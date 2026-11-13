@@ -299,7 +299,6 @@
     <string name="chat_open_settings">Настройки сессии</string>
     <string name="chat_session_actions">Действия с сессией</string>
     <string name="chat_scratchlist_badge">Заметки</string>
-    <string name="chat_inactive_bar">Сессия неактивна — отправьте сообщение, чтобы возобновить, или</string>
     <string name="chat_retry">Повторить</string>
     <string name="chat_loading_messages">Загрузка сообщений…</string>
     <string name="chat_loading_older">Загрузка старых сообщений…</string>
@@ -378,6 +377,7 @@
 
     <!-- Session config sheet (B-M3b) -->
     <string name="chat_config_offline_note">Сессия офлайн — изменения применятся после возобновления или могут быть отклонены.</string>
+    <string name="chat_config_context">Контекст</string>
     <string name="chat_config_terminal_note">Сессией управляют из терминала — изменения конфигурации будут отклонены.</string>
     <string name="chat_config_permission_mode">Режим разрешений</string>
     <string name="chat_config_model">Модель</string>

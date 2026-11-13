@@ -17,7 +17,7 @@ import app.hapi.companion.ui.theme.HapiTypography
 import app.hapi.companion.ui.theme.hapi
 
 /**
- * Context-remaining indicator in the composer status row ([ComposerStatusRow]). With a known
+ * Context-remaining indicator in the session config sheet. With a known
  * window it shows the budget and the free share; without one, just the
  * current context size. The color escalates from neutral to amber to red as
  * the window fills — the text itself stays the same in every band.

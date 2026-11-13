@@ -299,7 +299,6 @@
     <string name="chat_open_settings">Session settings</string>
     <string name="chat_session_actions">Session actions</string>
     <string name="chat_scratchlist_badge">Scratchlist</string>
-    <string name="chat_inactive_bar">Session inactive — send to resume, or</string>
     <string name="chat_retry">Retry</string>
     <string name="chat_loading_messages">Loading messages…</string>
     <string name="chat_loading_older">Loading older messages…</string>
@@ -378,6 +377,7 @@
 
     <!-- Session config sheet (B-M3b) -->
     <string name="chat_config_offline_note">Session is offline — changes apply after it resumes or may be rejected.</string>
+    <string name="chat_config_context">Context</string>
     <string name="chat_config_terminal_note">Session is controlled from the terminal — config changes will be rejected.</string>
     <string name="chat_config_permission_mode">Permission mode</string>
     <string name="chat_config_model">Model</string>

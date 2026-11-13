@@ -306,7 +306,6 @@
     <string name="chat_open_settings">会话设置</string>
     <string name="chat_session_actions">会话操作</string>
     <string name="chat_scratchlist_badge">草稿夹</string>
-    <string name="chat_inactive_bar">会话已停止 — 发送消息即可恢复，或</string>
     <string name="chat_retry">重试</string>
     <string name="chat_loading_messages">加载消息…</string>
     <string name="chat_loading_older">正在加载更早的消息…</string>
@@ -385,6 +384,7 @@
 
     <!-- Session config sheet (B-M3b) -->
     <string name="chat_config_offline_note">会话已离线 — 更改将在恢复后生效，也可能被拒绝。</string>
+    <string name="chat_config_context">上下文</string>
     <string name="chat_config_terminal_note">会话由终端控制 — 配置更改会被拒绝。</string>
     <string name="chat_config_permission_mode">权限模式</string>
     <string name="chat_config_model">模型</string>

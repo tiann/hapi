@@ -5,11 +5,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.unit.dp
-import app.hapi.companion.feature.chat.ComposerStatusRow
 import app.hapi.companion.feature.chat.ComposerUiState
-import app.hapi.companion.feature.chat.ContextUsage
 import app.hapi.companion.feature.chat.QueuedRowUi
-import app.hapi.companion.feature.chat.SessionConfigUi
 import app.hapi.companion.feature.chat.attachments.ComposerAttachmentStatus
 import app.hapi.companion.feature.chat.attachments.ComposerAttachmentUi
 import app.hapi.companion.feature.chat.composer.ChatComposer
@@ -97,16 +94,6 @@ class ComposerSpecimenTest {
                     ),
                 ),
                 onSteer = {}, onRetry = {}, onEdit = {}, onCancel = {},
-            )
-            ComposerStatusRow(
-                contextUsage = ContextUsage.indicator(140_000.0, 190_000.0),
-                config = SessionConfigUi(
-                    flavor = "claude", active = true, controlledByUser = false,
-                    permissionMode = "acceptEdits", permissionModes = emptyList(),
-                    model = null, modelOptions = null, modelOptionsLoading = false,
-                    effort = null, effortOptions = null,
-                ),
-                onModeClick = {},
             )
             Composer(ComposerUiState(text = "", isSending = false, canSteer = true))
         }
