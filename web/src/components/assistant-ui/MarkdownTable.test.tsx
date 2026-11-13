@@ -890,6 +890,26 @@ describe('MarkdownTable', () => {
         )
     })
 
+    it('omits image-preview filenames when copying rendered table images', () => {
+        const table = document.createElement('table')
+        table.innerHTML = '<thead><tr><th>Image</th></tr></thead><tbody><tr><td></td></tr></tbody>'
+        const cell = table.tBodies[0]!.rows[0]!.cells[0]!
+        const trigger = document.createElement('button')
+        trigger.setAttribute('data-image-preview-trigger', '')
+        const image = document.createElement('img')
+        image.setAttribute('src', 'data:image/png;base64,ZmFrZQ==')
+        image.setAttribute('alt', 'Chart')
+        image.dataset.hapiMarkdownSrc = 'images/chart.png'
+        const filename = document.createElement('span')
+        filename.setAttribute('data-image-preview-filename', '')
+        filename.className = 'sr-only'
+        filename.textContent = 'chart.png'
+        trigger.append(image, filename)
+        cell.append(trigger)
+
+        expect(serializeTableToMarkdown(table)).toBe('| Image |\n| --- |\n| ![Chart](images/chart.png) |\n')
+    })
+
     it('keeps sanitized custom-link destinations available for Markdown copying', () => {
         render(
             <I18nProvider>

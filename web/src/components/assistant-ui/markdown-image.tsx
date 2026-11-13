@@ -143,7 +143,6 @@ export function ChatMarkdownImage(props: ComponentPropsWithoutRef<'img'>) {
     return (
         <ImagePreview
             src={resolvedSrc}
-            data-hapi-markdown-src={typeof src === 'string' ? src : undefined}
             fileName={fileName}
             label={label}
             fileSize={state.fileSize}
@@ -151,7 +150,10 @@ export function ChatMarkdownImage(props: ComponentPropsWithoutRef<'img'>) {
             disabled={!state.loaded}
             loading="lazy"
             referrerPolicy="no-referrer"
-            thumbnailProps={imageProps}
+            thumbnailProps={{
+                ...imageProps,
+                ...(typeof src === 'string' ? { 'data-hapi-markdown-src': src } : {}),
+            }}
             imageStyle={imageProps.style}
             buttonClassName="my-3 inline-block max-w-full cursor-zoom-in rounded-xl text-left disabled:cursor-default"
             imageClassName={cn('aui-md-img block max-w-full rounded-xl', className)}

@@ -433,6 +433,7 @@ function serializeInlineMarkdown(node: Node): string {
             return src ? `![${alt}](${serializeMarkdownDestination(src)})` : alt
         }
         case 'span': {
+            if (element.hasAttribute('data-image-preview-filename')) return ''
             const imageSource = element.dataset.hapiMarkdownSrc
             if (imageSource) {
                 const alt = serializeMarkdownText(element.dataset.hapiMarkdownAlt ?? '', false)
