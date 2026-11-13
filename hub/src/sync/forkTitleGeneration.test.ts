@@ -284,6 +284,32 @@ it('seeds and generates when native readiness sees titled Hub source but untitle
         expect(metadata?.forkTitleSeed).toBeUndefined()
     } finally { f.close() }
 })
+it('does not seed a native readiness child from a parent in another namespace', async () => {
+    const f = fixture(true)
+    try {
+        const foreign = f.engine.getOrCreateSession('foreign-parent', {
+            path: '/tmp/foreign', host: 'test', machineId: 'machine', flavor: 'codex',
+            codexSessionId: 'native-foreign', name: 'Foreign title',
+            capabilities: { concurrentClients: true },
+        }, null, 'other')
+        f.setMetadata(f.child!.id, metadata => ({
+            ...metadata,
+            name: undefined,
+            summary: undefined,
+            forkTitleSeed: undefined,
+            forkedFrom: foreign.id,
+        }))
+        let requests = 0
+        f.internal.titleSuggestionService.suggestTitle = async () => {
+            requests += 1
+            throw new Error('provider unavailable')
+        }
+        f.engine.handleSessionReady({ sid: f.child!.id, time: Date.now() })
+        await flush()
+        expect(requests).toBe(1)
+        expect(f.engine.getSession(f.child!.id)?.metadata?.summary).toBeUndefined()
+    } finally { f.close() }
+})
 it('reconciles a stale CLI fork seed after an idle source rename before readiness claims generation', async () => {
     const seed = { text: 'Fork: Old', updatedAt: 1 }
     const f = fixture(true, { summary: seed, forkTitleSeed: seed })

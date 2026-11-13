@@ -2820,7 +2820,10 @@ export class SyncEngine {
         // If its source already had a title, wait for seedForkTitle instead of
         // consuming the one-shot generation claim with an undefined baseline.
         if (!metadata.forkTitleSeed && metadata.forkedFrom) {
-            const sourceMetadata = this.sessionCache.getSession(metadata.forkedFrom)?.metadata
+            const childNamespace = this.sessionCache.getSession(sessionId)?.namespace
+            const sourceMetadata = childNamespace
+                ? this.sessionCache.getSessionByNamespace(metadata.forkedFrom, childNamespace)?.metadata
+                : undefined
             const forkSummary = buildForkSessionSummary(sourceMetadata)
             if (forkSummary) {
                 // Native terminal readiness can arrive before a REST fork creates the
