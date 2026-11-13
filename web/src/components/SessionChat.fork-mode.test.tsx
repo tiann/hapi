@@ -244,4 +244,5 @@ describe('fork preview fed by the hub while the dialog stays open', () => {
         await waitFor(() => expect(screen.getByTestId('fork-preview-thread')).toBeTruthy())
         expect(forkPreview).toHaveBeenLastCalledWith('ses-1', 'message', 'u2-local')
     })
+
 })

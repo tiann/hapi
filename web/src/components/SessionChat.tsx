@@ -2319,6 +2319,24 @@ function SessionChatInner(props: SessionChatProps) {
                         onConfirm={forkFlow.confirmLegacy}
                     />
                 ) : null}
+                {forkFlow.errorMessage && !forkFlow.preview ? (
+                    <ConfirmDialog
+                        isOpen
+                        onClose={forkFlow.closePreview}
+                        title={t('message.fork.confirmTitle')}
+                        description={forkFlow.errorMessage}
+                        confirmLabel={forkFlow.errorWasConnectFailure ? t('button.retry') : t('dialog.reopen.dismiss')}
+                        confirmingLabel={forkFlow.errorWasConnectFailure ? t('button.retry') : t('dialog.reopen.dismiss')}
+                        isPending={forkFlow.loading}
+                        hideCancel={forkFlow.errorWasConnectFailure}
+                        keepOpenAfterConfirm={forkFlow.errorWasConnectFailure}
+                        centerTitle
+                        onConfirm={async () => {
+                            if (forkFlow.errorWasConnectFailure) forkFlow.retryPreview()
+                            else forkFlow.closePreview()
+                        }}
+                    />
+                ) : null}
                 <AbortRestoreConsumer messages={normalizedMessages} onAbortRestore={props.onAbortRestore ?? (() => {})} />
                 <DragDropZone disabled={(!props.session.active && !inactiveCanResume) || props.isSending || pendingSchedule != null || isScratchlistParking}>
                     <div className="relative flex min-h-0 flex-1 flex-col">

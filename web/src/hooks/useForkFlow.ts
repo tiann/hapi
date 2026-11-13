@@ -28,6 +28,9 @@ export type ForkFlow = {
     loading: boolean
     /** Preview failure message; the dialog stays open and shows it. */
     errorMessage: string | null
+    /** True when the failure was a connect-level error (no hub answer), so a
+     * retry is meaningful; hub rejections leave it false. */
+    errorWasConnectFailure: boolean
     /** True when the hub has no preview endpoint: render the legacy confirm. */
     legacyFallback: boolean
     /** The request to re-run through the legacy confirm dialog. */
@@ -41,6 +44,8 @@ export type ForkFlow = {
     confirmPreview: () => Promise<void>
     /** Legacy confirm for the 404 fallback path (old hub, no preview route). */
     confirmLegacy: () => Promise<void>
+    /** Re-run the request that produced the current error dialog. */
+    retryPreview: () => void
 }
 
 type UseForkFlowOptions = {
@@ -79,8 +84,10 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
     const [state, setState] = useState<ForkFlowState | null>(null)
     const [loading, setLoading] = useState(false)
     const [errorMessage, setErrorMessage] = useState<string | null>(null)
+    const [errorWasConnectFailure, setErrorWasConnectFailure] = useState(false)
     const [legacyRequest, setLegacyRequest] = useState<ForkFlow['legacyRequest']>(null)
     const [stale, setStale] = useState(false)
+    const lastFailedRequestRef = useRef<ForkFlow['legacyRequest']>(null)
     const requestSeq = useRef(0)
     const sessionRef = useRef(options.session)
     sessionRef.current = options.session
@@ -92,17 +99,21 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
         setState(null)
         setLoading(false)
         setErrorMessage(null)
+        setErrorWasConnectFailure(false)
         setLegacyRequest(null)
         setStale(false)
+        lastFailedRequestRef.current = null
     }, [])
 
     const fetchPreview = useCallback(async (intent: ForkPreviewIntent, messageLocalId?: string) => {
         const seq = ++requestSeq.current
         setLoading(true)
         setErrorMessage(null)
+        setErrorWasConnectFailure(false)
         try {
             const response = await api.forkPreview(sessionRef.current.id, intent, messageLocalId)
             if (seq !== requestSeq.current) return
+            lastFailedRequestRef.current = null
             setState({ intent, messageLocalId, response, view: buildForkPreviewView(response) })
         } catch (error) {
             if (seq !== requestSeq.current) return
@@ -113,6 +124,10 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
                 setState(null)
                 return
             }
+            // Connect-level failures (no hub answer) are retryable; hub
+            // rejections answer with an ApiError and stay dismiss-only.
+            setErrorWasConnectFailure(!(error instanceof ApiError))
+            lastFailedRequestRef.current = { intent, messageLocalId }
             setErrorMessage(apiErrorText(error, t('dialog.error.default')))
         } finally {
             if (seq === requestSeq.current) setLoading(false)
@@ -206,6 +221,7 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
         preview: state,
         loading,
         errorMessage,
+        errorWasConnectFailure,
         legacyFallback: legacyRequest !== null,
         legacyRequest,
         stale,
@@ -213,6 +229,10 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
         openRewind,
         closePreview,
         confirmPreview,
-        confirmLegacy
+        confirmLegacy,
+        retryPreview: () => {
+            const request = lastFailedRequestRef.current
+            if (request) void fetchPreview(request.intent, request.messageLocalId)
+        }
     }
 }
