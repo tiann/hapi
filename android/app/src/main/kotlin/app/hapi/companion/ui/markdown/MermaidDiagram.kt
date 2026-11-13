@@ -38,7 +38,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -47,6 +46,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import app.hapi.companion.R
 import app.hapi.companion.ui.components.FullTextAction
 import app.hapi.companion.ui.theme.HapiExtendedColors
+import app.hapi.companion.ui.theme.HapiTypography
 import app.hapi.companion.ui.theme.hapi
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -314,7 +314,7 @@ private fun MermaidDiagramHeader(code: String, colors: HapiExtendedColors) {
     ) {
         Text(
             text = "mermaid".uppercase(),
-            fontFamily = FontFamily.Monospace,
+            fontFamily = HapiTypography.monoFamily,
             fontSize = 11.sp,
             lineHeight = 16.sp,
             letterSpacing = 0.8.sp,
@@ -357,7 +357,7 @@ private fun MermaidDiagramFallback(
                     text = message,
                     fontSize = 11.sp,
                     lineHeight = 15.sp,
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = HapiTypography.monoFamily,
                     color = colors.hint,
                 )
             }
@@ -370,7 +370,7 @@ private fun MermaidDiagramFallback(
         ) {
             Text(
                 text = code,
-                fontFamily = FontFamily.Monospace,
+                fontFamily = HapiTypography.monoFamily,
                 fontSize = 14.sp,
                 lineHeight = 20.sp,
                 softWrap = false,

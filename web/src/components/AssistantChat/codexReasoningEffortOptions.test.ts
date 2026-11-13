@@ -83,4 +83,24 @@ describe('getCodexComposerReasoningEffortOptions', () => {
             { value: 'medium', label: 'Medium' }
         ])
     })
+    it('builds DSH options from the fixed thought_level presets', () => {
+        expect(getCodexComposerReasoningEffortOptions(null, 'dsh')).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'off', label: 'Off' },
+            { value: 'low', label: 'Low' },
+            { value: 'high', label: 'High' },
+            { value: 'max', label: 'Max' }
+        ])
+    })
+
+    it('prefers discovered DSH options over the presets', () => {
+        expect(getCodexComposerReasoningEffortOptions('low', 'dsh', [
+            { value: 'low', name: 'Low' },
+            { value: 'ultra', name: 'Ultra' }
+        ])).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'low', label: 'Low' },
+            { value: 'ultra', label: 'Ultra' }
+        ])
+    })
 })
