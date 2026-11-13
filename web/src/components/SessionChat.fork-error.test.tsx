@@ -228,6 +228,51 @@ describe('fork preview error display in the chat', () => {
         await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Fork conversation' })).toBeNull())
     })
 
+    it('refuses Escape and close-button dismissal while a legacy fork confirm is pending', async () => {
+        const fork = vi.fn()
+        let resolveFork!: (value: { sessionId: string }) => void
+        fork.mockImplementation(() => new Promise<{ sessionId: string }>(resolve => { resolveFork = resolve }))
+        const forkPreview = vi.fn(async () => { throw new ApiError('HTTP 404 Not Found', 404) })
+
+        render(shell(forkPreview, fork, makeSession(false), baseRows))
+        fireEvent.click((await screen.findAllByRole('button', { name: 'Fork' })).at(-1)!)
+        const legacyDialog = await screen.findByRole('dialog', { name: 'Fork conversation' })
+        fireEvent.click(within(legacyDialog).getByRole('button', { name: 'Fork' }))
+        await within(legacyDialog).findByRole('button', { name: 'Forking…' })
+
+        // Escape and the close button bypass the disabled Cancel button:
+        // dismissing mid-RPC leaves the fork running with nowhere to report
+        // its failure.
+        fireEvent.keyDown(document, { key: 'Escape' })
+        expect(screen.getByRole('dialog', { name: 'Fork conversation' })).toBeTruthy()
+        fireEvent.click(within(legacyDialog).getByRole('button', { name: 'Close' }))
+        expect(screen.getByRole('dialog', { name: 'Fork conversation' })).toBeTruthy()
+
+        resolveFork({ sessionId: 'ses-child' })
+        await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Fork conversation' })).toBeNull())
+    })
+
+    it('refuses Escape and close-button dismissal while a legacy rewind confirm is pending', async () => {
+        const rewind = vi.fn()
+        let resolveRewind!: (value: { success: true }) => void
+        rewind.mockImplementation(() => new Promise<{ success: true }>(resolve => { resolveRewind = resolve }))
+        const forkPreview = vi.fn(async () => { throw new ApiError('HTTP 404 Not Found', 404) })
+
+        render(shell(forkPreview, rewind, makeSession(false), baseRows))
+        fireEvent.click((await screen.findAllByRole('button', { name: 'Rewind' })).at(-1)!)
+        const legacyDialog = await screen.findByRole('dialog', { name: 'Rewind conversation' })
+        fireEvent.click(within(legacyDialog).getByRole('button', { name: 'Rewind' }))
+        await within(legacyDialog).findByRole('button', { name: 'Rewinding…' })
+
+        fireEvent.keyDown(document, { key: 'Escape' })
+        expect(screen.getByRole('dialog', { name: 'Rewind conversation' })).toBeTruthy()
+        fireEvent.click(within(legacyDialog).getByRole('button', { name: 'Close' }))
+        expect(screen.getByRole('dialog', { name: 'Rewind conversation' })).toBeTruthy()
+
+        resolveRewind({ success: true })
+        await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Rewind conversation' })).toBeNull())
+    })
+
     it('titles the rewind preview error dialog as a rewind', async () => {
         const fork = vi.fn(async () => ({ sessionId: 'ses-child' }))
         const forkPreview = vi.fn(async () => { throw new TypeError('Failed to fetch') })

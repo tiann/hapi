@@ -124,4 +124,33 @@ describe('SessionList fork preview error dialog', () => {
         expect(within(errorDialog).getByRole('button', { name: 'Dismiss' })).toBeTruthy()
         expect(within(errorDialog).queryByRole('button', { name: 'Retry' })).toBeNull()
     })
+
+    it('refuses Escape and close-button dismissal while a legacy fork confirm is pending', async () => {
+        const fork = vi.fn()
+        let resolveFork!: (value: { sessionId: string }) => void
+        fork.mockImplementation(() => new Promise<{ sessionId: string }>(resolve => { resolveFork = resolve }))
+        const api = {
+            forkPreview: vi.fn(async () => { throw new ApiError('HTTP 404 Not Found', 404) }),
+            forkConversation: fork,
+            rewindConversation: vi.fn(async () => ({ success: true as const }))
+        } as unknown as ApiClient
+
+        renderList(api)
+        openRowMenu()
+        fireEvent.click(await screen.findByRole('menuitem', { name: 'Fork session' }))
+        const legacyDialog = await screen.findByRole('dialog', { name: 'Fork session' })
+        fireEvent.click(within(legacyDialog).getByRole('button', { name: 'Confirm' }))
+        await within(legacyDialog).findByRole('button', { name: 'Forking…' })
+
+        // Escape and the dialog's close button must not dismiss the flow
+        // while the fork RPC is pending: the fork keeps running after the
+        // dialog disappears and a later failure would be silently lost.
+        fireEvent.keyDown(document, { key: 'Escape' })
+        expect(screen.getByRole('dialog', { name: 'Fork session' })).toBeTruthy()
+        fireEvent.click(within(legacyDialog).getByRole('button', { name: 'Close' }))
+        expect(screen.getByRole('dialog', { name: 'Fork session' })).toBeTruthy()
+
+        resolveFork({ sessionId: 'ses-child' })
+        await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Fork session' })).toBeNull())
+    })
 })

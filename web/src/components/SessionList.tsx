@@ -1451,7 +1451,7 @@ const SessionItem = memo(function SessionItem(props: {
             {forkFlow.legacyFallback ? (
                 <ConfirmDialog
                     isOpen={true}
-                    onClose={forkFlow.closePreview}
+                    onClose={() => { if (!forkFlow.confirming) forkFlow.closePreview() }}
                     title={t('dialog.sessionFork.title')}
                     description={t(s.thinking && supportsCompletedFork ? 'dialog.sessionFork.completedDescription' : 'dialog.sessionFork.description')}
                     confirmLabel={t('dialog.sessionFork.confirm')}

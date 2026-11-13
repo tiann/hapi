@@ -2368,7 +2368,7 @@ function SessionChatInner(props: SessionChatProps) {
                 {forkFlow.legacyFallback && forkFlow.legacyRequest?.intent !== 'rewind' ? (
                     <ConfirmDialog
                         isOpen
-                        onClose={forkFlow.closePreview}
+                        onClose={() => { if (!forkFlow.confirming) forkFlow.closePreview() }}
                         title={t('message.fork.confirmTitle')}
                         description={t('message.fork.confirmDescription')}
                         confirmLabel={t('message.fork')}
@@ -2381,7 +2381,7 @@ function SessionChatInner(props: SessionChatProps) {
                 {forkFlow.legacyFallback && forkFlow.legacyRequest?.intent === 'rewind' ? (
                     <ConfirmDialog
                         isOpen
-                        onClose={forkFlow.closePreview}
+                        onClose={() => { if (!forkFlow.confirming) forkFlow.closePreview() }}
                         title={t('message.rewind.confirmTitle')}
                         description={t('message.rewind.confirmDescription')}
                         confirmLabel={t('message.rewind')}
