@@ -446,4 +446,49 @@ describe('chunked upload handlers', () => {
             await cleanupUploadDir(sessionId);
         }
     });
+
+    it('reserves concurrent chunked upload slots across async initialization', async () => {
+        const { init, abort } = setupHandlers();
+        const sessionId = `test-upload-concurrent-${Date.now()}`;
+        const uploadIds: string[] = [];
+        try {
+            const results: Array<{ success: boolean; uploadId?: string; code?: string }> = await Promise.all(
+                Array.from({ length: 20 }, (_, i) =>
+                    init({
+                        sessionId,
+                        filename: `file-${i}.bin`,
+                        size: 1024,
+                        mimeType: 'application/octet-stream',
+                    })
+                )
+            );
+            const succeeded = results.filter((res) => res.success);
+            const conflicted = results.filter((res) => !res.success && res.code === 'upload_conflict');
+            expect(succeeded).toHaveLength(16);
+            expect(conflicted).toHaveLength(4);
+            for (const res of succeeded) {
+                if (res.uploadId) {
+                    uploadIds.push(res.uploadId);
+                }
+            }
+
+            const firstUploadId = uploadIds.shift();
+            expect(firstUploadId).toBeTruthy();
+            await abort({ sessionId, uploadId: firstUploadId! });
+
+            const replacement = await init({
+                sessionId,
+                filename: 'replacement.bin',
+                size: 1024,
+                mimeType: 'application/octet-stream',
+            });
+            expect(replacement.success).toBe(true);
+            if (replacement.uploadId) {
+                uploadIds.push(replacement.uploadId);
+            }
+        } finally {
+            await Promise.all(uploadIds.map((uploadId) => abort({ sessionId, uploadId }).catch(() => {})));
+            await cleanupUploadDir(sessionId);
+        }
+    });
 });

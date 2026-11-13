@@ -79,6 +79,7 @@ const uploadDirPromises = new Map<string, Promise<string>>()
 const uploadDirCleanupRequested = new Set<string>()
 const retainedUploadDirs = new Set<string>()
 const activeChunkedUploads = new Map<string, ActiveChunkedUpload>()
+let pendingChunkedUploadInits = 0
 let cleanupRegistered = false
 const MAX_FILENAME_COMPONENT_BYTES = 255
 const ACTIVE_UPLOAD_TTL_MS = 15 * 60 * 1000
@@ -252,6 +253,7 @@ export function preserveUploadDirOnExit(sessionId: string): void {
 
 function cleanupUploadDirsSync(): void {
     const dirs = Array.from(uploadDirs.entries()).filter(([key]) => !retainedUploadDirs.has(key)).map(([, dir]) => dir)
+    pendingChunkedUploadInits = 0
     for (const state of activeChunkedUploads.values()) {
         clearTimeout(state.timer)
         state.aborted = true
@@ -404,11 +406,12 @@ export function registerUploadHandlers(
             )
         }
 
-        if (activeChunkedUploads.size >= MAX_ACTIVE_CHUNKED_UPLOADS) {
+        if (activeChunkedUploads.size + pendingChunkedUploadInits >= MAX_ACTIVE_CHUNKED_UPLOADS) {
             return rpcUploadError('Too many concurrent uploads', 'upload_conflict')
         }
 
         const sessionKey = getSessionKey(data.sessionId)
+        pendingChunkedUploadInits += 1
         try {
             const dir = await getOrCreateUploadDir(data.sessionId)
             const uniqueFilename = buildUniqueUploadFilename(data.filename, Buffer.byteLength('.part'))
@@ -451,6 +454,8 @@ export function registerUploadHandlers(
         } catch (error) {
             logger.debug('Failed to initialize chunked upload:', error)
             return rpcError(getErrorMessage(error, 'Failed to initialize upload'))
+        } finally {
+            pendingChunkedUploadInits = Math.max(0, pendingChunkedUploadInits - 1)
         }
     })
 

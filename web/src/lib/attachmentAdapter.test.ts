@@ -351,15 +351,13 @@ describe('attachmentAdapter image previews', () => {
         expect(uploadFile).not.toHaveBeenCalled()
         expect(initChunkedUpload).toHaveBeenCalledWith(
             'session-1',
-            { filename: 'archive.zip', size: tenMiB, mimeType: 'application/zip' },
-            expect.objectContaining({ signal: expect.any(AbortSignal) })
+            { filename: 'archive.zip', size: tenMiB, mimeType: 'application/zip' }
         )
         expect(uploadFileChunk).toHaveBeenCalledTimes(3)
         expect(chunkSizes).toEqual([fourMiB, fourMiB, 2 * 1024 * 1024])
         expect(finalizeChunkedUpload).toHaveBeenCalledWith(
             'session-1',
-            'upload-123',
-            expect.objectContaining({ signal: expect.any(AbortSignal) })
+            'upload-123'
         )
         expect(emitted.at(-1)).toMatchObject({
             status: { type: 'requires-action', reason: 'composer-send' },
@@ -474,5 +472,119 @@ describe('attachmentAdapter image previews', () => {
             status: { type: 'incomplete', reason: 'error' },
             retryable: false,
         })
+    })
+
+    it('aborts the server upload when removed while initChunkedUpload is pending', async () => {
+        const { createAttachmentAdapter } = await import('./attachmentAdapter')
+        let resolveInit: ((value: { success: true; uploadId: string; chunkSize: number }) => void) | undefined
+        const initChunkedUpload = vi.fn().mockImplementation(
+            () => new Promise((resolve) => {
+                resolveInit = resolve
+            })
+        )
+        const uploadFileChunk = vi.fn()
+        const finalizeChunkedUpload = vi.fn()
+        const abortChunkedUpload = vi.fn().mockResolvedValue({ success: true })
+        const adapter = createAttachmentAdapter({
+            uploadFile: vi.fn(),
+            initChunkedUpload,
+            uploadFileChunk,
+            finalizeChunkedUpload,
+            abortChunkedUpload,
+            deleteUploadFile: vi.fn().mockResolvedValue({ success: true }),
+        } as never, 'session-1')
+
+        const tenMiB = 10 * 1024 * 1024
+        const file = new File([new Uint8Array(tenMiB)], 'pending-init.bin', { type: 'application/octet-stream' })
+
+        const iter = (adapter.add({ file }) as AsyncIterable<Record<string, unknown>>)[Symbol.asyncIterator]()
+        const firstStep = await iter.next()
+        expect(firstStep.value).toMatchObject({ id: expect.any(String), status: { type: 'running' } })
+        const attachment = firstStep.value!
+
+        const remainingPromise = (async () => {
+            const items: Record<string, unknown>[] = []
+            while (true) {
+                const next = await iter.next()
+                if (next.done) {
+                    break
+                }
+                items.push(next.value)
+            }
+            return items
+        })()
+
+        await adapter.remove(attachment as never)
+        expect(abortChunkedUpload).not.toHaveBeenCalled()
+
+        resolveInit?.({ success: true, uploadId: 'late-upload-id', chunkSize: 4 * 1024 * 1024 })
+        const remaining = await remainingPromise
+        expect(remaining).toEqual([])
+        expect(abortChunkedUpload).toHaveBeenCalledWith('session-1', 'late-upload-id')
+        expect(uploadFileChunk).not.toHaveBeenCalled()
+        expect(finalizeChunkedUpload).not.toHaveBeenCalled()
+    })
+
+    it('deletes the finalized file when removed while finalizeChunkedUpload is pending', async () => {
+        const { createAttachmentAdapter } = await import('./attachmentAdapter')
+        let resolveFinalize: ((value: { success: true; path: string }) => void) | undefined
+        const initChunkedUpload = vi.fn().mockResolvedValue({
+            success: true,
+            uploadId: 'upload-fin-1',
+            chunkSize: 10 * 1024 * 1024,
+        })
+        const uploadFileChunk = vi.fn().mockResolvedValue({ success: true, index: 0, receivedBytes: 10 * 1024 * 1024 })
+        const finalizeChunkedUpload = vi.fn().mockImplementation(
+            () => new Promise((resolve) => {
+                resolveFinalize = resolve
+            })
+        )
+        const abortChunkedUpload = vi.fn().mockResolvedValue({ success: true })
+        const deleteUploadFile = vi.fn().mockResolvedValue({ success: true })
+        const adapter = createAttachmentAdapter({
+            uploadFile: vi.fn(),
+            initChunkedUpload,
+            uploadFileChunk,
+            finalizeChunkedUpload,
+            abortChunkedUpload,
+            deleteUploadFile,
+        } as never, 'session-1')
+
+        const tenMiB = 10 * 1024 * 1024
+        const file = new File([new Uint8Array(tenMiB)], 'pending-fin.bin', { type: 'application/octet-stream' })
+
+        const iter = (adapter.add({ file }) as AsyncIterable<Record<string, unknown>>)[Symbol.asyncIterator]()
+        const step1 = await iter.next()
+        const step2 = await iter.next()
+        const step3 = await iter.next()
+        expect(step1.done).toBe(false)
+        expect(step2.done).toBe(false)
+        expect(step3.done).toBe(false)
+
+        const remainingPromise = (async () => {
+            const items: Record<string, unknown>[] = []
+            while (true) {
+                const next = await iter.next()
+                if (next.done) {
+                    break
+                }
+                items.push(next.value)
+            }
+            return items
+        })()
+
+        await vi.waitFor(() => {
+            expect(finalizeChunkedUpload).toHaveBeenCalledTimes(1)
+        })
+
+        await adapter.remove(step3.value as never)
+        expect(abortChunkedUpload).not.toHaveBeenCalled()
+        expect(deleteUploadFile).not.toHaveBeenCalled()
+
+        resolveFinalize?.({ success: true, path: '/tmp/blobs/pending-fin.bin' })
+        const remaining = await remainingPromise
+        expect(remaining).toEqual([])
+        expect(abortChunkedUpload).not.toHaveBeenCalled()
+        expect(deleteUploadFile).toHaveBeenCalledWith('session-1', '/tmp/blobs/pending-fin.bin')
     })
 })

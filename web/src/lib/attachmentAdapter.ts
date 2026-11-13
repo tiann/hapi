@@ -19,10 +19,11 @@ export const CHUNKED_UPLOAD_THRESHOLD_BYTES = UPLOAD_CHUNK_MAX_BYTES
 const MAX_PREVIEW_BYTES = 5 * 1024 * 1024
 
 type ActiveUploadEntry = {
-    controller: AbortController
+    chunkController: AbortController
     uploadSessionId: string
     uploadId?: string
     abortSent?: boolean
+    finalizing?: boolean
 }
 
 function isNonRetryableUploadError(error: unknown, code?: string): boolean {
@@ -172,8 +173,8 @@ export function createAttachmentAdapter(
                 let useLegacySingleUpload = file.size <= CHUNKED_UPLOAD_THRESHOLD_BYTES
 
                 if (!useLegacySingleUpload) {
-                    const controller = new AbortController()
-                    activeEntry = { controller, uploadSessionId }
+                    const chunkController = new AbortController()
+                    activeEntry = { chunkController, uploadSessionId }
                     activeUploads.set(id, activeEntry)
 
                     let initResult: Awaited<ReturnType<ApiClient['initChunkedUpload']>> | null = null
@@ -181,8 +182,7 @@ export function createAttachmentAdapter(
                     try {
                         initResult = await api.initChunkedUpload(
                             uploadSessionId,
-                            { filename: file.name, size: file.size, mimeType: contentType },
-                            { signal: controller.signal }
+                            { filename: file.name, size: file.size, mimeType: contentType }
                         )
                     } catch (error) {
                         if (cancelledAttachmentIds.has(id)) {
@@ -195,7 +195,12 @@ export function createAttachmentAdapter(
                         }
                     }
 
+                    if (initResult?.success && initResult.uploadId) {
+                        activeEntry.uploadId = initResult.uploadId
+                    }
+
                     if (cancelledAttachmentIds.has(id)) {
+                        abortActiveChunkedUpload(activeEntry)
                         return
                     }
 
@@ -221,7 +226,6 @@ export function createAttachmentAdapter(
                         return
                     } else {
                         const uploadId = initResult.uploadId
-                        activeEntry.uploadId = uploadId
                         const chunkSize = Math.min(
                             Math.max(1, initResult.chunkSize ?? DEFAULT_UPLOAD_CHUNK_BYTES),
                             UPLOAD_CHUNK_MAX_BYTES
@@ -240,7 +244,7 @@ export function createAttachmentAdapter(
                                 uploadId,
                                 index,
                                 file.slice(start, end),
-                                { signal: controller.signal }
+                                { signal: chunkController.signal }
                             )
                             if (cancelledAttachmentIds.has(id)) {
                                 abortActiveChunkedUpload(activeEntry)
@@ -263,24 +267,31 @@ export function createAttachmentAdapter(
                             } as PendingUploadAttachment
                         }
 
+                        activeEntry.finalizing = true
                         const finalResult = await api.finalizeChunkedUpload(
                             uploadSessionId,
-                            uploadId,
-                            { signal: controller.signal }
+                            uploadId
                         )
-                        finalized = true
 
                         if (cancelledAttachmentIds.has(id)) {
                             if (finalResult.success && finalResult.path) {
+                                finalized = true
                                 await deleteUpload(finalResult.path, uploadSessionId)
+                            } else {
+                                activeEntry.finalizing = false
+                                abortActiveChunkedUpload(activeEntry)
                             }
                             return
                         }
 
                         if (!finalResult.success || !finalResult.path) {
+                            activeEntry.finalizing = false
+                            abortActiveChunkedUpload(activeEntry)
                             yield makeIncomplete(!isNonRetryableUploadError(undefined, finalResult.code))
                             return
                         }
+
+                        finalized = true
 
                         yield {
                             id,
@@ -359,8 +370,10 @@ export function createAttachmentAdapter(
             cancelledAttachmentIds.add(attachment.id)
             const active = activeUploads.get(attachment.id)
             if (active) {
-                active.controller.abort()
-                abortActiveChunkedUpload(active)
+                active.chunkController.abort()
+                if (!active.finalizing) {
+                    abortActiveChunkedUpload(active)
+                }
             }
             const path = (attachment as PendingUploadAttachment).path
             const uploadSessionId = (attachment as PendingUploadAttachment).uploadSessionId
