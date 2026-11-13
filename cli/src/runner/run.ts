@@ -1705,18 +1705,25 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           if (!bindingUnchanged()) return await finishWithOrphanSweep('unknown');
           if (!isProcessAlive(pid)) return await finishWithOrphanSweep('already_gone');
           if (persisted.processStartMarker && getProcessStartMarker(pid) !== persisted.processStartMarker) return 'unknown';
-          if (!(await killProcessTreeByPid(pid, false, undefined,
-            signalDeadlines.get(pid), undefined, canSignal))) return 'still_alive';
-          if (!bindingUnchanged()) return await finishWithOrphanSweep('unknown');
-          terminated.add(pid);
-          if (requestedSessionId) rememberVerifiedExit(requestedSessionId);
-          if (confirmedSessionId) rememberVerifiedExit(confirmedSessionId);
-          rememberVerifiedExit(`PID-${pid}`);
-          pidToRequestedSessionId.delete(pid);
-          pidToConfirmedSessionId.delete(pid);
-          if (persistedResumeProcesses.delete(pid)) persistResumeProcesses();
-          releaseRecoveredSpawnDedupe(pid, existingSessionIdByChildPid, spawnSession);
-          return await finishWithOrphanSweep('stopped');        }
+          const termination = await terminateCapturedBinding(
+            bindingUnchanged,
+            () => killProcessTreeByPid(pid, false, undefined,
+              signalDeadlines.get(pid), undefined, canSignal),
+            () => {
+              terminated.add(pid);
+              if (requestedSessionId) rememberVerifiedExit(requestedSessionId);
+              if (confirmedSessionId) rememberVerifiedExit(confirmedSessionId);
+              rememberVerifiedExit(`PID-${pid}`);
+              pidToRequestedSessionId.delete(pid);
+              pidToConfirmedSessionId.delete(pid);
+              if (persistedResumeProcesses.delete(pid)) persistResumeProcesses();
+              releaseRecoveredSpawnDedupe(pid, existingSessionIdByChildPid, spawnSession);
+            },
+          );
+          if (termination === 'still_alive') return 'still_alive';
+          if (termination === 'unknown') return await finishWithOrphanSweep('unknown');
+          return await finishWithOrphanSweep('stopped');
+        }
         if (requestedSessionId) rememberVerifiedExit(requestedSessionId);
         if (confirmedSessionId) rememberVerifiedExit(confirmedSessionId);
         rememberVerifiedExit(`PID-${pid}`);
