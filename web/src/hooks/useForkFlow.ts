@@ -63,7 +63,7 @@ type UseForkFlowOptions = {
     onRewindForkSafeFallback?: (messageLocalId: string) => void
 }
 
-function apiErrorText(error: unknown, fallback: string): string {
+export function apiErrorText(error: unknown, fallback: string): string {
     if (error instanceof ApiError && error.body) {
         try {
             const parsed = JSON.parse(error.body) as { error?: unknown }

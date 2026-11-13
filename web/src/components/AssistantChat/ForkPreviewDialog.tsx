@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { useTranslation } from '@/lib/use-translation'
+import { apiErrorText } from '@/hooks/useForkFlow'
 import type { ForkPreviewView } from '@/lib/forkPreview'
 
 type ForkPreviewDialogProps = {
@@ -26,13 +27,19 @@ export function ForkPreviewDialog({ isOpen, view, prefixMayHaveMore = false, sta
     const [error, setError] = useState<string | null>(null)
     const rewind = view.kind === 'rewind'
 
+    // A background refresh (thinking edge) replaces the view: a confirm error
+    // quoted against the old boundary must not linger under the new one.
+    useEffect(() => {
+        setError(null)
+    }, [view])
+
     const handleConfirm = async () => {
         setError(null)
         setPending(true)
         try {
             await onConfirm()
         } catch (err) {
-            setError(err instanceof Error && err.message ? err.message : t('dialog.error.default'))
+            setError(apiErrorText(err, t('dialog.error.default')))
         } finally {
             setPending(false)
         }
@@ -86,7 +93,7 @@ export function ForkPreviewDialog({ isOpen, view, prefixMayHaveMore = false, sta
                                     <span className="line-clamp-2">{view.boundaryText}</span>
                                 </div>
                             ) : null}
-                            {rewind && view.excludedTurns.length > 0 ? (
+                            {rewind && (view.excludedTurns.length > 0 || view.excludedTruncated) ? (
                                 <div className="mt-2 flex flex-col gap-2" data-testid="fork-preview-excluded">
                                     {view.excludedTurns.map((turn, index) => (
                                         <div key={index} className={turn.role === 'user' ? 'self-end rounded-xl border border-red-300 px-3 py-2 text-sm opacity-70 dark:border-red-800' : 'self-start text-sm line-through opacity-50'}>
