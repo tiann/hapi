@@ -42,6 +42,11 @@ fragment = "1.8.5"
 # Per-app locales (B-M5a): AppCompatDelegate.setApplicationLocales back to
 # API 26 (appcompat 1.7.1, 2025-06, on Google Maven).
 appcompat = "1.7.1"
+# Visual specimens (JVM screenshots, see README "Visual specimens"):
+# Robolectric 4.17 renders SDK 36 with native graphics; Roborazzi captures.
+robolectric = "4.17"
+# 1.61+ ships Kotlin 2.3 metadata, unreadable by this Kotlin 2.1 build.
+roborazzi = "1.60.0"
 
 [libraries]
 # AndroidX
@@ -99,6 +104,9 @@ junit = { group = "junit", name = "junit", version.ref = "junit" }
 kotlin-test = { group = "org.jetbrains.kotlin", name = "kotlin-test", version.ref = "kotlin" }
 okhttp-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver", version.ref = "okhttp" }
 turbine = { group = "app.cash.turbine", name = "turbine", version.ref = "turbine" }
+robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
+roborazzi = { group = "io.github.takahirom.roborazzi", name = "roborazzi", version.ref = "roborazzi" }
+roborazzi-compose = { group = "io.github.takahirom.roborazzi", name = "roborazzi-compose", version.ref = "roborazzi" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
@@ -109,3 +117,4 @@ kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "ko
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 # Applied conditionally in :app (only when google-services.json exists).
 google-services = { id = "com.google.gms.google-services", version.ref = "googleServices" }
+roborazzi = { id = "io.github.takahirom.roborazzi", version.ref = "roborazzi" }
