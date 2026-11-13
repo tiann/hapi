@@ -1326,7 +1326,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         }
     });
 
-    it('keeps a verified no-op fenced until a held Stop resets, then admits one input', async () => {
+    it('keeps a verified no-op fenced until a held Stop settles, then admits preserved input with the next one', async () => {
         const gate = new OpenCodeRuntimeGate();
         harness.clientMetadata = { path: '/tmp/hapi-opencode-test', host: 'fixture', opencodeSessionId: 'acp-session-1' };
         const { session, rpcHandlers } = createSessionStub([], { keepOpen: true }); session.sessionId = 'acp-session-1';
@@ -1355,18 +1355,21 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             original = gate.enterRuntime(); start!(); stopping = Promise.resolve(rpcHandlers.get('abort')!({}));
             await vi.waitFor(() => expect(cancelEntered).toBe(true));
             original(); original = undefined; connected!();
-            session.queue.push('before reset', createMode(), 'discarded-before-reset');
+            session.queue.push('before reset', createMode(), 'preserved-before-reset');
             await new Promise<void>(resolve => setTimeout(resolve, 60));
             expect(gate.isBlocked()).toBe(true); expect(() => gate.enterRuntime()).toThrow('reconciliation');
             expect(harness.promptCount).toBe(0); expect(acknowledged).toEqual([]); expect(session.queue.size()).toBe(1);
             releaseCancel(); await stopping;
-            expect(session.queue.size()).toBe(0);
+            // A plain Stop preserves the entry-queued input; it runs together
+            // with the next admission once the entry confirmation releases
+            // the fence.
+            expect(session.queue.size()).toBe(1);
             await vi.waitFor(() => expect(confirmationHeld).toBe(true));
             session.queue.push('after reset', createMode(), 'after-reset');
             await new Promise<void>(resolve => setImmediate(resolve));
             expect(acknowledged).toEqual([]); expect(harness.promptCount).toBe(0); expect(gate.isBlocked()).toBe(true);
             releaseConfirmation(); await vi.waitFor(() => expect(harness.promptCount).toBe(1));
-            expect(acknowledged).toEqual(['after-reset']);
+            expect(acknowledged).toEqual(['preserved-before-reset', 'after-reset']);
         } finally {
             original?.(); releaseCancel(); releaseConfirmation(); await stopping?.catch(() => {});
             session.queue.close(); await launcher; harness.cancelPromptImpl = null;
@@ -5541,7 +5544,7 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
         }
     });
 
-    it.each(['v1', 'v2'] as const)('%s clears unsent queued input when a plain Stop settles mid-turn', async version => {
+    it.each(['v1', 'v2'] as const)('%s preserves queued inputs until native Stop settles, then drains each batch once', async version => {
         harness.detectedVersion = version;
         let releaseAbort!: () => void;
         harness.cancelPromptImpl = () => new Promise<void>(resolve => { releaseAbort = resolve; });
@@ -5560,13 +5563,16 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
             expect(batches).toEqual([]);
             expect(stub.session.queue.pendingLocalIds()).toEqual(['before', 'during']);
             releaseAbort(); await aborting;
-            // The settled Stop resets the queue: unsent input is discarded and
-            // the still-unsettled turn is the only one that ever ran.
-            expect(stub.session.queue.pendingLocalIds()).toEqual([]);
+            // A plain Stop preserves queued input: both items are still
+            // pending and drain as their own turns once the loop is free.
+            expect(stub.session.queue.pendingLocalIds()).toEqual(['before', 'during']);
             releasePrompt();
-            await vi.waitFor(() => expect(harness.events.filter(event => event === 'prompt:end').length).toBe(1));
-            expect(harness.promptCount).toBe(1);
-            expect(batches).toEqual([]);
+            await vi.waitFor(() => expect(harness.promptCount).toBe(3));
+            expect(harness.promptContents.slice(1)).toEqual([
+                [{ type: 'text', text: 'queued before Stop' }],
+                [{ type: 'text', text: 'queued during Stop' }]
+            ]);
+            expect(batches).toEqual([['before'], ['during']]);
         } finally {
             releaseAbort?.(); harness.cancelPromptImpl = null; await aborting;
             await stopTurn(stub, releasePrompt, runPromise);
@@ -5697,20 +5703,21 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
             await steerHandlerOf(stub)({ localId: 'steer' });
             harness.deferSteerState = new Promise<void>(resolve => { releaseState = resolve; });
             aborting = (stub.rpcHandlers.get('abort') as () => Promise<void>)();
-            // The owner Stop resets before awaiting the restore drain, and the
-            // restore's durable 'queued' persist parks until released.
+            // The plain owner preserves the queue; the restore's durable
+            // 'queued' persist parks until released, before any reset.
             await vi.waitFor(() => expect(harness.steerStateCalls).toContainEqual({ localIds: ['steer'], state: 'queued' }));
             expect(cancelled).toBe(true);
-            expect(reset).toHaveBeenCalledExactlyOnceWith({ preserveDispatchingReservations: true });
+            expect(reset).not.toHaveBeenCalled();
             leaving = reason === 'switch'
                 ? (stub.rpcHandlers.get('switch') as () => Promise<void>)()
                 : Promise.resolve(terminalHandlers.onExit());
             stub.session.queue.push('newer queued', createMode(), 'newer');
             releaseState(); await Promise.all([aborting, leaving]);
-            // The joined terminal reuses the owner's single reset; the drained
-            // steer survives it via the preserved dispatching reservation.
+            // The joined terminal promotes its cleanup intent: one reset after
+            // the shared restore drain clears the restored steer and the
+            // unsent sibling.
             expect(reset).toHaveBeenCalledExactlyOnceWith({ preserveDispatchingReservations: true });
-            expect(stub.session.queue.peekByLocalId('steer')?.message).toBe('correction');
+            expect(stub.session.queue.pendingLocalIds()).toEqual([]);
             expect(harness.cancelPrompt).toHaveBeenCalledOnce();
             expect(stub.emitMessagesConsumedCalls).toEqual([]);
             releasePrompt();
@@ -5912,7 +5919,7 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
         } finally { nativeFetch.mockRestore(); await stopTurn(stub, releasePrompt, runPromise); }
     });
 
-    it('v2 restores a proven cancelled input after one reset for overlapping Stops', async () => {
+    it('v2 restores a proven cancelled input across overlapping plain Stops', async () => {
         harness.detectedVersion = 'v2'; harness.discoveredPort = 48274; harness.discoveredPassword = 'test-only';
         let id = ''; let cancelled = false;
         const nativeFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
@@ -5936,7 +5943,9 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
             expect(stub.session.queue.peekByLocalId('v2-steer')).toBeNull();
             releaseAbort();
             await Promise.all([first, second]);
-            expect(reset).toHaveBeenCalledTimes(1);
+            // Plain Stops preserve the queue: no reset runs, and the restore
+            // puts the proven-cancelled input back for the next drain.
+            expect(reset).not.toHaveBeenCalled();
             expect(stub.session.queue.peekByLocalId('v2-steer')?.message).toBe('correction');
             expect(harness.steerStateCalls).toContainEqual({ localIds: ['v2-steer'], state: 'queued' });
             expect(stub.emitMessagesConsumedCalls).toEqual([]);

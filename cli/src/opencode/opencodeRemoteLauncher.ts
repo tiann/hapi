@@ -305,7 +305,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private readonly rewindEntryAbortController = new AbortController();
     private rewindSupersededId: string | undefined;
     private v2Steers = new Map<string, OpencodeV2SteerEntry>();
-    private v2AbortInProgress: Promise<void> | null = null;
+    private v2AbortInProgress: { promise: Promise<void>; leavingRemote: boolean } | null = null;
     private v2ResetInProgress: Promise<void> | null = null;
 
     constructor(
@@ -2885,22 +2885,47 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         }
         const inProgress = this.v2AbortInProgress;
         if (inProgress) {
-            // One overlapping Stop/switch owns queue.reset. A later reset
-            // must not erase an input the first cancellation just restored.
+            // One overlapping Stop/switch joins the in-flight cancellation and
+            // owns queue.reset exactly once. A terminal request joining a
+            // plain Stop promotes its cleanup intent onto that operation so
+            // the promoted reset below cannot erase an input the first
+            // cancellation just restored.
             if (leavingRemote) {
+                inProgress.leavingRemote = true;
                 this.closeSteerGate({ detachStrandedSteers: true });
                 this.compactResultSuppressed = true;
                 this.compactAbortController?.abort();
             }
-            try { return await inProgress; } finally { release(); }
+            try { return await inProgress.promise; } finally { release(); }
         }
         let resolve!: () => void;
         let reject!: (error: unknown) => void;
         const abort = new Promise<void>((ok, failed) => { resolve = ok; reject = failed; });
-        this.v2AbortInProgress = abort;
-        void this.performAbort(leavingRemote).then(resolve, reject);
+        const operation = { promise: abort, leavingRemote };
+        this.v2AbortInProgress = operation;
+        void this.performAbort(leavingRemote).then(() => {
+            try {
+                // The fence is held for the WHOLE teardown: a terminal request
+                // may join even after the plain owner skipped its reset, while
+                // a cancelled steer is still restoring. Apply the promoted
+                // terminal reset once, after that shared drain.
+                if (operation.leavingRemote && !leavingRemote) {
+                    this.session.queue.reset({ preserveDispatchingReservations: true });
+                }
+                resolve();
+            } catch (error) {
+                reject(error);
+            } finally {
+                // Clear in the same synchronous settlement so a later request
+                // cannot join an already-finished operation and lose its intent.
+                if (this.v2AbortInProgress === operation) this.v2AbortInProgress = null;
+            }
+        }, error => {
+            if (this.v2AbortInProgress === operation) this.v2AbortInProgress = null;
+            reject(error);
+        });
         try { await abort; }
-        finally { if (this.v2AbortInProgress === abort) this.v2AbortInProgress = null; release(); }
+        finally { release(); }
         return abort;
     }
 
@@ -2956,11 +2981,15 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 }
             }
             await this.permissionHandler?.cancelAll('User aborted');
-            // A steer that was already dispatched may still complete after the
-            // abort; preserve its reservation so the completion callback can
-            // still commit it (or mark it indeterminate) instead of losing the
-            // input.
-            this.session.queue.reset({ preserveDispatchingReservations: true });
+            // A plain Stop preserves queued, not-yet-dispatched input so it
+            // drains once the loop is free again; the v2 cancellation drain
+            // below restores a proven-cancelled steer into that queue. Only
+            // terminal cleanup (switch/exit) resets unsent rows, while a
+            // dispatched steer still owns its reservation until a receipt
+            // proves consumption or uncertainty.
+            if (leavingRemote) {
+                this.session.queue.reset({ preserveDispatchingReservations: true });
+            }
             resetDone = true;
             finishReset();
             await Promise.all(v2Cancellations);
