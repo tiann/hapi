@@ -32,6 +32,7 @@ import app.hapi.companion.feature.chat.composer.DictationController
 import app.hapi.companion.ui.markdown.LocalMarkdownLinkHandler
 import app.hapi.companion.ui.markdown.LocalMarkdownRenderCache
 import app.hapi.companion.ui.theme.HapiTypography
+import app.hapi.companion.ui.theme.NeutralChatSurfaces
 import app.hapi.companion.ui.theme.ReadingColumn
 import app.hapi.protocol.chat.*
 import kotlinx.coroutines.launch
@@ -125,44 +126,46 @@ internal fun ChatHost(
         LocalMarkdownRenderCache provides viewModel.markdownCache,
         LocalMarkdownLinkHandler provides rememberChatLinkHandler(onOpenFile = openFile),
     ) {
-        Box(Modifier.fillMaxSize()) {
-            NavHost(navigation, startDestination = "thread") {
-                composable("thread") {
-                    ChatScreen(
-                        viewModel, media, onBack, snackbarHostState = snackbar,
-                        dictation = dictation, onOpenFiles = { pauseReading(); onOpenFiles() }, onOpenFile = openFile,
-                        onOpenScratchlist = onOpenScratchlist?.let { open -> { pauseReading(); open() } },
-                        transcriptList = transcriptList, readingState = reading,
-                    )
-                }
-                for (kind in listOf("group", "tool", "process", "message")) {
-                    composable("$kind/{id}", arguments = listOf(navArgument("id") { type = NavType.StringType })) { destination ->
-                        val id = destination.arguments?.getString("id").orEmpty()
-                        val revision by viewModel.inspection.revision.collectAsState()
-                        val back = { navigation.popBackStack(); Unit }
-                        val close = { navigation.popBackStack("thread", false); Unit }
-                        when (kind) {
-                            "group" -> {
-                                val group = remember(id, revision) { viewModel.inspection.group(id) }
-                                if (group == null) MissingInspection(back, close)
-                                else ToolGroupBrowser(group, state.basePath, actions::openTool, back, close)
-                            }
-                            "message" -> {
-                                val message = remember(id, revision) { viewModel.inspection.message(id) }
-                                if (message == null) MissingInspection(back, close)
-                                else MessageReader(message.value.text, message.stale, back, close)
-                            }
-                            else -> {
-                                val tool = remember(id, revision) { viewModel.inspection.tool(id) }
-                                if (tool == null) MissingInspection(back, close)
-                                else ToolReader(tool, kind == "process", state.basePath, openFile, back, close)
+        NeutralChatSurfaces {
+            Box(Modifier.fillMaxSize()) {
+                NavHost(navigation, startDestination = "thread") {
+                    composable("thread") {
+                        ChatScreen(
+                            viewModel, media, onBack, snackbarHostState = snackbar,
+                            dictation = dictation, onOpenFiles = { pauseReading(); onOpenFiles() }, onOpenFile = openFile,
+                            onOpenScratchlist = onOpenScratchlist?.let { open -> { pauseReading(); open() } },
+                            transcriptList = transcriptList, readingState = reading,
+                        )
+                    }
+                    for (kind in listOf("group", "tool", "process", "message")) {
+                        composable("$kind/{id}", arguments = listOf(navArgument("id") { type = NavType.StringType })) { destination ->
+                            val id = destination.arguments?.getString("id").orEmpty()
+                            val revision by viewModel.inspection.revision.collectAsState()
+                            val back = { navigation.popBackStack(); Unit }
+                            val close = { navigation.popBackStack("thread", false); Unit }
+                            when (kind) {
+                                "group" -> {
+                                    val group = remember(id, revision) { viewModel.inspection.group(id) }
+                                    if (group == null) MissingInspection(back, close)
+                                    else ToolGroupBrowser(group, state.basePath, actions::openTool, back, close)
+                                }
+                                "message" -> {
+                                    val message = remember(id, revision) { viewModel.inspection.message(id) }
+                                    if (message == null) MissingInspection(back, close)
+                                    else MessageReader(message.value.text, message.stale, back, close)
+                                }
+                                else -> {
+                                    val tool = remember(id, revision) { viewModel.inspection.tool(id) }
+                                    if (tool == null) MissingInspection(back, close)
+                                    else ToolReader(tool, kind == "process", state.basePath, openFile, back, close)
+                                }
                             }
                         }
                     }
                 }
-            }
-            if (entry?.destination?.route != "thread") {
-                SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding())
+                if (entry?.destination?.route != "thread") {
+                    SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding())
+                }
             }
         }
     }

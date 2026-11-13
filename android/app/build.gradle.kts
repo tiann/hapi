@@ -8,6 +8,8 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     // New-session form draft + prefs persist as JSON blobs in DataStore (B-M3d).
     alias(libs.plugins.kotlin.serialization)
+    // Visual specimens: `./gradlew :app:recordRoborazziDebug` (README).
+    alias(libs.plugins.roborazzi)
     // com.google.gms.google-services is applied CONDITIONALLY below (B-M4a):
     // the plugin hard-fails when app/google-services.json is missing, and the
     // repo must build green without any Firebase project configured.
@@ -132,6 +134,8 @@ android {
     }
 
     testOptions {
+        // Robolectric specimens resolve fonts, drawables and strings.
+        unitTests.isIncludeAndroidResources = true
         unitTests.all { test ->
             // Chat pipeline smoke tests replay golden fixtures from the repo
             // root (same wiring as :core:protocol / :core:data).
@@ -213,4 +217,10 @@ dependencies {
     testImplementation(libs.turbine)
     // Generated media fetch tests: real HTTP round-trip against localhost.
     testImplementation(libs.okhttp.mockwebserver)
+    // Visual specimens (Compose rendered under Robolectric native graphics).
+    testImplementation(platform(libs.androidx.compose.bom))
+    testImplementation(libs.androidx.compose.ui.test.junit4)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.roborazzi)
+    testImplementation(libs.roborazzi.compose)
 }

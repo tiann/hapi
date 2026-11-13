@@ -369,10 +369,41 @@ content, or a failed clipboard operation, offers UTF-8 file export through
 FileProvider and Android's sharesheet; Binder receives a URI, not the text.
 Exports older than 24 hours are cleaned on the next export.
 
-Body/composer/user text uses 16sp/24sp, code/diff/terminal 14sp/20sp, captions
-12sp/16sp. Content and composer share a centered 720dp reading column with
-16dp minimum side margins. Bubble widths use actual container constraints,
+Reading metrics match iOS `HapiTypography` (`ui/theme/HapiTypography.kt`):
+body/composer/user text 16sp/24sp with zero tracking, strict CJK line breaking
+and leading trimmed above the first and below the last line; code/diff/terminal
+14sp/20sp in bundled JetBrains Mono NL (SIL OFL, no ligatures); inline code 14sp
+on a glyph-hugging chip; captions 12sp/16sp; headings 24/20/18/17sp semibold.
+Markdown blocks are 12dp apart, 24dp before a heading and 8dp after one; list
+items 8dp. Transcript rows use iOS `TranscriptRowRole` gaps (8dp between tools
+or between user prompts, 24dp before and 16dp after a user turn, otherwise
+12dp). Content and composer share a centered 720dp reading column with 16dp
+minimum side margins. Bubble widths use actual container constraints,
 including split-screen; Android font scaling remains enabled.
+
+Chat surfaces stay neutral gray: the static schemes carry hue-free surface
+ladders, and `NeutralChatSurfaces` reapplies them over Material You so the
+wallpaper only tints accents inside a conversation (presets and OLED pass
+through). Transcript icons are Material Symbols Rounded vector drawables
+(`res/drawable/ic_sym_*`, Apache-2.0), never emoji or text glyphs. Inline
+actions (approvals, plan actions) share `ChatActionButton`: 48dp minimum,
+10dp corners, one filled primary per row.
+
+### Visual specimens
+
+`app/src/test/.../specimens/` renders deterministic, non-networked specimens
+(Markdown, reasoning, tool cards, approvals, composer states) under Robolectric
+native graphics in light/dark/OLED. Ordinary unit-test runs only compose them;
+capture images with:
+
+```sh
+./gradlew :app:recordRoborazziDebug --tests 'app.hapi.companion.specimens.*'
+# → app/build/outputs/roborazzi/specimens/*.png
+```
+
+They are review aids for visual changes, not committed goldens or store
+screenshots. Roborazzi is pinned to 1.60.0: later releases ship Kotlin 2.3
+metadata this Kotlin 2.1 build cannot read.
 
 ## Connection status and home filters
 
