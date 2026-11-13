@@ -18,6 +18,17 @@ const CODEX_REASONING_EFFORT_LABELS: Record<string, string> = {
     ultra: 'Ultra'
 }
 
+// DSH advertises a single session-wide `reasoning_effort` config option
+// (category thought_level) whose value set is fixed: off/low/high/max plus
+// '' meaning "Provider default". The composer maps '' to the null Default
+// entry, so only the four explicit levels are listed here.
+export const DSH_REASONING_EFFORT_PRESETS = ['off', 'low', 'high', 'max'] as const
+
+/** Source options for SessionChat's dsh picker (mirrors what the agent's config option advertises). */
+export function getDshReasoningEffortSourceOptions(): ComposerReasoningEffortSourceOption[] {
+    return DSH_REASONING_EFFORT_PRESETS.map((value) => ({ value }))
+}
+
 function normalizeCodexComposerReasoningEffort(effort?: string | null): string | null {
     const trimmedEffort = effort?.trim().toLowerCase()
     if (!trimmedEffort || trimmedEffort === 'default') {
@@ -68,6 +79,15 @@ export function getCodexComposerReasoningEffortOptions(
             return []
         }
         return buildDynamicReasoningEffortOptions(normalizedCurrentEffort, dynamicOptions)
+    }
+
+    if (flavor === 'dsh') {
+        // DSH has a fixed thought_level value set; prefer discovered options
+        // when a catalog provides them, otherwise fall back to the presets.
+        const sourceOptions = dynamicOptions && dynamicOptions.length > 0
+            ? dynamicOptions
+            : getDshReasoningEffortSourceOptions()
+        return buildDynamicReasoningEffortOptions(normalizedCurrentEffort, sourceOptions)
     }
 
     if (dynamicOptions && dynamicOptions.length > 0) {
