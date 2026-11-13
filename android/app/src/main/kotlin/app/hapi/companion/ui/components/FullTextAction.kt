@@ -80,7 +80,7 @@ internal fun FullTextAction(source: String, compact: Boolean = false) {
     if (compact) {
         // Compact artwork, not a smaller touch target. Keep all states the
         // same size so copying/exporting never changes the code header layout.
-        IconButton(enabled = !busy, onClick = action, modifier = Modifier.size(44.dp)) {
+        IconButton(enabled = !busy, onClick = action, modifier = Modifier.size(48.dp)) {
             val iconModifier = Modifier.size(16.dp)
             val tint = if (copied && !export) MaterialTheme.colorScheme.primary else MaterialTheme.hapi.textSecondary
             when {
