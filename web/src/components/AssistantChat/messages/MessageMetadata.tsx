@@ -83,6 +83,9 @@ function buildAgyRoundLabels(summary: RoundSummary): string[] {
     }
     const round: string[] = []
     if (summary.durationMs !== undefined) round.push(formatRoundDuration(summary.durationMs))
+    if (summary.numTurns !== undefined && summary.numTurns > 0) {
+        round.push(`${summary.numTurns} turn${summary.numTurns === 1 ? '' : 's'}`)
+    }
     const tokensPerSecond = formatTokensPerSecond(summary)
     if (tokensPerSecond) round.push(tokensPerSecond)
     if (round.length > 0) parts.push(`Round: ${round.join(' · ')}`)

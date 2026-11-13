@@ -79,6 +79,13 @@ import { homedir } from 'node:os'
 import type { CursorChatStoreStatus } from '@hapi/protocol/apiTypes'
 import { MachinePathPolicy } from './machinePathPolicy'
 import { getAgentAvailabilityResponse } from '@/agent/agentAvailability'
+import {
+    QueryUsageRequestSchema,
+    SaveUsageQuerySettingsRequestSchema,
+    TestUsageQueryRequestSchema,
+    UsageQueryAgentRequestSchema
+} from '@hapi/protocol/usageQuery'
+import { UsageQueryService } from '@/usageQuery/service'
 import { getAgentQuotasResponse } from '@/agent/agentQuotas'
 
 export { normalizeWindowsDriveRoot } from './machinePathPolicy'
@@ -172,6 +179,7 @@ export class ApiMachineClient {
     private failoverAfter = DEFAULT_FAILOVER_AFTER
     private primaryEntryRetryTimer: ReturnType<typeof setTimeout> | null = null
     private rpcHandlerManager: RpcHandlerManager
+    private readonly usageQueryService: UsageQueryService
 
     private readonly pathPolicy: MachinePathPolicy
 
@@ -187,6 +195,9 @@ export class ApiMachineClient {
         this.rpcHandlerManager = new RpcHandlerManager({
             scopePrefix: this.machine.id,
             logger: (msg, data) => logger.debug(msg, data)
+        })
+        this.usageQueryService = new UsageQueryService({
+            settingsFile: join(configuration.happyHomeDir, 'usage-query.json')
         })
 
         registerCommonHandlers(this.rpcHandlerManager, getInvokedCwd())
@@ -204,6 +215,38 @@ export class ApiMachineClient {
         this.rpcHandlerManager.registerHandler<unknown, AgentAvailabilityResponse>(
             RPC_METHODS.AgentAvailability,
             async () => getAgentAvailabilityResponse()
+        )
+
+        this.rpcHandlerManager.registerHandler(
+            RPC_METHODS.UsageQueryGetSettings,
+            async (params) => {
+                const parsed = UsageQueryAgentRequestSchema.parse(params)
+                return await this.usageQueryService.getSettings(parsed.agent)
+            }
+        )
+
+        this.rpcHandlerManager.registerHandler(
+            RPC_METHODS.UsageQuerySaveSettings,
+            async (params) => {
+                const parsed = SaveUsageQuerySettingsRequestSchema.parse(params)
+                return await this.usageQueryService.saveSettings(parsed.agent, parsed)
+            }
+        )
+
+        this.rpcHandlerManager.registerHandler(
+            RPC_METHODS.UsageQueryTest,
+            async (params) => {
+                const parsed = TestUsageQueryRequestSchema.parse(params)
+                return await this.usageQueryService.test(parsed.agent, parsed.template)
+            }
+        )
+
+        this.rpcHandlerManager.registerHandler(
+            RPC_METHODS.UsageQuery,
+            async (params) => {
+                const parsed = QueryUsageRequestSchema.parse(params)
+                return await this.usageQueryService.query(parsed.agent, parsed.force === true)
+            }
         )
 
         this.rpcHandlerManager.registerHandler<AgentQuotasRequest, AgentQuotasResponse>(

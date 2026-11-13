@@ -1,5 +1,6 @@
 import { useEffect, useState, type ComponentPropsWithoutRef } from 'react'
 import { useOptionalHappyChatContext } from '@/components/AssistantChat/context'
+import { ImagePreview } from '@/components/ImagePreview'
 import { cn } from '@/lib/utils'
 import {
     getMarkdownImageMimeType,
@@ -9,6 +10,14 @@ import {
 } from '@/lib/markdown-file-assets'
 
 type ChatMarkdownImageTarget = Extract<MarkdownAssetTarget, { kind: 'local' | 'remote' | 'inert' }>
+
+type MarkdownImageState = {
+    key: string
+    dataUrl: string | null
+    fileSize?: number
+    failed: boolean
+    loaded: boolean
+}
 
 function resolveChatMarkdownImage(src: string, workspacePath: string | null | undefined): ChatMarkdownImageTarget {
     const target = resolveMarkdownFileImage('.hapi-chat-message.md', src, { workspacePath })
@@ -43,8 +52,24 @@ function markdownImageLoading(props: { label?: string; className?: string }) {
     )
 }
 
+function markdownImageFileName(source: ChatMarkdownImageTarget, src: string, alt?: string): string {
+    const candidate = source.kind === 'local'
+        ? source.path
+        : source.kind === 'remote'
+            ? source.href
+            : src
+    const withoutMeta = candidate.split(/[?#]/, 1)[0] ?? candidate
+    const normalized = withoutMeta.replaceAll('\\', '/')
+    const basename = normalized.slice(normalized.lastIndexOf('/') + 1)
+    try {
+        return decodeURIComponent(basename) || alt?.trim() || 'Image'
+    } catch {
+        return basename || alt?.trim() || 'Image'
+    }
+}
+
 export function ChatMarkdownImage(props: ComponentPropsWithoutRef<'img'>) {
-    const { src, alt, onError, className, ...imageProps } = props
+    const { src, alt, onLoad, onError, className, ...imageProps } = props
     const chat = useOptionalHappyChatContext()
     const workspacePath = chat?.metadata?.path ?? null
     const source = typeof src === 'string'
@@ -54,37 +79,40 @@ export function ChatMarkdownImage(props: ComponentPropsWithoutRef<'img'>) {
     const sourceKey = source.kind === 'local' ? source.path : source.href
     const api = chat?.api
     const sessionId = chat?.sessionId
-    const [state, setState] = useState<{ key: string; dataUrl: string | null; failed: boolean }>(() => ({
+    const [state, setState] = useState<MarkdownImageState>(() => ({
         key: sourceKey,
         dataUrl: null,
         failed: source.kind === 'inert' || (source.kind === 'local' && (!api || !sessionId)),
+        loaded: false,
     }))
 
     useEffect(() => {
         let active = true
         if (!localPath || !api || !sessionId) {
-            setState({ key: sourceKey, dataUrl: null, failed: source.kind !== 'remote' })
+            setState({ key: sourceKey, dataUrl: null, failed: source.kind !== 'remote', loaded: false })
             return () => {
                 active = false
             }
         }
 
-        setState({ key: sourceKey, dataUrl: null, failed: false })
+        setState({ key: sourceKey, dataUrl: null, failed: false, loaded: false })
         void api.readSessionFile(sessionId, localPath, MAX_MARKDOWN_IMAGE_BYTES).then((result) => {
             if (!active) return
             const mimeType = getMarkdownImageMimeType(localPath)
             const tooLarge = result.size !== undefined && result.size > MAX_MARKDOWN_IMAGE_BYTES
             if (!result.success || !result.content || !mimeType || tooLarge) {
-                setState({ key: sourceKey, dataUrl: null, failed: true })
+                setState({ key: sourceKey, dataUrl: null, failed: true, loaded: false })
                 return
             }
             setState({
                 key: sourceKey,
                 dataUrl: `data:${mimeType};base64,${result.content}`,
+                fileSize: result.size,
                 failed: false,
+                loaded: false,
             })
         }).catch(() => {
-            if (active) setState({ key: sourceKey, dataUrl: null, failed: true })
+            if (active) setState({ key: sourceKey, dataUrl: null, failed: true, loaded: false })
         })
 
         return () => {
@@ -105,17 +133,32 @@ export function ChatMarkdownImage(props: ComponentPropsWithoutRef<'img'>) {
         return markdownImageFallback({ label: alt, source: typeof src === 'string' ? src : '', className })
     }
 
+    const fileName = markdownImageFileName(source, typeof src === 'string' ? src : '', alt)
+    const label = alt?.trim() || fileName
+
     return (
-        <img
-            {...imageProps}
+        <ImagePreview
             src={resolvedSrc}
-            alt={alt}
+            fileName={fileName}
+            label={label}
+            fileSize={state.fileSize}
+            galleryId="chat-markdown-images"
+            disabled={!state.loaded}
             loading="lazy"
             referrerPolicy="no-referrer"
-            className={cn('aui-md-img my-3 max-w-full rounded-xl', className)}
-            onError={(event) => {
+            thumbnailProps={imageProps}
+            imageStyle={imageProps.style}
+            buttonClassName="my-3 inline-block max-w-full cursor-zoom-in rounded-xl text-left disabled:cursor-default"
+            imageClassName={cn('aui-md-img block max-w-full rounded-xl', className)}
+            onThumbnailLoad={(event) => {
+                onLoad?.(event)
+                setState((current) => current.key === sourceKey
+                    ? { ...current, loaded: true }
+                    : current)
+            }}
+            onThumbnailError={(event) => {
                 onError?.(event)
-                setState({ key: sourceKey, dataUrl: null, failed: true })
+                setState({ key: sourceKey, dataUrl: null, failed: true, loaded: false })
             }}
         />
     )

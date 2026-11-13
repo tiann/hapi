@@ -3,10 +3,6 @@ name: Android Official Build
 on:
     workflow_dispatch:
         inputs:
-            version_code:
-                description: 'Increasing Android versionCode (positive integer)'
-                required: true
-                type: string
             version_name:
                 description: 'Release versionName, e.g. 0.28.0'
                 required: true
@@ -28,13 +24,18 @@ jobs:
                 working-directory: android
         env:
             HAPI_FIREBASE_PROJECT_ID: ${{ vars.ANDROID_FIREBASE_PROJECT_ID }}
-            HAPI_VERSION_CODE: ${{ inputs.version_code }}
             HAPI_VERSION_NAME: ${{ inputs.version_name }}
             HAPI_UPLOAD_KEYSTORE_PASSWORD: ${{ secrets.HAPI_UPLOAD_KEYSTORE_PASSWORD }}
             HAPI_UPLOAD_KEY_ALIAS: ${{ secrets.HAPI_UPLOAD_KEY_ALIAS }}
             HAPI_UPLOAD_KEY_PASSWORD: ${{ secrets.HAPI_UPLOAD_KEY_PASSWORD }}
         steps:
             - uses: actions/checkout@v4
+              with:
+                  # versionCode = git commit count; a shallow clone would undercount.
+                  fetch-depth: 0
+            - name: Derive versionCode from commit count
+              id: version
+              run: printf 'code=%s\n' "$(git rev-list --count HEAD)" >> "$GITHUB_OUTPUT"
             - uses: actions/setup-java@v4
               with:
                   distribution: temurin
@@ -59,13 +60,12 @@ jobs:
                   ./gradlew \
                       -PhapiOfficialBuild=true \
                       -PhapiFirebaseProjectId="$HAPI_FIREBASE_PROJECT_ID" \
-                      -PhapiVersionCode="$HAPI_VERSION_CODE" \
                       -PhapiVersionName="$HAPI_VERSION_NAME" \
                       :core:protocol:test :core:data:testDebugUnitTest :app:testDebugUnitTest \
                       :app:assembleRelease :app:bundleRelease
             - uses: actions/upload-artifact@v4
               with:
-                  name: hapi-android-${{ inputs.version_code }}
+                  name: hapi-android-${{ steps.version.outputs.code }}
                   if-no-files-found: error
                   path: |
                       android/app/build/outputs/apk/release/*.apk
