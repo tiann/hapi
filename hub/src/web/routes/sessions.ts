@@ -406,7 +406,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 : result.code === 'access_denied' ? 403
                     : result.code === 'resume_unavailable' ? 409
                         : result.code === 'no_machine_online' ? 503
-                            : 502
+                            : 500
             return c.json({ error: result.message, code: result.code }, status)
         }
 
@@ -747,7 +747,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             ok: false as const, code: 'indeterminate' as const,
             error: 'Plan implementation could not be confirmed. Reconnect and check the mode, queue and conversation before retrying.'
         }))
-        const status = result.ok ? 200 : result.code === 'indeterminate' ? 503 : result.code === 'failed' ? 502 : 409
+        const status = result.ok ? 200 : result.code === 'indeterminate' ? 503 : result.code === 'failed' ? 500 : 409
         return c.json(result, status)
     })
 
@@ -961,8 +961,8 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'codex' && flavor !== 'opencode') {
-            return c.json({ error: 'Model reasoning effort is only supported for Codex and OpenCode sessions' }, 400)
+        if (flavor !== 'codex' && flavor !== 'opencode' && flavor !== 'dsh') {
+            return c.json({ error: 'Model reasoning effort is only supported for Codex, OpenCode, and DSH sessions' }, 400)
         }
         if (sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {
             return c.json({ error: 'Model reasoning effort can only be changed for remote sessions' }, 409)
@@ -1103,7 +1103,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             if (error instanceof TitleSuggestionError) {
                 return c.json({ error: error.message }, error.status)
             }
-            return c.json({ error: 'Failed to generate a session title' }, 502)
+            return c.json({ error: 'Failed to generate a session title' }, 500)
         }
     })
 

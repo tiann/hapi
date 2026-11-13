@@ -8,6 +8,7 @@ import type { AcpSdkBackend } from '@/agent/backends/acp';
 import { ACP_INDETERMINATE_SYMBOL } from '@/agent/backends/acp/AcpStdioTransport';
 import agySteeredTurn from '@/agent/backends/acp/__fixtures__/agy-steered-turn.json';
 import { AgySession } from './session';
+import * as agyNativeTitle from './agyNativeTitle';
 import type { AgyMode } from './types';
 import {
     AgyAcpRemoteLauncher,
@@ -294,7 +295,7 @@ describe('AgyAcpRemoteLauncher', () => {
         expect(session.sessionId).toBe('agy-conv-new');
         const metadata = client.updateMetadata.mock.calls
             .reduce((current, [update]) => (update as (m: object) => object)(current), {});
-        expect(metadata).toMatchObject({ agySessionId: 'agy-conv-new', agyProtocol: 'acp' });
+        expect(metadata).toMatchObject({ agySessionId: 'agy-conv-new', agyProtocol: 'acp', summary: { text: 'hello' } });
         expect(backend.prompts).toEqual([[{ type: 'text', text: 'hello' }]]);
         expect(client.sendAgentMessage).toHaveBeenCalledWith({ type: 'message', message: 'answer' });
         expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['local-1']);
@@ -328,6 +329,22 @@ describe('AgyAcpRemoteLauncher', () => {
         expect(backend.resumeCalls).toEqual(['agy-conv-old']);
         expect(backend.calls).toEqual(['initialize']);
         expect(session.sessionId).toBe('agy-conv-old');
+    });
+
+    it('restores a missing title from the native conversation when resuming', async () => {
+        const readTitle = vi.spyOn(agyNativeTitle, 'readAgyConversationTitle').mockResolvedValue('Original task');
+        const { session, queue, client } = makeSession('agy-conv-old');
+        const backend = new FakeAgyBackend();
+        queue.close();
+        try {
+            await launch(session, [backend]).run;
+            const metadata = client.updateMetadata.mock.calls
+                .reduce((current, [update]) => (update as (m: object) => object)(current), {});
+            expect(metadata).toMatchObject({ summary: { text: 'Original task' } });
+            expect(readTitle).toHaveBeenCalledWith('agy-conv-old');
+        } finally {
+            readTitle.mockRestore();
+        }
     });
 
     it('starts a new conversation when resume fails and says so', async () => {

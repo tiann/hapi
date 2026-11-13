@@ -247,7 +247,7 @@ function createHapiMcpServer(
         effort: z.string().trim().min(1).optional()
             .describe('Effort override (flavor-dependent).'),
         sessionType: z.enum(['simple', 'worktree']).optional()
-            .describe('simple or worktree. Default simple (use directory as cwd). worktree creates a new tree from directory.'),
+            .describe('simple or worktree. Default simple (use directory as cwd). worktree creates a new tree from directory, which must be a git repository.'),
         permissionMode: PermissionModeSchema.optional()
             .describe(
                 'Permission mode for the new session. Omit to use hub/stock default (yolo). '

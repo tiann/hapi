@@ -77,6 +77,7 @@ export class PermissionAdapter {
                 ...currentState.requests,
                 [request.id]: {
                     tool: toolName,
+                    toolCallId: request.toolCallId,
                     arguments: input,
                     createdAt: Date.now()
                 }

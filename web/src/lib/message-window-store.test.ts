@@ -2528,6 +2528,26 @@ describe('search-target message context', () => {
         ]))
     })
 
+    it('accepts a resolved context target when the request uses a tool-call alias', async () => {
+        const id = sessionId('search-context-tool-alias')
+        const target = makeAgentMessage({ id: 'raw-target', seq: 40, at: 40_000 })
+        const getMessageContext = vi.fn(async () => contextResponse([target], {
+            epoch: 7,
+            hasMore: false,
+            nextBeforeAt: 40_000,
+            nextBeforeSeq: 40,
+            snapshotHeadAt: 40_000,
+            snapshotHeadSeq: 40,
+            targetMessageId: target.id
+        }))
+        const api = createApi(vi.fn(async () => latestResponse([])))
+        api.getMessageContext = getMessageContext
+
+        await expect(loadMessageContext(api, id, 'tool-call:call-1')).resolves.toBe(true)
+        expect(getMessageContext).toHaveBeenCalledWith(id, 'tool-call:call-1')
+        expect(getMessageWindowState(id).messages).toContainEqual(expect.objectContaining({ id: target.id }))
+    })
+
     it('does not persist a stale latest-reset boundary for historical contexts', async () => {
         const id = sessionId('search-context-persistence')
         const target = makeAgentMessage({ id: 'target', seq: 40, at: 40_000 })

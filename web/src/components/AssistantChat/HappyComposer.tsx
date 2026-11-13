@@ -308,6 +308,7 @@ export function HappyComposer(props: {
     allowSendWhenInactive?: boolean
     thinking?: boolean
     agentState?: AgentState | null
+    onPendingRequestClick?: (requestId: string) => void
     backgroundTaskCount?: number
     contextSize?: number
     contextCacheRead?: number
@@ -430,6 +431,7 @@ export function HappyComposer(props: {
         allowSendWhenInactive = false,
         thinking = false,
         agentState,
+        onPendingRequestClick,
         backgroundTaskCount,
         contextSize,
         contextCacheRead,
@@ -1089,7 +1091,7 @@ export function HappyComposer(props: {
 
     const visibleModelEffortOptions = cursorDrillDownVariantOptions ?? modelEffortOptions
     const codexReasoningEffortOptions = useMemo(
-        () => agentFlavor === 'codex' || agentFlavor === 'opencode'
+        () => agentFlavor === 'codex' || agentFlavor === 'opencode' || agentFlavor === 'dsh'
             ? getCodexComposerReasoningEffortOptions(
                 modelReasoningEffort,
                 agentFlavor,
@@ -2339,6 +2341,7 @@ export function HappyComposer(props: {
                         active={active}
                         thinking={thinking}
                         agentState={agentState}
+                        onPendingRequestClick={onPendingRequestClick}
                         backgroundTaskCount={backgroundTaskCount}
                         contextSize={contextSize}
                         contextCacheRead={contextCacheRead}

@@ -32,6 +32,7 @@ export type AgyStreamEvent =
     | { kind: 'planner-delta'; stepIndex: number; delta: string; isDone: boolean; conversationId?: string }
     | { kind: 'tool'; entry: AgyTranscriptEntry; toolCall: AgyToolCall; isDone: boolean; conversationId?: string }
     | { kind: 'checkpoint'; stepIndex: number; conversationId?: string }
+    | { kind: 'turn-error'; stepIndex: number; conversationId?: string }
     | { kind: 'result'; conversationId: string; status: string; response: string | null; error: string | null }
     | { kind: 'ignored'; reason: string };
 
@@ -120,6 +121,10 @@ export function parseAgyNdjsonLine(rawLine: string): AgyStreamEvent {
         const stepConversationId = typeof step.conversation_id === 'string' && step.conversation_id
             ? step.conversation_id
             : undefined;
+
+        if (stepType === 'error_message' || state === 'ERROR') {
+            return { kind: 'turn-error', stepIndex, conversationId: stepConversationId };
+        }
 
         if (stepType === 'user_input') {
             return { kind: 'user-input', stepIndex, conversationId: stepConversationId };

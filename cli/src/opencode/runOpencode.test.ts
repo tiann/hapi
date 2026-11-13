@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildCliArgs } from '@/runner/run';
 import { parseRemoteAgentCommandOptions } from '@/commands/agentCommandOptions';
 import { OPENCODE_PERMISSION_MODES } from '@hapi/protocol/modes';
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import { createLocalHistoryPublisher, type LocalHistoryPublisher } from './localHistory';
+import type { Metadata } from '@/api/types';
 import type { MessageQueue2 } from '@/utils/MessageQueue2';
 import type { OpencodeMode } from './types';
 
@@ -14,6 +17,7 @@ const mockOpencodeSession = vi.hoisted(() => ({
     stopKeepAlive: vi.fn(),
     kill: vi.fn(async () => {}),
     onThinkingChange: vi.fn(),
+    localHistoryPublisher: null as LocalHistoryPublisher | null,
     // Mirrors AgentSessionBase's own `mode` field ('local' | 'remote',
     // flipped synchronously by onModeChange before either launcher
     // starts/finishes) — settable per test to simulate a session that
@@ -30,6 +34,8 @@ const harness = vi.hoisted(() => ({
     bootstrapExistingArgs: [] as Array<Record<string, unknown>>,
     opencodeLoopArgs: [] as Array<Record<string, unknown>>,
     opencodeLoopError: null as Error | null,
+    lifecycleOptions: undefined as Record<string, unknown> | undefined,
+    killLifecycle: undefined as Record<string, unknown> | undefined,
     triggerClear: false,
     triggerCleanupFailure: false,
     clearOpenCodeSession: vi.fn(async () => 'fresh-session'),
@@ -39,6 +45,7 @@ const harness = vi.hoisted(() => ({
     listSlashCommands: vi.fn(async (..._args: unknown[]) => [] as Array<unknown>),
     session: {
         sessionId: 'source-session',
+        getMetadata: vi.fn(() => null as Metadata | null),
         onUserMessage: vi.fn(),
         onCancelQueuedMessage: vi.fn(),
         sendAgentMessage: vi.fn(),
@@ -59,14 +66,16 @@ vi.mock('@/agent/sessionFactory', () => ({
         harness.bootstrapArgs.push(options);
         return {
             api: { clearOpenCodeSession: harness.clearOpenCodeSession, reserveOpenCodeClearSession: harness.reserveOpenCodeClearSession, confirmOpenCodeClearCleanup: harness.confirmOpenCodeClearCleanup, abortOpenCodeClearSession: harness.abortOpenCodeClearSession },
-            session: harness.session
+            session: harness.session,
+            machineId: 'machine-1'
         };
     }),
     bootstrapExistingSession: vi.fn(async (options: Record<string, unknown>) => {
         harness.bootstrapExistingArgs.push(options);
         return {
             api: { clearOpenCodeSession: harness.clearOpenCodeSession, reserveOpenCodeClearSession: harness.reserveOpenCodeClearSession, confirmOpenCodeClearCleanup: harness.confirmOpenCodeClearCleanup, abortOpenCodeClearSession: harness.abortOpenCodeClearSession },
-            session: harness.session
+            session: harness.session,
+            machineId: 'machine-1'
         };
     })
 }));
@@ -74,6 +83,13 @@ vi.mock('@/agent/sessionFactory', () => ({
 vi.mock('./loop', () => ({
     opencodeLoop: vi.fn(async (options: Record<string, unknown>) => {
         harness.opencodeLoopArgs.push(options);
+        // This mock represents a remote launcher that has reconciled an
+        // operation-free session; pending-operation cases stay fenced.
+        const gate = options.runtimeGate as import('./rewind').OpenCodeRuntimeGate;
+        if (!harness.session.getMetadata()?.opencodeRewind) {
+            const token = gate.takeInitialEntryFence();
+            if (token) gate.releaseEntryFence(token);
+        }
         if (harness.opencodeLoopError) {
             throw harness.opencodeLoopError;
         }
@@ -96,7 +112,7 @@ vi.mock('./loop', () => ({
 }));
 
 vi.mock('@/claude/registerKillSessionHandler', () => ({
-    registerKillSessionHandler: vi.fn()
+    registerKillSessionHandler: vi.fn((_manager: unknown, lifecycle: Record<string, unknown>) => { harness.killLifecycle = lifecycle; })
 }));
 
 const lifecycleMock = vi.hoisted(() => ({
@@ -113,7 +129,7 @@ const lifecycleMock = vi.hoisted(() => ({
 
 vi.mock('@/agent/runnerLifecycle', () => ({
     createModeChangeHandler: vi.fn(() => vi.fn()),
-    createRunnerLifecycle: vi.fn(() => lifecycleMock),
+    createRunnerLifecycle: vi.fn((options: Record<string, unknown>) => { harness.lifecycleOptions = options; return lifecycleMock; }),
     setControlledByUser: vi.fn()
 }));
 
@@ -126,7 +142,8 @@ vi.mock('./utils/startOpencodeHookServer', () => ({
 
 vi.mock('@/ui/logger', () => ({
     logger: {
-        debug: vi.fn()
+        debug: vi.fn(),
+        warn: vi.fn()
     }
 }));
 
@@ -140,6 +157,10 @@ vi.mock('@/modules/common/slashCommands', () => ({
 
 import { runOpencode } from './runOpencode';
 import { createRunnerLifecycle } from '@/agent/runnerLifecycle';
+import { configuration } from '@/configuration';
+import { hashObject } from '@/utils/deterministicJson';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 describe('runOpencode set-session-config handler', () => {
     beforeEach(() => {
@@ -147,6 +168,10 @@ describe('runOpencode set-session-config handler', () => {
         harness.bootstrapExistingArgs.length = 0;
         harness.opencodeLoopArgs.length = 0;
         harness.opencodeLoopError = null;
+        harness.lifecycleOptions = undefined;
+        harness.killLifecycle = undefined;
+        mockOpencodeSession.localHistoryPublisher = null;
+        mockOpencodeSession.kill.mockClear();
         harness.triggerClear = false;
         harness.triggerCleanupFailure = false;
         harness.clearOpenCodeSession.mockReset();
@@ -167,6 +192,8 @@ describe('runOpencode set-session-config handler', () => {
         harness.session.sendSessionEvent.mockReset();
         harness.session.emitMessagesConsumed.mockReset();
         harness.session.updateAgentState.mockReset();
+        harness.session.getMetadata.mockReset();
+        harness.session.getMetadata.mockReturnValue(null);
         harness.session.rpcHandlerManager.registerHandler.mockReset();
         harness.listSlashCommands.mockReset();
         harness.listSlashCommands.mockResolvedValue([]);
@@ -189,6 +216,117 @@ describe('runOpencode set-session-config handler', () => {
         expect(configHandler).toBeDefined();
         return configHandler![1] as (payload: unknown) => Promise<unknown>;
     }
+
+    it('publishes model configuration within synchronous runtime admission, without a late onAfterApply mutation', async () => {
+        await runOpencode({ startingMode: 'remote' });
+        const gate = harness.opencodeLoopArgs[0]!.runtimeGate as import('./rewind').OpenCodeRuntimeGate;
+        mockOpencodeSession.setModel.mockClear();
+        const pending = getConfigHandler()({ model: 'admitted-model' });
+        expect(mockOpencodeSession.setModel).toHaveBeenCalledWith('admitted-model');
+        gate.reserve();
+        const calls = mockOpencodeSession.setModel.mock.calls.length;
+        await pending;
+        expect(mockOpencodeSession.setModel).toHaveBeenCalledTimes(calls);
+        gate.release();
+    });
+
+    it.each(['reserved', 'prepared', 'unknown', 'committed'] as const)('blocks preparation/config/handoff before replaying a %s rewind operation', async (phase) => {
+        harness.session.getMetadata.mockReturnValue({ path: '/fixture', host: 'fixture', opencodeRewind: {
+            operationId: 'op', nativeSessionId: 'native', nativeMessageId: 'target', workerId: 'old-worker', requestedLocalId: 'local',
+            cutoffSeq: 1, sourceEpoch: 0, sourceMaxSeq: 1, reservationVersion: 1, sourceTranscriptHash: 'a'.repeat(64), phase
+        } });
+        await runOpencode({ startingMode: 'remote' });
+        const gate = harness.opencodeLoopArgs[0]!.runtimeGate as import('./rewind').OpenCodeRuntimeGate;
+        expect(gate.isBlocked()).toBe(true);
+        await expect(getConfigHandler()({ model: 'must-not-apply' })).rejects.toThrow('reconciliation');
+        const handoff = harness.session.rpcHandlerManager.registerHandler.mock.calls.find(call => call[0] === RPC_METHODS.HandoffLocal)![1] as () => unknown;
+        expect(() => handoff()).toThrow('reconciliation');
+        expect(mockOpencodeSession.setModel).not.toHaveBeenCalledWith('must-not-apply');
+    });
+
+    it.each([
+        { slow: false, rpc: false },
+        { slow: true, rpc: false },
+        { slow: true, rpc: true }
+    ])('drains queued local publications before production shutdown closes the client (%j)', async ({ slow, rpc }) => {
+        if (slow) vi.useFakeTimers();
+        let release!: () => void;
+        const guard = new Promise<void>((resolve) => { release = resolve; });
+        let metadata: Metadata = { path: '/tmp/project', host: 'fixture',
+            opencodeHistoryCheckpoint: { sessionId: 'native', messageIds: [], userMessageIds: [], localMessageIds: [] } };
+        const changes: Array<(value: Metadata) => Metadata> = [];
+        const order: string[] = [];
+        let guards = 0;
+        const client = {
+            updateMetadata(handler: (value: Metadata) => Metadata) { changes.push(handler); },
+            materialize: async () => true,
+            flushMetadata: vi.fn(async () => {
+                if (++guards === 1) await guard;
+                if (slow) await new Promise<void>((resolve) => setTimeout(resolve, 2000));
+                for (const handler of changes.splice(0)) metadata = handler(metadata);
+                return true;
+            }),
+            flush: async (options?: { timeoutMs?: number }) => {
+                await guard;
+                if (slow) await new Promise<void>((resolve) => setTimeout(resolve, 1000));
+                for (const handler of changes.splice(0)) metadata = handler(metadata);
+                order.push(options ? 'archive-flush' : 'content-flush');
+                return true;
+            },
+            sendSessionDeath() { order.push('death'); },
+            close() { order.push('close'); }
+        };
+        const publisher = createLocalHistoryPublisher(client, vi.fn());
+        mockOpencodeSession.localHistoryPublisher = publisher;
+        await runOpencode({ workingDirectory: '/tmp/project' });
+        const hook = harness.lifecycleOptions?.onBeforeClose as () => Promise<void> | void;
+        expect(hook).toBeTypeOf('function');
+        const { createRunnerLifecycle } = await vi.importActual<typeof import('@/agent/runnerLifecycle')>('@/agent/runnerLifecycle');
+        const lifecycle = createRunnerLifecycle({ session: client as never, logTag: 'shutdown-test', onBeforeClose: hook });
+        publisher.publish('native', 'msg_a', () => { order.push('send-a'); });
+        publisher.publish('native', 'msg_b', () => { order.push('send-b'); });
+        await vi.waitFor(() => expect(client.flushMetadata).toHaveBeenCalledTimes(1));
+        let acknowledged = false;
+        const { registerKillSessionHandler } = await vi.importActual<typeof import('@/claude/registerKillSessionHandler')>('@/claude/registerKillSessionHandler');
+        let kill!: () => Promise<unknown>;
+        expect(harness.killLifecycle?.machineId).toBe('machine-1');
+        registerKillSessionHandler({ registerHandler: (method: string, handler: typeof kill) => {
+            if (method === RPC_METHODS.KillSession) kill = handler;
+        } } as never, {
+            ...harness.killLifecycle,
+            cleanupAndExit: () => lifecycle.cleanup()
+        });
+        const shutdown = rpc ? kill().then(async () => {
+            acknowledged = true;
+            // Hub archive follows the KillSession ACK with StopSession. The
+            // runner allows only two seconds before force-killing the child.
+            await new Promise<void>((resolve) => setTimeout(resolve, 2000));
+            expect(order).toContain('send-b');
+            return lifecycle.cleanup();
+        }) : lifecycle.cleanup();
+        void shutdown.catch(() => {});
+        try {
+            await Promise.resolve();
+            expect(order).not.toContain('close');
+            if (rpc) {
+                await vi.advanceTimersByTimeAsync(2000);
+                expect(acknowledged).toBe(false);
+            }
+            release();
+            if (slow) await vi.advanceTimersByTimeAsync(12000);
+            await shutdown;
+            expect(order).toContain('send-a');
+            expect(order).toContain('send-b');
+            expect(order.indexOf('send-b')).toBeLessThan(order.indexOf('death'));
+            expect(order.indexOf('send-b')).toBeLessThan(order.indexOf('close'));
+        } finally {
+            release();
+            if (slow) await vi.runAllTimersAsync();
+            await shutdown;
+            publisher.stop();
+            if (slow) vi.useRealTimers();
+        }
+    });
 
     it('routes reservedSessionId from buildCliArgs into bootstrapSession (adopt, not reopen)', async () => {
         const runnerArgs = buildCliArgs('opencode', {
@@ -362,6 +500,104 @@ describe('runOpencode set-session-config handler', () => {
         expect(harness.session.sendAgentMessage).toHaveBeenCalled();
     });
 
+    it('delivers a prompt whose chain admission races a re-block and closes its preparing window', async () => {
+        await runOpencode({});
+
+        const gate = harness.opencodeLoopArgs[0]!.runtimeGate as import('./rewind').OpenCodeRuntimeGate;
+        const messageQueue = harness.opencodeLoopArgs[0]?.messageQueue as MessageQueue2<OpencodeMode>;
+        const userMessageHandler = harness.session.onUserMessage.mock.calls[0]?.[0] as
+            ((msg: { content: { text: string; attachments?: unknown[] } }, localId?: string) => void)
+            | undefined;
+        expect(userMessageHandler).toBeDefined();
+        const cancelHandler = harness.session.onCancelQueuedMessage.mock.calls[0]?.[0] as
+            ((localId: string) => boolean | 'in-flight' | 'indeterminate' | 'consumed') | undefined;
+        expect(cancelHandler).toBeDefined();
+
+        // Arrival while the gate is blocked: admission must wait inside the
+        // serialized chain, not throw outside the handler's try/finally.
+        gate.block();
+        let waits = 0;
+        const realWait = gate.waitUntilOpen.bind(gate);
+        const waitSpy = vi.spyOn(gate, 'waitUntilOpen').mockImplementation(async (signal?: AbortSignal) => {
+            waits++;
+            await realWait(signal);
+            // Deterministic re-block in the microtask window between the open
+            // notification and the admission retry.
+            if (waits === 1) gate.block();
+        });
+        try {
+            userMessageHandler!({ content: { text: 'race prompt' } }, 'race-prompt');
+            gate.release();
+            // The re-check loop must wait again instead of failing admission.
+            await vi.waitFor(() => expect(waits).toBe(2));
+            gate.release();
+            await vi.waitFor(() => expect(messageQueue.queue.some(item => item.localId === 'race-prompt')).toBe(true));
+            // The delivered prompt is cancellable through the queue...
+            expect(cancelHandler!('race-prompt')).toBe(true);
+            expect(messageQueue.queue.some(item => item.localId === 'race-prompt')).toBe(false);
+            // ...and its preparing window is closed: a second cancel falls
+            // through to the best-effort "not found" answer instead of the
+            // leaked pre-enqueue mark.
+            expect(cancelHandler!('race-prompt')).toBe(false);
+        } finally {
+            waitSpy.mockRestore();
+        }
+    });
+
+    describe('direct local resume with a terminal rewind tombstone', () => {
+        const tombstone = (phase: 'committed' | 'rejected') => ({
+            operationId: 'resume-op', nativeSessionId: 'native-1', workerId: 'worker',
+            requestedLocalId: 'local-1', nativeMessageId: 'u1', cutoffSeq: 1, sourceEpoch: 0, sourceMaxSeq: 1,
+            reservationVersion: 1, sourceTranscriptHash: 'a'.repeat(64), workerPid: 4242,
+            workerStartMarker: 'fixed-marker', phase
+        });
+
+        it('reconciles a terminal rewind without an unconsumed journal so enterLocalRuntime admits the launch', async () => {
+            harness.session.getMetadata.mockReturnValue({ opencodeRewind: tombstone('committed') } as never);
+            await runOpencode({ startingMode: 'local' });
+
+            const gate = harness.opencodeLoopArgs[0]!.runtimeGate as import('./rewind').OpenCodeRuntimeGate;
+            const operation = harness.session.getMetadata()!.opencodeRewind;
+            expect(gate.isBlocked()).toBe(false);
+            expect(() => gate.enterLocalRuntime(operation)).not.toThrow();
+        });
+
+        it('reconciles a rejected rewind whose journal is finalized so enterLocalRuntime admits the launch', async () => {
+            const operation = tombstone('rejected');
+            const journalDir = join(configuration.happyHomeDir, 'opencode-rewind', hashObject('source-session'));
+            mkdirSync(journalDir, { recursive: true });
+            const backupPath = join(journalDir, 'resume-backup.json');
+            writeFileSync(backupPath, JSON.stringify({ info: { id: operation.nativeSessionId }, messages: [] }));
+            writeFileSync(join(journalDir, 'intent.json'), JSON.stringify({
+                operation, phase: 'finalized', backupPath, source: [], prefix: [],
+                sourceHash: hashObject([]), prefixHash: hashObject([]), pendingRequest: false, ownerWorkerId: 'previous-worker'
+            }));
+            harness.session.getMetadata.mockReturnValue({ opencodeRewind: operation } as never);
+            await runOpencode({ startingMode: 'local' });
+
+            const gate = harness.opencodeLoopArgs[0]!.runtimeGate as import('./rewind').OpenCodeRuntimeGate;
+            expect(gate.isBlocked()).toBe(false);
+            expect(() => gate.enterLocalRuntime(operation)).not.toThrow();
+        });
+
+        it('still defers to remote reconciliation when the terminal rewind has an unconsumed journal', async () => {
+            const operation = tombstone('committed');
+            const journalDir = join(configuration.happyHomeDir, 'opencode-rewind', hashObject('source-session'));
+            mkdirSync(journalDir, { recursive: true });
+            const backupPath = join(journalDir, 'resume-backup.json');
+            writeFileSync(backupPath, JSON.stringify({ info: { id: operation.nativeSessionId }, messages: [] }));
+            writeFileSync(join(journalDir, 'intent.json'), JSON.stringify({
+                operation, phase: 'prepared', backupPath, source: [], prefix: [],
+                sourceHash: hashObject([]), prefixHash: hashObject([]), pendingRequest: false, ownerWorkerId: 'previous-worker'
+            }));
+            harness.session.getMetadata.mockReturnValue({ opencodeRewind: operation } as never);
+            await runOpencode({ startingMode: 'local' });
+
+            const gate = harness.opencodeLoopArgs[0]!.runtimeGate as import('./rewind').OpenCodeRuntimeGate;
+            expect(() => gate.enterLocalRuntime(operation)).toThrow(/reconciliation before local launch/);
+        });
+    });
+
     it('queues a /compact request (isolated, with operation:"compact") once compact becomes available', async () => {
         await runOpencode({});
 
@@ -519,6 +755,20 @@ describe('runOpencode set-session-config handler', () => {
             expect.objectContaining({ message: 'continue in the source session', localId: 'after-cancel' })
         ]);
         expect(harness.session.sendAgentMessage).not.toHaveBeenCalled();
+    });
+
+    it('kills the session before draining the local transcript', async () => {
+        const order: string[] = [];
+        mockOpencodeSession.kill.mockImplementationOnce(async () => { order.push('kill'); });
+        mockOpencodeSession.localHistoryPublisher = {
+            finish: async () => { order.push('finish'); return true; }
+        } as unknown as LocalHistoryPublisher;
+        await runOpencode({ startedBy: 'runner' });
+        const lifecycleOptions = vi.mocked(createRunnerLifecycle).mock.calls[0]?.[0];
+
+        await lifecycleOptions?.onBeforeClose?.();
+
+        expect(order).toEqual(['kill', 'finish']);
     });
 
     it('runs the session kill handler before the runner lifecycle closes the session', async () => {
