@@ -455,6 +455,20 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
     }
 
     /**
+     * Deny every pending request so a steered message can reach Claude, which
+     * only folds steers in at a tool boundary that a pending request blocks.
+     * Not recorded in `responses`, so isAborted() keeps the turn running.
+     */
+    denyPendingForSteer(): void {
+        const reason = 'The user sent a new message instead of answering. Read it and continue from there.';
+        for (const [id, pending] of this.pendingRequests) {
+            this.pendingRequests.delete(id);
+            pending.resolve({ behavior: 'deny', message: reason });
+            this.finalizeRequest(id, { status: 'denied', reason });
+        }
+    }
+
+    /**
      * Resets all state for new sessions
      */
     reset(): void {

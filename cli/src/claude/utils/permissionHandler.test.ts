@@ -226,3 +226,28 @@ describe('PermissionHandler — canceled request finalization', () => {
     });
 
 });
+
+describe('PermissionHandler — steer while a request is pending', () => {
+    it('denies the pending question so the turn reaches a tool boundary, without aborting the turn', async () => {
+        const { session, getAgentState } = createFakeSession();
+        const handler = new PermissionHandler(session);
+
+        handler.onMessage({
+            type: 'assistant',
+            message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tc-1', name: 'AskUserQuestion', input: { questions: [] } }] },
+        } as any);
+        const resultPromise = handler.handleToolCall(
+            'AskUserQuestion',
+            { questions: [] },
+            { permissionMode: 'default' } as any,
+            { signal: new AbortController().signal }
+        );
+
+        handler.denyPendingForSteer();
+
+        await expect(resultPromise).resolves.toMatchObject({ behavior: 'deny' });
+        expect(getAgentState().requests?.['tc-1']).toBeUndefined();
+        expect(getAgentState().completedRequests?.['tc-1']).toMatchObject({ status: 'denied' });
+        expect(handler.isAborted('tc-1')).toBe(false);
+    });
+});
