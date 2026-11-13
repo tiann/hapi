@@ -2,6 +2,7 @@ package app.hapi.companion.ui.theme
 
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Typography
 import androidx.compose.material3.darkColorScheme
@@ -10,20 +11,73 @@ import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+
+/**
+ * Neutral (hue-free) surface ladders mirroring iOS `HapiTheme.light/.dark`.
+ * Material's baseline schemes tint every surface lavender; HAPI keeps
+ * surfaces gray and lets only the accent roles carry color. [NeutralChatSurfaces]
+ * reapplies these over Material You so wallpaper hues never tint the transcript.
+ */
+private fun ColorScheme.withNeutralSurfaces(dark: Boolean): ColorScheme = if (dark) {
+    copy(
+        background = Color(0xFF0F1115),
+        onBackground = Color(0xFFE8EAED),
+        surface = Color(0xFF0F1115),
+        onSurface = Color(0xFFE8EAED),
+        surfaceVariant = Color(0xFF23272F),
+        onSurfaceVariant = Color(0xFFA8ADB8),
+        surfaceTint = Color(0xFF6E7481),
+        surfaceBright = Color(0xFF2A2E37),
+        surfaceDim = Color(0xFF0F1115),
+        surfaceContainerLowest = Color(0xFF0B0D10),
+        surfaceContainerLow = Color(0xFF14171C),
+        surfaceContainer = Color(0xFF181B22),
+        surfaceContainerHigh = Color(0xFF1E2129),
+        surfaceContainerHighest = Color(0xFF262A33),
+        outline = Color(0xFF6E7481),
+        outlineVariant = Color(0xFF2A2E37),
+        inverseSurface = Color(0xFFE8EAED),
+        inverseOnSurface = Color(0xFF1C1D22),
+    )
+} else {
+    copy(
+        background = Color(0xFFFFFFFF),
+        onBackground = Color(0xFF1C1D22),
+        surface = Color(0xFFFFFFFF),
+        onSurface = Color(0xFF1C1D22),
+        surfaceVariant = Color(0xFFEEF0F3),
+        onSurfaceVariant = Color(0xFF52555E),
+        surfaceTint = Color(0xFF8A8D96),
+        surfaceBright = Color(0xFFFFFFFF),
+        surfaceDim = Color(0xFFE2E4E8),
+        surfaceContainerLowest = Color(0xFFFFFFFF),
+        surfaceContainerLow = Color(0xFFF6F7F9),
+        surfaceContainer = Color(0xFFF1F3F5),
+        surfaceContainerHigh = Color(0xFFECEEF1),
+        surfaceContainerHighest = Color(0xFFE5E7EB),
+        outline = Color(0xFF8A8D96),
+        outlineVariant = Color(0xFFE5E7EB),
+        inverseSurface = Color(0xFF2B2D33),
+        inverseOnSurface = Color(0xFFF1F3F5),
+    )
+}
 
 private val LightColorScheme = lightColorScheme(
     primary = Color(0xFF3D6837),
     secondary = Color(0xFF54634D),
     tertiary = Color(0xFF386569),
-)
+).withNeutralSurfaces(dark = false)
 
 private val DarkColorScheme = darkColorScheme(
     primary = Color(0xFFA3D397),
+    // Material's baseline onPrimary is purple; ink on the light-green accent.
+    onPrimary = Color(0xFF0F1115),
     secondary = Color(0xFFBCCBB2),
     tertiary = Color(0xFFA0CFD2),
-)
+).withNeutralSurfaces(dark = true)
 
 /**
  * Pure-black scheme for OLED panels (mirrors the web `[data-theme="oled"]`
@@ -160,11 +214,37 @@ fun HapiTheme(
     }
     val extendedColors = presetPalette?.extendedColors(baseExtendedColors) ?: baseExtendedColors
 
-    CompositionLocalProvider(LocalHapiExtendedColors provides extendedColors) {
+    CompositionLocalProvider(
+        LocalHapiExtendedColors provides extendedColors,
+        LocalThemeSchemeSource provides schemeSource,
+    ) {
         MaterialTheme(
             colorScheme = colorScheme,
             typography = typography,
             content = content,
         )
     }
+}
+
+internal val LocalThemeSchemeSource = staticCompositionLocalOf<ThemeSchemeSource> { ThemeSchemeSource.StaticLight }
+
+/**
+ * Keeps conversation surfaces neutral under Material You: the wallpaper still
+ * drives accent roles, but the canvas, containers and on-surface text use the
+ * same gray ladder as the static schemes. Presets and OLED are deliberate
+ * palette choices and pass through unchanged.
+ */
+@Composable
+fun NeutralChatSurfaces(content: @Composable () -> Unit) {
+    val source = LocalThemeSchemeSource.current
+    if (source !is ThemeSchemeSource.Dynamic) {
+        content()
+        return
+    }
+    MaterialTheme(
+        colorScheme = MaterialTheme.colorScheme.withNeutralSurfaces(source.dark),
+        typography = MaterialTheme.typography,
+        shapes = MaterialTheme.shapes,
+        content = content,
+    )
 }

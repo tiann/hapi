@@ -580,6 +580,7 @@ describe('SessionRowSummary time label', () => {
             </I18nProvider>
         )
         expect(screen.getByText('just now')).toBeInTheDocument()
+        expect(screen.getByText('just now')).toHaveClass('translate-y-[0.5px]')
 
         act(() => { vi.advanceTimersByTime(2 * 60_000) })
         expect(screen.getByText('2m ago')).toBeInTheDocument()

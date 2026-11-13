@@ -13,7 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -38,13 +38,15 @@ import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
 import app.hapi.data.store.ChatHistoryPagingState
 import app.hapi.protocol.chat.AggregatedAssistantMeta
+import app.hapi.protocol.chat.ToolCallBlock
+import app.hapi.protocol.chat.ToolGroupBlock
+import app.hapi.protocol.chat.UserTextBlock
 import app.hapi.protocol.chat.VisibleChatBlock
-import app.hapi.protocol.chat.buildMessageMetadataLabels
-import app.hapi.protocol.chat.messageMetadataForBlock
 import app.hapi.protocol.wire.SessionReadState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
@@ -80,9 +82,11 @@ internal fun ChatTranscript(
     val stateKeys = remember(state.sessionId) { mutableSetOf<String>() }
     val rows = remember(state.blocks) { state.blocks.map(::TranscriptItem) }
     val heights = remember(state.sessionId) { mutableMapOf<String, Int>() }
+    val responseFooters = remember(state.blocks, messageAggregates) {
+        buildResponseFooters(state.blocks, messageAggregates)
+    }
     val density = LocalDensity.current
     val estimatedHeight = with(density) { 100.dp.roundToPx() }
-    val spacing = with(density) { 10.dp.roundToPx() }
     val headerHeight = with(density) { 44.dp.roundToPx() }
     val isDragged by listState.interactionSource.collectIsDraggedAsState()
     // Restore intent with LazyListState, otherwise the first tail effect
@@ -122,8 +126,9 @@ internal fun ChatTranscript(
                 }
             var distance = listState.firstVisibleItemScrollOffset
             for (index in 0 until listState.firstVisibleItemIndex) {
-                distance += if (index == 0) headerHeight + spacing
-                    else (heights[current.getOrNull(index - 1)?.id] ?: estimatedHeight) + spacing
+                // Measured row heights include their role-based top gap.
+                distance += if (index == 0) headerHeight
+                    else heights[current.getOrNull(index - 1)?.id] ?: estimatedHeight
                 if (distance > height) break
             }
             val short = !listState.canScrollBackward && !listState.canScrollForward
@@ -257,30 +262,25 @@ internal fun ChatTranscript(
                 }
             },
             contentPadding = PaddingValues(vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp, Alignment.Bottom),
+            verticalArrangement = Arrangement.Bottom,
         ) {
             item(key = HISTORY_KEY, contentType = HISTORY_KEY) {
                 HistoryControl(paging.phase, state.hasMore, state.isSyncingTail, onRetryHistory)
             }
-            items(rows, key = { it.id }, contentType = { it.block.contentKind }) { row ->
+            itemsIndexed(rows, key = { _, row -> row.id }, contentType = { _, row -> row.block.contentKind }) { index, row ->
                 rowState.SaveableStateProvider(row.id) {
+                    val gap = transcriptRowGap(row.block, rows.getOrNull(index - 1)?.block)
                     val rowModifier = Modifier
                         .onSizeChanged { heights[row.id] = it.height }
+                        .padding(top = gap)
                         .testTag("chat-row-" + row.id)
                     app.hapi.companion.ui.theme.ReadingColumn(modifier = rowModifier) {
                         Column(modifier = Modifier.fillMaxWidth()) {
                             ChatBlockCard(block = row.block, basePath = state.basePath, processSteps = state.processSteps[row.id])
-                            // Usage info (model / tokens / cost / timing) under
-                            // blocks that carry it; aggregated groups expose the
-                            // summed view through the same popup.
-                            val metadata = remember(row.block, messageAggregates) {
-                                messageMetadataForBlock(row.block, messageAggregates)
-                            }
-                            val labels = remember(metadata) {
-                                metadata?.let(::buildMessageMetadataLabels).orEmpty()
-                            }
-                            if (labels.isNotEmpty()) {
-                                MessageInfoEntry(onClick = { onShowMessageInfo(row.block) })
+                            // One copy / details / time row closes each agent
+                            // response, under its last block (web card join).
+                            responseFooters[row.id]?.let { footer ->
+                                ResponseActions(footer, onShowDetails = onShowMessageInfo)
                             }
                         }
                     }
@@ -356,5 +356,30 @@ private fun HistoryControl(
                 style = MaterialTheme.typography.labelSmall,
             )
         }
+    }
+}
+
+/** Presentation-only rhythm (iOS `TranscriptRowRole`); independent of grouping and IDs. */
+internal enum class TranscriptRowRole { User, Tool, Content }
+
+internal val VisibleChatBlock.rowRole: TranscriptRowRole
+    get() = when (this) {
+        is UserTextBlock -> TranscriptRowRole.User
+        is ToolCallBlock, is ToolGroupBlock -> TranscriptRowRole.Tool
+        else -> TranscriptRowRole.Content
+    }
+
+/**
+ * Gap above a transcript row: tight between consecutive tools or user
+ * prompts, generous around a user turn, 12dp otherwise (and after history).
+ */
+internal fun transcriptRowGap(block: VisibleChatBlock, previous: VisibleChatBlock?): Dp {
+    val role = block.rowRole
+    val before = previous?.rowRole ?: return 12.dp
+    return when {
+        role == TranscriptRowRole.User -> if (before == TranscriptRowRole.User) 8.dp else 24.dp
+        before == TranscriptRowRole.User -> 16.dp
+        role == TranscriptRowRole.Tool && before == TranscriptRowRole.Tool -> 8.dp
+        else -> 12.dp
     }
 }
