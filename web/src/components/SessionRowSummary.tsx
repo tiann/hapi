@@ -215,6 +215,10 @@ export function SessionRowSummary(props: {
     const hasRunningWork = Boolean(attachedJob)
         || (s.active && (s.backgroundTaskCount ?? 0) > 0)
         || isRunning
+    // While work runs, the spinner colour alone carries unread. A bold title and
+    // accented time are the at-rest unread look, so using them mid-run makes a
+    // working session read as finished.
+    const emphasizeUnread = isUnread && !hasRunningWork
     const activityLabel = isBackgroundOnly
         ? t('session.item.background')
         : t('session.item.running')
@@ -248,7 +252,7 @@ export function SessionRowSummary(props: {
                 <div className="grid grid-cols-[minmax(9rem,1fr)_minmax(0,max-content)] items-center gap-2">
                     <div className="flex min-w-0 items-center gap-2">
                         <div
-                            className={`min-w-0 flex-1 truncate text-sm text-[var(--app-fg)] ${isUnread ? 'font-semibold' : 'font-normal'} ${!s.active ? 'opacity-50' : ''}`}
+                            className={`min-w-0 flex-1 truncate text-sm text-[var(--app-fg)] ${emphasizeUnread ? 'font-semibold' : 'font-normal'} ${!s.active ? 'opacity-50' : ''}`}
                             title={sessionName}
                         >
                             {sessionName}
@@ -319,7 +323,7 @@ export function SessionRowSummary(props: {
                         ) : null}
                         {timeLabel ? (
                             <span className={`min-w-0 truncate whitespace-nowrap tabular-nums ${
-                                isUnread ? 'font-semibold text-[var(--app-link)]' : 'text-[var(--app-hint)]'
+                                emphasizeUnread ? 'font-semibold text-[var(--app-link)]' : 'text-[var(--app-hint)]'
                             }`}>{timeLabel}</span>
                         ) : null}
                     </div>
