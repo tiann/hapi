@@ -436,8 +436,8 @@ From the repository root, `bun run release-all <version>` updates the CLI packag
 shared app version, iOS `MARKETING_VERSION` (app and notification extension, all
 configurations), and Android's default `versionName`, then commits, tags `v<version>`,
 and pushes. It requires a clean working tree on `main`. Use `--dry-run` to preview
-without changing files. Native build numbers (`CURRENT_PROJECT_VERSION` / `versionCode`)
-remain managed separately; Android's `-PhapiVersionName` override is preserved.
+without changing files. iOS `CURRENT_PROJECT_VERSION` remains managed separately; Android's
+`versionCode` is the git commit count, and its `-PhapiVersionName` override is preserved.
 
 The pushed tag triggers `.github/workflows/release.yml`, which builds all binaries,
 runs `bun run --cwd cli publish-npm`, and creates the GitHub Release. npm publishing

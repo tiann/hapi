@@ -3479,4 +3479,66 @@ describe('gap recovery', () => {
         expect(replaced.oldestSeq).toBe(901)
         expect(replaced.warning).toBeNull()
     })
+
+    it('retries the row refresh on the next ordinary sync when the context request fails', async () => {
+        const id = sessionId('gap-recovery-refresh-retry')
+        const cachedTail = Array.from({ length: 9 }, (_, i) => (
+            makeUserMessage({ id: `n${1 + i}`, seq: 1 + i, invokedAt: (1 + i) * 10, createdAt: (1 + i) * 10 })
+        ))
+        const stale = toolCallRow('call-row', 10, 1_000, 'in_progress')
+        const missed = Array.from({ length: 300 }, (_, i) => (
+            makeUserMessage({ id: `n${11 + i}`, seq: 11 + i, invokedAt: (11 + i) * 10, createdAt: (11 + i) * 10 })
+        ))
+        const latestPage = missed.filter((message) => (message.seq ?? 0) >= 111)
+        let latestCalls = 0
+        let contextCalls = 0
+        const api = createApi(async (_sessionId, query) => {
+            if (query.afterAt !== undefined) {
+                return afterResponse(missed, {
+                    epoch: 1,
+                    hasMore: false,
+                    nextAfterAt: 3_100,
+                    nextAfterSeq: 310,
+                    snapshotHeadAt: 3_100,
+                    snapshotHeadSeq: 310
+                })
+            }
+            latestCalls += 1
+            if (latestCalls === 1) {
+                return latestResponse([...cachedTail, stale], { epoch: 1, hasMore: true, nextBeforeAt: 10, nextBeforeSeq: 1 })
+            }
+            return latestResponse(latestPage, { epoch: 1, hasMore: true, nextBeforeAt: 1_110, nextBeforeSeq: 111 })
+        }, async (_sessionId, messageId) => {
+            contextCalls += 1
+            if (contextCalls === 1) throw new Error('context fetch failed')
+            return contextResponse([toolCallRow(messageId, 10, 1_000, 'completed')], {
+                epoch: 1,
+                nextBeforeAt: 10,
+                nextBeforeSeq: 1,
+                snapshotHeadAt: 3_100,
+                snapshotHeadSeq: 310,
+                targetMessageId: messageId
+            })
+        })
+
+        await syncTailMessages(api, id)
+        await recoverWindowAfterGapResume(api, id)
+
+        // The failed refresh surfaces the warning and leaves the recovery
+        // pending, so the next ORDINARY sync retries the sweep instead of
+        // leaving the enriched cached call stale with no retry path.
+        const failed = getMessageWindowState(id)
+        expect(failed.warning).toBeTruthy()
+        expect(failed.pendingGapRecovery).toBe(true)
+        expect(contextCalls).toBe(1)
+
+        await syncTailMessages(api, id)
+
+        const state = getMessageWindowState(id)
+        expect(contextCalls).toBe(2)
+        expect(mergedContentOf(state)).toEqual(toolCallRow('call-row', 10, 1_000, 'completed').content)
+        expect(state.pendingGapRecovery).toBe(false)
+        expect(state.warning).toBeNull()
+        expect(state.messages).toHaveLength(310)
+    })
 })
