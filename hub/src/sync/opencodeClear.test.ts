@@ -6,7 +6,7 @@ import { SyncEngine, type SyncEvent } from './syncEngine'
 function createEngine(onCliEmit?: (payload: unknown) => void) {
     const store = new Store(':memory:')
     const engine = new SyncEngine(store, {
-        of: () => ({ to: () => ({ emit: (_event: string, payload: unknown) => onCliEmit?.(payload) }) })
+        of: () => ({ to: () => ({ emit: (_event: string, payload: unknown) => onCliEmit?.(payload) }), adapter: { rooms: { get: () => undefined } } })
     } as never, new RpcRegistry(), { broadcast() {} } as never)
     engine.getOrCreateMachine(
         'machine-1',
