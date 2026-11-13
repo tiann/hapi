@@ -16,20 +16,39 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import app.hapi.companion.R
 import app.hapi.companion.ui.theme.hapi
 import java.io.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 internal const val CLIPBOARD_TEXT_LIMIT = 64 * 1024
 
-/** Binder carries only small text or a content URI, never a megabyte log. */
+/**
+ * Copy-or-export state shared by [FullTextAction] and the transcript's
+ * response actions: plain clipboard copy up to [CLIPBOARD_TEXT_LIMIT], a
+ * UTF-8 file through the sharesheet beyond it (or after a clipboard failure).
+ */
+internal class FullTextCopyState(
+    val export: Boolean,
+    val copied: Boolean,
+    val busy: Boolean,
+    val label: String,
+    val invoke: () -> Unit,
+)
+
+/**
+ * Binder carries only small text or a content URI, never a megabyte log.
+ * [revertAfterMs] returns a successful copy to its idle state (web/iOS
+ * transient checkmark); null keeps "Copied" until the source changes.
+ */
 @Composable
-internal fun FullTextAction(source: String, compact: Boolean = false) {
+internal fun rememberFullTextCopy(source: String, revertAfterMs: Long? = null): FullTextCopyState {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var copyFailed by remember(source) { mutableStateOf(false) }
@@ -37,6 +56,12 @@ internal fun FullTextAction(source: String, compact: Boolean = false) {
     var copied by remember(source) { mutableStateOf(false) }
     var failed by remember(source) { mutableStateOf(false) }
     val export = source.length > CLIPBOARD_TEXT_LIMIT || copyFailed
+    if (revertAfterMs != null && copied) {
+        LaunchedEffect(Unit) {
+            delay(revertAfterMs)
+            copied = false
+        }
+    }
     val action: () -> Unit = {
         if (!export) {
             copyFailed = runCatching {
@@ -77,19 +102,31 @@ internal fun FullTextAction(source: String, compact: Boolean = false) {
             copied -> R.string.chat_content_copied
             else -> R.string.chat_copy_full_content
         })
+    return FullTextCopyState(export = export, copied = copied, busy = busy, label = label, invoke = action)
+}
+
+/** The copy/check/share glyph for [state], tinted primary after a copy. */
+@Composable
+internal fun FullTextCopyIcon(state: FullTextCopyState, size: Dp, contentDescription: String? = state.label) {
+    val iconModifier = Modifier.size(size)
+    val tint = if (state.copied && !state.export) MaterialTheme.colorScheme.primary else MaterialTheme.hapi.textSecondary
+    when {
+        state.export -> Icon(Icons.Default.Share, contentDescription, iconModifier, tint = tint)
+        state.copied -> Icon(painterResource(R.drawable.ic_sym_check), contentDescription, iconModifier, tint = tint)
+        else -> Icon(painterResource(R.drawable.ic_sym_content_copy), contentDescription, iconModifier, tint = tint)
+    }
+}
+
+@Composable
+internal fun FullTextAction(source: String, compact: Boolean = false) {
+    val state = rememberFullTextCopy(source)
     if (compact) {
         // Compact artwork, not a smaller touch target. Keep all states the
         // same size so copying/exporting never changes the code header layout.
-        IconButton(enabled = !busy, onClick = action, modifier = Modifier.size(48.dp)) {
-            val iconModifier = Modifier.size(16.dp)
-            val tint = if (copied && !export) MaterialTheme.colorScheme.primary else MaterialTheme.hapi.textSecondary
-            when {
-                export -> Icon(Icons.Default.Share, label, iconModifier, tint = tint)
-                copied -> Icon(painterResource(R.drawable.ic_sym_check), label, iconModifier, tint = tint)
-                else -> Icon(painterResource(R.drawable.ic_sym_content_copy), label, iconModifier, tint = tint)
-            }
+        IconButton(enabled = !state.busy, onClick = state.invoke, modifier = Modifier.size(48.dp)) {
+            FullTextCopyIcon(state, 16.dp)
         }
     } else {
-        TextButton(enabled = !busy, onClick = action) { Text(label) }
+        TextButton(enabled = !state.busy, onClick = state.invoke) { Text(state.label) }
     }
 }

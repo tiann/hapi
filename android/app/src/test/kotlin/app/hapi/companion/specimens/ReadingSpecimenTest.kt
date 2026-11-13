@@ -6,9 +6,14 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.Modifier
+import app.hapi.companion.feature.chat.ResponseActions
+import app.hapi.companion.feature.chat.ResponseFooter
 import app.hapi.companion.feature.chat.blocks.AgentReasoningBlockView
 import app.hapi.companion.ui.markdown.Markdown
 import app.hapi.protocol.chat.AgentReasoningBlock
+import app.hapi.protocol.chat.AgentTextBlock
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -26,12 +31,32 @@ class ReadingSpecimenTest {
     @Test fun markdownDark() = markdown(SpecimenTheme.Dark)
     @Test fun markdownOled() = markdown(SpecimenTheme.Oled)
 
+    @Test fun responseActionsLight() = responseActions(SpecimenTheme.Light)
+    @Test fun responseActionsDark() = responseActions(SpecimenTheme.Dark)
+
     @Test fun reasoningLight() = reasoning(SpecimenTheme.Light)
     @Test fun reasoningDark() = reasoning(SpecimenTheme.Dark)
 
     private fun markdown(theme: SpecimenTheme) {
         compose.setContent { Specimen(theme) { Markdown(MARKDOWN_SAMPLE) } }
         compose.captureSpecimen("markdown", theme)
+    }
+
+    private fun responseActions(theme: SpecimenTheme) {
+        val answer = AgentTextBlock(
+            id = "a1", localId = null, createdAt = 0, invokedAt = null, model = "claude-opus-4-5",
+            text = "修好了：游标现在同时携带 `beforeAt` 和 `beforeSeq`，翻页不再重复。", meta = null,
+        )
+        val footer = ResponseFooter(copyText = answer.text, detailsBlock = answer, timestamp = System.currentTimeMillis())
+        compose.setContent {
+            Specimen(theme) {
+                Markdown(answer.text)
+                ResponseActions(footer, onShowDetails = {})
+                Markdown("Tool-only responses keep just the time:", modifier = Modifier.padding(top = 20.dp))
+                ResponseActions(footer.copy(copyText = null, detailsBlock = null), onShowDetails = {})
+            }
+        }
+        compose.captureSpecimen("response-actions", theme)
     }
 
     private fun reasoning(theme: SpecimenTheme) {

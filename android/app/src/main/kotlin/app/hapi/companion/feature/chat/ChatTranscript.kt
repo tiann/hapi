@@ -47,8 +47,6 @@ import app.hapi.protocol.chat.ToolCallBlock
 import app.hapi.protocol.chat.ToolGroupBlock
 import app.hapi.protocol.chat.UserTextBlock
 import app.hapi.protocol.chat.VisibleChatBlock
-import app.hapi.protocol.chat.buildMessageMetadataLabels
-import app.hapi.protocol.chat.messageMetadataForBlock
 import app.hapi.protocol.wire.SessionReadState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collectLatest
@@ -84,6 +82,9 @@ internal fun ChatTranscript(
     val stateKeys = remember(state.sessionId) { mutableSetOf<String>() }
     val rows = remember(state.blocks) { state.blocks.map(::TranscriptItem) }
     val heights = remember(state.sessionId) { mutableMapOf<String, Int>() }
+    val responseFooters = remember(state.blocks, messageAggregates) {
+        buildResponseFooters(state.blocks, messageAggregates)
+    }
     val density = LocalDensity.current
     val estimatedHeight = with(density) { 100.dp.roundToPx() }
     val headerHeight = with(density) { 44.dp.roundToPx() }
@@ -276,17 +277,10 @@ internal fun ChatTranscript(
                     app.hapi.companion.ui.theme.ReadingColumn(modifier = rowModifier) {
                         Column(modifier = Modifier.fillMaxWidth()) {
                             ChatBlockCard(block = row.block, basePath = state.basePath, processSteps = state.processSteps[row.id])
-                            // Usage info (model / tokens / cost / timing) under
-                            // blocks that carry it; aggregated groups expose the
-                            // summed view through the same popup.
-                            val metadata = remember(row.block, messageAggregates) {
-                                messageMetadataForBlock(row.block, messageAggregates)
-                            }
-                            val labels = remember(metadata) {
-                                metadata?.let(::buildMessageMetadataLabels).orEmpty()
-                            }
-                            if (labels.isNotEmpty()) {
-                                MessageInfoEntry(onClick = { onShowMessageInfo(row.block) })
+                            // One copy / details / time row closes each agent
+                            // response, under its last block (web card join).
+                            responseFooters[row.id]?.let { footer ->
+                                ResponseActions(footer, onShowDetails = onShowMessageInfo)
                             }
                         }
                     }
