@@ -663,9 +663,9 @@ export class SharedCodexRoot {
             const { mode, messageLocalId } = z.object({ mode: z.enum(['current', 'message', 'latestCompleted']),
                 messageLocalId: z.string().optional() })
                 .refine(value => (value.mode === 'message') === Boolean(value.messageLocalId)).parse(raw);
-            const thread = await this.readThread(this.threadId, true);
-            const turns = (Array.isArray(thread.turns) ? thread.turns : []).map(record);
             if (mode === 'latestCompleted' || (mode === 'current' && this.currentTurn)) {
+                const thread = await this.readThread(this.threadId, true);
+                const turns = (Array.isArray(thread.turns) ? thread.turns : []).map(record);
                 // A plain current fork cannot run mid-turn: the honest answer is
                 // the last completed turn, which is also what a pinned fork uses.
                 const cutoff = latestCompletedForkCutoff(turns);
@@ -673,8 +673,22 @@ export class SharedCodexRoot {
                 return { nativeTurnId: cutoff, ...this.firstExcludedUserLocalId(turns, index + 1) };
             }
             if (mode === 'current') {
+                const thread = await this.readThread(this.threadId, true);
+                const turns = (Array.isArray(thread.turns) ? thread.turns : []).map(record);
                 if (!turns.length) return {};
-                return { nativeTurnId: string(turns.at(-1)?.id) };
+                // Confirm pins this turn and re-verifies its prefix, so offer
+                // the pin only when the confirm would accept it; a non-terminal
+                // prefix would otherwise preview a 200 that confirm always
+                // rejects. Without a valid pin both sides fall back to the
+                // unpinned whole-history cut the preview already showed.
+                const pinned = string(turns.at(-1)?.id);
+                if (!pinned) return {};
+                try {
+                    this.verifyPinnedTurn(turns, pinned);
+                } catch {
+                    return {};
+                }
+                return { nativeTurnId: pinned };
             }
             const beforeTurnId = this.projection.turnFor(messageLocalId!);
             if (!beforeTurnId) throw new Error('No native history point for this message');

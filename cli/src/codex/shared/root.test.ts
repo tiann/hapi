@@ -796,6 +796,45 @@ describe('fork preview boundary answers', () => {
         await expect(preview(f, { mode: 'current' })).resolves.not.toHaveProperty('cutBeforeLocalId');
     });
 
+    it('omits the idle-current pin when the pinned prefix is not terminal', async () => {
+        const f = await fixture();
+        // A turn left 'unknown' in the rollout (e.g. a crashed write) is not
+        // adopted as the running turn, so the idle branch pins the last turn.
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first', content: [{ type: 'text', text: 'first prompt' }] }] },
+            { id: 'two', status: 'unknown', items: [{ id: 'u2', type: 'userMessage', clientId: 'second', content: [{ type: 'text', text: 'second prompt' }] }] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        // Confirm verifies the pinned turn's prefix and would reject this
+        // fork; the preview must not answer a pin the confirm refuses. An
+        // unpinned answer keeps preview and confirm on the same whole-history
+        // cut.
+        await expect(preview(f, { mode: 'current' })).resolves.toEqual({});
+    });
+
+    it('omits the idle-current pin when a middle turn is unfinished', async () => {
+        const f = await fixture();
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first', content: [{ type: 'text', text: 'first prompt' }] }] },
+            { id: 'two', status: 'unknown', items: [] },
+            { id: 'three', status: 'completed', items: [{ id: 'u3', type: 'userMessage', clientId: 'third', content: [{ type: 'text', text: 'third prompt' }] }] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        await expect(preview(f, { mode: 'current' })).resolves.toEqual({});
+    });
+
+    it('reads the native thread once for a message preview', async () => {
+        const f = await fixture();
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first', content: [{ type: 'text', text: 'first prompt' }] }] },
+            { id: 'two', status: 'completed', items: [{ id: 'u2', type: 'userMessage', clientId: 'second', content: [{ type: 'text', text: 'second prompt' }] }] }
+        ];
+        await f.root.refresh(); await f.root.activate();
+        const read = vi.spyOn(f.root, 'readThread');
+        await preview(f, { mode: 'message', messageLocalId: 'second' });
+        expect(read).toHaveBeenCalledTimes(1);
+    });
+
     it('answers an empty thread current preview without a pin', async () => {
         const f = await fixture();
         await f.root.refresh(); await f.root.activate();
