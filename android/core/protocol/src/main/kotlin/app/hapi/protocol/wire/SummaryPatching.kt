@@ -123,6 +123,7 @@ object SummaryPatching {
                 "kimi" -> metadata.kimiSessionId
                 "copilot" -> metadata.copilotSessionId
                 "pi" -> metadata.piSessionId
+                "dsh" -> metadata.dshSessionId
                 else -> null
             }
             return flavorSessionId?.trim()?.takeIf { it.isNotEmpty() }
@@ -136,6 +137,7 @@ object SummaryPatching {
             ?: metadata.cursorSessionId
             ?: metadata.kimiSessionId
             ?: metadata.copilotSessionId
+            ?: metadata.dshSessionId
     }
 
     /** `toSessionSummaryMetadata` — list-sized projection of full metadata. */
@@ -208,6 +210,8 @@ object SummaryPatching {
      *   (see the class doc for why equality is safe here and only here), then
      *   recompute the derived fields. `pendingRequests`' fallback `since` is
      *   the summary's post-patch `updatedAt`, matching the reference.
+     * - `attachedJob` gates strictly (`>`) on `attachedJobUpdatedAt`, like
+     *   the reference: a lagged heartbeat must not resurrect a clear.
      * - `teamState` is a summary no-op (not rendered on the list).
      * - `activeTurnStartedAt` / `scratchlistUpdatedAt` / `serviceTier` /
      *   `permissionMode` / `collaborationMode` / `copilotAgentMode` have no
@@ -265,6 +269,11 @@ object SummaryPatching {
                     metadata = toSessionSummaryMetadata(metadata.value),
                     metadataVersion = metadata.version,
                 )
+            }
+        }
+        patch.attachedJob?.let { job ->
+            if (job.version > current.attachedJobUpdatedAt) {
+                next = next.copy(attachedJob = job.value, attachedJobUpdatedAt = job.version)
             }
         }
         return next
@@ -338,6 +347,9 @@ object SummaryPatching {
             && current.metadataVersion == next.metadataVersion
             && current.agentStateVersion == next.agentStateVersion
             && current.todosUpdatedAt == next.todosUpdatedAt
+            // Heartbeats move only `heartbeatAt`, which drives the stale state.
+            && current.attachedJob == next.attachedJob
+            && current.attachedJobUpdatedAt == next.attachedJobUpdatedAt
     }
 
     /**

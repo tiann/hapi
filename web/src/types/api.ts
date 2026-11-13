@@ -14,6 +14,9 @@ export type {
     AgyModelsResponse,
     AgentAvailabilityResponse,
     AgentAvailabilityEntry,
+    AgentQuotaAccount,
+    AgentQuotaBucket,
+    AgentQuotasResponse,
     AgyModelSummary,
     CodexModelsResponse,
     CodexModelSummary,
@@ -34,6 +37,8 @@ export type {
     CopilotModelsResponse,
     CopilotModelSummary,
     GrokReasoningEffortResponse,
+    CopilotReasoningEffortResponse,
+    KimiReasoningEffortResponse,
     GrokReasoningEffortOption,
     ListDirectoryResponse,
     MachineDirectoryEntry,
@@ -43,6 +48,7 @@ export type {
     ClaudeModelSummary,
     ClaudeModelsResponse,
     MachinesResponse,
+    MessageContextResponse,
     MessagesResponse,
     OpencodeModelsResponse,
     OpencodeModelSummary,
@@ -54,10 +60,15 @@ export type {
     SlashCommand,
     SlashCommandsResponse,
     SessionResponse,
+    SessionContentMatch,
+    SessionContentMatchesResponse,
     SessionTitleSuggestionResponse,
     SessionsResponse,
+    SessionContentSearchResponse,
     SpawnResponse,
-    UploadFileResponse
+    UploadFileResponse,
+    UsageMachineQuotasEntry,
+    UsageQuotasResponse
 } from '@hapi/protocol/apiTypes'
 
 export type {
@@ -156,6 +167,7 @@ export type FileSearchResponse = {
     success: boolean
     files?: FileSearchItem[]
     error?: string
+    pathSearch?: boolean
 }
 
 export type GitFileStatus = {

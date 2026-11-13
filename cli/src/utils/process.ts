@@ -1,6 +1,8 @@
 import type { ChildProcess } from 'node:child_process';
 import spawn from 'cross-spawn';
 import { readFileSync } from 'node:fs';
+import { monotonicTimeMs } from '@/utils/time';
+import { stopWindowsProcessTree, type WindowsStopReport } from './windowsProcessStop';
 
 export const isWindows = (): boolean => process.platform === 'win32';
 
@@ -232,10 +234,11 @@ function getPosixProcessCommandLine(pid: number): string | null {
   return commandLine.trim() ? commandLine : null;
 }
 
-function killProcessWindows(pid: number, force: boolean): boolean {
+function killProcessWindows(pid: number, force: boolean, deadlineMs?: number): boolean {
   if (!isProcessAlive(pid)) {
     return true;
   }
+  if (!signalAllowed(deadlineMs)) return false;
 
   const args = ['/T', '/PID', pid.toString()];
   if (force) {
@@ -342,22 +345,27 @@ export function collectWindowsProcessTree(pid: number): number[] | 'scan_failed'
   return parseWindowsProcessTreeStdout((result.stdout ?? '').toString(), n)
 }
 
-async function signalAndWaitWindowsRoot(pid: number, force: boolean): Promise<void> {
-  if (force) {
-    killProcessWindows(pid, true);
-    await waitForProcessToDie(pid, true);
-    return;
-  }
-  const softOk = killProcessWindows(pid, false);
-  if (!softOk && isProcessAlive(pid)) {
-    killProcessWindows(pid, true);
-    await waitForProcessToDie(pid, true);
-    return;
-  }
-  await waitForProcessToDie(pid, false);
+function signalAllowed(deadlineMs?: number): boolean {
+  return deadlineMs === undefined || monotonicTimeMs() < deadlineMs;
 }
 
-export async function killProcess(pid: number, force: boolean = false): Promise<boolean> {
+async function signalAndWaitWindowsRoot(pid: number, force: boolean, deadlineMs?: number): Promise<void> {
+  if (!signalAllowed(deadlineMs)) return;
+  if (force) {
+    killProcessWindows(pid, true, deadlineMs);
+    await waitForProcessToDie(pid, true, deadlineMs);
+    return;
+  }
+  const softOk = killProcessWindows(pid, false, deadlineMs);
+  if (!softOk && isProcessAlive(pid) && signalAllowed(deadlineMs)) {
+    killProcessWindows(pid, true, deadlineMs);
+    await waitForProcessToDie(pid, true, deadlineMs);
+    return;
+  }
+  await waitForProcessToDie(pid, false, deadlineMs);
+}
+
+export async function killProcess(pid: number, force: boolean = false, deadlineMs?: number): Promise<boolean> {
   const n = typeof pid === 'number' ? pid : Number(pid)
   if (!Number.isFinite(n) || n <= 0) {
     return false;
@@ -370,14 +378,15 @@ export async function killProcess(pid: number, force: boolean = false): Promise<
     // but the PID is still draining, honor the grace wait before /F so archive
     // flush can finish.
     // Root-only verify — callers that need full-tree proof use killProcessTreeByPid.
-    await signalAndWaitWindowsRoot(n, force);
+    await signalAndWaitWindowsRoot(n, force, deadlineMs);
     return !isProcessAlive(n);
   }
 
   try {
+    if (!signalAllowed(deadlineMs)) return !isProcessAlive(n);
     process.kill(n, force ? 'SIGKILL' : 'SIGTERM');
-    await waitForProcessToDie(n, force);
-    return true;
+    await waitForProcessToDie(n, force, deadlineMs);
+    return deadlineMs === undefined || !isProcessAlive(n);
   } catch {
     return false;
   }
@@ -424,27 +433,32 @@ function collectProcessTree(pid: number): number[] | 'scan_failed' {
  * Signals are sent synchronously (children first) to work in exit handlers,
  * then waits asynchronously for processes to die.
  */
-async function killProcessTree(pid: number, force: boolean): Promise<boolean> {
+async function killProcessTree(pid: number, force: boolean, deadlineMs?: number,
+  signal: NodeJS.Signals = 'SIGTERM'): Promise<boolean> {
   // Collect all PIDs first (sync) - returns in child-first order
   const pids = collectProcessTree(pid);
   if (pids === 'scan_failed') {
     // Signal the known root anyway (partial kill > zero kill), but never claim
     // stopped without a full-tree verify (#1911 Opus Major / debian-slim no pgrep).
-    const signal = force ? 'SIGKILL' : 'SIGTERM';
+    const killSignal = force ? 'SIGKILL' : signal;
     try {
-      process.kill(pid, signal);
+      if (!signalAllowed(deadlineMs)) return false;
+      process.kill(pid, killSignal);
     } catch {
       // already gone
     }
-    await waitForProcessToDie(pid, force);
+    await waitForProcessToDie(pid, force, deadlineMs);
     return false;
   }
 
-  // Signal all processes synchronously (children first, then root)
-  const signal = force ? 'SIGKILL' : 'SIGTERM';
+  // Signal all processes synchronously (children first, then root).
+  // Preserve the caller's signal when soft-killing so Ctrl-C stays SIGINT
+  // (exit 130) instead of always remapping to SIGTERM (exit 143).
+  const killSignal = force ? 'SIGKILL' : signal;
   for (const p of pids) {
     try {
-      process.kill(p, signal);
+      if (!signalAllowed(deadlineMs)) return false;
+      process.kill(p, killSignal);
     } catch {
       // Process may have already exited
     }
@@ -452,152 +466,41 @@ async function killProcessTree(pid: number, force: boolean): Promise<boolean> {
 
   // Wait for processes to die (async) - wait for root last
   for (const p of pids) {
-    await waitForProcessToDie(p, force);
+    await waitForProcessToDie(p, force, deadlineMs);
   }
 
   return pids.every((candidate) => !isProcessAlive(candidate));
 }
 
-export type ProcessTreeStopReport = {
-  rootPid: number;
-  outcome: 'verified' | 'scan_failed' | 'unconfirmed';
-  elapsedMs: number;
-  phaseMs: Record<string, number>;
-  members: Array<{
-    pid: number;
-    expectedMarker: string | null;
-    observedMarker?: string | null;
-    alive?: boolean;
-    observedAt?: number;
-    resolution?: 'exited' | 'generation_changed';
-  }>;
-};
-
 /** Kill a PID and all descendants, verifying the complete tree is gone. */
 export async function killProcessTreeByPid(
   pid: number,
   force: boolean = false,
-  onReport?: (report: ProcessTreeStopReport) => void
+  // 3rd arg: soft POSIX signal (#1424 job Ctrl-C → exit 130) OR Windows stop report (#1911).
+  signalOrReport: NodeJS.Signals | ((report: WindowsStopReport) => void) = 'SIGTERM',
+  // 4th arg: stop deadline (signal-lease budget) when numeric, else the Windows
+  // report fallback used when the 3rd arg is a signal (#1911).
+  deadlineOrFallbackReport?: number | ((report: WindowsStopReport) => void),
+  fallbackReport?: (report: WindowsStopReport) => void
 ): Promise<boolean> {
+  const deadlineMs = typeof deadlineOrFallbackReport === 'number' ? deadlineOrFallbackReport : undefined;
+  const onReport = typeof signalOrReport === 'function' ? signalOrReport
+    : typeof deadlineOrFallbackReport === 'function' ? deadlineOrFallbackReport
+    : fallbackReport;
+  const signal: NodeJS.Signals = typeof signalOrReport === 'function' ? 'SIGTERM' : signalOrReport;
   const n = typeof pid === 'number' ? pid : Number(pid)
   if (!Number.isFinite(n) || n <= 0) return false;
   if (isWindows()) {
-    const started = Date.now();
-    const phaseMs: Record<string, number> = {};
-    const members = new Map<number, ProcessTreeStopReport['members'][number]>();
-    const finish = (outcome: ProcessTreeStopReport['outcome']): boolean => {
-      // Report observations already made by the verifier. Re-probing here can
-      // both hide the failing instant and add seconds to an archive request.
-      try { onReport?.({ rootPid: n, outcome, elapsedMs: Date.now() - started, phaseMs, members: [...members.values()] }); }
-      catch { /* Diagnostics must not change the termination decision. */ }
-      return outcome === 'verified';
-    };
-    // taskkill /T exit 0 means "signalled", not "every descendant is dead".
-    // Collect the tree + generation markers first, signal the root with /T,
-    // then individually signal any surviving pre-kill PIDs whose generation
-    // still matches (PID reuse must not be killed) (#1911 bot Major).
-    const treePids = collectWindowsProcessTree(n);
-    phaseMs.scan = Date.now() - started;
-    if (treePids === 'scan_failed') {
-      // Still signal the (known) root — scan failure must not mean zero kill —
-      // but never claim stopped without a full-tree verify (#1911 Opus Major).
-      await signalAndWaitWindowsRoot(n, force);
-      phaseMs.signal = Date.now() - started - phaseMs.scan;
-      return finish('scan_failed');
-    }
-    // A leaf needs only one identity probe. Do not add full enumerations to
-    // the common model-discovery cleanup path, which has no descendants.
-    const useSnapshot = treePids.length > 1;
-    const initialSnapshot = useSnapshot ? readWindowsProcessStartMarkers() : null;
-    const markers = new Map<number, string | null>();
-    for (const candidate of treePids) {
-      // The bulk observation is fresh for this phase. If it was unavailable,
-      // retain individual identity checks and service control work between them.
-      await new Promise<void>(resolve => setImmediate(resolve));
-      markers.set(candidate, initialSnapshot ? initialSnapshot.get(candidate) ?? null : getProcessStartMarker(candidate));
-      members.set(candidate, { pid: candidate, expectedMarker: markers.get(candidate) ?? null });
-      if (initialSnapshot && !initialSnapshot.has(candidate)) {
-        Object.assign(members.get(candidate)!, { alive: false, resolution: 'exited', observedAt: Date.now() });
-      }
-    }
-    phaseMs.markers = Date.now() - started - phaseMs.scan;
-    const signallingStarted = Date.now();
-    let signalRoot = !initialSnapshot || initialSnapshot.has(n);
-    const rootMarker = markers.get(n);
-    if (initialSnapshot && rootMarker) {
-      const current = getProcessStartMarker(n);
-      Object.assign(members.get(n)!, { observedMarker: current, observedAt: Date.now() });
-      signalRoot = current === rootMarker;
-    }
-    if (signalRoot) await signalAndWaitWindowsRoot(n, force);
-    const survivorSnapshot = useSnapshot ? readWindowsProcessStartMarkers() : null;
-    for (const survivor of treePids) {
-      await new Promise<void>(resolve => setImmediate(resolve));
-      if (survivor === n) continue;
-      const expected = markers.get(survivor);
-      if (survivorSnapshot) {
-        if (!survivorSnapshot.has(survivor)) continue;
-        const observed = survivorSnapshot.get(survivor);
-        Object.assign(members.get(survivor)!, { observedMarker: observed, observedAt: Date.now() });
-        if (!expected || !observed || observed !== expected) continue;
-      } else if (!isProcessAlive(survivor)) continue;
-      // A previous batch can become stale while another survivor is stopped.
-      // Recheck this exact generation immediately before signalling it.
-      const current = getProcessStartMarker(survivor);
-      Object.assign(members.get(survivor)!, { observedMarker: current, observedAt: Date.now() });
-      // Unverifiable or reused PID — never signal the new/unknown process.
-      if (!expected || !current || current !== expected) continue;
-      await signalAndWaitWindowsRoot(survivor, true);
-    }
-    phaseMs.signal = Date.now() - signallingStarted;
-    // A wrapper can exit before its descendants finish draining. Keep the
-    // full-tree proof, allowing a bounded grace period without signalling an
-    // unverified or reused PID.
-    const deadline = Date.now() + 2_000;
-    const verificationStarted = Date.now();
-    const remaining = new Set(treePids.filter(candidate => !members.get(candidate)?.resolution));
-    for (;;) {
-      const verificationSnapshot = useSnapshot ? readWindowsProcessStartMarkers() : null;
-      for (const candidate of remaining) {
-        await new Promise<void>(resolve => setImmediate(resolve));
-        const member = members.get(candidate)!;
-        const alive = verificationSnapshot ? verificationSnapshot.has(candidate) : isProcessAlive(candidate);
-        Object.assign(member, { alive, observedAt: Date.now() });
-        if (!alive) {
-          member.resolution = 'exited';
-          remaining.delete(candidate);
-          continue;
-        }
-        const expected = markers.get(candidate);
-        const current = expected ? verificationSnapshot
-          ? verificationSnapshot.get(candidate) ?? null : getProcessStartMarker(candidate) : null;
-        member.observedMarker = current;
-        // A different known generation proves this tree member exited. Once
-        // proven gone, a PID must never re-enter the tree through later reuse.
-        // A missing marker alone is ambiguous and cannot prove termination.
-        if (expected && current && current !== expected) {
-          member.resolution = 'generation_changed';
-          remaining.delete(candidate);
-        } else if (!verificationSnapshot && !isProcessAlive(candidate)) {
-          Object.assign(member, { alive: false, resolution: 'exited' });
-          remaining.delete(candidate);
-        }
-        member.observedAt = Date.now();
-      }
-      phaseMs.verify = Date.now() - verificationStarted;
-      if (remaining.size === 0) return finish('verified');
-      if (Date.now() >= deadline) return finish('unconfirmed');
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
+    return stopWindowsProcessTree(n, force, onReport, deadlineMs);
   }
-  return killProcessTree(n, force);
+  return killProcessTree(n, force, deadlineMs, signal);
 }
 
 /**
  * Waits for a process to die, escalating if the graceful signal didn't work.
  * POSIX: SIGTERM → SIGKILL. Windows: taskkill /T → taskkill /F /T.
  */
-async function waitForProcessToDie(pid: number, force: boolean): Promise<void> {
+async function waitForProcessToDie(pid: number, force: boolean, deadlineMs?: number): Promise<void> {
   const maxWait = 2000;
   // Windows isProcessAlive shells out to tasklist; keep the poll coarse so a
   // stop cannot burn the runner event loop for seconds (#1911 Overseer).
@@ -614,10 +517,10 @@ async function waitForProcessToDie(pid: number, force: boolean): Promise<void> {
   }
 
   // Graceful kill didn't finish — escalate (same structure on both platforms).
-  if (!force && isProcessAlive(pid)) {
+  if (!force && isProcessAlive(pid) && signalAllowed(deadlineMs)) {
     try {
       if (isWindows()) {
-        killProcessWindows(pid, true);
+        killProcessWindows(pid, true, deadlineMs);
       } else {
         process.kill(pid, 'SIGKILL');
       }
@@ -636,13 +539,17 @@ async function waitForProcessToDie(pid: number, force: boolean): Promise<void> {
 export async function killProcessByChildProcess(
   child: ChildProcess,
   force: boolean = false,
-  onReport?: (report: ProcessTreeStopReport) => void
+  signalOrReport: NodeJS.Signals | ((report: WindowsStopReport) => void) = 'SIGTERM',
+  deadlineOrFallbackReport?: number | ((report: WindowsStopReport) => void),
+  fallbackReport?: (report: WindowsStopReport) => void
 ): Promise<boolean> {
   const pid = child.pid;
   if (!pid) {
     return false;
   }
 
-  // Both platforms: tree-kill + full-tree verify (win32 must not trust root-only).
-  return killProcessTreeByPid(pid, force, onReport);
+  // Both platforms: tree-kill + full-tree verify (win32 must not trust
+  // root-only). The soft signal rides along on POSIX so job Ctrl-C stays
+  // exit 130 (#1424).
+  return killProcessTreeByPid(pid, force, signalOrReport, deadlineOrFallbackReport, fallbackReport);
 }

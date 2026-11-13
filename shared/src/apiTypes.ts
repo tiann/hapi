@@ -6,9 +6,15 @@ import {
     DecryptedMessageSchema,
     MachineSchema,
     PermissionModeSchema,
-    SessionSchema
+    SessionSchema,
+    MetadataSchema,
+    OpenCodeRewindSchema
 } from './schemas'
 import { AgentFlavorSchema } from './modes'
+import {
+    PeerSpawnDefaultsSchema,
+    ResolvedPeerSpawnDefaultsSchema
+} from './peerSpawnDefaults'
 import type {
     DecryptedMessage,
     Machine,
@@ -56,6 +62,7 @@ export const CliMessagesResponseSchema = z.object({
         seq: z.number(),
         createdAt: z.number(),
         localId: z.string().nullable().optional(),
+        invokedAt: z.number().nullable().optional(),
         content: z.unknown()
     }))
 })
@@ -65,7 +72,9 @@ export type CliMessagesResponse = z.infer<typeof CliMessagesResponseSchema>
 export const CreateSessionResponseSchema = z.object({
     session: SessionSchema,
     /** Hub opt-in for AGENT_NOTIFY_SUMMARY prompt injection (default off when omitted). */
-    sessionSummaryContract: z.boolean().optional()
+    sessionSummaryContract: z.boolean().optional(),
+    /** Hub opt-in: Cursor auto-bridge after transient model errors (default off). */
+    autoBridgeTransientModelErrors: z.boolean().optional()
 })
 
 export type CreateSessionResponse = z.infer<typeof CreateSessionResponseSchema>
@@ -73,7 +82,9 @@ export type CreateSessionResponse = z.infer<typeof CreateSessionResponseSchema>
 export const HubSettingsResponseSchema = z.object({
     sessionSummaryContract: z.boolean(),
     /** Show compact AGENT_NOTIFY_SUMMARY in chat (default off / hide). */
-    sessionSummaryInChat: z.boolean()
+    sessionSummaryInChat: z.boolean(),
+    autoBridgeTransientModelErrors: z.boolean(),
+    peerSpawnDefaults: ResolvedPeerSpawnDefaultsSchema
 })
 
 export type HubSettingsResponse = z.infer<typeof HubSettingsResponseSchema>
@@ -81,10 +92,16 @@ export type HubSettingsResponse = z.infer<typeof HubSettingsResponseSchema>
 export const UpdateHubSettingsRequestSchema = z
     .object({
         sessionSummaryContract: z.boolean().optional(),
-        sessionSummaryInChat: z.boolean().optional()
+        sessionSummaryInChat: z.boolean().optional(),
+        autoBridgeTransientModelErrors: z.boolean().optional(),
+        peerSpawnDefaults: PeerSpawnDefaultsSchema.optional()
     })
     .refine(
-        (data) => data.sessionSummaryContract !== undefined || data.sessionSummaryInChat !== undefined,
+        (data) =>
+            data.sessionSummaryContract !== undefined
+            || data.sessionSummaryInChat !== undefined
+            || data.autoBridgeTransientModelErrors !== undefined
+            || data.peerSpawnDefaults !== undefined,
         { message: 'At least one hub setting field is required' }
     )
 
@@ -121,6 +138,28 @@ export type AuthResponse = {
 }
 
 export type SessionsResponse = { sessions: SessionSummary[] }
+export type SessionContentMatch = {
+    messageId: string
+    role: 'user' | 'assistant'
+    seq: number
+    createdAt: number
+    snippet: string
+    truncated: boolean
+}
+export type SessionContentSearchResponse = {
+    results: Array<{
+        session: SessionSummary
+        match: SessionContentMatch
+    }>
+    /** True when this query may miss content omitted by an indexing optimization. */
+    hasPotentiallyIncompleteResults: boolean
+}
+export type SessionContentMatchesResponse = {
+    matches: SessionContentMatch[]
+    total: number
+    /** True when this query may miss content omitted by an indexing optimization. */
+    hasPotentiallyIncompleteResults: boolean
+}
 export type SessionResponse = { session: Session }
 export type MessagesResponse = {
     messages: DecryptedMessage[]
@@ -135,6 +174,20 @@ export type MessagesResponse = {
         nextBeforeAt: number | null
         nextAfterSeq: number | null
         nextAfterAt: number | null
+        snapshotHeadSeq: number | null
+        snapshotHeadAt: number | null
+        hasMore: boolean
+    }
+}
+
+/** A bounded history window centered on a message selected from search results. */
+export type MessageContextResponse = {
+    messages: DecryptedMessage[]
+    targetMessageId: string
+    page: {
+        epoch: number
+        nextBeforeSeq: number | null
+        nextBeforeAt: number | null
         snapshotHeadSeq: number | null
         snapshotHeadAt: number | null
         hasMore: boolean
@@ -182,7 +235,8 @@ export type ReopenSessionMissingMetadataResponse = z.infer<typeof ReopenSessionM
 
 export const CursorChatStoreStatusSchema = z.object({
     onDisk: z.boolean(),
-    store: z.enum(['legacy', 'acp']).nullable()
+    // 'empty': ACP thread dir exists but no store.db, i.e. no chat was ever persisted.
+    store: z.enum(['legacy', 'acp', 'empty']).nullable()
 })
 
 export type CursorChatStoreStatus = z.infer<typeof CursorChatStoreStatusSchema>
@@ -377,8 +431,11 @@ export const SessionServiceTierRequestSchema = z.object({
 
 export type SessionServiceTierRequest = z.infer<typeof SessionServiceTierRequestSchema>
 
+/** Hub session display-name ceiling (`PATCH /api/sessions/:id`). */
+export const SESSION_NAME_MAX_LENGTH = 255
+
 export const RenameSessionRequestSchema = z.object({
-    name: z.string().min(1).max(255).optional(),
+    name: z.string().min(1).max(SESSION_NAME_MAX_LENGTH).optional(),
     titleLocked: z.boolean().optional()
 }).refine(value => value.name !== undefined || value.titleLocked !== undefined, {
     message: 'name or titleLocked is required'
@@ -498,6 +555,20 @@ export const ScratchlistEntryUpdateRequestSchema = z.object({
 
 export type ScratchlistEntryUpdateRequest = z.infer<typeof ScratchlistEntryUpdateRequestSchema>
 
+/** Dismiss the model-error banner for a specific displayed error (by eventId). */
+export const AcknowledgeModelErrorRequestSchema = z.object({
+    eventId: z.string().min(1)
+})
+
+export type AcknowledgeModelErrorRequest = z.infer<typeof AcknowledgeModelErrorRequestSchema>
+
+/** Bridge & retry for the specific displayed model error (by eventId). */
+export const BridgeModelErrorRequestSchema = z.object({
+    eventId: z.string().min(1)
+})
+
+export type BridgeModelErrorRequest = z.infer<typeof BridgeModelErrorRequestSchema>
+
 /** Per-session legacy stream-json → ACP migrator request. See tiann/hapi#824. */
 export const CursorMigrateToAcpRequestSchema = z.object({
     /** Skip removing the legacy ~/.cursor/chats source store.db even after verify passes. */
@@ -611,8 +682,9 @@ export const SendMessageRequestSchema = z.object({
 export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>
 
 export const ForkConversationRequestSchema = z.object({
-    messageLocalId: z.string().min(1).optional()
-})
+    messageLocalId: z.string().min(1).optional(),
+    latestCompleted: z.boolean().optional()
+}).refine(value => !(value.messageLocalId && value.latestCompleted), { message: 'Choose one fork boundary mode' })
 
 export type ForkConversationRequest = z.infer<typeof ForkConversationRequestSchema>
 
@@ -644,7 +716,9 @@ export type RewindConversationResponse = {
 
 /** CLI → hub RPC result for native fork (before HAPI child binding). */
 export type ForkConversationRpcResult = {
+    completedTurnId?: string
     nativeSessionId: string
+    opencodeHistoryCheckpoint?: NonNullable<Session['metadata']>['opencodeHistoryCheckpoint']
     /** Shared runtimes bind the child themselves; hub must not spawn another engine. */
     sessionId?: string
     /** When true, hub must spawn with --fork-session (Claude). */
@@ -671,6 +745,17 @@ export type ForkArchivedCodexResponse = { nativeSessionId: string } | { error: s
 export type RewindConversationErrorCode =
     | 'ambiguous_native_boundary'
     | 'ambiguous_native_boundary_fork_safe'
+
+export const OpenCodeRewindReportSchema = z.object({
+    operation: OpenCodeRewindSchema,
+    phase: z.enum(['prepared', 'applied', 'unknown', 'rejected']),
+    sourceHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+    prefixHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+    unchanged: z.literal(true).optional(),
+    checkpoint: MetadataSchema.shape.opencodeHistoryCheckpoint,
+    indexes: z.record(z.string(), z.number().int().nonnegative()).optional()
+})
+export type OpenCodeRewindReport = z.infer<typeof OpenCodeRewindReportSchema>
 
 export type RewindConversationRpcResult = {
     success: true
@@ -699,6 +784,8 @@ export type QueuedStateRequest = z.infer<typeof QueuedStateRequestSchema>
 export type QueuedStateResponse = {
     queuedLocalIds: string[]
     indeterminateLocalIds?: string[]
+    /** Subset of indeterminateLocalIds still awaiting delivery confirmation. */
+    dispatchingLocalIds?: string[]
     invokedLocalMessages: Array<{
         localId: string
         invokedAt: number
@@ -750,6 +837,66 @@ export const AgentAvailabilityResponseSchema = z.object({
     agents: z.array(AgentAvailabilityEntrySchema)
 })
 export type AgentAvailabilityResponse = z.infer<typeof AgentAvailabilityResponseSchema>
+
+export const AgentQuotaStatusSchema = z.enum([
+    'ok',
+    'custom_provider',
+    'unauthenticated',
+    'unavailable',
+    'error'
+])
+export type AgentQuotaStatus = z.infer<typeof AgentQuotaStatusSchema>
+
+export const AgentQuotaBucketSchema = z.object({
+    id: z.string(),
+    label: z.string(),
+    group: z.string().nullable().optional(),
+    window: z.string().nullable().optional(),
+    usedPercent: z.number().min(0).max(100),
+    remainingPercent: z.number().min(0).max(100),
+    resetsAt: z.number().nullable().optional()
+})
+export type AgentQuotaBucket = z.infer<typeof AgentQuotaBucketSchema>
+
+export const AgentQuotaAccountSchema = z.object({
+    agent: AgentFlavorSchema,
+    available: z.boolean(),
+    status: AgentQuotaStatusSchema,
+    accountLabel: z.string().nullable().optional(),
+    planLabel: z.string().nullable().optional(),
+    creditsLabel: z.string().nullable().optional(),
+    buckets: z.array(AgentQuotaBucketSchema),
+    note: z.string().nullable().optional(),
+    updatedAt: z.number()
+})
+export type AgentQuotaAccount = z.infer<typeof AgentQuotaAccountSchema>
+
+export const AgentQuotasRequestSchema = z.object({
+    refresh: z.boolean().optional()
+})
+export type AgentQuotasRequest = z.infer<typeof AgentQuotasRequestSchema>
+
+export const AgentQuotasResponseSchema = z.object({
+    accounts: z.array(AgentQuotaAccountSchema),
+    fetchedAt: z.number()
+})
+export type AgentQuotasResponse = z.infer<typeof AgentQuotasResponseSchema>
+
+export const UsageMachineQuotasEntrySchema = z.object({
+    machineId: z.string(),
+    machineName: z.string(),
+    supported: z.boolean(),
+    accounts: z.array(AgentQuotaAccountSchema),
+    fetchedAt: z.number().nullable(),
+    error: z.string().optional()
+})
+export type UsageMachineQuotasEntry = z.infer<typeof UsageMachineQuotasEntrySchema>
+
+export const UsageQuotasResponseSchema = z.object({
+    machines: z.array(UsageMachineQuotasEntrySchema),
+    updatedAt: z.number()
+})
+export type UsageQuotasResponse = z.infer<typeof UsageQuotasResponseSchema>
 
 export const AuthRequestSchema = z.union([
     z.object({ initData: z.string() }),
@@ -812,6 +959,7 @@ export type RpcListDirectoryResponse = ListDirectoryResponse
 
 export type FileMetadataEntry = {
     path: string
+    type?: 'file' | 'directory' | 'other'
     size?: number
     modified?: number
 }
@@ -1001,6 +1149,12 @@ export type GrokReasoningEffortResponse = {
     currentValue?: string | null
     error?: string
 }
+
+/** Copilot's ACP `thought_level` option for the active model. */
+export type CopilotReasoningEffortResponse = GrokReasoningEffortResponse
+
+/** Kimi's ACP `thought_level` (`thinking`) option for the active model. */
+export type KimiReasoningEffortResponse = GrokReasoningEffortResponse
 
 export type OpencodeReasoningEffortOption = {
     value: string

@@ -1,7 +1,8 @@
 import { useSyncExternalStore } from 'react'
 import { EMPTY_READ_STATE, mergeReadState, type SessionReadState, type SessionReadStateRequest } from '@hapi/protocol'
+import { randomId } from '@/lib/randomId'
 
-type SessionInput = { id: string; contentRevision?: number; readState?: SessionReadState; active?: boolean; thinking?: boolean }
+type SessionInput = { id: string; contentRevision?: number; readState?: SessionReadState }
 type Pending = { id: string; request: SessionReadStateRequest }
 type Entry = { server: SessionReadState; pending?: Pending }
 type Store = Record<string, Entry>
@@ -13,12 +14,47 @@ let sender: Sender | null = null
 let changeVersion = 0
 let running = false
 let retry: ReturnType<typeof setTimeout> | undefined
+const tailFollowers = new Map<string, number>()
 
+// The sidebar reads per-session state for every row on every render, and reading
+// (let alone parsing) the whole persisted store per row is O(rows x store size).
+// localStorage stays the source of truth: the parsed copy is compared with the raw
+// stored value on the first read after a microtask checkpoint and trusted for the
+// rest of that synchronous pass, so writes from other tabs or other code are
+// observed by the next read after the checkpoint.
+let cache: { key: string; raw: string | null; store: Store } | null = null
+let trusted = false
+function trustUntilNextCheckpoint(): void {
+    if (trusted) return
+    trusted = true
+    queueMicrotask(() => { trusted = false })
+}
 function readStore(key = scope): Store {
-    try { return JSON.parse(localStorage.getItem(PREFIX + key) ?? '{}') as Store } catch { return {} }
+    if (trusted && cache?.key === key) return cache.store
+    let raw: string | null
+    try { raw = localStorage.getItem(PREFIX + key) } catch { return {} }
+    if (cache?.key !== key || cache.raw !== raw) {
+        let store: Store
+        try { store = JSON.parse(raw ?? '{}') as Store } catch { store = {} }
+        cache = { key, raw, store }
+    }
+    trustUntilNextCheckpoint()
+    return cache.store
 }
 function save(store: Store, key = scope): boolean {
-    try { localStorage.setItem(PREFIX + key, JSON.stringify(store)); return true } catch { return false }
+    try {
+        const raw = JSON.stringify(store)
+        localStorage.setItem(PREFIX + key, raw)
+        cache = { key, raw, store }
+        trustUntilNextCheckpoint()
+        return true
+    } catch {
+        // Callers mutate the cached store before saving; drop it so the next
+        // read reflects what is actually persisted.
+        cache = null
+        trusted = false
+        return false
+    }
 }
 function notify(): void {
     changeVersion += 1
@@ -129,9 +165,26 @@ function enqueue(sessionId: string, request: SessionReadStateRequest): void {
     if (request.type === 'read' && previous?.type === 'read') {
         request = { ...request, readRevision: Math.max(request.readRevision, previous.readRevision) }
     }
-    store[sessionId] = { ...entry, pending: { id: crypto.randomUUID(), request } }
+    store[sessionId] = { ...entry, pending: { id: randomId(), request } }
     // Persistence failure must not claim a successful local read.
     if (save(store)) { notify(); void flushSessionReadState() }
+}
+
+/** A visible chat following its tail acknowledges output as it renders. Until
+ * that lands, hide the session's ordinary dot rather than flash it per message. */
+export function followSessionTail(sessionId: string): () => void {
+    tailFollowers.set(sessionId, (tailFollowers.get(sessionId) ?? 0) + 1)
+    notify()
+    return () => {
+        const remaining = (tailFollowers.get(sessionId) ?? 1) - 1
+        if (remaining > 0) tailFollowers.set(sessionId, remaining)
+        else tailFollowers.delete(sessionId)
+        notify()
+    }
+}
+/** Display only; running sessions count too. Never acknowledges content. */
+export function hasUnseenContent(session: SessionInput, readRevision: number): boolean {
+    return !tailFollowers.has(session.id) && (session.contentRevision ?? 0) > readRevision
 }
 
 export function getSessionLastSeenAt(sessionId: string): number { return effective(readStore()[sessionId]).readRevision }
@@ -162,7 +215,7 @@ export function markAllSessionsSeen(sessions: Iterable<SessionInput>): number {
     let count = 0
     for (const session of list) {
         const state = effective(readStore()[session.id], session.readState)
-        if (state.manualUnread || (!(session.active && session.thinking) && (session.contentRevision ?? 0) > state.readRevision)) {
+        if (state.manualUnread || hasUnseenContent(session, state.readRevision)) {
             markSessionSeen(session.id, session.contentRevision ?? 0)
             count += 1
         }
@@ -174,8 +227,8 @@ export function getUnreadSessionCount(sessions: Iterable<SessionInput>): number 
     const unique = new Map([...sessions].map(session => [session.id, session]))
     return [...unique.values()].filter(session => {
         const state = effective(store[session.id], session.readState)
-        return state.manualUnread || (!(session.active && session.thinking)
-            && (session.contentRevision ?? 0) > Math.max(state.readRevision, session.readState?.readRevision ?? 0))
+        return state.manualUnread
+            || hasUnseenContent(session, Math.max(state.readRevision, session.readState?.readRevision ?? 0))
     }).length
 }
 function subscribe(listener: () => void): () => void {

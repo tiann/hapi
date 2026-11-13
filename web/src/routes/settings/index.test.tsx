@@ -10,6 +10,7 @@ import SettingsAboutPage from './about'
 import SettingsVoicePage from './voice'
 import SettingsVoiceVoicesPage from './voice-voices'
 import SettingsVoiceAdvancedPage from './voice-advanced'
+import SettingsUsagePage from './usage'
 
 const { context, navigate, setAppearance, setColorTheme, setFontScale, setTerminalFontSize, setComposerEnterBehavior, setCodexExplorationCollapsed, setVoice, setAppBadgeEnabled } = vi.hoisted(() => ({
     context: { token: '' },
@@ -24,8 +25,81 @@ const { context, navigate, setAppearance, setColorTheme, setFontScale, setTermin
     setAppBadgeEnabled: vi.fn(),
 }))
 
-const getHubSettings = vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false })
-const updateHubSettings = vi.fn().mockResolvedValue({ sessionSummaryContract: true, sessionSummaryInChat: false })
+const hubSettingsFixture = {
+    sessionSummaryContract: false,
+    sessionSummaryInChat: false,
+    autoBridgeTransientModelErrors: false,
+    peerSpawnDefaults: {
+        agent: 'claude' as const,
+        permissionMode: 'bypassPermissions' as const,
+        models: { claude: 'sonnet' }
+    }
+}
+const getHubSettings = vi.fn().mockResolvedValue(hubSettingsFixture)
+const updateHubSettings = vi.fn().mockResolvedValue({
+    ...hubSettingsFixture,
+    sessionSummaryContract: true
+})
+const getUsageSummary = vi.fn().mockResolvedValue({
+    range: { from: null, to: null },
+    totals: {
+        inputTokens: 1000,
+        outputTokens: 200,
+        cacheReadTokens: 800,
+        cacheCreationTokens: 0,
+        totalTokens: 1200,
+        uncachedTokens: 400,
+        requests: 3,
+        sessions: 1
+    },
+    daily: [],
+    byAgent: [],
+    byModel: [],
+    updatedAt: 1700000000000
+})
+const getUsageQuotas = vi.fn().mockResolvedValue({
+    machines: [
+        {
+            machineId: 'machine-1',
+            machineName: 'Dev Box',
+            supported: true,
+            fetchedAt: 1700000000000,
+            accounts: [
+                {
+                    agent: 'codex',
+                    available: true,
+                    status: 'ok',
+                    accountLabel: 'dev@example.com',
+                    planLabel: 'Pro',
+                    creditsLabel: '500 credits · 1 free reset',
+                    buckets: [
+                        {
+                            id: 'codex-primary',
+                            label: 'Weekly (7d)',
+                            group: null,
+                            window: 'weekly',
+                            usedPercent: 18,
+                            remainingPercent: 82,
+                            resetsAt: 1700600000000
+                        }
+                    ],
+                    updatedAt: 1700000000000
+                },
+                {
+                    agent: 'claude',
+                    available: true,
+                    status: 'custom_provider',
+                    accountLabel: 'https://any.s6o.org',
+                    planLabel: 'apiKeyHelper',
+                    buckets: [],
+                    note: 'Endpoint: https://any.s6o.org · Auth: apiKeyHelper',
+                    updatedAt: 1700000000000
+                }
+            ]
+        }
+    ],
+    updatedAt: 1700000000000
+})
 
 vi.mock('@/hooks/useColorTheme', () => ({
     useColorTheme: () => ({ colorTheme: 'default', setColorTheme }),
@@ -86,7 +160,16 @@ vi.mock('@/hooks/useShowActiveSessionsOnly', () => ({
 }))
 
 vi.mock('@/hooks/usePinInProgressSessions', () => ({
-    usePinInProgressSessions: () => ({ pinInProgressSessions: false, setPinInProgressSessions: vi.fn() }),
+    usePinInProgressSessions: () => ({
+        pinInProgressMode: 'off' as const,
+        setPinInProgressMode: vi.fn(),
+        pinInProgressSessions: false,
+        setPinInProgressSessions: vi.fn(),
+    }),
+}))
+
+vi.mock('@/hooks/useKeepUnreadSessionsVisible', () => ({
+    useKeepUnreadSessionsVisible: () => ({ keepUnreadSessionsVisible: true, setKeepUnreadSessionsVisible: vi.fn() }),
 }))
 
 vi.mock('@/hooks/useAppBadgePreference', () => ({
@@ -162,7 +245,13 @@ vi.mock('@/hooks/useChatSurfaceColors', () => ({
 
 vi.mock('@/lib/app-context', () => ({
     useAppContext: () => ({
-        api: { getHubSettings, updateHubSettings },
+        api: {
+            getHubSettings,
+            updateHubSettings,
+            getUsageSummary,
+            getUsageQuotas,
+            getSessions: vi.fn().mockResolvedValue({ sessions: [] })
+        },
         baseUrl: 'http://127.0.0.1:3006',
         token: context.token,
     }),
@@ -218,8 +307,11 @@ describe('responsive settings pages', () => {
     beforeEach(() => {
         vi.clearAllMocks()
         localStorage.clear()
-        getHubSettings.mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false })
-        updateHubSettings.mockResolvedValue({ sessionSummaryContract: true, sessionSummaryInChat: false })
+        getHubSettings.mockResolvedValue(hubSettingsFixture)
+        updateHubSettings.mockResolvedValue({
+            ...hubSettingsFixture,
+            sessionSummaryContract: true
+        })
         context.token = `x.${btoa(JSON.stringify({ ns: 'default' }))}.x`
     })
 
@@ -265,7 +357,7 @@ describe('responsive settings pages', () => {
         expect(await screen.findByRole('heading', { name: 'Session status summaries' })).toBeInTheDocument()
         expect(screen.getByText('Choose whether supported agents emit status summaries and whether they appear in chat.')).toBeInTheDocument()
         expect(await screen.findByRole('checkbox', { name: 'Emit status summaries' })).toBeInTheDocument()
-        expect(screen.getByText('Off by default. When enabled, supported agents are asked to add a trailing AGENT_NOTIFY_SUMMARY line after each turn for notifications and background work records. Applies to new/resumed sessions. (Supported: Claude, Codex, OpenCode, remote Grok; not yet supported: local Grok, Cursor)')).toBeInTheDocument()
+        expect(screen.getByText('Off by default. When enabled, supported agents are asked to add a trailing AGENT_NOTIFY_SUMMARY line after each turn for notifications and background work records. Applies to new/resumed sessions. (Supported: Claude, Codex, OpenCode, remote Grok, Cursor ACP; not yet supported: local Grok)')).toBeInTheDocument()
         expect(screen.queryByRole('heading', { name: 'Chat display', level: 3 })).not.toBeInTheDocument()
         expect(screen.getByText('Only affects display in chat and copied content; it does not affect summary generation, notifications, or background work records. When on, a status row is shown; when off, it is hidden. Stored messages remain unchanged.')).toBeInTheDocument()
 
@@ -293,13 +385,15 @@ describe('responsive settings pages', () => {
         expect(setAppBadgeEnabled).toHaveBeenCalledWith(true)
         expect(screen.getByRole('checkbox', { name: 'Show field labels' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Project' })).toBeChecked()
-        expect(screen.getByRole('checkbox', { name: 'Reasoning effort' })).toBeChecked()
+        expect(screen.getByRole('checkbox', { name: 'Effort' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Machine' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Active time' })).toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Created time' })).not.toBeChecked()
         expect(screen.getByRole('checkbox', { name: 'Updated time' })).not.toBeChecked()
         expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+        // Fixed session order removed — SessionListView owns list order (#2263).
         expect(screen.queryByRole('checkbox', { name: 'Fixed session order' })).not.toBeInTheDocument()
+        expect(screen.getByRole('radio', { name: 'Long-running jobs' })).toBeInTheDocument()
     })
 
     it('keeps the session status description visible with its choice group', () => {
@@ -311,6 +405,21 @@ describe('responsive settings pages', () => {
         expect(screen.getByRole('radio', { name: 'Extended' })).toBeInTheDocument()
         expect(description.parentElement?.parentElement).toBe(choices.parentElement)
         expect(description.compareDocumentPosition(choices) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    })
+
+    it('keeps chat enum choices inline', async () => {
+        renderPage(<SettingsChatPage />)
+        fireEvent.click(screen.getByRole('radio', { name: 'Insert newline' }))
+        expect(setComposerEnterBehavior).toHaveBeenCalledWith('newline')
+        expect(screen.getByText('Combined Tool Use Background')).toBeInTheDocument()
+        expect(await screen.findByRole('checkbox', { name: 'Automatically bridge transient model errors' })).toBeInTheDocument()
+    })
+
+    it('hides the auto-bridge setting from tenant namespaces', () => {
+        context.token = `x.${btoa(JSON.stringify({ ns: 'tenant' }))}.x`
+        renderPage(<SettingsChatPage />)
+        expect(screen.queryByRole('checkbox', { name: 'Automatically bridge transient model errors' })).not.toBeInTheDocument()
+        expect(getHubSettings).not.toHaveBeenCalled()
     })
 
     it('shows one three-level tool card control with a persistent live preview', () => {
@@ -393,5 +502,39 @@ describe('responsive settings pages', () => {
         expect(screen.getByText('Persona controls')).toBeInTheDocument()
         expect(screen.getByText('Sound controls')).toBeInTheDocument()
         expect(screen.getByText('Diagnostics controls')).toBeInTheDocument()
+    })
+
+    it('renders CLI account quotas and supports manual quota refresh on the usage page', async () => {
+        renderPage(<SettingsUsagePage />)
+
+        expect(await screen.findByText('CLI account quotas')).toBeInTheDocument()
+        expect(await screen.findByText('dev@example.com')).toBeInTheDocument()
+        expect(screen.getByText('Pro')).toBeInTheDocument()
+        expect(screen.getByText('500 credits · 1 free reset')).toBeInTheDocument()
+        expect(screen.getByText('82% remaining (18% used)')).toBeInTheDocument()
+        expect(screen.getByText('Endpoint: https://any.s6o.org · Auth: apiKeyHelper')).toBeInTheDocument()
+
+        fireEvent.click(screen.getByRole('button', { name: 'Refresh quotas' }))
+        await waitFor(() => {
+            expect(getUsageQuotas).toHaveBeenCalledWith(true)
+        })
+    })
+
+    it('renders quota errors instead of the empty state and preserves existing quota cards when refresh fails', async () => {
+        getUsageQuotas.mockRejectedValueOnce(new Error('Quota endpoint unreachable'))
+        const firstRender = renderPage(<SettingsUsagePage />)
+
+        expect(await screen.findByText('Quota endpoint unreachable')).toBeInTheDocument()
+        expect(screen.queryByText('No online machines with installed CLI accounts')).not.toBeInTheDocument()
+        firstRender.unmount()
+
+        renderPage(<SettingsUsagePage />)
+        expect(await screen.findByText('dev@example.com')).toBeInTheDocument()
+
+        getUsageQuotas.mockRejectedValueOnce(new Error('Refresh quota timeout'))
+        fireEvent.click(screen.getByRole('button', { name: 'Refresh quotas' }))
+
+        expect(await screen.findByText('Refresh quota timeout')).toBeInTheDocument()
+        expect(screen.getByText('dev@example.com')).toBeInTheDocument()
     })
 })

@@ -13,20 +13,34 @@ vi.mock('@/lib/use-translation', () => ({
 
 import { AskUserQuestionFooter } from './AskUserQuestionFooter'
 
-function makeTool(id: string): ChatToolCall {
+function makeTool(id: string, allowFreeText?: boolean): ChatToolCall {
     return {
         id, name: 'AskUserQuestion', state: 'pending',
-        input: { questions: [{ question: 'Pick one', options: [{ label: 'Alpha', description: null }, { label: 'Beta', description: null }], multiSelect: false }] },
+        input: { questions: [{ question: 'Pick one', options: [{ label: 'Alpha', description: null }, { label: 'Beta', description: null }], multiSelect: false, ...(allowFreeText === undefined ? {} : { allowFreeText }) }] },
         createdAt: 1, startedAt: null, completedAt: null, execStartedAt: null, execCompletedAt: null, description: null,
         permission: { id: 'permission-1', status: 'pending' }
     } as unknown as ChatToolCall
 }
 
-function renderFooter(sessionId: string, tool: ChatToolCall, approvePermission = vi.fn().mockResolvedValue(undefined)) {
+function makeHeaderTool(questions: Array<{ header?: string; question: string }>): ChatToolCall {
+    return {
+        id: 'tool-header', name: 'AskUserQuestion', state: 'pending',
+        input: { questions: questions.map(question => ({ question: question.question, header: question.header, multiSelect: false, options: [{ label: 'Alpha', description: null }, { label: 'Beta', description: null }] })) },
+        createdAt: 1, startedAt: null, completedAt: null, execStartedAt: null, execCompletedAt: null, description: null,
+        permission: { id: 'permission-1', status: 'pending' }
+    } as unknown as ChatToolCall
+}
+
+function renderFooter(
+    sessionId: string,
+    tool: ChatToolCall,
+    approvePermission = vi.fn().mockResolvedValue(undefined),
+    denyPermission = vi.fn().mockResolvedValue(undefined)
+) {
     return {
         ...render(
             <AskUserQuestionFooter
-                api={{ approvePermission } as unknown as ApiClient}
+                api={{ approvePermission, denyPermission } as unknown as ApiClient}
                 sessionId={sessionId}
                 tool={tool}
                 disabled={false}
@@ -34,6 +48,7 @@ function renderFooter(sessionId: string, tool: ChatToolCall, approvePermission =
             />
         ),
         approvePermission,
+        denyPermission,
     }
 }
 
@@ -117,5 +132,91 @@ describe('AskUserQuestionFooter draft persistence (hapi#1734)', () => {
         // Re-mount the same session/tool pair as if the widget were shown again
         rerender(<SessionKeyedWrapper sessionId="session-A" tool={tool} />)
         expect(screen.getByRole('radio', { name: /Alpha/ })).toHaveAttribute('aria-checked', 'false')
+    })
+
+    it('denies the question once on Skip and clears the draft', async () => {
+        const tool = makeTool('tool-1')
+        const { approvePermission, denyPermission, rerender } = renderFooter('session-A', tool)
+
+        fireEvent.click(screen.getByRole('radio', { name: /Alpha/ }))
+        fireEvent.click(screen.getByRole('button', { name: 'tool.skip' }))
+        await vi.waitFor(() => expect(denyPermission).toHaveBeenCalledTimes(1))
+        expect(denyPermission).toHaveBeenCalledWith('session-A', 'permission-1')
+        expect(approvePermission).not.toHaveBeenCalled()
+
+        rerender(<SessionKeyedWrapper sessionId="session-A" tool={tool} />)
+        expect(screen.getByRole('radio', { name: /Alpha/ })).toHaveAttribute('aria-checked', 'false')
+    })
+
+    it('skips on Escape from inside the card', async () => {
+        const { denyPermission } = renderFooter('session-A', makeTool('tool-1'))
+
+        fireEvent.keyDown(screen.getByRole('radio', { name: /Alpha/ }), { key: 'Escape' })
+
+        await vi.waitFor(() => expect(denyPermission).toHaveBeenCalledTimes(1))
+    })
+
+    it('only leaves the Other field on Escape, keeping the typed text', async () => {
+        const { denyPermission } = renderFooter('session-A', makeTool('tool-1'))
+
+        fireEvent.click(screen.getByRole('radio', { name: /tool\.other/ }))
+        const field = screen.getByPlaceholderText('tool.askUserQuestion.otherPlaceholder') as HTMLTextAreaElement
+        field.focus()
+        fireEvent.change(field, { target: { value: 'my answer' } })
+        fireEvent.keyDown(field, { key: 'Escape' })
+
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        expect(denyPermission).not.toHaveBeenCalled()
+        expect(field.value).toBe('my answer')
+        expect(document.activeElement).not.toBe(field)
+    })
+
+    it('hides Other when the question does not allow free text, and submits an option as accept', async () => {
+        const { approvePermission } = renderFooter('session-A', makeTool('tool-1', false))
+
+        expect(screen.queryByRole('radio', { name: /tool\.other/ })).toBeNull()
+        fireEvent.click(screen.getByRole('radio', { name: /Beta/ }))
+        fireEvent.click(screen.getByRole('button', { name: 'tool.submit' }))
+
+        await vi.waitFor(() => expect(approvePermission).toHaveBeenCalledWith('session-A', 'permission-1', { answers: { '0': ['Beta'] } }))
+    })
+
+    it('still shows Other when free text is allowed or the flag is absent', () => {
+        const allowed = renderFooter('session-A', makeTool('tool-1', true))
+        expect(screen.getByRole('radio', { name: /tool\.other/ })).toBeTruthy()
+        allowed.unmount()
+
+        renderFooter('session-B', makeTool('tool-2'))
+        expect(screen.getByRole('radio', { name: /tool\.other/ })).toBeTruthy()
+    })
+
+    it('is not shown once the question is no longer pending', () => {
+        const tool = makeTool('tool-1')
+        const resolved = { ...tool, permission: { id: 'permission-1', status: 'denied' } } as unknown as ChatToolCall
+
+        renderFooter('session-A', resolved)
+
+        expect(screen.queryByRole('button', { name: 'tool.skip' })).toBeNull()
+    })
+})
+
+describe('AskUserQuestionFooter header chip dedupe', () => {
+    it('drops the header chip for a single question because the card title already shows it', () => {
+        renderFooter('session-A', makeHeaderTool([{ header: 'Database', question: 'Which database?' }]))
+        expect(screen.queryByText('Database')).toBeNull()
+        expect(screen.getByText('Which database?')).toBeVisible()
+    })
+
+    it('keeps the header chip for multi-question steps where it adds information', () => {
+        renderFooter('session-A', makeHeaderTool([
+            { header: 'Database', question: 'Which database?' },
+            { header: 'Region', question: 'Which region?' }
+        ]))
+        expect(screen.getByText('Database')).toBeVisible()
+    })
+
+    it('keeps the question text visible when the single question has no header', () => {
+        renderFooter('session-A', makeHeaderTool([{ question: 'Which database?' }]))
+        expect(screen.getByText('Which database?')).toBeVisible()
     })
 })

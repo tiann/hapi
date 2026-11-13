@@ -12,6 +12,7 @@ import { record } from './gateway';
 import { isProcessAlive } from '@/utils/process';
 import { notifyRunnerSessionStarted } from '@/runner/controlClient';
 import { asyncQuestionsForItem } from './asyncQuestions';
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
 const state = vi.hoisted(() => ({ home: '', sessions: new Map<string, MockSession>(), beforeBootstrap: undefined as (() => Promise<void>) | undefined }));
 const BOOTSTRAP_START_MARKER = vi.hoisted(() => 'Tue Sep 29 09:00:00 2026');
@@ -120,6 +121,47 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             expect(Object.keys(web.state.requests ?? {})).toHaveLength(0);
         } finally {
             release(); abort.abort(); await running.catch(() => {}); await client?.disconnect();
+            await new Promise<void>(resolve => http.close(() => resolve()));
+            await rm(home, { recursive: true, force: true, maxRetries: 3 });
+        }
+    }, 60_000);
+    it('seeds the generated fork title before binding child history', async () => {
+        const home = await mkdtemp('/tmp/hapi-shared-fork-summary-'); state.home = home;
+        const ch = join(home, 'codex'); const cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
+        const http = createServer((request, response) => {
+            if (!request.url?.endsWith('/responses')) { response.writeHead(404).end(); return; }
+            request.resume();
+            request.on('end', () => {
+                const id = randomUUID();
+                const events = [
+                    { type: 'response.created', response: { id } },
+                    { type: 'response.output_item.done', item: { id: `msg_${id}`, type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'MOCK' }] } },
+                    { type: 'response.completed', response: { id, usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } } }
+                ];
+                response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+                response.end(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''));
+            });
+        });
+        await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
+        const port = (http.address() as { port: number }).port;
+        await writeFile(join(ch, 'config.toml'), `model = "mock-model"\nmodel_provider = "mock_provider"\napproval_policy = "never"\nsandbox_mode = "read-only"\ncheck_for_update_on_startup = false\n[model_providers.mock_provider]\nname = "Isolated mock"\nbase_url = "http://127.0.0.1:${port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n[projects."${cwd}"]\ntrust_level = "trusted"\n`);
+        vi.stubEnv('CODEX_HOME', ch);
+        const { runSharedRuntime } = await import('./runtime');
+        let ready!: (value: import('./runtime').RuntimeReady) => void;
+        const readiness = new Promise<import('./runtime').RuntimeReady>(resolve => { ready = resolve; });
+        const abort = new AbortController();
+        const running = runSharedRuntime({ workingDirectory: cwd }, ready, abort.signal);
+        try {
+            const { sessionId } = await Promise.race([readiness, running.then(() => { throw new Error('Runtime stopped before ready'); })]);
+            const source = state.sessions.get(sessionId)!;
+            source.updateMetadata(metadata => ({ ...metadata, name: 'Source title' }));
+            const result = record(await source.rpc.get(RPC_METHODS.ForkConversation)!({}));
+            const child = state.sessions.get(String(result.sessionId))!;
+            expect(result.sessionId).not.toBe(sessionId);
+            expect(child.metadata.summary).toMatchObject({ text: 'Fork: Source title' });
+            expect(child.metadata.name).toBeUndefined();
+        } finally {
+            abort.abort(); await running.catch(() => {});
             await new Promise<void>(resolve => http.close(() => resolve()));
             await rm(home, { recursive: true, force: true, maxRetries: 3 });
         }
@@ -243,6 +285,12 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             const nextSession = [...state.sessions.values()].find(session => session.metadata.codexSessionId === next)!;
             expect(web.metadata.codexSessionId).toBe(initial);
             expect(process.env.HAPI_SESSION_ID).toBe('parent-must-not-leak');
+            // A thread created through the gateway (native /new) is fresh: the
+            // first turn must measure from the zero seed, not a null baseline.
+            await first.request('turn/start', { threadId: next, input: [{ type: 'text', text: 'HELLO NEW THREAD', text_elements: [] }] });
+            await vi.waitFor(() => expect(nextSession.messages).toContainEqual(expect.objectContaining({
+                type: 'turn_duration', generationMs: expect.any(Number), generationOutputTokens: 3
+            })), { timeout: 15_000 });
             await first.request('thread/archive', { threadId: next }); roots = [initial];
             await vi.waitFor(() => expect(nextSession.dead).toBe(true)); expect(web.dead).toBe(false);
             await second.request('turn/start', { threadId: initial, model: 'second-mock', input: [{ type: 'text', text: 'HELLO FROM TERMINAL', text_elements: [] }], clientUserMessageId: 'native-1' });
@@ -259,6 +307,81 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             for (const threadId of roots) {
                 await clients.at(-1)?.request('thread/archive', { threadId }).catch(() => {});
             }
+            abort.abort(); await running.catch(() => {});
+            await Promise.all(clients.map(client => client.disconnect()));
+            await new Promise<void>(resolve => http.close(() => resolve()));
+            await rm(home, { recursive: true, force: true, maxRetries: 3 });
+        }
+    }, 60_000);
+    it('seeds a gateway-created thread before session-ready releases queued input', async () => {
+        const home = await mkdtemp('/tmp/hapi-shared-gateway-seed-'); state.home = home;
+        const ch = join(home, 'codex'); const cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
+        const modelRequests: unknown[] = [];
+        const http = createServer((request, response) => {
+            const chunks: Buffer[] = [];
+            request.on('data', chunk => chunks.push(Buffer.from(chunk)));
+            request.on('end', () => {
+                if (!request.url?.endsWith('/responses')) { response.writeHead(404).end(); return; }
+                modelRequests.push(JSON.parse(Buffer.concat(chunks).toString()));
+                const id = randomUUID();
+                const events = [{ type: 'response.created', response: { id } },
+                    { type: 'response.output_item.done', item: { type: 'message', role: 'assistant', id: `msg_${id}`, content: [{ type: 'output_text', text: 'MOCK ANSWER' }] } },
+                    { type: 'response.completed', response: { id, usage: { input_tokens: 12, output_tokens: 3, total_tokens: 15 } } }];
+                response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+                response.end(events.map(e => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join(''));
+            });
+        });
+        await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
+        const port = (http.address() as { port: number }).port;
+        await writeFile(join(ch, 'config.toml'), `model = "mock-model"\nmodel_provider = "mock_provider"\napproval_policy = "never"\nsandbox_mode = "read-only"\ncheck_for_update_on_startup = false\n[model_providers.mock_provider]\nname = "Isolated mock"\nbase_url = "http://127.0.0.1:${port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n[projects."${cwd}"]\ntrust_level = "trusted"\n`);
+        vi.stubEnv('CODEX_HOME', ch); vi.stubEnv('HOME', home);
+        const { runSharedRuntime } = await import('./runtime');
+        let ready!: (value: import('./runtime').RuntimeReady) => void;
+        const readiness = new Promise<import('./runtime').RuntimeReady>(resolve => { ready = resolve; });
+        const abort = new AbortController();
+        const running = runSharedRuntime({ workingDirectory: cwd }, ready, abort.signal);
+        const clients: CodexAppServerClient[] = [];
+        // Hold the runner notification for the gateway-created session: the
+        // zero seed used to wait behind it while session-ready had already
+        // released input, and a later seed cannot repair that first turn.
+        let releaseRunner!: () => void;
+        const runnerGate = new Promise<void>(resolve => { releaseRunner = resolve; });
+        let released = false;
+        const release = () => { if (!released) { released = true; releaseRunner(); } };
+        const originalReady = MockSession.prototype.emitSessionReady;
+        try {
+            const { runtime, sessionId } = await Promise.race([readiness, running.then(() => { throw new Error('Runtime stopped before ready'); })]);
+            const firstWeb = state.sessions.get(sessionId)!;
+            vi.mocked(notifyRunnerSessionStarted).mockImplementation(async (id: string) => {
+                if (id !== sessionId) await runnerGate;
+                return {};
+            });
+            // The hub releases a queued prompt the moment session-ready fires.
+            MockSession.prototype.emitSessionReady = function (this: MockSession) {
+                this.user?.({ content: { text: 'QUEUED AT READY' } }, 'queued-at-ready');
+                originalReady.call(this);
+            };
+            const first = new CodexAppServerClient({ endpoint: runtime.endpoint, token: runtime.token });
+            clients.push(first); first.setServerRequestHandler(() => {}); await initializeSharedClient(first);
+            const started = first.request('thread/start', { cwd });
+            const nextSession = await vi.waitFor(() => {
+                const session = [...state.sessions.values()].find(candidate => candidate !== firstWeb);
+                expect(session, 'gateway session created').toBeDefined();
+                return session!;
+            }, { timeout: 15_000 });
+            // The queued turn runs to completion while the runner notification
+            // is still gated: its first turn must already measure from the
+            // zero seed.
+            await vi.waitFor(() => expect(nextSession.messages).toContainEqual(expect.objectContaining({
+                type: 'turn_duration', generationMs: expect.any(Number), generationOutputTokens: 3
+            })), { timeout: 15_000 });
+            expect(JSON.stringify(modelRequests)).toContain('QUEUED AT READY');
+            release();
+            await started;
+        } finally {
+            MockSession.prototype.emitSessionReady = originalReady;
+            release();
+            vi.mocked(notifyRunnerSessionStarted).mockImplementation(async () => ({}));
             abort.abort(); await running.catch(() => {});
             await Promise.all(clients.map(client => client.disconnect()));
             await new Promise<void>(resolve => http.close(() => resolve()));

@@ -7,6 +7,11 @@ import { preserveSessionTitle } from './sessionTitleLock'
 import type { StoredSession, VersionedUpdateResult } from './types'
 import { safeJsonParse } from './json'
 import { updateVersionedField } from './versionedUpdates'
+import { removeMessageContentSearchForSession } from './messageContentSearch'
+
+function runInTransaction<T>(db: Database, operation: () => T): T {
+    return db.inTransaction ? operation() : db.transaction(operation)()
+}
 
 // Carry-forward fields that the hub preserves across any metadata
 // replacement when the incoming write omits them.
@@ -39,6 +44,11 @@ import { updateVersionedField } from './versionedUpdates'
 //     write-once-keep semantics. Mirror of pickExistingSessionMetadata
 //     in cli/src/agent/sessionFactory.ts.
 //
+//   - ALERT_STATE_FIELDS: durable operator-facing alert state that must
+//     survive sparse metadata writes (e.g. archive). Without this,
+//     lastModelError (banner / amber dot / ack) vanishes when a write
+//     omits it — the user never dismissed the error.
+//
 // `cursorSessionProtocol` is paired with `cursorSessionId`: protocol is
 // tied to a specific chat id, so a write that explicitly sets a new
 // `cursorSessionId` must drop a stale prior protocol. Handled in
@@ -65,7 +75,8 @@ const SIMPLE_RESUME_TOKENS = [
     'cursorSessionId',
     'kimiSessionId',
     'copilotSessionId',
-    'piSessionId'
+    'piSessionId',
+    'dshSessionId'
 ] as const
 
 // Hub-owned metadata that must survive sparse CLI metadata replacements.
@@ -77,6 +88,8 @@ const HUB_OWNED_METADATA_FIELDS = [
     'titleSuggestionTurn',
     'promptTitle'
 ] as const
+
+const ALERT_STATE_FIELDS = ['lastModelError'] as const
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -133,6 +146,85 @@ function preserveCursorProtocolPair(
     return merged
 }
 
+function preserveForkSummary(
+    prior: Record<string, unknown>,
+    next: Record<string, unknown>,
+    merged: Record<string, unknown> | null
+): Record<string, unknown> | null {
+    // A fork's provisional title is Hub-generated. CLI bootstrap writes are
+    // sparse and historically drop it, leaving the child titled by its path.
+    // Explicit `summary: null` or a replacement summary still wins.
+    if (next.summary !== undefined) return merged
+    const summary = prior.summary
+    if (!isPlainObject(summary) || typeof summary.text !== 'string' || !summary.text.startsWith('Fork: ')) {
+        return merged
+    }
+    const result = merged ?? { ...next }
+    result.summary = summary
+    return result
+}
+
+/**
+ * Hub-owned fields on lastModelError (ack + delivery watermark) must survive
+ * stale CLI metadata rewrites of the same eventId. Web ack / NotificationHub
+ * write these on the hub copy; the CLI's local snapshot often lacks them.
+ * Identity is eventId — wall-clock atTs is display-only.
+ */
+function preserveModelErrorHubFields(
+    prior: Record<string, unknown>,
+    next: Record<string, unknown>,
+    merged: Record<string, unknown> | null
+): Record<string, unknown> | null {
+    const oldError = isPlainObject(prior.lastModelError) ? prior.lastModelError : null
+    const newError = isPlainObject(next.lastModelError) ? next.lastModelError : null
+    if (
+        !oldError
+        || !newError
+        || typeof oldError.eventId !== 'string'
+        || oldError.eventId !== newError.eventId
+    ) {
+        return merged
+    }
+
+    const preserved: Record<string, unknown> = { ...newError }
+    let changed = false
+    if (typeof oldError.acknowledgedAt === 'number' && newError.acknowledgedAt === undefined) {
+        preserved.acknowledgedAt = oldError.acknowledgedAt
+        changed = true
+    }
+    if (typeof oldError.notifiedAt === 'number' && newError.notifiedAt === undefined) {
+        preserved.notifiedAt = oldError.notifiedAt
+        changed = true
+    }
+    if (typeof oldError.bridgedForEventId === 'string' && newError.bridgedForEventId === undefined) {
+        preserved.bridgedForEventId = oldError.bridgedForEventId
+        changed = true
+    }
+    if (oldError.retriedAndFailed === true && newError.retriedAndFailed !== true) {
+        preserved.retriedAndFailed = true
+        changed = true
+    }
+    if (oldError.supersededByUserTurn === true && newError.supersededByUserTurn !== true) {
+        preserved.supersededByUserTurn = true
+        changed = true
+    }
+    if (oldError.bridgeable === false && newError.bridgeable !== false) {
+        preserved.bridgeable = false
+        changed = true
+    }
+    if (typeof oldError.lastUserMessage === 'string' && newError.lastUserMessage === undefined) {
+        preserved.lastUserMessage = oldError.lastUserMessage
+        changed = true
+    }
+    if (!changed) {
+        return merged
+    }
+
+    const result = merged ?? { ...next }
+    result.lastModelError = preserved
+    return result
+}
+
 export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
     if (!isPlainObject(prior) || !isPlainObject(next)) {
         return next
@@ -141,8 +233,11 @@ export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
     merged = carryForwardIfMissing(prior, next, merged, PARSE_IDENTITY_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, ROUTING_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, SIMPLE_RESUME_TOKENS)
+    merged = carryForwardIfMissing(prior, next, merged, ALERT_STATE_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, HUB_OWNED_METADATA_FIELDS)
+    merged = preserveForkSummary(prior, next, merged)
     merged = preserveCursorProtocolPair(prior, next, merged)
+    merged = preserveModelErrorHubFields(prior, next, merged)
     return merged ?? next
 }
 
@@ -219,7 +314,7 @@ export function getOrCreateSession(
     modelReasoningEffort?: string,
     requestedId?: string
 ): StoredSession {
-    const existing = prepareCached(db, 
+    const existing = prepareCached(db,
         'SELECT * FROM sessions WHERE tag = ? AND namespace = ? ORDER BY created_at DESC LIMIT 1'
     ).get(tag, namespace) as DbSessionRow | undefined
 
@@ -898,7 +993,7 @@ export function getSession(db: Database, id: string): StoredSession | null {
 }
 
 export function getSessionByNamespace(db: Database, id: string, namespace: string): StoredSession | null {
-    const row = prepareCached(db, 
+    const row = prepareCached(db,
         'SELECT * FROM sessions WHERE id = ? AND namespace = ?'
     ).get(id, namespace) as DbSessionRow | undefined
     return row ? toStoredSession(row) : null
@@ -910,21 +1005,37 @@ export function getSessions(db: Database): StoredSession[] {
 }
 
 export function getSessionsByNamespace(db: Database, namespace: string): StoredSession[] {
-    const rows = prepareCached(db, 
+    const rows = prepareCached(db,
         'SELECT * FROM sessions WHERE namespace = ? ORDER BY updated_at DESC'
     ).all(namespace) as DbSessionRow[]
     return rows.map(toStoredSession)
 }
 
 export function deleteSession(db: Database, id: string, namespace: string): boolean {
-    const result = prepareCached(db,
-        'DELETE FROM sessions WHERE id = ? AND namespace = ?'
-    ).run(id, namespace)
-    if (result.changes > 0) {
-        // Per-socket access memos stamp the epoch they were filled under;
-        // bumping makes their next event re-resolve instead of serving a
-        // grant for a row that no longer exists.
-        bumpSessionDeletionEpoch()
-    }
-    return result.changes > 0
+    // Refuse while a running attached job exists — CASCADE would erase the live
+    // meter for idle (active=false) outliving work. Callers must transfer/clear first.
+    // Also drop FTS rows before the session DELETE (#1598).
+    return runInTransaction(db, () => {
+        const existing = prepareCached(db,
+            'SELECT 1 FROM sessions WHERE id = ? AND namespace = ?'
+        ).get(id, namespace)
+        if (!existing) return false
+        const blocked = prepareCached(db, `
+            SELECT 1 FROM session_jobs
+            WHERE session_id = ? AND status = 'running'
+            LIMIT 1
+        `).get(id)
+        if (blocked) return false
+        removeMessageContentSearchForSession(db, id)
+        const result = prepareCached(db,
+            'DELETE FROM sessions WHERE id = ? AND namespace = ?'
+        ).run(id, namespace)
+        if (result.changes > 0) {
+            // Per-socket access memos stamp the epoch they were filled under;
+            // bumping makes their next event re-resolve instead of serving a
+            // grant for a row that no longer exists.
+            bumpSessionDeletionEpoch()
+        }
+        return result.changes > 0
+    })
 }

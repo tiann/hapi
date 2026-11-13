@@ -5,10 +5,17 @@ import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
 
-import { hasUnreadMessageContent, getLiveReasoningStreamId } from '@hapi/protocol/messages'
+import { hasUnreadMessageContent, getLiveReasoningStreamId, getToolCallId, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
+import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 
 import type { StoredMessage } from './types'
 import { decodeMessageContent, encodeMessageContent, truncateOversizedMessageContent } from './contentCodec'
+import {
+    indexMessageContent,
+    invalidateMessageContentSearchInjectedTurnCache,
+    rebuildMessageContentSearchForSessions,
+    removeMessageContentSearchIndex
+} from './messageContentSearch'
 
 type DbMessageRow = {
     content_revision: number
@@ -22,6 +29,13 @@ type DbMessageRow = {
     invoked_at: number | null
     scheduled_at: number | null
     delivery_state: string | null
+}
+
+// Message-store methods can be called directly or composed inside a Store-level
+// transaction. Reuse an existing transaction so canonical rows and derived
+// content-search rows always commit or roll back together.
+function runInTransaction<T>(db: Database, operation: () => T): T {
+    return db.inTransaction ? operation() : db.transaction(operation)()
 }
 
 export type MessagePosition = {
@@ -45,7 +59,7 @@ export function addImportedMessage(
     localId: string,
     createdAt: number
 ): { message: StoredMessage; inserted: boolean } {
-    const existing = prepareCached(db, 
+    const existing = prepareCached(db,
         'SELECT * FROM messages WHERE session_id = ? AND local_id = ? LIMIT 1'
     ).get(sessionId, localId) as DbMessageRow | undefined
     if (existing) {
@@ -59,10 +73,11 @@ export function addImportedMessage(
     const stampedAt = Number.isFinite(createdAt) ? Math.min(createdAt, now) : now
     return db.transaction(() => {
         const previousHead = getNewestMessagePosition(db, sessionId)
-        const msgSeqRow = prepareCached(db, 
+        const msgSeqRow = prepareCached(db,
             'SELECT COALESCE(MAX(seq), 0) + 1 AS nextSeq FROM messages WHERE session_id = ?'
         ).get(sessionId) as { nextSeq: number }
         const id = randomUUID()
+        const canonicalContent = truncateOversizedMessageContent(content)
         prepareCached(db, `
             INSERT INTO messages (
                 id, session_id, content, created_at, seq, local_id, invoked_at, scheduled_at
@@ -72,11 +87,19 @@ export function addImportedMessage(
         `).run({
             id,
             session_id: sessionId,
-            content: encodeMessageContent(truncateOversizedMessageContent(content)),
+            content: encodeMessageContent(canonicalContent),
             created_at: stampedAt,
             seq: msgSeqRow.nextSeq,
             local_id: localId,
             invoked_at: stampedAt
+        })
+        indexMessageContent(db, {
+            id,
+            sessionId,
+            content: canonicalContent,
+            seq: msgSeqRow.nextSeq,
+            createdAt: stampedAt,
+            invokedAt: stampedAt
         })
         recordUserMessage(db, sessionId, content, stampedAt)
         if (previousHead && stampedAt < previousHead.at) bumpMessageEpoch(db, sessionId)
@@ -85,7 +108,6 @@ export function addImportedMessage(
         return { message: toStoredMessage(row), inserted: true }
     })()
 }
-
 function toStoredMessage(row: DbMessageRow): StoredMessage {
     return {
         id: row.id,
@@ -97,7 +119,8 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
         localId: row.local_id,
         invokedAt: row.invoked_at ?? null,
         scheduledAt: row.scheduled_at ?? null,
-        ...(row.delivery_state && row.delivery_state !== 'queued' ? { deliveryState: 'indeterminate' as const } : {})
+        ...(row.delivery_state && row.delivery_state !== 'queued' ? { deliveryState: 'indeterminate' as const } : {}),
+        ...(row.delivery_state === 'dispatching' ? { deliveryPending: true as const } : {})
     }
 }
 
@@ -132,7 +155,7 @@ export function addMessage(
     }
 
     if (localId) {
-        const existing = prepareCached(db, 
+        const existing = prepareCached(db,
             'SELECT * FROM messages WHERE session_id = ? AND local_id = ? LIMIT 1'
         ).get(sessionId, localId) as DbMessageRow | undefined
         if (existing) {
@@ -140,13 +163,14 @@ export function addMessage(
         }
     }
 
-    const msgSeqRow = prepareCached(db, 
+    const msgSeqRow = prepareCached(db,
         'SELECT COALESCE(MAX(seq), 0) + 1 AS nextSeq FROM messages WHERE session_id = ?'
     ).get(sessionId) as { nextSeq: number }
     const msgSeq = msgSeqRow.nextSeq
 
     const id = randomUUID()
-    const encoded = encodeMessageContent(truncateOversizedMessageContent(content))
+    const canonicalContent = truncateOversizedMessageContent(content)
+    const encoded = encodeMessageContent(canonicalContent)
 
     // Messages without a localId have no ack path (markMessagesInvoked matches by localId).
     // Treat them as already-invoked at insert time so they land in the thread normally instead
@@ -174,6 +198,14 @@ export function addMessage(
             invoked_at: invokedAt,
             scheduled_at: scheduledAt ?? null
         })
+        indexMessageContent(db, {
+            id,
+            sessionId,
+            content: canonicalContent,
+            seq: msgSeq,
+            createdAt: stampedAt,
+            invokedAt
+        })
 
         if (hasUnreadMessageContent(content)) {
             prepareCached(db, 'UPDATE sessions SET content_revision = content_revision + 1 WHERE id = ?').run(sessionId)
@@ -185,6 +217,168 @@ export function addMessage(
         const row = prepareCached(db, 'SELECT * FROM messages WHERE id = ?').get(id) as DbMessageRow | undefined
         if (!row) throw new Error('Failed to create message')
         return toStoredMessage(row)
+    })()
+}
+
+/**
+ * How far back to look for the live row of one ACP tool call.
+ *
+ * The CLI re-emits a tool call under a stable callId on every state tick, so
+ * the previous tick of the same call always sits among the newest rows of its
+ * session. A bounded tail scan keeps the lookup off the hot path on sessions
+ * with tens of thousands of messages; anything older is left alone, which
+ * errs toward inserting a fresh row (the pre-upsert behavior).
+ */
+const TOOL_CALL_UPSERT_LOOKBACK = 200
+
+/** `tool-call` payload fields merged newest-wins-when-non-null. */
+const TOOL_CALL_MERGE_FIELDS = ['name', 'input', 'nativeTitle', 'nativeKind', 'nativeName', 'nativeArgs'] as const
+
+/** Status progression rank for one tool call: pending < in_progress <
+ *  completed/failed. A merged row may only advance the state — agents
+ *  normalize a missing/unknown status to `pending` (cli normalizeStatus), so
+ *  permission rounds re-emit pending after the call already ran, and that
+ *  re-send must not overwrite `in_progress` and never a terminal state.
+ *  `completed`/`failed` share the terminal tier; ties keep the newer value. */
+const TOOL_CALL_STATUS_RANK: Record<string, number> = {
+    pending: 0,
+    in_progress: 1,
+    completed: 2,
+    failed: 2
+}
+
+function toolCallStatusRank(status: unknown): number | null {
+    return typeof status === 'string' && status in TOOL_CALL_STATUS_RANK
+        ? TOOL_CALL_STATUS_RANK[status]
+        : null
+}
+
+function mergeToolCallStatus(stored: unknown, incoming: unknown): unknown {
+    if (incoming === null || incoming === undefined) return stored
+    const storedRank = toolCallStatusRank(stored)
+    const incomingRank = toolCallStatusRank(incoming)
+    // Unrecognized status strings rank below every known state so an unknown
+    // value can never regress a known one; two unknowns keep the newer.
+    if (incomingRank === null) return storedRank === null ? incoming : stored
+    if (storedRank === null) return incoming
+    return incomingRank >= storedRank ? incoming : stored
+}
+
+export type UpsertToolCallResult = {
+    message: StoredMessage
+    /** True when an existing tool-call row was updated in place. */
+    updated: boolean
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** The callId of a stored `tool-call-result` row, or null. The result shares
+ *  the call's callId but is a distinct row that must never be merged into. */
+function toolCallResultCallId(value: unknown): string | null {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent' || !isRecord(record.content)) return null
+    if (record.content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return null
+    const data = isRecord(record.content.data) ? record.content.data : null
+    if (!data || data.type !== 'tool-call-result') return null
+    const callId = data.callId
+    return typeof callId === 'string' && callId.trim().length > 0 ? callId : null
+}
+
+function isUserMessageRow(value: unknown): boolean {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    return record?.role === 'user'
+}
+
+/** Merge an incoming tool-call snapshot into the stored one.
+ *
+ *  A non-null new value wins for the payload fields the CLI updates
+ *  independently; a null/absent one keeps the stored value, so a later
+ *  status-only tick cannot erase the input or title an earlier tick carried.
+ *  `status` merges by progression rank so a re-emitted pending never regresses
+ *  a running or terminal call. `progress` follows the web's latest-wins
+ *  rendering of that transient (reducerTools.ensureToolBlock). */
+function mergeToolCallContent(stored: unknown, incoming: unknown): unknown {
+    const envelope = unwrapRoleWrappedRecordEnvelope(stored)
+    const incomingEnvelope = unwrapRoleWrappedRecordEnvelope(incoming)
+    if (!envelope || !incomingEnvelope || !isRecord(envelope.content) || !isRecord(incomingEnvelope.content)) {
+        return incoming
+    }
+    const storedData = isRecord(envelope.content.data) ? envelope.content.data : {}
+    const incomingData = isRecord(incomingEnvelope.content.data) ? incomingEnvelope.content.data : {}
+    const mergedData: Record<string, unknown> = { ...storedData }
+    for (const field of TOOL_CALL_MERGE_FIELDS) {
+        const next = incomingData[field]
+        if (next !== null && next !== undefined) mergedData[field] = next
+    }
+    const mergedStatus = mergeToolCallStatus(storedData.status, incomingData.status)
+    if (mergedStatus !== null && mergedStatus !== undefined) mergedData.status = mergedStatus
+    if (incomingData.progress !== null && incomingData.progress !== undefined) {
+        mergedData.progress = incomingData.progress
+    }
+    return { ...envelope, content: { ...envelope.content, data: mergedData } }
+}
+
+/** Find the live tool-call row for one callId, scanning the session tail.
+ *
+ *  The scan stops at a `tool-call-result` with the same callId or at a user
+ *  message row: both mean the call has completed or a new turn started, so an
+ *  incoming message with that callId is a NEW call, not an update. */
+function findLiveToolCallRow(db: Database, sessionId: string, callId: string): DbMessageRow | null {
+    const rows = prepareCached(db, `
+        SELECT id, content FROM messages
+        WHERE session_id = ?
+        ORDER BY seq DESC
+        LIMIT ?
+    `).all(sessionId, TOOL_CALL_UPSERT_LOOKBACK) as Array<Pick<DbMessageRow, 'id' | 'content'>>
+    for (const row of rows) {
+        const decoded = decodeMessageContent(row.content)
+        if (getToolCallId(decoded) === callId) {
+            const full = prepareCached(db, 'SELECT * FROM messages WHERE id = ?').get(row.id) as DbMessageRow | undefined
+            return full ?? null
+        }
+        if (toolCallResultCallId(decoded) === callId) return null
+        if (isUserMessageRow(decoded)) return null
+    }
+    return null
+}
+
+/** Store one ACP `tool-call` agent message, updating the call's existing row
+ *  in place when the same callId is still live in the session tail.
+ *
+ *  ACP agents re-emit the same call for every state tick; storing each tick as
+ *  its own row filled history pages with duplicates the web then folded back
+ *  into one card. Updating the single row keeps history pages honest. The
+ *  row's id/seq/createdAt/localId never move, so live clients can merge the
+ *  rebroadcast by id and stored ordering stays stable. */
+export function upsertToolCallMessage(
+    db: Database,
+    sessionId: string,
+    content: unknown,
+    callId: string,
+    localId?: string,
+    createdAt?: number
+): UpsertToolCallResult {
+    return db.transaction(() => {
+        const existing = findLiveToolCallRow(db, sessionId, callId)
+        if (!existing) {
+            return { message: addMessage(db, sessionId, content, localId, undefined, createdAt), updated: false }
+        }
+        const storedContent = decodeMessageContent(existing.content)
+        const mergedContent = truncateOversizedMessageContent(mergeToolCallContent(storedContent, content))
+        // A re-emitted tick that changes nothing must not rewrite the row:
+        // only observable content changes touch the database.
+        if (isDeepStrictEqual(mergedContent, storedContent)) {
+            return { message: toStoredMessage(existing), updated: true }
+        }
+        const encoded = encodeMessageContent(mergedContent)
+        // Same in-place content swap as the queued-message edit path
+        // (syncNativeQueuedMessage): no new seq, no content_revision bump.
+        prepareCached(db, 'UPDATE messages SET content = ? WHERE id = ?').run(encoded, existing.id)
+        const row = prepareCached(db, 'SELECT * FROM messages WHERE id = ?').get(existing.id) as DbMessageRow | undefined
+        if (!row) throw new Error('Failed to update tool-call message')
+        return { message: toStoredMessage(row), updated: true }
     })()
 }
 
@@ -209,60 +403,69 @@ export function copyMessageToSession(
     sessionId: string,
     message: CopyStoredMessageInput
 ): StoredMessage {
-    const createdAt = Number.isFinite(message.createdAt) ? message.createdAt : Date.now()
-    const nextSeq = getMaxSeq(db, sessionId) + 1
+    return runInTransaction(db, () => {
+        const createdAt = Number.isFinite(message.createdAt) ? message.createdAt : Date.now()
+        const nextSeq = getMaxSeq(db, sessionId) + 1
 
-    let localId = message.localId
-    if (localId) {
-        const collision = prepareCached(db, 
-            'SELECT 1 FROM messages WHERE session_id = ? AND local_id = ? LIMIT 1'
-        ).get(sessionId, localId) as { 1: number } | undefined
-        if (collision) {
-            // 中文注释：重复会话合并时如果 localId 撞车，给复制进目标会话的消息生成一个新 localId，避免误判成同一条已存在消息。
-            localId = `${localId}:merged:${randomUUID().slice(0, 8)}`
+        let localId = message.localId
+        if (localId) {
+            const collision = prepareCached(db,
+                'SELECT 1 FROM messages WHERE session_id = ? AND local_id = ? LIMIT 1'
+            ).get(sessionId, localId) as { 1: number } | undefined
+            if (collision) {
+                // 中文注释：重复会话合并时如果 localId 撞车，给复制进目标会话的消息生成一个新 localId，避免误判成同一条已存在消息。
+                localId = `${localId}:merged:${randomUUID().slice(0, 8)}`
+            }
         }
-    }
 
-    if (message.scheduledAt != null && !localId && message.invokedAt === null) {
-        // 中文注释：未来计划消息仍需要 ack 路径；异常情况下若源数据缺少 localId，这里补一个稳定可写的新值以保留调度语义。
-        localId = `merged-scheduled:${randomUUID()}`
-    }
+        if (message.scheduledAt != null && !localId && message.invokedAt === null) {
+            // 中文注释：未来计划消息仍需要 ack 路径；异常情况下若源数据缺少 localId，这里补一个稳定可写的新值以保留调度语义。
+            localId = `merged-scheduled:${randomUUID()}`
+        }
 
-    const invokedAt = localId ? message.invokedAt : (message.invokedAt ?? createdAt)
-    const id = randomUUID()
-    prepareCached(db, `
-        INSERT INTO messages (
-            id, session_id, content, created_at, seq, local_id, invoked_at, scheduled_at, delivery_state
-        ) VALUES (
-            @id, @session_id, @content, @created_at, @seq, @local_id, @invoked_at, @scheduled_at, @delivery_state
-        )
-    `).run({
-        id,
-        session_id: sessionId,
-        // Lossless re-encode only — copies move existing history between
-        // sessions, so no truncation here even for pre-codec oversized rows.
-        content: encodeMessageContent(message.content),
-        created_at: createdAt,
-        seq: nextSeq,
-        local_id: localId ?? null,
-        invoked_at: invokedAt ?? null,
-        scheduled_at: message.scheduledAt ?? null,
-        delivery_state: message.deliveryState ?? 'queued'
+        const invokedAt = localId ? message.invokedAt : (message.invokedAt ?? createdAt)
+        const id = randomUUID()
+        prepareCached(db, `
+            INSERT INTO messages (
+                id, session_id, content, created_at, seq, local_id, invoked_at, scheduled_at, delivery_state
+            ) VALUES (
+                @id, @session_id, @content, @created_at, @seq, @local_id, @invoked_at, @scheduled_at, @delivery_state
+            )
+        `).run({
+            id,
+            session_id: sessionId,
+            // Lossless re-encode only — copies move existing history between
+            // sessions, so no truncation here even for pre-codec oversized rows.
+            content: encodeMessageContent(message.content),
+            created_at: createdAt,
+            seq: nextSeq,
+            local_id: localId ?? null,
+            invoked_at: invokedAt ?? null,
+            scheduled_at: message.scheduledAt ?? null,
+            delivery_state: message.deliveryState ?? 'queued'
+        })
+        indexMessageContent(db, {
+            id,
+            sessionId,
+            content: message.content,
+            seq: nextSeq,
+            createdAt,
+            invokedAt: invokedAt ?? null
+        })
+
+        const row = prepareCached(db, 'SELECT * FROM messages WHERE id = ?').get(id) as DbMessageRow | undefined
+        if (!row) {
+            throw new Error('Failed to copy message into target session')
+        }
+
+        // Copies preserve the source display timestamp, so a new high-seq row can
+        // still land behind a Web client's cached composite tail cursor. Mark the
+        // target history as structurally changed so incremental readers reset.
+        recordUserMessage(db, sessionId, message.content, createdAt)
+        bumpMessageEpoch(db, sessionId)
+        return toStoredMessage(row)
     })
-
-    const row = prepareCached(db, 'SELECT * FROM messages WHERE id = ?').get(id) as DbMessageRow | undefined
-    if (!row) {
-        throw new Error('Failed to copy message into target session')
-    }
-    recordUserMessage(db, sessionId, message.content, createdAt)
-
-    // Copies preserve the source display timestamp, so a new high-seq row can
-    // still land behind a Web client's cached composite tail cursor. Mark the
-    // target history as structurally changed so incremental readers reset.
-    bumpMessageEpoch(db, sessionId)
-    return toStoredMessage(row)
 }
-
 /**
  * Batch-hydrate a fork child: one transaction, contiguous seq allocation,
  * single epoch bump. Avoids O(n) max-seq lookups and epoch writes.
@@ -283,7 +486,7 @@ export function copyMessagesToSession(
                 @id, @session_id, @content, @created_at, @seq, @local_id, @invoked_at, @scheduled_at, @delivery_state
             )
         `)
-        const collisionCheck = prepareCached(db, 
+        const collisionCheck = prepareCached(db,
             'SELECT 1 FROM messages WHERE session_id = ? AND local_id = ? LIMIT 1'
         )
 
@@ -300,8 +503,9 @@ export function copyMessagesToSession(
                 localId = `merged-scheduled:${randomUUID()}`
             }
             const invokedAt = localId ? message.invokedAt : (message.invokedAt ?? createdAt)
+            const id = randomUUID()
             insert.run({
-                id: randomUUID(),
+                id,
                 session_id: sessionId,
                 content: encodeMessageContent(message.content),
                 created_at: createdAt,
@@ -310,6 +514,14 @@ export function copyMessagesToSession(
                 invoked_at: invokedAt ?? null,
                 scheduled_at: message.scheduledAt ?? null,
                 delivery_state: message.deliveryState ?? 'queued'
+            })
+            indexMessageContent(db, {
+                id,
+                sessionId,
+                content: message.content,
+                seq: nextSeq,
+                createdAt,
+                invokedAt: invokedAt ?? null
             })
             recordUserMessage(db, sessionId, message.content, createdAt)
             nextSeq += 1
@@ -327,7 +539,7 @@ export function getMessages(
 ): StoredMessage[] {
     const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 200
 
-    const rows = prepareCached(db, 
+    const rows = prepareCached(db,
         'SELECT * FROM messages WHERE session_id = ? ORDER BY seq DESC LIMIT ?'
     ).all(sessionId, safeLimit) as DbMessageRow[]
 
@@ -338,7 +550,7 @@ export function getAllMessages(
     db: Database,
     sessionId: string
 ): StoredMessage[] {
-    const rows = prepareCached(db, 
+    const rows = prepareCached(db,
         'SELECT * FROM messages WHERE session_id = ? ORDER BY seq ASC'
     ).all(sessionId) as DbMessageRow[]
 
@@ -350,7 +562,7 @@ export function getMessagesAfterSeq(
     sessionId: string,
     afterSeq: number
 ): StoredMessage[] {
-    const rows = prepareCached(db, 
+    const rows = prepareCached(db,
         'SELECT * FROM messages WHERE session_id = ? AND seq > ? ORDER BY seq ASC'
     ).all(sessionId, afterSeq) as DbMessageRow[]
 
@@ -363,10 +575,21 @@ export function getMessageSeqById(
     sessionId: string,
     messageId: string
 ): number | null {
-    const row = prepareCached(db, 
+    const row = prepareCached(db,
         'SELECT seq FROM messages WHERE id = ? AND session_id = ?'
     ).get(messageId, sessionId) as { seq: number } | undefined
     return row ? row.seq : null
+}
+
+export function getMessageById(
+    db: Database,
+    sessionId: string,
+    messageId: string
+): StoredMessage | null {
+    const row = db.prepare(
+        'SELECT * FROM messages WHERE id = ? AND session_id = ?'
+    ).get(messageId, sessionId) as DbMessageRow | undefined
+    return row ? toStoredMessage(row) : null
 }
 
 export function getFirstMessages(
@@ -376,7 +599,7 @@ export function getFirstMessages(
 ): StoredMessage[] {
     const safeLimit = Number.isFinite(limit) ? Math.max(1, Math.min(200, limit)) : 50
 
-    const rows = prepareCached(db, 
+    const rows = prepareCached(db,
         'SELECT * FROM messages WHERE session_id = ? ORDER BY seq ASC LIMIT ?'
     ).all(sessionId, safeLimit) as DbMessageRow[]
 
@@ -451,7 +674,7 @@ export function deleteLiveReasoningSnapshots(
     if (staleIds.length === 0) return 0
 
     const placeholders = staleIds.map(() => '?').join(', ')
-    const result = prepareCached(db, 
+    const result = prepareCached(db,
         `DELETE FROM messages WHERE session_id = ? AND id IN (${placeholders})`
     ).run(sessionId, ...staleIds)
     return Number(result.changes)
@@ -537,7 +760,7 @@ export function getNewestMessagePosition(db: Database, sessionId: string): Messa
 }
 
 export function getMessageEpoch(db: Database, sessionId: string): number {
-    const row = prepareCached(db, 
+    const row = prepareCached(db,
         'SELECT epoch FROM message_epochs WHERE session_id = ?'
     ).get(sessionId) as { epoch: number } | undefined
     return row?.epoch ?? 0
@@ -561,7 +784,7 @@ export function getUninvokedLocalMessages(
     options?: { deliverableOnly?: boolean }
 ): StoredMessage[] {
     const deliverableClause = options?.deliverableOnly ? " AND delivery_state = 'queued'" : ''
-    const rows = prepareCached(db, 
+    const rows = prepareCached(db,
         `SELECT * FROM messages WHERE session_id = ? AND invoked_at IS NULL AND local_id IS NOT NULL${deliverableClause} ORDER BY seq ASC`
     ).all(sessionId) as DbMessageRow[]
     return rows.map(toStoredMessage)
@@ -608,7 +831,7 @@ export function getMatureScheduledMessages(
     db: Database,
     beforeTime: number
 ): StoredMessage[] {
-    const rows = prepareCached(db, 
+    const rows = prepareCached(db,
         "SELECT * FROM messages WHERE scheduled_at IS NOT NULL AND scheduled_at <= ? AND invoked_at IS NULL AND delivery_state = 'queued' ORDER BY scheduled_at ASC"
     ).all(beforeTime) as DbMessageRow[]
     return rows.map(toStoredMessage)
@@ -619,6 +842,22 @@ export function getMatureScheduledMessages(
  *  (sweepImmediateQueuedOnSessionEnd): these are messages the user posted to a
  *  CLI session that ended before the runner consumed them, so they cannot ever
  *  be delivered and must be force-invoked to clear the floating bar.
+ *
+ *  Scoped to role='user' on purpose. Some agent session events (the opencode
+ *  compaction ":started" status) also carry a durable localId but have no ack
+ *  path — nothing ever flips their invoked_at — so without this scope they
+ *  matched "queued prompt" selections forever: the session-end sweep would
+ *  force-invoke them at reopen time, restamping their display position
+ *  (COALESCE(invoked_at, created_at)) to "now" and resurfacing days-old events
+ *  at the bottom of the thread as if they had just arrived. Session events are
+ *  already stored and rendered; they are never deliverable prompts and must
+ *  keep their original position. The check unwraps role-wrapped envelopes via
+ *  unwrapRoleWrappedRecordEnvelope, the same helper the delivery/export paths
+ *  use (isQueuedUserMessage), so both sides agree on what a queued user prompt
+ *  is even if a row stores the role inside an envelope. It runs on the decoded
+ *  content rather than json_extract in SQL because compressed rows store
+ *  content as a zstd BLOB, which SQLite's JSON functions reject ("malformed
+ *  JSON").
  *
  *  Scheduled rows (scheduled_at IS NOT NULL) are *deliberately excluded*, mature
  *  or not.  The mature-scan path (releaseMatureScheduledMessages) is the sole
@@ -641,6 +880,7 @@ export function getImmediateQueuedLocalMessages(
         ORDER BY seq ASC
     `).all(sessionId) as DbMessageRow[]
     return rows.map(toStoredMessage)
+        .filter((message) => unwrapRoleWrappedRecordEnvelope(message.content)?.role === 'user')
 }
 
 /**
@@ -652,7 +892,7 @@ export function getImmediateQueuedLocalMessages(
  * tiann/hapi#872.
  */
 export function countMessages(db: Database, sessionId: string): number {
-    const row = prepareCached(db, 
+    const row = prepareCached(db,
         'SELECT COUNT(*) AS count FROM messages WHERE session_id = ?'
     ).get(sessionId) as { count: number } | undefined
     return row?.count ?? 0
@@ -738,7 +978,7 @@ export function minFutureScheduledAtBySessionIds(
 }
 
 export function getMaxSeq(db: Database, sessionId: string): number {
-    const row = prepareCached(db, 
+    const row = prepareCached(db,
         'SELECT COALESCE(MAX(seq), 0) AS maxSeq FROM messages WHERE session_id = ?'
     ).get(sessionId) as { maxSeq: number } | undefined
     return row?.maxSeq ?? 0
@@ -804,6 +1044,7 @@ export function cancelQueuedMessage(
         `).run(sessionId, messageId, messageId)
 
         if (deleted.changes > 0) {
+            removeMessageContentSearchIndex(db, row.id)
             bumpMessageEpoch(db, sessionId)
         }
 
@@ -894,18 +1135,23 @@ export function deleteQueuedMessageById(
     messageId: string
 ): boolean {
     return db.transaction(() => {
+        const row = prepareCached(db, `
+            SELECT id FROM messages
+            WHERE session_id = ? AND (id = ? OR local_id = ?) AND invoked_at IS NULL
+            LIMIT 1
+        `).get(sessionId, messageId, messageId) as { id: string } | undefined
         const deleted = prepareCached(db, `
             DELETE FROM messages
             WHERE session_id = ? AND (id = ? OR local_id = ?) AND invoked_at IS NULL
         `).run(sessionId, messageId, messageId)
         if (deleted.changes > 0) {
+            if (row) removeMessageContentSearchIndex(db, row.id)
             bumpMessageEpoch(db, sessionId)
             return true
         }
         return false
     })()
 }
-
 /** Mark messages as invoked at the given server timestamp.
  *  Only updates rows whose local_id is in localIds.
  *  First-write-wins: rows with a non-NULL invoked_at are not updated.  A duplicate
@@ -918,16 +1164,35 @@ export function markMessagesInvoked(
     invokedAt: number
 ): number {
     if (localIds.length === 0) return 0
-    const placeholders = localIds.map(() => '?').join(', ')
-    return prepareCached(db, 
-        `UPDATE messages
-         SET invoked_at = ?, delivery_state = 'queued'
-         WHERE session_id = ?
-           AND local_id IN (${placeholders})
-           AND invoked_at IS NULL`
-    ).run(invokedAt, sessionId, ...localIds).changes
+    return runInTransaction(db, () => {
+        const placeholders = localIds.map(() => '?').join(', ')
+        const changes = prepareCached(db,
+            `UPDATE messages
+             SET invoked_at = ?, delivery_state = 'queued'
+             WHERE session_id = ?
+               AND local_id IN (${placeholders})
+               AND invoked_at IS NULL`
+        ).run(invokedAt, sessionId, ...localIds).changes
+        if (changes > 0) {
+            const rows = prepareCached(db, `
+                SELECT id, session_id, content, created_at, seq, invoked_at
+                FROM messages
+                WHERE session_id = ? AND local_id IN (${placeholders}) AND invoked_at IS NOT NULL
+            `).all(sessionId, ...localIds) as DbMessageRow[]
+            for (const row of rows) {
+                indexMessageContent(db, {
+                    id: row.id,
+                    sessionId: row.session_id,
+                    content: decodeMessageContent(row.content),
+                    seq: row.seq,
+                    createdAt: row.created_at,
+                    invokedAt: row.invoked_at
+                })
+            }
+        }
+        return changes
+    })
 }
-
 /** Move an uninvoked steer through its durable delivery states. */
 export function setMessagesDeliveryState(
     db: Database,
@@ -942,7 +1207,7 @@ export function setMessagesDeliveryState(
         : state === 'dispatching'
             ? "'queued', 'indeterminate'"
             : "'queued', 'dispatching'"
-    return prepareCached(db, 
+    return prepareCached(db,
         `UPDATE messages
          SET delivery_state = ?
          WHERE session_id = ?
@@ -950,6 +1215,17 @@ export function setMessagesDeliveryState(
            AND invoked_at IS NULL
            AND delivery_state IN (${fromStates})`
     ).run(state, sessionId, ...localIds).changes
+}
+
+/** Release confirmation-only state when the owning OpenCode worker ends or is replaced. */
+export function markDispatchingMessagesIndeterminate(db: Database, sessionId: string): string[] {
+    const rows = prepareCached(db, `
+        UPDATE messages SET delivery_state = 'indeterminate'
+        WHERE session_id = ? AND delivery_state = 'dispatching'
+          AND invoked_at IS NULL AND local_id IS NOT NULL
+        RETURNING local_id
+    `).all(sessionId) as Array<{ local_id: string }>
+    return rows.map(row => row.local_id)
 }
 
 /** Hold an ambiguous steer out of automatic replay without claiming delivery. */
@@ -968,29 +1244,45 @@ export function markUninvokedImmediateMessages(
     sessionId: string,
     invokedAt: number
 ): string[] {
-    const rows = prepareCached(db, `
-        SELECT local_id FROM messages
-        WHERE session_id = ?
-          AND local_id IS NOT NULL
-          AND scheduled_at IS NULL
-          AND invoked_at IS NULL
-          AND delivery_state = 'queued'
-        ORDER BY seq ASC
-    `).all(sessionId) as Array<{ local_id: string }>
-    if (rows.length === 0) return []
+    return runInTransaction(db, () => {
+        const rows = prepareCached(db, `
+            SELECT local_id FROM messages
+            WHERE session_id = ?
+              AND local_id IS NOT NULL
+              AND scheduled_at IS NULL
+              AND invoked_at IS NULL
+              AND delivery_state = 'queued'
+            ORDER BY seq ASC
+        `).all(sessionId) as Array<{ local_id: string }>
+        if (rows.length === 0) return []
 
-    prepareCached(db, `
-        UPDATE messages
-        SET invoked_at = ?
-        WHERE session_id = ?
-          AND local_id IS NOT NULL
-          AND scheduled_at IS NULL
-          AND invoked_at IS NULL
-          AND delivery_state = 'queued'
-    `).run(invokedAt, sessionId)
-    return rows.map((row) => row.local_id)
+        prepareCached(db, `
+            UPDATE messages
+            SET invoked_at = ?
+            WHERE session_id = ?
+              AND local_id IS NOT NULL
+              AND scheduled_at IS NULL
+              AND invoked_at IS NULL
+              AND delivery_state = 'queued'
+        `).run(invokedAt, sessionId)
+        const invokedRows = prepareCached(db, `
+            SELECT id, session_id, content, created_at, seq, invoked_at
+            FROM messages
+            WHERE session_id = ? AND local_id IS NOT NULL AND scheduled_at IS NULL AND invoked_at = ?
+        `).all(sessionId, invokedAt) as DbMessageRow[]
+        for (const row of invokedRows) {
+            indexMessageContent(db, {
+                id: row.id,
+                sessionId: row.session_id,
+                content: decodeMessageContent(row.content),
+                seq: row.seq,
+                createdAt: row.created_at,
+                invokedAt: row.invoked_at
+            })
+        }
+        return rows.map((row) => row.local_id)
+    })
 }
-
 /**
  * Reassign only uninvoked scheduled rows when an archived OpenCode session
  * is replaced by /clear. The transaction preserves ids/localIds so the normal
@@ -1095,7 +1387,7 @@ export function mergeSessionMessages(
         db.exec('BEGIN')
 
         if (newMaxSeq > 0 && oldMaxSeq > 0) {
-            prepareCached(db, 
+            prepareCached(db,
                 'UPDATE messages SET seq = seq + ? WHERE session_id = ?'
             ).run(oldMaxSeq, toSessionId)
         }
@@ -1115,7 +1407,7 @@ export function mergeSessionMessages(
             // (markMessagesInvoked matches by local_id), so leaving invoked_at
             // NULL would strand the row in the queued floating bar forever.
             // Use COALESCE so an already-invoked row keeps its server timestamp.
-            prepareCached(db, 
+            prepareCached(db,
                 `UPDATE messages
                  SET local_id = NULL,
                      invoked_at = COALESCE(invoked_at, created_at)
@@ -1148,6 +1440,7 @@ export function mergeSessionMessages(
             AND (read_revision < content_revision OR manual_unread = 1)`).run(fromSessionId)
 
         if (result.changes > 0) {
+            rebuildMessageContentSearchForSessions(db, [fromSessionId, toSessionId], true)
             prepareCached(db, `
                 UPDATE sessions SET last_user_message_at = MAX(COALESCE(last_user_message_at, 0),
                     (SELECT last_user_message_at FROM sessions WHERE id = ?))
@@ -1166,10 +1459,38 @@ export function mergeSessionMessages(
 }
 
 /**
- * Truncate transcript at/after the message with `localId`, optionally replacing
- * the removed suffix with `replacement` messages. Bumps message epoch so web
- * clients reset their window.
+ * Truncate the invocation-ordered suffix at the boundary identified by seq.
+ * Bumps message epoch so web clients reset their window.
  */
+export function truncateOpenCodeRewind(db: Database, sessionId: string, cutoffSeq: number, boundaryId: string): number {
+    return db.transaction(() => {
+        const target = prepareCached(db, `
+            SELECT seq, COALESCE(invoked_at, created_at) AS position_at
+            FROM messages WHERE session_id = ? AND id = ? AND seq = ?
+        `).get(sessionId, boundaryId, cutoffSeq) as { seq: number; position_at: number } | undefined
+        if (!target) throw new Error('Rewind boundary not found')
+        const deletedRows = prepareCached(db, `
+            SELECT id FROM messages WHERE session_id = ? AND (
+                COALESCE(invoked_at, created_at) > ?
+                OR (COALESCE(invoked_at, created_at) = ? AND seq >= ?)
+            )
+        `).all(sessionId, target.position_at, target.position_at, target.seq) as Array<{ id: string }>
+        prepareCached(db, `
+            DELETE FROM messages WHERE session_id = ? AND (
+                COALESCE(invoked_at, created_at) > ?
+                OR (COALESCE(invoked_at, created_at) = ? AND seq >= ?)
+            )
+        `).run(sessionId, target.position_at, target.position_at, target.seq)
+        invalidateMessageContentSearchInjectedTurnCache(db, [sessionId])
+        for (const row of deletedRows) removeMessageContentSearchIndex(db, row.id)
+        prepareCached(db, `UPDATE sessions SET read_revision = content_revision, read_state_version = read_state_version + 1
+            WHERE id = ? AND read_revision < content_revision AND NOT EXISTS (
+                SELECT 1 FROM messages WHERE session_id = sessions.id AND content_revision > sessions.read_revision
+            )`).run(sessionId)
+        return bumpMessageEpoch(db, sessionId)
+    })()
+}
+
 export function truncateMessagesFromLocalId(
     db: Database,
     sessionId: string,
@@ -1193,6 +1514,14 @@ export function truncateMessagesFromLocalId(
             throw new Error(`Message not found for localId: ${localId}`)
         }
 
+        const deletedRows = prepareCached(db, `
+            SELECT id FROM messages
+            WHERE session_id = ?
+              AND (
+                COALESCE(invoked_at, created_at) > ?
+                OR (COALESCE(invoked_at, created_at) = ? AND seq >= ?)
+              )
+        `).all(sessionId, target.position_at, target.position_at, target.seq) as Array<{ id: string }>
         const deleted = prepareCached(db, `
             DELETE FROM messages
             WHERE session_id = ?
@@ -1201,11 +1530,13 @@ export function truncateMessagesFromLocalId(
                 OR (COALESCE(invoked_at, created_at) = ? AND seq >= ?)
               )
         `).run(sessionId, target.position_at, target.position_at, target.seq)
+        invalidateMessageContentSearchInjectedTurnCache(db, [sessionId])
+        for (const row of deletedRows) removeMessageContentSearchIndex(db, row.id)
 
         let inserted = 0
         for (const message of replacement) {
             const now = Date.now()
-            const msgSeqRow = prepareCached(db, 
+            const msgSeqRow = prepareCached(db,
                 'SELECT COALESCE(MAX(seq), 0) + 1 AS nextSeq FROM messages WHERE session_id = ?'
             ).get(sessionId) as { nextSeq: number }
             const id = randomUUID()
@@ -1224,6 +1555,14 @@ export function truncateMessagesFromLocalId(
                 rowLocalId,
                 invokedAt
             )
+            indexMessageContent(db, {
+                id,
+                sessionId,
+                content: message.content,
+                seq: msgSeqRow.nextSeq,
+                createdAt,
+                invokedAt
+            })
             recordUserMessage(db, sessionId, message.content, createdAt)
             inserted += 1
         }

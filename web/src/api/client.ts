@@ -13,6 +13,7 @@ import type {
     CopilotAgentMode,
     FileSearchResponse,
     MachinesResponse,
+    MessageContextResponse,
     MessagesResponse,
     OpencodeImportSessionsResponse,
     OpencodeLocalSessionsResponse,
@@ -29,12 +30,15 @@ import type {
     HapiSessionExportResponse,
     HubHealthResponse,
     SessionResponse,
+    SessionContentMatchesResponse,
     SessionTitleSuggestionResponse,
-    SessionsResponse
+    SessionsResponse,
+    SessionContentSearchResponse
 } from '@/types/api'
 import type {
     AgyModelsResponse,
     AgentAvailabilityResponse,
+    AgentQuotasResponse,
     CodexModelsResponse,
     CursorMigrateOutcome,
     CursorMigrateToAcpRequest,
@@ -48,6 +52,8 @@ import type {
     KimiModelsResponse,
     CopilotModelsResponse,
     GrokReasoningEffortResponse,
+    CopilotReasoningEffortResponse,
+    KimiReasoningEffortResponse,
     ListDirectoryResponse,
     MachineListDirectoryResponse,
     MachinePathsExistsResponse,
@@ -61,10 +67,12 @@ import type {
     SqliteStorageUsageResponse,
     HubSettingsResponse,
     UpdateHubSettingsRequest,
+    UsageQuotasResponse,
     UsageSummaryResponse,
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'
 import { fetchThroughAuthProxy } from '@/api/authProxy'
+import { FOLLOW_SESSION_REDIRECTS_HEADER } from '@hapi/protocol'
 import type { SessionReadState, SessionReadStateRequest, AgentFlavor, MessageDeliveryMode } from '@hapi/protocol'
 import type { CancelMessageResponse, SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { TranscriptionMode, TranscriptionProvider, TranscriptionProviderInfo } from '@hapi/protocol/voice'
@@ -124,6 +132,58 @@ export interface TranscriptionCredentialsUpdate {
     qwenRealtime?: string | null
     /** null resets to the hub default (1800s) */
     elevenLabsMaxDurationSeconds?: number | null
+}
+
+// Keep scoped content-search bodies comfortably below the Hub's 256 KiB
+// request limit. The remaining space covers the query, limit, and JSON body
+// framing; callers still get one merged result set for large visible scopes.
+const CONTENT_SEARCH_SCOPE_CHUNK_BYTES = 192 * 1024
+
+function chunkContentSearchSessionIds(sessionIds: readonly string[]): string[][] {
+    if (sessionIds.length === 0) return []
+
+    const encoder = new TextEncoder()
+    const chunks: string[][] = []
+    let current: string[] = []
+    let currentBytes = 2 // []
+
+    for (const sessionId of sessionIds) {
+        const itemBytes = encoder.encode(JSON.stringify(sessionId)).byteLength
+        const separatorBytes = current.length > 0 ? 1 : 0
+        if (
+            current.length > 0
+            && currentBytes + separatorBytes + itemBytes > CONTENT_SEARCH_SCOPE_CHUNK_BYTES
+        ) {
+            chunks.push(current)
+            current = []
+            currentBytes = 2
+        }
+
+        current.push(sessionId)
+        currentBytes += (current.length > 1 ? 1 : 0) + itemBytes
+    }
+
+    if (current.length > 0) chunks.push(current)
+    return chunks
+}
+
+function mergeContentSearchResponses(
+    responses: SessionContentSearchResponse[],
+    limit: number
+): SessionContentSearchResponse {
+    const results = responses
+        .flatMap(response => response.results)
+        .sort((a, b) => (
+            b.session.updatedAt - a.session.updatedAt
+            || b.match.seq - a.match.seq
+            || b.match.createdAt - a.match.createdAt
+            || a.session.id.localeCompare(b.session.id)
+        ))
+
+    return {
+        results: results.slice(0, limit),
+        hasPotentiallyIncompleteResults: responses.some(response => response.hasPotentiallyIncompleteResults)
+    }
 }
 
 type ApiClientOptions = {
@@ -200,6 +260,8 @@ export class ApiClient {
         if (authToken) {
             headers.set('authorization', `Bearer ${authToken}`)
         }
+        // The session route rebinds to a survivor's id (getMergedSessionRedirectId).
+        headers.set(FOLLOW_SESSION_REDIRECTS_HEADER, '1')
         if (init?.body !== undefined && !(init.body instanceof FormData) && !headers.has('content-type')) {
             headers.set('content-type', 'application/json')
         }
@@ -289,6 +351,65 @@ export class ApiClient {
 
     async getHealth(): Promise<HubHealthResponse> {
         return await this.request<HubHealthResponse>('/health')
+    }
+
+    async searchSessionContent(
+        query: string,
+        limit: number = 50,
+        signal?: AbortSignal,
+        sessionIds?: readonly string[]
+    ): Promise<SessionContentSearchResponse> {
+        const normalizedQuery = query.trim()
+        if (sessionIds !== undefined) {
+            const normalizedSessionIds = [...new Set(sessionIds.map((sessionId) => sessionId.trim()).filter(Boolean))]
+            const chunks = chunkContentSearchSessionIds(normalizedSessionIds)
+            if (chunks.length <= 1) {
+                return await this.request<SessionContentSearchResponse>(
+                    '/api/sessions/content-search',
+                    {
+                        method: 'POST',
+                        signal,
+                        body: JSON.stringify({
+                            query: normalizedQuery,
+                            limit,
+                            sessionIds: normalizedSessionIds
+                        })
+                    }
+                )
+            }
+
+            const responses = await Promise.all(chunks.map((chunk) => this.request<SessionContentSearchResponse>(
+                '/api/sessions/content-search',
+                {
+                    method: 'POST',
+                    signal,
+                    body: JSON.stringify({
+                        query: normalizedQuery,
+                        limit,
+                        sessionIds: chunk
+                    })
+                }
+            )))
+            return mergeContentSearchResponses(responses, limit)
+        }
+        const params = new URLSearchParams({ query: normalizedQuery, limit: String(limit) })
+        return await this.request<SessionContentSearchResponse>(
+            `/api/sessions/content-search?${params.toString()}`,
+            { signal }
+        )
+    }
+
+    async searchSessionContentMatches(
+        sessionId: string,
+        query: string,
+        limit: number = 500,
+        signal?: AbortSignal
+    ): Promise<SessionContentMatchesResponse> {
+        const params = new URLSearchParams({ query: query.trim(), limit: String(limit) })
+        return await this.request<SessionContentMatchesResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/content-search?${params.toString()}`,
+            { signal }
+        )
     }
 
     async getPushVapidPublicKey(): Promise<PushVapidPublicKeyResponse> {
@@ -452,6 +573,12 @@ export class ApiClient {
         const qs = params.toString()
         const url = `/api/sessions/${encodeURIComponent(sessionId)}/messages${qs ? `?${qs}` : ''}`
         return await this.request<MessagesResponse>(url)
+    }
+
+    async getMessageContext(sessionId: string, messageId: string): Promise<MessageContextResponse | null> {
+        return await this.request<MessageContextResponse | null>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/context`
+        )
     }
 
     async getGitStatus(sessionId: string): Promise<GitCommandResponse> {
@@ -636,12 +763,12 @@ export class ApiClient {
         })
     }
 
-    async forkConversation(sessionId: string, messageLocalId?: string): Promise<{ sessionId: string }> {
+    async forkConversation(sessionId: string, messageLocalId?: string, latestCompleted = false): Promise<{ sessionId: string }> {
         return await this.request<{ sessionId: string }>(
             `/api/sessions/${encodeURIComponent(sessionId)}/fork`,
             {
                 method: 'POST',
-                body: JSON.stringify(messageLocalId ? { messageLocalId } : {})
+                body: JSON.stringify(latestCompleted ? { latestCompleted: true } : messageLocalId ? { messageLocalId } : {})
             }
         )
     }
@@ -660,6 +787,86 @@ export class ApiClient {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/archive`, {
             method: 'POST',
             body: JSON.stringify({})
+        })
+    }
+
+    async acknowledgeModelError(sessionId: string, eventId: string): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/model-error/acknowledge`, {
+            method: 'POST',
+            body: JSON.stringify({ eventId })
+        })
+    }
+
+    async bridgeModelError(sessionId: string, eventId: string): Promise<{ ok: boolean; reason?: string }> {
+        const path = `/api/sessions/${encodeURIComponent(sessionId)}/model-error/bridge`
+        const tryOnce = async (overrideToken: string | null): Promise<Response> => {
+            const headers = new Headers({ 'content-type': 'application/json' })
+            const liveToken = this.getToken ? this.getToken() : null
+            const authToken = overrideToken ?? liveToken ?? this.token
+            if (authToken) {
+                headers.set('authorization', `Bearer ${authToken}`)
+            }
+            return fetchThroughAuthProxy(this.buildUrl(path), {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ eventId })
+            })
+        }
+
+        let res = await tryOnce(null)
+        if (res.status === 401 && this.onUnauthorized) {
+            const refreshed = await this.onUnauthorized()
+            if (refreshed) {
+                this.token = refreshed
+                res = await tryOnce(refreshed)
+            }
+        }
+        if (res.status === 401) {
+            throw new Error('Session expired. Please sign in again.')
+        }
+
+        const text = await res.text()
+        let body: { ok?: boolean; reason?: string; error?: string } | null = null
+        try {
+            body = text ? JSON.parse(text) as { ok?: boolean; reason?: string; error?: string } : null
+        } catch {
+            body = null
+        }
+
+        if (res.status === 409 && body && typeof body.ok === 'boolean') {
+            return { ok: body.ok, reason: body.reason }
+        }
+
+        if (!res.ok) {
+            const detail = body?.error ?? text
+            throw new ApiError(
+                `HTTP ${res.status} ${res.statusText}: ${detail}`,
+                res.status,
+                undefined,
+                detail || undefined
+            )
+        }
+
+        // A 2xx that is not the hub's `{ ok }` envelope never reached the hub:
+        // an auth gateway can answer with an HTML sign-in page at status 200.
+        // Reporting ok:true there makes SessionChat latch the event as pending,
+        // leaving "Bridging…" disabled forever while no CLI request was made.
+        if (!body || typeof body.ok !== 'boolean') {
+            throw new ApiError(
+                `HTTP ${res.status} ${res.statusText}: unexpected bridge response`,
+                res.status,
+                undefined,
+                text || undefined
+            )
+        }
+
+        return { ok: body.ok, reason: body.reason }
+    }
+
+    async setModelErrorAutoBridge(sessionId: string, enabled: boolean): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/model-error/auto-bridge-setting`, {
+            method: 'POST',
+            body: JSON.stringify({ enabled })
         })
     }
 
@@ -839,6 +1046,16 @@ export class ApiClient {
             timeZone
         })
         return await this.request<UsageSummaryResponse>(`/api/usage/summary?${params.toString()}`)
+    }
+
+    async getUsageQuotas(refresh?: boolean): Promise<UsageQuotasResponse> {
+        return await this.request<UsageQuotasResponse>(`/api/usage/quotas${refresh ? '?refresh=1' : ''}`)
+    }
+
+    async getMachineAgentQuotas(machineId: string, refresh?: boolean): Promise<AgentQuotasResponse> {
+        return await this.request<AgentQuotasResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/agent-quotas${refresh ? '?refresh=1' : ''}`
+        )
     }
 
     async restartMachineRunner(machineId: string): Promise<{ message: string }> {
@@ -1049,6 +1266,18 @@ export class ApiClient {
             method: 'POST',
             body: JSON.stringify({ mode })
         })
+    }
+
+    async getSessionCopilotReasoningEffortOptions(sessionId: string): Promise<CopilotReasoningEffortResponse> {
+        return await this.request<CopilotReasoningEffortResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/copilot-reasoning-effort-options`
+        )
+    }
+
+    async getSessionKimiReasoningEffortOptions(sessionId: string): Promise<KimiReasoningEffortResponse> {
+        return await this.request<KimiReasoningEffortResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/kimi-reasoning-effort-options`
+        )
     }
 
     async getSessionGrokReasoningEffortOptions(sessionId: string): Promise<GrokReasoningEffortResponse> {

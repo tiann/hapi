@@ -80,6 +80,9 @@ import app.hapi.companion.feature.sessions.RenameSessionDialog
 import app.hapi.companion.ui.markdown.LocalMarkdownRenderCache
 import app.hapi.companion.ui.markdown.LocalMarkdownLinkHandler
 import app.hapi.companion.ui.theme.hapi
+import app.hapi.protocol.chat.VisibleChatBlock
+import app.hapi.protocol.chat.buildMessageMetadataLabels
+import app.hapi.protocol.chat.messageMetadataForBlock
 import java.io.File
 import kotlinx.coroutines.launch
 
@@ -121,6 +124,7 @@ internal fun ChatScreen(
     val jumpToken by viewModel.jumpToken.collectAsState()
     val jumpingLatest by viewModel.jumpingLatest.collectAsState()
     val composerState by viewModel.composer.collectAsState()
+    val pendingSchedule by viewModel.pendingSchedule.collectAsState()
     val codexPlanActions by viewModel.codexPlanActions.collectAsState()
     val queuedRows by viewModel.queuedRows.collectAsState()
     val configState by viewModel.config.collectAsState()
@@ -128,6 +132,7 @@ internal fun ChatScreen(
     var configSheetOpen by remember { mutableStateOf(false) }
     var renameDialogOpen by remember { mutableStateOf(false) }
     var deleteDialogOpen by remember { mutableStateOf(false) }
+    var messageInfoBlock by remember { mutableStateOf<VisibleChatBlock?>(null) }
 
     DisposableEffect(viewModel) {
         viewModel.setTranscriptVisible(true)
@@ -192,6 +197,7 @@ internal fun ChatScreen(
         }
     }
     val slashSuggestions by viewModel.slashSuggestions.collectAsState()
+    val mentionSuggestions by viewModel.mentionSuggestions.collectAsState()
 
     // --------------------------------------------------------- attachments --
     val attachmentItems by viewModel.attachments.items.collectAsState()
@@ -330,9 +336,6 @@ internal fun ChatScreen(
                         .navigationBarsPadding()
                         .imePadding(),
                 ) {
-                    if (!state.header.active && !state.isInitialLoading && !state.loadFailed) {
-                        InactiveSessionBar(onReopen = viewModel::reopenSession)
-                    }
                     QueuedMessagesBar(
                         rows = queuedRows,
                         onSteer = viewModel::steerQueuedMessage,
@@ -340,17 +343,9 @@ internal fun ChatScreen(
                         onEdit = viewModel::editQueuedMessage,
                         onCancel = viewModel::cancelQueuedMessage,
                     )
-                    // Web StatusBar parity: the current permission mode rides
-                    // directly above the composer; tapping opens the config
-                    // sheet that hosts the switcher (the web span itself is
-                    // not clickable).
-                    PermissionModeChip(
-                        config = configState,
-                        onClick = { configSheetOpen = true },
-                    )
                     ChatComposer(
                         state = composerState,
-                        onTextChange = viewModel::setComposerText,
+                        onTextChange = viewModel::onComposerChange,
                         onSend = { viewModel.sendMessage() },
                         onSendSteer = { viewModel.sendMessage(steer = true) },
                         onAbort = viewModel::abortSession,
@@ -360,6 +355,11 @@ internal fun ChatScreen(
                         onAttachmentRemove = viewModel.attachments::remove,
                         slashSuggestions = slashSuggestions,
                         onSlashCommandSelected = viewModel::selectSlashCommand,
+                        mentionSuggestions = mentionSuggestions,
+                        onMentionSelected = viewModel::selectMentionSuggestion,
+                        pendingSchedule = pendingSchedule,
+                        onScheduleSelected = viewModel::setPendingSchedule,
+                        onClearSchedule = { viewModel.setPendingSchedule(null) },
                         dictation = if (dictationAvailable) dictationState else null,
                         onDictationToggle = onDictationToggle,
                         onDictationCancel = { dictation?.cancel() },
@@ -393,6 +393,8 @@ internal fun ChatScreen(
                             onRetryHistory = viewModel::loadOlder,
                             onJumpToLatest = viewModel::jumpToLatest,
                             listState = transcriptList, readingState = readingState,
+                            messageAggregates = state.messageAggregates,
+                            onShowMessageInfo = { messageInfoBlock = it },
                         )
                     }
                     if (!state.loadFailed) state.warning?.let { warning ->
@@ -420,6 +422,7 @@ internal fun ChatScreen(
     if (configSheetOpen) {
         SessionConfigSheet(
             config = configState,
+            contextUsage = state.contextUsage,
             onDismiss = { configSheetOpen = false },
             onSetPermissionMode = viewModel::setPermissionMode,
             onSetModel = viewModel::setModel,
@@ -446,6 +449,19 @@ internal fun ChatScreen(
             },
             onDismiss = { deleteDialogOpen = false },
         )
+    }
+    messageInfoBlock?.let { infoBlock ->
+        val labels = remember(infoBlock, state.messageAggregates) {
+            messageMetadataForBlock(infoBlock, state.messageAggregates)
+                ?.let(::buildMessageMetadataLabels)
+                .orEmpty()
+        }
+        if (labels.isNotEmpty()) {
+            MessageMetadataDialog(
+                labels = labels,
+                onDismiss = { messageInfoBlock = null },
+            )
+        }
     }
 }
 
@@ -534,31 +550,6 @@ private fun SessionOverflowMenu(
     }
 }
 
-/**
- * Inactive-session affordance above the composer: sending auto-resumes
- * (B-M3ab), Reopen is the explicit restart without a message.
- */
-@Composable
-private fun InactiveSessionBar(onReopen: () -> Unit) {
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = stringResource(R.string.chat_inactive_bar),
-                style = MaterialTheme.typography.labelMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(start = 16.dp, top = 4.dp, bottom = 4.dp),
-            )
-            TextButton(onClick = onReopen) { Text(stringResource(R.string.sessions_action_reopen)) }
-        }
-    }
-}
 
 @Composable
 private fun ChatTitle(header: ChatHeaderUi, reconnecting: Boolean, retry: () -> Unit) {
@@ -666,6 +657,8 @@ internal fun chatNoticeText(context: Context, notice: ChatNotice): String = when
     ChatNotice.AttachmentsUploading -> context.getString(R.string.chat_notice_attachments_uploading)
     ChatNotice.ResumeFailed -> context.getString(R.string.chat_notice_resume_failed)
     ChatNotice.QueuedEditKeptDraft -> context.getString(R.string.chat_notice_edit_kept_draft)
+    ChatNotice.QueuedEditScheduleDropped -> context.getString(R.string.chat_notice_edit_schedule_dropped)
+    ChatNotice.ScheduleAttachmentConflict -> context.getString(R.string.chat_notice_schedule_attachment_conflict)
     ChatNotice.QueuedAlreadyDelivered -> context.getString(R.string.chat_notice_already_delivered)
     ChatNotice.PermissionAlreadyHandled -> context.getString(R.string.chat_notice_request_already_handled)
     ChatNotice.DeleteConflictActive -> context.getString(R.string.sessions_error_delete_active)

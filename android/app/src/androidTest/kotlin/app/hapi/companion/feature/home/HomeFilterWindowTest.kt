@@ -51,11 +51,20 @@ class HomeFilterWindowTest {
     }
 
     private fun click(text: String) {
+        // The sheet scrolls; a retry while it is still opening must not strand
+        // the target above the viewport, so sweep back once the end is reached.
+        var direction = AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
         await("click $text") {
             val candidates = nodes(text).filter { it.isVisibleToUser }
             if (candidates.isEmpty()) {
-                descendants().firstOrNull { it.isScrollable }
-                    ?.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+                val scrollable = descendants().firstOrNull { it.isScrollable }
+                if (scrollable != null && !scrollable.performAction(direction)) {
+                    direction = if (direction == AccessibilityNodeInfo.ACTION_SCROLL_FORWARD) {
+                        AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+                    } else {
+                        AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
+                    }
+                }
             }
             candidates.any { node ->
                 var target = node
@@ -72,7 +81,8 @@ class HomeFilterWindowTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val viewModel = SessionListViewModel(HomeSessions(), HomeMachines(), LastSeenStore(scope), scope)
         val today = LocalDate.now().toEpochDay()
-        val laptop = "${context.getString(R.string.sessions_machine_fallback, "laptop")} · 2"
+        // The machine row's value; choices live in its menu (count is a trailing label).
+        val laptop = context.getString(R.string.sessions_machine_fallback, "laptop")
         val scenario = ActivityScenario.launch(ComponentActivity::class.java)
         try {
             scenario.onActivity { activity ->
@@ -90,6 +100,7 @@ class HomeFilterWindowTest {
             }
             await("initial sessions") { viewModel.uiState.value.rows.size == 3 }
             click(R.string.sessions_filters)
+            click(R.string.sessions_filter_machines)
             click(laptop)
             await("machine filter") { viewModel.uiState.value.activeMachineFilter == "laptop" }
             await("sheet remains open") { visible(laptop) }

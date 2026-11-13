@@ -9,11 +9,16 @@ import app.hapi.companion.feature.share.SharedFile
 import app.hapi.companion.feature.share.SharedFileStatus
 import app.hapi.companion.feature.chat.blocks.planProposalMarkdown
 import app.hapi.companion.feature.chat.composer.ChatDrafts
+import app.hapi.companion.feature.chat.composer.MentionSuggestion
+import app.hapi.companion.feature.chat.composer.Mentions
+import app.hapi.companion.feature.chat.composer.PendingSchedule
+import app.hapi.companion.feature.chat.composer.ScheduleSend
 import app.hapi.companion.feature.chat.composer.SlashCommands
 import app.hapi.companion.feature.chat.composer.appendTranscript
 import app.hapi.companion.ui.markdown.MarkdownRenderCache
 import app.hapi.protocol.chat.AgentTextBlock
 import app.hapi.protocol.chat.AgentReasoningBlock
+import app.hapi.protocol.chat.AggregatedAssistantMeta
 import app.hapi.companion.feature.sessions.SessionListViewModel
 import app.hapi.companion.feature.sessions.formatReopenError
 import app.hapi.data.api.ApiError
@@ -35,11 +40,13 @@ import app.hapi.protocol.catalog.Flavors
 import app.hapi.protocol.catalog.ModelCatalog
 import app.hapi.protocol.catalog.PermissionMode
 import app.hapi.protocol.catalog.PermissionModes
+import app.hapi.protocol.chat.ChatBlock
 import app.hapi.protocol.chat.NormalizedMessage
 import app.hapi.protocol.chat.ToolGroupBlock
 import app.hapi.protocol.chat.ToolCallBlock
 import app.hapi.protocol.chat.ToolGroupingOptions
 import app.hapi.protocol.chat.VisibleChatBlock
+import app.hapi.protocol.chat.aggregateResponseGroups
 import app.hapi.protocol.chat.buildVisibleChatBlocks
 import app.hapi.protocol.chat.getInputStringAny
 import app.hapi.protocol.chat.normalizeDecryptedMessage
@@ -66,6 +73,7 @@ import app.hapi.protocol.wire.objOrNull
 import app.hapi.protocol.wire.stringOrNull
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CompletableDeferred
@@ -87,6 +95,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
@@ -129,7 +138,6 @@ enum class PermissionRowOverride {
     /** The hub said the request is no longer pending (404/409) — benign. */
     AlreadyHandled,
 }
-
 /** What [ChatScreen] renders. */
 data class ChatUiState(
     val sessionId: String,
@@ -158,6 +166,10 @@ data class ChatUiState(
     val processSteps: Map<String, Int> = emptyMap(),
     val readThroughRevision: Long? = null,
     val renderedReadState: SessionReadState? = null,
+    /** Summed usage metadata per response group, keyed by first-block id. */
+    val messageAggregates: Map<String, AggregatedAssistantMeta> = emptyMap(),
+    /** Context-remaining readout for the composer strip; null until usage arrives. */
+    val contextUsage: ContextUsageIndicator? = null,
 )
 
 /** Composer bar state (M3a). */
@@ -170,6 +182,12 @@ data class ComposerUiState(
     /** Local focus intent; does not replace or send the draft. */
     val focusRequest: Long = 0,
     val isImportingShare: Boolean = false,
+    /**
+     * Where the caret rests after a VM-driven text change (mention insert,
+     * draft prefill, send-clear) — consumed by the composer when it adopts
+     * external text. `-1` ⇒ the text tail; tracks the live caret otherwise.
+     */
+    val caretPosition: Int = -1,
 )
 
 data class ShareImportFailure(val fileId: String, val status: SharedFileStatus)
@@ -238,6 +256,8 @@ sealed interface ChatNotice {
     data object AttachmentsUploading : ChatNotice
     data object ResumeFailed : ChatNotice
     data object QueuedEditKeptDraft : ChatNotice
+    data object QueuedEditScheduleDropped : ChatNotice
+    data object ScheduleAttachmentConflict : ChatNotice
     data object QueuedAlreadyDelivered : ChatNotice
     data object PermissionAlreadyHandled : ChatNotice
 
@@ -320,6 +340,22 @@ sealed interface PermissionAction {
  *   store-optimistic rename, delete (409-aware) with [ChatEvent.SessionDeleted],
  *   reopen reusing the supersede path (window seed + draft move +
  *   [ChatEvent.SessionSuperseded]) and [formatReopenError] for 422s.
+ *
+ * B-M16a adds:
+ * - **Composer mentions** ([mentionSuggestions]/[selectMentionSuggestion]): an
+ *   active `@word` at the composer tail opens the mention dropdown. Sources:
+ *   cached session rows (`matchSessionsForMention` — content gate, scored,
+ *   self-excluded) merged ahead of `GET /files` hits (codex/copilot only,
+ *   limit 50, silent on failure); selection swaps the whole word for the
+ *   suggestion's insert text (Copy-reference prose / flavor `@path` form).
+ *
+ * B-M16b adds:
+ * - **Scheduled send** ([pendingSchedule]/[setPendingSchedule]): the composer
+ *   clock pick (web `ScheduleTimePicker`) resolves `scheduledAt` at the send
+ *   instant inside [sendMessage] (a pending pick downgrades steer to queue),
+ *   absolute picks auto-clear when their instant passes, and the queued
+ *   bar's Edit re-arms a future fire time as a new pick
+ *   (`computeEditPendingSchedule`).
  *
  * M2 core (unchanged): owns the session-scope SSE subscription while
  * [start]ed (dual-subscription model: `HubGraph` owns the global pipe) and
@@ -429,7 +465,14 @@ class ChatViewModel(
 
     // ------------------------------------------------------------ M3 state --
 
-    private val composerText = MutableStateFlow("")
+    /** Composer text + live caret, updated atomically (mirrors the composer's TextFieldValue). */
+    private data class ComposerDraft(
+        val text: String = "",
+        val selectionStart: Int = 0,
+        val selectionEnd: Int = 0,
+    )
+
+    private val composerDraft = MutableStateFlow(ComposerDraft())
     private val sendInFlight = MutableStateFlow(false)
     private val importingShare = MutableStateFlow(false)
     private val draftReady = CompletableDeferred<Unit>()
@@ -437,6 +480,45 @@ class ChatViewModel(
     private val importedShareTexts = mutableSetOf<String>()
     private val importedSharedFiles = mutableSetOf<String>()
     private val shareImportMutex = Mutex()
+
+    /**
+     * Pending scheduled-send pick (B-M16b, web SessionChat `pendingSchedule`):
+     * null = immediate send; a pick makes the next Send carry
+     * `scheduledAt` resolved at the send instant. Owned here so the queued
+     * bar's Edit can re-arm it ([editQueuedMessage]) and the expiry auto-clear
+     * below survives UI recomposition.
+     */
+    private val mutablePendingSchedule = MutableStateFlow<PendingSchedule?>(null)
+
+    /** The composer clock-button state; collected by [ChatScreen]. */
+    val pendingSchedule: StateFlow<PendingSchedule?> = mutablePendingSchedule.asStateFlow()
+
+    /**
+     * Monotonic revision of the pending-schedule slot (web
+     * `pendingScheduleRevision`): bumped by EVERY schedule interaction —
+     * picks, clears, send-consume clears, expiry auto-clears and edit
+     * restores. Value equality cannot tell a pick from a pick→clear→re-pick
+     * of the same value; the revision can, which is what the queued-edit
+     * restore guard ([editQueuedMessage]) needs.
+     */
+    private val pendingScheduleRevision = AtomicLong(0L)
+
+    /**
+     * Serializes the pending-schedule transition (value swap + expiry
+     * registration) across the Main thread (picker callbacks, send) and the
+     * edit-restore coroutine on the holder's Default scope. Without the lock
+     * an AtomicReference job handle still leaves a window: a restore could
+     * publish pick A, a Main callback could select B before A's expiry job
+     * is stored (B finds no timer to cancel), and A's stale timer would then
+     * clear B at A's deadline — the next Send going out immediately despite
+     * the newer pick. The mutex makes value+timer one critical section; the
+     * revision check inside the timer is the second layer (an obsolete timer
+     * can never clear a newer pick). Guarded by [scheduleMutex].
+     */
+    private val scheduleMutex = Mutex()
+
+    /** Expiry auto-clear job for the current pick; guarded by [scheduleMutex]. */
+    private var pendingScheduleExpiryJob: Job? = null
 
     /**
      * Composer attachment tray (B-M3f). The screen feeds prepared picks in
@@ -522,18 +604,19 @@ class ChatViewModel(
 
     /** Composer bar state (text is VM-owned so drafts and edit-prefill flow through it). */
     val composer: StateFlow<ComposerUiState> = combine(
-        composerText,
+        composerDraft,
         sendInFlight,
         sessionStateFlow(),
         composerFocusRequest,
         importingShare,
-    ) { text, sending, session, focusRequest, importing ->
+    ) { draft, sending, session, focusRequest, importing ->
         ComposerUiState(
-            text = text,
+            text = draft.text,
             isSending = sending,
             canSteer = session.thinking && session.active,
             focusRequest = focusRequest,
             isImportingShare = importing,
+            caretPosition = draft.selectionEnd,
         )
     }.stateIn(scope, SharingStarted.Eagerly, ComposerUiState(text = "", isSending = false, canSteer = false))
 
@@ -572,14 +655,68 @@ class ChatViewModel(
      * the first `/`), RPC entries winning dedupe.
      */
     val slashSuggestions: StateFlow<List<SlashCommand>> = combine(
-        composerText,
+        composerDraft,
         slashFetch,
         sessionStore.sessionDetail(sessionId),
-    ) { text, fetch, detail ->
-        val query = SlashCommands.queryOf(text) ?: return@combine emptyList()
+    ) { draft, fetch, detail ->
+        val query = SlashCommands.queryOf(draft.text) ?: return@combine emptyList()
         val fetched = (fetch as? SlashFetch.Loaded)?.commands
         SlashCommands.filter(SlashCommands.merge(detail?.metadata?.slashCommands, fetched), query)
     }.stateIn(scope, SharingStarted.Eagerly, emptyList())
+
+    /**
+     * Mention dropdown rows (B-M16a): non-empty only while the composer caret
+     * sits in an active `@word` (web `findActiveWord` rules — see [Mentions];
+     * a selected range suppresses detection). Sources merge like the web
+     * (`[...sessionHits, ...fileHits]`):
+     * - Sessions from the cached list (`matchSessionsForMention`: content
+     *   filter + score, current session excluded, limit 20) — pure client.
+     * - Files via `GET /api/sessions/:id/files` (limit 50) — codex/copilot
+     *   flavors only; RPC failure is silently an empty file leg (web parity).
+     * Each query change restarts the file leg (flatMapLatest = the web's
+     * generation guard); the file leg emits an empty batch BEFORE awaiting
+     * the RPC, so the new query's session hits publish immediately and the
+     * previous query's rows never linger through the request (the web hides
+     * suggestions the moment the input no longer matches).
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val mentionSuggestions: StateFlow<List<MentionSuggestion>> = composerDraft
+        .map { Mentions.mentionQueryOf(it.text, it.selectionStart, it.selectionEnd) }
+        .distinctUntilChanged()
+        .flatMapLatest { query ->
+            if (query == null) {
+                flowOf(emptyList())
+            } else {
+                val sessionFlow = sessionStore.sessions
+                    .map { sessions -> Mentions.sessionSuggestions(sessions, query, excludeId = sessionId) }
+                val fileFlow = sessionStore.sessionDetail(sessionId)
+                    .map { detail -> detail?.metadata?.flavor }
+                    .distinctUntilChanged()
+                    .flatMapLatest { flavor ->
+                        if (flavor == null || flavor !in Mentions.FILE_MENTION_FLAVORS) {
+                            flowOf(emptyList())
+                        } else {
+                            flow {
+                                // Invalidate the previous query's rows right away
+                                // (review fix): `combine` can publish this query's
+                                // session hits while the file RPC is in flight.
+                                emit(emptyList())
+                                val files = try {
+                                    val response = api.searchSessionFiles(sessionId, query, Mentions.FILE_SEARCH_LIMIT)
+                                    if (response.success) response.files.orEmpty() else emptyList()
+                                } catch (cancellation: CancellationException) {
+                                    throw cancellation
+                                } catch (_: Exception) {
+                                    emptyList()
+                                }
+                                emit(files.map { Mentions.fileSuggestion(flavor, it) })
+                            }
+                        }
+                    }
+                combine(sessionFlow, fileFlow) { sessionHits, fileHits -> sessionHits + fileHits }
+            }
+        }
+        .stateIn(scope, SharingStarted.Eagerly, emptyList())
 
     /**
      * Entry count for the top-bar scratchlist badge (B-M4d); stays 0 without
@@ -682,7 +819,7 @@ class ChatViewModel(
         draftJob?.cancel()
         if (!pending) return
         val store = drafts ?: return
-        val text = composerText.value
+        val text = composerDraft.value.text
         kotlinx.coroutines.GlobalScope.launch(Dispatchers.IO) {
             runCatching { store.save(sessionId, text) }
         }
@@ -851,14 +988,24 @@ class ChatViewModel(
 
     // ------------------------------------------------------------- composer --
 
-    fun setComposerText(text: String) {
+    fun setComposerText(text: String) = setComposerText(text, text.length)
+
+    /**
+     * [setComposerText] with an explicit resting caret (mention insert lands
+     * mid-draft); every other programmatic set rests at the tail. The caret
+     * only moves when the text actually changes, so a same-text call never
+     * teleports the user's caret.
+     */
+    private fun setComposerText(text: String, caret: Int) {
         if (importingShare.value) return
         // Fetch the RPC command list on the transition INTO slash mode (the
         // web refetches when the menu opens) — not on every keystroke, so a
         // wedged CLI cannot be hammered while the user types a command.
         val enteredSlashMode = SlashCommands.queryOf(text) != null &&
-            SlashCommands.queryOf(composerText.value) == null
-        composerText.value = text
+            SlashCommands.queryOf(composerDraft.value.text) == null
+        if (text != composerDraft.value.text) {
+            composerDraft.value = ComposerDraft(text, caret, caret)
+        }
         if (enteredSlashMode) loadSlashCommands()
         draftJob?.cancel()
         val store = drafts ?: return
@@ -868,11 +1015,43 @@ class ChatViewModel(
         }
     }
 
+    /**
+     * User edit from the composer's TextFieldValue — one atomic text+caret
+     * update, so detection never observes a transient text/selection mix.
+     */
+    fun onComposerChange(text: String, selectionStart: Int, selectionEnd: Int) {
+        if (importingShare.value) return
+        // Fetch the RPC command list on the transition INTO slash mode (the
+        // web refetches when the menu opens) — not on every keystroke, so a
+        // wedged CLI cannot be hammered while the user types a command.
+        val enteredSlashMode = SlashCommands.queryOf(text) != null &&
+            SlashCommands.queryOf(composerDraft.value.text) == null
+        composerDraft.value = ComposerDraft(text, selectionStart, selectionEnd)
+        if (enteredSlashMode) loadSlashCommands()
+        draftJob?.cancel()
+        val store = drafts ?: return
+        draftJob = scope.launch {
+            delay(draftSaveDebounceMs)
+            runCatching { store.save(sessionId, text) }
+        }
+    }
+
+    /**
+     * Raw text swap for paths that must bypass [setComposerText]'s guards
+     * (share import) or skip its draft debounce (send-clear, prefill
+     * restore) — keeps the caret resting at the tail.
+     */
+    private fun replaceComposerTextRaw(text: String) {
+        if (text == composerDraft.value.text) return
+        val tail = text.length
+        composerDraft.value = ComposerDraft(text, tail, tail)
+    }
+
     /** Commit the latest keystrokes before a share picker can reopen this session under a new ID. */
     suspend fun persistComposerDraft() {
         draftReady.await()
         draftJob?.cancelAndJoin()
-        drafts?.save(sessionId, composerText.value)
+        drafts?.save(sessionId, composerDraft.value.text)
     }
 
     /** Caller is the chat entry's Main-thread effect; cancellation preserves the inbox batch. */
@@ -891,8 +1070,9 @@ class ChatViewModel(
             draftReady.await()
             draftJob?.cancelAndJoin()
             if (share.text.isNotBlank() && share.id !in importedShareTexts) {
-                composerText.value = drafts?.appendSharedText(sessionId, share.id, composerText.value, share.text)
-                    ?: appendSharedText(composerText.value, share.text)
+                val appended = drafts?.appendSharedText(sessionId, share.id, composerDraft.value.text, share.text)
+                    ?: appendSharedText(composerDraft.value.text, share.text)
+                replaceComposerTextRaw(appended)
                 importedShareTexts += share.id
             }
             for (file in share.files) {
@@ -917,7 +1097,7 @@ class ChatViewModel(
 
     /** Dictation transcript arrived: append with a space separator (web `appendTranscript`). */
     fun appendDictatedText(transcript: String) {
-        setComposerText(appendTranscript(composerText.value, transcript))
+        setComposerText(appendTranscript(composerDraft.value.text, transcript))
     }
 
     /**
@@ -928,7 +1108,7 @@ class ChatViewModel(
      */
     fun insertComposerText(text: String) {
         if (text.isBlank()) return
-        val current = composerText.value
+        val current = composerDraft.value.text
         setComposerText(if (current.isBlank()) text else "${current.trimEnd()}\n$text")
     }
 
@@ -940,14 +1120,14 @@ class ChatViewModel(
      */
     fun parkComposerDraft() {
         val store = scratchlist ?: return
-        val text = composerText.value
+        val text = composerDraft.value.text
         if (text.isBlank()) return
         scope.launch {
             when (val result = store.createEntry(sessionId, text)) {
                 is ScratchlistCreateResult.Created -> {
                     // Clear only when the draft is still what we parked (the
                     // operator may have kept typing while the POST ran).
-                    if (composerText.value == text) setComposerText("")
+                    if (composerDraft.value.text == text) setComposerText("")
                     _events.tryEmit(ChatEvent.Notice(ChatNotice.DraftParked))
                 }
                 ScratchlistCreateResult.AtCap ->
@@ -961,6 +1141,82 @@ class ChatViewModel(
     /** Dropdown tap: replace the slash token with `/name ` ready for arguments. */
     fun selectSlashCommand(command: SlashCommand) {
         setComposerText("/${command.name} ")
+    }
+
+    /**
+     * Mention dropdown tap: replace the active `@word` at the composer caret
+     * with the suggestion's insert text (web `applySuggestion` — whole-word
+     * swap + trailing space, cursor landing after the insertion). Replacing
+     * the word closes the menu.
+     */
+    fun selectMentionSuggestion(suggestion: MentionSuggestion) {
+        val draft = composerDraft.value
+        val edit = Mentions.applySuggestion(draft.text, draft.selectionStart, draft.selectionEnd, suggestion.insertText)
+        setComposerText(edit.text, edit.cursorPosition)
+    }
+
+    /**
+     * Schedule-picker selection / clock-button clear (B-M16b). Mirrors the
+     * web SessionChat `updatePendingSchedule`: every call — including clears
+     * — bumps [pendingScheduleRevision], and absolute picks also arm an
+     * expiry auto-clear (a pick whose instant passes stops highlighting the
+     * clock instead of silently scheduling into the past; a within-grace
+     * past pick — still valid at validation time — clears immediately, the
+     * web's exact `remaining <= 0` behavior). Presets are send-relative and
+     * never expire on a timer.
+     *
+     * Mutual exclusion (wire: `scheduledAt` excludes attachments): arming a
+     * pick while the tray holds any chip is REJECTED here. The clock button
+     * disables with a non-empty tray, but the picker panel can stay open
+     * across an attachment add and the share-import path can drop a file in
+     * while a pick is armed — the ViewModel transition is the gate the UI
+     * gates only mirror; [sendMessage] validates again before consuming.
+     * Clearing is always allowed.
+     */
+    fun setPendingSchedule(pending: PendingSchedule?) {
+        // Fast path: apply inline while uncontended so UI callbacks (and the
+        // JVM tests driving them) stay synchronous. When the edit-restore
+        // coroutine holds the lock, queue behind it on the holder scope.
+        if (scheduleMutex.tryLock()) {
+            try {
+                applyPendingScheduleLocked(pending)
+            } finally {
+                scheduleMutex.unlock()
+            }
+        } else {
+            scope.launch { scheduleMutex.withLock { applyPendingScheduleLocked(pending) } }
+        }
+    }
+
+    /**
+     * The transition itself — caller must hold [scheduleMutex]. Atomic by
+     * construction: the value swap, the revision bump and the expiry-job
+     * registration happen with no interleaving point between them.
+     */
+    private fun applyPendingScheduleLocked(pending: PendingSchedule?) {
+        if (pending != null && attachments.items.value.isNotEmpty()) return
+        pendingScheduleExpiryJob?.cancel()
+        pendingScheduleExpiryJob = null
+        mutablePendingSchedule.value = pending
+        val armedRevision = pendingScheduleRevision.incrementAndGet()
+        if (!ScheduleSend.shouldAutoClearPendingSchedule(pending)) return
+        val ms = (pending as PendingSchedule.Absolute).ms
+        val remaining = ms - now()
+        if (remaining <= 0) {
+            mutablePendingSchedule.value = null
+            return
+        }
+        pendingScheduleExpiryJob = scope.launch {
+            delay(remaining)
+            // Revision guard: only the timer armed by the CURRENT pick may
+            // clear it. A timer that lost a race (or an obsolete restore)
+            // sees a newer revision and no-ops instead of clobbering.
+            scheduleMutex.withLock {
+                if (pendingScheduleRevision.get() != armedRevision) return@withLock
+                mutablePendingSchedule.value = null
+                pendingScheduleRevision.incrementAndGet()
+            }
+        }
     }
 
     /**
@@ -993,6 +1249,13 @@ class ChatViewModel(
      * Ready attachments are consumed into `SendMessageRequest.attachments`;
      * an unsettled chip (uploading/failed) blocks the send with a notice.
      * Text may be empty when attachments exist (wire: text OR attachments).
+     *
+     * B-M16b: a pending schedule resolves here, at the send instant (web
+     * `resolvePendingSchedule(pending, Date.now())`) — presets are relative to
+     * the Send tap. A pending pick also downgrades a steer long-press to
+     * queue: the wire forbids `scheduledAt` + steer and the web forces the
+     * send intent to 'default' while a schedule is pending. The pick is
+     * cleared with the draft once the send consumes it.
      */
     fun sendMessage(steer: Boolean = false) {
         if (sendInFlight.value || importingShare.value) return
@@ -1000,16 +1263,37 @@ class ChatViewModel(
             _events.tryEmit(ChatEvent.Notice(ChatNotice.AttachmentsUploading))
             return
         }
-        val text = composerText.value.trim()
+        val text = composerDraft.value.text.trim()
+        val scheduledAt = ScheduleSend.resolvePendingSchedule(mutablePendingSchedule.value, now())
+        // Mutual exclusion, checked BEFORE the draft clears or the tray
+        // consumes: a scheduled send cannot carry attachments on the wire,
+        // and the pre-consume order keeps both recoverable — the chips stay
+        // in the tray and the draft keeps its text so the operator can drop
+        // one side and re-tap Send. (Reaching performSend with the combo
+        // would throw on its invariant before a recoverable row exists.)
+        if (scheduledAt != null && attachments.items.value.isNotEmpty()) {
+            _events.tryEmit(ChatEvent.Notice(ChatNotice.ScheduleAttachmentConflict))
+            return
+        }
         val attachmentMetadata = attachments.consume()
         if (text.isEmpty() && attachmentMetadata == null) return
-        composerText.value = ""
+        val deliveryMode = if (steer && scheduledAt == null) "steer" else "queue"
+        replaceComposerTextRaw("")
+        // 分歧 (same intent as the web, Android-native restore): the web
+        // clears the pick in SessionChat only after the send is accepted and
+        // restores it on failure; the Android failed row already carries wire
+        // `scheduledAt` and `retryFailedMessage` re-fires with it — the retry
+        // IS the restore — so clearing at dispatch loses nothing.
+        setPendingSchedule(null)
         draftJob?.cancel()
         sendInFlight.value = true
         scope.launch {
             try {
                 drafts?.let { runCatching { it.clear(sessionId) } }
-                if (attachmentMetadata == null && (text == "/clear" || text == "/new") &&
+                // A scheduled /clear|/new goes out as a queued message like any
+                // other scheduled text (web gates the shortcut the same way).
+                if (attachmentMetadata == null && scheduledAt == null &&
+                    (text == "/clear" || text == "/new") &&
                     sessionStore.sessionDetail(sessionId).first()?.metadata?.capabilities?.concurrentClients == true) {
                     sendInFlight.value = true
                     try {
@@ -1018,7 +1302,7 @@ class ChatViewModel(
                     } catch (cancellation: CancellationException) {
                         throw cancellation
                     } catch (error: Exception) {
-                        composerText.value = text
+                        replaceComposerTextRaw(text)
                         _events.tryEmit(ChatEvent.Notice(ChatNotice.ReopenFailed(error.message)))
                     } finally { sendInFlight.value = false }
                     return@launch
@@ -1027,8 +1311,9 @@ class ChatViewModel(
                     text = text,
                     localId = localIdGenerator(),
                     createdAt = now(),
-                    deliveryMode = if (steer) "steer" else "queue",
+                    deliveryMode = deliveryMode,
                     attachments = attachmentMetadata,
+                    scheduledAt = scheduledAt,
                     isRetry = false,
                 )
             } finally { sendInFlight.value = false }
@@ -1339,20 +1624,52 @@ class ChatViewModel(
         }
     }
 
-    /** Edit = cancel + prefill composer (kept when the operator typed meanwhile). */
+    /**
+     * Edit = cancel + prefill composer (kept when the operator typed
+     * meanwhile). B-M16b: a future `scheduledAt` re-arms the pending schedule
+     * as an absolute pick so a re-send keeps (or adjusts) the fire time;
+     * past/null clears it so the re-send goes out immediately (web
+     * `computeEditPendingSchedule`). The restore is guarded by the schedule
+     * revision, like the web's `pendingScheduleRevisionAtEdit` check in
+     * `onEdit`: every schedule interaction bumps the revision, so a pick —
+     * or a pick and an explicit clear of it — re-made while the cancel
+     * round-trip is in flight wins over the restore even when the slot's
+     * value lands back where it started (value equality cannot see that).
+     * The restore is also skipped (with a notice) when the attachment tray
+     * is non-empty — a schedule cannot carry attachments on the wire and
+     * the clock button is disabled while the tray is non-empty, so
+     * re-arming would arm a state the operator can neither see nor clear,
+     * and the send would crash on the scheduledAt+attachments invariant.
+     */
     fun editQueuedMessage(messageId: String) {
+        // Snapshot on the calling thread: a single atomic read — any
+        // schedule interaction after the tap (pick, clear, expiry) bumps the
+        // revision and must win over the restore below.
+        val revisionAtEdit = pendingScheduleRevision.get()
         scope.launch {
             val store = awaitWindowStore()
             val row = store.state.value.messages.firstOrNull { it.id == messageId } ?: return@launch
             val preview = queuedPreview(row)
             val editText = preview.text.ifEmpty { preview.attachmentNames.joinToString(", ") }
-            val composerAtEdit = composerText.value
+            val restoredSchedule = ScheduleSend.computeEditPendingSchedule(row.wire.scheduledAt, now())
+            val composerAtEdit = composerDraft.value.text
             when (cancelQueuedInternal(messageId)) {
                 "cancelled" -> {
-                    if (composerText.value == composerAtEdit) {
+                    if (composerDraft.value.text == composerAtEdit) {
                         setComposerText(editText)
                     } else {
                         _events.tryEmit(ChatEvent.Notice(ChatNotice.QueuedEditKeptDraft))
+                    }
+                    // Check + restore as one critical section, serialized
+                    // against picker picks and expiry timers by the same
+                    // mutex the transitions hold.
+                    scheduleMutex.withLock {
+                        if (pendingScheduleRevision.get() != revisionAtEdit) return@withLock
+                        if (restoredSchedule != null && attachments.items.value.isNotEmpty()) {
+                            _events.tryEmit(ChatEvent.Notice(ChatNotice.QueuedEditScheduleDropped))
+                        } else {
+                            applyPendingScheduleLocked(restoredSchedule)
+                        }
                     }
                 }
                 "invoked" -> _events.tryEmit(ChatEvent.Notice(ChatNotice.QueuedAlreadyDelivered))
@@ -1791,7 +2108,7 @@ class ChatViewModel(
         if (draftReady.isCompleted) return
         try {
             val draft = drafts?.load(sessionId)
-            if (composerText.value.isEmpty() && draft != null) composerText.value = draft
+            if (composerDraft.value.text.isEmpty() && draft != null) replaceComposerTextRaw(draft)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
@@ -1867,7 +2184,7 @@ class ChatViewModel(
         val agentState = inputs.detail?.agentState
         val reduced = reduceChatBlocks(normalized, agentState)
         val visibleBlocks = buildVisibleChatBlocks(
-            reduced.blocks,
+            filterEmptyReasoning(reduced.blocks),
             ToolGroupingOptions(hasMoreMessages = window.hasMore, previousGroups = previousGroups),
         )
         previousGroups = visibleBlocks.filterIsInstance<ToolGroupBlock>()
@@ -1890,12 +2207,22 @@ class ChatViewModel(
         // syncGeneration 0 = no tail sync has even begun (the moment between
         // open and syncTail) — still "loading", never a flash of empty state.
         val syncSettled = !window.isSyncingTail && window.syncGeneration > 0
+        val flavor = inputs.detail?.metadata?.flavor ?: inputs.summary?.metadata?.flavor
+        // Composer-strip context readout rides the session-level usage
+        // projection; the window falls back to a flavor/model estimate when
+        // the usage signal omits one.
+        val contextUsage = ContextUsage.indicator(
+            usage = reduced.latestUsage,
+            sessionModel = inputs.detail?.model,
+            flavor = flavor,
+        )
         return ChatUiState(
             sessionId = sessionId,
             header = buildHeader(inputs),
-            flavor = inputs.detail?.metadata?.flavor ?: inputs.summary?.metadata?.flavor,
+            flavor = flavor,
             basePath = inputs.detail?.metadata?.path ?: inputs.summary?.metadata?.path,
             blocks = transcriptProjection.project(visibleBlocks),
+            messageAggregates = aggregateResponseGroups(visibleBlocks),
             processSteps = visibleBlocks.filterIsInstance<ToolCallBlock>().filter(::opensToolProcess)
                 .associate { it.id to it.children.size },
             permissionOverrides = inputs.permissionOverrides,
@@ -1912,8 +2239,18 @@ class ChatViewModel(
             requiresLatestReset = window.requiresLatestReset,
             readThroughRevision = window.readThroughRevision,
             renderedReadState = SessionReadState.merge(inputs.detail?.readState, inputs.summary?.readState),
+            contextUsage = contextUsage,
         )
     }
+
+    // Web's assistant-ui drops blank reasoning parts; hide them before native
+    // presentation too, including in nested agent processes.
+    private fun filterEmptyReasoning(blocks: List<ChatBlock>): List<ChatBlock> =
+        blocks.filterNot { it is AgentReasoningBlock && it.text.isBlank() }.onEach { block ->
+            if (block is ToolCallBlock && block.children.isNotEmpty()) {
+                block.children = filterEmptyReasoning(block.children)
+            }
+        }
 
     /** A settled request (gone from `agentState.requests`) drops its override. */
     private fun prunePermissionOverrides(

@@ -15,6 +15,7 @@ import {
     type SDKControlRequest,
     type ControlRequest,
     type SetPermissionModeRequest,
+    type ApplyFlagSettingsRequest,
     type SDKControlResponse,
     type CanCallToolCallback,
     type CanUseToolControlRequest,
@@ -196,6 +197,36 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
     }
 
     /**
+     * Query the running Claude process for its authenticated account/provider identity.
+     */
+    async getAccountIdentity(): Promise<string | null> {
+        if (!this.childStdin) {
+            throw new Error('getAccountIdentity requires --input-format stream-json')
+        }
+
+        const response = await this.request({
+            subtype: 'initialize'
+        } as unknown as ControlRequest, this.childStdin) as {
+            response?: {
+                account?: {
+                    email?: string
+                    accountUuid?: string
+                    tokenSource?: string
+                    apiProvider?: string
+                }
+            }
+        }
+        const account = response.response?.account
+        if (typeof account?.email === 'string' && account.email.trim()) {
+            return `acct:${account.email.trim().toLowerCase()}`
+        }
+        if (typeof account?.accountUuid === 'string' && account.accountUuid.trim()) {
+            return `acct:${account.accountUuid.trim().toLowerCase()}`
+        }
+        return null
+    }
+
+    /**
      * Change Claude's native permission mode without restarting the process
      */
     async setPermissionMode(mode: ClaudePermissionMode): Promise<void> {
@@ -207,6 +238,21 @@ export class Query implements AsyncIterableIterator<SDKMessage> {
             subtype: 'set_permission_mode',
             mode
         } as SetPermissionModeRequest, this.childStdin)
+    }
+
+    /**
+     * Change the session effort without restarting the process; null restores
+     * the model default. Older Claude Code builds reject the request.
+     */
+    async setEffort(effort: string | null): Promise<void> {
+        if (!this.childStdin) {
+            throw new Error('setEffort requires --input-format stream-json')
+        }
+
+        await this.request({
+            subtype: 'apply_flag_settings',
+            settings: { effortLevel: effort }
+        } as ApplyFlagSettingsRequest, this.childStdin)
     }
 
     /**
@@ -348,6 +394,7 @@ export function query(config: {
             fallbackModel,
             settingsPath,
             strictMcpConfig,
+            replayUserMessages,
             canCallTool,
             promptFailureCleanupTimeoutMs = DEFAULT_PROMPT_FAILURE_CLEANUP_TIMEOUT_MS
         } = {}
@@ -396,6 +443,7 @@ export function query(config: {
         args.push('--print', stripNewlinesForWindowsShellArg(prompt.trim()))
     } else {
         args.push('--input-format', 'stream-json')
+        if (replayUserMessages) args.push('--replay-user-messages')
     }
 
     // Determine how to spawn Claude Code

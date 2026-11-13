@@ -3,6 +3,7 @@ package app.hapi.companion.feature.home
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.os.Build
+import android.view.KeyEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.enableEdgeToEdge
@@ -130,8 +131,21 @@ class HomeScreenTest {
 
     private fun label(id: Int) = context.getString(id)
     private fun openFilters() = compose.onNodeWithContentDescription(label(R.string.sessions_filters)).performClick()
+    // Send a real Back event: dispatching straight to the activity skips the
+    // IME's pre-IME handling, which dismisses the keyboard before app callbacks.
     private fun pressBack() {
-        compose.runOnUiThread { compose.activity.onBackPressedDispatcher.onBackPressed() }
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_BACK)
+    }
+
+    private fun platformImeVisible(): Boolean {
+        var visible = false
+        compose.runOnUiThread {
+            // On API 29 the decor sees IME insets that ADJUST_RESIZE consumes
+            // before they reach Compose. Observe the actual window instead.
+            visible = ViewCompat.getRootWindowInsets(compose.activity.window.decorView)
+                ?.isVisible(WindowInsetsCompat.Type.ime()) == true
+        }
+        return visible
     }
 
     /**
@@ -198,6 +212,26 @@ class HomeScreenTest {
             .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, label(R.string.sessions_filters_active)))
     }
 
+    @Test fun sheetShowsStatusAndSortChoicesBelowTheFilters() {
+        sessions.sessions.value = sessions.sessions.value.map { if (it.id == "research") it.copy(active = false) else it }
+        mount()
+        openFilters()
+        // "Show" is one row whose value opens a menu of statuses.
+        compose.onNodeWithTag("session-status-filter").performClick()
+        compose.onNodeWithText(label(R.string.sessions_view_status_archived)).performClick()
+        compose.waitUntil(10_000) { viewModel.uiState.value.rows.map { it.id } == listOf("research") }
+        compose.onNodeWithTag("session-filters").performScrollToNode(hasTestTag("session-active-first"))
+        compose.onNodeWithTag("session-active-first").assertIsDisplayed().performClick()
+        compose.waitUntil(10_000) { !viewModel.uiState.value.order.activeFirst && viewModel.uiState.value.isCustomized }
+        compose.onNodeWithTag("session-active-first").performClick()
+        compose.waitUntil(10_000) { viewModel.uiState.value.order.activeFirst }
+        compose.onNodeWithText(label(R.string.sessions_filters_reset)).performClick()
+        compose.waitUntil(10_000) { !viewModel.uiState.value.hasActiveFilters && viewModel.uiState.value.rows.size == 3 }
+        compose.onNodeWithText(label(R.string.sessions_filters_done)).performClick()
+        compose.onNodeWithContentDescription(label(R.string.sessions_filters))
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, label(R.string.sessions_filter_all)))
+    }
+
     @Test fun singleMachineStillOffersDateFilteringAndReset() {
         sessions.sessions.value = sessions.sessions.value.filter { it.metadata?.machineId == "laptop" }
         viewModel.setDateRange(today, today)
@@ -239,15 +273,15 @@ class HomeScreenTest {
         mount()
         compose.onNodeWithContentDescription(label(R.string.sessions_search_open)).performClick()
         compose.onNodeWithTag("home-search-input").performTextInput("Build")
-        awaitPhase("IME appears after opening search") { imeVisible }
+        awaitPhase("IME appears after opening search") { platformImeVisible() }
         pressBack()
-        awaitPhase("IME hides after Back") { !imeVisible }
+        awaitPhase("IME hides after Back") { !platformImeVisible() }
         compose.onNodeWithTag("home-search-input").assertIsDisplayed().assertTextEquals("Build")
 
         compose.onNodeWithTag("home-search-input").performClick()
-        awaitPhase("IME appears after re-focusing the search field") { imeVisible }
+        awaitPhase("IME appears after re-focusing the search field") { platformImeVisible() }
         compose.onNodeWithTag("home-search-input").performImeAction()
-        awaitPhase("IME hides after the IME Search action") { !imeVisible }
+        awaitPhase("IME hides after the IME Search action") { !platformImeVisible() }
         compose.onNodeWithTag("home-search-input").assertIsDisplayed().assertTextEquals("Build")
         pressBack()
         awaitPhase("search closes once the keyboard is already hidden") {

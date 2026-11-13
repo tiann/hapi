@@ -466,6 +466,44 @@ describe('updateSessionMetadata: refuse un-archive (#1911 M1)', () => {
 })
 
 describe('updateSessionMetadata: protocol resume token preservation', () => {
+    it('preserves a generated fork summary across sparse child startup metadata', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'fork-summary-preserve',
+            { path: '/tmp/project', host: 'example', summary: { text: 'Fork: Source title', updatedAt: 1234 } },
+            null,
+            'default'
+        )
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            { path: '/tmp/project', host: 'example', lifecycleState: 'running' },
+            session.metadataVersion,
+            'default'
+        )
+        expect(result.result).toBe('success')
+        expect(getMetadata(store, session.id)?.summary).toEqual({ text: 'Fork: Source title', updatedAt: 1234 })
+        store.close()
+    })
+
+    it('does not globally preserve ordinary summaries across sparse metadata updates', () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession(
+            'ordinary-summary-replace',
+            { path: '/tmp/project', host: 'example', summary: { text: 'Generated title', updatedAt: 1234 } },
+            null,
+            'default'
+        )
+        const result = store.sessions.updateSessionMetadata(
+            session.id,
+            { path: '/tmp/project', host: 'example', lifecycleState: 'running' },
+            session.metadataVersion,
+            'default'
+        )
+        expect(result.result).toBe('success')
+        expect(getMetadata(store, session.id)?.summary).toBeUndefined()
+        store.close()
+    })
+
     it('preserves the automatic title attempt marker across sparse metadata updates', () => {
         const store = makeStore()
         const session = store.sessions.getOrCreateSession(
@@ -577,7 +615,8 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
         ['cursorSessionId', 'cursor-thread-x'],
         ['kimiSessionId', 'kimi-thread-x'],
         ['copilotSessionId', 'copilot-thread-x'],
-        ['piSessionId', 'pi-thread-x']
+        ['piSessionId', 'pi-thread-x'],
+        ['dshSessionId', 'dsh-thread-x']
     ])('preserves %s across an archive metadata replacement', (field, value) => {
         const store = makeStore()
         const session = store.sessions.getOrCreateSession(
@@ -862,6 +901,150 @@ describe('updateSessionMetadata: protocol resume token preservation', () => {
         expect(metadata?.host).toBe('example')
         expect(metadata?.cursorSessionId).toBe('parse-required')
         expect(metadata?.lifecycleState).toBe('archived')
+    })
+
+    it('preserves lastModelError across sparse archive (durable alert state)', () => {
+        const store = makeStore()
+        const lastModelError = {
+            eventId: 'evt-1700000000000',
+            kind: 'quota_exhausted',
+            transient: false,
+            rawSnippet: 'Error: T: [resource_exhausted]',
+            atTs: 1_700_000_000_000,
+            priorAssistantClaimsDone: false
+        }
+        const session = store.sessions.getOrCreateSession(
+            'cursor-model-error-survives',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                cursorSessionId: 'err-uuid',
+                lastModelError
+            },
+            null,
+            'default'
+        )
+
+        store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                lifecycleState: 'archived',
+                archivedBy: 'cli',
+                archiveReason: 'Session crashed'
+            },
+            session.metadataVersion,
+            'default'
+        )
+
+        const metadata = getMetadata(store, session.id) as Record<string, unknown> | null
+        expect(metadata?.lastModelError).toEqual(lastModelError)
+        expect(metadata?.lifecycleState).toBe('archived')
+    })
+
+    it('preserves lastModelError.acknowledgedAt against stale CLI rewrite of same eventId', () => {
+        const store = makeStore()
+        const eventId = 'evt-ack-1700000000111'
+        const atTs = 1_700_000_000_111
+        const session = store.sessions.getOrCreateSession(
+            'cursor-model-error-ack-survives',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                cursorSessionId: 'ack-uuid',
+                lastModelError: {
+                    eventId,
+                    kind: 'quota_exhausted',
+                    transient: false,
+                    rawSnippet: 'Error: T: [resource_exhausted]',
+                    atTs,
+                    priorAssistantClaimsDone: false,
+                    acknowledgedAt: 1_700_000_000_222
+                }
+            },
+            null,
+            'default'
+        )
+
+        // CLI local snapshot still has the same error without acknowledgedAt.
+        store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                cursorSessionId: 'ack-uuid',
+                lastModelError: {
+                    eventId,
+                    kind: 'quota_exhausted',
+                    transient: false,
+                    rawSnippet: 'Error: T: [resource_exhausted]',
+                    atTs,
+                    priorAssistantClaimsDone: false
+                }
+            },
+            session.metadataVersion,
+            'default'
+        )
+
+        const metadata = getMetadata(store, session.id) as {
+            lastModelError?: { atTs?: number; acknowledgedAt?: number }
+        } | null
+        expect(metadata?.lastModelError?.atTs).toBe(atTs)
+        expect(metadata?.lastModelError?.acknowledgedAt).toBe(1_700_000_000_222)
+    })
+
+    it('preserves lastModelError.notifiedAt against stale CLI rewrite of same eventId', () => {
+        const store = makeStore()
+        const eventId = 'evt-notified-1700000000333'
+        const atTs = 1_700_000_000_333
+        const session = store.sessions.getOrCreateSession(
+            'cursor-model-error-notified-survives',
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                cursorSessionId: 'notify-uuid',
+                lastModelError: {
+                    eventId,
+                    kind: 'rate_limited',
+                    transient: true,
+                    rawSnippet: 'Error: T: [resource_exhausted]',
+                    atTs,
+                    priorAssistantClaimsDone: false,
+                    notifiedAt: 1_700_000_000_444
+                }
+            },
+            null,
+            'default'
+        )
+
+        store.sessions.updateSessionMetadata(
+            session.id,
+            {
+                path: '/tmp/project',
+                host: 'example',
+                flavor: 'cursor',
+                cursorSessionId: 'notify-uuid',
+                lastModelError: {
+                    eventId,
+                    kind: 'rate_limited',
+                    transient: true,
+                    rawSnippet: 'Error: T: [resource_exhausted]',
+                    atTs,
+                    priorAssistantClaimsDone: false
+                }
+            },
+            session.metadataVersion,
+            'default'
+        )
+
+        const metadata = getMetadata(store, session.id) as {
+            lastModelError?: { atTs?: number; notifiedAt?: number }
+        } | null
+        expect(metadata?.lastModelError?.atTs).toBe(atTs)
+        expect(metadata?.lastModelError?.notifiedAt).toBe(1_700_000_000_444)
     })
 
     it('does not invent path or host when prior had none', () => {

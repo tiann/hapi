@@ -32,7 +32,7 @@ export function getClaudeComposerEffortOptions(
         ? CLAUDE_EFFORT_LEVELS.filter((effort) => supportedLevels.includes(effort))
         : CLAUDE_EFFORT_LEVELS
     const options: ClaudeComposerEffortOption[] = [
-        { value: null, label: 'Auto' }
+        { value: null, label: 'Default' }
     ]
 
     if (

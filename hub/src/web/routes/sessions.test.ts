@@ -4,6 +4,7 @@ import type { Session, SyncEngine } from '../../sync/syncEngine'
 import { TitleSuggestionError } from '../../sync/titleSuggestion'
 import type { WebAppEnv } from '../middleware/auth'
 import { createSessionsRoutes } from './sessions'
+import { ArchiveCleanupError } from '../../sync/archiveCleanupError'
 import { RpcTargetMissingError } from '../../sync/rpcGateway'
 
 function createSession(overrides?: Partial<Session>): Session {
@@ -65,8 +66,11 @@ function createApp(session: Session, opts?: {
     getSessionExport?: (sessionId: string, session: Session, options?: { force?: boolean }) => unknown
     sessionExists?: boolean
     archiveSession?: (sessionId: string) => Promise<void>
+    acknowledgeModelError?: (sessionId: string, eventId: string) => Promise<void>
     getCursorChatStoreStatus?: SyncEngine['getCursorChatStoreStatus']
     listCodexModelsForSession?: SyncEngine['listCodexModelsForSession']
+    listDshModelsForSession?: SyncEngine['listDshModelsForSession']
+    listPiModelsForSession?: SyncEngine['listPiModelsForSession']
     forkConversation?: SyncEngine['forkConversation']
     clearConversation?: SyncEngine['clearConversation']
     implementCodexPlan?: SyncEngine['implementCodexPlan']
@@ -74,8 +78,11 @@ function createApp(session: Session, opts?: {
     suggestSessionTitle?: SyncEngine['suggestSessionTitle']
     renameSession?: SyncEngine['renameSession']
     updateSessionSummary?: SyncEngine['updateSessionSummary']
+    getPrimaryAttachedJobsBySessionIds?: SyncEngine['getPrimaryAttachedJobsBySessionIds']
+    allocateAttachedJobVersion?: SyncEngine['allocateAttachedJobVersion']
     setSessionPinned?: (sessionId: string, pinned: boolean) => void
     setSessionPinMode?: (sessionId: string, mode: 'none' | 'project' | 'global') => void
+    namespace?: string
 }) {
     const applySessionConfigCalls: Array<[string, Record<string, unknown>]> = []
     const applySessionConfig = async (sessionId: string, config: Record<string, unknown>) => {
@@ -140,6 +147,7 @@ function createApp(session: Session, opts?: {
     }))
     const sessionExists = opts?.sessionExists !== false
     const archiveSessionMock = opts?.archiveSession ?? (async () => {})
+    const acknowledgeModelErrorMock = opts?.acknowledgeModelError ?? (async () => {})
     const engine = {
         resolveSessionAccess: () => sessionExists
             ? { ok: true, sessionId: session.id, session }
@@ -149,6 +157,15 @@ function createApp(session: Session, opts?: {
         listCodexModelsForSession: opts?.listCodexModelsForSession ?? (async () => ({
             success: true,
             models: []
+        })),
+        listDshModelsForSession: opts?.listDshModelsForSession ?? (async () => ({
+            success: true,
+            models: []
+        })),
+        listPiModelsForSession: opts?.listPiModelsForSession ?? (async () => ({
+            success: true,
+            availableModels: [],
+            currentModelId: null
         })),
         listOpencodeModelsForSession,
         listOpencodeReasoningEffortOptionsForSession,
@@ -164,6 +181,7 @@ function createApp(session: Session, opts?: {
         archiveSession: archiveSessionMock,
         setSessionPinned: opts?.setSessionPinned ?? (() => {}),
         setSessionPinMode: opts?.setSessionPinMode ?? (() => {}),
+        acknowledgeModelError: acknowledgeModelErrorMock,
         getSessionExport: opts?.getSessionExport ?? (() => ({
             type: 'success',
             payload: {
@@ -184,12 +202,14 @@ function createApp(session: Session, opts?: {
         rewindConversation: opts?.rewindConversation ?? (async () => ({ type: 'success' })),
         suggestSessionTitle: opts?.suggestSessionTitle ?? (async () => 'Generated title'),
         renameSession: opts?.renameSession ?? (async () => {}),
-        updateSessionSummary: opts?.updateSessionSummary ?? (async () => {})
+        updateSessionSummary: opts?.updateSessionSummary ?? (async () => {}),
+        getPrimaryAttachedJobsBySessionIds: opts?.getPrimaryAttachedJobsBySessionIds ?? (() => new Map()),
+        allocateAttachedJobVersion: opts?.allocateAttachedJobVersion ?? (() => Date.now())
     } as Partial<SyncEngine>
 
     const app = new Hono<WebAppEnv>()
     app.use('*', async (c, next) => {
-        c.set('namespace', 'default')
+        c.set('namespace', opts?.namespace ?? 'default')
         await next()
     })
     app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
@@ -210,6 +230,8 @@ describe('sessions routes', () => {
         expect(calls).toEqual([['session-1', 'default', 'plan']])
         result = { ok: false, code: 'stale_plan', error: 'Old plan' }
         expect((await post()).status).toBe(409)
+        result = { ok: false, code: 'failed', error: 'Try again' }
+        expect((await post()).status).toBe(500)
         result = { ok: false, code: 'indeterminate', error: 'Unknown result' }
         expect((await post()).status).toBe(503)
     })
@@ -495,6 +517,53 @@ describe('sessions routes', () => {
         })
     })
 
+    it('returns a stable code when the DSH session model RPC target is absent', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'dsh' }
+        })
+        const { app } = createApp(session, {
+            listDshModelsForSession: async () => {
+                throw new RpcTargetMissingError('session-1:listDshModels', 'handler-not-registered')
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/dsh-models')
+
+        expect(response.status).toBe(503)
+        expect(await response.json()).toEqual({
+            success: false,
+            error: 'RPC handler not registered: session-1:listDshModels',
+            code: 'rpc_target_missing'
+        })
+    })
+
+    it('serves Pi session model lists through the engine cache wrapper', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'pi' }
+        })
+        const captured: string[] = []
+        const { app } = createApp(session, {
+            listPiModelsForSession: async (sessionId) => {
+                captured.push(sessionId)
+                return {
+                    success: true,
+                    availableModels: [{ provider: 'openai-codex', modelId: 'gpt-5.6-sol' }],
+                    currentModelId: 'gpt-5.6-sol'
+                }
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/pi-models')
+
+        expect(response.status).toBe(200)
+        expect(captured).toEqual(['session-1'])
+        expect(await response.json()).toEqual({
+            success: true,
+            availableModels: [{ provider: 'openai-codex', modelId: 'gpt-5.6-sol' }],
+            currentModelId: 'gpt-5.6-sol'
+        })
+    })
+
     it('returns the machine-scoped Cursor chat store status', async () => {
         const session = createSession({
             active: false,
@@ -722,9 +791,32 @@ describe('sessions routes', () => {
 
         expect(response.status).toBe(400)
         expect(await response.json()).toEqual({
-            error: 'Model reasoning effort is only supported for Codex and OpenCode sessions'
+            error: 'Model reasoning effort is only supported for Codex, OpenCode, and DSH sessions'
         })
         expect(applySessionConfigCalls).toEqual([])
+    })
+
+    it('applies model reasoning effort changes for remote DSH sessions', async () => {
+        const session = createSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'dsh'
+            }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model-reasoning-effort', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ modelReasoningEffort: 'max' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ ok: true })
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { modelReasoningEffort: 'max' }]
+        ])
     })
 
     it('rejects model reasoning effort changes for local Codex sessions', async () => {
@@ -1647,6 +1739,27 @@ describe('sessions routes', () => {
     // rows and for split-brain rows whose CLI is gone but the in-memory `active`
     // flag has not been reconciled to false yet.
     describe('POST /sessions/:id/archive (tiann/hapi#916)', () => {
+        it.each(['timeout', 'unavailable', 'unconfirmed'] as const)('returns a structured cleanup %s without claiming archive success', async (reason) => {
+            const error = new ArchiveCleanupError(reason)
+            const { app } = createApp(createSession({ active: true }), {
+                archiveSession: async () => { throw error },
+            })
+            const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
+            expect(response.status).toBe(error.status)
+            expect(await response.json()).toEqual({ error: error.message, code: error.code })
+        })
+
+        it('rechecks Runner cleanup for an already inactive archived row on retry', async () => {
+            let calls = 0
+            const session = createSession({ active: false, metadata: {
+                path: '/tmp/project', host: 'localhost', flavor: 'codex', machineId: 'machine-1',
+                lifecycleState: 'archived', startedBy: 'runner',
+            } })
+            const { app } = createApp(session, { archiveSession: async () => { calls++ } })
+            const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
+            expect(response.status).toBe(200)
+            expect(calls).toBe(1)
+        })
         it('returns 2xx and calls archiveSession for an active session', async () => {
             const calls: string[] = []
             const session = createSession({ active: true })
@@ -1938,6 +2051,8 @@ describe('sessions routes', () => {
                 return new Map(ids.map((id) => [id, 0]))
             },
             getNextScheduledAtBySessionIds: (_ids: string[]) => new Map<string, number>(),
+            getPrimaryAttachedJobsBySessionIds: () => new Map(),
+            allocateAttachedJobVersion: () => Date.now(),
             resolveSessionAccess: () => ({ ok: false, reason: 'not-found' as const })
         } as unknown as Partial<SyncEngine>
 
@@ -1960,6 +2075,242 @@ describe('sessions routes', () => {
         expect(unlimitedBody.sessions).toHaveLength(3)
     })
 
+    it('searches message content only through the explicit content endpoint', async () => {
+        const session = createSession({ id: 'content-session' })
+        const engine = {
+            getSessionsByNamespace: () => [session],
+            getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
+            getNextScheduledAtBySessionIds: (ids: string[]) => new Map(ids.map((id) => [id, null])),
+            getPrimaryAttachedJobsBySessionIds: () => new Map(),
+            allocateAttachedJobVersion: () => Date.now(),
+            hasPotentiallyIncompleteSessionContent: (namespace: string, query: string, sessionIds?: readonly string[]) => {
+                expect(namespace).toBe('default')
+                expect(query).toBe('needle')
+                expect(sessionIds).toEqual([session.id])
+                return true
+            },
+            searchSessionContent: (query: string, namespace: string, limit: number, sessionIds?: readonly string[]) => {
+                expect(query).toBe('needle')
+                expect(namespace).toBe('default')
+                expect(limit).toBe(7)
+                expect(sessionIds).toEqual([session.id])
+                return [{
+                    sessionId: session.id,
+                    messageId: 'message-1',
+                    role: 'assistant' as const,
+                    seq: 3,
+                    createdAt: 123,
+                    snippet: 'context needle',
+                    truncated: true
+                }]
+            }
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/sessions/content-search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                query: 'needle',
+                limit: 7,
+                sessionIds: [session.id, 'unknown-session', session.id]
+            })
+        })
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            hasPotentiallyIncompleteResults: true,
+            results: [{
+                session: expect.objectContaining({ id: session.id }),
+                match: {
+                    messageId: 'message-1',
+                    role: 'assistant',
+                    seq: 3,
+                    createdAt: 123,
+                    snippet: 'context needle',
+                    truncated: true
+                }
+            }]
+        })
+    })
+
+    it('allows scoped content-search requests with more than 500 session IDs', async () => {
+        const sessions = Array.from({ length: 501 }, (_, index) => createSession({ id: `session-${index}` }))
+        let receivedSessionIds: readonly string[] | undefined
+        const engine = {
+            getSessionsByNamespace: () => sessions,
+            getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
+            getNextScheduledAtBySessionIds: (ids: string[]) => new Map(ids.map((id) => [id, null])),
+            getPrimaryAttachedJobsBySessionIds: () => new Map(),
+            allocateAttachedJobVersion: () => Date.now(),
+            hasPotentiallyIncompleteSessionContent: () => false,
+            searchSessionContent: (_query: string, _namespace: string, _limit: number, sessionIds?: readonly string[]) => {
+                receivedSessionIds = sessionIds
+                return []
+            }
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/sessions/content-search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                query: 'needle',
+                sessionIds: Array.from({ length: 501 }, (_, index) => `session-${index}`)
+            })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ results: [], hasPotentiallyIncompleteResults: false })
+        expect(receivedSessionIds).toEqual(sessions.map((session) => session.id))
+    })
+
+    it('rejects an oversized content-search body before JSON parsing', async () => {
+        const engine = {
+            getSessionsByNamespace: () => [],
+            getFutureScheduledMessageCounts: () => new Map(),
+            getNextScheduledAtBySessionIds: () => new Map(),
+            searchSessionContent: () => []
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/sessions/content-search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: 'x'.repeat(300 * 1024)
+        })
+
+        expect(response.status).toBe(413)
+        expect(await response.json()).toEqual({ error: 'Content search request too large' })
+    })
+
+    it('rejects overlong content-search queries consistently across endpoints', async () => {
+        const session = createSession({ id: 'overlong-content-query-session' })
+        const engine = {
+            getSessionsByNamespace: () => [session],
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: session.id, session }),
+            searchSessionContent: () => {
+                throw new Error('must reject before searching')
+            },
+            searchSessionContentMatches: () => {
+                throw new Error('must reject before searching')
+            },
+            getFutureScheduledMessageCounts: () => new Map(),
+            getNextScheduledAtBySessionIds: () => new Map()
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const query = 'x'.repeat(201)
+        const expected = { error: 'Content search query too long' }
+        const postResponse = await app.request('/api/sessions/content-search', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query })
+        })
+        const getResponse = await app.request(`/api/sessions/content-search?query=${query}`)
+        const sessionResponse = await app.request(
+            `/api/sessions/${session.id}/content-search?query=${query}`
+        )
+
+        expect(postResponse.status).toBe(400)
+        expect(await postResponse.json()).toEqual(expected)
+        expect(getResponse.status).toBe(400)
+        expect(await getResponse.json()).toEqual(expected)
+        expect(sessionResponse.status).toBe(400)
+        expect(await sessionResponse.json()).toEqual(expected)
+    })
+
+    it('lists all content matches for an opened session without exposing its session id', async () => {
+        const session = createSession({ id: 'content-session-matches' })
+        const engine = {
+            resolveSessionAccess: (sessionId: string, namespace: string) => {
+                expect(sessionId).toBe(session.id)
+                expect(namespace).toBe('default')
+                return { ok: true as const, sessionId, session }
+            },
+            searchSessionContentMatches: (query: string, namespace: string, sessionId: string, limit: number) => {
+                expect(query).toBe('needle')
+                expect(namespace).toBe('default')
+                expect(sessionId).toBe(session.id)
+                expect(limit).toBe(12)
+                return {
+                    total: 2,
+                    matches: [
+                        {
+                            sessionId,
+                            messageId: 'message-new',
+                            role: 'assistant' as const,
+                            seq: 8,
+                            createdAt: 456,
+                            snippet: 'new needle',
+                            truncated: false
+                        },
+                        {
+                            sessionId,
+                            messageId: 'message-old',
+                            role: 'user' as const,
+                            seq: 3,
+                            createdAt: 123,
+                            snippet: 'old needle',
+                            truncated: false
+                        }
+                    ],
+                    hasPotentiallyIncompleteResults: false
+                }
+            }
+        } as unknown as Partial<SyncEngine>
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const response = await app.request(`/api/sessions/${session.id}/content-search?query=needle&limit=12`)
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({
+            matches: [
+                {
+                    messageId: 'message-new',
+                    role: 'assistant',
+                    seq: 8,
+                    createdAt: 456,
+                    snippet: 'new needle',
+                    truncated: false
+                },
+                {
+                    messageId: 'message-old',
+                    role: 'user',
+                    seq: 3,
+                    createdAt: 123,
+                    snippet: 'old needle',
+                    truncated: false
+                }
+            ],
+            total: 2,
+            hasPotentiallyIncompleteResults: false
+        })
+    })
+
     it('order=updatedAt truncates newest-first including inactive peers', async () => {
         const sessions = [
             createSession({ id: 'old-active', active: true, updatedAt: 10 }),
@@ -1970,6 +2321,8 @@ describe('sessions routes', () => {
             getSessionsByNamespace: () => sessions,
             getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
             getNextScheduledAtBySessionIds: (_ids: string[]) => new Map<string, number>(),
+            getPrimaryAttachedJobsBySessionIds: () => new Map(),
+            allocateAttachedJobVersion: () => Date.now(),
             resolveSessionAccess: () => ({ ok: false, reason: 'not-found' as const })
         } as unknown as Partial<SyncEngine>
 
@@ -1984,6 +2337,217 @@ describe('sessions routes', () => {
         expect(response.status).toBe(200)
         const body = await response.json() as { sessions: Array<{ id: string }> }
         expect(body.sessions.map((s) => s.id)).toEqual(['new-inactive'])
+    })
+
+    describe('POST /sessions/:id/model-error/acknowledge', () => {
+        it('forwards eventId to the engine when body is valid', async () => {
+            const calls: Array<[string, string]> = []
+            const { app } = createApp(createSession(), {
+                acknowledgeModelError: async (sessionId, eventId) => {
+                    calls.push([sessionId, eventId])
+                }
+            })
+
+            const response = await app.request('/api/sessions/session-1/model-error/acknowledge', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ eventId: 'evt-ack-1' })
+            })
+
+            expect(response.status).toBe(200)
+            expect(await response.json()).toEqual({ ok: true })
+            expect(calls).toEqual([['session-1', 'evt-ack-1']])
+        })
+
+        it('returns 400 when eventId is missing', async () => {
+            let called = false
+            const { app } = createApp(createSession(), {
+                acknowledgeModelError: async () => { called = true }
+            })
+
+            const response = await app.request('/api/sessions/session-1/model-error/acknowledge', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({})
+            })
+
+            expect(response.status).toBe(400)
+            expect(called).toBe(false)
+        })
+
+        it('returns 409 when the displayed error no longer matches', async () => {
+            const { app } = createApp(createSession(), {
+                acknowledgeModelError: async () => {
+                    throw new Error('Model error changed; refresh before acknowledging.')
+                }
+            })
+
+            const response = await app.request('/api/sessions/session-1/model-error/acknowledge', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ eventId: 'evt-stale' })
+            })
+
+            expect(response.status).toBe(409)
+            expect(await response.json()).toEqual({
+                error: 'Model error changed; refresh before acknowledging.'
+            })
+        })
+    })
+
+    describe('POST /sessions/:id/model-error/bridge', () => {
+        it('returns 409 session_inactive when the session is not active', async () => {
+            const { app } = createApp(createSession({
+                active: false,
+                metadata: { path: '/tmp/project', host: 'localhost', flavor: 'cursor' }
+            }))
+
+            const response = await app.request('/api/sessions/session-1/model-error/bridge', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ eventId: 'evt-1' })
+            })
+
+            expect(response.status).toBe(409)
+            expect(await response.json()).toEqual({
+                error: 'Session is inactive',
+                code: 'session_inactive'
+            })
+        })
+
+        it('returns 400 when eventId is missing', async () => {
+            const { app } = createApp(createSession({
+                metadata: { path: '/tmp/project', host: 'localhost', flavor: 'cursor' }
+            }))
+
+            const response = await app.request('/api/sessions/session-1/model-error/bridge', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({})
+            })
+
+            expect(response.status).toBe(400)
+        })
+    })
+
+    describe('POST /sessions/:id/model-error/auto-bridge-setting', () => {
+        it('rejects non-default namespaces with 403 and does not apply config', async () => {
+            const { app, applySessionConfigCalls } = createApp(createSession({
+                metadata: { path: '/tmp/project', host: 'localhost', flavor: 'cursor' }
+            }), { namespace: 'tenant-a' })
+
+            const response = await app.request('/api/sessions/session-1/model-error/auto-bridge-setting', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ enabled: true })
+            })
+
+            expect(response.status).toBe(403)
+            expect(await response.json()).toEqual({
+                error: 'Model error auto-bridge is only available to the hub owner'
+            })
+            expect(applySessionConfigCalls).toEqual([])
+        })
+
+        it('applies the setting for the default namespace', async () => {
+            const { app, applySessionConfigCalls } = createApp(createSession({
+                metadata: { path: '/tmp/project', host: 'localhost', flavor: 'cursor' }
+            }))
+
+            const response = await app.request('/api/sessions/session-1/model-error/auto-bridge-setting', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ enabled: true })
+            })
+
+            expect(response.status).toBe(200)
+            expect(await response.json()).toEqual({ ok: true })
+            expect(applySessionConfigCalls).toEqual([
+                ['session-1', { autoBridgeTransientModelErrors: true }]
+            ])
+        })
+    })
+
+    it('active=true filters inactive sessions before limit truncation', async () => {
+        const sessions = [
+            createSession({ id: 'old-active', active: true, updatedAt: 10 }),
+            createSession({ id: 'new-inactive', active: false, updatedAt: 50 }),
+            createSession({ id: 'mid-active', active: true, updatedAt: 20 })
+        ]
+        const engine = {
+            getSessionsByNamespace: () => sessions,
+            getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
+            getNextScheduledAtBySessionIds: (_ids: string[]) => new Map<string, number>(),
+            getPrimaryAttachedJobsBySessionIds: () => new Map(),
+            allocateAttachedJobVersion: () => Date.now(),
+            resolveSessionAccess: () => ({ ok: false, reason: 'not-found' as const })
+        } as unknown as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/sessions?limit=1&order=updatedAt&active=true')
+        expect(response.status).toBe(200)
+        const body = await response.json() as { sessions: Array<{ id: string }> }
+        expect(body.sessions.map((s) => s.id)).toEqual(['mid-active'])
+    })
+
+    it('allocates attachedJob watermark before reading jobs (SSE race)', async () => {
+        const session = createSession({ id: 'session-watermark' })
+        const callOrder: string[] = []
+        let watermark = 0
+        const runningJob = {
+            key: 'beets',
+            label: 'beets',
+            status: 'running' as const,
+            remaining: 3,
+            heartbeatAt: 1,
+            startedAt: 1,
+            updatedAt: 1
+        }
+        let primary: typeof runningJob | null = runningJob
+        const engine = {
+            getSessionsByNamespace: () => [session],
+            getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
+            getNextScheduledAtBySessionIds: (_ids: string[]) => new Map<string, number>(),
+            allocateAttachedJobVersion: (id: string) => {
+                expect(id).toBe(session.id)
+                callOrder.push('allocate')
+                watermark += 1
+                return watermark
+            },
+            getPrimaryAttachedJobsBySessionIds: (ids: string[]) => {
+                callOrder.push('read')
+                // Concurrent terminal mutation in the old read→allocate gap:
+                // SSE would allocate the next watermark with the cleared job.
+                primary = null
+                watermark += 1
+                return new Map(ids.map((id) => [id, primary]))
+            },
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: session.id, session })
+        } as unknown as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/sessions')
+        expect(response.status).toBe(200)
+        expect(callOrder).toEqual(['allocate', 'read'])
+        const body = await response.json() as {
+            sessions: Array<{ id: string; attachedJob: unknown; attachedJobUpdatedAt: number }>
+        }
+        const row = body.sessions.find((s) => s.id === session.id)
+        expect(row?.attachedJobUpdatedAt).toBe(1)
+        // Snapshot watermark must stay behind the concurrent SSE emit so useSSE applies it.
+        expect(row?.attachedJobUpdatedAt).toBeLessThan(watermark)
     })
 
 })

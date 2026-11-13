@@ -34,6 +34,8 @@ function createSession(
         nextScheduledAt: null,
         model: null,
         effort: null,
+        attachedJob: null,
+        attachedJobUpdatedAt: 0,
     }
 }
 
@@ -80,17 +82,10 @@ describe('useAppBadge', () => {
         )).toBe(1)
     })
 
-    it('does not count a session while it is generating, then counts it after completion', () => {
-        const lastSeenById = { 'session-a': 10 }
-
+    it('counts unseen output while a session is generating', () => {
         expect(countUnreadSessions(
             [createSession('session-a', 11, true)],
-            lastSeenById,
-        )).toBe(0)
-
-        expect(countUnreadSessions(
-            [createSession('session-a', 11)],
-            lastSeenById,
+            { 'session-a': 10 },
         )).toBe(1)
     })
 

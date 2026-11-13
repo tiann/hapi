@@ -6,16 +6,76 @@ import {
     RenameMachineRequestSchema,
     SpawnSessionRequestSchema
 } from '@hapi/protocol'
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
+import {
+    resolvePeerSpawnConfig,
+    STOCK_PEER_SPAWN_DEFAULTS,
+    type PeerSpawnDefaults,
+    type ResolvedPeerSpawnDefaults
+} from '@hapi/protocol/peerSpawnDefaults'
+import { getPermissionModesForFlavor } from '@hapi/protocol/modes'
 import { RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol/rpcMethods'
-import type { SyncEngine } from '../../sync/syncEngine'
+import { readPeerSpawnDefaults } from '../../config/peerSpawnDefaults'
+import type { Machine, SyncEngine } from '../../sync/syncEngine'
 import { RpcTargetMissingError } from '../../sync/rpcGateway'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireMachine } from './guards'
+import {
+    QueryUsageRequestSchema,
+    SaveUsageQuerySettingsRequestSchema,
+    TestUsageQueryRequestSchema,
+    UsageQueryAgentSchema
+} from '@hapi/protocol/usageQuery'
 
-export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
+const SPAWN_REMIT_FIELDS = ['message', 'prompt', 'text'] as const
+
+function spawnRemitField(body: unknown): string | null {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+        return null
+    }
+    for (const key of SPAWN_REMIT_FIELDS) {
+        if (Object.prototype.hasOwnProperty.call(body, key)) {
+            return key
+        }
+    }
+    return null
+}
+
+export type MachinesRoutesOptions = {
+    dataDir?: string
+    /** Test seam: override hub peer spawn defaults (resolved or stored partial). */
+    getPeerSpawnDefaults?: () => PeerSpawnDefaults | ResolvedPeerSpawnDefaults | null | Promise<PeerSpawnDefaults | ResolvedPeerSpawnDefaults | null>
+}
+
+async function loadPeerSpawnDefaultsForSpawn(
+    options: MachinesRoutesOptions | undefined
+): Promise<PeerSpawnDefaults | ResolvedPeerSpawnDefaults | null> {
+    if (options?.getPeerSpawnDefaults) {
+        return await options.getPeerSpawnDefaults()
+    }
+    if (options?.dataDir) {
+        // Do not swallow read failures into stock yolo — that would override
+        // operator-configured restrictive defaults on a transient I/O error.
+        return await readPeerSpawnDefaults(options.dataDir)
+    }
+    return null
+}
+
+export function createMachinesRoutes(
+    getSyncEngine: () => SyncEngine | null,
+    options?: MachinesRoutesOptions
+): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
-
+    const requireUsageQueryCapability = (c: Context<WebAppEnv>, machine: Machine | Response): Response | null => {
+        if (machine instanceof Response) return machine
+        if (!machine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.UsageQuery)) {
+            return c.json({
+                error: 'This runner must be upgraded before querying agent quota',
+                code: 'runner_upgrade_required'
+            }, 409)
+        }
+        return null
+    }
     app.get('/machines', (c) => {
         const engine = getSyncEngine()
         if (!engine) {
@@ -25,6 +85,101 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const namespace = c.get('namespace')
         const machines = engine.getOnlineMachinesByNamespace(namespace)
         return c.json({ machines })
+    })
+
+    app.get('/machines/:id/usage-query/settings', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) return c.json({ error: 'Not connected' }, 503)
+
+        const machineId = c.req.param('id')
+        const machine = requireMachine(c, engine, machineId)
+        const capabilityError = requireUsageQueryCapability(c, machine)
+        if (capabilityError) return capabilityError
+
+        const parsed = UsageQueryAgentSchema.safeParse(c.req.query('agent'))
+        if (!parsed.success) return c.json({ error: 'agent must be claude, codex, or kimi' }, 400)
+
+        try {
+            return c.json(await engine.getUsageQuerySettings(machineId, parsed.data))
+        } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                return c.json({ error: error.message, code: RPC_TARGET_MISSING_ERROR_CODE }, 503)
+            }
+            return c.json({ error: error instanceof Error ? error.message : 'Failed to read usage query settings' }, 500)
+        }
+    })
+
+    app.put('/machines/:id/usage-query/settings', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) return c.json({ error: 'Not connected' }, 503)
+
+        const machineId = c.req.param('id')
+        const machine = requireMachine(c, engine, machineId)
+        const capabilityError = requireUsageQueryCapability(c, machine)
+        if (capabilityError) return capabilityError
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = SaveUsageQuerySettingsRequestSchema.safeParse(body)
+        if (!parsed.success) return c.json({ error: 'Invalid usage query settings' }, 400)
+
+        try {
+            return c.json(await engine.saveUsageQuerySettings(machineId, parsed.data.agent, {
+                enabled: parsed.data.enabled,
+                templateId: parsed.data.templateId,
+                template: parsed.data.template
+            }))
+        } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                return c.json({ error: error.message, code: RPC_TARGET_MISSING_ERROR_CODE }, 503)
+            }
+            return c.json({ error: error instanceof Error ? error.message : 'Failed to save usage query settings' }, 500)
+        }
+    })
+
+    app.post('/machines/:id/usage-query/test', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) return c.json({ error: 'Not connected' }, 503)
+
+        const machineId = c.req.param('id')
+        const machine = requireMachine(c, engine, machineId)
+        const capabilityError = requireUsageQueryCapability(c, machine)
+        if (capabilityError) return capabilityError
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = TestUsageQueryRequestSchema.safeParse(body)
+        if (!parsed.success) return c.json({ error: 'Invalid usage query test request' }, 400)
+
+        try {
+            return c.json(await engine.testUsageQueryTemplate(machineId, parsed.data.agent, parsed.data.template))
+        } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                return c.json({ error: error.message, code: RPC_TARGET_MISSING_ERROR_CODE }, 503)
+            }
+            return c.json({ error: error instanceof Error ? error.message : 'Failed to test usage query' }, 500)
+        }
+    })
+
+    app.post('/machines/:id/usage-query/query', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) return c.json({ error: 'Not connected' }, 503)
+
+        const machineId = c.req.param('id')
+        const machine = requireMachine(c, engine, machineId)
+        const capabilityError = requireUsageQueryCapability(c, machine)
+        if (capabilityError) return capabilityError
+
+        const body = await c.req.json().catch(() => ({}))
+        const parsed = QueryUsageRequestSchema.safeParse(body)
+        if (!parsed.success) return c.json({ error: 'Invalid usage query request' }, 400)
+
+        try {
+            return c.json(await engine.queryUsage(machineId, parsed.data.agent, parsed.data.force === true))
+        } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                return c.json({ error: error.message, code: RPC_TARGET_MISSING_ERROR_CODE }, 503)
+            }
+            return c.json({ error: error instanceof Error ? error.message : 'Failed to query usage' }, 500)
+        }
     })
 
     app.patch('/machines/:id', async (c) => {
@@ -85,32 +240,96 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const body = await c.req.json().catch(() => null)
+        const remitField = spawnRemitField(body)
+        if (remitField) {
+            return c.json({
+                error: `POST /api/machines/:id/spawn does not accept '${remitField}'. Machine spawn creates an empty composer. Use hapi spawn-peer / MCP spawn_peer, or POST /api/sessions/:id/messages after spawn.`,
+                code: 'spawn_remit_not_supported'
+            }, 400)
+        }
         const parsed = SpawnSessionRequestSchema.safeParse(body)
         if (!parsed.success) {
             return c.json({ error: 'Invalid body' }, 400)
         }
-        if (
-            (parsed.data.agent === 'agy' || parsed.data.agent === 'dsh')
-            && parsed.data.startingMode
-            && parsed.data.startingMode !== 'remote'
-        ) {
-            return c.json({ error: `${parsed.data.agent.toUpperCase()} only supports remote mode` }, 400)
-        }
         const startingMode = parsed.data.startingMode
         const namespace = c.get('namespace')
+
+        // Apply hub peerSpawnDefaults when agent / permissionMode / model are omitted
+        // so scavenger/raw machine spawn matches Settings → General → Agents (and stock yolo).
+        let hubDefaults: PeerSpawnDefaults | ResolvedPeerSpawnDefaults | null
+        try {
+            hubDefaults = await loadPeerSpawnDefaultsForSpawn(options)
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Cannot load hub spawn defaults'
+            return c.json({ error: message, code: 'hub_spawn_defaults_unavailable' as const }, 500)
+        }
+
+        const effectiveAgent = parsed.data.agent
+            ?? hubDefaults?.agent
+            ?? STOCK_PEER_SPAWN_DEFAULTS.agent
+        // Validate startingMode against the resolved agent (hub default may be
+        // AGY/DSH even when the request omitted agent).
+        if (
+            (effectiveAgent === 'agy' || effectiveAgent === 'dsh')
+            && startingMode
+            && startingMode !== 'remote'
+        ) {
+            return c.json({ error: `${effectiveAgent.toUpperCase()} only supports remote mode` }, 400)
+        }
+        if (
+            parsed.data.permissionMode !== undefined
+            && !getPermissionModesForFlavor(effectiveAgent).includes(parsed.data.permissionMode)
+        ) {
+            return c.json({
+                error: `permission mode ${parsed.data.permissionMode} is not supported by ${effectiveAgent}`,
+                code: 'invalid_permission_mode' as const
+            }, 400)
+        }
+
+        const resolved = resolvePeerSpawnConfig({
+            ...(parsed.data.agent !== undefined ? { agent: parsed.data.agent } : {}),
+            ...(parsed.data.permissionMode !== undefined ? { permissionMode: parsed.data.permissionMode } : {}),
+            ...(parsed.data.model !== undefined ? { model: parsed.data.model } : {}),
+            ...(parsed.data.effort !== undefined ? { effort: parsed.data.effort } : {})
+        }, hubDefaults)
+
+        // When the caller supplies an explicit yolo boolean without a native
+        // permissionMode, preserve the runner's boolean path — injecting a hub
+        // mode would override yolo:false (runner prioritizes permissionMode).
+        // Flavors with an empty launch catalog (pi/dsh) must omit permissionMode.
+        const permissionModeForSpawn =
+            parsed.data.permissionMode === undefined && parsed.data.yolo !== undefined
+                ? undefined
+                : getPermissionModesForFlavor(resolved.agent).length === 0
+                    ? undefined
+                    : resolved.permissionMode
+
+        // Apply hub model only when the caller omitted agent+model (full defaults
+        // path). An explicit agent with model omitted means native Default —
+        // do not inject the hub model for that flavor.
+        const modelForSpawn = parsed.data.model !== undefined
+            ? parsed.data.model
+            : parsed.data.agent === undefined
+                ? resolved.model
+                : undefined
+        const effortForSpawn = parsed.data.effort !== undefined
+            ? parsed.data.effort
+            : parsed.data.agent === undefined
+                ? resolved.effort
+                : undefined
 
         const result = await engine.spawnSession(
             machineId,
             parsed.data.directory,
-            parsed.data.agent,
-            parsed.data.model,
+            resolved.agent,
+            modelForSpawn,
             parsed.data.modelReasoningEffort,
             parsed.data.yolo,
             parsed.data.sessionType,
             parsed.data.worktreeName,
             undefined, // resumeSessionId
-            parsed.data.effort,
-            parsed.data.permissionMode,
+            effortForSpawn,
+            permissionModeForSpawn,
             parsed.data.serviceTier,
             undefined,
             parsed.data.collaborationMode,
@@ -140,6 +359,32 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         } catch (error) {
             return c.json({
                 error: error instanceof Error ? error.message : 'Failed to inspect Agent availability',
+            }, 500)
+        }
+    })
+
+    app.get('/machines/:id/agent-quotas', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) return c.json({ error: 'Not connected' }, 503)
+
+        const machineId = c.req.param('id')
+        const machine = requireMachine(c, engine, machineId)
+        if (machine instanceof Response) return machine
+        if (!machine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.AgentQuotas)) {
+            return c.json({
+                error: 'This runner does not support agent quota inspection yet',
+                code: 'runner_upgrade_required',
+            }, 409)
+        }
+
+        const refreshQuery = c.req.query('refresh')
+        const refresh = refreshQuery === '1' || refreshQuery === 'true'
+
+        try {
+            return c.json(await engine.getAgentQuotas(machineId, { refresh }))
+        } catch (error) {
+            return c.json({
+                error: error instanceof Error ? error.message : 'Failed to inspect Agent quotas',
             }, 500)
         }
     })
@@ -218,6 +463,13 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             })
             return c.json(result)
         } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                return c.json({
+                    success: false,
+                    error: error.message,
+                    code: RPC_TARGET_MISSING_ERROR_CODE
+                }, 503)
+            }
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to list Agy models'
@@ -240,6 +492,13 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         try {
             return c.json(await engine.listDshModelsForMachine(machineId))
         } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                return c.json({
+                    success: false,
+                    error: error.message,
+                    code: RPC_TARGET_MISSING_ERROR_CODE
+                }, 503)
+            }
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to list DSH models'
@@ -509,7 +768,7 @@ export function createMachinesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (result.type === 'error') {
             const status = result.code === 'machine_not_found' ? 404
                 : result.code === 'machine_offline' ? 503
-                    : 502
+                    : 500
             return c.json({ error: result.message, code: result.code }, status)
         }
         return c.json({ message: result.message })

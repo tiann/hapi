@@ -88,7 +88,7 @@ directory browsing and session creation.
 | Capability | Current native behavior |
 |---|---|
 | Chat and permissions | Streaming messages, history, tool inspection, approvals and question answering on both platforms. |
-| Composer | Text, photos/camera/files, drafts, queued-message actions, `/` command suggestions and steering when supported by the session. |
+| Composer | Text, photos/camera/files, drafts, queued-message actions, `/` command suggestions and steering when supported by the session. iOS also offers `@` session references, plus file references for Codex/Copilot (editable text, not inline chips). |
 | Android incoming shares | Share files, photos, text or links to HAPI, choose a session and confirm sending from its composer. The picker can switch paired hubs and explicitly restore stopped sessions. |
 | Session controls | Both support pin, rename, stopping a turn and sending to resume an inactive session. Active sessions can be archived; inactive sessions can be reopened explicitly or deleted. |
 | Files and Git | Open **Session files** from the chat menu to browse/search files, inspect Git status and read diffs. |
@@ -114,14 +114,18 @@ attachment behavior applies: leaving the chat discards unsent attachments.
 ### Session-list parity
 
 Android and iOS use the shared base session-list order: global-pinned sessions,
-project-pinned sessions, active sessions, pending-request priority among active
-sessions, then `updatedAt` descending. Ties preserve their incoming order. The
-Web sidebar may apply additional directory grouping and client-side search
-ranking; it also exposes text, date-range and unread-only session-list filters.
-Both native apps offer machine filtering and relevance-ranked text search.
-Android adds a date range; iOS adds an unread-only lens and **Mark All as
-Read**. Android and iOS README files describe their platform-specific filter
-presentation and session-row differences.
+project-pinned sessions, then your most recent input (`lastUserMessageAt`,
+falling back to creation time) descending, with creation time and session ID
+breaking ties; see [Session list](./session-list.md#ordering-and-grouping). The
+Web sidebar adds directory grouping, client-side search ranking and a sort and
+filter menu. Both native apps mirror that menu: sort by last message or date
+created, **Active first** (on by default; manual pins still come first), show
+all, active or archived sessions, and an unread-only lens, alongside machine
+filtering and relevance-ranked text search. Android adds a date range; iOS adds
+**Mark All as Read**. Rows in all three clients use the same presence badges
+and show a running [attached job](./session-jobs.md). Android and iOS README
+files describe their platform-specific filter presentation and session-row
+differences.
 
 Selecting an attachment starts its upload after preparation, before you send
 the message or save the Scratchlist entry. Removing it requests cleanup of

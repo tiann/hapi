@@ -8,6 +8,8 @@ import {
 import { Button } from '@/components/ui/button'
 import { ApiError } from '@/api/client'
 import { useTranslation } from '@/lib/use-translation'
+import { useFue } from '@/lib/use-fue'
+import { FueCallout, FueDot } from '@/components/Fue'
 
 type RenameSessionDialogProps = {
     isOpen: boolean
@@ -139,6 +141,8 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
     const busy = isPending || isGenerating || isSaving
     const openedRef = useRef(false)
     const sessionRef = useRef(sessionId)
+    const titleLockButtonRef = useRef<HTMLButtonElement>(null)
+    const titleLockFue = useFue('session-title-lock')
 
     const handleClose = () => {
         generationRef.current += 1
@@ -272,11 +276,15 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
                             maxLength={255}
                         />
                         <button
+                            ref={titleLockButtonRef}
                             type="button"
                             aria-label={t('dialog.rename.titleLock')}
                             aria-pressed={titleLocked}
                             title={t(titleLocked ? 'dialog.rename.unlockTitle' : 'dialog.rename.lockTitle')}
-                            onClick={() => setTitleLocked(!titleLocked)}
+                            onClick={() => {
+                                titleLockFue.engage()
+                                setTitleLocked(!titleLocked)
+                            }}
                             disabled={busy}
                             className="absolute right-0 top-0 flex h-full w-11 items-center justify-center rounded-r-lg text-[var(--app-hint)] hover:text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-button)] disabled:opacity-50"
                         >
@@ -284,7 +292,23 @@ export function RenameSessionDialog(props: RenameSessionDialogProps) {
                                 <rect x="4" y="11" width="16" height="10" rx="2" />
                                 {titleLocked ? <path d="M8 11V7a4 4 0 0 1 8 0v4" /> : <path d="M8 11V7a4 4 0 0 1 7.8-1" />}
                             </svg>
+                            {titleLockFue.status !== 'acknowledged' ? (
+                                <FueDot
+                                    pulsing={titleLockFue.status === 'unseen'}
+                                    ariaLabel={t('fue.newFeatureDot')}
+                                />
+                            ) : null}
                         </button>
+                        {titleLockFue.status === 'engaging' ? (
+                            <FueCallout
+                                title={t('dialog.rename.titleLock.fueTitle')}
+                                body={t('dialog.rename.titleLock.fueBody')}
+                                onDismiss={titleLockFue.dismiss}
+                                dismissLabel={t('fue.gotIt')}
+                                closeAriaLabel={t('fue.closeAriaLabel')}
+                                anchorRef={titleLockButtonRef}
+                            />
+                        ) : null}
                     </div>
 
                     {error ? (

@@ -1,5 +1,5 @@
 import { useEffect, useRef, type RefObject } from 'react'
-import { markSessionSeen } from '@/lib/sessionLastSeen'
+import { followSessionTail, markSessionSeen } from '@/lib/sessionLastSeen'
 import { useDocumentVisibility } from './useDocumentVisibility'
 
 /** Called by the rendered transcript, never by list selection or SSE metadata. */
@@ -13,6 +13,23 @@ export function useSelectedSessionSeen(
     const visible = useDocumentVisibility()
     const version = useRef(stateVersion)
     version.current = stateVersion
+    const followsTail = visible && renderedRevision !== undefined
+    // Suppress transient unread dots only while the user is actually at the tail.
+    useEffect(() => {
+        if (!followsTail || !sessionId) return
+        const viewport = viewportRef.current
+        if (!viewport) return
+        let stopFollowing: (() => void) | undefined
+        const update = () => {
+            const atTail = viewport.clientHeight > 0
+                && viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= 2
+            if (atTail && !stopFollowing) stopFollowing = followSessionTail(sessionId)
+            else if (!atTail && stopFollowing) { stopFollowing(); stopFollowing = undefined }
+        }
+        viewport.addEventListener('scroll', update, { passive: true })
+        update()
+        return () => { viewport.removeEventListener('scroll', update); stopFollowing?.() }
+    }, [followsTail, sessionId, viewportRef])
     useEffect(() => {
         if (!visible || !sessionId || renderedRevision === undefined) return
         const viewport = viewportRef.current

@@ -20,6 +20,7 @@ import app.hapi.protocol.wire.ApprovePermissionRequest
 import app.hapi.protocol.wire.CancelMessageResponse
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.DecryptedMessage
+import app.hapi.protocol.wire.MessageContextResponse
 import app.hapi.protocol.wire.HapiJson
 import app.hapi.protocol.wire.ResumeSessionResponse
 import app.hapi.protocol.wire.RetryIndeterminateMessageResponse
@@ -170,6 +171,8 @@ private open class FakeMessagesApi : ChatSessionApi {
     override suspend fun getQueuedState(sessionId: String, localIds: List<String>): QueuedStateResponse =
         QueuedStateResponse(queuedLocalIds = emptyList(), invokedLocalMessages = emptyList())
 
+    override suspend fun getMessageContext(sessionId: String, messageId: String): MessageContextResponse? = null
+
     // Interaction endpoints are exercised by ChatViewModelInteractionTest.
     override suspend fun sendMessage(sessionId: String, message: SendMessageRequest) {}
     override suspend fun cancelMessage(sessionId: String, messageId: String): CancelMessageResponse =
@@ -195,6 +198,12 @@ private open class FakeMessagesApi : ChatSessionApi {
         CodexModelsResponse(success = false, error = "not scripted")
     override suspend fun getSlashCommands(sessionId: String): app.hapi.protocol.wire.SlashCommandsResponse =
         app.hapi.protocol.wire.SlashCommandsResponse(success = false, error = "not scripted")
+    override suspend fun searchSessionFiles(
+        sessionId: String,
+        query: String,
+        limit: Int?,
+    ): app.hapi.protocol.wire.FileSearchResponse =
+        app.hapi.protocol.wire.FileSearchResponse(success = false, error = "not scripted")
     override suspend fun uploadFile(
         sessionId: String,
         filename: String,

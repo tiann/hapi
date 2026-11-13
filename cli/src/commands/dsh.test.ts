@@ -12,11 +12,19 @@ describe('parseDshCommandOptions', () => {
         })
     })
 
-    it('rejects native resume and HAPI permission controls unsupported by DSH ACP', () => {
-        expect(() => parseDshCommandOptions(['--resume', 'native-id']))
-            .toThrow('fresh sessions')
-        expect(() => parseDshCommandOptions(['--yolo']))
-            .toThrow('permission policy')
+    it('accepts native resume and model options plus the spawn-time permission modes', () => {
+        expect(parseDshCommandOptions(['--resume', 'native-id', '--model', 'deepseek-v4-pro']))
+            .toMatchObject({ resumeSessionId: 'native-id', model: 'deepseek-v4-pro', startingMode: 'remote' })
+        // --yolo maps onto the flavor's own auto-approve mode, pinned into the
+        // child env as DSH_PERMISSION_MODE=danger-full-access at spawn.
+        expect(parseDshCommandOptions(['--yolo']))
+            .toMatchObject({ permissionMode: 'yolo', startingMode: 'remote' })
+        expect(parseDshCommandOptions(['--permission-mode', 'read-only']))
+            .toMatchObject({ permissionMode: 'read-only', startingMode: 'remote' })
+        // Modes outside dsh's catalog stay rejected (claude's yolo alias is
+        // not a dsh mode; --yolo resolves it to dsh's own 'yolo').
+        expect(() => parseDshCommandOptions(['--permission-mode', 'bypassPermissions']))
+            .toThrow('Invalid --permission-mode value: bypassPermissions')
     })
 
     it('accepts a model override applied through the ACP config option', () => {

@@ -158,6 +158,12 @@ export class AcpStdioTransport {
             logger.debug('[ACP] agent CLI guard armed', describeAgentAcpGuardState(childPid));
         }
 
+        // A child can exit between the liveness check and a write. Node emits
+        // stream errors separately from the write callback; handle both paths.
+        this.process.stdin.on('error', (error) => {
+            this.markClosed(markAcpIndeterminate(error));
+        });
+
         this.process.stdout.setEncoding('utf8');
         this.process.stdout.on('data', (chunk) => this.handleStdout(chunk));
 
@@ -247,6 +253,10 @@ export class AcpStdioTransport {
 
     onNotification(handler: ((method: string, params: unknown) => void) | null): void {
         this.notificationHandler = handler;
+    }
+
+    isAlive(): boolean {
+        return !this.closed && !this.exited;
     }
 
     /** PID of the spawned ACP agent process, when known. */
@@ -549,7 +559,10 @@ export class AcpStdioTransport {
         this.pending.delete(response.id);
 
         if (response.error) {
-            pending.reject(new Error(response.error.message));
+            pending.reject(Object.assign(new Error(response.error.message), {
+                code: response.error.code,
+                ...(response.error.data !== undefined ? { data: response.error.data } : {})
+            }));
             return;
         }
 

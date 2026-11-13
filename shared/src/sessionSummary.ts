@@ -1,13 +1,35 @@
-import type { AgentState, Metadata, Session, TodoItem, WorktreeMetadata } from './schemas'
+import type { AgentState, AttachedJob, Metadata, Session, TodoItem, WorktreeMetadata } from './schemas'
 import type { SessionReadState } from './sessionReadState'
+import type { ConversationHistoryCapabilities } from './conversationHistory'
 import { isKnownFlavor } from './flavors'
 import type { AgentFlavor } from './modes'
+
+export type ForkSessionSummary = {
+    text: string
+    updatedAt: number
+}
+
+/** Seed a fork's generated/native title without claiming manual-name ownership. */
+export function buildForkSessionSummary(
+    metadata: { name?: string; summary?: { text?: string } | null } | null | undefined,
+    updatedAt: number = Date.now()
+): ForkSessionSummary | undefined {
+    const sourceTitle = metadata?.name?.trim() || metadata?.summary?.text?.trim()
+    if (!sourceTitle) return undefined
+
+    return {
+        text: `Fork: ${sourceTitle}`,
+        updatedAt
+    }
+}
 
 export type PendingRequestKind = 'permission' | 'input'
 
 const INPUT_REQUEST_TOOLS = new Set([
     'AskUserQuestion',
     'ask_user_question',
+    'CursorAskQuestion',
+    'cursor_ask_question',
     'ExitPlanMode',
     'exit_plan_mode',
     'request_user_input'
@@ -46,8 +68,23 @@ export type SessionSummaryMetadata = {
     worktree?: WorktreeMetadata
     agentSessionId?: string
     lifecycleState?: string
+    conversationHistory?: ConversationHistoryCapabilities
     /** Loopback MCP URL when session CLI happy server is running (#956). */
     hapiMcpUrl?: string
+    lastModelError?: {
+        eventId: string
+        kind: string
+        transient: boolean
+        rawSnippet: string
+        atTs: number
+        priorAssistantClaimsDone: boolean
+        bridgedForEventId?: string
+        retriedAndFailed?: boolean
+        supersededByUserTurn?: boolean
+        bridgeable?: boolean
+        acknowledgedAt?: number
+        notifiedAt?: number
+    }
 }
 
 export type SessionSummary = {
@@ -83,6 +120,13 @@ export type SessionSummary = {
     futureScheduledMessageCount: number
     /** Epoch ms of the soonest uninvoked future scheduled message, or null. */
     nextScheduledAt: number | null
+    /**
+     * Primary running session-attached job (tiann/hapi#1404), or null.
+     * Independent of agent `active` / thinking — work that outlives the agent.
+     */
+    attachedJob: AttachedJob | null
+    /** Watermark for versioned `attachedJob` SSE patches (dual EventSource race). */
+    attachedJobUpdatedAt: number
     model: string | null
     modelReasoningEffort?: string | null
     effort: string | null
@@ -170,7 +214,8 @@ const AGENT_SESSION_ID_FIELD_BY_FLAVOR: Partial<Record<AgentFlavor, keyof Metada
     cursor: 'cursorSessionId',
     kimi: 'kimiSessionId',
     copilot: 'copilotSessionId',
-    pi: 'piSessionId'
+    pi: 'piSessionId',
+    dsh: 'dshSessionId'
 }
 
 function getSummaryAgentSessionId(metadata: Metadata): string | undefined {
@@ -194,6 +239,7 @@ function getSummaryAgentSessionId(metadata: Metadata): string | undefined {
         ?? metadata.cursorSessionId
         ?? metadata.kimiSessionId
         ?? metadata.copilotSessionId
+        ?? metadata.dshSessionId
         ?? undefined
 }
 
@@ -212,11 +258,32 @@ export function toSessionSummaryMetadata(metadata: Metadata | null | undefined):
         worktree: metadata.worktree,
         agentSessionId: getSummaryAgentSessionId(metadata),
         lifecycleState: metadata.lifecycleState,
-        hapiMcpUrl: metadata.hapiMcpUrl ?? undefined
+        conversationHistory: metadata.capabilities?.conversationHistory,
+        hapiMcpUrl: metadata.hapiMcpUrl ?? undefined,
+        // Omit lastUserMessage — bridge recovery text stays in full session
+        // metadata only; list/SSE summaries must not ship up to 32 KB of prompt.
+        lastModelError: metadata.lastModelError
+            ? (() => {
+                const {
+                    lastUserMessage: _omitLastUserMessage,
+                    ...summaryError
+                } = metadata.lastModelError
+                return summaryError
+            })()
+            : undefined
     }
 }
 
-export function toSessionSummary(session: Session): SessionSummary {
+export function toSessionSummary(
+    session: Session,
+    extras?: {
+        attachedJob?: AttachedJob | null
+        /** Explicit SSE/list watermark; required when attachedJob is null so
+         *  a REST refetch does not reset the client gate to 0. */
+        attachedJobUpdatedAt?: number
+    }
+): SessionSummary {
+    const attachedJob = extras?.attachedJob ?? null
     return {
         hasConversationContent: session.hasConversationContent ?? false,
         id: session.id,
@@ -241,6 +308,10 @@ export function toSessionSummary(session: Session): SessionSummary {
         backgroundTaskCount: session.backgroundTaskCount ?? 0,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
+        attachedJob,
+        attachedJobUpdatedAt: extras?.attachedJobUpdatedAt
+            ?? attachedJob?.updatedAt
+            ?? 0,
         model: session.model,
         modelReasoningEffort: session.modelReasoningEffort,
         effort: session.effort

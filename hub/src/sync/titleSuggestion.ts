@@ -41,7 +41,7 @@ export class TitleSuggestionError extends Error {
     constructor(
         readonly code: TitleSuggestionErrorCode,
         message: string,
-        readonly status: 422 | 429 | 502 | 503,
+        readonly status: 422 | 429 | 500 | 502 | 503,
         readonly reason?: TitleSuggestionProviderReason,
         readonly providerStatus?: number
     ) {

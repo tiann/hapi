@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-    configureSessionReadState, flushSessionReadState, getSessionLastSeenAt,
+    configureSessionReadState, flushSessionReadState, followSessionTail, getSessionLastSeenAt,
     getSessionManualUnreadAt, getUnreadSessionCount, markAllSessionsSeen,
     markSessionSeen, markSessionUnread, observeSessionReadStates,
 } from './sessionLastSeen'
@@ -16,9 +16,40 @@ beforeEach(() => {
     localStorage.clear()
     offlineScope('hub-a:alice')
 })
-afterEach(async () => { cleanup(); await vi.advanceTimersByTimeAsync(0); vi.useRealTimers(); vi.restoreAllMocks() })
+afterEach(async () => { cleanup(); await vi.advanceTimersByTimeAsync(0); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('durable session read state', () => {
+    it('reads persisted state once per synchronous pass instead of once per row', async () => {
+        markSessionSeen('s', 2)
+        await Promise.resolve()
+        const parse = vi.spyOn(JSON, 'parse')
+        const getItem = vi.spyOn(Storage.prototype, 'getItem')
+        for (let i = 0; i < 500; i += 1) {
+            getSessionLastSeenAt('s')
+            getSessionManualUnreadAt('s')
+        }
+        expect(parse).not.toHaveBeenCalled()
+        expect(getItem).toHaveBeenCalledTimes(1)
+        expect(getSessionLastSeenAt('s')).toBe(2)
+    })
+
+    it('observes writes from other tabs or code after the next microtask checkpoint', async () => {
+        markSessionSeen('s', 2)
+        localStorage.setItem('hapi.sessionReadState.v1:hub-a:alice', JSON.stringify({ s: { server: server(7) } }))
+        await Promise.resolve()
+        expect(getSessionLastSeenAt('s')).toBe(7)
+        localStorage.clear()
+        await Promise.resolve()
+        expect(getSessionLastSeenAt('s')).toBe(0)
+    })
+
+    it('does not keep an unsaved mutation when persistence fails', () => {
+        markSessionSeen('s', 2)
+        vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota') })
+        markSessionSeen('s', 9)
+        expect(getSessionLastSeenAt('s')).toBe(2)
+    })
+
     it('ignores legacy timestamps and metadata-only changes', () => {
         localStorage.setItem('hapi.sessionLastSeen.v1', JSON.stringify({ s: Date.now() }))
         expect(getSessionLastSeenAt('s')).toBe(0)
@@ -49,14 +80,21 @@ describe('durable session read state', () => {
         expect(getUnreadSessionCount([{ id: 's', contentRevision: 3, readState: server(3, 3, true) }])).toBe(1)
     })
 
-    it('suppresses running content without discarding it or manual unread', () => {
+    it('counts running output and hides only a followed tail until it is acknowledged', () => {
         const row = { id: 's', contentRevision: 2, active: true, thinking: true }
+        expect(getUnreadSessionCount([row])).toBe(1)
+        const release = followSessionTail('s')
+        const again = followSessionTail('s')
         expect(getUnreadSessionCount([row])).toBe(0)
-        expect(getUnreadSessionCount([{ ...row, active: false }])).toBe(1)
+        expect(markAllSessionsSeen([row])).toBe(0)
+        expect(getSessionLastSeenAt('s')).toBe(0)
         markSessionUnread('s')
         expect(getUnreadSessionCount([row])).toBe(1)
+        release()
+        again()
         expect(markAllSessionsSeen([row])).toBe(1)
         expect(getSessionLastSeenAt('s')).toBe(2)
+        expect(getUnreadSessionCount([{ ...row, contentRevision: 3 }])).toBe(1)
     })
 
     it('does not claim a read when durable storage fails', () => {
@@ -91,5 +129,18 @@ describe('durable session read state', () => {
         await vi.advanceTimersByTimeAsync(0)
         expect(getSessionLastSeenAt('s')).toBe(2)
         expect(getSessionManualUnreadAt('s')).toBe(0)
+    })
+
+    it('stores and sends a read without crypto.randomUUID (insecure context)', async () => {
+        vi.stubGlobal('crypto', { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) })
+        const sent: SessionReadStateRequest[] = []
+        cleanup = configureSessionReadState('hub-a:alice', async (_id, request) => {
+            sent.push({ ...request })
+            return { readState: server(request.type === 'read' ? request.readRevision : 0, 1) }
+        })
+        expect(() => markSessionSeen('s', 5)).not.toThrow()
+        await vi.advanceTimersByTimeAsync(0)
+        await flushSessionReadState()
+        expect(sent.map(r => r.type === 'read' ? r.readRevision : null)).toEqual([5])
     })
 })

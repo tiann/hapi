@@ -33,6 +33,7 @@ const runtime = vi.hoisted(() => ({
     pendingSendIntentRef: null as null | { current: ComposerSendIntent },
     sentIntents: [] as ComposerSendIntent[],
     modelChanges: [] as Array<{ provider: string; modelId: string } | string | null>,
+    composerEnterBehavior: 'send' as 'send' | 'newline',
     pendingHydration: null as Promise<void> | null,
     dictationEnabled: false,
     dictation: { status: 'connected', supported: true, partialTranscript: '', error: null, toggle: vi.fn(), stopAndSend: vi.fn() },
@@ -113,7 +114,9 @@ vi.mock('@/hooks/useDictation', () => ({ useDictation: () => runtime.dictation }
 vi.mock('@/hooks/useVoiceInputPreferences', () => ({
     useVoiceInputPreferences: () => ({ voiceMode: runtime.dictationEnabled ? 'dictation' : 'conversation', provider: 'openai', transcriptionMode: 'standard' }),
 }))
-vi.mock('@/hooks/useComposerEnterBehavior', () => ({ useComposerEnterBehavior: () => ({ composerEnterBehavior: 'send' }) }))
+vi.mock('@/hooks/useComposerEnterBehavior', () => ({
+    useComposerEnterBehavior: () => ({ composerEnterBehavior: runtime.composerEnterBehavior }),
+}))
 vi.mock('@/hooks/usePlatform', () => ({ usePlatform: () => ({ haptic: { impact: () => {}, notification: () => {} }, isTouch: false }) }))
 vi.mock('@/hooks/usePWAInstall', () => ({ usePWAInstall: () => ({ isStandalone: false, isIOS: false }) }))
 vi.mock('@/hooks/useActiveWord', () => ({ useActiveWord: () => null }))
@@ -163,11 +166,8 @@ type HarnessControls = {
     acceptAndClearSchedule: () => void
     remount: () => void
     programmaticSetText: (text: string) => void
-    acceptSend: () => void
     setSending: (sending: boolean) => void
     setThreadDisabled: (disabled: boolean) => void
-    settleSend: (error?: ComposerSendError) => void
-    settleAttachmentSendFailure: () => void
     getClearErrorCalls: () => number
 }
 
@@ -185,11 +185,6 @@ function ComposerHarness(props: {
     const [sendError, setSendError] = useState<ComposerSendError | null>(null)
     const [isSending, setIsSending] = useState(false)
     const [composerKey, setComposerKey] = useState('composer-a')
-    const [sendAcceptance, setSendAcceptance] = useState<{ attemptId: string | null } | null>(null)
-    const [sendSettlement, setSendSettlement] = useState<{
-        attemptId: string
-        status: 'success' | 'error'
-    } | null>(null)
     const clearErrorCallsRef = useRef(0)
     const pendingSendIntentRef = useRef<ComposerSendIntent>('default')
 
@@ -215,25 +210,11 @@ function ComposerHarness(props: {
             ...current,
             composer: { ...current.composer, text },
         })),
-        acceptSend: () => {
-            setIsSending(true)
-            setSendSettlement(null)
-            setSendAcceptance({ attemptId: 'attempt-1' })
-        },
         setSending: setIsSending,
         setThreadDisabled: (disabled) => setSnapshot((current) => ({
             ...current,
             thread: { ...current.thread, isDisabled: disabled },
         })),
-        settleSend: (error) => {
-            if (error) setSendError(error)
-            setSendSettlement({ attemptId: 'attempt-1', status: error ? 'error' : 'success' })
-            setIsSending(false)
-        },
-        settleAttachmentSendFailure: () => {
-            setSendSettlement({ attemptId: 'attempt-1', status: 'error' })
-            setIsSending(false)
-        },
         getClearErrorCalls: () => clearErrorCallsRef.current,
     }
 
@@ -244,8 +225,6 @@ function ComposerHarness(props: {
                 sessionId={composerKey}
                 disabled={isSending}
                 pendingSchedule={schedule}
-                sendAcceptance={sendAcceptance}
-                sendSettlement={sendSettlement}
                 onSchedule={setSchedule}
                 onClearSchedule={() => setSchedule(null)}
                 sendError={sendError}
@@ -273,10 +252,12 @@ function renderComposer(
     initialText = 'failed text',
     initialSchedule: PendingSchedule | null = { type: 'absolute', ms: 1234 },
     piRunning = false,
+    composerEnterBehavior: 'send' | 'newline' = 'send',
 ) {
     const controls: { current: HarnessControls | null } = { current: null }
     runtime.sentIntents = []
     runtime.modelChanges = []
+    runtime.composerEnterBehavior = composerEnterBehavior
     render(<ComposerHarness initialText={initialText} initialSchedule={initialSchedule} piRunning={piRunning} controls={controls} />)
     return controls
 }
@@ -329,43 +310,33 @@ describe('HappyComposer send-error atomic restore', () => {
         runtime.setSnapshot = null
     })
 
-    it('collapses an expanded composer only after an accepted send succeeds', async () => {
-        const controls = renderComposer('message', null)
+    it('collapses an expanded composer immediately when a send is submitted', () => {
+        renderComposer('message', null)
         fireEvent.click(screen.getByRole('button', { name: 'expand' }))
         expect(screen.getByTestId('composer-shell')).toHaveAttribute('data-expanded', 'true')
 
         send()
-        expect(screen.getByTestId('composer-shell')).toHaveAttribute('data-expanded', 'true')
-
-        act(() => controls.current!.acceptSend())
-        expect(screen.getByTestId('composer-shell')).toHaveAttribute('data-expanded', 'true')
-
-        act(() => controls.current!.settleSend())
-        await waitFor(() => expect(screen.getByTestId('composer-shell')).not.toHaveAttribute('data-expanded'))
+        expect(screen.getByTestId('composer-shell')).not.toHaveAttribute('data-expanded')
     })
 
-    it('keeps the composer expanded when an accepted send later fails', async () => {
+    it('keeps the composer collapsed when a submitted send later fails', async () => {
         const controls = renderComposer('message', null)
         fireEvent.click(screen.getByRole('button', { name: 'expand' }))
         send()
 
-        act(() => controls.current!.acceptSend())
-        act(() => controls.current!.settleSend(fail(1, 'message', null)))
+        setError(controls, fail(1, 'message', null))
 
         await waitFor(() => expect(input()).toHaveValue('message'))
-        expect(screen.getByTestId('composer-shell')).toHaveAttribute('data-expanded', 'true')
+        expect(screen.getByTestId('composer-shell')).not.toHaveAttribute('data-expanded')
     })
 
-    it('keeps the composer expanded when an attachment send later fails', () => {
+    it('keeps the composer collapsed when an attachment send later fails', () => {
         const controls = renderComposer('', null)
         act(() => controls.current!.addAttachment())
         fireEvent.click(screen.getByRole('button', { name: 'expand' }))
         send()
 
-        act(() => controls.current!.acceptSend())
-        act(() => controls.current!.settleAttachmentSendFailure())
-
-        expect(screen.getByTestId('composer-shell')).toHaveAttribute('data-expanded', 'true')
+        expect(screen.getByTestId('composer-shell')).not.toHaveAttribute('data-expanded')
         expect(screen.queryByTestId('composer-send-error')).toBeNull()
     })
 
@@ -594,6 +565,51 @@ describe('HappyComposer send intent gestures', () => {
         fireEvent.keyDown(input(), { key: 'Enter' })
 
         expect(runtime.sentIntents).toEqual(['default'])
+        expect(runtime.pendingSendIntentRef?.current).toBe('default')
+    })
+
+    it('sends with Alt+S regardless of the configured Enter behavior', () => {
+        renderComposer('shortcut send', null, true, 'newline')
+
+        fireEvent.keyDown(input(), { key: 's', code: 'KeyS', altKey: true })
+
+        expect(runtime.sentIntents).toEqual(['default'])
+        expect(runtime.pendingSendIntentRef?.current).toBe('default')
+    })
+
+    it('matches the logical S key across keyboard layouts', () => {
+        renderComposer('shortcut send', null, true)
+
+        fireEvent.keyDown(input(), { key: 's', code: 'KeyO', altKey: true })
+
+        expect(runtime.sentIntents).toEqual(['default'])
+        expect(runtime.pendingSendIntentRef?.current).toBe('default')
+    })
+
+    it('does not send Alt+S while an IME composition is active', () => {
+        renderComposer('shortcut send', null, true)
+
+        fireEvent.keyDown(input(), { key: 's', code: 'KeyS', altKey: true, isComposing: true })
+
+        expect(runtime.sentIntents).toEqual([])
+        expect(runtime.pendingSendIntentRef?.current).toBe('default')
+    })
+
+    it('does not treat modified Alt+S combinations as the send shortcut', () => {
+        renderComposer('shortcut send', null, true)
+
+        fireEvent.keyDown(input(), { key: 's', code: 'KeyS', altKey: true, shiftKey: true })
+
+        expect(runtime.sentIntents).toEqual([])
+        expect(runtime.pendingSendIntentRef?.current).toBe('default')
+    })
+
+    it('preserves printable Option characters that share the physical S key', () => {
+        renderComposer('shortcut send', null, true)
+
+        fireEvent.keyDown(input(), { key: 'ß', code: 'KeyS', altKey: true })
+
+        expect(runtime.sentIntents).toEqual([])
         expect(runtime.pendingSendIntentRef?.current).toBe('default')
     })
 

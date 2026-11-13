@@ -8,6 +8,7 @@ export type ConversationHistoryCapabilityStates = {
 
 export type ConversationHistoryCapabilities = {
     forkCurrent?: boolean
+    forkLatestCompleted?: boolean
     forkAtMessage?: boolean
     rewindToMessage?: boolean
 }
@@ -58,6 +59,12 @@ export const CODEX_CONVERSATION_HISTORY_INITIAL: ConversationHistoryCapabilitySt
 }
 
 export const GROK_CONVERSATION_HISTORY_INITIAL: ConversationHistoryCapabilityStates = {
+    forkCurrent: 'unknown',
+    forkAtMessage: 'unknown',
+    rewindToMessage: 'unknown'
+}
+
+export const OPENCODE_CONVERSATION_HISTORY_INITIAL: ConversationHistoryCapabilityStates = {
     forkCurrent: 'unknown',
     forkAtMessage: 'unknown',
     rewindToMessage: 'unknown'

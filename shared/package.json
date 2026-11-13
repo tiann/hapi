@@ -13,10 +13,12 @@
         "./buildInfo": "./src/buildInfo.ts",
         "./conversationHistory": "./src/conversationHistory.ts",
         "./modes": "./src/modes.ts",
+        "./peerSpawnDefaults": "./src/peerSpawnDefaults.ts",
         "./rpcMethods": "./src/rpcMethods.ts",
         "./runnerCapabilities": "./src/runnerCapabilities.ts",
         "./schemas": "./src/schemas.ts",
         "./sessionCitation": "./src/sessionCitation.ts",
+        "./peerParentStamp": "./src/peerParentStamp.ts",
         "./sessionExport": "./src/sessionExport.ts",
         "./sessionLifecycle": "./src/sessionLifecycle.ts",
         "./types": "./src/types.ts",
@@ -24,6 +26,7 @@
         "./voicePickerCatalog": "./src/voicePickerCatalog.ts",
         "./voice-personality": "./src/voicePersonality.ts",
         "./usage": "./src/usage.ts",
+        "./usageQuery": "./src/usageQuery.ts",
         "./settingsFileLock": "./src/settingsFileLock.ts",
         "./agentCliSpawnLease": "./src/agentCliSpawnLease.ts"
     },
@@ -32,6 +35,10 @@
         "test": "bun test"
     },
     "dependencies": {
+        "mdast-util-from-markdown": "^2.0.2",
+        "mdast-util-gfm": "^3.1.0",
+        "mdast-util-to-string": "^4.0.0",
+        "micromark-extension-gfm": "^3.0.0",
         "proper-lockfile": "^4.1.2",
         "zod": "^4.2.1"
     },

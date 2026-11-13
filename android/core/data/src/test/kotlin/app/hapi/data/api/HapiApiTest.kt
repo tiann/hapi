@@ -128,7 +128,7 @@ class HapiApiTest {
     }
 
     @Test fun `uncertain plan implementation reports its error without automatic resubmission`() = runBlocking {
-        for ((status, code) in listOf(409 to "stale_plan", 409 to "unavailable", 502 to "failed", 503 to "indeterminate")) {
+        for ((status, code) in listOf(409 to "stale_plan", 409 to "unavailable", 500 to "failed", 503 to "indeterminate")) {
             server.enqueue(MockResponse().setResponseCode(status).setBody("""{"ok":false,"code":"$code","error":"Not confirmed"}"""))
             val error = assertFailsWith<ApiError> { session.api.implementCodexPlan("session", "proposal") }
             assertEquals(status, error.status)
@@ -193,6 +193,37 @@ class HapiApiTest {
             },
             body,
             "null fields (attachments/scheduledAt) must be omitted, not sent as null",
+        )
+    }
+
+    @Test
+    fun `send message body carries scheduledAt as epoch millis`() {
+        server.enqueue(ok("""{"ok":true}"""))
+
+        runBlocking {
+            session.api.sendMessage(
+                "s1",
+                SendMessageRequest(
+                    text = "later",
+                    localId = "local-2",
+                    deliveryMode = "queue",
+                    scheduledAt = 1_761_400_200_000L,
+                ),
+            )
+        }
+
+        val request = server.takeRequest()
+        assertEquals("/api/sessions/s1/messages", request.path)
+        val body = Json.parseToJsonElement(request.body.readUtf8()).jsonObject
+        assertEquals(
+            buildJsonObject {
+                put("text", "later")
+                put("localId", "local-2")
+                put("deliveryMode", "queue")
+                put("scheduledAt", 1_761_400_200_000L)
+            },
+            body,
+            "a scheduled send rides the wire as an epoch-millis number",
         )
     }
 

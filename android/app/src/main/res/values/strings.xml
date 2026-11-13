@@ -6,6 +6,7 @@
     <string name="code_copy">Copy</string>
     <string name="code_copied">Copied</string>
     <string name="code_plain_fallback">text</string>
+    <string name="mermaid_render_error">Could not render diagram.</string>
     <string name="diff_binary_file">Binary file not shown</string>
     <string name="diff_show_more">Show %1$d more lines</string>
     <string name="diff_collapse">Collapse</string>
@@ -125,6 +126,25 @@
     <string name="settings_dynamic_color">Material You colors</string>
     <string name="settings_dynamic_color_description">Derive app colors from your wallpaper.</string>
     <string name="settings_dynamic_color_oled_note">Not available with OLED black.</string>
+    <string name="settings_color_theme">Color theme</string>
+    <string name="settings_color_theme_default">Default</string>
+    <string name="settings_color_theme_notion">Notion</string>
+    <string name="settings_color_theme_one">One</string>
+    <string name="settings_color_theme_proof">Proof</string>
+    <string name="settings_color_theme_raycast">Raycast</string>
+    <string name="settings_color_theme_rose_pine">Rose Pine</string>
+    <string name="settings_color_theme_solarized">Solarized</string>
+    <string name="settings_color_theme_vercel">Vercel</string>
+    <string name="settings_color_theme_vs_code_plus">VS Code Plus</string>
+    <string name="settings_color_theme_xcode">Xcode</string>
+    <string name="settings_color_theme_linear">Linear</string>
+    <string name="settings_color_theme_lobster">Lobster</string>
+    <string name="settings_color_theme_material">Material</string>
+    <string name="settings_color_theme_matrix">Matrix</string>
+    <string name="settings_color_theme_monokai">Monokai</string>
+    <string name="settings_color_theme_night_owl">Night Owl</string>
+    <string name="settings_color_theme_nord">Nord</string>
+    <string name="settings_dynamic_color_preset_note">Not available while a color theme is in use.</string>
 
     <string name="settings_section_language">Language</string>
     <string name="settings_language">App language</string>
@@ -182,10 +202,12 @@
     <string name="channel_permission_requests_desc">An agent is waiting for you to allow or deny a tool call</string>
     <string name="channel_input_requests">Questions for you</string>
     <string name="channel_input_requests_desc">An agent needs you to answer a question in the session</string>
+    <string name="channel_model_errors">Model errors</string>
+    <string name="channel_model_errors_desc">An agent hit a model-side failure that needs attention</string>
     <string name="channel_ready">Agent ready</string>
     <string name="channel_ready_desc">An agent finished and is waiting for input</string>
-    <string name="channel_task_notifications">Task notifications</string>
-    <string name="channel_task_notifications_desc">Task completed or failed, and other updates</string>
+    <string name="channel_other">Other notifications</string>
+    <string name="channel_other_desc">Other updates from HAPI</string>
     <string name="notif_action_allow">Allow</string>
     <string name="notif_action_deny">Deny</string>
     <string name="notif_action_reply">Reply</string>
@@ -209,6 +231,32 @@
     <string name="sessions_filter_all">All</string>
     <string name="sessions_filter_unknown_machine">Unknown machine</string>
     <string name="sessions_offline_banner">Offline — showing cached sessions</string>
+    <string name="sessions_section_recent">Recent</string>
+    <string name="sessions_status_connecting">Connecting…</string>
+    <string name="sessions_status_reconnecting">Reconnecting…</string>
+    <string name="sessions_status_paused">Paused</string>
+    <string name="sessions_offline_updated">Offline · updated %1$s</string>
+    <string name="sessions_offline_retry">Retry</string>
+    <string name="sessions_action_mark_read">Mark as read</string>
+    <string name="sessions_unread">Unread</string>
+    <string name="sessions_presence_connected">Connected</string>
+    <string name="sessions_presence_running">Running</string>
+    <string name="sessions_presence_background">Background tasks running</string>
+    <string name="sessions_presence_stopped">Stopped</string>
+    <string name="sessions_view_sort">Sort by</string>
+    <string name="sessions_view_sort_last_message">Last message</string>
+    <string name="sessions_view_sort_created">Date created</string>
+    <string name="sessions_view_active_first">Active first</string>
+    <string name="sessions_view_status">Show</string>
+    <string name="sessions_view_status_all">All sessions</string>
+    <string name="sessions_view_status_active">Active only</string>
+    <string name="sessions_view_status_archived">Archived only</string>
+    <string name="sessions_view_unread_only">Unread only</string>
+    <string name="sessions_filter_empty_title">No matching sessions</string>
+    <string name="sessions_filter_empty_hint">Change or reset the filters to see more sessions.</string>
+    <string name="sessions_job_left">%1$s left</string>
+    <string name="sessions_job_no_heartbeat">no heartbeat %1$s</string>
+    <string name="sessions_error_mark_read">Couldn’t mark as read</string>
     <string name="sessions_search_hint">Search sessions</string>
     <string name="sessions_search_open">Search sessions</string>
     <string name="sessions_search_close">Close search</string>
@@ -253,7 +301,6 @@
     <string name="chat_open_settings">Session settings</string>
     <string name="chat_session_actions">Session actions</string>
     <string name="chat_scratchlist_badge">Scratchlist</string>
-    <string name="chat_inactive_bar">Session inactive — send to resume, or</string>
     <string name="chat_retry">Retry</string>
     <string name="chat_loading_messages">Loading messages…</string>
     <string name="chat_loading_older">Loading older messages…</string>
@@ -280,6 +327,8 @@
     <string name="chat_notice_delete_failed">Failed to delete session</string>
     <string name="chat_notice_cancel_failed">Failed to cancel queued message</string>
     <string name="chat_notice_edit_kept_draft">Message cancelled — kept your current draft</string>
+    <string name="chat_notice_edit_schedule_dropped">Schedule dropped — attachments cannot be scheduled</string>
+    <string name="chat_notice_schedule_attachment_conflict">Scheduled sends cannot carry attachments — remove the chips or clear the schedule</string>
     <string name="chat_notice_already_delivered">Already delivered to the agent</string>
     <string name="chat_notice_steer_failed">Failed to steer message</string>
     <string name="chat_notice_request_already_handled">Request was already handled</string>
@@ -299,10 +348,21 @@
     <string name="chat_composer_stop_recording">Stop recording</string>
     <string name="chat_composer_send">Send</string>
     <string name="chat_composer_abort">Stop the current turn</string>
+    <string name="chat_mention_suggestions">Mention suggestions</string>
     <string name="chat_send_steer">Send &amp; steer into current turn</string>
+    <string name="chat_schedule_send">Schedule send</string>
+    <string name="chat_schedule_capsule">Scheduled · %1$s</string>
+    <string name="chat_schedule_clear">Clear schedule</string>
+    <string name="chat_attachment_remove">Remove %1$s</string>
+    <string name="chat_schedule_relative_tab">Relative</string>
+    <string name="chat_schedule_specific_tab">Specific</string>
+    <string name="chat_schedule_specific_hint">Max 7 days. Requires the hub running; the CLI catches up the next time it connects after that time.</string>
+    <string name="chat_schedule_error_past">Scheduled time must be in the future.</string>
+    <string name="chat_schedule_error_too_far">Maximum schedule time is 7 days.</string>
+    <string name="chat_schedule_error_invalid">Enter the full date and time (YYYY-MM-DD, HH:mm).</string>
     <string name="chat_queued_one">1 queued message</string>
     <string name="chat_queued_many">%1$d queued messages</string>
-    <string name="chat_queued_scheduled">Scheduled · %1$s</string>
+    <string name="chat_queued_scheduled">Scheduled for %1$s</string>
     <string name="chat_queued_steer">Steer</string>
     <string name="chat_queued_edit">Edit</string>
     <string name="chat_picker_title">Attach</string>
@@ -319,6 +379,7 @@
 
     <!-- Session config sheet (B-M3b) -->
     <string name="chat_config_offline_note">Session is offline — changes apply after it resumes or may be rejected.</string>
+    <string name="chat_config_context">Context</string>
     <string name="chat_config_terminal_note">Session is controlled from the terminal — config changes will be rejected.</string>
     <string name="chat_config_permission_mode">Permission mode</string>
     <string name="chat_config_model">Model</string>
@@ -328,16 +389,46 @@
 
     <!-- Chat blocks (B-M2c/d) -->
     <string name="chat_tool_awaiting_approval">Awaiting approval</string>
-    <string name="chat_tool_awaiting_approval_badge">⏳ Awaiting approval</string>
-    <string name="chat_tool_approved">✓ Approved</string>
-    <string name="chat_tool_approved_for_session">✓ Approved for session</string>
-    <string name="chat_tool_approved_allow_all_edits">✓ Approved: allow all edits</string>
-    <string name="chat_tool_denied">✕ Denied</string>
-    <string name="chat_tool_aborted">✕ Aborted</string>
+    <string name="chat_tool_awaiting_approval_badge">Awaiting approval</string>
+    <string name="chat_tool_approved">Approved</string>
+    <string name="chat_tool_approved_for_session">Approved for session</string>
+    <string name="chat_tool_approved_allow_all_edits">Approved: allow all edits</string>
+    <string name="chat_tool_denied">Denied</string>
+    <string name="chat_tool_aborted">Aborted</string>
     <string name="chat_tool_resolved">Resolved in Codex</string>
-    <string name="chat_tool_canceled">— Canceled</string>
+    <string name="chat_tool_canceled">Canceled</string>
     <string name="chat_tool_status_pending">pending</string>
     <string name="chat_tool_status_error">error</string>
+    <string name="chat_tool_status_done">Done</string>
+    <string name="chat_tool_status_running">Running</string>
+    <plurals name="chat_group_reads">
+        <item quantity="one">%1$d read</item>
+        <item quantity="other">%1$d reads</item>
+    </plurals>
+    <plurals name="chat_group_searches">
+        <item quantity="one">%1$d search</item>
+        <item quantity="other">%1$d searches</item>
+    </plurals>
+    <plurals name="chat_group_commands">
+        <item quantity="one">%1$d command</item>
+        <item quantity="other">%1$d commands</item>
+    </plurals>
+    <plurals name="chat_group_edits">
+        <item quantity="one">%1$d edit</item>
+        <item quantity="other">%1$d edits</item>
+    </plurals>
+    <plurals name="chat_group_web_requests">
+        <item quantity="one">%1$d web request</item>
+        <item quantity="other">%1$d web requests</item>
+    </plurals>
+    <plurals name="chat_group_other_tools">
+        <item quantity="one">%1$d other tool</item>
+        <item quantity="other">%1$d other tools</item>
+    </plurals>
+    <plurals name="chat_group_failed">
+        <item quantity="one">%1$d failed tool</item>
+        <item quantity="other">%1$d failed tools</item>
+    </plurals>
     <string name="chat_agent_steps_one">1 agent step</string>
     <string name="chat_agent_steps_many">%1$d agent steps</string>
     <string name="chat_group_tools_one">1 tool</string>
@@ -347,9 +438,13 @@
     <string name="chat_edit_n_of_m">Edit %1$d/%2$d</string>
     <string name="chat_empty_snippet">(empty)</string>
     <string name="chat_result">Result</string>
+    <string name="chat_result_waiting">Waiting for output…</string>
+    <string name="chat_result_none">No output</string>
     <string name="chat_result_error">Result · error</string>
-    <string name="chat_reasoning_expanded">💭 Reasoning ▾</string>
-    <string name="chat_reasoning_collapsed">💭 Reasoning ▸</string>
+    <string name="chat_reasoning_expanded">Reasoning</string>
+    <string name="chat_reasoning_collapsed">Reasoning…</string>
+    <string name="chat_reasoning_state_expanded">Expanded</string>
+    <string name="chat_reasoning_state_collapsed">Collapsed</string>
     <string name="chat_not_delivered_retry">Not delivered — tap to retry</string>
     <string name="chat_not_delivered">Not delivered</string>
     <string name="chat_review_title">Code review</string>
@@ -362,18 +457,31 @@
     <string name="chat_perm_abort">Abort</string>
     <string name="chat_perm_allow_for_session">Allow for this session</string>
     <string name="chat_perm_allow_all_edits">Allow all edits</string>
+    <string name="chat_perm_more_options">More options</string>
     <string name="chat_perm_already_handled">Already handled elsewhere</string>
     <string name="chat_perm_type_answer">Type your answer…</string>
-    <string name="chat_perm_type_answer_first">Type an answer first</string>
-    <string name="chat_perm_answer_all">Answer every question first</string>
-    <string name="chat_perm_answer_required">Answer every required question first</string>
-    <string name="chat_perm_submit">Submit</string>
-    <string name="chat_perm_other">Other…</string>
-    <string name="chat_perm_optional_format">%1$s (optional)</string>
     <string name="chat_perm_add_note">Add a note…</string>
     <string name="chat_perm_none_of_the_above">None of the above</string>
     <string name="chat_perm_other_note_optional">Optionally, add details in notes.</string>
     <string name="chat_perm_open_signin_failed">Could not open the sign-in page. Check that a browser is installed and try again.</string>
+    <string name="chat_question_awaiting">Awaiting response</string>
+    <string name="chat_question_answered">Answered</string>
+    <string name="chat_question_handled">Question handled</string>
+    <string name="chat_question_canceled">Question canceled</string>
+    <string name="chat_question_failed">Question failed</string>
+    <string name="chat_question_submitting">Submitting answer…</string>
+    <string name="chat_question_your_answer">Your answer</string>
+    <string name="chat_question_progress_a11y">Question %1$d of %2$d</string>
+    <string name="chat_question_details">Details</string>
+    <string name="chat_question_unavailable">This question could not be displayed. Open details to inspect the request.</string>
+    <string name="chat_question_select_all">Select all that apply</string>
+    <string name="chat_question_optional">Optional</string>
+    <string name="chat_question_other_answer">Other answer</string>
+    <string name="chat_question_hide_note">Hide note</string>
+    <string name="chat_question_previous">Previous question</string>
+    <string name="chat_question_submit">Submit answer</string>
+    <string name="chat_question_next">Next question</string>
+    <string name="chat_question_recommended">Recommended</string>
 
     <!-- External links (B-M2d) -->
     <string name="chat_link_open_title">Open link?</string>
@@ -554,6 +662,11 @@
     <string name="chat_history_continue">Continue loading history</string>
     <string name="chat_history_load">Load older messages</string>
     <string name="chat_history_beginning">Beginning of conversation</string>
+    <string name="chat_context_usage">ctx %1$s · %2$d%% left</string>
+    <string name="chat_context_usage_no_window">ctx %1$s</string>
+    <string name="chat_context_details">Context details</string>
+    <string name="chat_message_details">Message details</string>
+    <string name="chat_message_details_close">Close</string>
     <string name="chat_copy_full_content">Copy full content</string>
     <string name="chat_showing_parts">Showing %1$d of %2$d parts</string>
     <string name="chat_load_more_content">Load more content</string>
@@ -580,17 +693,35 @@
     <string name="chat_view_process">View process · %1$d steps</string>
     <string name="chat_agent_process">Agent process</string>
     <string name="chat_show_image">Show image</string>
+    <string name="media_displayed_image">Displayed image</string>
+    <string name="media_displayed_video">Displayed video</string>
+    <string name="media_displayed_audio">Displayed audio</string>
+    <string name="media_displayed_file">Displayed file</string>
+    <string name="media_displayed_header">%1$s: %2$s</string>
+    <string name="media_displayed_unavailable">%1$s is unavailable. %2$s</string>
+    <string name="media_load_video">Load video</string>
+    <string name="media_load_audio">Load audio</string>
+    <string name="media_prepare_download">Prepare download</string>
+    <string name="media_load_failed">Failed to load inline media</string>
+    <string name="media_playback_failed">Playback failed</string>
+    <string name="media_open">Open</string>
+    <string name="media_save">Save</string>
+    <string name="media_open_failed">No app can open this file.</string>
+    <string name="media_save_failed">Save failed.</string>
+    <string name="media_play">Play</string>
+    <string name="media_pause">Pause</string>
     <string name="chat_reconnecting_retry">Reconnecting… Tap to retry</string>
-    <string name="sessions_filters">Filters</string>
+    <string name="sessions_filters">Sort &amp; filter</string>
     <string name="sessions_filters_active">Filters applied</string>
     <string name="sessions_filters_reset">Reset</string>
+    <string name="sessions_filter_section">Filter</string>
+    <string name="sessions_sort_section">Sort</string>
     <string name="sessions_filters_done">Done</string>
     <string name="sessions_filter_machines">Machines</string>
     <string name="sessions_filter_dates">Activity dates</string>
     <string name="sessions_filter_any_date">Any date</string>
     <string name="sessions_filter_clear_dates">Clear date filter</string>
     <string name="sessions_machine_fallback">Machine · %1$s</string>
-    <string name="sessions_time_filter_label">Filter sessions by last activity</string>
     <string name="sessions_time_filter_apply">Apply</string>
     <string name="sessions_time_filter_clear">Clear</string>
     <string name="sessions_time_filter_summary">%1$s – %2$s</string>
@@ -628,4 +759,25 @@
     <string name="share_ok">OK</string>
     <string name="share_pair_first">Pair a hub to choose a session for the shared content.</string>
     <string name="chat_notice_read_state_failed">Couldn’t save read status</string>
+
+    <!-- Global connection + runner version-skew banners (Home chrome). -->
+    <string name="connection_reconnecting">Reconnecting…</string>
+    <string name="connection_syncing">Syncing…</string>
+    <string name="connection_reason_heartbeat_timeout">heartbeat timeout</string>
+    <string name="connection_reason_visibility_recovery">resuming after background</string>
+    <string name="connection_reason_connect_timeout">connect timeout</string>
+    <string name="connection_reason_transport_error">stream error</string>
+    <string name="connection_reason_closed">stream closed</string>
+    <string name="connection_reason_http_code">HTTP %1$d</string>
+    <string name="runner_skew_summary_title">%1$d runner(s) out of date</string>
+    <string name="runner_skew_summary_body">Upgrade the HAPI CLI on each host below, then restart that runner. Minimize or snooze this banner to reach sessions underneath.</string>
+    <string name="runner_skew_minimized">%1$d outdated runner(s): %2$s — tap to expand</string>
+    <string name="runner_skew_minimize">Minimize</string>
+    <string name="runner_skew_dismiss_temp">Snooze 1h</string>
+    <string name="runner_skew_restart">Restart runner</string>
+    <string name="runner_skew_restart_unavailable">Upgrade CLI first</string>
+    <string name="runner_skew_restarting">Restarting…</string>
+    <string name="runner_skew_binary_updated_hint">(newer CLI on disk — runner should self-restart soon)</string>
+    <string name="runner_skew_upgrade_cli_first">(no newer CLI on disk yet — install/upgrade on that host)</string>
+    <string name="runner_skew_restart_failed">Failed to restart runner</string>
 </resources>
