@@ -126,6 +126,11 @@ describe('fork preview error display in the chat', () => {
         render(shell(forkPreview, fork, makeSession(false), baseRows))
         fireEvent.click((await screen.findAllByRole('button', { name: 'Fork' })).at(-1)!)
 
+        // While the preview request is in flight the per-message history
+        // affordances lock, so another message's Fork/Rewind cannot supersede
+        // the request behind the user's back.
+        expect(screen.queryByRole('button', { name: 'Fork' })).toBeNull()
+
         // The chat surfaces the failure instead of swallowing it: a single
         // Retry action (dismissed via Esc/backdrop), not the fork dialog.
         const errorDialog = await screen.findByRole('dialog', { name: 'Fork conversation' })
@@ -221,5 +226,19 @@ describe('fork preview error display in the chat', () => {
 
         resolveFork({ sessionId: 'ses-child' })
         await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Fork conversation' })).toBeNull())
+    })
+
+    it('titles the rewind preview error dialog as a rewind', async () => {
+        const fork = vi.fn(async () => ({ sessionId: 'ses-child' }))
+        const forkPreview = vi.fn(async () => { throw new TypeError('Failed to fetch') })
+
+        render(shell(forkPreview, fork, makeSession(false), baseRows))
+        fireEvent.click((await screen.findAllByRole('button', { name: 'Rewind' })).at(-1)!)
+
+        // The failure came from an openRewind request; the dialog must not
+        // introduce itself as a fork.
+        const errorDialog = await screen.findByRole('dialog', { name: 'Rewind conversation' })
+        expect(within(errorDialog).getByRole('button', { name: 'Retry' })).toBeTruthy()
+        expect(screen.queryByRole('dialog', { name: 'Fork conversation' })).toBeNull()
     })
 })

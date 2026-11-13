@@ -30,6 +30,8 @@ export type ForkFlow = {
     confirming: boolean
     /** Preview failure message; the dialog stays open and shows it. */
     errorMessage: string | null
+    /** The intent whose preview produced errorMessage, for the dialog title. */
+    errorIntent: ForkPreviewIntent | null
     /** True when the failure was a connect-level error (no hub answer), so a
      * retry is meaningful; hub rejections leave it false. */
     errorWasConnectFailure: boolean
@@ -88,6 +90,7 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
     const [confirming, setConfirming] = useState(false)
     const [errorMessage, setErrorMessage] = useState<string | null>(null)
     const [errorWasConnectFailure, setErrorWasConnectFailure] = useState(false)
+    const [errorIntent, setErrorIntent] = useState<ForkPreviewIntent | null>(null)
     const [legacyRequest, setLegacyRequest] = useState<ForkFlow['legacyRequest']>(null)
     const [stale, setStale] = useState(false)
     const lastFailedRequestRef = useRef<ForkFlow['legacyRequest']>(null)
@@ -106,6 +109,7 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
         setLoading(false)
         setErrorMessage(null)
         setErrorWasConnectFailure(false)
+        setErrorIntent(null)
         setLegacyRequest(null)
         setStale(false)
         lastFailedRequestRef.current = null
@@ -117,6 +121,7 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
         setLoading(true)
         setErrorMessage(null)
         setErrorWasConnectFailure(false)
+        setErrorIntent(null)
         try {
             const response = await api.forkPreview(sessionRef.current.id, intent, messageLocalId)
             if (seq !== requestSeq.current) return
@@ -139,6 +144,7 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
             // Connect-level failures (no hub answer) are retryable; hub
             // rejections answer with an ApiError and stay dismiss-only.
             setErrorWasConnectFailure(!(error instanceof ApiError))
+            setErrorIntent(intent)
             lastFailedRequestRef.current = { intent, messageLocalId }
             setErrorMessage(apiErrorText(error, t('dialog.error.default')))
         } finally {
@@ -248,6 +254,7 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
         loading,
         confirming,
         errorMessage,
+        errorIntent,
         errorWasConnectFailure,
         legacyFallback: legacyRequest !== null,
         legacyRequest,

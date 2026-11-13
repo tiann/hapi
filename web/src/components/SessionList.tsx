@@ -1384,11 +1384,16 @@ const SessionItem = memo(function SessionItem(props: {
                     onClose={forkFlow.closePreview}
                     title={t('dialog.sessionFork.title')}
                     description={forkFlow.errorMessage}
-                    confirmLabel={t('dialog.reopen.dismiss')}
-                    confirmingLabel={t('dialog.reopen.dismiss')}
-                    isPending={false}
+                    confirmLabel={forkFlow.errorWasConnectFailure ? t('button.retry') : t('dialog.reopen.dismiss')}
+                    confirmingLabel={forkFlow.errorWasConnectFailure ? t('button.retry') : t('dialog.reopen.dismiss')}
+                    isPending={forkFlow.loading}
+                    hideCancel
+                    keepOpenAfterConfirm={forkFlow.errorWasConnectFailure}
                     centerTitle
-                    onConfirm={async () => forkFlow.closePreview()}
+                    onConfirm={async () => {
+                        if (forkFlow.errorWasConnectFailure) forkFlow.retryPreview()
+                        else forkFlow.closePreview()
+                    }}
                 />
             ) : null}
 

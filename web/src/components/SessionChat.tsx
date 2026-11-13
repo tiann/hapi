@@ -2323,12 +2323,12 @@ function SessionChatInner(props: SessionChatProps) {
                     <ConfirmDialog
                         isOpen
                         onClose={forkFlow.closePreview}
-                        title={t('message.fork.confirmTitle')}
+                        title={forkFlow.errorIntent === 'rewind' ? t('message.rewind.confirmTitle') : t('message.fork.confirmTitle')}
                         description={forkFlow.errorMessage}
                         confirmLabel={forkFlow.errorWasConnectFailure ? t('button.retry') : t('dialog.reopen.dismiss')}
                         confirmingLabel={forkFlow.errorWasConnectFailure ? t('button.retry') : t('dialog.reopen.dismiss')}
                         isPending={forkFlow.loading}
-                        hideCancel={forkFlow.errorWasConnectFailure}
+                        hideCancel
                         keepOpenAfterConfirm={forkFlow.errorWasConnectFailure}
                         centerTitle
                         onConfirm={async () => {
@@ -2367,7 +2367,7 @@ function SessionChatInner(props: SessionChatProps) {
                         onRefresh={props.onRefresh}
                         onRetryMessage={props.onRetryMessage}
                         onContinuePlan={() => focusComposerRef.current?.()}
-                        historyActionPending={false}
+                        historyActionPending={forkFlow.loading}
                         onForkConversation={controlledByUser && !sessionInactive ? undefined : onForkConversation}
                         onRewindConversation={controlledByUser ? undefined : onRewindConversation}
                         isLatestCompletedBoundary={isLatestCompletedBoundary}
