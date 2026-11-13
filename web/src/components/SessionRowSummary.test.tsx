@@ -208,7 +208,7 @@ describe('SessionRowSummary background status', () => {
             </I18nProvider>
         )
 
-        expectUnread()
+        expectRunningUnread()
         const dots = container.querySelectorAll('.rounded-full')
         expect(dots).toHaveLength(1)
         expect(container.querySelector('[data-testid="session-unread"]')).toBeNull()
@@ -226,7 +226,7 @@ describe('SessionRowSummary background status', () => {
             </I18nProvider>
         )
 
-        expectUnread()
+        expectRunningUnread()
         expect(container.querySelector('[data-testid="session-presence"]')).toHaveClass('bg-blue-400', 'animate-pulse')
     })
 
@@ -468,12 +468,13 @@ describe('SessionRowSummary combined activity and unread indicator', () => {
         view.rerender(row())
         expect(screen.getByTestId('session-activity').querySelector('svg')).toHaveClass('text-blue-500')
         expect(screen.queryByTestId('session-unread')).toBeNull()
-        expectUnread()
+        expectRunningUnread()
 
         session = { ...session, thinking: false }
         view.rerender(row())
         expect(screen.queryByTestId('session-activity')).toBeNull()
         expect(screen.getByTestId('session-unread')).toHaveClass('bg-[var(--app-fg)]')
+        expectUnread()
 
         markSessionSeen(session.id, 2)
         view.rerender(row())
@@ -503,7 +504,7 @@ describe('SessionRowSummary combined activity and unread indicator', () => {
         expect(screen.queryByTestId('session-unread')).toBeNull()
         expect(screen.getByTestId('session-activity').querySelector('svg')).toHaveClass('text-blue-500')
         expect(screen.getByRole('tooltip', { hidden: true })).toHaveTextContent('Question')
-        expectUnread()
+        expectRunningUnread()
     })
 
     it('ignores expired thinking and background flags when disconnected', () => {
@@ -554,6 +555,13 @@ function expectUnread() {
     expect(screen.getByText(/demo|Background/, { selector: '[title]' })).toHaveClass('font-semibold')
 }
 
+// While work runs, the blue spinner carries unread; the at-rest bold title
+// would make a working session look finished.
+function expectRunningUnread() {
+    expect(screen.getByText('New activity')).toHaveClass('sr-only')
+    expect(screen.getByText(/demo|Background/, { selector: '[title]' })).toHaveClass('font-normal')
+}
+
 describe('SessionRowSummary time label', () => {
     beforeEach(() => {
         localStorage.clear()
@@ -575,6 +583,20 @@ describe('SessionRowSummary time label', () => {
 
         act(() => { vi.advanceTimersByTime(2 * 60_000) })
         expect(screen.getByText('2m ago')).toBeInTheDocument()
+    })
+
+    it('accents the time for unread output only once work stops', () => {
+        vi.useFakeTimers()
+        vi.setSystemTime(1_800_000_000_000)
+        let session = makeSummary({ updatedAt: 1_800_000_000_000, contentRevision: 2, thinking: true, backgroundTaskCount: 0 })
+        const row = () => <I18nProvider><SessionRowSummary session={session} /></I18nProvider>
+        const view = render(row())
+        expect(screen.getByText('just now')).toHaveClass('text-[var(--app-hint)]')
+        expect(screen.getByText('just now')).not.toHaveClass('font-semibold')
+
+        session = { ...session, thinking: false }
+        view.rerender(row())
+        expect(screen.getByText('just now')).toHaveClass('font-semibold', 'text-[var(--app-link)]')
     })
 
     it('shows a Codex import marker set after the first render', () => {

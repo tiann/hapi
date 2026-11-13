@@ -242,6 +242,24 @@ export abstract class RemoteLauncherBase {
         }
     }
 
+    /** Run a non-terminal abort teardown under the abort barrier: the loop's
+     * next dequeue waits until the teardown settles, but the launcher keeps
+     * running afterwards (unlike requestExit, which ends the loop). `run` is
+     * invoked synchronously so its synchronous prefix (state flips, the
+     * cancel wire call) lands before the caller's first await. */
+    protected runAbortUnderBarrier(run: () => Promise<void>): Promise<void> {
+        let release!: () => void;
+        const barrier = new Promise<void>((resolve) => { release = resolve; });
+        this.abortInFlight = barrier;
+        const settled = run();
+        const finish = () => {
+            release();
+            if (this.abortInFlight === barrier) this.abortInFlight = null;
+        };
+        settled.then(finish, finish);
+        return settled;
+    }
+
     protected clearAbortHandlers(rpcHandlerManager: RpcHandlerManagerLike): void {
         rpcHandlerManager.registerHandler(RPC_METHODS.Abort, async () => {});
         rpcHandlerManager.registerHandler(RPC_METHODS.Switch, async () => {});

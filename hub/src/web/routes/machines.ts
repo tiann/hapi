@@ -252,6 +252,32 @@ export function createMachinesRoutes(
         }
     })
 
+    app.get('/machines/:id/agent-quotas', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) return c.json({ error: 'Not connected' }, 503)
+
+        const machineId = c.req.param('id')
+        const machine = requireMachine(c, engine, machineId)
+        if (machine instanceof Response) return machine
+        if (!machine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.AgentQuotas)) {
+            return c.json({
+                error: 'This runner does not support agent quota inspection yet',
+                code: 'runner_upgrade_required',
+            }, 409)
+        }
+
+        const refreshQuery = c.req.query('refresh')
+        const refresh = refreshQuery === '1' || refreshQuery === 'true'
+
+        try {
+            return c.json(await engine.getAgentQuotas(machineId, { refresh }))
+        } catch (error) {
+            return c.json({
+                error: error instanceof Error ? error.message : 'Failed to inspect Agent quotas',
+            }, 500)
+        }
+    })
+
     app.post('/machines/:id/list-directory', async (c) => {
         const engine = getSyncEngine()
         if (!engine) {
@@ -631,7 +657,7 @@ export function createMachinesRoutes(
         if (result.type === 'error') {
             const status = result.code === 'machine_not_found' ? 404
                 : result.code === 'machine_offline' ? 503
-                    : 502
+                    : 500
             return c.json({ error: result.message, code: result.code }, status)
         }
         return c.json({ message: result.message })

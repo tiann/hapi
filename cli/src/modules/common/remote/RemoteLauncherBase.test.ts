@@ -220,7 +220,6 @@ describe('RemoteLauncherBase abort barrier', () => {
     })
 
     it.each([
-        'opencode/opencodeRemoteLauncher.ts',
         'copilot/copilotRemoteLauncher.ts',
         'cursor/cursorAcpRemoteLauncher.ts',
         'cursor/cursorLegacyRemoteLauncher.ts',

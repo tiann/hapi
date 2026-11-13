@@ -40,6 +40,8 @@ export class MessageQueue2<T> {
     private closed = false;
     private onMessageHandler: ((message: string, mode: T) => void) | null = null;
     onBatchConsumed: ((localIds: string[]) => void) | null = null;
+    /** Optional synchronous admission, before removing or acknowledging a batch. */
+    beforeDequeue: (() => void) | null = null;
     modeHasher: (mode: T) => string;
     private readonly reservations = new Map<string, QueueReservation<T>>();
     private readonly consumedReservations = new Set<string>();
@@ -636,6 +638,8 @@ export class MessageQueue2<T> {
         if (this.queue.length === 0) {
             return null;
         }
+
+        this.beforeDequeue?.();
 
         const firstItem = this.queue[0];
         const sameModeMessages: string[] = [];
