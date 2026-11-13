@@ -1456,6 +1456,16 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     messageText = `${PLAN_MODE_INSTRUCTION}\n\n${messageText}`;
                 }
 
+                if (waitSignal.aborted || this.shouldExit) {
+                    // A Stop that landed during the pre-prompt model/config
+                    // awaits must not run a round-snapshot read or blink
+                    // thinking/steeringActive for a prompt that never starts.
+                    if (!this.shouldExit) {
+                        this.requeueUndeliveredBatch(session, batch);
+                    }
+                    continue;
+                }
+
                 this.stallErrorReportedForPrompt = false;
                 const roundSummaryAbortController = new AbortController();
                 this.roundSummaryAbortController = roundSummaryAbortController;
@@ -1741,7 +1751,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     return { steered: false, error: 'Steer state is indeterminate' };
                 }
 
-                const restoreQueuedReservation = async (shouldRestore: () => boolean = () => !this.shouldExit): Promise<boolean> => {
+                const restoreQueuedReservation = async (shouldRestore: () => boolean = () => !this.shouldExit): Promise<'restored' | 'dropped' | 'indeterminate'> => {
                     // Includes pre-admission and stall restores, whose native
                     // entry may not yet exist or predate the active Stop. A
                     // terminal switch/exit resets the queue without waiting
@@ -1755,50 +1765,67 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                             // Terminal switch/exit resets the shared queue
                             // without waiting for this handler, so re-admitting
                             // would bounce the terminal straight back into
-                            // remote mode. Leaving must still undo this steer's
-                            // 'dispatching' stamp: persist 'queued' so the hub
-                            // row reads like any other queued row the terminal
-                            // reset dropped, and release the held reservation so
-                            // the shared queue stays usable in local mode (a
-                            // later Cancel must not answer 'in-flight' forever).
+                            // remote mode. For a proven row, leaving still
+                            // undoes this steer's 'dispatching' stamp: persist
+                            // 'queued' so the hub row reads like any other
+                            // queued row the terminal reset dropped, and
+                            // release the held reservation so the shared queue
+                            // stays usable in local mode (a later Cancel must
+                            // not answer 'in-flight' forever). An origin-
+                            // indeterminate row cannot be honestly reverted to
+                            // 'queued': stamp 'indeterminate' and keep its
+                            // reservation for explicit Cancel/Retry in local
+                            // mode instead of deleting it with the stamp
+                            // unreverted.
                             if (!taken.originIndeterminate) {
                                 const persisted = await session.client.setSteerDeliveryState([localId], 'queued');
                                 if (!persisted) {
                                     session.queue.markReservationIndeterminate(taken);
                                     session.client.emitSteerIndeterminate([localId]);
-                                    return false;
+                                    return 'indeterminate';
                                 }
+                            } else {
+                                session.queue.markReservationIndeterminate(taken);
+                                session.client.emitSteerIndeterminate([localId]);
+                                return 'indeterminate';
                             }
                             session.queue.markReservationIndeterminate(taken);
                             session.queue.cancelByLocalId(localId);
+                            return 'dropped';
                         }
-                        return false;
+                        return 'indeterminate';
                     }
                     if (!taken.originIndeterminate) {
                         const persisted = await session.client.setSteerDeliveryState([localId], 'queued');
                         if (!persisted) {
                             session.queue.markReservationIndeterminate(taken);
                             session.client.emitSteerIndeterminate([localId]);
-                            return false;
+                            return 'indeterminate';
                         }
                     }
                     while (this.v2ResetInProgress) await this.v2ResetInProgress;
                     if (!shouldRestore()) {
                         if (this.shouldExit) {
                             // Same terminal release as above; the 'queued'
-                            // persist already ran (or the row was
-                            // origin-indeterminate), so only the held
-                            // 'dispatching' reservation is left to clean up.
+                            // persist already ran cleanly, or the row is
+                            // origin-indeterminate and keeps its reservation
+                            // under the 'indeterminate' stamp.
+                            if (taken.originIndeterminate) {
+                                session.queue.markReservationIndeterminate(taken);
+                                session.client.emitSteerIndeterminate([localId]);
+                                return 'indeterminate';
+                            }
                             session.queue.markReservationIndeterminate(taken);
                             session.queue.cancelByLocalId(localId);
+                            return 'dropped';
                         }
-                        return false;
+                        return 'indeterminate';
                     }
                     if (taken.state !== 'dispatching' || !session.queue.restoreReservation(taken)) {
                         session.client.emitSteerIndeterminate([localId]);
-                        return false;
+                        return 'indeterminate';
                     }
-                    return true;
+                    return 'restored';
                 };
 
                 if (taken.state !== 'dispatching') {
@@ -2001,7 +2028,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         localId: string,
         taken: QueueReservation<OpencodeMode>,
         release: () => void,
-        restore: (shouldRestore?: () => boolean) => Promise<boolean>
+        restore: (shouldRestore?: () => boolean) => Promise<'restored' | 'dropped' | 'indeterminate'>
     ): Promise<{ steered: boolean; error?: string }> {
         const rest = this.v2RestInfo!;
         const opts = { ...rest, sessionId, text: taken.item.message, inputId: opencodeV2InputId({
@@ -2078,9 +2105,16 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                             release(); remove();
                             return removed;
                         }
-                        if (!restored) unknown();
+                        if (restored === 'dropped') {
+                            // Terminal exit cleanly dropped the row ('queued'
+                            // persisted, reservation released): a definitive
+                            // non-delivery, not an unknown one.
+                            release(); remove();
+                            return true;
+                        }
+                        if (restored !== 'restored') unknown();
                         release(); remove();
-                        return restored ? true : 'indeterminate';
+                        return restored === 'restored' ? true : 'indeterminate';
                     }
                     // Teardown or a previously unknown delivery never becomes
                     // an implicit retry. The durable HAPI row remains unknown.
@@ -2125,7 +2159,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             remove();
             const restored = await restore();
             release();
-            return { steered: false, error: restored ? 'OpenCode rejected steering input' : 'Steer state is indeterminate' };
+            return {
+                steered: false,
+                error: restored === 'restored' ? 'OpenCode rejected steering input'
+                    // A terminal exit cleanly dropped the row during the
+                    // restore: the turn is gone, not the outcome unknown.
+                    : restored === 'dropped' ? 'Active turn changed'
+                    : 'Steer state is indeterminate'
+            };
         }
         if (result !== 'admitted') {
             unknown();

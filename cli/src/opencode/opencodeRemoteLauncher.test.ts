@@ -5220,6 +5220,44 @@ describe('selectAbortStatusMessage', () => {
         }
     })
 
+    it('skips the round snapshot and thinking toggle when a plain Stop lands during the inline model switch', async () => {
+        harness.promptCount = 0
+        harness.promptContents = []
+        let releaseModel: (() => void) | undefined
+        harness.setModelImpl = () => new Promise<void>((resolve) => { releaseModel = resolve })
+        const { session, rpcHandlers, thinkingChangeCalls } = createSessionStub([
+            { message: 'first turn', mode: createMode('ollama/exaone:4.5-33b-q8') },
+            { message: 'aborted during model switch', mode: createMode('mlx/qwen3:0.6b') }
+        ], { keepOpen: true })
+        const launchPromise = opencodeRemoteLauncher(session as never)
+        let aborted: Promise<void> | undefined
+        try {
+            await vi.waitFor(() => expect(harness.promptCount).toBe(1))
+            await vi.waitFor(() => expect(harness.setModelArgs).toHaveLength(1))
+            const abortHandler = rpcHandlers.get(RPC_METHODS.Abort) as () => Promise<void>
+            aborted = abortHandler()
+            await aborted
+            releaseModel?.()
+            // The dequeued, hub-ACKed batch re-runs as its own turn.
+            await vi.waitFor(() => expect(harness.promptCount).toBe(2))
+            session.queue.close()
+            await launchPromise
+            const text = (harness.promptContents[1] as Array<{ type: string; text?: string }>)[0]?.text
+            expect(text).toContain('aborted during model switch')
+            // The aborted iteration must not run a round-snapshot read or
+            // blink thinking for a prompt that never started: the aborted
+            // prep adds neither a snapshot call nor a thinking cycle (the
+            // middle false is the Stop teardown's thinking clear).
+            expect(roundSummaryHarness.snapshotCalls).toHaveLength(1)
+            expect(thinkingChangeCalls).toEqual([true, false, false, true, false])
+        } finally {
+            releaseModel?.()
+            harness.setModelImpl = null
+            session.queue.close()
+            await Promise.all([launchPromise.catch(() => {}), aborted?.catch(() => {})])
+        }
+    })
+
     it('keeps native instructions for the first actual prompt after Stop aborts the history read', async () => {
         roundSummaryHarness.snapshotImpl = async () => ({ messageIds: [] })
         harness.promptCount = 0
@@ -5993,6 +6031,86 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
         } finally {
             releaseState?.(); harness.deferSteerState = null;
             aborting?.catch(() => {}); await aborting?.catch(() => {});
+            await stopTurn(stub, releasePrompt, runPromise); nativeFetch.mockRestore();
+        }
+    });
+
+    it('preserves an origin-indeterminate steer reservation across terminal switch', async () => {
+        const { stub, releasePrompt, runPromise } = await startTurn();
+        let steering2: Promise<unknown> | undefined;
+        try {
+            stub.session.queue.push('correction', createMode(), 'steer');
+            // Steer #1 ends indeterminate: the reservation is retained.
+            const indeterminate = new Error('ACP transport closed');
+            Object.defineProperty(indeterminate, ACP_INDETERMINATE_SYMBOL, { value: true });
+            harness.softSteerThrow = indeterminate;
+            await expect(steerHandlerOf(stub)({ localId: 'steer' }))
+                .resolves.toEqual({ steered: false, error: 'Steer outcome is being reconciled' });
+            harness.softSteerThrow = null;
+            expect(stub.steerIndeterminateCalls).toEqual([['steer']]);
+
+            // Steer #2 retries the retained reservation; park its durable
+            // 'dispatching' stamp so the terminal switch lands mid-retry.
+            let releaseStamp!: () => void;
+            harness.deferSteerState = new Promise<void>(resolve => { releaseStamp = resolve; });
+            steering2 = steerHandlerOf(stub)({ localId: 'steer' });
+            await vi.waitFor(() => expect(harness.steerStateCalls.filter(c => c.state === 'dispatching')).toHaveLength(2));
+            const switching = (stub.rpcHandlers.get('switch') as () => Promise<void>)();
+            await new Promise<void>(resolve => setImmediate(resolve));
+            releaseStamp();
+            expect(await steering2).toEqual({ steered: false, error: 'Active turn changed' });
+            await switching;
+            // The origin-indeterminate reservation survives the terminal
+            // reset for explicit Cancel/Retry in local mode, and the hub
+            // stamp was reverted to 'indeterminate' — not deleted with a
+            // stuck 'dispatching'.
+            expect(stub.steerIndeterminateCalls).toEqual([['steer'], ['steer']]);
+            expect(stub.session.queue.cancelByLocalId('steer')).toBe(true);
+            expect(stub.session.queue.pendingLocalIds()).toEqual([]);
+            releasePrompt();
+            expect(await runPromise).toBe('switch');
+        } finally {
+            harness.deferSteerState = null;
+            harness.softSteerThrow = null;
+            releasePrompt();
+            stub.session.queue.close();
+            await Promise.all([runPromise.catch(() => {}), steering2?.catch(() => {})]);
+        }
+    });
+
+    it('v2 switch landing during a rejected steer restore reports the terminal drop, not indeterminate', async () => {
+        harness.detectedVersion = 'v2'; harness.discoveredPort = 48274; harness.discoveredPassword = 'test-only';
+        let releasePost!: () => void;
+        const heldPost = new Promise<Response>(resolve => { releasePost = () => resolve(new Response(null, { status: 422 })); });
+        const nativeFetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
+            if (init?.method === 'POST') return heldPost;
+            return new Response(null, { status: 404 });
+        });
+        const { stub, releasePrompt, runPromise } = await startTurn();
+        let releaseState!: () => void;
+        let switching: Promise<void> | undefined;
+        let steering: Promise<unknown> | undefined;
+        try {
+            stub.session.queue.push('correction', createMode(), 'steer');
+            steering = steerHandlerOf(stub)({ localId: 'steer' });
+            await vi.waitFor(() => expect(harness.steerStateCalls).toContainEqual({ localIds: ['steer'], state: 'dispatching' }));
+            // Park the rejected branch's durable 'queued' persist mid-restore.
+            harness.deferSteerState = new Promise<void>(resolve => { releaseState = resolve; });
+            releasePost();
+            await vi.waitFor(() => expect(harness.steerStateCalls).toContainEqual({ localIds: ['steer'], state: 'queued' }));
+            // The terminal lands while the persist is parked: the row is
+            // definitively rejected AND cleanly dropped — never indeterminate.
+            switching = (stub.rpcHandlers.get('switch') as () => Promise<void>)();
+            releaseState();
+            expect(await steering).toEqual({ steered: false, error: 'Active turn changed' });
+            await switching;
+            expect(stub.steerIndeterminateCalls).toEqual([]);
+            expect(stub.session.queue.pendingLocalIds()).toEqual([]);
+            releasePrompt();
+            expect(await runPromise).toBe('switch');
+        } finally {
+            releaseState?.(); harness.deferSteerState = null;
+            await Promise.all([switching?.catch(() => {}), steering?.catch(() => {}) as Promise<unknown>]);
             await stopTurn(stub, releasePrompt, runPromise); nativeFetch.mockRestore();
         }
     });

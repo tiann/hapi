@@ -991,6 +991,77 @@ describe('cursorAcpRemoteLauncher', () => {
         }
     });
 
+    it('preserves an origin-indeterminate steer reservation across a terminal switch', async () => {
+        let releasePrompt!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        const indeterminate = new Error('ACP write callback failed');
+        Object.defineProperty(indeterminate, ACP_INDETERMINATE_SYMBOL, { value: true });
+        harness.softSteerDispatchError = indeterminate;
+        const session = makeSession(null, { keepQueueOpen: true });
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+
+        // Steer #1 ends indeterminate: the reservation is retained.
+        session.queue.push('correction', mode, 'steer');
+        await expect(handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' }))
+            .resolves.toEqual({ steered: false, error: 'Steer outcome is being reconciled' });
+        expect(session.client.emitSteerIndeterminate).toHaveBeenCalledTimes(1);
+        harness.softSteerDispatchError = null;
+
+        // Steer #2 retries the retained reservation; park its durable
+        // 'dispatching' stamp so the terminal switch lands mid-retry, and
+        // make the dispatch itself fail definitively so the restore runs.
+        harness.softSteerDispatchError = new Error('stdin closed');
+        let releaseStamp!: () => void;
+        const setSteer = session.client.setSteerDeliveryState as unknown as ReturnType<typeof vi.fn>;
+        setSteer.mockImplementation(async (_localIds: string[], state: string) => {
+            if (state === 'dispatching') await new Promise<void>(resolve => { releaseStamp = resolve; });
+            return true;
+        });
+        let releaseCancel!: () => void;
+        const backend = vi.mocked(createCursorAcpBackend).mock.results.at(-1)!.value as {
+            cancelPrompt: ReturnType<typeof vi.fn>;
+        };
+        backend.cancelPrompt.mockImplementationOnce(() => new Promise<void>(resolve => { releaseCancel = resolve; }));
+
+        let retry: Promise<unknown> | undefined;
+        try {
+            retry = handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' });
+            await vi.waitFor(() => expect(releaseStamp).toBeTypeOf('function'));
+            const switchPromise = handlers.get(RPC_METHODS.Switch)!();
+            await new Promise<void>(resolve => setImmediate(resolve));
+            releaseStamp();
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(await retry).toEqual({ steered: false, error: 'Failed to soft-steer into active turn' });
+            releaseCancel();
+            await switchPromise;
+            // The origin-indeterminate reservation survives the terminal
+            // reset for explicit Cancel/Retry in local mode, and the hub
+            // stamp was reverted to 'indeterminate' — not deleted with a
+            // stuck 'dispatching'.
+            expect(session.client.emitSteerIndeterminate).toHaveBeenCalledTimes(2);
+            expect(session.queue.cancelByLocalId('steer')).toBe(true);
+            harness.deferPrompt = null;
+            releasePrompt();
+            session.queue.close();
+            expect(await runPromise).toBe('switch');
+        } finally {
+            releaseStamp?.();
+            releaseCancel?.();
+            setSteer.mockImplementation(async () => true);
+            harness.deferPrompt = null;
+            releasePrompt?.();
+            session.queue.close();
+            await Promise.all([runPromise.catch(() => {}), retry?.catch(() => {})]);
+        }
+    });
+
     it('restores a queued steer when ACP dispatch fails', async () => {
         let releasePrompt!: () => void;
         harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });

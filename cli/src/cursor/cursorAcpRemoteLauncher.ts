@@ -606,7 +606,10 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         // stamp: persist 'queued' so the hub row reads like any
                         // other queued row the terminal reset dropped, and
                         // release the held reservation so a later Cancel works
-                        // in local mode.
+                        // in local mode. An origin-indeterminate row cannot be
+                        // honestly reverted to 'queued': stamp 'indeterminate'
+                        // and keep its reservation for explicit Cancel/Retry
+                        // instead of deleting it with the stamp unreverted.
                         if (!taken.originIndeterminate) {
                             const persisted = await session.client.setSteerDeliveryState([localId], 'queued');
                             if (!persisted) {
@@ -614,6 +617,10 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                                 session.client.emitSteerIndeterminate([localId]);
                                 return false;
                             }
+                        } else {
+                            session.queue.markReservationIndeterminate(taken);
+                            session.client.emitSteerIndeterminate([localId]);
+                            return false;
                         }
                         session.queue.markReservationIndeterminate(taken);
                         session.queue.cancelByLocalId(localId);
