@@ -6,6 +6,12 @@ import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import type { Store, StoredMessage } from '../../store'
 import { truncateOversizedMessageContent } from '../../store/contentCodec'
 import type { SyncEngine } from '../../sync/syncEngine'
+import { collectImportCandidates, type ImportCandidate } from './localSessions/matchContentPrefix'
+
+// The canonical candidate collection lives with the generic matcher; the
+// Codex sidecar re-exports it so the route module keeps its import surface.
+export { collectImportCandidates } from './localSessions/matchContentPrefix'
+export type { ImportCandidate } from './localSessions/matchContentPrefix'
 
 /**
  * Codex sidecar capabilities that live outside the import path:
@@ -686,45 +692,6 @@ export function getComparableStoredMessageKey(message: StoredMessage): string {
 }
 
 // --- duplicate detection / merge ---------------------------------------------
-
-export type ImportCandidate = {
-    sessionId: string
-    active: boolean
-    updatedAt: number
-    metadata: Record<string, unknown> | null
-    persisted: boolean
-}
-
-export function collectImportCandidates(
-    store: Store,
-    namespace: string,
-    getSyncEngine?: () => SyncEngine | null
-): ImportCandidate[] {
-    const candidatesBySessionId = new Map<string, ImportCandidate>()
-    for (const session of store.sessions.getSessionsByNamespace(namespace)) {
-        candidatesBySessionId.set(session.id, {
-            sessionId: session.id,
-            active: session.active,
-            updatedAt: session.updatedAt,
-            metadata: asRecord(session.metadata),
-            persisted: true
-        })
-    }
-
-    const engineSessions = getSyncEngine?.()?.getSessionsByNamespace(namespace) ?? []
-    for (const session of engineSessions) {
-        const existing = candidatesBySessionId.get(session.id)
-        candidatesBySessionId.set(session.id, {
-            sessionId: session.id,
-            active: session.active || Boolean(existing?.active),
-            updatedAt: Math.max(session.updatedAt, existing?.updatedAt ?? 0),
-            metadata: asRecord(session.metadata) ?? existing?.metadata ?? null,
-            persisted: Boolean(existing?.persisted)
-        })
-    }
-
-    return Array.from(candidatesBySessionId.values())
-}
 
 export function getCodexImportIds(metadata: Record<string, unknown> | null | undefined): string[] {
     return Array.from(new Set([metadata?.codexSessionId, metadata?.codexSourceSessionId]

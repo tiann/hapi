@@ -7,7 +7,7 @@ import type { Machine, SyncEngine } from '../../../sync/syncEngine'
 import type { Store, StoredMessage, StoredSession } from '../../../store'
 import { ImportedMessageConflictError } from '../../../store/messages'
 import { matchAnchored } from './matchAnchored'
-import { matchContentPrefix, type ImportCandidate } from './matchContentPrefix'
+import { collectImportCandidates, matchContentPrefix } from './matchContentPrefix'
 import type { HubLocalSessionSource } from './sources'
 
 /**
@@ -70,30 +70,6 @@ export function findImportedLocalSession(options: {
     return null
 }
 
-function collectImportCandidates(store: Store, namespace: string, engine: SyncEngine | null): ImportCandidate[] {
-    const candidatesBySessionId = new Map<string, ImportCandidate>()
-    for (const session of store.sessions.getSessionsByNamespace(namespace)) {
-        candidatesBySessionId.set(session.id, {
-            sessionId: session.id,
-            active: session.active,
-            updatedAt: session.updatedAt,
-            metadata: asRecord(session.metadata),
-            persisted: true
-        })
-    }
-    for (const session of engine?.getSessionsByNamespace(namespace) ?? []) {
-        const existing = candidatesBySessionId.get(session.id)
-        candidatesBySessionId.set(session.id, {
-            sessionId: session.id,
-            active: session.active || Boolean(existing?.active),
-            updatedAt: Math.max(session.updatedAt, existing?.updatedAt ?? 0),
-            metadata: asRecord(session.metadata) ?? existing?.metadata ?? null,
-            persisted: Boolean(existing?.persisted)
-        })
-    }
-    return Array.from(candidatesBySessionId.values())
-}
-
 function buildImportMetadata(options: {
     source: HubLocalSessionSource
     transcript: LocalTranscript
@@ -118,14 +94,10 @@ function buildImportMetadata(options: {
         machineId: machine.id,
         flavor: source.flavor
     }
-    // The primary native id always follows the transcript; alias keys are set
-    // only when absent (Codex fork provenance; Claude id history is maintained
-    // by the live rotation machinery).
+    // The primary native id follows the transcript only when the session does
+    // not carry one yet: Codex fork provenance renames the primary id while
+    // keeping the alias, and a re-sync must preserve it.
     source.nativeIdKeys.forEach((key, index) => {
-        if (index === 0) {
-            metadata[key] = transcript.id
-            return
-        }
         if (typeof existing[key] !== 'string' && !Array.isArray(existing[key])) {
             metadata[key] = transcript.id
         }
@@ -286,7 +258,7 @@ export function runLocalImportSync(options: {
             // --- match ----------------------------------------------------
             let delta: LocalTranscript['messages']
             if (source.match.strategy === 'contentPrefix') {
-                const candidates = collectImportCandidates(store, namespace, engine)
+                const candidates = collectImportCandidates(store, namespace, () => engine)
                 const result = matchContentPrefix({
                     candidates,
                     transcript,

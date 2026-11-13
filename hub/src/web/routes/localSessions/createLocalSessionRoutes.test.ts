@@ -219,20 +219,6 @@ describe('generic local session routes', () => {
         expect(body.results[0]).toMatchObject({ error: { code: 'not_found' } })
     })
 
-    it('enforces a temporary namespace gate', async () => {
-        const gatedSource = {
-            ...PI_LOCAL_SESSION_SOURCE,
-            namespaceGate: { namespace: 'default', error: 'Codex transcript import is not available outside the default namespace' }
-        }
-        const { app } = harness({ namespace: 'team', sources: [gatedSource] })
-        const listResponse = await app.request('/api/pi/sessions')
-        expect(listResponse.status).toBe(403)
-        const importResponse = await app.request('/api/pi/import-sessions', {
-            method: 'POST',
-            body: JSON.stringify({ sessionIds: ['pi-1'] })
-        })
-        expect(importResponse.status).toBe(403)
-    })
 })
 
 describe('fetchLocalTranscripts', () => {

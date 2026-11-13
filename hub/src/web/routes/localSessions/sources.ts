@@ -24,7 +24,6 @@ import type {
 import type { MachineCapability } from '@hapi/protocol/runnerCapabilities'
 import type { SyncEngine } from '../../../sync/syncEngine'
 import { truncateOversizedMessageContent } from '../../../store/contentCodec'
-import { CODEX_TRANSCRIPT_IMPORT_NAMESPACE_ERROR } from '../codexExtras'
 import { normalizeComparableText, stableSerializeContent } from './compare'
 
 /**
@@ -77,8 +76,6 @@ export type HubLocalSessionSource = {
     requiredMachineCapability?: MachineCapability
     /** Codex request flag yolo -> metadata.preferredPermissionMode. */
     requestMetadata?: (body: Record<string, unknown>) => Record<string, unknown>
-    /** Temporary (commit 2): namespace restriction until 4b lifts it for list/sync. */
-    namespaceGate?: { namespace: string; error: string }
 }
 
 /** True when the machine advertises the source's required capability. */
@@ -186,9 +183,7 @@ export const CODEX_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
     match: { strategy: 'contentPrefix', compareKey: codexCompareKey },
     lifecycleOnCreate: 'imported',
     batch: 'stopOnFirstError',
-    // Temporary (commit 2): the pre-registry default-namespace gate; 4b lifts
-    // it for list and sync while the desktop extras stay gated.
-    namespaceGate: { namespace: 'default', error: CODEX_TRANSCRIPT_IMPORT_NAMESPACE_ERROR },
+    importLimit: 200,
     requiredMachineCapability: MACHINE_CAPABILITIES.LocalSessionImport,
     requestMetadata: (body) => (body.yolo === true ? { preferredPermissionMode: 'yolo' } : {}),
     legacy: {

@@ -122,9 +122,6 @@ export function createLocalSessionRoutes(options: {
 
         app.get(listPath, async (c) => {
             const namespace = c.get('namespace')
-            if (source.namespaceGate && namespace !== source.namespaceGate.namespace) {
-                return c.json({ success: false, error: source.namespaceGate.error, sessions: [] }, 403)
-            }
             const machine = pickImportMachine({
                 engine: options.getSyncEngine(),
                 namespace,
@@ -157,9 +154,6 @@ export function createLocalSessionRoutes(options: {
 
         app.post(importPath, async (c) => {
             const namespace = c.get('namespace')
-            if (source.namespaceGate && namespace !== source.namespaceGate.namespace) {
-                return c.json({ success: false, error: source.namespaceGate.error }, 403)
-            }
             const body = asRecord(await c.req.json().catch(() => null)) ?? {}
             const rawSessionIds = Array.isArray(body.sessionIds) ? body.sessionIds : []
             const importLimit = source.importLimit

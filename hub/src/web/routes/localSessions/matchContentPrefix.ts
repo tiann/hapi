@@ -1,5 +1,7 @@
 import type { LocalTranscript } from '@hapi/protocol/localTranscript'
+import type { Store } from '../../../store'
 import type { StoredMessage } from '../../../store'
+import type { SyncEngine } from '../../../sync/syncEngine'
 import { truncateOversizedMessageContent } from '../../../store/contentCodec'
 import { stableSerializeContent } from './compare'
 
@@ -30,6 +32,48 @@ export type ImportCandidate = {
     updatedAt: number
     metadata: Record<string, unknown> | null
     persisted: boolean
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+        ? value as Record<string, unknown>
+        : null
+}
+
+/**
+ * Canonical import-candidate collection shared by the generic importer and
+ * the Codex duplicate-merge sidecar: store rows first, then engine cache
+ * entries merged in by session id.
+ */
+export function collectImportCandidates(
+    store: Store,
+    namespace: string,
+    getSyncEngine?: () => SyncEngine | null
+): ImportCandidate[] {
+    const candidatesBySessionId = new Map<string, ImportCandidate>()
+    for (const session of store.sessions.getSessionsByNamespace(namespace)) {
+        candidatesBySessionId.set(session.id, {
+            sessionId: session.id,
+            active: session.active,
+            updatedAt: session.updatedAt,
+            metadata: asRecord(session.metadata),
+            persisted: true
+        })
+    }
+
+    const engineSessions = getSyncEngine?.()?.getSessionsByNamespace(namespace) ?? []
+    for (const session of engineSessions) {
+        const existing = candidatesBySessionId.get(session.id)
+        candidatesBySessionId.set(session.id, {
+            sessionId: session.id,
+            active: session.active || Boolean(existing?.active),
+            updatedAt: Math.max(session.updatedAt, existing?.updatedAt ?? 0),
+            metadata: asRecord(session.metadata) ?? existing?.metadata ?? null,
+            persisted: Boolean(existing?.persisted)
+        })
+    }
+
+    return Array.from(candidatesBySessionId.values())
 }
 
 export type ContentPrefixMatchResult =
