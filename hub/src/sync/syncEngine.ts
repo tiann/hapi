@@ -16,6 +16,7 @@ import type { AbortChunkedUploadResponse, CursorChatStoreStatus, CursorMigrateOu
 import type { UsageQueryAgent, UsageQueryAgentSettings, UsageQueryResult, UsageQuerySettingsResponse, UsageQueryTemplate } from '@hapi/protocol/usageQuery'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
+import type { ListLocalSessionsRpcResponse, LocalSessionFlavor } from '@hapi/protocol/localTranscript'
 import type { CopilotReasoningEffortResponse, ImplementCodexPlanResult, KimiReasoningEffortResponse } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, BackgroundTask, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { hasConversationMessageContent, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
@@ -6062,6 +6063,14 @@ export class SyncEngine {
 
     async archiveCodexSessionForMachine(machineId: string, sessionId: string): Promise<RpcArchiveCodexSessionResponse> {
         return await this.rpcGateway.archiveCodexSessionForMachine(machineId, sessionId)
+    }
+
+    async listLocalSessionsForMachine(machineId: string, params: {
+        flavor: LocalSessionFlavor
+        cwd?: string | null
+        sessionIds?: string[] | null
+    }): Promise<ListLocalSessionsRpcResponse> {
+        return await this.rpcGateway.listLocalSessionsForMachine(machineId, params)
     }
 
     async listCursorModelsForSession(sessionId: string): Promise<RpcListCursorModelsResponse> {

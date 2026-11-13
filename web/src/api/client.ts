@@ -212,6 +212,27 @@ function parseErrorCode(bodyText: string): string | undefined {
     }
 }
 
+function parseErrorDisplay(bodyText: string): string | undefined {
+    try {
+        const parsed = JSON.parse(bodyText) as ErrorPayload
+        if (typeof parsed.error === 'string' && parsed.error.trim().length > 0) return parsed.error
+        return undefined
+    } catch {
+        return undefined
+    }
+}
+
+/**
+ * User-facing message for a failed API call: unwrap the hub's human error
+ * string instead of leaking the raw `HTTP <status>: <body>` envelope.
+ */
+export function apiErrorMessage(error: unknown, fallback: string): string {
+    if (!(error instanceof ApiError)) {
+        return error instanceof Error && error.message.trim().length > 0 ? error.message : fallback
+    }
+    return parseErrorDisplay(error.body ?? '') ?? error.code?.trim() ?? fallback
+}
+
 export class ApiError extends Error {
     status: number
     code?: string
