@@ -1,14 +1,48 @@
 import type { AttachmentAdapter, PendingAttachment, CompleteAttachment, Attachment } from '@assistant-ui/react'
-import type { ApiClient } from '@/api/client'
+import {
+    DEFAULT_UPLOAD_CHUNK_BYTES,
+    LEGACY_SINGLE_UPLOAD_MAX_BYTES,
+    MAX_CONFIGURABLE_UPLOAD_BYTES,
+    UPLOAD_CHUNK_MAX_BYTES
+} from '@hapi/protocol/apiTypes'
+import { ApiError, type ApiClient } from '@/api/client'
 import type { AttachmentMetadata } from '@/types/api'
 import { isImageMimeType } from '@/lib/fileAttachments'
 import { randomId } from '@/lib/randomId'
 import { getRestoredUploadMetadata } from '@/lib/composer-attachment-drafts'
 import type { AttachmentDraftHandoff } from '@/lib/composer-draft-transfer'
 
-/** Composer / share upload ceiling — keep deep-link fetch in sync. */
-export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+/** Client sanity ceiling matching the Hub/CLI max configurable byte limit (10 GiB). */
+export const MAX_UPLOAD_BYTES = MAX_CONFIGURABLE_UPLOAD_BYTES
+/** Files above 8 MiB stream in chunks instead of buffering base64 in browser memory. */
+export const CHUNKED_UPLOAD_THRESHOLD_BYTES = UPLOAD_CHUNK_MAX_BYTES
 const MAX_PREVIEW_BYTES = 5 * 1024 * 1024
+
+type ActiveUploadEntry = {
+    chunkController: AbortController
+    uploadSessionId: string
+    uploadId?: string
+    abortSent?: boolean
+    finalizing?: boolean
+}
+
+function isNonRetryableUploadError(error: unknown, code?: string): boolean {
+    if (code === 'upload_too_large') {
+        return true
+    }
+    return error instanceof ApiError && (error.status === 413 || error.code === 'upload_too_large')
+}
+
+function isUnsupportedChunkedUploadError(error: unknown, code?: string): boolean {
+    if (code === 'rpc_target_missing') {
+        return true
+    }
+    if (!(error instanceof ApiError)) {
+        return false
+    }
+    return error.code === 'rpc_target_missing'
+        || (error.status === 404 && error.code !== 'Session not found')
+}
 
 type PendingUploadAttachment = PendingAttachment & {
     path?: string
@@ -27,6 +61,7 @@ export function createAttachmentAdapter(
     onSessionResolved?: (sessionId: string, pending: AttachmentDraftHandoff) => Promise<void>,
 ): AttachmentAdapter {
     const cancelledAttachmentIds = new Set<string>()
+    const activeUploads = new Map<string, ActiveUploadEntry>()
 
     const deleteUpload = async (path?: string, uploadSessionId = sessionId) => {
         if (!path) return
@@ -35,6 +70,14 @@ export function createAttachmentAdapter(
         } catch {
             // Best effort cleanup
         }
+    }
+
+    const abortActiveChunkedUpload = (entry: ActiveUploadEntry | undefined) => {
+        if (!entry || entry.abortSent || !entry.uploadId) {
+            return
+        }
+        entry.abortSent = true
+        void api.abortChunkedUpload(entry.uploadSessionId, entry.uploadId).catch(() => {})
     }
 
     return {
@@ -68,9 +111,21 @@ export function createAttachmentAdapter(
 
             const id = restored?.id ?? randomId()
             const contentType = file.type || 'application/octet-stream'
+            const makeIncomplete = (retryable: boolean): PendingUploadAttachment => ({
+                id,
+                type: 'file',
+                name: file.name,
+                contentType,
+                file,
+                status: { type: 'incomplete', reason: 'error' },
+                retryable,
+            } as PendingUploadAttachment)
+
+            let previewUrl: string | undefined
+            let activeEntry: ActiveUploadEntry | undefined
+            let finalized = false
 
             try {
-                let previewUrl: string | undefined
                 if (isImageMimeType(contentType) && file.size <= MAX_PREVIEW_BYTES) {
                     try {
                         previewUrl = await fileToDataUrl(file)
@@ -94,15 +149,7 @@ export function createAttachmentAdapter(
                 }
 
                 if (file.size > MAX_UPLOAD_BYTES) {
-                    yield {
-                        id,
-                        type: 'file',
-                        name: file.name,
-                        contentType,
-                        file,
-                        status: { type: 'incomplete', reason: 'error' },
-                        retryable: false,
-                    } as PendingUploadAttachment
+                    yield makeIncomplete(false)
                     return
                 }
 
@@ -123,72 +170,211 @@ export function createAttachmentAdapter(
                     return
                 }
 
-                const content = previewUrl
-                    ? base64FromDataUrl(previewUrl)
-                    : await fileToBase64(file)
+                let useLegacySingleUpload = file.size <= CHUNKED_UPLOAD_THRESHOLD_BYTES
 
-                if (cancelledAttachmentIds.has(id)) {
-                    return
-                }
+                if (!useLegacySingleUpload) {
+                    const chunkController = new AbortController()
+                    activeEntry = { chunkController, uploadSessionId }
+                    activeUploads.set(id, activeEntry)
 
-                yield {
-                    id,
-                    type: 'file',
-                    name: file.name,
-                    contentType,
-                    file,
-                    status: { type: 'running', reason: 'uploading', progress: 50 },
-                    previewUrl
-                } as PendingUploadAttachment
-
-                const result = await api.uploadFile(uploadSessionId, file.name, content, contentType)
-                if (cancelledAttachmentIds.has(id)) {
-                    if (result.success && result.path) {
-                        await deleteUpload(result.path, uploadSessionId)
+                    let initResult: Awaited<ReturnType<ApiClient['initChunkedUpload']>> | null = null
+                    let chunkedUnsupported = false
+                    try {
+                        initResult = await api.initChunkedUpload(
+                            uploadSessionId,
+                            { filename: file.name, size: file.size, mimeType: contentType }
+                        )
+                    } catch (error) {
+                        if (cancelledAttachmentIds.has(id)) {
+                            return
+                        }
+                        if (isUnsupportedChunkedUploadError(error)) {
+                            chunkedUnsupported = true
+                        } else {
+                            throw error
+                        }
                     }
-                    return
+
+                    if (initResult?.success && initResult.uploadId) {
+                        activeEntry.uploadId = initResult.uploadId
+                    }
+
+                    if (cancelledAttachmentIds.has(id)) {
+                        abortActiveChunkedUpload(activeEntry)
+                        return
+                    }
+
+                    if (!chunkedUnsupported && initResult && !initResult.success) {
+                        if (isUnsupportedChunkedUploadError(undefined, initResult.code)) {
+                            chunkedUnsupported = true
+                        } else {
+                            yield makeIncomplete(!isNonRetryableUploadError(undefined, initResult.code))
+                            return
+                        }
+                    }
+
+                    if (chunkedUnsupported) {
+                        activeUploads.delete(id)
+                        activeEntry = undefined
+                        if (file.size > LEGACY_SINGLE_UPLOAD_MAX_BYTES) {
+                            yield makeIncomplete(false)
+                            return
+                        }
+                        useLegacySingleUpload = true
+                    } else if (!initResult?.uploadId) {
+                        yield makeIncomplete(true)
+                        return
+                    } else {
+                        const uploadId = initResult.uploadId
+                        const chunkSize = Math.min(
+                            Math.max(1, initResult.chunkSize ?? DEFAULT_UPLOAD_CHUNK_BYTES),
+                            UPLOAD_CHUNK_MAX_BYTES
+                        )
+                        const totalChunks = Math.ceil(file.size / chunkSize)
+
+                        for (let index = 0; index < totalChunks; index += 1) {
+                            if (cancelledAttachmentIds.has(id)) {
+                                abortActiveChunkedUpload(activeEntry)
+                                return
+                            }
+                            const start = index * chunkSize
+                            const end = Math.min(start + chunkSize, file.size)
+                            const chunkRes = await api.uploadFileChunk(
+                                uploadSessionId,
+                                uploadId,
+                                index,
+                                file.slice(start, end),
+                                { signal: chunkController.signal }
+                            )
+                            if (cancelledAttachmentIds.has(id)) {
+                                abortActiveChunkedUpload(activeEntry)
+                                return
+                            }
+                            if (!chunkRes.success) {
+                                abortActiveChunkedUpload(activeEntry)
+                                yield makeIncomplete(!isNonRetryableUploadError(undefined, chunkRes.code))
+                                return
+                            }
+                            const progress = Math.min(99, Math.max(1, Math.round((end / file.size) * 95)))
+                            yield {
+                                id,
+                                type: 'file',
+                                name: file.name,
+                                contentType,
+                                file,
+                                status: { type: 'running', reason: 'uploading', progress },
+                                previewUrl
+                            } as PendingUploadAttachment
+                        }
+
+                        activeEntry.finalizing = true
+                        const finalResult = await api.finalizeChunkedUpload(
+                            uploadSessionId,
+                            uploadId
+                        )
+
+                        if (cancelledAttachmentIds.has(id)) {
+                            if (finalResult.success && finalResult.path) {
+                                finalized = true
+                                await deleteUpload(finalResult.path, uploadSessionId)
+                            } else {
+                                activeEntry.finalizing = false
+                                abortActiveChunkedUpload(activeEntry)
+                            }
+                            return
+                        }
+
+                        if (!finalResult.success || !finalResult.path) {
+                            activeEntry.finalizing = false
+                            abortActiveChunkedUpload(activeEntry)
+                            yield makeIncomplete(!isNonRetryableUploadError(undefined, finalResult.code))
+                            return
+                        }
+
+                        finalized = true
+
+                        yield {
+                            id,
+                            type: 'file',
+                            name: file.name,
+                            contentType,
+                            file,
+                            status: { type: 'requires-action', reason: 'composer-send' },
+                            path: finalResult.path,
+                            previewUrl,
+                            uploadSessionId,
+                        } as PendingUploadAttachment
+                        return
+                    }
                 }
 
-                if (!result.success || !result.path) {
+                if (useLegacySingleUpload) {
+                    const content = previewUrl
+                        ? base64FromDataUrl(previewUrl)
+                        : await fileToBase64(file)
+
+                    if (cancelledAttachmentIds.has(id)) {
+                        return
+                    }
+
                     yield {
                         id,
                         type: 'file',
                         name: file.name,
                         contentType,
                         file,
-                        status: { type: 'incomplete', reason: 'error' },
-                        retryable: true,
+                        status: { type: 'running', reason: 'uploading', progress: 50 },
+                        previewUrl
                     } as PendingUploadAttachment
-                    return
+
+                    const result = await api.uploadFile(uploadSessionId, file.name, content, contentType)
+                    if (cancelledAttachmentIds.has(id)) {
+                        if (result.success && result.path) {
+                            await deleteUpload(result.path, uploadSessionId)
+                        }
+                        return
+                    }
+
+                    if (!result.success || !result.path) {
+                        yield makeIncomplete(!isNonRetryableUploadError(undefined, result.code))
+                        return
+                    }
+
+                    yield {
+                        id,
+                        type: 'file',
+                        name: file.name,
+                        contentType,
+                        file,
+                        status: { type: 'requires-action', reason: 'composer-send' },
+                        path: result.path,
+                        previewUrl,
+                        uploadSessionId,
+                    } as PendingUploadAttachment
                 }
 
-                yield {
-                    id,
-                    type: 'file',
-                    name: file.name,
-                    contentType,
-                    file,
-                    status: { type: 'requires-action', reason: 'composer-send' },
-                    path: result.path,
-                    previewUrl,
-                    uploadSessionId,
-                } as PendingUploadAttachment
-
-            } catch {
-                yield {
-                    id,
-                    type: 'file',
-                    name: file.name,
-                    contentType,
-                    file,
-                    status: { type: 'incomplete', reason: 'error' },
-                    retryable: true,
-                } as PendingUploadAttachment
+            } catch (error) {
+                if (!finalized) {
+                    abortActiveChunkedUpload(activeEntry)
+                }
+                if (cancelledAttachmentIds.has(id)) {
+                    return
+                }
+                yield makeIncomplete(!isNonRetryableUploadError(error))
+            } finally {
+                activeUploads.delete(id)
             }
         },
 
         async remove(attachment: Attachment): Promise<void> {
             cancelledAttachmentIds.add(attachment.id)
+            const active = activeUploads.get(attachment.id)
+            if (active) {
+                active.chunkController.abort()
+                if (!active.finalizing) {
+                    abortActiveChunkedUpload(active)
+                }
+            }
             const path = (attachment as PendingUploadAttachment).path
             const uploadSessionId = (attachment as PendingUploadAttachment).uploadSessionId
             // The composer waits for remove() before dropping the chip. Remote
