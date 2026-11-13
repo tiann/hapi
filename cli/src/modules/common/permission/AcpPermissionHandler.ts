@@ -108,7 +108,7 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
         this.addPendingRequest(request.id, toolName, toolInput, {
             resolve: () => {},
             reject: () => {}
-        })
+        }, request.toolCallId)
         logger.debug(`[ACP] Permission request queued for ${toolName} (${request.id})`)
     }
 
