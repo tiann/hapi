@@ -127,7 +127,7 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
   early inactive/archived update. Concurrent requests join the same operation.
   Cleanup confirmation has a 90-second budget; failure returns a structured
   `archive-cleanup-unconfirmed` (409), `archive-cleanup-unavailable` (503), or
-  `archive-cleanup-timeout` (504) error. A timeout does not cancel Runner cleanup
+  `archive-cleanup-timeout` (503) error. A timeout does not cancel Runner cleanup
   or prove the process is still alive; retry to verify the final result.
 - `PATCH /api/sessions/:id` - Rename session.
 - `DELETE /api/sessions/:id` - Delete inactive session.

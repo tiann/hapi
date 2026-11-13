@@ -132,6 +132,13 @@ export class IncomingMessageFilter {
         return this.lastSeenSeq
     }
 
+    /** Keep ID deduplication, but stop skipping sequence numbers reused after rewind. */
+    rewindCursor(lastRetainedSeq: number): void {
+        if (this.lastSeenSeq !== null) {
+            this.lastSeenSeq = Math.min(this.lastSeenSeq, lastRetainedSeq)
+        }
+    }
+
     /** Returns true if this message should be processed; false to drop as a duplicate. */
     accept(message: { id?: string | null; seq?: number | null }): boolean {
         const id = typeof message.id === 'string' && message.id.length > 0 ? message.id : null
@@ -271,7 +278,13 @@ export class ApiSessionClient extends EventEmitter {
         localId?: string | null
         content: unknown
     }> = []
+    private reconciledRewindOperationId: string | undefined
+    private incomingCursorEpoch = 0
+    private pendingRewindBackfill: { operationId: string; epoch: number; afterSeq: number } | null = null
+    private rewindBackfillScheduled = false
     private backfillInFlight: Promise<void> | null = null
+    private backfillPageLoaded = false
+    private backfillResumeSeq: number | null = null
     private backfillRetryTimer: ReturnType<typeof setTimeout> | null = null
     private needsBackfill = false
     private hasConnectedOnce = false
@@ -316,6 +329,7 @@ export class ApiSessionClient extends EventEmitter {
         this.sessionId = session.id
         this.attachmentMaterializer = new AttachmentMaterializer(this.sessionId, token)
         this.metadata = session.metadata
+        this.reconcileCommittedRewindCursor(this.metadata)
         this.metadataVersion = session.metadataVersion
         this.agentState = session.agentState
         this.agentStateVersion = session.agentStateVersion
@@ -359,6 +373,7 @@ export class ApiSessionClient extends EventEmitter {
 
         this.socket.on('connect', () => {
             logger.debug('Socket connected successfully')
+            this.emit('connection-start')
             this.awaitingMaterializedConnection = false
             this.rpcHandlerManager.onSocketConnect(this.socket)
             const isReconnect = this.hasConnectedOnce
@@ -373,6 +388,7 @@ export class ApiSessionClient extends EventEmitter {
                 : Promise.resolve()
             void afterMeta.finally(() => {
                 void this.backfillIfNeeded()
+                if (this.state === 'active' && this.allowReconnect) this.emit('connected')
             })
             this.hasConnectedOnce = true
             this.reconnectHandler?.()
@@ -477,7 +493,14 @@ export class ApiSessionClient extends EventEmitter {
                 if (!data.body) return
 
                 if (data.body.t === 'new-message') {
-                    if (this.backfillInFlight || this.needsBackfill) {
+                    const holdBehindReconnect = this.backfillInFlight !== null && this.pendingRewindBackfill === null
+                    if (this.backfillPageLoaded || this.deferredLiveMessages.length > 0 || holdBehindReconnect) {
+                        // Preserve reconnect order and allow cancellation while the
+                        // first page loads. A committed rewind has no older retry
+                        // prefix to protect here, so its live rows stay responsive.
+                        if (!this.pendingRewindBackfill) {
+                            this.incomingFilter.accept({ seq: data.body.message.seq })
+                        }
                         this.deferredLiveMessages.push(data.body.message)
                         return
                     }
@@ -616,6 +639,11 @@ export class ApiSessionClient extends EventEmitter {
         return this.attachmentMaterializer.isAuthorizedFile(path, identity)
     }
 
+    /** Whether hub reads are served live: a null read then is a transient miss, not a waiting socket. */
+    isActive(): boolean {
+        return this.state === 'active'
+    }
+
     private isClosed(): boolean {
         return this.state === 'closed'
     }
@@ -670,6 +698,7 @@ export class ApiSessionClient extends EventEmitter {
                     || !hasSameJsonValue(materialized.agentState, latestAgentState)
 
                 this.metadata = materialized.metadata
+                this.reconcileCommittedRewindCursor(this.metadata)
                 this.metadataVersion = materialized.metadataVersion
                 this.agentState = materialized.agentState
                 this.agentStateVersion = materialized.agentStateVersion
@@ -1046,8 +1075,8 @@ export class ApiSessionClient extends EventEmitter {
         }
         try {
             await this.backfillMessages()
-            this.needsBackfill = false
-            this.clearBackfillRetry()
+            this.needsBackfill = this.pendingRewindBackfill !== null
+            if (!this.needsBackfill) this.clearBackfillRetry()
         } catch (error) {
             logger.debug('[API] Backfill failed', error)
             this.needsBackfill = true
@@ -1075,6 +1104,49 @@ export class ApiSessionClient extends EventEmitter {
         }, 1_000)
     }
 
+    private reconcileCommittedRewindCursor(metadata: Metadata | null): void {
+        const operation = metadata?.opencodeRewind
+        if (operation?.phase !== 'committed') {
+            this.scheduleRewindBackfill()
+            return
+        }
+        // A same-process reconnect must see prompts queued while disconnected,
+        // even if Hub truncation reused a sequence below the old cursor. Repeated
+        // metadata for the committed tombstone must not rewind later deliveries.
+        if (operation.operationId !== this.reconciledRewindOperationId) {
+            this.reconciledRewindOperationId = operation.operationId
+            // Invocation order can remove rows below the boundary's insertion
+            // seq too. New inputs may reuse those slots, so rescan from zero.
+            this.incomingFilter.rewindCursor(0)
+            // A newer rewind cannot retire an earlier, still-unscanned prefix.
+            const previousFloor = this.pendingRewindBackfill?.afterSeq
+            const cursor = this.incomingFilter.cursorSeq()
+            const afterSeq = previousFloor === undefined ? cursor : Math.min(previousFloor, cursor ?? previousFloor)
+            this.incomingCursorEpoch += 1
+            this.pendingRewindBackfill = afterSeq === null ? null : {
+                operationId: operation.operationId, epoch: this.incomingCursorEpoch, afterSeq
+            }
+        }
+        this.scheduleRewindBackfill()
+    }
+
+    private scheduleRewindBackfill(): void {
+        if (!this.pendingRewindBackfill || this.state !== 'active' || this.rewindBackfillPaused()
+            || this.rewindBackfillScheduled) return
+        this.needsBackfill = true
+        this.rewindBackfillScheduled = true
+        queueMicrotask(() => {
+            this.rewindBackfillScheduled = false
+            if (this.pendingRewindBackfill && this.state === 'active' && !this.rewindBackfillPaused()) {
+                void this.backfillIfNeeded()
+            }
+        })
+    }
+
+    private rewindBackfillPaused(): boolean {
+        const phase = this.metadata?.opencodeRewind?.phase
+        return !this.socket?.connected || phase === 'reserved' || phase === 'prepared' || phase === 'unknown'
+    }
     /**
      * Apply a remote metadata snapshot (Socket.IO update-session or reconnect
      * REST reconcile). Advances metadataVersion and emits hub-archived when
@@ -1091,6 +1163,7 @@ export class ApiSessionClient extends EventEmitter {
         const wasHubArchived = this.metadata?.lifecycleState === 'archived'
             && this.metadata?.archivedBy === 'hub'
         this.metadata = parsed.data
+        this.reconcileCommittedRewindCursor(this.metadata)
         this.metadataVersion = version
         // #1910: hub may archive via metadata when KillSession cannot reach
         // this CLI. Stop reconnect immortality and let runners exit instead
@@ -1112,6 +1185,17 @@ export class ApiSessionClient extends EventEmitter {
     }
 
     /** Refresh Hub-owned metadata before an explicit tool action or after reconnect. */
+    async reportOpenCodeRewind(report: import('@hapi/protocol/apiTypes').OpenCodeRewindReport): Promise<import('@hapi/protocol/schemas').OpenCodeRewindOperation> {
+        const before = await this.readRewindMetadata()
+        if (!before) throw new Error('Cannot reconcile Hub rewind reservation')
+        const response = await axios.post(`${configuration.apiUrl}/cli/sessions/${encodeURIComponent(this.sessionId)}/opencode-rewind`,
+            { report, expectedVersion: before.version }, { headers: buildHubRequestHeaders({ Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' }), timeout: 15_000 })
+        const { OpenCodeRewindSchema } = await import('@hapi/protocol/schemas')
+        const operation = OpenCodeRewindSchema.parse(response.data?.operation)
+        if (!await this.readRewindMetadata()) throw new Error('Cannot confirm authoritative rewind state')
+        return operation
+    }
+
     async refreshMetadata(): Promise<boolean> {
         try {
             const response = await axios.get(
@@ -1130,6 +1214,7 @@ export class ApiSessionClient extends EventEmitter {
             if (session.metadataVersion >= this.metadataVersion) {
                 this.applyRemoteMetadata(session.metadataVersion, session.metadata)
             }
+            this.scheduleRewindBackfill()
             return true
         } catch (error) {
             logger.debug('[API] Session metadata reconcile failed', error)
@@ -1150,13 +1235,34 @@ export class ApiSessionClient extends EventEmitter {
         }
     }
 
+    /** Read the exact validated REST snapshot for rewind admission decisions. */
+    async readRewindMetadata(): Promise<{ metadata: Metadata; version: number } | null> {
+        if (this.state !== 'active') return null
+        try {
+            const response = await axios.get(`${configuration.apiUrl}/cli/sessions/${encodeURIComponent(this.sessionId)}`, {
+                headers: buildHubRequestHeaders({ Authorization: `Bearer ${this.token}`, 'Content-Type': 'application/json' }),
+                timeout: 15_000
+            })
+            const session = response.data?.session
+            if (this.state !== 'active' || !session || !Number.isSafeInteger(session.metadataVersion) || session.metadataVersion < this.metadataVersion
+                || session.metadata === null) return null
+            const parsed = MetadataSchema.safeParse(session.metadata)
+            if (!parsed.success) return null
+            if (session.metadataVersion > this.metadataVersion) this.applyRemoteMetadata(session.metadataVersion, parsed.data)
+            return { metadata: parsed.data, version: session.metadataVersion }
+        } catch (error) {
+            logger.debug('[API] Strict rewind metadata reconcile failed', error)
+            return null
+        }
+    }
+
     private async backfillMessages(): Promise<void> {
         if (this.backfillInFlight) {
             await this.backfillInFlight
             return
         }
 
-        const startSeq = this.incomingFilter.cursorSeq()
+        const startSeq = this.backfillResumeSeq ?? this.pendingRewindBackfill?.afterSeq ?? this.incomingFilter.cursorSeq()
         if (startSeq === null) {
             logger.debug('[API] Skipping backfill because no last-seen message sequence is available')
             await this.drainDeferredLiveMessages()
@@ -1164,82 +1270,107 @@ export class ApiSessionClient extends EventEmitter {
         }
 
         const limit = 200
+        let attemptedEpoch = this.incomingCursorEpoch
         let backfillSucceeded = false
         const run = async () => {
-            try {
-                let cursor = startSeq
-                while (true) {
-                    const response = await axios.get(
-                        `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(this.sessionId)}/messages`,
-                        {
-                            params: { afterSeq: cursor, limit },
-                            headers: buildHubRequestHeaders({
-                                Authorization: `Bearer ${this.token}`,
-                                'Content-Type': 'application/json'
-                            }),
-                            timeout: 15_000
-                        }
-                    )
-
-                    const parsed = CliMessagesResponseSchema.safeParse(response.data)
-                    if (!parsed.success) {
-                        throw apiValidationError('Invalid /cli/sessions/:id/messages response', response)
+            let cursor = startSeq
+            let cursorEpoch = this.incomingCursorEpoch
+            while (true) {
+                if (this.pendingRewindBackfill && this.rewindBackfillPaused()) return
+                attemptedEpoch = cursorEpoch
+                const response = await axios.get(
+                    `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(this.sessionId)}/messages`,
+                    {
+                        params: { afterSeq: cursor, limit },
+                        headers: buildHubRequestHeaders({
+                            Authorization: `Bearer ${this.token}`,
+                            'Content-Type': 'application/json'
+                        }),
+                        timeout: 15_000
                     }
+                )
 
-                    const messages = parsed.data.messages
-                    if (messages.length === 0) {
-                        break
+                if (this.pendingRewindBackfill && this.rewindBackfillPaused()) return
+                if (cursorEpoch !== this.incomingCursorEpoch) {
+                    cursor = this.pendingRewindBackfill?.afterSeq ?? this.incomingFilter.cursorSeq() ?? 0
+                    cursorEpoch = this.incomingCursorEpoch
+                    continue
+                }
+
+                const parsed = CliMessagesResponseSchema.safeParse(response.data)
+                if (!parsed.success) {
+                    throw apiValidationError('Invalid /cli/sessions/:id/messages response', response)
+                }
+
+                const messages = parsed.data.messages
+                if (messages.length === 0) break
+                this.backfillPageLoaded = true
+
+                let maxSeq = cursor
+                // Register the whole page before awaiting attachment downloads,
+                // so live socket rows cannot overtake the rest of this page.
+                const pending: Promise<void>[] = []
+                for (const message of messages) {
+                    if (typeof message.seq === 'number' && message.seq > maxSeq) maxSeq = message.seq
+                    if (this.pendingRewindBackfill && message.invokedAt != null
+                        && UserMessageSchema.safeParse(message.content).success) {
+                        // A backward rewind scan can outlive the bounded ID LRU;
+                        // never enqueue an invoked prompt again.
+                        this.incomingFilter.accept({ id: message.id, seq: message.seq })
+                        continue
                     }
+                    pending.push(this.handleIncomingMessage(message))
+                }
+                await Promise.all(pending)
 
-                    let maxSeq = cursor
-                    // Register the whole page with the delivery queue before
-                    // awaiting any attachment materialization. Otherwise a live
-                    // socket message can arrive while the first backfill row is
-                    // downloading and get queued ahead of the remaining, older
-                    // rows from this page.
-                    const pending = messages.map((message) => {
-                        if (typeof message.seq === 'number') {
-                            if (message.seq > maxSeq) {
-                                maxSeq = message.seq
-                            }
-                        }
-                        return this.handleIncomingMessage(message)
+                if (this.pendingRewindBackfill && this.rewindBackfillPaused()) return
+                if (cursorEpoch !== this.incomingCursorEpoch) {
+                    cursor = this.pendingRewindBackfill?.afterSeq ?? this.incomingFilter.cursorSeq() ?? 0
+                    cursorEpoch = this.incomingCursorEpoch
+                    continue
+                }
+
+                if (this.pendingRewindBackfill) this.incomingFilter.accept({ seq: maxSeq })
+                const observedSeq = this.incomingFilter.cursorSeq() ?? maxSeq
+                // Live rows are held until the complete recovery scan ends.
+                // Their sequence can be newer than the fetched page without
+                // making the pages in between visible, so advance by the page.
+                const nextCursor = this.backfillPageLoaded
+                    ? maxSeq
+                    : Math.max(maxSeq, observedSeq)
+                if (nextCursor <= cursor) {
+                    logger.debug('[API] Backfill stopped due to non-advancing cursor', {
+                        cursor,
+                        maxSeq,
+                        observedSeq
                     })
-                    await Promise.all(pending)
-
-                    // Only advance the HTTP cursor by the page that this request
-                    // actually fetched. A live socket message may have advanced
-                    // the incoming filter while this page was materializing; using
-                    // that live seq here could skip rows from a later page.
-                    const nextCursor = maxSeq
-                    if (nextCursor <= cursor) {
-                        logger.debug('[API] Backfill stopped due to non-advancing cursor', {
-                            cursor,
-                            maxSeq,
-                            nextCursor
-                        })
-                        break
-                    }
-
-                    cursor = nextCursor
-                    if (messages.length < limit) {
-                        break
-                    }
+                    if (this.pendingRewindBackfill) throw new Error('Rewind backfill did not advance')
+                    break
                 }
-                backfillSucceeded = true
-            } finally {
-                if (backfillSucceeded) {
-                    // Keep live socket messages behind every fetched backfill page.
-                    await this.drainDeferredLiveMessages()
-                }
+
+                this.backfillResumeSeq = nextCursor
+                cursor = nextCursor
+                if (messages.length < limit) break
             }
+            if (this.pendingRewindBackfill?.epoch === cursorEpoch && !this.rewindBackfillPaused()) {
+                this.pendingRewindBackfill = null
+            }
+            backfillSucceeded = true
         }
 
         this.backfillInFlight = run().finally(() => {
             this.backfillInFlight = null
+            if (this.pendingRewindBackfill && this.pendingRewindBackfill.epoch !== attemptedEpoch) {
+                this.scheduleRewindBackfill()
+            }
         })
 
         await this.backfillInFlight
+        if (backfillSucceeded || this.rewindBackfillPaused()) {
+            await this.drainDeferredLiveMessages()
+            this.backfillPageLoaded = false
+            this.backfillResumeSeq = null
+        }
     }
 
     sendClaudeSessionMessage(body: RawJSONLines): void {
@@ -1389,6 +1520,17 @@ export class ApiSessionClient extends EventEmitter {
         tokensBefore?: number
         tokensAfter?: number
         estimatedTokensAfter?: number
+    } | {
+        type: 'modelError'
+        kind: string
+        transient: boolean
+        rawSnippet: string
+        priorAssistantClaimsDone: boolean
+    } | {
+        type: 'modelErrorBridged'
+        kind: string
+        auto: boolean
+        eventId: string
     }, id?: string, options?: { localId: string }): void {
         const content = {
             role: 'agent',
@@ -1618,6 +1760,7 @@ export class ApiSessionClient extends EventEmitter {
                             const wasHubArchived = this.metadata?.lifecycleState === 'archived'
                                 && this.metadata?.archivedBy === 'hub'
                             this.metadata = value
+                            this.reconcileCommittedRewindCursor(this.metadata)
                             if (
                                 !wasHubArchived
                                 && value?.lifecycleState === 'archived'

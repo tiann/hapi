@@ -48,6 +48,7 @@ import {
     getMessageSeqById,
     getMessageById,
     truncateMessagesFromLocalId,
+    truncateOpenCodeRewind,
     type CancelQueuedMessageResult,
     type LookupQueuedMessageResult,
     type LocalMessageState,
@@ -67,6 +68,10 @@ export class MessageStore {
 
     constructor(db: Database) {
         this.db = db
+    }
+
+    truncateOpenCodeRewind(sessionId: string, cutoffSeq: number, boundaryId: string): number {
+        return truncateOpenCodeRewind(this.db, sessionId, cutoffSeq, boundaryId)
     }
 
     addMessage(sessionId: string, content: unknown, localId?: string, scheduledAt?: number | null, createdAt?: number): StoredMessage {
