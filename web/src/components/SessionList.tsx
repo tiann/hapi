@@ -1356,7 +1356,20 @@ const SessionItem = memo(function SessionItem(props: {
                     role="button"
                     tabIndex={0}
                     {...longPressHandlers}
-                    onKeyDown={handleRowKeyDown}
+                    onKeyDown={(event) => {
+                        // handleRowKeyDown only preventDefaults in its own
+                        // narrow case (selected row, pending request, Enter/
+                        // Space) — otherwise it's a no-op, so falling through
+                        // to longPressHandlers.onKeyDown is safe and keeps
+                        // this a real <div role="button">'s only path to
+                        // keyboard activation (unlike a native <button>,
+                        // this div gets no browser-synthesized click on
+                        // Enter/Space, so overriding rather than composing
+                        // the hook's own onKeyDown would silently break
+                        // keyboard selection for every ordinary row).
+                        handleRowKeyDown(event)
+                        if (!event.defaultPrevented) longPressHandlers.onKeyDown(event)
+                    }}
                     onPointerDownCapture={(event) => {
                         pendingRequestPressedRef.current = event.target instanceof Element
                             && event.target.closest('[data-session-pending-request-id]') !== null
