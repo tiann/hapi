@@ -13,6 +13,18 @@ export const CopilotAgentModeSchema = z.union([
     z.literal('fleet').transform((): CopilotAgentMode => 'interactive'),
 ])
 export const SessionEndReasonSchema = z.enum(['completed', 'terminated', 'error', 'handoff', 'cleared'])
+/** OpenCode-only durable operation. No native identity change or filesystem rewind. */
+export const OpenCodeRewindSchema = z.object({
+    operationId: z.string().min(1), nativeSessionId: z.string().min(1), workerId: z.string().min(1),
+    workerPid: z.number().int().positive().optional(), workerStartMarker: z.string().min(1).optional(),
+    requestedLocalId: z.string().min(1), nativeMessageId: z.string().min(1),
+    cutoffSeq: z.number().int().positive(), sourceEpoch: z.number().int().nonnegative(),
+    sourceMaxSeq: z.number().int().nonnegative(), reservationVersion: z.number().int().nonnegative(),
+    sourceTranscriptHash: z.string().regex(/^[a-f0-9]{64}$/),
+    phase: z.enum(['reserved', 'prepared', 'unknown', 'committed', 'rejected']),
+    sourceHash: z.string().optional(), prefixHash: z.string().optional()
+})
+export type OpenCodeRewindOperation = z.infer<typeof OpenCodeRewindSchema>
 export type SessionEndReason = z.infer<typeof SessionEndReasonSchema>
 
 const MetadataSummarySchema = z.object({
@@ -566,6 +578,20 @@ export const MetadataSchema = z.object({
     // Native locators for historical fork/rewind (e.g. Grok prompt indexes).
     // Kept separately from the boolean UI markers above.
     conversationHistoryIndexes: z.record(z.string(), z.number().int().nonnegative()).optional(),
+    opencodeHistoryCheckpoint: z.object({
+        sessionId: z.string().min(1),
+        messageIds: z.array(z.string().min(1)),
+        userMessageIds: z.array(z.string().min(1)),
+        // Present even when empty once local publication tracking is enabled.
+        localMessageIds: z.array(z.string().min(1)).optional(),
+        localPublicationPending: z.literal(true).optional()
+    }).optional(),
+    // Hub-owned until the child's first validated session-ready is committed.
+    opencodeForkPending: z.literal(true).optional(),
+    opencodeWorkerId: z.string().optional(),
+    opencodeWorkerProcess: z.object({ workerId: z.string().min(1), pid: z.number().int().positive(),
+        startMarker: z.string().min(1) }).optional(),
+    opencodeRewind: OpenCodeRewindSchema.optional(),
     // Codex localId → turnId mapping (durable across runner relaunches).
     conversationHistoryTurns: z.record(z.string(), z.string().min(1)).optional(),
     // Pi localId → append-only session entry id mapping. Pi entry ids are the

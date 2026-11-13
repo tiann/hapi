@@ -1,4 +1,4 @@
-import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import * as Popover from '@radix-ui/react-popover'
 import { SessionListScrollAnchor } from './SessionListScrollAnchor'
 import type { SessionContentSearchResponse, SessionSummary } from '@/types/api'
@@ -1071,7 +1071,7 @@ function CollapsiblePanel(props: { open: boolean; children: ReactNode }) {
 
 const SessionItem = memo(function SessionItem(props: {
     session: SessionSummary
-    onSelect: (sessionId: string, targetMessageId?: string, targetMessageQuery?: string) => void
+    onSelect: (sessionId: string, targetMessageId?: string, targetMessageQuery?: string, pendingRequestId?: string) => void
     showPath?: boolean
     api: ApiClient | null
     features: FeaturesResponse | null
@@ -1125,6 +1125,7 @@ const SessionItem = memo(function SessionItem(props: {
     const prChipDisplay = features?.prChipDisplay
     const [forkOpen, setForkOpen] = useState(false)
     const [forkPending, setForkPending] = useState(false)
+    const pendingRequestPressedRef = useRef(false)
     const {
         status: cursorChatStoreStatus,
         isApplicable: cursorChatStoreApplicable,
@@ -1255,12 +1256,27 @@ const SessionItem = memo(function SessionItem(props: {
         },
         onClick: () => {
             if (!menuOpen) {
-                onSelect(s.id, targetMessageId, targetMessageQuery)
+                const pendingRequestId = pendingRequestPressedRef.current
+                    ? s.pendingRequests?.[0]?.id
+                    : undefined
+                pendingRequestPressedRef.current = false
+                if (pendingRequestId) {
+                    onSelect(s.id, undefined, undefined, pendingRequestId)
+                } else {
+                    onSelect(s.id, targetMessageId, targetMessageQuery)
+                }
             }
         },
         threshold: 500
     })
 
+    const handleRowKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+        if (event.target !== event.currentTarget || !selected) return
+        const pendingRequestId = s.pendingRequests?.[0]?.id
+        if (!pendingRequestId || (event.key !== 'Enter' && event.key !== ' ')) return
+        event.preventDefault()
+        onSelect(s.id, undefined, undefined, pendingRequestId)
+    }
     const sessionName = getSessionTitle(s)
     const primaryPrRef = getPrimaryGithubPrRef(s.metadata?.externalRefs)
     const linkedPr = useMemo(() => {
@@ -1340,6 +1356,11 @@ const SessionItem = memo(function SessionItem(props: {
                     role="button"
                     tabIndex={0}
                     {...longPressHandlers}
+                    onKeyDown={handleRowKeyDown}
+                    onPointerDownCapture={(event) => {
+                        pendingRequestPressedRef.current = event.target instanceof Element
+                            && event.target.closest('[data-session-pending-request-id]') !== null
+                    }}
                     className="group/session-row flex min-w-0 flex-1 flex-col gap-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none rounded-lg cursor-pointer"
                     style={{ WebkitTouchCallout: 'none' }}
                     aria-current={selected ? 'page' : undefined}
@@ -1560,7 +1581,7 @@ function PullRefreshIcon(props: { rotation: number }) {
 
 export function SessionList(props: {
     sessions: SessionSummary[]
-    onSelect: (sessionId: string, targetMessageId?: string, targetMessageQuery?: string) => void
+    onSelect: (sessionId: string, targetMessageId?: string, targetMessageQuery?: string, pendingRequestId?: string) => void
     onNewSession: () => void
     onNewSessionInDirectory?: (args: { machineId: string | null; directory: string }) => void
     onBrowse?: () => void

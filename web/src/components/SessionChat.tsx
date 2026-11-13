@@ -50,6 +50,8 @@ import { resolvePendingSchedule } from '@/components/AssistantChat/ScheduleTimeP
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { QueuedMessagesBar } from '@/components/AssistantChat/QueuedMessagesBar'
 import { AsyncQuestionsPanel } from '@/components/AssistantChat/AsyncQuestionsPanel'
+import { isAsyncRequestUserInput } from '@/components/ToolCard/requestUserInput'
+import { getPendingRequestNavigationTarget } from '@/lib/pendingRequests'
 import { ScratchlistDrawer } from '@/components/AssistantChat/ScratchlistPanel'
 import { useHubScratchlist } from '@/lib/use-hub-scratchlist'
 import { useSessions } from '@/hooks/queries/useSessions'
@@ -60,6 +62,7 @@ import { getSessionLastSeenAt } from '@/lib/sessionLastSeen'
 import { formatRelativeTime } from '@/lib/relativeTime'
 import { ScratchlistMigrationBanner } from '@/components/AssistantChat/ScratchlistMigrationBanner'
 import { assignThreadMessageIds, findLatestCompletedBoundaryId, useHappyRuntime } from '@/lib/assistant-runtime'
+import { resolveAssistantForkPointsForCanonicalBlocks } from '@/lib/assistant-fork-points'
 import {
     getRestoredComposerSendIntent,
     resolveMessageDeliveryMode,
@@ -647,6 +650,18 @@ function hasAbortableAgentRun(blocks: readonly ChatBlock[]): boolean {
     return false
 }
 
+type PendingRequestNavigation = {
+    requestId: string
+    version: number
+    fromRoute: boolean
+}
+
+type PendingRequestTarget = {
+    messageId: string
+    version: number
+    fromRoute: boolean
+}
+
 type SessionChatProps = {
     readThroughRevision?: number
     api: ApiClient
@@ -704,6 +719,8 @@ type SessionChatProps = {
     initialTargetMessageId?: string
     initialTargetMessageQuery?: string
     searchRequestId?: number
+    initialPendingRequestId?: string
+    onInitialPendingRequestConsumed?: () => void
     onLoadMessageContext?: (messageId: string) => Promise<boolean>
     onInitialTargetConsumed?: () => void
     onSearchTargetDismissed?: () => void
@@ -814,6 +831,15 @@ function SessionChatInner(props: SessionChatProps) {
     })
     const [outlineOpen, setOutlineOpen] = useState(props.initialOutlineOpen ?? false)
     const [terminalVisible, setTerminalVisible] = useState(false)
+    const pendingRequestSequenceRef = useRef(0)
+    const [pendingRequestNavigation, setPendingRequestNavigation] = useState<PendingRequestNavigation | null>(() =>
+        props.initialPendingRequestId
+            ? { requestId: props.initialPendingRequestId, version: 1, fromRoute: true }
+            : null
+    )
+    const [livePendingRequestId, setLivePendingRequestId] = useState<string | null>(props.initialPendingRequestId ?? null)
+    const [pendingMessageTarget, setPendingMessageTarget] = useState<PendingRequestTarget | null>(null)
+    const [pendingAsyncTarget, setPendingAsyncTarget] = useState<PendingRequestNavigation | null>(null)
     useEffect(() => {
         if (!props.initialOutlineOpen) {
             return
@@ -821,6 +847,90 @@ function SessionChatInner(props: SessionChatProps) {
         setOutlineOpen(true)
         props.onInitialOutlineConsumed?.()
     }, [props.initialOutlineOpen, props.onInitialOutlineConsumed])
+
+    useEffect(() => {
+        if (!props.initialPendingRequestId) return
+        setLivePendingRequestId(props.initialPendingRequestId)
+        pendingRequestSequenceRef.current += 1
+        setPendingRequestNavigation({
+            requestId: props.initialPendingRequestId,
+            version: pendingRequestSequenceRef.current,
+            fromRoute: true,
+        })
+    }, [props.initialPendingRequestId])
+
+    const consumePendingRequestNavigation = useCallback((fromRoute: boolean) => {
+        setPendingRequestNavigation(null)
+        setPendingMessageTarget(null)
+        setPendingAsyncTarget(null)
+        if (fromRoute) props.onInitialPendingRequestConsumed?.()
+    }, [props.onInitialPendingRequestConsumed])
+
+    const locatePendingRequest = useCallback((requestId: string) => {
+        setLivePendingRequestId(requestId)
+        pendingRequestSequenceRef.current += 1
+        setPendingRequestNavigation({
+            requestId,
+            version: pendingRequestSequenceRef.current,
+            fromRoute: false,
+        })
+    }, [])
+
+    const consumeMessagePendingRequestTarget = useCallback(() => {
+        if (!pendingMessageTarget) return
+        const fromRoute = pendingMessageTarget.fromRoute
+        consumePendingRequestNavigation(fromRoute)
+        if (fromRoute || props.initialTargetMessageId) {
+            props.onInitialTargetConsumed?.()
+            if (!fromRoute) props.onSearchTargetDismissed?.()
+        }
+    }, [
+        consumePendingRequestNavigation,
+        pendingMessageTarget,
+        props.initialTargetMessageId,
+        props.onInitialTargetConsumed,
+        props.onSearchTargetDismissed,
+    ])
+
+    const dismissMessagePendingRequestTarget = useCallback(() => {
+        if (pendingMessageTarget) consumePendingRequestNavigation(pendingMessageTarget.fromRoute)
+        props.onSearchTargetDismissed?.()
+    }, [consumePendingRequestNavigation, pendingMessageTarget, props.onSearchTargetDismissed])
+
+    const consumeAsyncPendingRequestTarget = useCallback(() => {
+        if (pendingAsyncTarget) consumePendingRequestNavigation(pendingAsyncTarget.fromRoute)
+    }, [consumePendingRequestNavigation, pendingAsyncTarget])
+
+    useEffect(() => {
+        if (!pendingRequestNavigation) return
+        const request = props.session.agentState?.requests?.[pendingRequestNavigation.requestId]
+        if (!request) {
+            setLivePendingRequestId(null)
+            consumePendingRequestNavigation(pendingRequestNavigation.fromRoute)
+            return
+        }
+        const target = getPendingRequestNavigationTarget(
+            pendingRequestNavigation.requestId,
+            request,
+            isAsyncRequestUserInput(request.tool, request.arguments)
+        )
+        if (target.kind === 'async') {
+            setPendingMessageTarget(null)
+            setPendingAsyncTarget(pendingRequestNavigation)
+            return
+        }
+        setPendingAsyncTarget(null)
+        setPendingMessageTarget({
+            messageId: target.messageId,
+            version: pendingRequestNavigation.version,
+            fromRoute: pendingRequestNavigation.fromRoute,
+        })
+    }, [consumePendingRequestNavigation, pendingRequestNavigation, props.session.agentState?.requests])
+    useEffect(() => {
+        if (livePendingRequestId && !props.session.agentState?.requests?.[livePendingRequestId]) {
+            setLivePendingRequestId(null)
+        }
+    }, [livePendingRequestId, props.session.agentState?.requests])
     const [cursorSelectedBase, setCursorSelectedBase] = useState('auto')
     // Serialize Cursor setModel RPCs so drill-down default apply cannot finish
     // after a later explicit variant click and overwrite it.
@@ -1636,9 +1746,10 @@ function SessionChatInner(props: SessionChatProps) {
 
     const reduced = useMemo(
         () => reduceChatBlocks(normalizedMessages, props.session.agentState, {
-            goalStateMessages: normalizedGoalStateMessages
+            goalStateMessages: normalizedGoalStateMessages,
+            pendingRequestTargetId: livePendingRequestId ?? undefined
         }),
-        [normalizedMessages, normalizedGoalStateMessages, props.session.agentState]
+        [normalizedMessages, normalizedGoalStateMessages, props.session.agentState, livePendingRequestId]
     )
     const reconciled = useMemo(
         () => reconcileChatBlocks(reduced.blocks, blocksByIdRef.current),
@@ -1670,6 +1781,7 @@ function SessionChatInner(props: SessionChatProps) {
     // A search jump can target any message, so show the full thread while a
     // search target is active and restore the concise view once dismissed.
     const conciseViewActive = conciseChatMode
+        && !pendingMessageTarget
         && !(props.initialTargetMessageId && props.initialTargetMessageQuery)
     const threadBlocks = useMemo(
         () => conciseViewActive ? filterConciseChatBlocks(reconciled.blocks) : reconciled.blocks,
@@ -1725,6 +1837,20 @@ function SessionChatInner(props: SessionChatProps) {
             isRunning: props.session.thinking }
     )
 
+    const assistantForkPoints = useMemo(
+        // Resolve against the canonical thread: concise filtering hides
+        // compact-summary/system/CLI boundaries and would bridge an
+        // assistant fork point across them.
+        () => resolveAssistantForkPointsForCanonicalBlocks(reconciled.blocks, {
+            hasMoreMessages: props.hasMoreMessages,
+            previousGroups: visibleGroupsRef.current,
+            previousGroupingMode: visibleGroupsModeRef.current,
+            groupingMode: toolGroupingMode,
+            codexExplorationCollapsed
+        }, props.session.metadata?.conversationHistoryPoints),
+        [reconciled.blocks, props.hasMoreMessages, toolGroupingMode, codexExplorationCollapsed,
+            props.session.metadata?.conversationHistoryPoints]
+    )
     const isLatestCompletedBoundary = useCallback((messageId: string) => {
         return latestCompletedBoundaryId === messageId
     }, [latestCompletedBoundaryId])
@@ -2199,6 +2325,7 @@ function SessionChatInner(props: SessionChatProps) {
                         onForkConversation={controlledByUser && !sessionInactive ? undefined : onForkConversation}
                         onRewindConversation={controlledByUser ? undefined : onRewindConversation}
                         isLatestCompletedBoundary={isLatestCompletedBoundary}
+                        assistantForkPoints={assistantForkPoints}
                         onViewModeChange={props.onViewModeChange}
                         onJumpToTail={props.onJumpToTail}
                         readThroughRevision={!terminalVisible && props.viewMode === 'tail' ? props.readThroughRevision : undefined}
@@ -2219,12 +2346,17 @@ function SessionChatInner(props: SessionChatProps) {
                         outlineOpen={outlineOpen}
                         outlineItems={outlineItems}
                         onOutlineOpenChange={setOutlineOpen}
-                        initialTargetMessageId={props.initialTargetMessageId}
-                        initialTargetMessageQuery={props.initialTargetMessageQuery}
-                        searchRequestId={props.searchRequestId}
+                        initialTargetMessageId={pendingMessageTarget?.messageId ?? props.initialTargetMessageId}
+                        initialTargetMessageQuery={pendingMessageTarget ? undefined : props.initialTargetMessageQuery}
+                        targetHighlightKind={pendingMessageTarget ? 'pending-request' : 'search'}
+                        searchRequestId={(props.searchRequestId ?? 0) + (pendingMessageTarget?.version ?? 0)}
                         onLoadMessageContext={props.onLoadMessageContext}
-                        onInitialTargetConsumed={props.onInitialTargetConsumed}
-                        onSearchTargetDismissed={props.onSearchTargetDismissed}
+                        onInitialTargetConsumed={pendingMessageTarget
+                            ? consumeMessagePendingRequestTarget
+                            : props.onInitialTargetConsumed}
+                        onSearchTargetDismissed={pendingMessageTarget
+                            ? dismissMessagePendingRequestTarget
+                            : props.onSearchTargetDismissed}
                     />
                     </div>
 
@@ -2258,6 +2390,9 @@ function SessionChatInner(props: SessionChatProps) {
                                 requests={props.session.agentState?.requests}
                                 disabled={sessionInactive}
                                 onRefresh={props.onRefresh}
+                                targetRequestId={pendingAsyncTarget?.requestId}
+                                targetVersion={pendingAsyncTarget?.version}
+                                onTargetConsumed={consumeAsyncPendingRequestTarget}
                             />
                             {/*
                              * Scratchlist drawer - composer-controlled. Only
@@ -2378,6 +2513,7 @@ function SessionChatInner(props: SessionChatProps) {
                         onResumeStoredDraft={() => handleSend('', undefined, null)}
                         thinking={props.session.thinking}
                         agentState={props.session.agentState}
+                        onPendingRequestClick={locatePendingRequest}
                         backgroundTaskCount={props.session.backgroundTaskCount}
                         contextSize={reduced.latestUsage?.contextSize}
                         contextCacheRead={reduced.latestUsage?.cacheRead}
@@ -2457,7 +2593,7 @@ function SessionChatInner(props: SessionChatProps) {
                                 : undefined
                         }
                         onModelReasoningEffortChange={
-                            (agentFlavor === 'codex' || agentFlavor === 'opencode')
+                            (agentFlavor === 'codex' || agentFlavor === 'opencode' || agentFlavor === 'dsh')
                                 && props.session.active
                                 && !controlledByUser
                                 && (agentFlavor !== 'opencode' || opencodeReasoningEffortState.options.length > 0)

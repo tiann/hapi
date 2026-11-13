@@ -657,7 +657,7 @@ export function createMachinesRoutes(
         if (result.type === 'error') {
             const status = result.code === 'machine_not_found' ? 404
                 : result.code === 'machine_offline' ? 503
-                    : 502
+                    : 500
             return c.json({ error: result.message, code: result.code }, status)
         }
         return c.json({ message: result.message })
