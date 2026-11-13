@@ -302,7 +302,7 @@ function TraceChildRow({ child, metadata, expanded, onToggle, mode }: TraceChild
 
     const label = formatTaskChildLabel(child, metadata, t)
     const FullInputView = getToolFullViewComponent(child.tool.name)
-    const ResultView = getToolResultViewComponent(child.tool.name)
+    const ResultView = getToolResultViewComponent(child.tool.name, child)
 
     return (
         <div className={rowClassName}>

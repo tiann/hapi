@@ -231,7 +231,7 @@ export function resolvePreferredLaunchSettings(
         && LEGACY_YOLO_BRIDGE_AGENTS.includes(agent)
         ? (legacyYolo
             ? resolveHapiYoloPermissionMode(agent)
-            : 'default')
+            : resolvePermissionModeForFlavor('default', agent as AgentFlavor))
         : null
     const hubMode = hubPermissionMode
         ? (() => {
@@ -248,10 +248,10 @@ export function resolvePreferredLaunchSettings(
             : preferredPermissionMode !== undefined
                 // Explicit saved mode that left the launch catalog → Default,
                 // never hub yolo (would upgrade sandboxed → unrestricted).
-                ? 'default'
+                ? resolvePermissionModeForFlavor('default', agent as AgentFlavor)
                 : legacyYoloBridgeMode && availablePermissionModes.includes(legacyYoloBridgeMode)
                     ? legacyYoloBridgeMode
-                    : hubMode ?? 'default'
+                    : hubMode ?? resolvePermissionModeForFlavor('default', agent as AgentFlavor)
         : undefined
 
     return {

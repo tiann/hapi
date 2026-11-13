@@ -16,7 +16,7 @@ beforeEach(() => {
     localStorage.clear()
     offlineScope('hub-a:alice')
 })
-afterEach(async () => { cleanup(); await vi.advanceTimersByTimeAsync(0); vi.useRealTimers(); vi.restoreAllMocks() })
+afterEach(async () => { cleanup(); await vi.advanceTimersByTimeAsync(0); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('durable session read state', () => {
     it('reads persisted state once per synchronous pass instead of once per row', async () => {
@@ -129,5 +129,18 @@ describe('durable session read state', () => {
         await vi.advanceTimersByTimeAsync(0)
         expect(getSessionLastSeenAt('s')).toBe(2)
         expect(getSessionManualUnreadAt('s')).toBe(0)
+    })
+
+    it('stores and sends a read without crypto.randomUUID (insecure context)', async () => {
+        vi.stubGlobal('crypto', { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) })
+        const sent: SessionReadStateRequest[] = []
+        cleanup = configureSessionReadState('hub-a:alice', async (_id, request) => {
+            sent.push({ ...request })
+            return { readState: server(request.type === 'read' ? request.readRevision : 0, 1) }
+        })
+        expect(() => markSessionSeen('s', 5)).not.toThrow()
+        await vi.advanceTimersByTimeAsync(0)
+        await flushSessionReadState()
+        expect(sent.map(r => r.type === 'read' ? r.readRevision : null)).toEqual([5])
     })
 })

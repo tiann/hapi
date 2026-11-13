@@ -44,6 +44,16 @@ describe('getPendingRequestKinds', () => {
         expect(kinds).toEqual(['input'])
     })
 
+    it('classifies Cursor questions as input', () => {
+        const kinds = getPendingRequestKinds(makeSession({
+            agentState: {
+                requests: {
+                    req1: { tool: 'CursorAskQuestion', arguments: {} }
+                }
+            }
+        }))
+        expect(kinds).toEqual(['input'])
+    })
     it('classifies other pending tools as permission', () => {
         const kinds = getPendingRequestKinds(makeSession({
             agentState: {
@@ -335,6 +345,27 @@ describe('summary derivation helpers', () => {
         expect(computePendingRequestsCount(undefined)).toBe(0)
     })
 
+    it('includes attachedJob when provided via extras', () => {
+        const job = {
+            key: 'beets',
+            label: 'beets import',
+            status: 'running' as const,
+            remaining: 120,
+            unit: 'tracks',
+            heartbeatAt: 9_000,
+            startedAt: 1_000,
+            updatedAt: 9_000
+        }
+        const summary = toSessionSummary(makeSession(), { attachedJob: job })
+        expect(summary.attachedJob).toEqual(job)
+        expect(summary.attachedJobUpdatedAt).toBe(job.updatedAt)
+    })
+
+    it('defaults attachedJob to null', () => {
+        expect(toSessionSummary(makeSession()).attachedJob).toBeNull()
+        expect(toSessionSummary(makeSession()).attachedJobUpdatedAt).toBe(0)
+    })
+
     it('toSessionSummaryMetadata returns null for null metadata', () => {
         expect(toSessionSummaryMetadata(null)).toBeNull()
         expect(toSessionSummaryMetadata(undefined)).toBeNull()
@@ -347,6 +378,24 @@ describe('summary derivation helpers', () => {
             cursorSessionId: 'cursor-xyz'
         })
         expect(summary?.agentSessionId).toBe('cursor-xyz')
+    })
+
+    it('toSessionSummaryMetadata omits lastModelError.lastUserMessage', () => {
+        const summary = toSessionSummaryMetadata({
+            path: '/p',
+            host: 'h',
+            lastModelError: {
+                eventId: 'evt-1',
+                kind: 'transport_closed',
+                transient: true,
+                rawSnippet: 'WritableIterable is closed',
+                atTs: 1,
+                priorAssistantClaimsDone: false,
+                lastUserMessage: 'secret prompt text that must not leak into list payloads'
+            }
+        })
+        expect(summary?.lastModelError?.eventId).toBe('evt-1')
+        expect(summary?.lastModelError).not.toHaveProperty('lastUserMessage')
     })
 
     it('carries current-fork capability into list summaries', () => {

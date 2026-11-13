@@ -113,6 +113,33 @@ export function getLiveReasoningStreamId(value: unknown): string | null {
     return readReasoningStreamId(value, true)
 }
 
+/**
+ * The callId of a supersedable tool-call row, or `null` when the value is not
+ * one.
+ *
+ * ACP agents re-emit the same tool call under a stable callId on every state
+ * tick, and the timeline folds all of those rows into a single card. The hub
+ * and the web therefore keep only the latest row per callId, and both need to
+ * recognise the rows that may be superseded. Only `tool-call` payloads match:
+ * the `tool-call-result` that shares the callId is a distinct row that carries
+ * completion, so it is never dropped. Anything unrecognised reads as `null`,
+ * which means "keep it".
+ */
+export function getToolCallId(value: unknown): string | null {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent') return null
+
+    const content = record.content
+    if (!isObject(content) || content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return null
+
+    const data = isObject(content.data) ? content.data : null
+    if (!data || data.type !== 'tool-call') return null
+
+    const callId = data.callId
+    if (typeof callId !== 'string' || callId.trim().length === 0) return null
+    return callId
+}
+
 export function isRedundantGoalStatusEventContent(value: unknown): boolean {
     const record = unwrapRoleWrappedRecordEnvelope(value)
     if (record?.role !== 'agent') return false

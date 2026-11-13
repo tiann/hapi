@@ -25,6 +25,54 @@ describe('AcpMessageHandler', () => {
         vi.restoreAllMocks();
     });
 
+    it('carries the agent\'s own tool name and args on tool calls and their updates', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+        const args = { CommandLine: 'ls -la', toolSummary: 'List files' };
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+            toolCallId: 'tool-n',
+            name: 'run_command',
+            args,
+            title: 'ls -la',
+            kind: 'execute',
+            rawInput: args,
+            status: 'in_progress'
+        });
+        // A later update that omits the name keeps the stored one.
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCallUpdate,
+            toolCallId: 'tool-n',
+            title: 'ls -la',
+            kind: 'execute',
+            rawInput: args,
+            status: 'in_progress'
+        });
+
+        const calls = messages.filter((m): m is Extract<AgentMessage, { type: 'tool_call' }> => m.type === 'tool_call');
+        expect(calls).toHaveLength(2);
+        for (const call of calls) {
+            expect(call).toMatchObject({ nativeName: 'run_command', nativeArgs: args });
+        }
+    });
+
+    it('leaves nativeName off tool calls from agents that do not send a name', () => {
+        const messages: AgentMessage[] = [];
+        const handler = new AcpMessageHandler((message) => messages.push(message));
+
+        handler.handleUpdate({
+            sessionUpdate: ACP_SESSION_UPDATE_TYPES.toolCall,
+            toolCallId: 'tool-o',
+            title: 'Read',
+            rawInput: { path: 'README.md' },
+            status: 'in_progress'
+        });
+
+        expect(messages[0]).not.toHaveProperty('nativeName');
+        expect(messages[0]).not.toHaveProperty('nativeArgs');
+    });
+
     it('does not synthesize {status} output when tool completes without payload', () => {
         const messages: AgentMessage[] = [];
         const handler = new AcpMessageHandler((message) => messages.push(message));

@@ -18,10 +18,22 @@ export type AgentSessionConfig = {
     mcpServers: McpServerStdio[];
 };
 
-export type PromptContent = {
-    type: 'text';
-    text: string;
-};
+/**
+ * ACP prompt content blocks. Text blocks are universal; image blocks carry
+ * the canonical base64 form and are only accepted by agents that advertise
+ * `agentCapabilities.promptCapabilities.image` in their initialize result
+ * (e.g. DSH 0.2.2+).
+ */
+export type PromptContent =
+    | {
+        type: 'text';
+        text: string;
+    }
+    | {
+        type: 'image';
+        data: string;
+        mimeType: string;
+    };
 
 export type PlanItem = {
     content: string;
@@ -59,6 +71,10 @@ export type AgentMessage =
         title?: string;
         kind?: string;
         progress?: unknown;
+        // The agent's own tool name and args, when it sends them next to the
+        // standard fields (agy does: `name`, `args`).
+        nativeName?: string;
+        nativeArgs?: unknown;
     }
     | { type: 'tool_result'; id: string; output: unknown; status: 'completed' | 'failed' }
     | {
@@ -74,7 +90,7 @@ export type AgentMessage =
     }
     | { type: 'plan'; items: PlanItem[] }
     | { type: 'generated_image'; imageId: string; fileName: string; mimeType: string; source?: InlineMediaSource }
-    | { type: 'turn_complete'; stopReason: string }
+    | { type: 'turn_complete'; stopReason: string; numTurns?: number }
     | { type: 'round_summary'; summary: AgentRoundSummary }
     | { type: 'error'; message: string };
 
@@ -98,6 +114,28 @@ export type PermissionRequest = {
 export type PermissionResponse =
     | { outcome: 'selected'; optionId: string }
     | { outcome: 'cancelled' };
+
+/** Agent-initiated `elicitation/create` in form mode (structured user input). */
+export type FormElicitationRequest = {
+    sessionId: string;
+    /** Tool call that triggered the form, when the agent links one. */
+    toolCallId?: string;
+    message: string;
+    /** JSON-Schema-like object schema; shape is owned by the agent. */
+    requestedSchema: unknown;
+};
+
+export type FormElicitationContent = Record<string, string | number | boolean | string[]>;
+
+/**
+ * `decline` is the user refusing to answer; `cancel` covers every other
+ * non-answer: dismissed, aborted, or unavailable. Agents may record the two
+ * differently.
+ */
+export type FormElicitationResponse =
+    | { action: 'accept'; content: FormElicitationContent }
+    | { action: 'decline' }
+    | { action: 'cancel' };
 
 export type AgentSessionModelDescriptor = {
     modelId: string;
@@ -124,10 +162,21 @@ export interface AgentBackend {
     setConfigOption?(sessionId: string, configId: string, value: string): Promise<void>;
     getSessionModelsMetadata?(sessionId: string): AgentSessionModelsMetadata | undefined;
     getThoughtLevelConfigOption?(sessionId: string): AgentSessionConfigOptionDescriptor | undefined;
-    prompt(sessionId: string, content: PromptContent[], onUpdate: (msg: AgentMessage) => void): Promise<void>;
+    prompt(
+        sessionId: string,
+        content: PromptContent[],
+        onUpdate: (msg: AgentMessage) => void,
+        options?: { shouldSend?: () => boolean }
+    ): Promise<void | boolean>;
     cancelPrompt(sessionId: string): Promise<void>;
     respondToPermission(sessionId: string, request: PermissionRequest, response: PermissionResponse): Promise<void>;
     onPermissionRequest(handler: (request: PermissionRequest) => void): void;
+    /**
+     * Register the handler for agent form elicitations. The returned promise
+     * stays pending until the user answers; backends settle it with `cancel`
+     * on abort and disconnect.
+     */
+    onFormElicitation?(handler: (request: FormElicitationRequest) => Promise<FormElicitationResponse>): void;
     disconnect(): Promise<void>;
 }
 

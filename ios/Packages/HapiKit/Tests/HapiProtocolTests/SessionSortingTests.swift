@@ -36,6 +36,38 @@ struct SessionSortingTests {
         #expect(sortSessionSummaries(rows.reversed()).map(\.id) == ["a", "b", "old"])
     }
 
+    @Test func activeFirstLeadsEachPinTierWithoutBeatingPins() {
+        var oldLive = summary("old-live", createdAt: 1, at: 100)
+        oldLive.active = true
+        let newStopped = summary("new-stopped", createdAt: 2, at: 200)
+        var pinnedStopped = summary("pinned-stopped", at: 1)
+        pinnedStopped.pinned = true
+        var pinnedLive = summary("pinned-live", at: 0)
+        pinnedLive.pinned = true
+        pinnedLive.active = true
+        var global = summary("global", at: 0)
+        global.globalPinned = true
+        let rows = [newStopped, oldLive, pinnedStopped, global, pinnedLive]
+        #expect(sortSessionSummaries(rows, order: .default).map(\.id)
+            == ["global", "pinned-live", "pinned-stopped", "old-live", "new-stopped"])
+        #expect(sortSessionSummaries(rows, order: .base).map(\.id)
+            == ["global", "pinned-stopped", "pinned-live", "new-stopped", "old-live"])
+        #expect(sortSessionSummaries(rows, order: .base) == sortSessionSummaries(rows))
+    }
+
+    @Test func createdSortIgnoresInputAndFallsBackToZero() {
+        let early = summary("early", createdAt: 1, at: 900)
+        let late = summary("late", createdAt: 5, at: 10)
+        let unknown = SessionSummary(id: "unknown", active: false, thinking: false, activeAt: 0, updatedAt: 0,
+                                     lastUserMessageAt: 999, metadataVersion: 0, agentStateVersion: 0,
+                                     todosUpdatedAt: 0, pendingRequestsCount: 0)
+        let created = SessionListOrder(sort: .created, activeFirst: false)
+        #expect(sortSessionSummaries([early, unknown, late], order: created).map(\.id) == ["late", "early", "unknown"])
+        #expect(sortSessionSummaries([early, unknown, late], order: .base).map(\.id) == ["unknown", "early", "late"])
+        #expect(SessionListSort.lastMessage.rawValue == "last-message", "Same stored value as web")
+        #expect(SessionListOrder.default == SessionListOrder(sort: .lastMessage, activeFirst: true))
+    }
+
     @Test func patchClockIsMonotonicAndRenderRelevant() throws {
         let row = summary("a", at: 100)
         let patch = try JSONDecoder().decode(SessionPatch.self, from: Data("{\"lastUserMessageAt\":200}".utf8))

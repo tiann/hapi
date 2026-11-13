@@ -1,5 +1,6 @@
 package app.hapi.data.api
 
+import app.hapi.protocol.wire.MessageContextResponse
 import app.hapi.protocol.wire.MessagesResponse
 import app.hapi.protocol.wire.QueuedStateResponse
 
@@ -48,4 +49,12 @@ interface MessagesApi {
 
     /** `POST /api/sessions/:id/messages/queued-state`. */
     suspend fun getQueuedState(sessionId: String, localIds: List<String>): QueuedStateResponse
+
+    /**
+     * `GET /api/sessions/:id/messages/:messageId/context` — a bounded history
+     * window centered on one message, or null when the message does not
+     * resolve. The gap-recovery sweep re-reads out-of-page merged rows
+     * through it (web `getMessageContext`).
+     */
+    suspend fun getMessageContext(sessionId: String, messageId: String): MessageContextResponse?
 }

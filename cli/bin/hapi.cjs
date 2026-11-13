@@ -154,7 +154,12 @@ function main() {
     const args = process.argv.slice(2);
 
     try {
-        execFileSync(binPath, args, { stdio: 'inherit' });
+        // The binary may hand this launcher's macOS responsibility on to the
+        // processes it detaches (see cli/src/runtime/responsibility.ts).
+        execFileSync(binPath, args, {
+            stdio: 'inherit',
+            env: { ...process.env, HAPI_LAUNCHER_PID: String(process.pid) },
+        });
     } catch (error) {
         const { status, signal } = reportExecutionFailure(error, binPath, args);
 
