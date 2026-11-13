@@ -10,13 +10,14 @@ import { HandIcon, LoaderIcon, MessageIcon } from '@/components/icons'
  * Pending-request symbol: amber hand (permission) or bubble (input). Symbols,
  * not dots, so the row's presence badge stays its only dot.
  */
-export function SessionRequestIcon(props: { kind: 'permission' | 'input'; label?: string }) {
+export function SessionRequestIcon(props: { kind: 'permission' | 'input'; label?: string; requestId?: string }) {
     const Icon = props.kind === 'permission' ? HandIcon : MessageIcon
     return (
         <span
             className="inline-flex shrink-0 text-[var(--app-badge-warning-text)]"
             title={props.label}
             aria-label={props.label}
+            data-session-pending-request-id={props.requestId}
         >
             <Icon className="h-3.5 w-3.5" />
         </span>
@@ -43,6 +44,7 @@ export function SessionAttentionIndicator(props: {
     label: string
     tooltipId: string
     target?: ReactNode
+    pendingRequestId?: string
 }) {
     const { t } = useTranslation()
     const kind = props.attention.kind
@@ -51,7 +53,7 @@ export function SessionAttentionIndicator(props: {
     ) : kind === 'unread' ? (
         <span className="inline-flex h-2 w-2 shrink-0 rounded-full bg-[var(--app-link)]" />
     ) : (
-        <SessionRequestIcon kind={kind} />
+        <SessionRequestIcon kind={kind} requestId={props.pendingRequestId} />
     ))
 
     return (
@@ -59,7 +61,7 @@ export function SessionAttentionIndicator(props: {
             id={props.tooltipId}
             target={dot}
             side="bottom"
-            align="start"
+            align={kind === 'background' ? 'start' : 'end'}
             className="shrink-0"
             revealOnParentFocusClass={SESSION_ROW_TOOLTIP_FOCUS_CLASS}
         >

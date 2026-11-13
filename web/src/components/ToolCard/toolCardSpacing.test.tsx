@@ -46,6 +46,10 @@ function renderDetailedBash(command: string, state: 'pending' | 'completed' = 'c
 }
 
 describe('ToolCard spacing', () => {
+    it('exposes the correlated tool-call anchor for pending navigation', () => {
+        renderDetailedBash('pwd')
+        expect(document.querySelector('[data-hapi-source-message-id="tool-call:tool-1"]')).not.toBeNull()
+    })
     it('matches the dialog gap when the timing header has a subtitle', () => {
         const inlineBody = renderDetailedBash('echo hello && pwd')
 

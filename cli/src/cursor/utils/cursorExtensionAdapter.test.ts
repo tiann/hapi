@@ -63,6 +63,7 @@ describe('CursorExtensionAdapter', () => {
         expect(getAgentState().requests).toMatchObject({
             'q-1': {
                 tool: 'CursorAskQuestion',
+                toolCallId: 'q-1',
                 createdAt: 1_700_000_000_000
             }
         });

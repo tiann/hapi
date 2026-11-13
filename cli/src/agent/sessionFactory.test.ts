@@ -250,6 +250,7 @@ describe('bootstrapExistingSession', () => {
     })
 
     it('preserves existing native resume metadata when reactivating a session', async () => {
+        const checkpoint = { sessionId: 'native-child', messageIds: ['m1'], userMessageIds: ['m1'], localMessageIds: ['m2'], localPublicationPending: true as const }
         const session = createSession()
         const existingMetadata = session.metadata
         if (!existingMetadata) throw new Error('expected test session metadata')
@@ -292,6 +293,8 @@ describe('bootstrapExistingSession', () => {
                 }
             },
             conversationHistoryPoints: { 'local-user-1': true },
+            opencodeHistoryCheckpoint: checkpoint,
+            opencodeForkPending: true,
             conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' },
             capabilities: {
                 terminal: true,
@@ -350,6 +353,8 @@ describe('bootstrapExistingSession', () => {
                 }
             },
             conversationHistoryPoints: { 'local-user-1': true },
+            opencodeHistoryCheckpoint: checkpoint,
+            opencodeForkPending: true,
             conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' },
             capabilities: {
                 terminal: true,
@@ -363,7 +368,9 @@ describe('bootstrapExistingSession', () => {
             codexSessionId: 'codex-thread-1',
             grokSessionId: 'grok-thread-1',
             conversationHistoryEntryIds: { 'local-user-1': 'pi-entry-1' },
-            contextDetails: session.metadata.contextDetails
+            contextDetails: session.metadata.contextDetails,
+            opencodeHistoryCheckpoint: checkpoint,
+            opencodeForkPending: true
         }))
         expect(notifyRunnerSessionStartedMock).toHaveBeenCalledWith(
             'hapi-session-1',

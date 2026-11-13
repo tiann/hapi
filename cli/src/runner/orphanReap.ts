@@ -34,6 +34,8 @@ export type OrphanTarget = {
     pid: number
     /** Marker captured in the argv-match snapshot (not a later probe). */
     startMarker: string | null
+    /** MCP bridge helpers have no local transcript publisher to prepare. */
+    needsPublicationDrain?: false
 }
 
 /** True when cmd looks like a HAPI driver CLI (binary or bun/node src/index.ts). */
@@ -108,6 +110,8 @@ export function selectOrphanTargetsForSession(
         targets.push({
             pid,
             startMarker: proc.startMarker === undefined ? null : proc.startMarker,
+            ...(!commandMatchesRunnerSpawnedSession(cmd, sessionId) && commandMatchesHapiMcpBridgeForSession(cmd, sessionId)
+                ? { needsPublicationDrain: false as const } : {}),
         })
     }
     return targets
@@ -293,6 +297,7 @@ export async function reapRunnerSpawnedOrphans(
         /** @deprecated Prefer findTargets (includes same-snapshot markers). */
         findOrphans?: (sessionId: string) => Promise<number[] | 'scan_failed'>
         killTree?: (pid: number) => Promise<boolean>
+        prepare?: (target: OrphanTarget) => Promise<boolean>
         getStartMarker?: (pid: number) => string | null | Promise<string | null>
         isAlive?: (pid: number) => boolean | Promise<boolean>
     } = {}
@@ -334,7 +339,8 @@ export async function reapRunnerSpawnedOrphans(
     // do not downgrade to stopped based on root liveness alone (#1910 / #1911 B2).
     let anyUnconfirmed = false
     let resolved = 0
-    for (const { pid: orphanPid, startMarker: expectedMarker } of targets) {
+    for (const target of targets) {
+        const { pid: orphanPid, startMarker: expectedMarker } = target
         if (expectedMarker === null) {
             // No generation identity from the match snapshot. If the PID is
             // already dead the orphan is gone; if still alive, skip kill and
@@ -366,6 +372,11 @@ export async function reapRunnerSpawnedOrphans(
             continue
         }
 
+        if (deps.prepare) {
+            if (!await deps.prepare(target)) { anyUnconfirmed = true; continue }
+            if (!await isAlive(orphanPid)) { resolved++; continue }
+            if (await getStartMarker(orphanPid) !== expectedMarker) { anyUnconfirmed = true; continue }
+        }
         if (!(await killTree(orphanPid))) {
             anyUnconfirmed = true
             continue
