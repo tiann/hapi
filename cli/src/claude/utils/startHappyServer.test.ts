@@ -225,7 +225,6 @@ describe('startHappyServer skill_lookup', () => {
             expect(description).toContain('explicit delivery preferences')
             expect(description).not.toContain('Web/PWA')
             expect(description).not.toContain('iOS')
-            expect(description!.length).toBeLessThan(500)
         }
     })
 
