@@ -268,6 +268,22 @@ describe('fork title generation', () => {
     })
 })
 
+it('seeds and generates when native readiness sees titled Hub source but untitled child metadata', async () => {
+    const f = fixture(true)
+    try {
+        let requests = 0
+        f.internal.titleSuggestionService.suggestTitle = async () => {
+            requests += 1
+            return 'Native readiness title'
+        }
+        f.engine.handleSessionReady({ sid: f.child!.id, time: Date.now() })
+        await flush()
+        expect(requests).toBe(1)
+        const metadata = f.engine.getSession(f.child!.id)?.metadata
+        expect(metadata?.summary?.text).toBe('Native readiness title')
+        expect(metadata?.forkTitleSeed).toBeUndefined()
+    } finally { f.close() }
+})
 it('reconciles a stale CLI fork seed after an idle source rename before readiness claims generation', async () => {
     const seed = { text: 'Fork: Old', updatedAt: 1 }
     const f = fixture(true, { summary: seed, forkTitleSeed: seed })

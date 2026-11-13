@@ -2821,7 +2821,15 @@ export class SyncEngine {
         // consuming the one-shot generation claim with an undefined baseline.
         if (!metadata.forkTitleSeed && metadata.forkedFrom) {
             const sourceMetadata = this.sessionCache.getSession(metadata.forkedFrom)?.metadata
-            if (buildForkSessionSummary(sourceMetadata)) return
+            const forkSummary = buildForkSessionSummary(sourceMetadata)
+            if (forkSummary) {
+                // Native terminal readiness can arrive before a REST fork creates the
+                // owned seed. Bootstrap it here so that one-shot readiness can claim
+                // generation instead of waiting for a later event that never arrives.
+                await this.sessionCache.seedForkTitle(sessionId, forkSummary)
+                metadata = this.sessionCache.getSession(sessionId)?.metadata
+                if (!metadata) return
+            }
         }
         const expected = metadata.summary
         if (expected && (expected.text !== metadata.forkTitleSeed?.text
