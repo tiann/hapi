@@ -254,6 +254,11 @@ describe('SDKToLogConverter', () => {
     })
 
     describe('Result messages', () => {
+        // resultSummary rides the system variant's passthrough; the union needs
+        // a narrowing cast for direct property assertions.
+        const summaryOf = (logMessage: ReturnType<SDKToLogConverter['convert']>): Record<string, unknown> | undefined =>
+            (logMessage as { resultSummary?: Record<string, unknown> } | null)?.resultSummary
+
         it('converts successful results into a round-summary carrier without advancing the parent chain', () => {
             const preceding = converter.convert({
                 type: 'user',
@@ -311,6 +316,10 @@ describe('SDKToLogConverter', () => {
                 type: 'result',
                 subtype: 'error_max_turns',
                 num_turns: 10,
+                usage: {
+                    input_tokens: 500,
+                    output_tokens: 40
+                },
                 total_cost_usd: 0.1,
                 duration_ms: 5000,
                 duration_api_ms: 4500,
@@ -330,6 +339,87 @@ describe('SDKToLogConverter', () => {
                     duration_ms: 5000
                 }
             })
+            // An errored round has no meaningful generation rate.
+            expect(summaryOf(logMessage)).not.toHaveProperty('generation_ms')
+            expect(summaryOf(logMessage)).not.toHaveProperty('generation_output_tokens')
+        })
+
+        it('carries the API generation time and output tokens for tok/s', () => {
+            const sdkMessage: SDKResultMessage = {
+                type: 'result',
+                subtype: 'success',
+                num_turns: 3,
+                usage: {
+                    input_tokens: 100,
+                    output_tokens: 200
+                },
+                total_cost_usd: 0.05,
+                duration_ms: 3000,
+                duration_api_ms: 2500,
+                is_error: false,
+                session_id: 'result-session'
+            }
+
+            const logMessage = converter.convert(sdkMessage)
+
+            // duration_api_ms is Claude Code's own API-active time: tool
+            // execution and permission waits are already outside it.
+            expect(summaryOf(logMessage)).toMatchObject({
+                generation_ms: 2500,
+                generation_output_tokens: 200
+            })
+        })
+
+        it.each([
+            ['duration', { duration_api_ms: 0 }],
+            ['duration', { duration_api_ms: -1 }],
+            ['duration', { duration_api_ms: 1.5 }],
+            ['tokens', { usage: { input_tokens: 10, output_tokens: 0 } }],
+            ['tokens', { usage: { input_tokens: 10, output_tokens: -5 } }],
+            ['tokens', { usage: { input_tokens: 10, output_tokens: 2.5 } }],
+            ['tokens', {}]
+        ])('omits the tok/s pair for a %s value that cannot produce a rate (%j)', (_label, patch) => {
+            const sdkMessage: SDKResultMessage = {
+                type: 'result',
+                subtype: 'success',
+                num_turns: 1,
+                total_cost_usd: 0,
+                duration_ms: 3000,
+                duration_api_ms: 2500,
+                is_error: false,
+                session_id: 'result-session',
+                ...patch
+            } as SDKResultMessage
+
+            const logMessage = converter.convert(sdkMessage)
+
+            expect(summaryOf(logMessage)).toBeTruthy()
+            expect(summaryOf(logMessage)).not.toHaveProperty('generation_ms')
+            expect(summaryOf(logMessage)).not.toHaveProperty('generation_output_tokens')
+        })
+
+        it('omits the tok/s pair for a compaction turn result', () => {
+            const sdkMessage = {
+                type: 'result',
+                subtype: 'success',
+                num_turns: 1,
+                usage: {
+                    input_tokens: 30_000,
+                    output_tokens: 900
+                },
+                total_cost_usd: 0.02,
+                duration_ms: 4000,
+                duration_api_ms: 3800,
+                is_error: false,
+                session_id: 'result-session',
+                hapi_compact_turn: true
+            } as unknown as SDKResultMessage
+
+            const logMessage = converter.convert(sdkMessage)
+
+            expect(summaryOf(logMessage)).toMatchObject({ duration_ms: 4000, num_turns: 1 })
+            expect(summaryOf(logMessage)).not.toHaveProperty('generation_ms')
+            expect(summaryOf(logMessage)).not.toHaveProperty('generation_output_tokens')
         })
 
         it('does not let a sidechain result carrier advance the sidechain parent chain', () => {

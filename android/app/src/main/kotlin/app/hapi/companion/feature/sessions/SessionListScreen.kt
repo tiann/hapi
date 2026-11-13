@@ -12,6 +12,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -22,6 +23,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -39,6 +41,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -67,6 +70,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -83,7 +87,10 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import app.hapi.companion.R
 import app.hapi.companion.ui.components.AgentFlavorIcon
 import app.hapi.companion.ui.theme.HapiTheme
+import app.hapi.protocol.wire.AttachedJob
 import app.hapi.protocol.wire.PendingRequest
+import app.hapi.protocol.wire.formatCompactElapsed
+import app.hapi.protocol.wire.formatJobQuantity
 import app.hapi.protocol.wire.SessionSummary
 import app.hapi.protocol.wire.SessionSummaryMetadata
 import app.hapi.protocol.wire.SummaryText
@@ -103,12 +110,15 @@ import kotlinx.coroutines.delay
  *   stubs hidden (ViewModel pipeline, web sidebar parity);
  * - pinned section first (the sort already puts globalPinned/pinned rows on
  *   top; compact "Pinned" / "Recent" headers mark the boundary);
- * - per row: a two-line-tall flavor icon whose presence badge marks
- *   connected sessions (pulsing while a turn is in flight), title with a
+ * - rows follow the persisted order (Active first and the sort key within
+ *   the pin tiers), except while searching;
+ * - per row: a two-line-tall flavor icon whose presence badge gives every
+ *   state its own mark (working / background / waiting / stopped), title with a
  *   right-aligned relative `updatedAt` (unread: semibold title + accent
  *   time, no dot), summary line, `project · worktree · machine` meta line
  *   (machine only when it disambiguates) with todo chip and pending badge
- *   trailing. Disconnected rows are not dimmed and have no spinner;
+ *   trailing, and a running attached job's progress line. Disconnected rows
+ *   are not dimmed and have no spinner;
  * - swipe: start→end pin/unpin (project), end→start archive (live) or
  *   delete with confirmation (inactive); the row snaps back;
  * - long-press → actions sheet: mark read (unread rows), pin
@@ -208,7 +218,12 @@ fun SessionListScreen(
                     if (state.isSearching) {
                         SearchEmptyState(query = state.searchQuery)
                     } else {
-                        EmptyState(hasLoaded = state.hasLoaded, isOffline = state.isOffline, hasDateFilter = state.dateRange != null)
+                        EmptyState(
+                            hasLoaded = state.hasLoaded,
+                            isOffline = state.isOffline,
+                            hasDateFilter = state.dateRange != null,
+                            hasFilters = state.hasActiveFilters,
+                        )
                     }
                 } else {
                     SessionRows(
@@ -415,6 +430,9 @@ private val ICON_SIZE = 30.dp
 private val ICON_SPACING = 12.dp
 private val PRESENCE_GREEN = Color(0xFF34C759)
 
+/** Tailwind blue-400, web's background-work colour in both themes. */
+private val PRESENCE_BLUE = Color(0xFF60A5FA)
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun SessionRow(
@@ -436,8 +454,7 @@ private fun SessionRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // The agent owns a two-line-tall leading column; its presence badge
-        // marks connected sessions (pulsing while running) instead of
-        // dimming every disconnected row.
+        // carries the session state instead of dimming disconnected rows.
         AgentIconWithPresence(row)
         Spacer(modifier = Modifier.width(ICON_SPACING))
         // The divider starts under the text column, as in Mail/Messages.
@@ -456,6 +473,7 @@ private fun SessionRow(
                     )
                 }
                 MetaLine(row)
+                row.runningJob?.let { AttachedJobLine(it) }
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
         }
@@ -464,7 +482,6 @@ private fun SessionRow(
 
 @Composable
 private fun AgentIconWithPresence(row: SessionRowUi) {
-    val summary = row.summary
     Box(modifier = Modifier.size(ICON_SIZE)) {
         AgentFlavorIcon(
             row.flavor,
@@ -472,40 +489,154 @@ private fun AgentIconWithPresence(row: SessionRowUi) {
                 .size(ICON_SIZE * 0.8f)
                 .align(Alignment.Center),
         )
-        if (summary.active) {
-            val running = summary.thinking
-            val alpha = if (running) {
-                val transition = rememberInfiniteTransition(label = "presence")
-                transition.animateFloat(
-                    initialValue = 1f,
-                    targetValue = 0.35f,
-                    animationSpec = infiniteRepeatable(tween(800), RepeatMode.Reverse),
-                    label = "presence-pulse",
-                ).value
-            } else {
-                1f
-            }
-            val presence = stringResource(
-                if (running) R.string.sessions_presence_running else R.string.sessions_presence_connected,
+        PresenceBadge(
+            row.presence,
+            Modifier
+                .align(Alignment.BottomEnd)
+                .offset(x = 2.dp, y = 2.dp),
+        )
+    }
+}
+
+/**
+ * Web presence badge (#2296): shape carries the state, colour keeps its old
+ * meaning. Solid green = working, solid blue = background tasks only (both
+ * pulse), green ring = connected and waiting, power mark = stopped or
+ * archived. The surface-coloured halo separates it from the agent icon.
+ */
+@Composable
+internal fun PresenceBadge(presence: SessionPresence, modifier: Modifier = Modifier) {
+    val alpha = if (presence.pulses) {
+        val transition = rememberInfiniteTransition(label = "presence")
+        transition.animateFloat(
+            initialValue = 1f,
+            targetValue = 0.35f,
+            animationSpec = infiniteRepeatable(tween(800), RepeatMode.Reverse),
+            label = "presence-pulse",
+        ).value
+    } else {
+        1f
+    }
+    val description = stringResource(
+        when (presence) {
+            SessionPresence.Working -> R.string.sessions_presence_running
+            SessionPresence.Background -> R.string.sessions_presence_background
+            SessionPresence.Waiting -> R.string.sessions_presence_connected
+            SessionPresence.Stopped -> R.string.sessions_presence_stopped
+        },
+    )
+    Box(
+        modifier = modifier
+            .size(12.dp)
+            .background(MaterialTheme.colorScheme.surface, CircleShape)
+            .padding(2.dp)
+            .semantics { contentDescription = description }
+            .testTag("session-presence-${presence.name.lowercase()}"),
+    ) {
+        val mark = Modifier.fillMaxSize()
+        when (presence) {
+            SessionPresence.Working, SessionPresence.Background -> Box(
+                mark
+                    .graphicsLayer { this.alpha = alpha }
+                    .background(if (presence == SessionPresence.Working) PRESENCE_GREEN else PRESENCE_BLUE, CircleShape),
             )
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .offset(x = 2.dp, y = 2.dp)
-                    .size(12.dp)
-                    .background(MaterialTheme.colorScheme.surface, CircleShape)
-                    .padding(2.dp)
-                    .semantics { contentDescription = presence },
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .graphicsLayer { this.alpha = alpha }
-                        .background(PRESENCE_GREEN, CircleShape),
-                )
-            }
+            SessionPresence.Waiting -> Box(mark.border(1.8.dp, PRESENCE_GREEN, CircleShape))
+            SessionPresence.Stopped -> Icon(
+                painterResource(R.drawable.ic_presence_stopped),
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                modifier = mark,
+            )
         }
     }
+}
+
+/**
+ * A running attached job (web `SessionRowSummary` job line): label, then
+ * remaining or percent, then elapsed wall time — never an ETA — with a thin
+ * bar (determinate when the hub sends an honest fraction). After 15 minutes
+ * without a heartbeat it turns amber and says so instead of passing frozen
+ * progress off as live.
+ */
+@Composable
+private fun AttachedJobLine(job: AttachedJob) {
+    // Minute ticks: elapsed and stale age are minute-granular.
+    val now by produceState(System.currentTimeMillis(), job) {
+        while (true) {
+            value = System.currentTimeMillis()
+            delay(60_000)
+        }
+    }
+    val context = LocalContext.current
+    val dark = isSystemInDarkTheme()
+    val color = when {
+        job.isStale(now) -> if (dark) Color(0xFFE3B341) else Color(0xFF9A6700)
+        dark -> PRESENCE_GREEN
+        // Darker success green for text on a light surface.
+        else -> Color(0xFF16A34A)
+    }
+    val text = attachedJobText(
+        job,
+        now,
+        left = { context.getString(R.string.sessions_job_left, it) },
+        noHeartbeat = { context.getString(R.string.sessions_job_no_heartbeat, it) },
+    )
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.padding(top = 2.dp).testTag("session-attached-job"),
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.bodySmall,
+            color = color,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        val fraction = job.fraction
+        val barModifier = Modifier.width(56.dp).height(3.dp)
+        if (fraction != null) {
+            LinearProgressIndicator(
+                progress = { fraction },
+                modifier = barModifier,
+                color = color,
+                trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+                drawStopIndicator = {},
+            )
+        } else {
+            LinearProgressIndicator(
+                modifier = barModifier,
+                color = color,
+                trackColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+            )
+        }
+    }
+}
+
+/** `label · remaining or percent · elapsed` (web `formatAttachedJobProgress`, compact). */
+internal fun attachedJobText(
+    job: AttachedJob,
+    nowMs: Long,
+    left: (String) -> String,
+    noHeartbeat: (String) -> String,
+): String {
+    val unit = job.unit?.let { " $it" } ?: ""
+    val parts = mutableListOf(job.label)
+    val remaining = job.remaining
+    val percent = job.percent
+    if (remaining != null) {
+        parts += left(formatJobQuantity(remaining) + unit)
+    } else if (percent != null) {
+        parts += "$percent%"
+        parts += "${formatJobQuantity(job.done ?: 0.0)}/${formatJobQuantity(job.total ?: 0.0)}$unit"
+    }
+    parts += if (job.isStale(nowMs)) {
+        noHeartbeat(formatCompactElapsed(maxOf(0, nowMs - job.heartbeatAt)))
+    } else {
+        formatCompactElapsed(maxOf(0, nowMs - job.startedAt))
+    }
+    return parts.joinToString(" · ")
 }
 
 /**
@@ -687,7 +818,7 @@ private fun SearchEmptyState(query: String) {
 }
 
 @Composable
-private fun EmptyState(hasLoaded: Boolean, isOffline: Boolean, hasDateFilter: Boolean = false) {
+private fun EmptyState(hasLoaded: Boolean, isOffline: Boolean, hasDateFilter: Boolean = false, hasFilters: Boolean = false) {
     // verticalScroll keeps the pull-to-refresh gesture available even though
     // there is nothing to scroll.
     Column(
@@ -704,6 +835,7 @@ private fun EmptyState(hasLoaded: Boolean, isOffline: Boolean, hasDateFilter: Bo
                     !hasLoaded && !isOffline -> R.string.sessions_empty_loading_title
                     isOffline -> R.string.sessions_empty_offline_title
                     hasDateFilter -> R.string.sessions_time_filter_empty_title
+                    hasFilters -> R.string.sessions_filter_empty_title
                     else -> R.string.sessions_empty_title
                 },
             ),
@@ -716,6 +848,7 @@ private fun EmptyState(hasLoaded: Boolean, isOffline: Boolean, hasDateFilter: Bo
                     !hasLoaded && !isOffline -> R.string.sessions_empty_loading_hint
                     isOffline -> R.string.sessions_empty_offline_hint
                     hasDateFilter -> R.string.sessions_time_filter_empty_hint
+                    hasFilters -> R.string.sessions_filter_empty_hint
                     else -> R.string.sessions_empty_hint
                 },
             ),

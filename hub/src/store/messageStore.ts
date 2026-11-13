@@ -6,6 +6,7 @@ import { decodeMessageContent } from './contentCodec'
 import type { StoredMessage } from './types'
 import {
     addMessage,
+    upsertToolCallMessage,
     syncNativeQueuedMessage,
     addImportedMessage,
     cancelQueuedMessage,
@@ -45,10 +46,12 @@ import {
     getMessageSeqById,
     getMessageById,
     truncateMessagesFromLocalId,
+    truncateOpenCodeRewind,
     type CancelQueuedMessageResult,
     type LookupQueuedMessageResult,
     type LocalMessageState,
     type MessagePosition,
+    type UpsertToolCallResult,
 } from './messages'
 import {
     hasPotentiallyIncompleteMessageContent,
@@ -65,8 +68,16 @@ export class MessageStore {
         this.db = db
     }
 
+    truncateOpenCodeRewind(sessionId: string, cutoffSeq: number, boundaryId: string): number {
+        return truncateOpenCodeRewind(this.db, sessionId, cutoffSeq, boundaryId)
+    }
+
     addMessage(sessionId: string, content: unknown, localId?: string, scheduledAt?: number | null, createdAt?: number): StoredMessage {
         return addMessage(this.db, sessionId, content, localId, scheduledAt, createdAt)
+    }
+
+    upsertToolCallMessage(sessionId: string, content: unknown, callId: string, localId?: string, createdAt?: number): UpsertToolCallResult {
+        return upsertToolCallMessage(this.db, sessionId, content, callId, localId, createdAt)
     }
 
     syncNativeQueuedMessage(sessionId: string, localId: string, text: string): StoredMessage {

@@ -1,7 +1,9 @@
 import axios from 'axios'
+import { randomUUID } from 'node:crypto'
+import { DEFAULT_RPC_TIMEOUT_MS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
 import type { AgentState, ClearOpencodeSessionCallbackRequest, ClearOpencodeSessionResponse, CreateMachineResponse, CreateSessionResponse, RunnerState, Machine, MachineMetadata, Metadata, Session } from '@/api/types'
 import { applyHubSessionSummaryContract } from '@/modules/common/sessionSummaryInstruction'
-import type { LocalResumeTarget, ResumableSession } from '@hapi/protocol'
+import type { LocalResumeTarget, LocalResumeTargetByAgentResponse, ResumableSession } from '@hapi/protocol'
 import {
     AgentStateSchema,
     ClearOpencodeSessionResponseSchema,
@@ -10,6 +12,8 @@ import {
     GetSessionResponseSchema,
     LocalHandoffResponseSchema,
     LocalResumeTargetResponseSchema,
+    LocalResumeTargetByAgentResponseSchema,
+    LocalResumePrepareResponseSchema,
     RunnerStateSchema,
     MachineMetadataSchema,
     MetadataSchema,
@@ -21,6 +25,7 @@ import { apiValidationError } from '@/utils/errorUtils'
 import { ApiMachineClient } from './apiMachine'
 import { ApiSessionClient, type ApiSessionClientOptions } from './apiSession'
 import { buildHubRequestHeaders } from './hubExtraHeaders'
+import { monotonicTimeMs } from '@/utils/time'
 
 export class ApiClient {
     static async create(): Promise<ApiClient> {
@@ -34,6 +39,31 @@ export class ApiClient {
             Authorization: `Bearer ${this.token}`,
             'Content-Type': 'application/json'
         })
+    }
+
+    async prepareOpenCodeSessionStop(sessionId: string, machineId: string, pid: number, processStartMarker: string): Promise<number | undefined> {
+        const preparationLease = { id: randomUUID(), expiresAt: monotonicTimeMs() + DEFAULT_RPC_TIMEOUT_MS }
+        try {
+            const response = await axios.post<{ status: string; preparationLease?: SessionStopPreparationLease }>(
+                `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}/prepare-stop`,
+                { machineId, pid, processStartMarker, preparationLease }, { headers: this.authHeaders(), timeout: 60_000 }
+            )
+            if (response.data.status !== 'ready' && response.data.status !== 'not_required') {
+                throw new Error('Session shutdown preparation was not confirmed')
+            }
+            if (response.data.status === 'not_required') return
+            if (response.data.preparationLease?.id !== preparationLease.id
+                || response.data.preparationLease.expiresAt !== preparationLease.expiresAt
+                || monotonicTimeMs() >= preparationLease.expiresAt) {
+                throw new Error('Session shutdown preparation lease was not confirmed')
+            }
+            return preparationLease.expiresAt
+        } catch (error) {
+            // A removed Hub row has no transcript left to drain. Preserve the
+            // runner's existing orphan-process cleanup for that case.
+            if (axios.isAxiosError(error) && error.response?.status === 404) return
+            throw error
+        }
     }
 
     async getOrCreateSession(opts: {
@@ -268,6 +298,49 @@ export class ApiClient {
             throw apiValidationError('Invalid /cli/sessions/:id/resume-target response', response)
         }
         return parsed.data.target
+    }
+
+    /**
+     * HAPI session that owns a native Claude session id (current or rotated
+     * away), or `target: null` when none does.
+     */
+    async getLocalResumeTargetByAgentSessionId(
+        agentSessionId: string,
+        machineId?: string
+    ): Promise<LocalResumeTargetByAgentResponse> {
+        const params = new URLSearchParams({ flavor: 'claude', agentSessionId })
+        if (machineId) params.set('machineId', machineId)
+        const response = await axios.get(
+            `${configuration.apiUrl}/cli/sessions/resume-target-by-agent?${params.toString()}`,
+            {
+                headers: this.authHeaders(),
+                timeout: 60_000
+            }
+        )
+        const parsed = LocalResumeTargetByAgentResponseSchema.safeParse(response.data)
+        if (!parsed.success) {
+            throw apiValidationError('Invalid /cli/sessions/resume-target-by-agent response', response)
+        }
+        return parsed.data
+    }
+
+    /**
+     * Before reopening an inactive session from this terminal: the hub clears a
+     * hub-authored archive (which `--existing-session-id` bootstrap refuses).
+     */
+    async prepareSessionForLocalResume(sessionId: string): Promise<void> {
+        const response = await axios.post(
+            `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}/prepare-local-resume`,
+            {},
+            {
+                headers: this.authHeaders(),
+                timeout: 60_000
+            }
+        )
+        const parsed = LocalResumePrepareResponseSchema.safeParse(response.data)
+        if (!parsed.success || !parsed.data.ok) {
+            throw apiValidationError('Invalid /cli/sessions/:id/prepare-local-resume response', response)
+        }
     }
 
     async handoffSessionToLocal(sessionId: string): Promise<void> {

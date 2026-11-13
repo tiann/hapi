@@ -38,6 +38,7 @@ import type {
 import type {
     AgyModelsResponse,
     AgentAvailabilityResponse,
+    AgentQuotasResponse,
     CodexModelsResponse,
     CursorMigrateOutcome,
     CursorMigrateToAcpRequest,
@@ -51,6 +52,8 @@ import type {
     KimiModelsResponse,
     CopilotModelsResponse,
     GrokReasoningEffortResponse,
+    CopilotReasoningEffortResponse,
+    KimiReasoningEffortResponse,
     ListDirectoryResponse,
     MachineListDirectoryResponse,
     MachinePathsExistsResponse,
@@ -64,10 +67,12 @@ import type {
     SqliteStorageUsageResponse,
     HubSettingsResponse,
     UpdateHubSettingsRequest,
+    UsageQuotasResponse,
     UsageSummaryResponse,
     UploadFileResponse
 } from '@hapi/protocol/apiTypes'
 import { fetchThroughAuthProxy } from '@/api/authProxy'
+import { FOLLOW_SESSION_REDIRECTS_HEADER } from '@hapi/protocol'
 import type { SessionReadState, SessionReadStateRequest, AgentFlavor, MessageDeliveryMode } from '@hapi/protocol'
 import type { CancelMessageResponse, SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { TranscriptionMode, TranscriptionProvider, TranscriptionProviderInfo } from '@hapi/protocol/voice'
@@ -255,6 +260,8 @@ export class ApiClient {
         if (authToken) {
             headers.set('authorization', `Bearer ${authToken}`)
         }
+        // The session route rebinds to a survivor's id (getMergedSessionRedirectId).
+        headers.set(FOLLOW_SESSION_REDIRECTS_HEADER, '1')
         if (init?.body !== undefined && !(init.body instanceof FormData) && !headers.has('content-type')) {
             headers.set('content-type', 'application/json')
         }
@@ -756,12 +763,12 @@ export class ApiClient {
         })
     }
 
-    async forkConversation(sessionId: string, messageLocalId?: string): Promise<{ sessionId: string }> {
+    async forkConversation(sessionId: string, messageLocalId?: string, latestCompleted = false): Promise<{ sessionId: string }> {
         return await this.request<{ sessionId: string }>(
             `/api/sessions/${encodeURIComponent(sessionId)}/fork`,
             {
                 method: 'POST',
-                body: JSON.stringify(messageLocalId ? { messageLocalId } : {})
+                body: JSON.stringify(latestCompleted ? { latestCompleted: true } : messageLocalId ? { messageLocalId } : {})
             }
         )
     }
@@ -959,6 +966,16 @@ export class ApiClient {
             timeZone
         })
         return await this.request<UsageSummaryResponse>(`/api/usage/summary?${params.toString()}`)
+    }
+
+    async getUsageQuotas(refresh?: boolean): Promise<UsageQuotasResponse> {
+        return await this.request<UsageQuotasResponse>(`/api/usage/quotas${refresh ? '?refresh=1' : ''}`)
+    }
+
+    async getMachineAgentQuotas(machineId: string, refresh?: boolean): Promise<AgentQuotasResponse> {
+        return await this.request<AgentQuotasResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/agent-quotas${refresh ? '?refresh=1' : ''}`
+        )
     }
 
     async restartMachineRunner(machineId: string): Promise<{ message: string }> {
@@ -1169,6 +1186,18 @@ export class ApiClient {
             method: 'POST',
             body: JSON.stringify({ mode })
         })
+    }
+
+    async getSessionCopilotReasoningEffortOptions(sessionId: string): Promise<CopilotReasoningEffortResponse> {
+        return await this.request<CopilotReasoningEffortResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/copilot-reasoning-effort-options`
+        )
+    }
+
+    async getSessionKimiReasoningEffortOptions(sessionId: string): Promise<KimiReasoningEffortResponse> {
+        return await this.request<KimiReasoningEffortResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/kimi-reasoning-effort-options`
+        )
     }
 
     async getSessionGrokReasoningEffortOptions(sessionId: string): Promise<GrokReasoningEffortResponse> {

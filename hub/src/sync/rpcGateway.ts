@@ -1,8 +1,9 @@
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, PermissionMode } from '@hapi/protocol/types'
-import { PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS } from '@hapi/protocol/rpcMethods'
+import { DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
 import {
     ArchiveCodexSessionRpcResponseSchema,
     AgentAvailabilityResponseSchema,
+    AgentQuotasResponseSchema,
     CursorChatStoreStatusSchema,
     ListCodexSessionsRpcResponseSchema,
     ListOpencodeSessionsRpcResponseSchema,
@@ -12,6 +13,7 @@ import type {
     AgyModelsResponse,
     ClaudeModelsResponse,
     AgentAvailabilityResponse,
+    AgentQuotasResponse,
     CodexModelSummary,
     CodexModelsResponse,
     CommandResponse,
@@ -25,8 +27,10 @@ import type {
     GeneratedImageResponse,
     ImplementCodexPlanResult,
     CopilotModelsResponse,
+    CopilotReasoningEffortResponse,
     GrokModelsResponse,
     KimiModelsResponse,
+    KimiReasoningEffortResponse,
     GrokReasoningEffortResponse,
     ListDirectoryResponse,
     ListCodexSessionsRpcResponse,
@@ -53,7 +57,6 @@ import type {
 import type { Server } from 'socket.io'
 import type { RpcRegistry } from '../socket/rpcRegistry'
 
-const DEFAULT_RPC_TIMEOUT_MS = 30_000
 const MODEL_LIST_RPC_TIMEOUT_MS = 120_000
 // Codex can spend 30s awaiting startup after preflight and process creation.
 const CODEX_SPAWN_RPC_TIMEOUT_MS = 60_000
@@ -208,14 +211,31 @@ export class RpcGateway {
         return await this.sessionRpc(sessionId, RPC_METHODS.SetSessionConfig, config)
     }
 
-    async killSession(sessionId: string): Promise<{ pid?: number; processStartMarker?: string }> {
-        const result = await this.sessionRpc(sessionId, RPC_METHODS.KillSession, {})
+    async killSession(sessionId: string, options: {
+        prepareOnly?: boolean; expectedMachineId?: string; expectedPid?: number; expectedProcessStartMarker?: string; preparationLease?: SessionStopPreparationLease
+    } = {}): Promise<{ pid?: number; machineId?: string; processStartMarker?: string; preparationLease?: SessionStopPreparationLease }> {
+        let method: string = RPC_METHODS.KillSession
+        if (options.prepareOnly) {
+            if (!options.expectedMachineId || !options.expectedPid || !options.expectedProcessStartMarker) {
+                throw new Error('Process shutdown preparation requires machine and process generation')
+            }
+            method = getSessionStopPreparationMethod(options.expectedMachineId, options.expectedPid)
+        }
+        const result = await this.sessionRpc(sessionId, method, options)
+        if (result && typeof result === 'object' && ('error' in result || ('success' in result && result.success === false))) {
+            throw new Error(typeof (result as { error?: unknown }).error === 'string'
+                ? (result as { error: string }).error : 'Session shutdown was not confirmed')
+        }
         if (!result || typeof result !== 'object') return {}
         const pid = (result as { pid?: unknown }).pid
         const processStartMarker = (result as { processStartMarker?: unknown }).processStartMarker
+        const preparationLease = (result as { preparationLease?: SessionStopPreparationLease }).preparationLease
+        const machineId = (result as { machineId?: unknown }).machineId
         return {
             ...(typeof pid === 'number' ? { pid } : {}),
             ...(typeof processStartMarker === 'string' ? { processStartMarker } : {}),
+            ...(preparationLease ? { preparationLease } : {}),
+            ...(typeof machineId === 'string' ? { machineId } : {}),
         }
     }
 
@@ -371,6 +391,12 @@ export class RpcGateway {
     async getAgentAvailability(machineId: string): Promise<AgentAvailabilityResponse> {
         const result = await this.machineRpc(machineId, RPC_METHODS.AgentAvailability, {})
         return AgentAvailabilityResponseSchema.parse(result)
+    }
+
+    async getAgentQuotas(machineId: string, options?: { refresh?: boolean }): Promise<AgentQuotasResponse> {
+        const params = options?.refresh ? { refresh: true } : {}
+        const result = await this.machineRpc(machineId, RPC_METHODS.AgentQuotas, params, 20_000)
+        return AgentQuotasResponseSchema.parse(result)
     }
 
     async checkPathsExist(machineId: string, paths: string[]): Promise<PathExistsResponse> {
@@ -581,6 +607,10 @@ export class RpcGateway {
         ) as RpcListCopilotModelsResponse
     }
 
+    async listCopilotReasoningEffortOptionsForSession(sessionId: string): Promise<CopilotReasoningEffortResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.ListCopilotReasoningEffortOptions, {}) as CopilotReasoningEffortResponse
+    }
+
     async listCopilotModelsForSession(sessionId: string): Promise<RpcListCopilotModelsResponse> {
         return await this.sessionRpc(
             sessionId,
@@ -603,6 +633,10 @@ export class RpcGateway {
      * Active-session Kimi discovery. The probe runs in the CLI that owns the
      * session, so it works without a background runner on the machine.
      */
+    async listKimiReasoningEffortOptionsForSession(sessionId: string): Promise<KimiReasoningEffortResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.ListKimiReasoningEffortOptions, {}) as KimiReasoningEffortResponse
+    }
+
     async listKimiModelsForSession(sessionId: string): Promise<RpcListKimiModelsResponse> {
         return await this.sessionRpc(
             sessionId,
@@ -634,7 +668,7 @@ export class RpcGateway {
 
     async forkConversation(
         sessionId: string,
-        params: { messageLocalId?: string }
+        params: { messageLocalId?: string; latestCompleted?: boolean }
     ): Promise<import('@hapi/protocol/apiTypes').ForkConversationRpcResponse> {
         return await this.sessionRpc(
             sessionId,
@@ -661,7 +695,7 @@ export class RpcGateway {
 
     async rewindConversation(
         sessionId: string,
-        params: { messageLocalId: string }
+        params: { messageLocalId: string; opencodeRewind?: import('@hapi/protocol/schemas').OpenCodeRewindOperation }
     ): Promise<import('@hapi/protocol/apiTypes').RewindConversationRpcResult> {
         return await this.sessionRpc(
             sessionId,

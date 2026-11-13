@@ -6,6 +6,8 @@ The web app and PWA are free and full-featured. This page
 covers browser installation. For the paid iOS and Android apps, see
 [Native apps (iOS / Android)](./native-apps.md).
 
+For Markdown image requirements, native-client differences, and display-tool guidance, see [Displaying images](./agents.md#displaying-images).
+
 ## What is PWA?
 
 A Progressive Web App (PWA) is a web application that can be installed on your device and works like a native app:
@@ -127,7 +129,6 @@ HAPI supports push notifications to alert you when agents need attention.
 |------|-----------|
 | Permission Request | Agent needs your approval |
 | Ready | Agent finished and awaits input |
-| Task completed / Task failed | A background task finishes (success or failure) |
 
 ### Native app notifications
 

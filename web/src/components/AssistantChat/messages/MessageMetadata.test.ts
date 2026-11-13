@@ -319,10 +319,49 @@ describe('provider throughput metadata', () => {
         expect(parts.at(-1)).toBe('Round: 14.9s · 28.0 tok/s')
     })
 
+    it('adds Claude tok/s to the Round line from the duration_api_ms pair', () => {
+        const parts = buildMessageMetadataLabels({
+            roundSummary: {
+                modelUsage: { 'claude-opus-5': { inputTokens: 4_422, outputTokens: 70, cacheReadInputTokens: 900, cacheCreationInputTokens: 100 } },
+                usage: { input_tokens: 4_422, output_tokens: 70, cache_read_input_tokens: 900, cache_creation_input_tokens: 100 },
+                numTurns: 3,
+                durationMs: 14_900,
+                generationMs: 2_500,
+                generationOutputTokens: 70
+            }
+        })
+        expect(parts.at(-1)).toBe('Round: 14.9s · 3 turns · 28.0 tok/s')
+    })
+
     it('omits the agy cache share without cache reads and shows partial usage as reported', () => {
         expect(buildMessageMetadataLabels({
             model: 'fallback-model',
             roundSummary: { provider: 'agy', modelUsage: {}, agyUsage: { input_tokens: 15_172, output_tokens: 44, cache_read_tokens: 0 } }
         })).toEqual(['Model: fallback-model', 'Tokens: 15.2k in · 44 out'])
+    })
+
+    it('adds the agy turn count to the agy Round line (google-antigravity/antigravity-cli#1045)', () => {
+        const parts = buildMessageMetadataLabels({
+            roundSummary: {
+                provider: 'agy',
+                modelUsage: {},
+                agyUsage: { input_tokens: 4_422, output_tokens: 58 },
+                durationMs: 14_900,
+                numTurns: 3
+            }
+        })
+        expect(parts.at(-1)).toBe('Round: 14.9s · 3 turns')
+        for (const numTurns of [undefined, 0, -2]) {
+            const hidden = buildMessageMetadataLabels({
+                roundSummary: {
+                    provider: 'agy',
+                    modelUsage: {},
+                    agyUsage: { input_tokens: 4_422, output_tokens: 58 },
+                    durationMs: 14_900,
+                    numTurns
+                }
+            })
+            expect(hidden.at(-1)).toBe('Round: 14.9s')
+        }
     })
 })

@@ -33,6 +33,7 @@ import app.hapi.protocol.wire.AgentState
 import app.hapi.protocol.wire.AgentStateRequest
 import app.hapi.protocol.wire.ApprovePermissionRequest
 import app.hapi.protocol.wire.CancelMessageResponse
+import app.hapi.protocol.wire.MessageContextResponse
 import app.hapi.protocol.chat.NormalizedMessage
 import app.hapi.protocol.chat.normalizeDecryptedMessage
 import app.hapi.protocol.wire.CodexModelsResponse
@@ -209,6 +210,8 @@ private class RecordingChatApi : ChatSessionApi {
 
     override suspend fun getQueuedState(sessionId: String, localIds: List<String>): QueuedStateResponse =
         QueuedStateResponse(queuedLocalIds = localIds, invokedLocalMessages = emptyList())
+
+    override suspend fun getMessageContext(sessionId: String, messageId: String): MessageContextResponse? = null
 
     override suspend fun sendMessage(sessionId: String, message: SendMessageRequest) {
         sendCalls.value = sendCalls.value + (sessionId to message)
@@ -578,7 +581,7 @@ class ChatViewModelInteractionTest {
     }
 
     @Test fun `plan errors survive withdrawal and do not automatically resubmit`() = runTest {
-        for ((status, code) in listOf(409 to "stale_plan", 409 to "unavailable", 502 to "failed", 503 to "indeterminate")) {
+        for ((status, code) in listOf(409 to "stale_plan", 409 to "unavailable", 500 to "failed", 503 to "indeterminate")) {
             val harness = InteractionHarness(this, planDetail())
             harness.api.planFailures.add(ApiError.from(status, """{"ok":false,"code":"$code","error":"Not confirmed"}"""))
             harness.sessionStore.detailToLoad = planDetail().copy(agentState = AgentState())
@@ -596,7 +599,7 @@ class ChatViewModelInteractionTest {
 
     @Test fun `confirmed failure allows an explicit retry and clears its error`() = runTest {
         val harness = InteractionHarness(this, planDetail())
-        harness.api.planFailures.add(ApiError.from(502, """{"code":"failed","error":"Try again"}"""))
+        harness.api.planFailures.add(ApiError.from(500, """{"code":"failed","error":"Try again"}"""))
         harness.viewModel.implementCodexPlan("plan-1")
         testScheduler.runCurrent()
         assertTrue(harness.viewModel.codexPlanActions.value.forPlan("plan-1").canAct)

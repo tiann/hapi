@@ -55,9 +55,11 @@ See `src/router.tsx` for route definitions.
 ### Session list (`src/components/SessionList.tsx`)
 
 - Active/inactive status indicator.
+- Title-side activity/unread indicator: grey spinner while work runs with all output read, blue spinner while work runs with unread output, and a theme-foreground dot for unread content when no work is running. Reading clears the unread state without stopping the spinner. Permission/input requests keep their own symbols; an idle unread dot does not certify a successful turn outcome.
 - Session title from name, summary, or path.
 - Todo progress display.
 - Pending permission request count.
+- Pending-request status and session-row symbols distinguish questions from approvals and locate the correlated card; async questions open the live question panel.
 - Agent name and model display.
 - Metadata search with relevance ranking, wildcard matching, and date/unread/machine filters.
 - Stable user-input ordering across sessions and machine/project groups; agent output and status updates do not reorder ordinary rows.
@@ -163,6 +165,19 @@ See `src/hooks/useSSE.ts`.
 - SSE connection to `/api/events`.
 - Session/message/machine update events.
 - Automatic cache invalidation on events.
+
+## Syntax highlighting
+
+Code fences load their Shiki grammar on demand and reuse one highlighter. Plain
+text and unknown languages fetch no grammars; aliases, line wrapping and the
+150 ms streaming debounce are retained. A Markdown source fence loads the full
+supported set to preserve its embedded-language colors. Failed loads or rendering
+fall back to the current plain text instead of retaining an older code block.
+
+The PWA caches optional grammar/theme chunks after use, outside its install-time
+precache. Previously used grammars remain available offline; an unseen language
+falls back to plain text while offline. Only successful JavaScript responses are
+cached, so SSO HTML/redirects cannot replace a grammar module.
 
 ## Stack
 

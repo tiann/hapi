@@ -612,8 +612,16 @@ export function reduceTimeline(
             }
             if (msg.content.type === 'turn-duration') {
                 if (msg.content.provider === 'codex') {
+                    // The pair rides conditionally: a later usage summary must
+                    // not wipe a duration summary's generation fields.
+                    const durationContent = msg.content as { generationMs?: unknown; generationOutputTokens?: unknown }
+                    const generationMs = typeof durationContent.generationMs === 'number' ? durationContent.generationMs : undefined
+                    const generationOutputTokens = typeof durationContent.generationOutputTokens === 'number' ? durationContent.generationOutputTokens : undefined
+                    const generation = generationMs !== undefined && generationOutputTokens !== undefined
+                        ? { generationMs, generationOutputTokens } : {}
                     attachCodexRoundSummaryToLatestGroup(blocks, {
-                        provider: 'codex', turnId: msg.content.turnId as string, modelUsage: {}, numTurns: 1, durationMs: msg.content.durationMs as number
+                        provider: 'codex', turnId: msg.content.turnId as string, modelUsage: {}, numTurns: 1, durationMs: msg.content.durationMs as number,
+                        ...generation
                     })
                     continue
                 }

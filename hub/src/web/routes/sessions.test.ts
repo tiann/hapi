@@ -76,6 +76,8 @@ function createApp(session: Session, opts?: {
     suggestSessionTitle?: SyncEngine['suggestSessionTitle']
     renameSession?: SyncEngine['renameSession']
     updateSessionSummary?: SyncEngine['updateSessionSummary']
+    getPrimaryAttachedJobsBySessionIds?: SyncEngine['getPrimaryAttachedJobsBySessionIds']
+    allocateAttachedJobVersion?: SyncEngine['allocateAttachedJobVersion']
     setSessionPinned?: (sessionId: string, pinned: boolean) => void
     setSessionPinMode?: (sessionId: string, mode: 'none' | 'project' | 'global') => void
 }) {
@@ -195,7 +197,9 @@ function createApp(session: Session, opts?: {
         rewindConversation: opts?.rewindConversation ?? (async () => ({ type: 'success' })),
         suggestSessionTitle: opts?.suggestSessionTitle ?? (async () => 'Generated title'),
         renameSession: opts?.renameSession ?? (async () => {}),
-        updateSessionSummary: opts?.updateSessionSummary ?? (async () => {})
+        updateSessionSummary: opts?.updateSessionSummary ?? (async () => {}),
+        getPrimaryAttachedJobsBySessionIds: opts?.getPrimaryAttachedJobsBySessionIds ?? (() => new Map()),
+        allocateAttachedJobVersion: opts?.allocateAttachedJobVersion ?? (() => Date.now())
     } as Partial<SyncEngine>
 
     const app = new Hono<WebAppEnv>()
@@ -221,6 +225,8 @@ describe('sessions routes', () => {
         expect(calls).toEqual([['session-1', 'default', 'plan']])
         result = { ok: false, code: 'stale_plan', error: 'Old plan' }
         expect((await post()).status).toBe(409)
+        result = { ok: false, code: 'failed', error: 'Try again' }
+        expect((await post()).status).toBe(500)
         result = { ok: false, code: 'indeterminate', error: 'Unknown result' }
         expect((await post()).status).toBe(503)
     })
@@ -720,9 +726,32 @@ describe('sessions routes', () => {
 
         expect(response.status).toBe(400)
         expect(await response.json()).toEqual({
-            error: 'Model reasoning effort is only supported for Codex and OpenCode sessions'
+            error: 'Model reasoning effort is only supported for Codex, OpenCode, and DSH sessions'
         })
         expect(applySessionConfigCalls).toEqual([])
+    })
+
+    it('applies model reasoning effort changes for remote DSH sessions', async () => {
+        const session = createSession({
+            metadata: {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'dsh'
+            }
+        })
+        const { app, applySessionConfigCalls } = createApp(session)
+
+        const response = await app.request('/api/sessions/session-1/model-reasoning-effort', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ modelReasoningEffort: 'max' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ ok: true })
+        expect(applySessionConfigCalls).toEqual([
+            ['session-1', { modelReasoningEffort: 'max' }]
+        ])
     })
 
     it('rejects model reasoning effort changes for local Codex sessions', async () => {
@@ -1957,6 +1986,8 @@ describe('sessions routes', () => {
                 return new Map(ids.map((id) => [id, 0]))
             },
             getNextScheduledAtBySessionIds: (_ids: string[]) => new Map<string, number>(),
+            getPrimaryAttachedJobsBySessionIds: () => new Map(),
+            allocateAttachedJobVersion: () => Date.now(),
             resolveSessionAccess: () => ({ ok: false, reason: 'not-found' as const })
         } as unknown as Partial<SyncEngine>
 
@@ -1985,6 +2016,8 @@ describe('sessions routes', () => {
             getSessionsByNamespace: () => [session],
             getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
             getNextScheduledAtBySessionIds: (ids: string[]) => new Map(ids.map((id) => [id, null])),
+            getPrimaryAttachedJobsBySessionIds: () => new Map(),
+            allocateAttachedJobVersion: () => Date.now(),
             hasPotentiallyIncompleteSessionContent: (namespace: string, query: string, sessionIds?: readonly string[]) => {
                 expect(namespace).toBe('default')
                 expect(query).toBe('needle')
@@ -2047,6 +2080,8 @@ describe('sessions routes', () => {
             getSessionsByNamespace: () => sessions,
             getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
             getNextScheduledAtBySessionIds: (ids: string[]) => new Map(ids.map((id) => [id, null])),
+            getPrimaryAttachedJobsBySessionIds: () => new Map(),
+            allocateAttachedJobVersion: () => Date.now(),
             hasPotentiallyIncompleteSessionContent: () => false,
             searchSessionContent: (_query: string, _namespace: string, _limit: number, sessionIds?: readonly string[]) => {
                 receivedSessionIds = sessionIds
@@ -2221,6 +2256,8 @@ describe('sessions routes', () => {
             getSessionsByNamespace: () => sessions,
             getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
             getNextScheduledAtBySessionIds: (_ids: string[]) => new Map<string, number>(),
+            getPrimaryAttachedJobsBySessionIds: () => new Map(),
+            allocateAttachedJobVersion: () => Date.now(),
             resolveSessionAccess: () => ({ ok: false, reason: 'not-found' as const })
         } as unknown as Partial<SyncEngine>
 
@@ -2247,6 +2284,8 @@ describe('sessions routes', () => {
             getSessionsByNamespace: () => sessions,
             getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
             getNextScheduledAtBySessionIds: (_ids: string[]) => new Map<string, number>(),
+            getPrimaryAttachedJobsBySessionIds: () => new Map(),
+            allocateAttachedJobVersion: () => Date.now(),
             resolveSessionAccess: () => ({ ok: false, reason: 'not-found' as const })
         } as unknown as Partial<SyncEngine>
 
@@ -2261,6 +2300,60 @@ describe('sessions routes', () => {
         expect(response.status).toBe(200)
         const body = await response.json() as { sessions: Array<{ id: string }> }
         expect(body.sessions.map((s) => s.id)).toEqual(['mid-active'])
+    })
+
+    it('allocates attachedJob watermark before reading jobs (SSE race)', async () => {
+        const session = createSession({ id: 'session-watermark' })
+        const callOrder: string[] = []
+        let watermark = 0
+        const runningJob = {
+            key: 'beets',
+            label: 'beets',
+            status: 'running' as const,
+            remaining: 3,
+            heartbeatAt: 1,
+            startedAt: 1,
+            updatedAt: 1
+        }
+        let primary: typeof runningJob | null = runningJob
+        const engine = {
+            getSessionsByNamespace: () => [session],
+            getFutureScheduledMessageCounts: (ids: string[]) => new Map(ids.map((id) => [id, 0])),
+            getNextScheduledAtBySessionIds: (_ids: string[]) => new Map<string, number>(),
+            allocateAttachedJobVersion: (id: string) => {
+                expect(id).toBe(session.id)
+                callOrder.push('allocate')
+                watermark += 1
+                return watermark
+            },
+            getPrimaryAttachedJobsBySessionIds: (ids: string[]) => {
+                callOrder.push('read')
+                // Concurrent terminal mutation in the old read→allocate gap:
+                // SSE would allocate the next watermark with the cleared job.
+                primary = null
+                watermark += 1
+                return new Map(ids.map((id) => [id, primary]))
+            },
+            resolveSessionAccess: () => ({ ok: true as const, sessionId: session.id, session })
+        } as unknown as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createSessionsRoutes(() => engine as SyncEngine))
+
+        const response = await app.request('/api/sessions')
+        expect(response.status).toBe(200)
+        expect(callOrder).toEqual(['allocate', 'read'])
+        const body = await response.json() as {
+            sessions: Array<{ id: string; attachedJob: unknown; attachedJobUpdatedAt: number }>
+        }
+        const row = body.sessions.find((s) => s.id === session.id)
+        expect(row?.attachedJobUpdatedAt).toBe(1)
+        // Snapshot watermark must stay behind the concurrent SSE emit so useSSE applies it.
+        expect(row?.attachedJobUpdatedAt).toBeLessThan(watermark)
     })
 
 })

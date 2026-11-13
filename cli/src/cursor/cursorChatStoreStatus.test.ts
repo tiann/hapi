@@ -32,6 +32,19 @@ describe('inspectCursorChatStore', () => {
         })).resolves.toEqual({ onDisk: true, store: 'acp' })
     })
 
+    it('reports empty when the ACP thread has meta.json but no store.db', async () => {
+        const home = await makeHome()
+        const dir = join(home, '.cursor', 'acp-sessions', 'cursor-empty')
+        await mkdir(dir, { recursive: true })
+        await writeFile(join(dir, 'meta.json'), '{}')
+
+        await expect(inspectCursorChatStore({
+            home,
+            workspacePath: '/work/project',
+            cursorSessionId: 'cursor-empty'
+        })).resolves.toEqual({ onDisk: true, store: 'empty' })
+    })
+
     it('finds legacy store.db by Cursor workspace hash', async () => {
         const home = await makeHome()
         const workspacePath = '/work/project'

@@ -513,7 +513,7 @@ it('resolves relative directory against cwd (MCP session working directory)', as
                     return { status: 200, data: { token: 'jwt' } }
                 }
                 if (url.endsWith(`/api/machines/${MACHINE_ID}/spawn`)) {
-                    return { status: 200, data: { type: 'error', message: 'no runner' } }
+                    return { status: 200, data: { type: 'error', message: 'Path is not a Git repository' } }
                 }
                 throw new Error(`unexpected POST ${url}`)
             }
@@ -526,7 +526,7 @@ it('resolves relative directory against cwd (MCP session working directory)', as
             accessToken: 'tok',
             apiUrl: 'http://hub.test',
             http: http as never
-        })).rejects.toMatchObject({ code: 'spawn_failed' })
+        })).rejects.toMatchObject({ code: 'spawn_failed', message: 'spawn failed: Path is not a Git repository' })
         expect(http.post).toHaveBeenCalledTimes(2)
     })
 
@@ -627,7 +627,9 @@ it('resolves relative directory against cwd (MCP session working directory)', as
 
         expect(result).toEqual({
             sessionId: SESSION_ID,
-            name: 'Peer #1509: spawn-peer remit'
+            name: 'Peer #1509: spawn-peer remit',
+            localId: (delivered as { localId?: string } | undefined)?.localId,
+            flavor: 'cursor'
         })
         expect(spawnedBody).toMatchObject({
             directory: '/home/u/coding/hapi/worktrees/spawn-peer-remit',
@@ -972,7 +974,7 @@ it('resolves relative directory against cwd (MCP session working directory)', as
             http: http as never
         })
 
-        expect(result).toEqual({ sessionId: SESSION_ID, name: SESSION_ID.slice(0, 8) })
+        expect(result).toEqual({ sessionId: SESSION_ID, name: SESSION_ID.slice(0, 8), flavor: 'claude' })
     })
 
     it('does not report a requested name when rename failed and ping-peer threw', async () => {

@@ -59,6 +59,11 @@ data class SessionPatch(
     val backgroundTaskCount: Int? = null,
     /** Bare refetch trigger for `GET /sessions/:id/scratchlist`; carries no data. */
     val scratchlistUpdatedAt: Long? = null,
+    /**
+     * tiann/hapi#1404: the list row's primary attached job; a null value
+     * clears it. Summary-only — the detail [Session] has no such field.
+     */
+    val attachedJob: VersionedValue<AttachedJob>? = null,
     val contentRevision: Long? = null,
     val readState: SessionReadState? = null,
 )
@@ -70,7 +75,7 @@ object SessionPatches {
         "metadata", "agentState", "todos", "teamState",
         "model", "modelReasoningEffort", "effort", "serviceTier",
         "permissionMode", "collaborationMode", "copilotAgentMode",
-        "backgroundTaskCount", "scratchlistUpdatedAt",
+        "backgroundTaskCount", "scratchlistUpdatedAt", "attachedJob",
         // Web-only status-panel list; accepted so the patch is not refetched.
         "backgroundTasks",
     )
@@ -144,6 +149,12 @@ object SessionPatches {
                 },
                 backgroundTaskCount = obj["backgroundTaskCount"]?.let { it.intOrNull ?: return null },
                 scratchlistUpdatedAt = obj["scratchlistUpdatedAt"]?.let { it.longOrNull ?: return null },
+                attachedJob = obj["attachedJob"]?.let { wrapper ->
+                    versioned(wrapper) { value ->
+                        if (value is JsonNull) null
+                        else HapiJson.decodeFromJsonElement(AttachedJob.serializer(), value)
+                    } ?: return null
+                },
             )
         } catch (_: Exception) {
             null

@@ -44,6 +44,16 @@ describe('getPendingRequestKinds', () => {
         expect(kinds).toEqual(['input'])
     })
 
+    it('classifies Cursor questions as input', () => {
+        const kinds = getPendingRequestKinds(makeSession({
+            agentState: {
+                requests: {
+                    req1: { tool: 'CursorAskQuestion', arguments: {} }
+                }
+            }
+        }))
+        expect(kinds).toEqual(['input'])
+    })
     it('classifies other pending tools as permission', () => {
         const kinds = getPendingRequestKinds(makeSession({
             agentState: {
@@ -333,6 +343,27 @@ describe('summary derivation helpers', () => {
     it('computePendingRequestsCount handles null agentState', () => {
         expect(computePendingRequestsCount(null)).toBe(0)
         expect(computePendingRequestsCount(undefined)).toBe(0)
+    })
+
+    it('includes attachedJob when provided via extras', () => {
+        const job = {
+            key: 'beets',
+            label: 'beets import',
+            status: 'running' as const,
+            remaining: 120,
+            unit: 'tracks',
+            heartbeatAt: 9_000,
+            startedAt: 1_000,
+            updatedAt: 9_000
+        }
+        const summary = toSessionSummary(makeSession(), { attachedJob: job })
+        expect(summary.attachedJob).toEqual(job)
+        expect(summary.attachedJobUpdatedAt).toBe(job.updatedAt)
+    })
+
+    it('defaults attachedJob to null', () => {
+        expect(toSessionSummary(makeSession()).attachedJob).toBeNull()
+        expect(toSessionSummary(makeSession()).attachedJobUpdatedAt).toBe(0)
     })
 
     it('toSessionSummaryMetadata returns null for null metadata', () => {

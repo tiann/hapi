@@ -157,6 +157,23 @@
         }
       }
     },
+    "%@ left" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "осталось %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "剩余 %@"
+          }
+        }
+      }
+    },
     "%@ log" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -1253,6 +1270,57 @@
         }
       }
     },
+    "Active First" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сначала активные"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "活跃会话优先"
+          }
+        }
+      }
+    },
+    "Active only" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Только активные"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅活跃"
+          }
+        }
+      }
+    },
+    "Active Only" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Только активные"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅活跃"
+          }
+        }
+      }
+    },
     "Active sessions can't be deleted — archive first" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -1504,6 +1572,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "所有机器"
+          }
+        }
+      }
+    },
+    "All Sessions" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Все сессии"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "全部会话"
           }
         }
       }
@@ -1899,6 +1984,40 @@
         }
       }
     },
+    "Archived only" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Только архивные"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅已归档"
+          }
+        }
+      }
+    },
+    "Archived Only" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Только архивные"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "仅已归档"
+          }
+        }
+      }
+    },
     "Attach" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -2048,6 +2167,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "后台任务"
+          }
+        }
+      }
+    },
+    "Background tasks running" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Выполняются фоновые задачи"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "后台任务运行中"
           }
         }
       }
@@ -3442,6 +3578,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "数据库"
+          }
+        }
+      }
+    },
+    "Date Created" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Дате создания"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "创建时间"
           }
         }
       }
@@ -4891,23 +5044,6 @@
         }
       }
     },
-    "Filters" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Фильтры"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "筛选"
-          }
-        }
-      }
-    },
     "Follow system" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -5584,6 +5720,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "导出内容较大"
+          }
+        }
+      }
+    },
+    "Last Message" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Последнему сообщению"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "最后消息时间"
           }
         }
       }
@@ -6536,6 +6689,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "该地址没有 HAPI Hub 应答。请确认 Hub 正在运行，且本设备能够访问它（处于同一网络，或中继隧道已开启）。"
+          }
+        }
+      }
+    },
+    "no heartbeat %@" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "нет heartbeat %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无心跳 %@"
           }
         }
       }
@@ -9634,6 +9804,23 @@
         }
       }
     },
+    "Show" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Показывать"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "显示"
+          }
+        }
+      }
+    },
     "Show all %lld lines" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -9889,6 +10076,40 @@
         }
       }
     },
+    "Sort & Filter" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сортировка и фильтр"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "排序与筛选"
+          }
+        }
+      }
+    },
+    "Sort By" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Сортировать по"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "排序方式"
+          }
+        }
+      }
+    },
     "Source" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -10089,6 +10310,23 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "停止当前回合"
+          }
+        }
+      }
+    },
+    "Stopped" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Остановлена"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已停止"
           }
         }
       }

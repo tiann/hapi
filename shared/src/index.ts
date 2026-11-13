@@ -12,6 +12,8 @@ export * from './models'
 export * from './agyModels'
 export * from './modes'
 export * from './resume'
+export * from './claudeSessionIdHistory'
+export * from './sessionRedirect'
 export * from './rpcMethods'
 export * from './runnerCapabilities'
 export * from './search'
@@ -31,4 +33,16 @@ export * from './slashCommands'
 export * from './utils'
 export * from './usage'
 export * from './version'
+export {
+    AttachedJobSchema,
+    AttachedJobUpsertSchema,
+    AttachedJobPatchSchema,
+    AttachedJobStatusSchema
+} from './schemas'
+export type {
+    AttachedJob,
+    AttachedJobUpsert,
+    AttachedJobPatch,
+    AttachedJobStatus
+} from './schemas'
 export type * from './types'
