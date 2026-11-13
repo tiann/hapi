@@ -1,4 +1,4 @@
-import { mergeReadState } from '@hapi/protocol'
+import { mergeClaudeSessionIdHistory, mergeReadState } from '@hapi/protocol'
 import { SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING } from '@hapi/protocol'
 import { AgentStateSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
 import type { BackgroundTask, CodexCollaborationMode, CopilotAgentMode, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
@@ -103,6 +103,31 @@ export class SessionCache {
         }
 
         return { ok: false, reason: 'not-found' }
+    }
+
+    /**
+     * Boundary variant of `resolveSessionAccess` for ids supplied by clients
+     * (web/native routes, CLI REST): a merged-away id follows its durable
+     * redirect to the surviving row, so links, peer references and
+     * reopen-by-id keep working after a merge. Callers must continue with the
+     * returned `sessionId`. Internal paths (sockets, job ownership) keep the
+     * strict lookup so a stale process cannot write into the survivor.
+     * Redirect rows are namespace-scoped, so this never crosses namespaces.
+     */
+    resolveSessionAccessFollowingRedirects(
+        sessionId: string,
+        namespace: string
+    ): { ok: true; sessionId: string; session: Session } | { ok: false; reason: 'not-found' | 'access-denied' } {
+        const direct = this.resolveSessionAccess(sessionId, namespace)
+        if (direct.ok || direct.reason === 'access-denied') {
+            return direct
+        }
+        const redirectedId = this.store.sessionRedirects.resolve(sessionId, namespace)
+        if (!redirectedId || redirectedId === sessionId) {
+            return direct
+        }
+        const target = this.resolveSessionAccess(redirectedId, namespace)
+        return target.ok ? target : direct
     }
 
     getActiveSessions(): Session[] {
@@ -1430,6 +1455,150 @@ export class SessionCache {
         return false
     }
 
+    async markModelErrorBridged(sessionId: string, eventId: string): Promise<void> {
+        const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+        if (!session) {
+            throw new Error('Session not found')
+        }
+
+        const currentMetadata = session.metadata ?? { path: '', host: '' }
+        const currentError = currentMetadata.lastModelError
+        if (!currentError || currentError.eventId !== eventId) {
+            return
+        }
+        if (currentError.bridgedForEventId === eventId) {
+            return
+        }
+
+        const newMetadata = {
+            ...currentMetadata,
+            lastModelError: {
+                ...currentError,
+                bridgedForEventId: eventId
+            }
+        }
+
+        const result = this.store.sessions.updateSessionMetadata(
+            sessionId,
+            newMetadata,
+            session.metadataVersion,
+            session.namespace,
+            { touchUpdatedAt: false }
+        )
+
+        if (result.result === 'error') {
+            throw new Error('Failed to update session metadata')
+        }
+
+        if (result.result === 'version-mismatch') {
+            throw new Error('Session was modified concurrently. Please try again.')
+        }
+
+        this.refreshSession(sessionId)
+    }
+
+    async acknowledgeModelError(sessionId: string, eventId: string): Promise<void> {
+        // Bind dismiss to the error the client actually showed. If a newer
+        // lastModelError replaced it between render and click, refuse so we
+        // don't silently ack the unseen error (banner/dot would vanish).
+        // Identity is eventId (not wall-clock atTs). Retry version-mismatch
+        // (CLI metadata race) like markModelErrorNotified.
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+            if (!session) {
+                throw new Error('Session not found')
+            }
+
+            const currentMetadata = session.metadata ?? { path: '', host: '' }
+            const currentError = currentMetadata.lastModelError
+            if (!currentError) {
+                return
+            }
+            if (currentError.eventId !== eventId) {
+                throw new Error('Model error changed; refresh before acknowledging.')
+            }
+            if (typeof currentError.acknowledgedAt === 'number') {
+                return
+            }
+
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                {
+                    ...currentMetadata,
+                    lastModelError: {
+                        ...currentError,
+                        acknowledgedAt: Date.now()
+                    }
+                },
+                session.metadataVersion,
+                session.namespace,
+                { touchUpdatedAt: false }
+            )
+
+            if (result.result === 'success') {
+                this.refreshSession(sessionId)
+                return
+            }
+            if (result.result === 'error') {
+                throw new Error('Failed to update session metadata')
+            }
+
+            this.refreshSession(sessionId)
+        }
+
+        throw new Error('Session was modified concurrently. Please try again.')
+    }
+
+    /**
+     * Persist delivery watermark on lastModelError so hub restarts do not
+     * re-page the same unacknowledged eventId (in-memory Map alone is lost).
+     * No-ops when the error changed under us — a different eventId owns the page.
+     * Retries on version-mismatch (same pattern as renameSession / #919).
+     */
+    async markModelErrorNotified(sessionId: string, eventId: string): Promise<void> {
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+            if (!session) {
+                return
+            }
+
+            const currentMetadata = session.metadata ?? { path: '', host: '' }
+            const currentError = currentMetadata.lastModelError
+            if (!currentError || currentError.eventId !== eventId) {
+                return
+            }
+            if (typeof currentError.notifiedAt === 'number') {
+                return
+            }
+
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                {
+                    ...currentMetadata,
+                    lastModelError: {
+                        ...currentError,
+                        notifiedAt: Date.now()
+                    }
+                },
+                session.metadataVersion,
+                session.namespace,
+                { touchUpdatedAt: false }
+            )
+
+            if (result.result === 'success') {
+                this.refreshSession(sessionId)
+                return
+            }
+            if (result.result === 'error') {
+                throw new Error('Failed to persist model-error notification')
+            }
+
+            this.refreshSession(sessionId)
+        }
+
+        throw new Error('Model-error notification metadata stayed contended')
+    }
+
     /**
      * Clear archive-related metadata on an archived session so it can be resumed.
      * - Removes `lifecycleState`, `archivedBy`, `archiveReason`, and stamps
@@ -1599,6 +1768,9 @@ export class SessionCache {
         if (!deleted) {
             throw new Error('Failed to delete session')
         }
+        // Explicit delete ends the conversation; ids merged into it must not
+        // resolve to a different row later.
+        this.store.sessionRedirects.deleteTargeting(sessionId, session.namespace)
 
         this.sessions.delete(sessionId)
         this.lastBroadcastAtBySessionId.delete(sessionId)
@@ -1806,7 +1978,9 @@ export class SessionCache {
         // Merge from the *latest* target metadata (not the pre-transfer snapshot).
         // recordJobKeyRedirects already wrote onto the target; rebuilding from
         // stale newStored.metadata would drop jobKeyRedirects whenever the
-        // source contributes name/summary/path/etc.
+        // source contributes name/summary/path/etc. Recomputing per attempt also
+        // picks up a newer lastModelError that landed on newSessionId between the
+        // initial read and this write (version-mismatch retry).
         for (let attempt = 0; attempt < 2; attempt += 1) {
             const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
             if (!latest) break
@@ -1940,6 +2114,9 @@ export class SessionCache {
         if (options.deleteOldSession) {
             // Deleting the row cascades to its turns; they're the new row's history now.
             this.store.turns.transferSession(oldSessionId, newSessionId)
+            // Write the redirect before the row disappears so a concurrent
+            // lookup of the old id never observes "neither row nor redirect".
+            this.store.sessionRedirects.record(oldSessionId, newSessionId, namespace)
             const deleted = this.store.sessions.deleteSession(oldSessionId, namespace)
             if (!deleted) {
                 throw new Error('Failed to delete old session during merge')
@@ -2430,6 +2607,48 @@ export class SessionCache {
         }
         if (typeof oldObj.preferredCopilotAgentMode === 'string' && typeof newObj.preferredCopilotAgentMode !== 'string') {
             merged.preferredCopilotAgentMode = oldObj.preferredCopilotAgentMode
+            changed = true
+        }
+
+        const claudeHistory = mergeClaudeSessionIdHistory(oldObj, newObj)
+        if (claudeHistory) {
+            merged.claudeSessionIdHistory = claudeHistory
+            changed = true
+        }
+
+        // Preserve durable model-error alert state across resume/dedup row merges.
+        // Identity is eventId (wall-clock atTs is display-only and can go
+        // backwards after NTP/sleep). Carry old when new has none; when both
+        // share an eventId, merge hub watermarks.
+        type ModelErrorState = {
+            eventId?: string
+            atTs?: number
+            acknowledgedAt?: number
+            notifiedAt?: number
+            [key: string]: unknown
+        }
+        const oldError = oldObj.lastModelError as ModelErrorState | undefined
+        const newError = newObj.lastModelError as ModelErrorState | undefined
+        const oldId = typeof oldError?.eventId === 'string' ? oldError.eventId : null
+        const newId = typeof newError?.eventId === 'string' ? newError.eventId : null
+        if (oldError && oldId && !newError) {
+            merged.lastModelError = oldError
+            changed = true
+        } else if (oldError && newError && oldId && newId && oldId === newId) {
+            merged.lastModelError = {
+                ...oldError,
+                ...newError,
+                acknowledgedAt: newError.acknowledgedAt ?? oldError.acknowledgedAt,
+                notifiedAt: newError.notifiedAt ?? oldError.notifiedAt,
+                bridgedForEventId: newError.bridgedForEventId ?? oldError.bridgedForEventId,
+                retriedAndFailed: newError.retriedAndFailed === true || oldError.retriedAndFailed === true,
+                supersededByUserTurn: newError.supersededByUserTurn === true
+                    || oldError.supersededByUserTurn === true,
+                bridgeable: newError.bridgeable === false || oldError.bridgeable === false
+                    ? false
+                    : (newError.bridgeable ?? oldError.bridgeable),
+                lastUserMessage: newError.lastUserMessage ?? oldError.lastUserMessage
+            }
             changed = true
         }
 

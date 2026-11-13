@@ -19,6 +19,7 @@ const spawnState = vi.hoisted(() => ({
     exitHandlers: [] as Array<(code: number | null, signal: NodeJS.Signals | null) => void>,
     closeHandlers: [] as Array<(code: number | null, signal: NodeJS.Signals | null) => void>,
     stdoutDataHandlers: [] as Array<(chunk: string) => void>,
+    stdinErrorHandlers: [] as Array<(error: Error) => void>,
     stdinEnd: vi.fn(),
     stdinWrite: vi.fn<(chunk: string) => boolean>(() => true),
     kill: vi.fn(),
@@ -49,6 +50,7 @@ vi.mock('node:child_process', () => ({
         spawnState.exitHandlers = [];
         spawnState.closeHandlers = [];
         spawnState.stdoutDataHandlers = [];
+        spawnState.stdinErrorHandlers = [];
         const handlers = new Map<string, Array<(...args: unknown[]) => void>>();
         const proc = {
             get pid() {
@@ -73,6 +75,9 @@ vi.mock('node:child_process', () => ({
                 })
             },
             stdin: {
+                on: vi.fn((event: string, handler: (error: Error) => void) => {
+                    if (event === 'error') spawnState.stdinErrorHandlers.push(handler);
+                }),
                 end: (...args: unknown[]) => spawnState.stdinEnd(...args),
                 write: (chunk: string) => spawnState.stdinWrite(chunk)
             },
@@ -278,6 +283,18 @@ describe('AcpStdioTransport plain-text stdout', () => {
         await expect(transport.sendRequest('session/new')).rejects.toThrow(
             'Failed to parse JSON-RPC from ACP agent'
         );
+    });
+});
+
+describe('AcpStdioTransport stdin errors', () => {
+    test('rejects pending requests when stdin emits EPIPE', async () => {
+        const transport = await AcpStdioTransport.create({ command: 'test-agent' });
+        const pending = transport.sendRequest('initialize', {});
+        const failure = Object.assign(new Error('broken pipe'), { code: 'EPIPE' });
+        expect(spawnState.stdinErrorHandlers).toHaveLength(1);
+        spawnState.stdinErrorHandlers[0](failure);
+        await expect(pending).rejects.toMatchObject({ code: 'EPIPE' });
+        await expect(transport.sendRequest('initialize', {})).rejects.toThrow();
     });
 });
 

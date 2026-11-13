@@ -22,12 +22,20 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.Measurable
 import androidx.compose.ui.layout.Placeable
@@ -36,21 +44,24 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.LinkInteractionListener
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withAnnotation
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import app.hapi.companion.ui.theme.HapiExtendedColors
+import app.hapi.companion.ui.theme.HapiTypography
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.markdown.HrefDecision
 import app.hapi.protocol.markdown.HrefPolicy
@@ -138,9 +149,9 @@ fun Markdown(text: String, modifier: Modifier = Modifier) {
         }
         cache.cached(text) ?: prepared
     }
-    val baseStyle = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp, lineHeight = 24.sp)
+    val baseStyle = MaterialTheme.typography.bodyLarge.merge(HapiTypography.body)
     CompositionLocalProvider(LocalTextStyle provides baseStyle) {
-        Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(modifier = modifier) {
             if (parsed != null) MarkdownBlockChildren(parsed.document, parsed)
             else Text(text)
         }
@@ -184,20 +195,39 @@ internal fun prepareDocument(text: String): ParsedMarkdown {
 
 // ── Block rendering ──────────────────────────────────────────────────────────
 
+/**
+ * Children of a container block, separated by context-aware gaps (iOS
+ * `MarkdownBlockListView.spacing`): 24dp before a heading, 8dp after one,
+ * 12dp between other blocks. Containers add no spacing of their own.
+ */
 @Composable
 private fun MarkdownBlockChildren(parent: Node, parsed: ParsedMarkdown) {
+    var previous: Node? = null
     var child = parent.firstChild
     while (child != null) {
-        MarkdownBlock(child, parsed)
+        val gap = markdownBlockGap(child, previous)
+        if (gap == 0.dp) {
+            MarkdownBlock(child, parsed)
+        } else {
+            Box(Modifier.padding(top = gap)) { MarkdownBlock(child, parsed) }
+        }
+        previous = child
         child = child.next
     }
+}
+
+internal fun markdownBlockGap(block: Node, previous: Node?): Dp = when {
+    previous == null -> 0.dp
+    block is Heading -> 24.dp
+    previous is Heading -> 8.dp
+    else -> 12.dp
 }
 
 @Composable
 private fun MarkdownBlock(node: Node, parsed: ParsedMarkdown) {
     when (node) {
         is Paragraph -> MarkdownInlineText(node)
-        is Heading -> MarkdownInlineText(node, style = headingStyle(node.level))
+        is Heading -> MarkdownInlineText(node, style = LocalTextStyle.current.merge(HapiTypography.heading(node.level)))
         is BlockQuote -> MarkdownBlockQuote(node, parsed)
         is BulletList -> MarkdownList(node, ordered = false, parsed = parsed)
         is OrderedList -> MarkdownList(node, ordered = true, parsed = parsed)
@@ -223,19 +253,6 @@ private fun MarkdownBlock(node: Node, parsed: ParsedMarkdown) {
 }
 
 @Composable
-private fun headingStyle(level: Int): TextStyle {
-    // Chat headings are compact (web: 1.05rem..0.88rem semibold).
-    val base = LocalTextStyle.current
-    val size = when (level) {
-        1 -> 18.sp
-        2 -> 17.sp
-        3 -> 16.sp
-        else -> 15.sp
-    }
-    return base.copy(fontSize = size, lineHeight = size * 1.4, fontWeight = FontWeight.SemiBold)
-}
-
-@Composable
 private fun MarkdownBlockQuote(node: BlockQuote, parsed: ParsedMarkdown) {
     val colors = MaterialTheme.hapi
     Row(
@@ -252,8 +269,7 @@ private fun MarkdownBlockQuote(node: BlockQuote, parsed: ParsedMarkdown) {
         )
         CompositionLocalProvider(LocalContentColor provides colors.blockquoteForeground) {
             Column(
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
             ) {
                 MarkdownBlockChildren(node, parsed)
             }
@@ -263,7 +279,7 @@ private fun MarkdownBlockQuote(node: BlockQuote, parsed: ParsedMarkdown) {
 
 @Composable
 private fun MarkdownList(list: Node, ordered: Boolean, parsed: ParsedMarkdown) {
-    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         var index = (list as? OrderedList)?.markerStartNumber ?: 1
         var item = list.firstChild
         while (item != null) {
@@ -275,7 +291,7 @@ private fun MarkdownList(list: Node, ordered: Boolean, parsed: ParsedMarkdown) {
                     ordered -> "$index."
                     else -> "•" // bullet
                 }
-                MarkdownListItem(item, marker, parsed)
+                MarkdownListItem(item, marker, ordered && task == null, parsed)
                 index += 1
             }
             item = item.next
@@ -284,17 +300,21 @@ private fun MarkdownList(list: Node, ordered: Boolean, parsed: ParsedMarkdown) {
 }
 
 @Composable
-private fun MarkdownListItem(item: ListItem, marker: String, parsed: ParsedMarkdown) {
+private fun MarkdownListItem(item: ListItem, marker: String, ordered: Boolean, parsed: ParsedMarkdown) {
     Row {
+        // Numbers keep a shared column so multi-digit lists align; bullets
+        // sit close to their text (iOS: 8pt marker gap, first-baseline aligned).
         Text(
             text = marker,
             style = LocalTextStyle.current,
-            color = MaterialTheme.hapi.hint,
+            color = MaterialTheme.hapi.textSecondary,
+            textAlign = if (ordered) TextAlign.End else null,
             modifier = Modifier
-                .widthIn(min = 22.dp)
-                .padding(end = 4.dp),
+                .alignByBaseline()
+                .widthIn(min = if (ordered) 18.dp else 10.dp)
+                .padding(end = 8.dp),
         )
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(Modifier.alignByBaseline()) {
             MarkdownBlockChildren(item, parsed)
         }
     }
@@ -305,7 +325,7 @@ private fun HtmlBlockFallback(literal: String) {
     Text(
         text = literal.trimEnd('\n'),
         style = LocalTextStyle.current.copy(
-            fontFamily = FontFamily.Monospace,
+            fontFamily = HapiTypography.monoFamily,
             fontSize = 14.sp,
             lineHeight = 20.sp,
         ),
@@ -468,10 +488,60 @@ private fun MarkdownInlineText(
             appendInlineChildren(parent, InlineContext(colors, handler), insideLink = false)
         }
     }
+    var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
+    val codeBackground = colors.inlineCodeBackground
+    val hasCode = remember(annotated) { annotated.hasStringAnnotations(INLINE_CODE_TAG, 0, annotated.length) }
     Text(
         text = annotated,
         style = if (textAlign != null) style.copy(textAlign = textAlign) else style,
+        onTextLayout = { if (hasCode) layout = it },
+        modifier = if (!hasCode) Modifier else Modifier.drawBehind {
+            val result = layout ?: return@drawBehind
+            if (result.layoutInput.text != annotated) return@drawBehind
+            drawInlineCodeBackgrounds(result, codeBackground)
+        },
     )
+}
+
+private const val INLINE_CODE_TAG = "hapi-inline-code"
+
+/**
+ * Inline code chips hug the glyphs (iOS draws the run's font box, not the
+ * 24sp line box): a rounded rect from just above the cap height to just below
+ * the baseline, slightly outset horizontally, split per wrapped line.
+ */
+private fun DrawScope.drawInlineCodeBackgrounds(layout: TextLayoutResult, color: Color) {
+    val text = layout.layoutInput.text
+    val outset = 3.dp.toPx()
+    val radius = CornerRadius(4.dp.toPx())
+    // Sized from the paragraph font (code runs are a fixed em fraction of it),
+    // so headings get proportionally taller chips.
+    val fontPx = layout.layoutInput.style.fontSize.let { if (it.isSp) it.toPx() else 16.sp.toPx() }
+    for (range in text.getStringAnnotations(INLINE_CODE_TAG, 0, text.length)) {
+        var start = range.start
+        while (start < range.end) {
+            val line = layout.getLineForOffset(start)
+            val lineEnd = minOf(range.end, layout.getLineEnd(line, visibleEnd = true))
+            if (lineEnd <= start) {
+                // Only trailing whitespace of this line is inside the run.
+                start = layout.getLineEnd(line)
+                continue
+            }
+            val first = layout.getBoundingBox(start)
+            val last = layout.getBoundingBox(lineEnd - 1)
+            val baseline = layout.getLineBaseline(line)
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(minOf(first.left, last.left) - outset, baseline - fontPx * 0.95f),
+                size = Size(
+                    (maxOf(first.right, last.right) - minOf(first.left, last.left)) + outset * 2,
+                    fontPx * 1.3f,
+                ),
+                cornerRadius = radius,
+            )
+            start = maxOf(lineEnd, start + 1)
+        }
+    }
 }
 
 private class InlineContext(val colors: HapiExtendedColors, val handler: MarkdownLinkHandler) {
@@ -482,10 +552,11 @@ private class InlineContext(val colors: HapiExtendedColors, val handler: Markdow
             textDecoration = TextDecoration.Underline,
         ),
     )
+    // JetBrains Mono's tall x-height reads larger than SF Mono at equal
+    // size, so inline code steps down to 14sp in 16sp prose.
     val codeSpanStyle = SpanStyle(
-        fontFamily = FontFamily.Monospace,
-        fontSize = 0.9375.em,
-        background = colors.inlineCodeBackground,
+        fontFamily = HapiTypography.monoFamily,
+        fontSize = 0.875.em,
         color = colors.inlineCodeForeground,
     )
 }
@@ -540,7 +611,7 @@ private fun AnnotatedString.Builder.appendInlineNode(node: Node, ctx: InlineCont
  * out of their paragraph.
  */
 private fun AnnotatedString.Builder.appendMathLiteral(latex: String, ctx: InlineContext) {
-    withStyle(ctx.codeSpanStyle) { append(latex) }
+    appendCodeSpan(latex, ctx.codeSpanStyle)
 }
 
 /** Plain prose: autolink workspace file citations found by the shared detector. */
@@ -569,7 +640,7 @@ private fun AnnotatedString.Builder.appendFilePathLink(
     val listener = LinkInteractionListener { ctx.handler.onFilePath(path, line) }
     withLink(LinkAnnotation.Clickable("hapi-file:$path", ctx.linkStyles, listener)) {
         if (monospace) {
-            withStyle(ctx.codeSpanStyle.copy(color = ctx.colors.link)) { append(display) }
+            appendCodeSpan(display, ctx.codeSpanStyle.copy(color = ctx.colors.link))
         } else {
             append(display)
         }
@@ -582,7 +653,14 @@ private fun AnnotatedString.Builder.appendInlineCode(literal: String, ctx: Inlin
     if (whole != null) {
         appendFilePathLink(whole.display, whole.path, whole.line, ctx, monospace = true)
     } else {
-        withStyle(ctx.codeSpanStyle) { append(literal) }
+        appendCodeSpan(literal, ctx.codeSpanStyle)
+    }
+}
+
+/** A code run plus the annotation [drawInlineCodeBackgrounds] paints behind. */
+private fun AnnotatedString.Builder.appendCodeSpan(text: String, style: SpanStyle) {
+    withAnnotation(INLINE_CODE_TAG, "") {
+        withStyle(style) { append(text) }
     }
 }
 

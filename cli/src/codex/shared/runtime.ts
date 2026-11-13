@@ -213,7 +213,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== root.session.sessionId); await persist();
     };
     const reserve = async (root: SharedCodexRoot, threadId: string) => withThreadOwnership(home, threadId, id, () => reserveRecord(root, threadId));
-    const bind = async (root: SharedCodexRoot, response: Record<string, unknown>, subscribe: boolean, initialOptions?: SharedLaunchOptions) => {
+    const bind = async (root: SharedCodexRoot, response: Record<string, unknown>, subscribe: boolean, initialOptions?: SharedLaunchOptions, freshThread = false) => {
         assertRunning();
         const threadId = string(record(response.thread).id);
         if (!threadId) throw new Error('Codex lifecycle response has no thread ID');
@@ -225,6 +225,13 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         assertRunning();
         roots.set(threadId, root);
         await root.bind(threadId, response, subscribe);
+        // A thread this runtime created (thread/start) starts from zero
+        // cumulative usage: seed before activate() opens the input gates, or
+        // a prompt released at session-ready starts the first turn with a
+        // null baseline that later seeding cannot repair. Forks are
+        // excluded: their totals arrive through the app-server's attach-time
+        // usage replay.
+        if (freshThread) root.seedFreshUsage();
         assertRunning();
         // Cold-resumed threads predate the control connection's automatic
         // new-thread subscription. Subscribe once without changing settings.
@@ -247,7 +254,8 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             runtime.pendingCreations = [...runtime.pendingCreations ?? [], root.session.sessionId]; await persist();
             const response = record(await root.client.request(method, root.config({ ...params, ...(method === 'thread/fork' ? { deferGoalContinuation: true } : {}) })));
             nativeSucceeded = true;
-            await bind(root, response, true, initialOptions); return root;
+            await bind(root, response, true, initialOptions, method === 'thread/start');
+            return root;
         } catch (error) {
             // A timed-out native mutation may have succeeded. Never replay it or kill unrelated roots.
             if (!nativeSucceeded && !isIndeterminateError(error)) {
@@ -307,7 +315,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== reservation.root.session.sessionId);
                 await persist(); prepared.delete(reservation.root); await reservation.root.close(true); return;
             }
-            await bind(reservation.root, record(response.result), true);
+            await bind(reservation.root, record(response.result), true, undefined, request.method === 'thread/start');
         } else if (request.method === 'thread/archive' && !response.error) {
             const root = roots.get(string(record(request.params).threadId) ?? ''); if (root) await end(root, false);
         } else if (request.method === 'thread/queue/delete' && !response.error && record(response.result).deleted === true) {

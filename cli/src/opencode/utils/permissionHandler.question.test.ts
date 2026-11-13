@@ -113,6 +113,7 @@ describe('OpencodePermissionHandler question forms', () => {
         expect(harness.getAgentState().requests).toEqual({
             'call-question': {
                 tool: 'AskUserQuestion',
+                toolCallId: 'call-question',
                 arguments: {
                     questions: [{
                         header: '승인',

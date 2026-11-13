@@ -165,6 +165,7 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
         preserved.forkTitleGenerationAttemptedAt = metadata.forkTitleGenerationAttemptedAt
     }
     if (metadata.claudeSessionId !== undefined) preserved.claudeSessionId = metadata.claudeSessionId
+    if (metadata.claudeSessionIdHistory !== undefined) preserved.claudeSessionIdHistory = metadata.claudeSessionIdHistory
     if (metadata.codexSessionId !== undefined) preserved.codexSessionId = metadata.codexSessionId
     if (metadata.codexSourceSessionId !== undefined) preserved.codexSourceSessionId = metadata.codexSourceSessionId
     if (metadata.geminiSessionId !== undefined) preserved.geminiSessionId = metadata.geminiSessionId
@@ -194,6 +195,10 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     if (metadata.conversationHistoryIndexes !== undefined) {
         preserved.conversationHistoryIndexes = metadata.conversationHistoryIndexes
     }
+    if (metadata.opencodeHistoryCheckpoint !== undefined) preserved.opencodeHistoryCheckpoint = metadata.opencodeHistoryCheckpoint
+    if (metadata.opencodeRewind !== undefined) preserved.opencodeRewind = metadata.opencodeRewind
+    if (metadata.opencodeWorkerId !== undefined) preserved.opencodeWorkerId = metadata.opencodeWorkerId
+    if (metadata.opencodeForkPending !== undefined) preserved.opencodeForkPending = metadata.opencodeForkPending
     if (metadata.conversationHistoryTurns !== undefined) {
         preserved.conversationHistoryTurns = metadata.conversationHistoryTurns
     }

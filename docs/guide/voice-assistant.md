@@ -227,6 +227,12 @@ If voice cannot start on a Xiaomi/MIUI device, or the browser cannot request mic
 - Check your ElevenLabs account has available quota
 - Try setting a custom `ELEVENLABS_AGENT_ID`
 
+### Preview voice differs from the live assistant
+
+- Confirm **Settings → Voice → Backend** is the provider you expect (hub `VOICE_BACKEND` is only the default; a stale session can keep an older backend until the picker remounts it).
+- Previewing an ElevenLabs voice also selects it for runtime; if you still hear the wrong voice, hard-refresh so `VoiceBackendSession` re-resolves.
+- With multiple backends configured, picking ElevenLabs JessicaX while the session is still on Qwen/Gemini will sound like a completely different person.
+
 ### Poor audio quality
 
 - Use a headset to avoid echo
