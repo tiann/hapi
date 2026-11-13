@@ -110,105 +110,9 @@ export function resolveToolAutoApprovalDecision(
     return null;
 }
 
-/**
- * Detect tools that display or read a local file.
- * Recognizes canonical names, snake_case variants, namespaced MCP tools
- * (e.g. mcp__filesystem__read_file, functions.read_file, filesystem_read_file),
- * and ACP human-readable titles (e.g. "Display Media", "Read: private.txt").
- */
-export function isDisplayOrReadFileTool(toolName?: string | null, kind?: string | null): boolean {
-    if (kind === 'read') return true;
-    if (!toolName) return false;
-    let name = toolName.toLowerCase();
-    // Strip namespaces: "mcp__server__read_file" -> "read_file" (server name may contain single underscores, e.g. "my_server")
-    // or "functions.read_file" -> "read_file"
-    const mcpMatch = /^mcp__(.+?)__(.+)$/.exec(name);
-    if (mcpMatch && mcpMatch[2]) {
-        name = mcpMatch[2];
-    } else {
-        name = name.replace(/^(functions\.|tools\.[^.]+\.|tools\.)/, '');
-    }
-    const normalized = name.replace(/[_-]/g, ' ').trim();
-    return (
-        normalized.includes('display media')
-        || normalized.includes('display image')
-        || normalized.includes('display video')
-        || normalized.includes('read file')
-        || normalized.includes('view file')
-        || normalized.startsWith('read')
-        || normalized === 'view'
-        || normalized.endsWith('read')
-        || normalized === 'cat'
-    );
-}
-
-function collectPathsFromRecord(record: Record<string, unknown>, add: (v: unknown) => void): void {
-    add(record.path);
-    add(record.file_path);
-    add(record.filePath);
-    add(record.target);
-    if (Array.isArray(record.paths)) record.paths.forEach(add);
-    if (Array.isArray(record.files)) record.files.forEach(add);
-    if (Array.isArray(record.file_paths)) record.file_paths.forEach(add);
-    if (Array.isArray(record.locations)) {
-        for (const loc of record.locations) {
-            if (loc && typeof loc === 'object') {
-                add((loc as { path?: unknown }).path);
-            }
-        }
-    }
-}
-
-/**
- * Extract target file paths from tool arguments, approval inputs, or ACP titles.
- * Supports flat path/file_path, multi-file arrays (paths, files, file_paths),
- * nested Codex toolParams, arguments objects, locations arrays, and ACP title shapes.
- */
-export function extractTargetFilePaths(
-    input: unknown,
-    title?: string | null,
-    kind?: string | null
-): string[] {
-    const paths: string[] = [];
-    const add = (v: unknown) => {
-        if (typeof v === 'string') {
-            const trimmed = v.trim();
-            if (trimmed.length > 0 && !paths.includes(trimmed)) {
-                paths.push(trimmed);
-            }
-        }
-    };
-
-    if (input && typeof input === 'object') {
-        const record = input as Record<string, unknown>;
-        collectPathsFromRecord(record, add);
-        if (record.toolParams && typeof record.toolParams === 'object') {
-            collectPathsFromRecord(record.toolParams as Record<string, unknown>, add);
-        }
-        if (record.arguments && typeof record.arguments === 'object') {
-            collectPathsFromRecord(record.arguments as Record<string, unknown>, add);
-        }
-    }
-
-    // ACP fallback: when structured input is absent, derive from title and kind
-    if (paths.length === 0 && title && (kind === 'read' || isDisplayOrReadFileTool(title, kind))) {
-        const cleanTitle = title.trim();
-        const colonMatch = /^([A-Za-z][A-Za-z _-]{0,31}):\s+(.+)$/.exec(cleanTitle);
-        if (colonMatch && colonMatch[2]) {
-            add(colonMatch[2].trim());
-        } else if (kind === 'read') {
-            add(cleanTitle);
-        }
-    }
-
-    return paths;
-}
-
 export type PermissionHandlerClient = {
     rpcHandlerManager: RpcHandlerManagerLike;
     updateAgentState: (handler: (state: AgentState) => AgentState) => void;
-    markAttachmentDenied?: (path: string) => void;
-    markAttachmentApproved?: (path: string) => void;
 };
 
 export type PendingPermissionRequest<TResult> = {
@@ -298,23 +202,6 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
             const request = currentState.requests?.[id];
             if (!request) return currentState;
 
-            // When a display tool permission request is denied or canceled by the user,
-            // register the path with the attachment compatibility layer so subsequent
-            // assistant Markdown links cannot bypass the user's rejection.
-            if (
-                completion.status === 'denied'
-                || completion.status === 'canceled'
-                || completion.decision === 'denied'
-                || completion.decision === 'abort'
-            ) {
-                if (isDisplayOrReadFileTool(request.tool)) {
-                    const targetPaths = extractTargetFilePaths(request.arguments);
-                    for (const targetPath of targetPaths) {
-                        this.client.markAttachmentDenied?.(targetPath);
-                    }
-                }
-            }
-
             const nextRequests = { ...currentState.requests };
             delete nextRequests[id];
 
@@ -343,12 +230,6 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
 
         for (const [id, pending] of this.pendingRequests.entries()) {
             if (filter && !filter(pending.toolName)) continue;
-            if (isDisplayOrReadFileTool(pending.toolName)) {
-                const targetPaths = extractTargetFilePaths(pending.input);
-                for (const targetPath of targetPaths) {
-                    this.client.markAttachmentDenied?.(targetPath);
-                }
-            }
             pending.reject(new Error(options.rejectMessage));
             this.pendingRequests.delete(id);
         }
@@ -393,24 +274,6 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
             this.pendingRequests.delete(response.id);
 
             const completion = await this.handlePermissionResponse(response, pending);
-
-            // When a display tool permission request is denied or canceled by the user,
-            // register the path with the attachment compatibility layer so subsequent
-            // assistant Markdown links cannot bypass the user's rejection.
-            if (
-                completion.status === 'denied'
-                || completion.status === 'canceled'
-                || completion.decision === 'denied'
-                || completion.decision === 'abort'
-            ) {
-                if (isDisplayOrReadFileTool(pending.toolName)) {
-                    const targetPaths = extractTargetFilePaths(pending.input);
-                    for (const targetPath of targetPaths) {
-                        this.client.markAttachmentDenied?.(targetPath);
-                    }
-                }
-            }
-
             this.finalizeRequest(response.id, completion);
         });
     }

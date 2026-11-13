@@ -21,39 +21,6 @@ Choose a supported coding agent from your terminal and control its sessions remo
 3. Run `hapi` to choose an agent, or `hapi <agent>` to start one directly.
 4. Use the web app or Telegram Mini App to monitor and control.
 
-## Attachment compatibility
-
-The existing `display_image`, `display_video`, and `display_media` tools and their
-agent instructions remain available. The link fallback supplements that path.
-
-Assistant Markdown links and image links to local deliverables also produce the existing
-inline media/download cards, even when the agent omits the HAPI display tool. This runs
-at the shared CLI message boundary for Claude transcripts, normalized agent messages
-(Codex/Pi/ACP), and Antigravity planner responses.
-
-Supported targets include relative and absolute paths, `file:///...`, and `sandbox:/...`
-(the latter refers to the literal local path, not a virtual filesystem). Angle-bracket
-paths with spaces and percent-encoded filenames are supported. Only existing regular
-files whose canonical paths are inside the session working directory are read. Common
-document, archive, image, audio, and video extensions are allowlisted; each message is
-limited to 16 distinct links and each file to 25 MiB. External URLs, source line citations,
-bare paths, fenced/inline code examples, tool output, and reasoning are ignored.
-
-Content hashes suppress repeated deliveries, including links after explicit MCP/ACP
-uploads; changed contents can be delivered again. Missing files do not interrupt the
-answer and can be retried by a later link. The original text is preserved. Files outside
-the workspace and other formats still require the explicit display tools. Attachment
-storage and retention are the same as for those tools. Native agent-specific artifact
-protocols and Markdown reference-style links are not inferred by this fallback.
-
-### Authorization and permissions
-
-Automatic attachment fallback respects session authorization boundaries:
-- In autonomous/auto-approved modes (`yolo`, `bypassPermissions`, `always-proceed`), workspace links are automatically rendered as attachments.
-- In restrictive modes (`default`, `read-only`, `plan`, `ask`), automatic file reads are withheld by default so they do not bypass user approval. Local files must be delivered via user-approved display tools (`display_media`, `display_image`).
-- Set `HAPI_AUTO_ATTACHMENT_LINKS=1` to explicitly opt into automatic workspace attachment reads regardless of permission mode.
-- Files previously denied by the user via permission approval are tracked and will never be delivered by the fallback.
-
 ## Commands
 
 ### Session commands

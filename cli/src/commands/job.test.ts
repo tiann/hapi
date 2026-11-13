@@ -177,6 +177,36 @@ describe('parseJobArgs', () => {
         ])).toThrow(/--progress until/)
     })
 
+    it('accepts relative deadlines and preserves explicit countdowns', () => {
+        const before = Date.now()
+        const parsed = parseJobArgs(['run', 'sid', 'wait', '--progress=until', '--until=+5m', '--', 'sleep', '60'])
+        expect(parsed.untilMs).toBeGreaterThanOrEqual(before + 300_000)
+        expect(parsed.untilMs).toBeLessThanOrEqual(Date.now() + 300_000)
+        expect(parsed.total).toBe(300)
+    })
+
+    it.each([
+        ['bash', '-c', 'sleep 60'],
+        ['sleep', 'infinity'],
+        ['sleep', '60', '--help'],
+        ['sleep', '9007199254740992'],
+    ])('requires an explicit mode for unsupported command %j', (...command) => {
+        expect(() => parseJobArgs(['run', 'sid', 'wait', '--', ...command])).toThrow(/requires --progress/)
+    })
+
+    it('rejects unrepresentable inferred deadlines', () => {
+        expect(() => parseJobArgs(['run', 'sid', 'wait', '--', 'sleep', '8640000000000']))
+            .toThrow(/supported timestamp range/)
+    })
+
+    it('does not infer over explicit progress or count fields', () => {
+        expect(() => parseJobArgs(['run', 'sid', 'wait', '--progress=until', '--', 'sleep', '60']))
+            .toThrow(/requires --until/)
+        expect(() => parseJobArgs(['run', 'sid', 'wait', '--done=1', '--total=2', '--', 'sleep', '60']))
+            .toThrow(/derives remaining/)
+        expect(() => parseJobArgs(['set', 'sid', 'wait'])).toThrow(/requires --progress/)
+    })
+
     it('auto-infers until progress mode when running numeric sleep without explicit progress', () => {
         const parsed = parseJobArgs([
             'run',

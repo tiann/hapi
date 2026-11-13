@@ -5,8 +5,6 @@ import { logger } from '@/ui/logger';
 import { deriveToolInput, deriveToolName } from '@/agent/utils';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import {
-    isDisplayOrReadFileTool,
-    extractTargetFilePaths,
     resolveToolAutoApprovalDecision,
     type AutoApprovalDecision
 } from '@/modules/common/permission/BasePermissionHandler';
@@ -158,18 +156,6 @@ export class PermissionAdapter {
             await this.backend.respondToPermission(pending.sessionId, pending, outcome);
         }
 
-        if (!response.approved || decision === 'denied' || decision === 'abort') {
-            if (isDisplayOrReadFileTool(toolName, pending.kind) || isDisplayOrReadFileTool(pending.title, pending.kind)) {
-                const targetPaths = [
-                    ...extractTargetFilePaths(toolInput, pending.title, pending.kind),
-                    ...extractTargetFilePaths(pending.rawInput, pending.title, pending.kind)
-                ];
-                for (const targetPath of targetPaths) {
-                    this.session.markAttachmentDenied(targetPath);
-                }
-            }
-        }
-
         this.session.updateAgentState((currentState) => {
             const requestEntry = currentState.requests?.[response.id];
             const { [response.id]: _, ...remaining } = currentState.requests ?? {};
@@ -223,21 +209,6 @@ export class PermissionAdapter {
         this.pendingRequests.clear();
 
         for (const request of pending) {
-            const toolName = deriveToolName({
-                title: request.title,
-                kind: request.kind,
-                rawInput: request.rawInput
-            });
-            if (isDisplayOrReadFileTool(toolName, request.kind) || isDisplayOrReadFileTool(request.title, request.kind)) {
-                const toolInput = deriveToolInput(request);
-                const targetPaths = [
-                    ...extractTargetFilePaths(toolInput, request.title, request.kind),
-                    ...extractTargetFilePaths(request.rawInput, request.title, request.kind)
-                ];
-                for (const targetPath of targetPaths) {
-                    this.session.markAttachmentDenied(targetPath);
-                }
-            }
             await this.backend.respondToPermission(request.sessionId, request, { outcome: 'cancelled' });
         }
 

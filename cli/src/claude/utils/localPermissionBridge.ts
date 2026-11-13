@@ -4,11 +4,7 @@ import { z } from 'zod'
 import { isObject } from '@hapi/protocol'
 import type { AgentStateCompletedRequest, AgentStateRequest } from '@hapi/protocol/schemas'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
-import {
-    isDisplayOrReadFileTool,
-    extractTargetFilePaths,
-    type PermissionHandlerClient
-} from '@/modules/common/permission/BasePermissionHandler'
+import type { PermissionHandlerClient } from '@/modules/common/permission/BasePermissionHandler'
 import { buildAskUserQuestionUpdatedInput } from './askUserQuestionAnswers'
 import {
     type LocalPermissionDecision,
@@ -177,12 +173,6 @@ export class LocalPermissionBridge {
         let decision: LocalPermissionDecision
         if (!response.approved) {
             decision = { behavior: 'deny', message: response.reason ?? 'The user declined this request.' }
-            if (isDisplayOrReadFileTool(pending.entry.tool)) {
-                const targetPaths = extractTargetFilePaths(pending.entry.arguments)
-                for (const targetPath of targetPaths) {
-                    this.client.markAttachmentDenied?.(targetPath)
-                }
-            }
         } else if (pending.entry.tool === 'AskUserQuestion') {
             const questions = questionsSchema.parse(input.questions)
             const answers = response.answers ?? {}
@@ -222,15 +212,6 @@ export class LocalPermissionBridge {
     }
 
     private finishTool(toolCallId: string, status: AgentStateCompletedRequest['status'], reason?: string, result?: unknown): void {
-        const observed = this.calls.get(toolCallId)
-        if (status === 'denied' || status === 'canceled') {
-            if (observed && isDisplayOrReadFileTool(observed.tool)) {
-                const targetPaths = extractTargetFilePaths(observed.input)
-                for (const targetPath of targetPaths) {
-                    this.client.markAttachmentDenied?.(targetPath)
-                }
-            }
-        }
         this.calls.delete(toolCallId)
         for (const [id, pending] of this.pending) {
             if (pending.entry.toolCallId === toolCallId) this.finish(id, status, reason, result)
@@ -243,14 +224,6 @@ export class LocalPermissionBridge {
         this.pending.delete(id)
         pending.detach()
         pending.resolve(null)
-        if (status === 'denied' || status === 'canceled') {
-            if (isDisplayOrReadFileTool(pending.entry.tool)) {
-                const targetPaths = extractTargetFilePaths(pending.entry.arguments)
-                for (const targetPath of targetPaths) {
-                    this.client.markAttachmentDenied?.(targetPath)
-                }
-            }
-        }
         // Prefer actual native answers (including when the terminal won), not
         // the verdict we merely sent. Never parse comma-separated free text.
         let answers: Record<string, string[]> | undefined

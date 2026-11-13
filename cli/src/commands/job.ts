@@ -16,7 +16,6 @@ import { runSessionJob } from '@/modules/sessionJob/runSessionJob'
 import {
     assertCreateProgressMode,
     assertNumericSleepUsesUntil,
-    commandLooksLikeNumericSleep,
     computeNumericSleepSeconds,
     type JobProgressMode,
     parseUntilTimestamp,
@@ -60,7 +59,7 @@ ${chalk.bold('When to use:')}
 ${chalk.bold('Agent contract:')}
   Prefer ${chalk.bold('hapi job run')} — it heartbeats for you and marks completed/failed on exit.
   An idle agent cannot heartbeat; set-once jobs go amber after ~15m.
-  ${chalk.bold('run/set require --progress')} unknown|fraction|until (explicit affordance).
+  ${chalk.bold('run/set require --progress')} unknown|fraction|until, except inferred numeric sleep countdowns.
   unknown → indeterminate stripes (no counts). fraction → remaining+total or done+total.
   until → --until <ISO|epoch|duration (+5m, 300s)>; remaining/total derived (job run heartbeats re-stamp remaining).
   Fraction without a continuous updater freezes under heartbeats — keep
@@ -433,7 +432,7 @@ export function parseJobArgs(args: string[]): ParsedJobArgs {
             const sleepSec = computeNumericSleepSeconds(result.command)
             if (sleepSec !== null && sleepSec > 0) {
                 result.progress = 'until'
-                result.untilMs = Date.now() + sleepSec * 1000
+                result.untilMs = parseUntilTimestamp(`${sleepSec}s`)
             }
         }
 

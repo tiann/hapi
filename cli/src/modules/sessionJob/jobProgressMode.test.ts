@@ -27,6 +27,19 @@ describe('commandLooksLikeNumericSleep', () => {
         expect(computeNumericSleepSeconds(['sleep', 'infinity'])).toBeNull()
         expect(computeNumericSleepSeconds(['sleep'])).toBeNull()
     })
+    it.each([
+        ['bash', '-c', 'sleep 60'],
+        ['env', 'sleep', '60'],
+        ['sleep', 'infinity'],
+        ['sleep', '1.5'],
+        ['sleep', '1m'],
+        ['sleep', ' 60 '],
+        ['sleep', '9007199254740992'],
+        ['sleep', '9007199254740991', '1'],
+    ])('does not infer unsupported or unsafe command %j', (...command) => {
+        expect(computeNumericSleepSeconds(command)).toBeNull()
+    })
+
 })
 
 describe('assertNumericSleepUsesUntil', () => {
@@ -109,6 +122,16 @@ describe('parseUntilTimestamp', () => {
         expect(parseUntilTimestamp('+1h', now)).toBe(now + 3600 * 1000)
         expect(parseUntilTimestamp('2d', now)).toBe(now + 2 * 86400 * 1000)
     })
+    it.each(['0s', '+0m', '-5m', '1.5m', '8640000000000d', '9'.repeat(400) + 's'])('rejects invalid or unrepresentable duration %s', raw => {
+        expect(() => parseUntilTimestamp(raw, 1_000_000)).toThrow(SessionJobError)
+    })
+
+    it('preserves epoch seconds and milliseconds', () => {
+        const now = 1_000_000
+        expect(parseUntilTimestamp('1794531600', now)).toBe(1_794_531_600_000)
+        expect(parseUntilTimestamp('1794531600000', now)).toBe(1_794_531_600_000)
+    })
+
 })
 
 describe('stampUntilProgress', () => {

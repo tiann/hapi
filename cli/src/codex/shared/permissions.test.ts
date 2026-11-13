@@ -8,18 +8,14 @@ function fixture() {
     let state: AgentState = {};
     const handlers = new Map<string, (raw: unknown) => Promise<unknown>>();
     const send = vi.fn();
-    const markAttachmentDenied = vi.fn();
-    const markAttachmentApproved = vi.fn();
     const session = { getMetadata: () => ({ codexSessionId: 'thread' }), sendAgentMessage: send,
-        markAttachmentDenied,
-        markAttachmentApproved,
         updateAgentState: (fn: (state: AgentState) => AgentState) => { state = fn(state); },
         rpcHandlerManager: { registerHandler: (key: string, fn: (raw: unknown) => Promise<unknown>) => handlers.set(key, fn) } } as unknown as ApiSessionClient;
     const respond = vi.fn();
     const permissions = new SharedCodexPermissions(session, { respond } as unknown as CodexAppServerClient, 'generation');
     const request = { id: 1, method: 'item/tool/requestUserInput', params: { threadId: 'thread', turnId: 'turn', itemId: 'call',
         questions: [{ id: 'choice', header: 'Choose', question: 'Which?', options: [{ label: 'A', description: 'A' }, { label: 'B', description: 'B' }] }] } };
-    return { permissions, request, respond, handlers, send, markAttachmentDenied, markAttachmentApproved, state: () => state };
+    return { permissions, request, respond, handlers, send, state: () => state };
 }
 describe('shared request arbitration', () => {
     it.each([{ notes: [] }, { notes: ['user_note: custom answer'] }])('preserves isOther and canonical other answers (%j) without claiming a winner', async ({ notes }) => {
@@ -129,111 +125,5 @@ describe('shared request arbitration', () => {
         permissions.receive(request);
         permissions.resolved('thread', request.id);
         await vi.waitFor(() => expect(waitCloses).toBe(1));
-    });
-
-    it('marks attachment denied when a tool request for read_file or display_media is denied in SharedCodexPermissions', async () => {
-        const f = fixture();
-        const request = {
-            id: 2,
-            method: 'item/tool/requestApproval',
-            params: {
-                threadId: 'thread',
-                turnId: 'turn',
-                itemId: 'call-read-1',
-                tool: 'read_file',
-                input: { path: '/workspace/private.txt' }
-            }
-        };
-        f.permissions.receive(request);
-        const [id] = Object.entries(f.state().requests ?? {})[0]!;
-        await f.handlers.get('permission')!({ id, approved: false, decision: 'denied' });
-        expect(f.markAttachmentDenied).toHaveBeenCalledWith('/workspace/private.txt');
-    });
-
-    it('marks attachment denied when a file request is canceled or resolved via native terminal without web approval', () => {
-        const f = fixture();
-        const request = {
-            id: 3,
-            method: 'item/tool/requestApproval',
-            params: {
-                threadId: 'thread',
-                turnId: 'turn',
-                itemId: 'call-read-terminal',
-                tool: 'mcp__filesystem__read_file',
-                input: { path: '/workspace/terminal-denied.txt' }
-            }
-        };
-        f.permissions.receive(request);
-        // Neutral native resolution without web approval: serverRequest/resolved calls resolved(thread, 3)
-        f.permissions.resolved('thread', 3);
-        expect(f.markAttachmentDenied).toHaveBeenCalledWith('/workspace/terminal-denied.txt');
-    });
-
-    it('marks attachment approved when a file request is web-approved and resolved natively', async () => {
-        const f = fixture();
-        const request = {
-            id: 4,
-            method: 'item/tool/requestApproval',
-            params: {
-                threadId: 'thread',
-                turnId: 'turn',
-                itemId: 'call-read-approved',
-                tool: 'read_file',
-                input: { path: '/workspace/web-approved.txt' }
-            }
-        };
-        f.permissions.receive(request);
-        const [id] = Object.entries(f.state().requests ?? {})[0]!;
-        await f.handlers.get('permission')!({ id, approved: true, decision: 'approved' });
-        f.permissions.resolved('thread', 4, 'resolved');
-        expect(f.markAttachmentApproved).toHaveBeenCalledWith('/workspace/web-approved.txt');
-    });
-
-    it('preserves web denial even when native resolution arrives with status=resolved', async () => {
-        const f = fixture();
-        const request = {
-            id: 5,
-            method: 'item/tool/requestApproval',
-            params: {
-                threadId: 'thread',
-                turnId: 'turn',
-                itemId: 'call-read-web-denied',
-                tool: 'read_file',
-                input: { path: '/workspace/web-denied.txt' }
-            }
-        };
-        f.permissions.receive(request);
-        const [id] = Object.entries(f.state().requests ?? {})[0]!;
-        await f.handlers.get('permission')!({ id, approved: false, decision: 'denied' });
-        // Native serverRequest/resolved arrives with status='resolved'
-        f.permissions.resolved('thread', 5, 'resolved');
-        expect(f.markAttachmentApproved).not.toHaveBeenCalledWith('/workspace/web-denied.txt');
-        expect(f.markAttachmentDenied).toHaveBeenCalledWith('/workspace/web-denied.txt');
-    });
-
-    it('marks attachment approved when execution evidence arrives through observeExecution', () => {
-        const f = fixture();
-        f.permissions.observeExecution('read_file', { path: '/workspace/executed.txt', status: 'completed' });
-        expect(f.markAttachmentApproved).toHaveBeenCalledWith('/workspace/executed.txt');
-
-        // Accept null error field on successful completions
-        f.permissions.observeExecution('read_file', { path: '/workspace/null-error.txt', status: 'completed', error: null, result: { Ok: 'success' } });
-        expect(f.markAttachmentApproved).toHaveBeenCalledWith('/workspace/null-error.txt');
-    });
-
-    it('does not mark attachment approved when execution completed with failure or error', () => {
-        const f = fixture();
-        f.permissions.observeExecution('read_file', { path: '/workspace/failed.txt', status: 'failed' });
-        f.permissions.observeExecution('read_file', { path: '/workspace/errored.txt', is_error: true });
-        f.permissions.observeExecution('read_file', { path: '/workspace/cancelled.txt', status: 'cancelled' });
-        f.permissions.observeExecution('read_file', { path: '/workspace/mcp-err.txt', status: 'completed', result: { Err: 'permission denied' } });
-        f.permissions.observeExecution('read_file', { path: '/workspace/mcp-iserror.txt', status: 'completed', result: { isError: true } });
-        f.permissions.observeExecution('read_file', { path: '/workspace/mcp-ok-iserror.txt', status: 'completed', result: { Ok: { isError: true } } });
-        expect(f.markAttachmentApproved).not.toHaveBeenCalledWith('/workspace/failed.txt');
-        expect(f.markAttachmentApproved).not.toHaveBeenCalledWith('/workspace/errored.txt');
-        expect(f.markAttachmentApproved).not.toHaveBeenCalledWith('/workspace/cancelled.txt');
-        expect(f.markAttachmentApproved).not.toHaveBeenCalledWith('/workspace/mcp-err.txt');
-        expect(f.markAttachmentApproved).not.toHaveBeenCalledWith('/workspace/mcp-iserror.txt');
-        expect(f.markAttachmentApproved).not.toHaveBeenCalledWith('/workspace/mcp-ok-iserror.txt');
     });
 });

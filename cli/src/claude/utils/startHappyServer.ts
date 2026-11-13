@@ -20,7 +20,7 @@ import {
     registerGeneratedImage,
 } from "@/modules/common/generatedImages";
 import type { InlineMediaSource } from "@/modules/common/inlineMediaSource";
-import { DISPLAY_IMAGE_PROMPT_CURSOR, DISPLAY_MEDIA_PROMPT_CURSOR, DISPLAY_VIDEO_PROMPT_CURSOR } from "@/modules/common/displayImagePrompt";
+import { DISPLAY_IMAGE_TOOL_DESCRIPTION, DISPLAY_MEDIA_TOOL_DESCRIPTION, DISPLAY_VIDEO_TOOL_DESCRIPTION } from "@/modules/common/displayToolDescriptions";
 import { resolveSkill } from "@/modules/common/skills";
 import { SESSION_NAME_MAX_LENGTH, toSessionSummaryMetadata } from '@hapi/protocol'
 import { isPeerToolsDisabled } from "@/modules/common/peerTools";
@@ -350,7 +350,7 @@ function createHapiMcpServer(
     }
 
     registerTool('display_image', {
-        description: 'Display a local image file to the human user inline in the current HAPI chat session. Call with the absolute filesystem path so HAPI can show it inline. This tool sends the image to the human user for inline display in HAPI; it does not provide image input to the model and cannot be used to read, inspect, or analyze image contents.',
+        description: DISPLAY_IMAGE_TOOL_DESCRIPTION,
         title: 'Display Image',
         inputSchema: displayImageInputSchema,
     }, async (args: { path: string; title?: string }) => {
@@ -384,7 +384,7 @@ function createHapiMcpServer(
     });
 
     registerTool('display_video', {
-        description: `Display a local mp4 or webm file inline in the current HAPI chat session. ${DISPLAY_VIDEO_PROMPT_CURSOR}`,
+        description: DISPLAY_VIDEO_TOOL_DESCRIPTION,
         title: 'Display Video',
         inputSchema: displayVideoInputSchema,
     }, async (args: { path: string; title?: string }) => {
@@ -418,7 +418,7 @@ function createHapiMcpServer(
     });
 
     registerTool('display_media', {
-        description: `Send a local image, video, audio, or other file to the current HAPI chat session. Recognized media is shown inline; other files use a download card. ${DISPLAY_MEDIA_PROMPT_CURSOR}`,
+        description: DISPLAY_MEDIA_TOOL_DESCRIPTION,
         title: 'Display Media',
         inputSchema: displayMediaInputSchema,
     }, async (args: { path: string; title?: string }) => {

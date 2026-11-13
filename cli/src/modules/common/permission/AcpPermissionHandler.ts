@@ -5,8 +5,6 @@ import { deriveToolInput, deriveToolName } from '@/agent/utils'
 import { logger } from '@/ui/logger'
 import {
     BasePermissionHandler,
-    extractTargetFilePaths,
-    isDisplayOrReadFileTool,
     type AutoApprovalDecision,
     type AutoApprovalRuleSet,
     type PendingPermissionRequest,
@@ -87,13 +85,7 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
             kind: request.kind,
             rawInput: request.rawInput
         })
-        let toolInput = deriveToolInput(request)
-        if (!toolInput && (request.kind === 'read' || isDisplayOrReadFileTool(request.title, request.kind))) {
-            const derivedPaths = extractTargetFilePaths(null, request.title, request.kind)
-            if (derivedPaths.length > 0) {
-                toolInput = { file_path: derivedPaths[0] }
-            }
-        }
+        const toolInput = deriveToolInput(request)
         const autoDecision = this.options.requiresUser?.(request)
             ? null
             : this.resolveAutoApprovalDecision(
@@ -183,12 +175,6 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
             await this.backend.cancelPrompt(request.sessionId)
         }
         if (request) {
-            if (!response.approved || decision === 'denied' || decision === 'abort') {
-                const targetPaths = extractTargetFilePaths(request.rawInput, request.title, request.kind)
-                for (const targetPath of targetPaths) {
-                    this.client.markAttachmentDenied?.(targetPath)
-                }
-            }
             await this.backend.respondToPermission(request.sessionId, request, mapDecisionToOutcome(request, decision))
         }
         this.endUserWait(response.id)
@@ -237,10 +223,6 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
         const pending = Array.from(this.pendingBackendRequests.values())
         this.pendingBackendRequests.clear()
         for (const request of pending) {
-            const targetPaths = extractTargetFilePaths(request.rawInput, request.title, request.kind)
-            for (const targetPath of targetPaths) {
-                this.client.markAttachmentDenied?.(targetPath)
-            }
             await this.backend.respondToPermission(request.sessionId, request, { outcome: 'cancelled' })
             this.endUserWait(request.id)
         }

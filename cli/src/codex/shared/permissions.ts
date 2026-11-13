@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import type { ApiSessionClient } from '@/api/apiSession';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
-import { isDisplayOrReadFileTool, extractTargetFilePaths } from '@/modules/common/permission/BasePermissionHandler';
 import type { CodexAppServerClient } from '../codexAppServerClient';
 import { registerAppServerPermissionHandlers, IGNORE_SHARED_REQUEST } from '../utils/appServerPermissionAdapter';
 import { record, string } from './gateway';
@@ -14,7 +13,7 @@ const ReplySchema = z.object({
 });
 export type PermissionReply = z.infer<typeof ReplySchema>;
 type Reply = PermissionReply;
-type Pending = { nativeId: string | number; threadId: string; turnId?: string; toolCallId: string; toolName: string; userInput: boolean; input: unknown; submitted: boolean; webApproved?: boolean; answer(reply: Reply): void; cancel(error: Error): void };
+type Pending = { nativeId: string | number; threadId: string; turnId?: string; toolCallId: string; userInput: boolean; input: unknown; submitted: boolean; answer(reply: Reply): void; cancel(error: Error): void };
 
 /** No winner is inferred from submitting a Web candidate: only native resolution closes it. */
 export class SharedCodexPermissions {
@@ -49,7 +48,6 @@ export class SharedCodexPermissions {
                 }
             }
             request.submitted = true;
-            request.webApproved = reply.approved === true;
             if (request.userInput && !reply.approved) {
                 if (!request.turnId) { request.submitted = false; throw new Error('Cannot cancel a question without its native turn ID'); }
                 try { await this.client.request('turn/interrupt', { threadId: request.threadId, turnId: request.turnId }); }
@@ -69,7 +67,6 @@ export class SharedCodexPermissions {
         const ask = (tool: string, input: unknown): Promise<Reply> => new Promise((answer, cancel) => {
             const pending: Pending = { nativeId: request.id, threadId, turnId: string(record(request.params).turnId),
                 toolCallId: string(record(request.params).itemId) ?? key,
-                toolName: tool,
                 userInput: request.method === 'item/tool/requestUserInput', input, answer, cancel, submitted: false };
             this.pending.set(key, pending);
             // requestUserInput is a server request, not a native transcript item.
@@ -84,14 +81,6 @@ export class SharedCodexPermissions {
             shared: true,
             permissionHandler: { handleToolCall: async (_id, name, input) => {
                 const reply = await ask(name, input);
-                if (!reply.approved || reply.decision === 'denied' || reply.decision === 'abort') {
-                    if (isDisplayOrReadFileTool(name)) {
-                        const targetPaths = extractTargetFilePaths(input);
-                        for (const targetPath of targetPaths) {
-                            this.session.markAttachmentDenied(targetPath);
-                        }
-                    }
-                }
                 return { decision: reply.approved ? (reply.decision === 'approved_for_session' ? 'approved_for_session' : 'approved') : reply.decision === 'denied' ? 'denied' : 'abort' };
             } },
             onUserInputRequest: async ({ input }) => {
@@ -130,16 +119,6 @@ export class SharedCodexPermissions {
         for (const [key, request] of this.pending) {
             if (request.threadId !== threadId || request.nativeId !== nativeId) continue;
             this.pending.delete(key);
-            if (isDisplayOrReadFileTool(request.toolName)) {
-                const targetPaths = extractTargetFilePaths(request.input);
-                for (const targetPath of targetPaths) {
-                    if (request.webApproved === true && status === 'resolved') {
-                        this.session.markAttachmentApproved?.(targetPath);
-                    } else {
-                        this.session.markAttachmentDenied(targetPath);
-                    }
-                }
-            }
             request.cancel(new Error('Resolved by Codex'));
             if (request.userInput) this.questionEvent(request, status);
             this.session.updateAgentState(state => {
@@ -150,36 +129,6 @@ export class SharedCodexPermissions {
                 } };
             });
         }
-    }
-
-    observeExecution(tool: string, item: unknown): void {
-        const recordItem = record(item);
-        const status = string(recordItem.status);
-        const rawResult = recordItem.result ?? recordItem.output;
-        const resultRecord = record(rawResult);
-        const hasResultError =
-            'Err' in resultRecord
-            || resultRecord.isError === true
-            || resultRecord.is_error === true
-            || (record(resultRecord.Ok).isError === true || record(resultRecord.Ok).is_error === true);
-        const isError =
-            recordItem.is_error === true
-            || (recordItem.error !== undefined && recordItem.error !== null)
-            || status === 'failed'
-            || status === 'cancelled'
-            || hasResultError;
-        if (isError) return;
-
-        if (isDisplayOrReadFileTool(tool)) {
-            const targetPaths = extractTargetFilePaths(recordItem.arguments ?? recordItem.input ?? recordItem.toolParams ?? item);
-            for (const targetPath of targetPaths) {
-                this.session.markAttachmentApproved?.(targetPath);
-            }
-        }
-    }
-
-    recordApproved(path: string): void {
-        this.session.markAttachmentApproved?.(path);
     }
 
     close(): void {
