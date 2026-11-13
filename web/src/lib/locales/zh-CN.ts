@@ -107,6 +107,7 @@ export default {
   'sessions.view.fueTitle': '新功能：排序与筛选',
   'sessions.view.fueBody': '在这里调整排序方式、按状态筛选，或让活跃/未读会话优先显示。你的选择会被记住。',
   'sessions.toolbar.more': '更多会话列表操作',
+  'sessions.openTick.tooltip': '当前打开会话的位置 — 将滚动条拖到此标记处即可到达',
   'sessions.markAllRead.button': '全部标为已读（{count}）',
   'sessions.markAllRead.title': '全部标为已读？',
   'sessions.markAllRead.description': '将 {count} 个未读会话在各设备上标为已读。',

@@ -107,6 +107,7 @@ export default {
   'sessions.view.fueTitle': 'New: sort & filter',
   'sessions.view.fueBody': 'Change the sort order, filter by status, or show active/unread sessions first. Your choices are remembered.',
   'sessions.toolbar.more': 'More session list actions',
+  'sessions.openTick.tooltip': 'Open session position — drag the scrollbar to this mark to reach it',
   'sessions.markAllRead.button': 'Mark all as read ({count})',
   'sessions.markAllRead.title': 'Mark all as read?',
   'sessions.markAllRead.description': 'This will mark {count} unread sessions as read across your devices.',
