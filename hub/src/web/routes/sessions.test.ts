@@ -225,6 +225,8 @@ describe('sessions routes', () => {
         expect(calls).toEqual([['session-1', 'default', 'plan']])
         result = { ok: false, code: 'stale_plan', error: 'Old plan' }
         expect((await post()).status).toBe(409)
+        result = { ok: false, code: 'failed', error: 'Try again' }
+        expect((await post()).status).toBe(500)
         result = { ok: false, code: 'indeterminate', error: 'Unknown result' }
         expect((await post()).status).toBe(503)
     })

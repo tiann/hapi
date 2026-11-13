@@ -266,7 +266,8 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         gateway.stopRunnerSession = async () => { throw new RunnerStopRpcError(true, new Error('operation has timed out')) }
         const error = await engine.archiveSession(sessionId).catch(error => error)
         expect(error).toBeInstanceOf(ArchiveCleanupError)
-        expect(error.status).toBe(504)
+        expect(error.status).toBe(503)
+        expect(error.code).toBe('archive-cleanup-timeout')
         expect(cache().getSession(sessionId)?.active).toBe(true)
         gateway.stopRunnerSession = async () => 'already_gone'
         await engine.archiveSession(sessionId)

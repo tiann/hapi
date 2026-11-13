@@ -61,14 +61,14 @@ Source: `hub/src/web/routes/sessions.ts`; request schemas in `shared/src/apiType
 | `POST /api/sessions/:id/resume` | `{permissionMode?}` (`ResumeSessionRequestSchema`) | `{type: 'success', sessionId}` |
 | `POST /api/sessions/:id/reopen` | `{}` | `{ok: true, sessionId, resumed: boolean, cursorSessionProtocol?}` (`ReopenSessionResponseSchema`); `422 {error, missing[]}` if metadata is incomplete |
 | `POST /api/sessions/:id/abort` | `{}` | `{ok: true}` (active sessions only) |
-| `POST /api/sessions/:id/archive` | `{}` | `{ok: true}` or `{ok: true, alreadyArchived: true}`; 409 for a plain inactive session |
+| `POST /api/sessions/:id/archive` | `{}` | `{ok: true}` or `{ok: true, alreadyArchived: true}`; 409 for a plain inactive session; unconfirmed Runner cleanup returns 409 `archive-cleanup-unconfirmed` or 503 `archive-cleanup-unavailable` / `archive-cleanup-timeout` |
 | `DELETE /api/sessions/:id` | — | `{ok: true}`; 409 while active (archive first) |
 | `PATCH /api/sessions/:id` | `{name?, titleLocked?}` (at least one; name: 1–255 chars; lock: boolean) | `{ok: true}` (rename) |
 | `PATCH /api/sessions/:id/summary` | `{text, titleLocked?}` (text: 1–255 chars; lock: boolean) | `{ok: true}` |
 | `PUT /api/sessions/:id/pin` | `{mode: 'none'\|'project'\|'global'}` | `{ok: true}` |
 | `POST /api/sessions/:id/switch` | `{}` | `{ok: true}` — hands terminal-controlled session over to remote control |
 | `POST /api/sessions/:id/clear` | `{}` | `{sessionId}` — shared sessions only; resume inactive sessions through the Runner first, then create a new root; navigate only the initiating view |
-| `POST /api/sessions/:id/title-suggestion` | — | `{title}`; errors pass through 422/429/502/503 |
+| `POST /api/sessions/:id/title-suggestion` | — | `{title}`; errors pass through 422/429/500/503 |
 | `GET /api/sessions/:id/slash-commands` | — | `SlashCommandsResponse` `{success, commands?, error?}` |
 | `GET /api/sessions/:id/skills` | — | `SkillsResponse`-shaped `{success, ...}` |
 
@@ -143,7 +143,7 @@ tool-call id; `null` withdraws actions without removing content. The CLI
 validates the latest completed Plan-mode turn, switches to Default, and queues
 `Implement the plan.` with a stable submission id. Repeating an accepted
 action does not enqueue it again. This is separate from tool permissions.
-Errors include HTTP 409 (`stale_plan` / `unavailable`), 502 (`failed`) and 503
+Errors include HTTP 409 (`stale_plan` / `unavailable`), 500 (`failed`) and 503
 (`indeterminate`); error bodies have `{ok: false, code, error}`. Do not
 automatically resend after an unconfirmed result. "Continue planning" is a
 local composer-focus action and does not submit a native approval or message.
@@ -169,7 +169,7 @@ Source: `hub/src/web/routes/machines.ts`; schemas `SpawnSessionRequestSchema`, `
 | `POST /api/machines/:id/spawn` | `{directory, agent?, model?, effort?, modelReasoningEffort?, yolo?, permissionMode?, sessionType?: 'simple'\|'worktree', worktreeName?, serviceTier?, collaborationMode?, copilotAgentMode?, startingMode?: 'remote'\|'pty'}` | `{type: 'success', sessionId}` \| `{type: 'error', message, code?, agent?}` (agy accepts only `remote`) |
 | `POST /api/machines/:id/list-directory` | `{path, includeHidden?}` | `{success, entries?: (DirectoryEntry & {isGitRepo?})[], error?}` |
 | `POST /api/machines/:id/paths/exists` | `{paths: string[]}` (≤ 1000) | `{exists: Record<string, boolean>, outsideWorkspaceRoots?: string[]}` |
-| `POST /api/machines/:id/restart-runner` | `{}` | `{message}`; errors carry `code: 'machine_not_found' \| 'machine_offline'` |
+| `POST /api/machines/:id/restart-runner` | `{}` | `{message}`; errors carry `code`: 404 `machine_not_found`, 503 `machine_offline`, other Runner failures 500 |
 
 Note the spawn response is discriminated on `type`, not HTTP status — a failed
 spawn is still HTTP 200. Stable spawn failure codes are
