@@ -65,6 +65,21 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
         expect(description).toContain('cannot be used to read, inspect, or analyze image contents')
     })
 
+    it('exposes concise delivery contracts for all media tools', async () => {
+        await runHappyMcpStdioBridge([
+            '--url', 'http://127.0.0.1:43006',
+            '--tools', 'display_image,display_video,display_media'
+        ])
+        for (const name of ['display_image', 'display_video', 'display_media']) {
+            const description = harness.configs.get(name)?.description
+            expect(description).toContain('absolute filesystem path')
+            expect(description).toContain('25 MiB')
+            expect(description).toContain('explicit delivery preferences')
+            expect(description).not.toContain('Web/PWA')
+            expect(description).not.toContain('iOS')
+        }
+    })
+
     it('registers and forwards skill_lookup when the HTTP server enables it', async () => {
         await runHappyMcpStdioBridge([
             '--url',

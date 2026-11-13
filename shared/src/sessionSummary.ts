@@ -73,6 +73,20 @@ export type SessionSummaryMetadata = {
     conversationHistory?: ConversationHistoryCapabilities
     /** Loopback MCP URL when session CLI happy server is running (#956). */
     hapiMcpUrl?: string
+    lastModelError?: {
+        eventId: string
+        kind: string
+        transient: boolean
+        rawSnippet: string
+        atTs: number
+        priorAssistantClaimsDone: boolean
+        bridgedForEventId?: string
+        retriedAndFailed?: boolean
+        supersededByUserTurn?: boolean
+        bridgeable?: boolean
+        acknowledgedAt?: number
+        notifiedAt?: number
+    }
 }
 
 export type SessionSummary = {
@@ -248,7 +262,18 @@ export function toSessionSummaryMetadata(metadata: Metadata | null | undefined):
         lifecycleState: metadata.lifecycleState,
         externalRefs: metadata.externalRefs,
         conversationHistory: metadata.capabilities?.conversationHistory,
-        hapiMcpUrl: metadata.hapiMcpUrl ?? undefined
+        hapiMcpUrl: metadata.hapiMcpUrl ?? undefined,
+        // Omit lastUserMessage — bridge recovery text stays in full session
+        // metadata only; list/SSE summaries must not ship up to 32 KB of prompt.
+        lastModelError: metadata.lastModelError
+            ? (() => {
+                const {
+                    lastUserMessage: _omitLastUserMessage,
+                    ...summaryError
+                } = metadata.lastModelError
+                return summaryError
+            })()
+            : undefined
     }
 }
 

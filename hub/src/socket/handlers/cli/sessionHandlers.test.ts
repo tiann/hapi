@@ -108,6 +108,37 @@ function toolCallResultContent(callId: string, output: unknown): unknown {
 }
 
 describe('cli session handlers', () => {
+    it('advances the agent-progress clock when a tool-call tick merges into its row', () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('merge-progress', {}, null, 'default')
+        const socket = new FakeSocket()
+        const progressTimes: number[] = []
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {},
+            onAgentProgress: (sid, at) => progressTimes.push(at)
+        })
+        const now = Date.now()
+        // Two ticks of one live call, two minutes apart per the CLI's own
+        // transcript timestamps. The merged row keeps its first snapshot's
+        // createdAt for stable ordering — but each tick must still advance
+        // the keepalive-idle clock, or an ACP call with thinking=false and no
+        // background task can be marked idle despite fresh updates.
+        socket.trigger('message', {
+            sid: session.id,
+            message: toolCallContent('call-1', { status: 'running' }),
+            createdAt: now - 120_000
+        })
+        expect(progressTimes).toHaveLength(1)
+        socket.trigger('message', {
+            sid: session.id,
+            message: toolCallContent('call-1', { status: 'running', input: { file: 'b' } }),
+            createdAt: now - 60_000
+        })
+        expect(progressTimes).toHaveLength(2)
+        expect(progressTimes[1]!).toBeGreaterThan(progressTimes[0]!)
+        expect(store.messages.getAllMessages(session.id)).toHaveLength(1)
+        store.close()
+    })
     it.each([undefined, 'terminated', 'error'] as const)('preserves shared Codex pending input on execution exit (%s)', reason => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('shared-end', { flavor: 'codex', capabilities: { concurrentClients: true } }, null, 'default')

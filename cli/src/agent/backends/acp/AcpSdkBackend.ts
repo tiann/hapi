@@ -753,10 +753,18 @@ export class AcpSdkBackend implements AgentBackend {
         sessionId: string,
         content: PromptContent[],
         onUpdate: (msg: AgentMessage) => void,
-        // prompt() waits for earlier output before it sends and for late output
-        // after the answer; callers timing the agent itself need both moments.
-        timing?: { onSent?: () => void; onAnswered?: () => void }
-    ): Promise<void> {
+        options?: {
+            /**
+             * Re-checked immediately before the send. Returning false aborts
+             * the turn without prompting (e.g. a queued bridge superseded by a
+             * real user turn); prompt() then resolves false.
+             */
+            shouldSend?: () => boolean
+            // prompt() waits for earlier output before it sends and for late output
+            // after the answer; callers timing the agent itself need both moments.
+            timing?: { onSent?: () => void; onAnswered?: () => void }
+        }
+    ): Promise<boolean> {
         if (!this.transport) {
             throw new Error('ACP transport not initialized');
         }
@@ -774,6 +782,9 @@ export class AcpSdkBackend implements AgentBackend {
         );
         await this.sessionUpdateQueue;
         this.messageHandler?.drainBuffers();
+        if (options?.shouldSend && !options.shouldSend()) {
+            return false;
+        }
         this.messageHandler = new AcpMessageHandler(onUpdate, {
             textChunkMode: this.options.textChunkMode,
             flavor: this.options.flavor,
@@ -800,11 +811,11 @@ export class AcpSdkBackend implements AgentBackend {
                     sessionId,
                     prompt: content
                 }, { timeoutMs: Infinity });
-                timing?.onSent?.();
+                options?.timing?.onSent?.();
                 response = await request;
             } finally {
                 this.promptRequestInFlight = false;
-                timing?.onAnswered?.();
+                options?.timing?.onAnswered?.();
             }
 
             stopReason = isObject(response) ? asString(response.stopReason) : null;
@@ -885,6 +896,7 @@ export class AcpSdkBackend implements AgentBackend {
                 }
             }
         }
+        return true;
     }
 
     async cancelPrompt(sessionId: string): Promise<void> {

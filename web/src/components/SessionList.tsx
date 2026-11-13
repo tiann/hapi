@@ -181,6 +181,7 @@ type SessionGroup = {
     hasPinnedSession: boolean
 }
 
+export type SessionSearchMode = 'default' | 'exclude'
 const MIN_CONTENT_SEARCH_QUERY_LENGTH = 2
 
 const RUNNING_BUCKETS = [
@@ -265,7 +266,6 @@ export function isPinnedInProgressSession(
     }
     return hasRunningAttachedJob(session) || hasAgentInProgressActivity(session)
 }
-
 
 function SessionsEmptyState(props: {
     onNewSession: () => void
@@ -630,6 +630,26 @@ function SearchIcon(props: { className?: string }) {
     )
 }
 
+function ChevronDownIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+            aria-hidden="true"
+        >
+            <path d="m6 9 6 6 6-6" />
+        </svg>
+    )
+}
+
 function XIcon(props: { className?: string }) {
     return (
         <svg
@@ -764,6 +784,16 @@ export function normalizeSearch(value: string | null | undefined): string {
     return (value ?? '').trim().toLowerCase()
 }
 
+export function sessionMatchesSearchMode(
+    session: SessionSummary,
+    query: string,
+    machineLabel: string,
+    mode: SessionSearchMode = 'default'
+): boolean {
+    if (!query) return true
+    const matches = sessionMatchesQuery(session, query, machineLabel)
+    return mode === 'exclude' ? !matches : matches
+}
 
 export function getVisibleSessionPreview(
     sessions: SessionSummary[],
@@ -811,6 +841,8 @@ export function SessionListSearch(props: {
     onExpandedChange: (expanded: boolean) => void
     searchMode?: 'metadata' | 'content'
     onSearchModeChange?: (mode: 'metadata' | 'content') => void
+    searchMatchMode?: SessionSearchMode
+    onSearchMatchModeChange?: (mode: SessionSearchMode) => void
     /** Minimum width of icon + clear. Query text may shrink; these may not. */
     chromeMinPx?: number
     /**
@@ -820,6 +852,9 @@ export function SessionListSearch(props: {
     maxWidthPx?: number
 }) {
     const { t } = useTranslation()
+
+    const [searchMatchModeOpen, setSearchMatchModeOpen] = useState(false)
+
     const inputRef = useRef<HTMLInputElement>(null)
     const collapsedButtonRef = useRef<HTMLButtonElement>(null)
     const scopeButtonRef = useRef<HTMLButtonElement>(null)
@@ -828,17 +863,21 @@ export function SessionListSearch(props: {
     useEffect(() => {
         if (props.expanded) {
             inputRef.current?.focus()
+        } else {
+            setSearchMatchModeOpen(false)
         }
     }, [props.expanded])
 
     const searchMode = props.searchMode ?? 'metadata'
+    const searchMatchMode = props.searchMatchMode ?? 'default'
     const canSearchContent = Boolean(props.onSearchModeChange)
+    const canChangeSearchMatchMode = Boolean(props.onSearchMatchModeChange)
     const searchLabel = searchMode === 'content'
         ? t('sessions.search.content.placeholder')
         : t('sessions.search.open')
 
-    // A two-state toggle, not a menu: one tap flips the scope, and the glyph
-    // (ID card vs speech bubble) carries the mode without a chrome label.
+    // Metadata/content scope is a two-state toggle; include/exclude is an
+    // orthogonal metadata-search control and is hidden while searching content.
     const otherSearchMode = searchMode === 'content' ? 'metadata' : 'content'
     const scopeHint = t('sessions.search.scope.' + searchMode + '.description')
         + '. '
@@ -847,7 +886,7 @@ export function SessionListSearch(props: {
         })
     const ScopeIcon = searchMode === 'content' ? ScopeContentIcon : ScopeMetadataIcon
 
-    const renderSearchMode = () => canSearchContent ? (
+    const renderSearchScope = () => canSearchContent ? (
         <>
             <button
                 ref={scopeButtonRef}
@@ -890,6 +929,50 @@ export function SessionListSearch(props: {
                 />
             ) : null}
         </>
+    ) : null
+
+    const renderSearchMatchMode = () => canChangeSearchMatchMode && searchMode === 'metadata' ? (
+        <div className="relative shrink-0">
+            <button
+                type="button"
+                aria-label={t('sessions.search.scope.toggle')}
+                aria-expanded={searchMatchModeOpen}
+                onClick={() => setSearchMatchModeOpen(open => !open)}
+                className="flex h-full w-auto items-center gap-0.5 border-r border-[var(--app-border)] px-1.5 text-xs leading-none text-[var(--app-hint)] transition-colors hover:text-[var(--app-fg)]"
+            >
+                <span className="shrink-0 whitespace-nowrap leading-none">
+                    {t(`sessions.search.scope.${searchMatchMode}`)}
+                </span>
+                <ChevronDownIcon className={cn(
+                    'h-3.5 w-3.5 shrink-0 transition-transform duration-200',
+                    searchMatchModeOpen && 'rotate-180'
+                )} />
+            </button>
+            {searchMatchModeOpen ? (
+                <div className="absolute left-0 top-full z-30 mt-1 flex w-max min-w-full flex-col gap-0.5 overflow-hidden rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-0.5 shadow-lg">
+                    {(['default', 'exclude'] as const).map(mode => (
+                        <button
+                            key={mode}
+                            type="button"
+                            aria-pressed={searchMatchMode === mode}
+                            onClick={() => {
+                                props.onSearchMatchModeChange?.(mode)
+                                setSearchMatchModeOpen(false)
+                                inputRef.current?.focus()
+                            }}
+                            className={cn(
+                                'flex min-h-8 w-full items-center justify-center whitespace-nowrap rounded-md px-2 py-0.5 text-center text-sm leading-none transition-colors',
+                                searchMatchMode === mode
+                                    ? 'bg-[var(--app-subtle-bg)] text-[var(--app-fg)]'
+                                    : 'text-[var(--app-hint)] hover:text-[var(--app-fg)]'
+                            )}
+                        >
+                            {t(`sessions.search.scope.${mode}`)}
+                        </button>
+                    ))}
+                </div>
+            ) : null}
+        </div>
     ) : null
 
     if (!props.expanded) {
@@ -1002,7 +1085,8 @@ export function SessionListSearch(props: {
                 <div className="pointer-events-none flex shrink-0 items-center pl-2 text-[var(--app-hint)]">
                     <SearchIcon className="h-5 w-5" />
                 </div>
-                {renderSearchMode()}
+                {renderSearchScope()}
+                {renderSearchMatchMode()}
                 <input
                     ref={inputRef}
                     type="search"
@@ -1583,6 +1667,7 @@ export function SessionList(props: {
     const showDetailedStatus = sessionListStatusMode === 'detailed'
     const [searchQuery, setSearchQuery] = useState('')
     const [searchMode, setSearchMode] = useState<'metadata' | 'content'>('metadata')
+    const [searchMatchMode, setSearchMatchMode] = useState<SessionSearchMode>('default')
     const [contentSearchResponse, setContentSearchResponse] = useState<SessionContentSearchResponse | null>(null)
     const [contentSearchLoading, setContentSearchLoading] = useState(false)
     const [contentSearchError, setContentSearchError] = useState(false)
@@ -1687,10 +1772,11 @@ export function SessionList(props: {
     )
     const hasTextQuery = normalizedQuery.length > 0 && !contentSearchActive
     const searchScoreIndex = useMemo(
-        () => hasTextQuery
+
+        () => searchMatchMode === 'default' && hasTextQuery
             ? buildSessionSearchScoreIndex(allSessions, normalizedQuery, resolveMachineLabel)
             : null,
-        [hasTextQuery, allSessions, normalizedQuery, machineLabelsById] // eslint-disable-line react-hooks/exhaustive-deps
+        [hasTextQuery, searchMatchMode, allSessions, normalizedQuery, machineLabelsById] // eslint-disable-line react-hooks/exhaustive-deps
     )
     const visibleSessions = useMemo(
         () => {
@@ -1703,21 +1789,26 @@ export function SessionList(props: {
                     : byStatus
             }
             if (!isFiltering) return allSessions
-            const matched = hasTextQuery && searchScoreIndex
-                ? allSessions.filter(session => searchScoreIndex.matchedIds.has(session.id))
-                : allSessions.filter(session => (
-                    sessionMatchesQuery(
+            const matched = searchMatchMode === 'exclude'
+                ? allSessions.filter(session => sessionMatchesSearchMode(
+                    session,
+                    normalizedQuery,
+                    resolveMachineLabel(session.metadata?.machineId ?? null),
+                    'exclude'
+                ))
+                : searchScoreIndex
+                    ? allSessions.filter(session => searchScoreIndex.matchedIds.has(session.id))
+                    : allSessions.filter(session => sessionMatchesQuery(
                         session,
                         normalizedQuery,
                         resolveMachineLabel(session.metadata?.machineId ?? null)
-                    )
-                ))
+                    ))
             if (hasTextQuery && searchScoreIndex) {
                 return sortSessionsBySearchRelevance(matched, searchScoreIndex)
             }
             return matched
         },
-        [allSessions, contentSearchActive, contentSearchResponse, hasTextQuery, isFiltering, normalizedQuery, searchScoreIndex, selectedSessionId, listView.status, listView.unreadOnly, isSessionUnread, machineLabelsById] // eslint-disable-line react-hooks/exhaustive-deps
+        [allSessions, contentSearchActive, contentSearchResponse, hasTextQuery, isFiltering, normalizedQuery, searchMatchMode, searchScoreIndex, selectedSessionId, listView.status, listView.unreadOnly, isSessionUnread, machineLabelsById] // eslint-disable-line react-hooks/exhaustive-deps
     )
     const contentSnippetBySessionId = useMemo(() => {
         const snippets = new Map<string, string>()
@@ -2103,7 +2194,9 @@ export function SessionList(props: {
                                             showDetailedStatus={showDetailedStatus}
                                             inRunningSection
                                             projectLabel={getSessionProjectLabel(getSessionProjectPath(s.metadata) ?? 'Other')}
-                                            machineLabel={resolveMachineLabel(s.metadata?.machineId ?? null)}
+                                            machineLabel={showMachineFilterBar && activeMachineFilter === null
+                                                ? resolveMachineLabel(s.metadata?.machineId ?? null)
+                                                : undefined}
                                             contentSnippet={contentSnippetBySessionId.get(s.id)}
                                             contentSearchTruncated={contentSearchTruncatedBySessionId.has(s.id)}
                                             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
@@ -2538,6 +2631,8 @@ export function SessionList(props: {
                             onExpandedChange={setSearchExpanded}
                             searchMode={searchMode}
                             onSearchModeChange={setSearchMode}
+                            searchMatchMode={searchMatchMode}
+                            onSearchMatchModeChange={setSearchMatchMode}
                             chromeMinPx={searchQuery.length > 0 ? searchChromePx : 0}
                             maxWidthPx={searchQuery.length > 0 ? searchMaxPx : 0}
                         />
@@ -2823,7 +2918,9 @@ export function SessionList(props: {
                                             showDetailedStatus={showDetailedStatus}
                                             inRunningSection
                                             projectLabel={getSessionProjectLabel(getSessionProjectPath(s.metadata) ?? 'Other')}
-                                            machineLabel={resolveMachineLabel(s.metadata?.machineId ?? null)}
+                                            machineLabel={showMachineFilterBar && activeMachineFilter === null
+                                                ? resolveMachineLabel(s.metadata?.machineId ?? null)
+                                                : undefined}
                                             contentSnippet={contentSnippetBySessionId.get(s.id)}
                                             contentSearchTruncated={contentSearchTruncatedBySessionId.has(s.id)}
                                             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}

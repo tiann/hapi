@@ -57,15 +57,26 @@ Treat this like `ping_peer` / `inspect_peer`: it is first-class HAPI tooling, no
 
 Prefer `"$HAPI_SESSION_ID"` only when it matches the operator chat URL uuid. Remote Cursor runner: pass `/sessions/<id>` explicitly (see "Which session id").
 
-#### Progress mode (required on `run` / `set`)
+#### Progress mode
 
-`--progress` is **required** on create. Omission used to default to indeterminate stripes and hid known-duration countdowns (dogfood postmortem 2026-11-08). Pick deliberately:
+`--progress` is required on `run` / `set`, except when `run` directly wraps a numeric `sleep` command without progress flags. In that case the CLI infers a countdown from the duration. Other commands still require an explicit mode:
 
 | Mode | Flags | List chrome |
 |------|-------|-------------|
 | `unknown` | no counts / no `--until` | `running · elapsed` + indeterminate stripes |
 | `fraction` | `--remaining N --total M` **or** `--done N --total M` | determinate fill |
-| `until` | `--until <ISO-8601\|epoch-ms>` | determinate countdown (`s`); `job run` heartbeats re-stamp `remaining` |
+| `until` | `--until <ISO-8601\|epoch-ms\|duration>` | determinate countdown (`s`); `job run` heartbeats re-stamp `remaining` |
+
+Relative deadlines accept positive integer durations with `s`, `m`, `h`, or `d` units, optionally prefixed by `+` (for example, `--until +5m`). Existing ISO timestamps and epochs remain supported.
+
+For a direct `sleep N` (or GNU `sleep N M`), omit both `--progress` and `--until` to infer the countdown:
+
+```bash
+hapi job run "$HAPI_SESSION_ID" wait --label 'Wait five minutes' \
+  --wake-on-terminal -- sleep 300
+```
+
+Inference applies only to direct positive integer sleep operands. Shell scripts, wrappers, `sleep infinity`, and other commands still require an explicit mode. Explicit progress flags are validated as supplied.
 
 The bar and stripes are the Web list. The native lists show the same job as one
 text line (`label · remaining or percent · elapsed`, amber with `no heartbeat`
@@ -108,7 +119,7 @@ hapi job run "$HAPI_SESSION_ID" beets \
 hapi job run "$HAPI_SESSION_ID" beets --label 'beets import' --progress unknown -- ./beets-import.sh &
 # …and from t=0, something continuously: hapi job update … --done N --total 1787
 
-# Dogfood / countdown window (numeric sleep N without until is refused):
+# Countdown window with an explicit deadline:
 hapi job run "$HAPI_SESSION_ID" dogfood-1424-48h \
   --label 'dogfood #1424 48h' --progress until --until 2026-11-09T21:20:14Z \
   --wake-on-terminal -- sleep 999999
@@ -130,7 +141,7 @@ Do **not**:
 
 - MCP `session_job` `set` or one-shot CLI `set` + background the real work (no heartbeat).
 - `hapi job run --done 0 --total N -- cmd` with **no** continuous count writer (**frozen 0/N under a live heartbeat** — the common agent footgun).
-- `hapi job run --progress unknown -- sleep 150747` (or any numeric `sleep N`) — that is a known-duration countdown; CLI refuses it. Use `--progress until --until …` (or `sleep infinity` under `unknown`).
+- `hapi job run --progress unknown -- sleep 150747` (or any numeric `sleep N`) — that is a known-duration countdown; CLI refuses it under `unknown`. Use `--progress until --until …` (supports relative durations like `+5m` or `300s`, and running `hapi job run <session> <key> -- sleep N` automatically infers countdown progress).
 - Wrap `hapi-restart-hub` / `hapi-use-worktree` / `hapi-use-driver` / `hapi-watch-activate-driver` inside `hapi job run`. The hub is down exactly when the terminal `completed`/`failed` PATCH must land → `ECONNREFUSED` → zombie `running` meter (CLI refuses these argv tokens). Run remat/work under the job; run the hub restart **after** the job exits (same shape as soup remat `#205`).
 - Claim done / invite archive while a zombie `running` meter remains.
 
