@@ -16,9 +16,33 @@ beforeEach(() => {
     localStorage.clear()
     offlineScope('hub-a:alice')
 })
-afterEach(async () => { cleanup(); await vi.advanceTimersByTimeAsync(0); vi.useRealTimers(); vi.restoreAllMocks() })
+afterEach(async () => { cleanup(); await vi.advanceTimersByTimeAsync(0); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('durable session read state', () => {
+    it.each(['read', 'unread', 'all'] as const)('persists and syncs %s over HTTP without crypto.randomUUID', async (action) => {
+        vi.stubGlobal('crypto', { getRandomValues: crypto.getRandomValues.bind(crypto) })
+        const session = { id: 's', contentRevision: 3, readState: server() }
+        observeSessionReadStates([session])
+
+        if (action === 'read') markSessionSeen('s', 3)
+        else if (action === 'unread') markSessionUnread('s', session.readState)
+        else expect(markAllSessionsSeen([session])).toBe(1)
+
+        const request: SessionReadStateRequest = action === 'unread'
+            ? { type: 'unread', expectedVersion: 0 }
+            : { type: 'read', readRevision: 3, expectedVersion: 0 }
+        const persisted = () => JSON.parse(localStorage.getItem('hapi.sessionReadState.v1:hub-a:alice')!).s
+        expect(persisted().pending).toEqual({ id: expect.any(String), request })
+        expect(getUnreadSessionCount([session])).toBe(action === 'unread' ? 1 : 0)
+
+        const send = vi.fn(async () => ({ readState: server(action === 'unread' ? 0 : 3, 1, action === 'unread') }))
+        cleanup = configureSessionReadState('hub-a:alice', send)
+        await vi.advanceTimersByTimeAsync(0)
+        expect(send).toHaveBeenCalledExactlyOnceWith('s', request)
+        expect(persisted().pending).toBeUndefined()
+        expect(getUnreadSessionCount([session])).toBe(action === 'unread' ? 1 : 0)
+    })
+
     it('reads persisted state once per synchronous pass instead of once per row', async () => {
         markSessionSeen('s', 2)
         await Promise.resolve()
