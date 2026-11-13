@@ -1,35 +1,68 @@
 package app.hapi.companion.feature.chat.composer
 
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.MutableTransitionState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import app.hapi.companion.R
 import app.hapi.companion.feature.chat.QueuedRowUi
 import app.hapi.companion.ui.theme.HapiTheme
+import app.hapi.companion.ui.theme.HapiTypography
 import app.hapi.companion.ui.theme.hapi
 
 /**
- * Floating bar above the composer for queued (uninvoked) sends — the Compose
- * twin of `QueuedMessagesBar.tsx`. Per row: Steer (while a turn is active),
- * Edit (cancel + prefill composer) and Cancel. Rows without a server echo yet
- * (`id == localId`) keep their actions disabled until the SSE echo lands.
+ * Queued (uninvoked) sends stacked above the composer — the Compose twin of
+ * `QueuedMessagesBar.tsx`, styled like iOS `QueuedMessagesBarView`: one card
+ * inset from the composer, one line per message. Steer (while a turn is
+ * active) or Retry (unknown delivery) and Cancel are icon actions; tapping a
+ * row edits it (cancel + prefill the composer); long-press lists every action
+ * by name. Rows without a server echo yet (`id == localId`) keep their actions
+ * disabled until the SSE echo lands.
  */
 @Composable
 fun QueuedMessagesBar(
@@ -42,34 +75,45 @@ fun QueuedMessagesBar(
 ) {
     if (rows.isEmpty()) return
 
-    Column(
+    val queuedLabel = if (rows.size == 1) {
+        stringResource(R.string.chat_queued_one)
+    } else {
+        stringResource(R.string.chat_queued_many, rows.size)
+    }
+    Surface(
+        color = MaterialTheme.hapi.composerSurface,
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(0.5.dp, MaterialTheme.hapi.divider),
         modifier = modifier
             .fillMaxWidth()
-            .padding(horizontal = 10.dp, vertical = 4.dp),
-        verticalArrangement = Arrangement.spacedBy(4.dp),
+            .padding(horizontal = 8.dp)
+            .padding(top = 4.dp)
+            .semantics { contentDescription = queuedLabel }
+            .testTag("chat-queued-card"),
     ) {
-        Text(
-            text = if (rows.size == 1) {
-                stringResource(R.string.chat_queued_one)
-            } else {
-                stringResource(R.string.chat_queued_many, rows.size)
-            },
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.hapi.hint,
-        )
         Column(
             modifier = Modifier
-                .heightIn(max = 160.dp)
+                .animateContentSize()
+                .heightIn(max = 168.dp)
                 .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            rows.forEach { row ->
-                QueuedRow(row, onSteer, onRetry, onEdit, onCancel)
+            rows.forEachIndexed { index, row ->
+                key(row.id) {
+                    // New rows slide in; removals collapse through the card's size animation.
+                    val visible = remember { MutableTransitionState(false).apply { targetState = true } }
+                    AnimatedVisibility(visibleState = visible, enter = fadeIn() + expandVertically()) {
+                        Column {
+                            if (index > 0) HorizontalDivider(color = MaterialTheme.hapi.divider, modifier = Modifier.padding(start = 40.dp))
+                            QueuedRow(row, onSteer, onRetry, onEdit, onCancel)
+                        }
+                    }
+                }
             }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun QueuedRow(
     row: QueuedRowUi,
@@ -78,26 +122,45 @@ private fun QueuedRow(
     onEdit: (String) -> Unit,
     onCancel: (String) -> Unit,
 ) {
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        shape = RoundedCornerShape(10.dp),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
+    var menuOpen by remember { mutableStateOf(false) }
+    val editLabel = stringResource(R.string.chat_queued_edit)
+    val secondary = MaterialTheme.hapi.textSecondary
+    Box {
         Row(
-            modifier = Modifier.padding(start = 10.dp, end = 2.dp, top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp)
+                .combinedClickable(
+                    enabled = row.canAct,
+                    onClickLabel = editLabel,
+                    onClick = { onEdit(row.id) },
+                    onLongClick = { menuOpen = true },
+                )
+                .padding(start = 14.dp, end = 2.dp),
         ) {
-            Column(modifier = Modifier.weight(1f)) {
+            Icon(
+                painterResource(R.drawable.ic_sym_subdirectory_arrow_right),
+                contentDescription = null,
+                tint = secondary,
+                modifier = Modifier.size(16.dp),
+            )
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(start = 10.dp, top = 6.dp, bottom = 6.dp),
+            ) {
                 Text(
                     text = row.text.ifEmpty { row.attachmentNames.joinToString(", ") },
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 2,
+                    style = HapiTypography.body.copy(fontSize = 15.sp, lineHeight = 20.sp),
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 if (row.indeterminate) {
                     Text(
                         text = "Delivery outcome unknown",
-                        style = MaterialTheme.typography.labelSmall,
+                        style = HapiTypography.caption,
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
@@ -109,21 +172,76 @@ private fun QueuedRow(
                             // year only when it differs from the current one.
                             ScheduleSend.formatScheduledTime(scheduledAt),
                         ),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.hapi.hint,
+                        style = HapiTypography.caption,
+                        color = secondary,
                     )
                 }
             }
             if (row.indeterminate) {
-                TextButton(onClick = { onRetry(row.id) }, enabled = row.canAct) { Text("Retry") }
+                QueuedIconAction(R.drawable.ic_sym_refresh, stringResource(R.string.chat_retry), row.canAct) { onRetry(row.id) }
             } else if (row.canSteer) {
-                TextButton(onClick = { onSteer(row.id) }) { Text(stringResource(R.string.chat_queued_steer)) }
+                QueuedIconAction(
+                    R.drawable.ic_sym_bolt,
+                    stringResource(R.string.chat_queued_steer),
+                    enabled = true,
+                    tint = MaterialTheme.colorScheme.primary,
+                ) { onSteer(row.id) }
             }
-            TextButton(onClick = { onEdit(row.id) }, enabled = row.canAct) { Text(stringResource(R.string.chat_queued_edit)) }
-            TextButton(onClick = { onCancel(row.id) }, enabled = row.canAct) {
-                Text(stringResource(R.string.chat_cancel), color = MaterialTheme.colorScheme.error)
-            }
+            QueuedIconAction(R.drawable.ic_sym_close, stringResource(R.string.chat_cancel), row.canAct) { onCancel(row.id) }
         }
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            if (row.indeterminate) {
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.chat_retry)) },
+                    enabled = row.canAct,
+                    onClick = { menuOpen = false; onRetry(row.id) },
+                )
+            } else if (row.canSteer) {
+                DropdownMenuItem(
+                    text = { Text(stringResource(R.string.chat_queued_steer)) },
+                    onClick = { menuOpen = false; onSteer(row.id) },
+                )
+            }
+            DropdownMenuItem(
+                text = { Text(editLabel) },
+                enabled = row.canAct,
+                onClick = { menuOpen = false; onEdit(row.id) },
+            )
+            DropdownMenuItem(
+                text = { Text(stringResource(R.string.chat_cancel), color = MaterialTheme.colorScheme.error) },
+                enabled = row.canAct,
+                onClick = { menuOpen = false; onCancel(row.id) },
+            )
+        }
+    }
+}
+
+@Composable
+private fun QueuedIconAction(
+    iconRes: Int,
+    label: String,
+    enabled: Boolean,
+    tint: Color = MaterialTheme.hapi.textSecondary,
+    onClick: () -> Unit,
+) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .clickable(enabled = enabled, onClick = onClick)
+            .semantics(mergeDescendants = true) {
+                contentDescription = label
+                role = Role.Button
+                if (!enabled) disabled()
+            },
+    ) {
+        Icon(
+            painterResource(iconRes),
+            contentDescription = null,
+            tint = if (enabled) tint else tint.copy(alpha = 0.38f),
+            modifier = Modifier.size(18.dp),
+        )
     }
 }
 

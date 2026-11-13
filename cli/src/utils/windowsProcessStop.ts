@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { monotonicTimeMs } from './time'
 
 export type WindowsProcessEntry = { parentPid: number; marker: string | null; name: string; commandLine: string }
 export type WindowsProcessTable = Map<number, WindowsProcessEntry>
@@ -76,12 +77,8 @@ export function windowsGenerationMayBeAlive(table: WindowsProcessTable | null, p
 }
 
 export type WindowsStopReport = { confirmed: boolean; phase: string; elapsedMs: number; snapshots: number }
-export async function stopWindowsProcessTree(
-    rootPid: number,
-    force: boolean,
-    report?: (result: WindowsStopReport) => void,
-    canSignal?: (phase?: 'root' | 'descendant') => boolean,
-): Promise<boolean> {
+export async function stopWindowsProcessTree(rootPid: number, force: boolean, report?: (result: WindowsStopReport) => void,
+    callerDeadlineMs?: number, canSignal?: (phase?: 'root' | 'descendant') => boolean): Promise<boolean> {
     // Includes command startup, queries, signalling and verification, independent
     // of tree size. Each async child is killed when its remaining budget expires.
     const started = performance.now()
@@ -91,7 +88,10 @@ export async function stopWindowsProcessTree(
         report?.({ confirmed, phase, elapsedMs: Math.round(performance.now() - started), snapshots })
         return confirmed
     }
-    const remaining = () => Math.max(0, deadline - performance.now())
+    // The cross-process preparation lease uses the OS-wide clock, not this
+    // process's performance origin. Cap budgets without comparing origins.
+    const remaining = () => Math.max(0, Math.min(deadline - performance.now(),
+        callerDeadlineMs === undefined ? Infinity : callerDeadlineMs - monotonicTimeMs()))
     const signal = async (pid: number, hard: boolean, tree: boolean) => {
         if (canSignal && !canSignal(pid === rootPid ? 'root' : 'descendant')) return null
         phase = 'signal'
@@ -99,6 +99,7 @@ export async function stopWindowsProcessTree(
             ...(hard ? ['/F'] : []), ...(tree ? ['/T'] : []), '/PID', String(pid),
         ], Math.min(5_000, remaining()))
     }
+    if (!remaining()) return finish(false)
     const initial = await readWindowsProcessTable(Math.min(15_000, remaining()))
     if (!initial) {
         // A transient CIM failure must not leave the cancellation path with no
@@ -143,7 +144,7 @@ export async function stopWindowsProcessTree(
     if (unresolved.has(rootPid) && rootMarker && current.get(rootPid)?.marker === rootMarker) {
         const softAccepted = await signal(rootPid, force, true)
         if (!force && softAccepted !== null) {
-            const graceDeadline = Math.min(deadline, performance.now() + 2_000)
+            const graceDeadline = performance.now() + Math.min(2_000, remaining())
             while (unresolved.size && performance.now() < graceDeadline) {
                 current = await snapshot()
                 if (!current) return finish(false)

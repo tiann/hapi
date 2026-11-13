@@ -8,6 +8,7 @@ import {
     PROTOCOL_VERSION
 } from '@hapi/protocol'
 import { getConfiguration } from '../../configuration'
+import { readAutoBridgeTransientModelErrorsEnabled } from '../../config/autoBridgeTransientModelErrors'
 import { readSessionSummaryContractEnabled } from '../../config/sessionSummaryContract'
 import { constantTimeEquals } from '../../utils/crypto'
 import { parseAccessToken } from '../../utils/accessToken'
@@ -32,7 +33,8 @@ function resolveSessionForNamespace(
     sessionId: string,
     namespace: string
 ): { ok: true; session: Session; sessionId: string } | { ok: false; status: 403 | 404; error: string } {
-    const access = engine.resolveSessionAccess(sessionId, namespace)
+    // CLI callers continue with the returned id (e.g. a runner reopen of a merged-away id).
+    const access = engine.resolveSessionAccess(sessionId, namespace, { followRedirects: true })
     if (access.ok) {
         return { ok: true, session: access.session, sessionId: access.sessionId }
     }
@@ -140,10 +142,13 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
                     parsed.data.modelReasoningEffort,
                     parsed.data.id
                 )
-            const sessionSummaryContract = await readSessionSummaryContractEnabled(
-                getConfiguration().dataDir
-            )
-            return c.json({ session, sessionSummaryContract })
+            const dataDir = getConfiguration().dataDir
+            const sessionSummaryContract = await readSessionSummaryContractEnabled(dataDir)
+            // Owner-only hub setting — never enable auto-bridge for tenant namespaces.
+            const autoBridgeTransientModelErrors = namespace === 'default'
+                ? await readAutoBridgeTransientModelErrorsEnabled(dataDir)
+                : false
+            return c.json({ session, sessionSummaryContract, autoBridgeTransientModelErrors })
         } catch (error) {
             if (error instanceof SessionIdentityConflictError) {
                 return c.json({ error: error.message }, 409)
@@ -168,6 +173,28 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         return c.json({ sessions })
     })
 
+    // Registered before `/sessions/:id/*` so the literal segment wins.
+    app.get('/sessions/resume-target-by-agent', (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not ready' }, 503)
+        }
+
+        const flavor = c.req.query('flavor')
+        const agentSessionId = c.req.query('agentSessionId')?.trim()
+        if (flavor !== 'claude' || !agentSessionId) {
+            return c.json({ error: 'Invalid query' }, 400)
+        }
+
+        const namespace = c.get('namespace')
+        const machineId = c.req.query('machineId') || undefined
+        const result = engine.resolveLocalResumeTargetByAgentSessionId(agentSessionId, namespace, { machineId })
+        if (result.type === 'error') {
+            return c.json({ error: result.message, code: result.code }, 409)
+        }
+        return c.json({ target: result.target, historical: result.historical })
+    })
+
     app.get('/sessions/:id/resume-target', (c) => {
         const engine = getSyncEngine()
         if (!engine) {
@@ -184,6 +211,62 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         }
 
         return c.json({ target: result.target })
+    })
+
+app.post('/sessions/:id/prepare-local-resume', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) {
+            return c.json({ error: 'Not ready' }, 503)
+        }
+
+        const namespace = c.get('namespace')
+        let result: Awaited<ReturnType<SyncEngine['prepareLocalResume']>>
+        try {
+            result = await engine.prepareLocalResume(c.req.param('id'), namespace)
+        } catch (error) {
+            return c.json({ error: error instanceof Error ? error.message : 'Failed to prepare session', code: 'prepare_failed' }, 409)
+        }
+        if (result.type === 'error') {
+            const status = result.code === 'access_denied' ? 403
+                : result.code === 'session_not_found' ? 404
+                    : 409
+            return c.json({ error: result.message, code: result.code }, status)
+        }
+        return c.json({ ok: true, revived: result.revived })
+    })
+
+    app.post('/sessions/:id/opencode-rewind', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) return c.json({ error: 'Not ready' }, 503)
+        const { OpenCodeRewindReportSchema } = await import('@hapi/protocol/apiTypes')
+        const parsed = z.object({ report: OpenCodeRewindReportSchema, expectedVersion: z.number().int().nonnegative() }).safeParse(await c.req.json().catch(() => null))
+        if (!parsed.success) return c.json({ error: 'Invalid rewind report' }, 400)
+        try {
+            const operation = engine.reportOpenCodeRewind(c.req.param('id'), c.get('namespace'), parsed.data.report, parsed.data.expectedVersion)
+            return c.json({ operation })
+        } catch (error) {
+            return c.json({ error: error instanceof Error ? error.message : String(error) }, 409)
+        }
+    })
+
+    app.post('/sessions/:id/prepare-stop', async (c) => {
+        const engine = getSyncEngine()
+        if (!engine) return c.json({ error: 'Not ready' }, 503)
+        const access = resolveSessionForNamespace(engine, c.req.param('id'), c.get('namespace'))
+        if (!access.ok) return c.json({ error: access.error }, access.status)
+        const body = z.object({ machineId: z.string().min(1), pid: z.number().int().positive(),
+            processStartMarker: z.string().min(1), preparationLease: z.object({ id: z.string().min(1),
+                expiresAt: z.number().int().positive() }) }).safeParse(await c.req.json().catch(() => null))
+        if (!body.success) return c.json({ error: 'Invalid body' }, 400)
+        if (access.session.metadata?.machineId !== body.data.machineId) {
+            return c.json({ error: 'Session machine does not match runner' }, 403)
+        }
+        try {
+            const status = await engine.prepareOpenCodeSessionStop(access.sessionId, body.data.pid, body.data.processStartMarker, body.data.preparationLease, body.data.machineId)
+            return c.json({ status, ...(status === 'ready' ? { preparationLease: body.data.preparationLease } : {}) })
+        } catch {
+            return c.json({ error: 'Session shutdown preparation was not confirmed' }, 503)
+        }
     })
 
     app.post('/sessions/:id/handoff-local', async (c) => {
@@ -264,10 +347,16 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
         if (!resolved.ok) {
             return c.json({ error: resolved.error }, resolved.status)
         }
-        const sessionSummaryContract = await readSessionSummaryContractEnabled(
-            getConfiguration().dataDir
-        )
-        return c.json({ session: resolved.session, sessionSummaryContract })
+        const dataDir = getConfiguration().dataDir
+        const sessionSummaryContract = await readSessionSummaryContractEnabled(dataDir)
+        const autoBridgeTransientModelErrors = namespace === 'default'
+            ? await readAutoBridgeTransientModelErrorsEnabled(dataDir)
+            : false
+        return c.json({
+            session: resolved.session,
+            sessionSummaryContract,
+            autoBridgeTransientModelErrors
+        })
     })
 
     app.get('/sessions/:id/messages', (c) => {

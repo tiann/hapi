@@ -158,6 +158,12 @@ export class AcpStdioTransport {
             logger.debug('[ACP] agent CLI guard armed', describeAgentAcpGuardState(childPid));
         }
 
+        // A child can exit between the liveness check and a write. Node emits
+        // stream errors separately from the write callback; handle both paths.
+        this.process.stdin.on('error', (error) => {
+            this.markClosed(markAcpIndeterminate(error));
+        });
+
         this.process.stdout.setEncoding('utf8');
         this.process.stdout.on('data', (chunk) => this.handleStdout(chunk));
 

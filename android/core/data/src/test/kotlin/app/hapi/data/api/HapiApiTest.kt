@@ -128,7 +128,7 @@ class HapiApiTest {
     }
 
     @Test fun `uncertain plan implementation reports its error without automatic resubmission`() = runBlocking {
-        for ((status, code) in listOf(409 to "stale_plan", 409 to "unavailable", 502 to "failed", 503 to "indeterminate")) {
+        for ((status, code) in listOf(409 to "stale_plan", 409 to "unavailable", 500 to "failed", 503 to "indeterminate")) {
             server.enqueue(MockResponse().setResponseCode(status).setBody("""{"ok":false,"code":"$code","error":"Not confirmed"}"""))
             val error = assertFailsWith<ApiError> { session.api.implementCodexPlan("session", "proposal") }
             assertEquals(status, error.status)
