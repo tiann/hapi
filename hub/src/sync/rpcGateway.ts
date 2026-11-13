@@ -1,5 +1,14 @@
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, PermissionMode } from '@hapi/protocol/types'
-import { PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS } from '@hapi/protocol/rpcMethods'
+import { DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
+import {
+    UsageQueryResultSchema,
+    UsageQuerySettingsResponseSchema,
+    type UsageQueryAgent,
+    type UsageQueryAgentSettings,
+    type UsageQueryResult,
+    type UsageQuerySettingsResponse,
+    type UsageQueryTemplate
+} from '@hapi/protocol/usageQuery'
 import {
     UsageQueryResultSchema,
     UsageQuerySettingsResponseSchema,
@@ -66,7 +75,6 @@ import type {
 import type { Server } from 'socket.io'
 import type { RpcRegistry } from '../socket/rpcRegistry'
 
-const DEFAULT_RPC_TIMEOUT_MS = 30_000
 const MODEL_LIST_RPC_TIMEOUT_MS = 120_000
 // Codex can spend 30s awaiting startup after preflight and process creation.
 const CODEX_SPAWN_RPC_TIMEOUT_MS = 60_000
@@ -218,19 +226,37 @@ export class RpcGateway {
             effort?: string | null
             collaborationMode?: CodexCollaborationMode
             copilotAgentMode?: CopilotAgentMode
+            autoBridgeTransientModelErrors?: boolean
         }
     ): Promise<unknown> {
         return await this.sessionRpc(sessionId, RPC_METHODS.SetSessionConfig, config)
     }
 
-    async killSession(sessionId: string): Promise<{ pid?: number; processStartMarker?: string }> {
-        const result = await this.sessionRpc(sessionId, RPC_METHODS.KillSession, {})
+    async killSession(sessionId: string, options: {
+        prepareOnly?: boolean; expectedMachineId?: string; expectedPid?: number; expectedProcessStartMarker?: string; preparationLease?: SessionStopPreparationLease
+    } = {}): Promise<{ pid?: number; machineId?: string; processStartMarker?: string; preparationLease?: SessionStopPreparationLease }> {
+        let method: string = RPC_METHODS.KillSession
+        if (options.prepareOnly) {
+            if (!options.expectedMachineId || !options.expectedPid || !options.expectedProcessStartMarker) {
+                throw new Error('Process shutdown preparation requires machine and process generation')
+            }
+            method = getSessionStopPreparationMethod(options.expectedMachineId, options.expectedPid)
+        }
+        const result = await this.sessionRpc(sessionId, method, options)
+        if (result && typeof result === 'object' && ('error' in result || ('success' in result && result.success === false))) {
+            throw new Error(typeof (result as { error?: unknown }).error === 'string'
+                ? (result as { error: string }).error : 'Session shutdown was not confirmed')
+        }
         if (!result || typeof result !== 'object') return {}
         const pid = (result as { pid?: unknown }).pid
         const processStartMarker = (result as { processStartMarker?: unknown }).processStartMarker
+        const preparationLease = (result as { preparationLease?: SessionStopPreparationLease }).preparationLease
+        const machineId = (result as { machineId?: unknown }).machineId
         return {
             ...(typeof pid === 'number' ? { pid } : {}),
             ...(typeof processStartMarker === 'string' ? { processStartMarker } : {}),
+            ...(preparationLease ? { preparationLease } : {}),
+            ...(typeof machineId === 'string' ? { machineId } : {}),
         }
     }
 
@@ -260,6 +286,28 @@ export class RpcGateway {
 
     async handoffSessionToLocal(sessionId: string): Promise<void> {
         await this.sessionRpc(sessionId, RPC_METHODS.HandoffLocal, {})
+    }
+
+    async bridgeModelError(
+        sessionId: string,
+        payload: {
+            eventId: string
+            atTs: number
+            kind: string
+            rawSnippet: string
+            lastUserMessage?: string
+            priorAssistantClaimsDone: boolean
+            transient: boolean
+            bridgedForEventId?: string
+            retriedAndFailed?: boolean
+            supersededByUserTurn?: boolean
+            bridgeable?: boolean
+        }
+    ): Promise<{ ok: boolean; reason?: string }> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.BridgeModelError, payload) as {
+            ok: boolean
+            reason?: string
+        }
     }
 
     async spawnSession(
@@ -725,7 +773,7 @@ export class RpcGateway {
 
     async rewindConversation(
         sessionId: string,
-        params: { messageLocalId: string }
+        params: { messageLocalId: string; opencodeRewind?: import('@hapi/protocol/schemas').OpenCodeRewindOperation }
     ): Promise<import('@hapi/protocol/apiTypes').RewindConversationRpcResult> {
         return await this.sessionRpc(
             sessionId,

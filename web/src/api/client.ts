@@ -797,6 +797,86 @@ export class ApiClient {
         })
     }
 
+    async acknowledgeModelError(sessionId: string, eventId: string): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/model-error/acknowledge`, {
+            method: 'POST',
+            body: JSON.stringify({ eventId })
+        })
+    }
+
+    async bridgeModelError(sessionId: string, eventId: string): Promise<{ ok: boolean; reason?: string }> {
+        const path = `/api/sessions/${encodeURIComponent(sessionId)}/model-error/bridge`
+        const tryOnce = async (overrideToken: string | null): Promise<Response> => {
+            const headers = new Headers({ 'content-type': 'application/json' })
+            const liveToken = this.getToken ? this.getToken() : null
+            const authToken = overrideToken ?? liveToken ?? this.token
+            if (authToken) {
+                headers.set('authorization', `Bearer ${authToken}`)
+            }
+            return fetchThroughAuthProxy(this.buildUrl(path), {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ eventId })
+            })
+        }
+
+        let res = await tryOnce(null)
+        if (res.status === 401 && this.onUnauthorized) {
+            const refreshed = await this.onUnauthorized()
+            if (refreshed) {
+                this.token = refreshed
+                res = await tryOnce(refreshed)
+            }
+        }
+        if (res.status === 401) {
+            throw new Error('Session expired. Please sign in again.')
+        }
+
+        const text = await res.text()
+        let body: { ok?: boolean; reason?: string; error?: string } | null = null
+        try {
+            body = text ? JSON.parse(text) as { ok?: boolean; reason?: string; error?: string } : null
+        } catch {
+            body = null
+        }
+
+        if (res.status === 409 && body && typeof body.ok === 'boolean') {
+            return { ok: body.ok, reason: body.reason }
+        }
+
+        if (!res.ok) {
+            const detail = body?.error ?? text
+            throw new ApiError(
+                `HTTP ${res.status} ${res.statusText}: ${detail}`,
+                res.status,
+                undefined,
+                detail || undefined
+            )
+        }
+
+        // A 2xx that is not the hub's `{ ok }` envelope never reached the hub:
+        // an auth gateway can answer with an HTML sign-in page at status 200.
+        // Reporting ok:true there makes SessionChat latch the event as pending,
+        // leaving "Bridging…" disabled forever while no CLI request was made.
+        if (!body || typeof body.ok !== 'boolean') {
+            throw new ApiError(
+                `HTTP ${res.status} ${res.statusText}: unexpected bridge response`,
+                res.status,
+                undefined,
+                text || undefined
+            )
+        }
+
+        return { ok: body.ok, reason: body.reason }
+    }
+
+    async setModelErrorAutoBridge(sessionId: string, enabled: boolean): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/model-error/auto-bridge-setting`, {
+            method: 'POST',
+            body: JSON.stringify({ enabled })
+        })
+    }
+
     async reopenSession(sessionId: string): Promise<ReopenSessionResponse> {
         return await this.request<ReopenSessionResponse>(
             `/api/sessions/${encodeURIComponent(sessionId)}/reopen`,

@@ -28,7 +28,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
@@ -36,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.hapi.companion.R
 import app.hapi.companion.ui.theme.HapiExtendedColors
+import app.hapi.companion.ui.theme.HapiTypography
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.git.DiffChangeKind
 import app.hapi.protocol.git.DiffFile
@@ -93,7 +93,7 @@ fun DiffView(
                 ) {
                     Text(
                         text = row.text,
-                        fontFamily = FontFamily.Monospace,
+                        fontFamily = HapiTypography.monoFamily,
                         fontSize = 14.sp,
                         lineHeight = 20.sp,
                         softWrap = false,
@@ -140,7 +140,7 @@ private fun DiffHeader(file: DiffFile, colors: HapiExtendedColors) {
         }
         Text(
             text = title,
-            fontFamily = FontFamily.Monospace,
+            fontFamily = HapiTypography.monoFamily,
             fontSize = 11.sp,
             letterSpacing = 0.5.sp,
             color = colors.codeHeaderForeground,

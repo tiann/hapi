@@ -540,6 +540,7 @@ describe('ApiClient auth proxy redirect', () => {
             run: (api) => api.getGeneratedImageBlob('session-1', 'image-1')
         },
         { name: 'migrateCursorSessionToAcp', run: (api) => api.migrateCursorSessionToAcp('session-1') },
+        { name: 'bridgeModelError', run: (api) => api.bridgeModelError('session-1', 'evt-1') },
         {
             name: 'fetchScratchlistAttachmentBlob',
             run: (api) => api.fetchScratchlistAttachmentBlob('session-1', 'attachment-1')
@@ -564,5 +565,40 @@ describe('ApiClient auth proxy redirect', () => {
         const api = new ApiClient('test-token', { baseUrl: 'https://hub.example' })
         await expect(api.getGeneratedImageBlob('session-1', 'image-1')).rejects.toBeInstanceOf(AuthProxyRedirectError)
         expect(fetchMock.mock.calls[1][1]).toMatchObject({ cache: 'force-cache', redirect: 'manual' })
+    })
+
+    // An auth gateway can answer a POST with an HTML sign-in page at status
+    // 200. Treating that as a successful enqueue latches the banner into
+    // "Bridging…" forever while no CLI request was ever made.
+    it('bridgeModelError rejects a 200 HTML response instead of reporting ok', async () => {
+        fetchMock.mockResolvedValueOnce(
+            new Response('<!doctype html><title>Sign in</title>', {
+                status: 200,
+                headers: { 'content-type': 'text/html' }
+            })
+        )
+
+        const api = new ApiClient('test-token', { baseUrl: 'https://hub.example' })
+        await expect(api.bridgeModelError('session-1', 'evt-1')).rejects.toBeInstanceOf(ApiError)
+    })
+
+    it('bridgeModelError returns the hub refusal outcome on 409', async () => {
+        fetchMock.mockResolvedValueOnce(
+            new Response(JSON.stringify({ ok: false, reason: 'not_bridgeable' }), { status: 409 })
+        )
+
+        const api = new ApiClient('test-token', { baseUrl: 'https://hub.example' })
+        await expect(api.bridgeModelError('session-1', 'evt-1'))
+            .resolves.toEqual({ ok: false, reason: 'not_bridgeable' })
+    })
+
+    it('bridgeModelError reports success only for the hub ok envelope', async () => {
+        fetchMock.mockResolvedValueOnce(
+            new Response(JSON.stringify({ ok: true }), { status: 200 })
+        )
+
+        const api = new ApiClient('test-token', { baseUrl: 'https://hub.example' })
+        await expect(api.bridgeModelError('session-1', 'evt-1'))
+            .resolves.toEqual({ ok: true, reason: undefined })
     })
 })

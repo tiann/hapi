@@ -6,7 +6,9 @@ import {
     DecryptedMessageSchema,
     MachineSchema,
     PermissionModeSchema,
-    SessionSchema
+    SessionSchema,
+    MetadataSchema,
+    OpenCodeRewindSchema
 } from './schemas'
 import { AgentFlavorSchema } from './modes'
 import {
@@ -60,6 +62,7 @@ export const CliMessagesResponseSchema = z.object({
         seq: z.number(),
         createdAt: z.number(),
         localId: z.string().nullable().optional(),
+        invokedAt: z.number().nullable().optional(),
         content: z.unknown()
     }))
 })
@@ -69,7 +72,9 @@ export type CliMessagesResponse = z.infer<typeof CliMessagesResponseSchema>
 export const CreateSessionResponseSchema = z.object({
     session: SessionSchema,
     /** Hub opt-in for AGENT_NOTIFY_SUMMARY prompt injection (default off when omitted). */
-    sessionSummaryContract: z.boolean().optional()
+    sessionSummaryContract: z.boolean().optional(),
+    /** Hub opt-in: Cursor auto-bridge after transient model errors (default off). */
+    autoBridgeTransientModelErrors: z.boolean().optional()
 })
 
 export type CreateSessionResponse = z.infer<typeof CreateSessionResponseSchema>
@@ -78,6 +83,7 @@ export const HubSettingsResponseSchema = z.object({
     sessionSummaryContract: z.boolean(),
     /** Show compact AGENT_NOTIFY_SUMMARY in chat (default off / hide). */
     sessionSummaryInChat: z.boolean(),
+    autoBridgeTransientModelErrors: z.boolean(),
     peerSpawnDefaults: ResolvedPeerSpawnDefaultsSchema
 })
 
@@ -87,12 +93,14 @@ export const UpdateHubSettingsRequestSchema = z
     .object({
         sessionSummaryContract: z.boolean().optional(),
         sessionSummaryInChat: z.boolean().optional(),
+        autoBridgeTransientModelErrors: z.boolean().optional(),
         peerSpawnDefaults: PeerSpawnDefaultsSchema.optional()
     })
     .refine(
         (data) =>
             data.sessionSummaryContract !== undefined
             || data.sessionSummaryInChat !== undefined
+            || data.autoBridgeTransientModelErrors !== undefined
             || data.peerSpawnDefaults !== undefined,
         { message: 'At least one hub setting field is required' }
     )
@@ -546,6 +554,20 @@ export const ScratchlistEntryUpdateRequestSchema = z.object({
 
 export type ScratchlistEntryUpdateRequest = z.infer<typeof ScratchlistEntryUpdateRequestSchema>
 
+/** Dismiss the model-error banner for a specific displayed error (by eventId). */
+export const AcknowledgeModelErrorRequestSchema = z.object({
+    eventId: z.string().min(1)
+})
+
+export type AcknowledgeModelErrorRequest = z.infer<typeof AcknowledgeModelErrorRequestSchema>
+
+/** Bridge & retry for the specific displayed model error (by eventId). */
+export const BridgeModelErrorRequestSchema = z.object({
+    eventId: z.string().min(1)
+})
+
+export type BridgeModelErrorRequest = z.infer<typeof BridgeModelErrorRequestSchema>
+
 /** Per-session legacy stream-json → ACP migrator request. See tiann/hapi#824. */
 export const CursorMigrateToAcpRequestSchema = z.object({
     /** Skip removing the legacy ~/.cursor/chats source store.db even after verify passes. */
@@ -695,6 +717,7 @@ export type RewindConversationResponse = {
 export type ForkConversationRpcResult = {
     completedTurnId?: string
     nativeSessionId: string
+    opencodeHistoryCheckpoint?: NonNullable<Session['metadata']>['opencodeHistoryCheckpoint']
     /** Shared runtimes bind the child themselves; hub must not spawn another engine. */
     sessionId?: string
     /** When true, hub must spawn with --fork-session (Claude). */
@@ -721,6 +744,17 @@ export type ForkArchivedCodexResponse = { nativeSessionId: string } | { error: s
 export type RewindConversationErrorCode =
     | 'ambiguous_native_boundary'
     | 'ambiguous_native_boundary_fork_safe'
+
+export const OpenCodeRewindReportSchema = z.object({
+    operation: OpenCodeRewindSchema,
+    phase: z.enum(['prepared', 'applied', 'unknown', 'rejected']),
+    sourceHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+    prefixHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+    unchanged: z.literal(true).optional(),
+    checkpoint: MetadataSchema.shape.opencodeHistoryCheckpoint,
+    indexes: z.record(z.string(), z.number().int().nonnegative()).optional()
+})
+export type OpenCodeRewindReport = z.infer<typeof OpenCodeRewindReportSchema>
 
 export type RewindConversationRpcResult = {
     success: true
