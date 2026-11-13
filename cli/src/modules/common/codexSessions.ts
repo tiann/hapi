@@ -2,7 +2,14 @@ import { closeSync, existsSync, mkdirSync, openSync, readSync, readdirSync, read
 import { randomUUID } from 'node:crypto'
 import { basename, dirname, join, relative } from 'node:path'
 import { homedir } from 'node:os'
-import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
+import {
+    AGENT_MESSAGE_PAYLOAD_TYPE,
+    deduplicateCodexTranscriptMessages,
+    shouldIgnoreInjectedResponseUserMessage,
+    type CodexImportedMessageContent,
+    type CodexImportedMessageEntry,
+    type CodexImportedMessageSource
+} from '@hapi/protocol'
 import { isCodexSubagentSource } from '@/codex/utils/codexSessionMetadata'
 
 const DEFAULT_CODEX_SESSION_SCAN_LIMIT = 200
@@ -10,16 +17,6 @@ const DEFAULT_CODEX_SESSION_SCAN_LIMIT = 200
 type CodexSessionIndexTitle = {
     threadName: string
     updatedAt: string
-}
-
-type CodexImportedMessageContent = {
-    role: 'user'
-    content: { type: 'text'; text: string }
-    meta: { sentFrom: 'cli' }
-} | {
-    role: 'agent'
-    content: { type: typeof AGENT_MESSAGE_PAYLOAD_TYPE; data: unknown }
-    meta: { sentFrom: 'cli' }
 }
 
 export type LocalCodexSessionSummary = {
@@ -72,11 +69,6 @@ function extractCodexText(value: unknown): string {
 
 function truncateText(value: string, maxLength: number): string {
     return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value
-}
-
-function shouldIgnoreSyntheticUserMessage(text: string): boolean {
-    const normalized = text.trim()
-    return normalized.startsWith('# AGENTS.md instructions') || normalized.startsWith('<environment_context>')
 }
 
 function inferSessionIdFromFileName(filePath: string): string | null {
@@ -183,7 +175,7 @@ function getLatestCodexUserMessage(lines: string[]): string | null {
             const payload = asRecord(record.payload)
             if (payload?.type !== 'message' || payload.role !== 'user') continue
             const text = extractCodexText(payload.content)
-            if (text && !shouldIgnoreSyntheticUserMessage(text)) return truncateText(text, 140)
+            if (text && !shouldIgnoreInjectedResponseUserMessage(text)) return truncateText(text, 140)
         } catch { continue }
     }
     return null
@@ -220,83 +212,51 @@ function buildImportedAgentMessage(data: unknown): CodexImportedMessageContent {
     return { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data }, meta: { sentFrom: 'cli' } }
 }
 
-function convertCodexRecordToImportedMessage(record: Record<string, unknown>): CodexImportedMessageContent | null {
+function convertCodexRecordToImportedMessage(record: Record<string, unknown>): CodexImportedMessageEntry | null {
     const type = asString(record.type)
     const payload = asRecord(record.payload)
     if (!type || !payload) return null
     if (type === 'event_msg') {
+        const source: CodexImportedMessageSource = 'event_msg'
         const eventType = asString(payload.type)
         if (eventType === 'user_message') {
             const text = asString(payload.message) ?? asString(payload.text) ?? asString(payload.content)
-            return text && !shouldIgnoreSyntheticUserMessage(text) ? buildImportedUserMessage(text) : null
+            return text ? { source, message: buildImportedUserMessage(text) } : null
         }
         if (eventType === 'agent_message') {
             const message = asString(payload.message)
-            return message ? buildImportedAgentMessage({ type: 'message', message, id: randomUUID() }) : null
+            return message ? { source, message: buildImportedAgentMessage({ type: 'message', message, id: randomUUID() }) } : null
         }
         if (eventType === 'token_count') {
             const info = asRecord(payload.info)
-            return info ? buildImportedAgentMessage({ type: 'token_count', info, id: randomUUID() }) : null
+            return info ? { source, message: buildImportedAgentMessage({ type: 'token_count', info, id: randomUUID() }) } : null
         }
         return null
     }
     if (type !== 'response_item') return null
+    const source: CodexImportedMessageSource = 'response_item'
     const itemType = asString(payload.type)
     if (itemType === 'message') {
         const role = asString(payload.role)
         const text = extractCodexText(payload.content)
-        if (!text || shouldIgnoreSyntheticUserMessage(text)) return null
-        if (role === 'user') return buildImportedUserMessage(text)
-        if (role === 'assistant') return buildImportedAgentMessage({ type: 'message', message: text, id: randomUUID() })
+        if (!text) return null
+        if (role === 'user') {
+            return shouldIgnoreInjectedResponseUserMessage(text) ? null : { source, message: buildImportedUserMessage(text) }
+        }
+        if (role === 'assistant') {
+            return { source, message: buildImportedAgentMessage({ type: 'message', message: text, id: randomUUID() }) }
+        }
     }
     if (itemType === 'function_call') {
         const name = asString(payload.name)
         const callId = extractCodexToolCallId(payload)
-        return name && callId ? buildImportedAgentMessage({ type: 'tool-call', name, callId, input: parseCodexFunctionArguments(payload.arguments), id: randomUUID() }) : null
+        return name && callId ? { source, message: buildImportedAgentMessage({ type: 'tool-call', name, callId, input: parseCodexFunctionArguments(payload.arguments), id: randomUUID() }) } : null
     }
     if (itemType === 'function_call_output') {
         const callId = extractCodexToolCallId(payload)
-        return callId ? buildImportedAgentMessage({ type: 'tool-call-result', callId, output: payload.output, id: randomUUID() }) : null
+        return callId ? { source, message: buildImportedAgentMessage({ type: 'tool-call-result', callId, output: payload.output, id: randomUUID() }) } : null
     }
     return null
-}
-
-function stableSerialize(value: unknown): string {
-    if (value === null || typeof value !== 'object') return JSON.stringify(value)
-    if (Array.isArray(value)) return `[${value.map(stableSerialize).join(',')}]`
-    const record = value as Record<string, unknown>
-    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableSerialize(record[key])}`).join(',')}}`
-}
-
-function normalizeComparableContent(content: unknown): string | null {
-    const record = asRecord(content)
-    if (!record) return null
-    if (record.role === 'user') {
-        const body = asRecord(record.content)
-        return body?.type === 'text' && typeof body.text === 'string'
-            ? stableSerialize({ role: 'user', text: body.text.replace(/\s+$/u, '') })
-            : null
-    }
-    if (record.role === 'agent') {
-        const body = asRecord(record.content)
-        const data = asRecord(body?.data)
-        const normalized = data ? { ...data } : body?.data
-        if (data) delete (normalized as Record<string, unknown>).id
-        return body?.type === AGENT_MESSAGE_PAYLOAD_TYPE ? stableSerialize({ role: 'agent', data: normalized }) : null
-    }
-    return null
-}
-
-function deduplicateAdjacentImportedMessages(messages: CodexImportedMessageContent[]): CodexImportedMessageContent[] {
-    const deduped: CodexImportedMessageContent[] = []
-    let previousKey: string | null = null
-    for (const message of messages) {
-        const key = normalizeComparableContent(message)
-        if (key && key === previousKey) continue
-        deduped.push(message)
-        previousKey = key
-    }
-    return deduped
 }
 
 function parseCodexLocalSession(
@@ -316,15 +276,15 @@ function parseCodexLocalSession(
     let threadSource: string | null = null
     let forkedFromId: string | null = null
     let firstUserMessage: string | null = null
-    const messages: CodexImportedMessageContent[] = []
+    const entries: CodexImportedMessageEntry[] = []
 
     if (includeMessages) {
         for (const line of lines) {
             let record: Record<string, unknown> | null = null
             try { record = asRecord(JSON.parse(line)) } catch { continue }
             if (!record) continue
-            const message = convertCodexRecordToImportedMessage(record)
-            if (message) messages.push(message)
+            const entry = convertCodexRecordToImportedMessage(record)
+            if (entry) entries.push(entry)
         }
     }
 
@@ -347,7 +307,7 @@ function parseCodexLocalSession(
                 const payload = asRecord(record.payload)
                 if (payload?.type === 'message' && payload.role === 'user') {
                     const text = extractCodexText(payload.content)
-                    if (text && !shouldIgnoreSyntheticUserMessage(text)) firstUserMessage = text
+                    if (text && !shouldIgnoreInjectedResponseUserMessage(text)) firstUserMessage = text
                 }
             }
         } catch { continue }
@@ -373,7 +333,7 @@ function parseCodexLocalSession(
         threadSource,
         forkedFromId
     }
-    return includeMessages ? { ...summary, messages: deduplicateAdjacentImportedMessages(messages) } : summary
+    return includeMessages ? { ...summary, messages: deduplicateCodexTranscriptMessages(entries) } : summary
 }
 
 function listLocalCodexSessions(includeMessages: false, limit?: number): LocalCodexSessionSummary[]
