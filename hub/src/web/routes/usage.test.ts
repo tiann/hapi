@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { Hono } from 'hono'
+import { MACHINE_CAPABILITIES } from '@hapi/protocol'
 import { Store } from '../../store'
 import type { WebAppEnv } from '../middleware/auth'
 import { createUsageRoutes } from './usage'
@@ -54,6 +55,66 @@ describe('GET /api/usage/summary', () => {
                 const response = await createApp(store, 'default').request(`/api/usage/summary?timeZone=${encodeURIComponent(timeZone)}`)
                 expect(response.status).toBe(400)
             }
+        } finally {
+            store.close()
+        }
+    })
+
+    it('returns CLI account quotas across online machines on GET /api/usage/quotas', async () => {
+        const store = new Store(':memory:')
+        try {
+            const fakeSyncEngine = {
+                getOnlineMachinesByNamespace: () => [
+                    {
+                        id: 'machine-1',
+                        active: true,
+                        metadata: {
+                            displayName: 'Dev Box',
+                            host: 'dev-host',
+                            capabilities: [MACHINE_CAPABILITIES.AgentQuotas]
+                        }
+                    }
+                ],
+                getAgentQuotas: async (_machineId: string, opts?: { refresh?: boolean }) => ({
+                    fetchedAt: 1700000000000,
+                    accounts: [
+                        {
+                            agent: 'codex' as const,
+                            available: true,
+                            status: 'ok' as const,
+                            accountLabel: 'user@example.com',
+                            planLabel: opts?.refresh ? 'Pro (Refreshed)' : 'Pro',
+                            buckets: [
+                                {
+                                    id: 'codex-primary',
+                                    label: 'Weekly (7d)',
+                                    group: null,
+                                    window: 'weekly',
+                                    usedPercent: 18,
+                                    remainingPercent: 82,
+                                    resetsAt: 1700600000000
+                                }
+                            ],
+                            updatedAt: 1700000000000
+                        }
+                    ]
+                })
+            }
+
+            const app = new Hono<WebAppEnv>()
+            app.use('*', async (c, next) => {
+                c.set('namespace', 'default')
+                await next()
+            })
+            app.route('/api', createUsageRoutes(store, () => fakeSyncEngine as never))
+
+            const response = await app.request('/api/usage/quotas?refresh=1')
+            expect(response.status).toBe(200)
+            const body = await response.json() as { machines: Array<{ machineId: string; machineName: string | null; accounts: Array<{ planLabel?: string }> }> }
+            expect(body.machines).toHaveLength(1)
+            expect(body.machines[0]?.machineId).toBe('machine-1')
+            expect(body.machines[0]?.machineName).toBe('Dev Box')
+            expect(body.machines[0]?.accounts[0]?.planLabel).toBe('Pro (Refreshed)')
         } finally {
             store.close()
         }

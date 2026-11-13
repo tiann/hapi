@@ -157,7 +157,7 @@ async function transcribeStandard(
         })
         if (!response.ok) {
             console.warn('[Voice][Transcription] Upstream request failed', { provider, status: response.status })
-            return Response.json({ error: `${provider} transcription failed (HTTP ${response.status})` }, { status: 502 })
+            return Response.json({ error: `${provider} transcription failed (HTTP ${response.status})` }, { status: 500 })
         }
         const data = await response.json() as {
             text?: string
@@ -174,7 +174,7 @@ async function transcribeStandard(
             provider,
             error: error instanceof Error ? error.message : String(error)
         })
-        return Response.json({ error: `${provider} transcription request failed` }, { status: 502 })
+        return Response.json({ error: `${provider} transcription request failed` }, { status: 500 })
     }
 }
 
@@ -233,18 +233,18 @@ async function createRealtimeTranscriptionToken(
         })
         if (!response.ok) {
             console.warn('[Voice][RealtimeTranscription] Token request failed', { provider, status: response.status })
-            return Response.json({ error: `${provider} realtime transcription token failed (HTTP ${response.status})` }, { status: 502 })
+            return Response.json({ error: `${provider} realtime transcription token failed (HTTP ${response.status})` }, { status: 500 })
         }
         const data = await response.json() as { value?: string; token?: string; access_token?: string }
         const token = data.value ?? data.token ?? data.access_token
-        if (!token) return Response.json({ error: `${provider} realtime transcription returned no token` }, { status: 502 })
+        if (!token) return Response.json({ error: `${provider} realtime transcription returned no token` }, { status: 500 })
         return Response.json({ token })
     } catch (error) {
         console.warn('[Voice][RealtimeTranscription] Token request error', {
             provider,
             error: error instanceof Error ? error.message : String(error)
         })
-        return Response.json({ error: `${provider} realtime transcription token request failed` }, { status: 502 })
+        return Response.json({ error: `${provider} realtime transcription token request failed` }, { status: 500 })
     }
 }
 

@@ -91,6 +91,7 @@ export async function claudeRemote(opts: {
     onThinkingChange?: (thinking: boolean) => void,
     onMessage: (message: SDKMessage) => void,
     onContextUsage?: (usage: { model?: string, maxTokens?: number }) => void,
+    onAccountIdentity?: (accountIdentity: string | null) => void,
     onFirstResult?: (initialMessage: string) => void,
     /**
      * The delivered input finished at the SDK boundary although onReady is
@@ -684,6 +685,15 @@ export async function claudeRemote(opts: {
                     // Older CLIs may not support get_context_usage; the converter's seed stays.
                     response.getContextUsage().then(opts.onContextUsage, (e) => {
                         logger.debug('[claudeRemote] get_context_usage failed', e);
+                    });
+                }
+
+                if (
+                    opts.onAccountIdentity
+                    && typeof (response as { getAccountIdentity?: () => Promise<string | null> }).getAccountIdentity === 'function'
+                ) {
+                    response.getAccountIdentity().then(opts.onAccountIdentity, (e) => {
+                        logger.debug('[claudeRemote] getAccountIdentity failed', e);
                     });
                 }
 

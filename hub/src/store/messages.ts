@@ -1459,10 +1459,38 @@ export function mergeSessionMessages(
 }
 
 /**
- * Truncate transcript at/after the message with `localId`, optionally replacing
- * the removed suffix with `replacement` messages. Bumps message epoch so web
- * clients reset their window.
+ * Truncate the invocation-ordered suffix at the boundary identified by seq.
+ * Bumps message epoch so web clients reset their window.
  */
+export function truncateOpenCodeRewind(db: Database, sessionId: string, cutoffSeq: number, boundaryId: string): number {
+    return db.transaction(() => {
+        const target = prepareCached(db, `
+            SELECT seq, COALESCE(invoked_at, created_at) AS position_at
+            FROM messages WHERE session_id = ? AND id = ? AND seq = ?
+        `).get(sessionId, boundaryId, cutoffSeq) as { seq: number; position_at: number } | undefined
+        if (!target) throw new Error('Rewind boundary not found')
+        const deletedRows = prepareCached(db, `
+            SELECT id FROM messages WHERE session_id = ? AND (
+                COALESCE(invoked_at, created_at) > ?
+                OR (COALESCE(invoked_at, created_at) = ? AND seq >= ?)
+            )
+        `).all(sessionId, target.position_at, target.position_at, target.seq) as Array<{ id: string }>
+        prepareCached(db, `
+            DELETE FROM messages WHERE session_id = ? AND (
+                COALESCE(invoked_at, created_at) > ?
+                OR (COALESCE(invoked_at, created_at) = ? AND seq >= ?)
+            )
+        `).run(sessionId, target.position_at, target.position_at, target.seq)
+        invalidateMessageContentSearchInjectedTurnCache(db, [sessionId])
+        for (const row of deletedRows) removeMessageContentSearchIndex(db, row.id)
+        prepareCached(db, `UPDATE sessions SET read_revision = content_revision, read_state_version = read_state_version + 1
+            WHERE id = ? AND read_revision < content_revision AND NOT EXISTS (
+                SELECT 1 FROM messages WHERE session_id = sessions.id AND content_revision > sessions.read_revision
+            )`).run(sessionId)
+        return bumpMessageEpoch(db, sessionId)
+    })()
+}
+
 export function truncateMessagesFromLocalId(
     db: Database,
     sessionId: string,

@@ -374,7 +374,9 @@ describe('buildCliArgs', () => {
         expect(args).not.toContain('--hapi-session-id')
     })
 
-    it('builds a remote DSH ACP runner command without unsupported policy flags', () => {
+    it('builds a remote DSH ACP runner command with the spawn-time policy flag', () => {
+        // dsh accepts the standard permission flags since the DSH_PERMISSION_MODE
+        // spawn mapping: read-only/yolo pin the server's sandbox preset.
         const args = buildCliArgs('dsh', {
             directory: '/tmp',
             existingSessionId: 'existing-hub-id',
@@ -385,7 +387,8 @@ describe('buildCliArgs', () => {
             'dsh',
             '--hapi-starting-mode', 'remote',
             '--started-by', 'runner',
-            '--existing-session-id', 'existing-hub-id'
+            '--existing-session-id', 'existing-hub-id',
+            '--permission-mode', 'read-only'
         ])
     })
 
