@@ -447,6 +447,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             try {
                 await backend.prompt(acpSessionId, prompt, (message) => this.handleAgentMessage(message))
             } catch (error) {
+                this.throwIfTransportFailed()
                 const message = error instanceof Error ? error.message : String(error)
                 logger.warn('[dsh-acp] prompt failed', { message })
                 // isAcpIndeterminateError is the transport's own typed marker

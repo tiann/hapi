@@ -349,11 +349,14 @@ describe('DshRemoteLauncher', () => {
 
     it('does not swallow a prompt failure caused by an ACP transport close', async () => {
         const session = createSession()
-        harness.promptFailure = new Error('ACP transport closed')
+        harness.promptFailure = deadTransportError('ACP transport closed')
         const launcher = new DshRemoteLauncher(session as never)
 
         await expect(launcher.launch()).rejects.toThrow('ACP transport closed')
+        expect(harness.backends).toHaveLength(1)
         expect(harness.backend?.disconnect).toHaveBeenCalled()
+        expect(harness.backend?.resumeSession).not.toHaveBeenCalled()
+        expect(harness.backend?.newSession).toHaveBeenCalledTimes(1)
         expect(session.sendSessionEvent).not.toHaveBeenCalledWith({ type: 'ready' })
     })
 
