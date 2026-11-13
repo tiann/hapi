@@ -2253,17 +2253,8 @@ export class SyncEngine {
         { type: 'success'; sessionId: string } | { type: 'error'; message: string }
     > {
         try {
-            const metadata = source.metadata
-            if (metadata?.flavor !== 'codex' || !metadata.codexSessionId || !metadata.machineId || !metadata.path) {
-                throw new Error('Inactive fork requires a Codex session with native history and a machine binding')
-            }
-            if (metadata.conversationHistoryDiverged) throw new Error('Conversation history is diverged; refuse further fork/rewind')
-            if (this.store.messages.getUninvokedLocalMessages(source.id).length) throw new Error('Session has queued messages')
-            const machine = this.getMachine(metadata.machineId)
-            if (!machine?.active || machine.namespace !== namespace) throw new Error('Source machine is offline')
-            if (!machine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.ForkArchivedCodex)) {
-                throw new Error('Upgrade the source Runner to fork archived Codex sessions')
-            }
+            const { machineId, codexSessionId, path } = this.assertArchivedForkEligible(source, namespace, messageLocalId)
+            const metadata = source.metadata!
             let attempt = metadata.codexArchivedFork
             if (attempt && attempt.boundaryLocalId !== messageLocalId) throw new Error('A previous archived fork is pending at another boundary; retry that fork first')
             const turnId = attempt ? attempt.boundaryTurnId : messageLocalId ? metadata.conversationHistoryTurns?.[messageLocalId] : undefined
@@ -2288,19 +2279,19 @@ export class SyncEngine {
             }
             if (!child) {
                 child = this.sessionCache.getOrCreateSession(`archived-fork:${attempt.operationId}`, {
-                    path: metadata.path, host: metadata.host, machineId: metadata.machineId, flavor: 'codex',
+                    path: path, host: metadata.host, machineId: machineId, flavor: 'codex',
                     forkedFrom: source.id, startedBy: 'runner',
                     summary: buildForkSessionSummary(metadata)
                 }, null, namespace, source.model ?? undefined, source.effort ?? undefined, source.modelReasoningEffort ?? undefined, childId)
             } else if (child.namespace !== namespace || child.metadata?.forkedFrom !== source.id) throw new Error('Invalid archived fork reservation')
             if (attempt.spawnAttempted) {
-                const stopped = await this.rpcGateway.stopRunnerSession(metadata.machineId, childId)
+                const stopped = await this.rpcGateway.stopRunnerSession(machineId, childId)
                 if (stopped !== 'stopped' && stopped !== 'already_gone') throw new Error('Previous fork launcher outcome is unconfirmed; retry after cleanup')
             }
             if (!attempt.nativeSessionId) {
-                const result = await this.rpcGateway.forkArchivedCodex(metadata.machineId, {
+                const result = await this.rpcGateway.forkArchivedCodex(machineId, {
                     operationId: attempt.operationId, sourceSessionId: source.id,
-                    sourceThreadId: metadata.codexSessionId, directory: metadata.path,
+                    sourceThreadId: codexSessionId, directory: path,
                     ...(messageLocalId ? { boundary: { localId: messageLocalId, turnId: turnId! } } : {})
                 })
                 if ('error' in result) {
@@ -2310,7 +2301,7 @@ export class SyncEngine {
                     }
                     throw new Error(result.error)
                 }
-                if (result.nativeSessionId === metadata.codexSessionId) throw new Error('Native fork reused the source identity')
+                if (result.nativeSessionId === codexSessionId) throw new Error('Native fork reused the source identity')
                 attempt = { ...attempt, nativeSessionId: result.nativeSessionId }
                 this.setArchivedForkAttempt(source.id, namespace, attempt)
             }
@@ -2321,7 +2312,7 @@ export class SyncEngine {
             this.sessionCache.refreshSession(childId)
             attempt = { ...attempt, spawnAttempted: true }
             this.setArchivedForkAttempt(source.id, namespace, attempt)
-            const spawn = await this.rpcGateway.spawnSession(metadata.machineId, metadata.path, 'codex',
+            const spawn = await this.rpcGateway.spawnSession(machineId, path, 'codex',
                 source.model ?? undefined, source.modelReasoningEffort ?? undefined, undefined, 'simple', undefined,
                 attempt.nativeSessionId, source.effort ?? undefined, source.permissionMode, source.serviceTier ?? undefined,
                 childId, source.collaborationMode)
@@ -2376,6 +2367,30 @@ export class SyncEngine {
      * after the confirm lock is taken and before any flavor dispatch. Returns
      * a human-readable reason when the source moved since the preview.
      */
+    /** Admission guards shared by the archived-fork confirm and its preview:
+     *  a preview must never answer a boundary the confirm would refuse.
+     *  Returns the machine binding the guards verified. */
+    private assertArchivedForkEligible(source: Session, namespace: string, messageLocalId?: string): {
+        machineId: string
+        codexSessionId: string
+        path: string
+    } {
+        const metadata = source.metadata
+        if (metadata?.flavor !== 'codex' || !metadata.codexSessionId || !metadata.machineId || !metadata.path) {
+            throw new Error('Inactive fork requires a Codex session with native history and a machine binding')
+        }
+        if (metadata.conversationHistoryDiverged) throw new Error('Conversation history is diverged; refuse further fork/rewind')
+        if (this.store.messages.getUninvokedLocalMessages(source.id).length) throw new Error('Session has queued messages')
+        const machine = this.getMachine(metadata.machineId)
+        if (!machine?.active || machine.namespace !== namespace) throw new Error('Source machine is offline')
+        if (!machine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.ForkArchivedCodex)) {
+            throw new Error('Upgrade the source Runner to fork archived Codex sessions')
+        }
+        const attempt = metadata.codexArchivedFork
+        if (attempt && attempt.boundaryLocalId !== messageLocalId) throw new Error('A previous archived fork is pending at another boundary; retry that fork first')
+        return { machineId: metadata.machineId, codexSessionId: metadata.codexSessionId, path: metadata.path }
+    }
+
     private boundaryMovedReason(
         sessionId: string,
         source: Session,
@@ -2412,6 +2427,13 @@ export class SyncEngine {
             case 'latestCompleted':
                 // The pinned native turn is re-verified by the runner against
                 // native history; epoch covers hub-side truncation.
+                // A latestCompleted token is only minted for a running source,
+                // so an inactive source at confirm means the runner exited:
+                // refresh instead of confirming into the archived path, which
+                // ignores the pin.
+                if (!source.active) {
+                    return 'The source session stopped running since the preview'
+                }
                 break
             case 'rewind':
                 if (invokedTailSeq(rows) > boundary.tailSeq) {
@@ -2464,7 +2486,14 @@ export class SyncEngine {
         }
 
         if (!source.active) {
-            // Archived fork is hub-decided and the transcript is static.
+            // Archived fork is hub-decided and the transcript is static; run
+            // the same admission guards as the confirm so the preview cannot
+            // answer a boundary the confirm would refuse.
+            try {
+                this.assertArchivedForkEligible(source, namespace, intent === 'message' ? messageLocalId : undefined)
+            } catch (error) {
+                return guardError(error)
+            }
             if (intent === 'message') {
                 try {
                     this.assertInvokedHistoryBoundary(sessionId, messageLocalId!)

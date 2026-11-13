@@ -3,6 +3,7 @@ import { Store } from '../store'
 import { RpcRegistry } from '../socket/rpcRegistry'
 import { SyncEngine } from './syncEngine'
 import { FORK_PREVIEW_TAIL_ROWS, type ForkBoundary, type ForkPreviewResponse } from '@hapi/protocol/forkBoundary'
+import { MACHINE_CAPABILITIES } from '@hapi/protocol'
 import type { RpcGateway } from './rpcGateway'
 
 type FixtureOptions = {
@@ -355,6 +356,54 @@ describe('preview-capable shared runtime', () => {
         const { preview, rpc } = sharedFixture()
         rpc.previewForkBoundary = async () => { throw new Error('Native history is ambiguous') }
         expect(await preview('current')).toEqual({ type: 'error', message: 'Native history is ambiguous' })
+    })
+
+    it('refuses the preview of an inactive session the archived-fork confirm would refuse', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        const source = engine.getOrCreateSession('source', {
+            path: '/tmp/work', host: 'test', machineId: 'machine', hostPid: 42, flavor: 'claude',
+            capabilities: { conversationHistory: { forkCurrent: true } }
+        }, { controlledByUser: false }, 'default')
+        store.messages.addMessage(source.id, { role: 'user', content: { type: 'text', text: 'u1' } }, 'u1')
+        store.messages.markMessagesInvoked(source.id, ['u1'], Date.now())
+        // The confirm runs forkArchivedCodexSession, which demands a Codex
+        // session with native history and a machine binding; the preview must
+        // refuse the same session instead of answering a forkable boundary.
+        const result = await engine.forkPreview(source.id, 'default', 'current')
+        expect(result).toMatchObject({ type: 'error', message: expect.stringContaining('Inactive fork requires a Codex session') })
+    })
+
+    it('answers the preview for an eligible archived Codex session', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        engine.getOrCreateMachine('machine', { host: 'test', platform: 'win32', happyCliVersion: '1',
+            capabilities: [MACHINE_CAPABILITIES.ForkArchivedCodex] }, null, 'default')
+        engine.handleMachineAlive({ machineId: 'machine', time: Date.now() })
+        const source = engine.getOrCreateSession('source', {
+            path: '/tmp/work', host: 'test', machineId: 'machine', hostPid: 42, flavor: 'codex',
+            lifecycleState: 'archived', codexSessionId: 'native-source',
+            capabilities: { conversationHistory: { forkCurrent: true } }
+        }, { controlledByUser: false }, 'default')
+        store.messages.addMessage(source.id, { role: 'user', content: { type: 'text', text: 'u1' } }, 'u1')
+        store.messages.markMessagesInvoked(source.id, ['u1'], Date.now())
+        const result = await engine.forkPreview(source.id, 'default', 'current')
+        expect(result).toMatchObject({ type: 'success', preview: { mode: 'current' } })
+    })
+
+    it('rejects a latestCompleted token once the source stops running, with boundary_moved', async () => {
+        const { engine, source, rpc, preview } = sharedFixture()
+        engine.handleSessionAlive({ sid: source.id, time: Date.now(), thinking: true, mode: 'remote' })
+        rpc.previewForkBoundary = async () => ({ nativeTurnId: 'turn-2' })
+        const response = expectPreview(await preview('current'))
+        expect(response.mode).toBe('latestCompleted')
+        // The runner exits before the confirm: the archived path ignores the
+        // pinned turn, so the token must come back as boundary_moved for a
+        // fresh preview instead of failing with an unactionable error.
+        engine.handleSessionEnd({ sid: source.id, time: Date.now() })
+        rpc.forkConversation = async () => ({ nativeSessionId: 'child-native' })
+        const result = await engine.forkConversation(source.id, 'default', undefined, true, response.boundary)
+        expect(result).toMatchObject({ type: 'error', code: 'boundary_moved' })
     })
 
     it('still answers a latestCompleted intent for a running preview-capable source', async () => {
