@@ -467,6 +467,142 @@ describe('cursorAcpRemoteLauncher', () => {
         await runPromise;
     }, 10_000);
 
+    it('requeues the never-ACKed batch when a plain Stop lands during the model apply', async () => {
+        const session = makeSession(null, false);
+        const mode = { permissionMode: 'default', model: 'gpt-5.3-codex[reasoning=medium,fast=false]' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+        let releaseConfig!: () => void;
+        harness.deferSetConfigOption = new Promise<void>(resolve => { releaseConfig = resolve; });
+        const runPromise = cursorAcpRemoteLauncher(session);
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        let releaseCancel: (() => void) | undefined;
+        try {
+            await vi.waitFor(() => {
+                const backend = vi.mocked(createCursorAcpBackend).mock.results.at(-1)!.value as {
+                    setConfigOption: ReturnType<typeof vi.fn>;
+                };
+                expect(backend.setConfigOption.mock.calls.some(call => call[1] === 'model-opt')).toBe(true);
+            });
+            // The model-opt apply parks on deferSetConfigOption: nothing has
+            // settled yet.
+            expect(harness.setConfigOptionCalls.filter(call => call.configId === 'model-opt')).toEqual([]);
+            // Park the Stop's cancelPrompt so the teardown is still in flight
+            // when the model apply settles.
+            const backend = vi.mocked(createCursorAcpBackend).mock.results.at(-1)!.value as {
+                cancelPrompt: ReturnType<typeof vi.fn>;
+            };
+            backend.cancelPrompt.mockImplementationOnce(() => new Promise<void>(resolve => { releaseCancel = resolve; }));
+            const stop = handlers.get(RPC_METHODS.Abort)!();
+            await vi.waitFor(() => expect(releaseCancel).toBeTypeOf('function'));
+            releaseConfig();
+            await new Promise<void>(resolve => setImmediate(resolve));
+            await new Promise<void>(resolve => setImmediate(resolve));
+            // The batch was dequeued but never hub-ACKed (the ACK is deferred
+            // to the dispatch point): the Stop must preserve it, not dispatch
+            // a cancelled turn behind the in-flight teardown.
+            expect(harness.promptCalls).toBe(0);
+            expect(session.client.emitMessagesConsumed).not.toHaveBeenCalled();
+            releaseCancel?.();
+            await stop;
+            await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+            expect(session.client.emitMessagesConsumed).toHaveBeenCalledExactlyOnceWith(['first']);
+            session.queue.close();
+            await runPromise;
+        } finally {
+            releaseConfig?.();
+            releaseCancel?.();
+            session.queue.close();
+            await runPromise.catch(() => {});
+        }
+    });
+
+    it('ends without dispatching when switch lands during the model apply', async () => {
+        const session = makeSession(null, false);
+        const mode = { permissionMode: 'default', model: 'gpt-5.3-codex[reasoning=medium,fast=false]' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+        let releaseConfig!: () => void;
+        harness.deferSetConfigOption = new Promise<void>(resolve => { releaseConfig = resolve; });
+        const runPromise = cursorAcpRemoteLauncher(session);
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        try {
+            await vi.waitFor(() => {
+                const backend = vi.mocked(createCursorAcpBackend).mock.results.at(-1)!.value as {
+                    setConfigOption: ReturnType<typeof vi.fn>;
+                };
+                expect(backend.setConfigOption.mock.calls.some(call => call[1] === 'model-opt')).toBe(true);
+            });
+            expect(harness.setConfigOptionCalls.filter(call => call.configId === 'model-opt')).toEqual([]);
+            const switchPromise = handlers.get(RPC_METHODS.Switch)!();
+            releaseConfig();
+            await switchPromise;
+            await new Promise<void>(resolve => setImmediate(resolve));
+            // The terminal teardown reset the queue: no dispatch, no bounce.
+            expect(harness.promptCalls).toBe(0);
+            expect(session.client.emitMessagesConsumed).not.toHaveBeenCalled();
+            expect(session.queue.pendingLocalIds()).toEqual([]);
+            session.queue.close();
+            expect(await runPromise).toBe('switch');
+        } finally {
+            releaseConfig?.();
+            session.queue.close();
+            await runPromise.catch(() => {});
+        }
+    });
+
+    it('releases a pre-dispatch parked steer reservation and reverts its hub stamp on switch', async () => {
+        let releasePrompt!: () => void;
+        harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });
+        const session = makeSession(null, false);
+        const mode = { permissionMode: 'default' } as EnhancedMode;
+        session.queue.push('first', mode, 'first');
+        const runPromise = cursorAcpRemoteLauncher(session);
+        await vi.waitFor(() => expect(harness.promptCalls).toBe(1));
+        const handlers = (session.client as unknown as {
+            rpcHandlerManager: { handlers: Map<string, (payload?: unknown) => Promise<unknown>> };
+        }).rpcHandlerManager.handlers;
+        const stateCalls: Array<[string[], string]> = [];
+        let releaseDispatch!: () => void;
+        let dispatchParked = false;
+        const client = session.client as unknown as {
+            setSteerDeliveryState: (ids: string[], state: string) => Promise<boolean>;
+        };
+        const setSteerDeliveryState = session.client.setSteerDeliveryState as unknown as ReturnType<typeof vi.fn>;
+        setSteerDeliveryState.mockImplementation(async (localIds: string[], state: string) => {
+            stateCalls.push([localIds, state]);
+            if (state === 'dispatching' && !dispatchParked) {
+                dispatchParked = true;
+                await new Promise<void>(resolve => { releaseDispatch = resolve; });
+            }
+            return true;
+        });
+        try {
+            session.queue.push('correction', mode, 'steer');
+            const steering = handlers.get(RPC_METHODS.SteerQueuedMessage)!({ localId: 'steer' });
+            await vi.waitFor(() => expect(stateCalls).toContainEqual([['steer'], 'dispatching']));
+            const switchPromise = handlers.get(RPC_METHODS.Switch)!();
+            await switchPromise;
+            releaseDispatch();
+            expect(await steering).toEqual({ steered: false, error: 'Active turn changed' });
+            // Leaving remote undoes the 'dispatching' stamp and releases the
+            // held reservation instead of re-admitting the row.
+            await vi.waitFor(() => expect(stateCalls).toContainEqual([['steer'], 'queued']));
+            expect(session.queue.cancelByLocalId('steer')).toBe(false);
+            expect(session.queue.pendingLocalIds()).toEqual([]);
+            releasePrompt();
+            expect(await runPromise).toBe('switch');
+        } finally {
+            releaseDispatch?.();
+            setSteerDeliveryState.mockImplementation(async () => true);
+            releasePrompt?.();
+            session.queue.close();
+            await runPromise.catch(() => {});
+        }
+    });
+
     it('restores a queued steer when ACP dispatch fails', async () => {
         let releasePrompt!: () => void;
         harness.deferPrompt = new Promise((resolve) => { releasePrompt = resolve; });

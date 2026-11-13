@@ -150,6 +150,12 @@ describe('RemoteLauncherBase.runRespawnLoop', () => {
     })
 })
 
+class TerminalExitLauncher extends TestLauncher {
+    public readonly teardownRejected = vi.fn()
+    protected override onTerminalTeardownRejected(): void { this.teardownRejected() }
+    public async exit(handler: () => Promise<void>): Promise<void> { return this.requestExit('switch', handler) }
+}
+
 class AbortBarrierLauncher extends TestLauncher {
     public wire(
         rpc: { registerHandler: (method: string, handler: (params: unknown) => unknown) => void },
@@ -163,6 +169,18 @@ class AbortBarrierLauncher extends TestLauncher {
         return this.waitForAbortBarrier()
     }
 }
+
+describe('RemoteLauncherBase terminal teardown rejection hook', () => {
+    it('runs the rejection cleanup when the requestExit handler rejects, and not on success', async () => {
+        const launcher = new TerminalExitLauncher()
+        await expect(launcher.exit(async () => { throw new Error('cancel boom') })).rejects.toThrow('cancel boom')
+        expect(launcher.teardownRejected).toHaveBeenCalledTimes(1)
+        // The rejection still propagates to the caller, and a successful
+        // teardown performs its own cleanup without the hook.
+        await expect(launcher.exit(async () => {})).resolves.toBeUndefined()
+        expect(launcher.teardownRejected).toHaveBeenCalledTimes(1)
+    })
+})
 
 describe('RemoteLauncherBase abort barrier', () => {
     function wired(onAbort: () => Promise<void>) {
@@ -232,5 +250,36 @@ describe('RemoteLauncherBase abort barrier', () => {
         const args = call.slice(0, call.indexOf('this.abortController = new AbortController()') + 60)
         expect(args).toContain('() => this.abortController.abort()')
         expect(args).toContain('if (this.abortController.signal.aborted) this.abortController = new AbortController()')
+    })
+
+    it('holds the barrier until an overlapping non-terminal teardown chained behind a terminal one also settles', async () => {
+        const launcher = new AbortBarrierLauncher()
+        const handlers = new Map<string, (params: unknown) => unknown>()
+        let controller = new AbortController()
+        launcher.wire({ registerHandler: (method, handler) => { handlers.set(method, handler) } },
+            () => new Promise<void>((resolve) => { resolveStopTeardown = resolve }),
+            () => controller.abort())
+        let resolveStopTeardown!: () => void
+        let releaseKill!: () => void
+        const killGate = new Promise<void>(resolve => { releaseKill = resolve })
+        const stopped = handlers.get(RPC_METHODS.Abort)!({}) as Promise<void>
+        // kill() chains onto the in-flight Stop barrier instead of overwriting it.
+        const killBarrier = (launcher as unknown as {
+            runAbortUnderBarrier(run: () => Promise<void>): Promise<void>;
+        }).runAbortUnderBarrier(() => killGate)
+        let barrierPassed = false
+        const waiting = launcher.barrier().then(() => { barrierPassed = true })
+        await new Promise<void>(resolve => setImmediate(resolve))
+        expect(barrierPassed).toBe(false)
+        // The kill teardown settling first must NOT unblock the barrier while
+        // the earlier Stop teardown is still running.
+        releaseKill()
+        await killBarrier
+        await new Promise<void>(resolve => setImmediate(resolve))
+        expect(barrierPassed).toBe(false)
+        resolveStopTeardown()
+        await stopped
+        await waiting
+        expect(barrierPassed).toBe(true)
     })
 })

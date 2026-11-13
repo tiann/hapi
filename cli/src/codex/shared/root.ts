@@ -123,14 +123,6 @@ export class SharedCodexRoot {
         });
         this.client.setTransportAbandonedHandler(() => { void this.reconnect(); });
         this.session.onUserMessage((message, localId) => {
-            const batchKey = JSON.stringify({
-                ...this.settings,
-                fallbackModel: message.meta?.fallbackModel ?? null,
-                customSystemPrompt: message.meta?.customSystemPrompt ?? null,
-                appendSystemPrompt: message.meta?.appendSystemPrompt ?? null,
-                allowedTools: message.meta?.allowedTools ?? null,
-                disallowedTools: message.meta?.disallowedTools ?? null
-            });
             this.work = this.work.catch(() => {}).then(async () => {
                 await this.bound;
                 if (this.closed || this.stopping) return;
@@ -138,6 +130,19 @@ export class SharedCodexRoot {
                 const text = formatMessageWithAttachments(message.content.text, message.content.attachments);
                 const resolved = text.trim().startsWith('/') ? await this.queue.command(id, () => this.command(text)) : text;
                 if (resolved === null) { this.session.emitMessagesConsumed([id], { clearQueuedThinkingGrace: true }); return; }
+                // Compute the batch key now: this.settings may have changed
+                // while this message waited behind earlier queued work (e.g. a
+                // settings-updating slash command) or while hydration
+                // populated them. Capturing it at callback arrival would merge
+                // across the configuration change.
+                const batchKey = JSON.stringify({
+                    ...this.settings,
+                    fallbackModel: message.meta?.fallbackModel ?? null,
+                    customSystemPrompt: message.meta?.customSystemPrompt ?? null,
+                    appendSystemPrompt: message.meta?.appendSystemPrompt ?? null,
+                    allowedTools: message.meta?.allowedTools ?? null,
+                    disallowedTools: message.meta?.disallowedTools ?? null
+                });
                 await this.queue.enqueue(id, buildUserInputFromMessage(resolved), this.interrupted,
                     text.trim().startsWith('/') || message.meta?.isNativeQueuedMessage ? undefined : batchKey);
             }).catch(error => this.notice(`Message not confirmed: ${error instanceof Error ? error.message : error}. Inspect the queue before retrying.`));

@@ -59,6 +59,10 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
     /** Bumped at the top of every handleAbort; lets the respawn branch detect
      *  an abort that landed while the replacement session was being created. */
     private abortGeneration = 0
+    /** Bumped alongside abortGeneration for terminal aborts only (exit,
+     * switch-to-local, kill): those reset the pending queue, so the loop's
+     * mid-prep batch checks must drop instead of requeueing. */
+    private terminalAbortCount = 0
     private currentBackendModel: string | null = null
     /** Live reasoning-effort preference ('' = Provider default); re-applied on respawn. */
     private currentReasoningEffort: string | null = null
@@ -198,6 +202,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             // waitForMessagesAndGetAsString cannot be discarded that way —
             // the generation mismatch is what drops it.
             const generationAtDequeue = this.abortGeneration
+            const terminalAbortsAtDequeue = this.terminalAbortCount
 
             // A respawn that failed on an earlier batch leaves no backend
             // behind: rebuild before touching this batch. One fresh attempt
@@ -222,11 +227,18 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 }
                 if (generationAtDequeue !== this.abortGeneration) {
                     // A user stop landed while the replacement backend was
-                    // being established: the user already saw 'Session
-                    // aborted' and the queue was reset, so this already-
-                    // dequeued batch must not run (same contract as the
-                    // mid-prompt reconnect below).
-                    this.messageBuffer.addMessage('Aborted while reconnecting the DSH session; dropping the queued message', 'status')
+                    // being established. A terminal abort (exit/switch/kill)
+                    // reset the queue, so this already-dequeued batch must
+                    // not run (same contract as the mid-prompt reconnect
+                    // below). A plain Stop preserves the queue — but the
+                    // batch was already dequeued and hub-ACKed, so it goes
+                    // back for the post-stop drain instead of vanishing.
+                    if (!this.shouldExit && terminalAbortsAtDequeue === this.terminalAbortCount) {
+                        this.session.queue.unshiftBatch(batch)
+                        this.messageBuffer.addMessage('Aborted while reconnecting the DSH session; the queued message will run after the stop settles', 'status')
+                    } else {
+                        this.messageBuffer.addMessage('Aborted while reconnecting the DSH session; dropping the queued message', 'status')
+                    }
                     if (this.session.queue.size() === 0 && !this.shouldExit) {
                         this.session.sendSessionEvent({ type: 'ready' })
                     }
@@ -255,6 +267,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 // id and must also discard the already-dequeued batch (the user
                 // saw 'Session aborted').
                 const generationBeforeRespawn = this.abortGeneration
+                const terminalAbortsBeforeRespawn = this.terminalAbortCount
                 let resumed = false
                 try {
                     if (this.session.sessionId && backend.supportsSessionResume()) {
@@ -338,11 +351,18 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                     }
                 }
                 if (generationBeforeRespawn !== this.abortGeneration) {
-                    // Aborted mid-recreation: drop the batch and treat the fresh
-                    // session as ended so the next loop respawns cleanly instead
-                    // of running a message the user aborted.
+                    // Aborted mid-recreation: the fresh session is treated as
+                    // ended so the next loop respawns cleanly. A terminal
+                    // abort reset the queue — drop the batch; a plain Stop
+                    // preserves it, and the already-dequeued, hub-ACKed rows
+                    // go back for the post-stop drain.
                     this.acpSessionEnded = true
-                    this.messageBuffer.addMessage('Aborted while restarting the DSH session; dropping the queued message', 'status')
+                    if (!this.shouldExit && terminalAbortsBeforeRespawn === this.terminalAbortCount) {
+                        this.session.queue.unshiftBatch(batch)
+                        this.messageBuffer.addMessage('Aborted while restarting the DSH session; the queued message will run after the stop settles', 'status')
+                    } else {
+                        this.messageBuffer.addMessage('Aborted while restarting the DSH session; dropping the queued message', 'status')
+                    }
                     continue
                 }
                 this.acpSessionEnded = false
@@ -405,7 +425,6 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             }
 
             this.session.onThinkingChange(true)
-            this.messageBuffer.addMessage(batch.message, 'user')
             // Image attachments are read once here (authorized per session)
             // and the built content is reused verbatim by the respawn retry,
             // so a reconnect never re-reads or re-orders the batch's images.
@@ -430,11 +449,16 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             }
             if (generationAtDequeue !== this.abortGeneration) {
                 // A user stop landed while the prompt content was being
-                // prepared (image reads await): the user already saw
-                // 'Session aborted' and the queue was reset, so the
-                // already-dequeued batch must not run (same contract as the
-                // reconnect windows).
-                this.messageBuffer.addMessage('Aborted while preparing the DSH prompt; dropping the queued message', 'status')
+                // prepared (image reads await). A terminal abort reset the
+                // queue — drop the batch; a plain Stop preserves it, and the
+                // already-dequeued, hub-ACKed rows go back for the post-stop
+                // drain (same contract as the reconnect windows).
+                if (!this.shouldExit && terminalAbortsAtDequeue === this.terminalAbortCount) {
+                    this.session.queue.unshiftBatch(batch)
+                    this.messageBuffer.addMessage('Aborted while preparing the DSH prompt; the queued message will run after the stop settles', 'status')
+                } else {
+                    this.messageBuffer.addMessage('Aborted while preparing the DSH prompt; dropping the queued message', 'status')
+                }
                 this.session.onThinkingChange(false)
                 await this.permissionHandler?.cancelAll('Prompt finished')
                 if (this.session.queue.size() === 0 && !this.shouldExit) {
@@ -442,6 +466,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 }
                 continue
             }
+            this.messageBuffer.addMessage(batch.message, 'user')
             let failureMessage: string | null = null
             try {
                 await backend.prompt(acpSessionId, prompt, (message) => this.handleAgentMessage(message))
@@ -950,6 +975,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         // around its resume/new-session `await`s to detect aborts that land
         // inside that window.
         this.abortGeneration += 1
+        if (leavingRemote) this.terminalAbortCount += 1
         // Aborting (and replacing) the controller first also unparks a
         // waiting loop iteration via the captured signal so it re-waits on
         // the fresh controller instead of spinning on the aborted one.
@@ -963,18 +989,21 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         // Reads the CURRENT backend: after a respawn this cancels on the
         // replacement; mid-respawn it is null and the skip is correct (the
         // dead transport cannot accept a cancel anyway).
-        if (this.backend && this.session.sessionId) {
-            await this.backend.cancelPrompt(this.session.sessionId)
+        try {
+            if (this.backend && this.session.sessionId) {
+                await this.backend.cancelPrompt(this.session.sessionId)
+            }
+            await this.permissionHandler?.cancelAll('User aborted')
+        } finally {
+            // A rejected cancel must not skip the terminal teardown's queue
+            // reset: kill()/exit still owe the cleared rows. The dequeue
+            // signal was already replaced synchronously above, so only the
+            // reset can be missed.
+            if (leavingRemote) {
+                this.session.queue.reset()
+            }
         }
-        await this.permissionHandler?.cancelAll('User aborted')
         this.session.sendSessionEvent({ type: 'message', message: 'Session aborted' })
-        // Plain Stop preserves the pending queue for the next drain; only
-        // terminal cleanup (exit / switch-to-local / kill) resets it. The
-        // abort barrier holds the loop's dequeue until this teardown
-        // settles, so the deferred reset cannot race a dequeue.
-        if (leavingRemote) {
-            this.session.queue.reset()
-        }
         this.session.onThinkingChange(false)
         this.messageBuffer.addMessage('Turn aborted', 'status')
     }

@@ -9,6 +9,24 @@ describe('MessageQueue2', () => {
         expect(queue.isClosed()).toBe(false);
     });
 
+    it('unshiftBatch restores a dequeued batch in original order with localIds intact and no extra ACK', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        const consumed: string[][] = [];
+        queue.onBatchConsumed = ids => { consumed.push(ids); };
+        queue.push('a', 'local', 'id-a');
+        queue.push('b', 'local', 'id-b');
+        const batch = await queue.waitForMessagesAndGetAsString();
+        expect(batch?.items.map(item => item.localId)).toEqual(['id-a', 'id-b']);
+        expect(queue.size()).toBe(0);
+        queue.unshiftBatch(batch!);
+        expect(queue.pendingLocalIds()).toEqual(['id-a', 'id-b']);
+        const again = await queue.waitForMessagesAndGetAsString();
+        expect(again?.message).toBe('a\nb');
+        expect(again?.items.map(item => item.localId)).toEqual(['id-a', 'id-b']);
+        // One ACK per collection: the unshift itself fired none.
+        expect(consumed).toEqual([['id-a', 'id-b'], ['id-a', 'id-b']]);
+    });
+
     it('should push and retrieve messages with same mode', async () => {
         const queue = new MessageQueue2<string>(mode => mode);
         

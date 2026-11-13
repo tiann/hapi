@@ -35,7 +35,7 @@ type GrokRemoteLauncherOptions = {
     onConfigDiscovered?: (config: { model: string | null; effort: string | null }) => void
 }
 
-class GrokRemoteLauncher extends RemoteLauncherBase {
+export class GrokRemoteLauncher extends RemoteLauncherBase {
     private backend: ReturnType<typeof createGrokBackend> | null = null
     private permissionHandler: GrokPermissionHandler | null = null
     private happyServer: { stop: () => void } | null = null
@@ -304,14 +304,24 @@ class GrokRemoteLauncher extends RemoteLauncherBase {
             }
 
             this.applyDisplayMode(batch.mode.permissionMode)
-            this.messageBuffer.addMessage(batch.message, 'user')
+            if (this.shouldExit) {
+                // Terminal teardown reset the queue: drop the already-ACKed
+                // batch and end.
+                break
+            }
+            if (waitSignal.aborted) {
+                // A plain Stop preserves the queue, but this batch was already
+                // dequeued and hub-ACKed: put it back so it drains once the
+                // Stop settles instead of dispatching a cancelled turn.
+                session.queue.unshiftBatch(batch)
+                continue
+            }
             const isSlashCommand = batch.message.trimStart().startsWith('/')
             let text = batch.mode.permissionMode === 'plan' && !isSlashCommand
                 ? `${PLAN_MODE_INSTRUCTION}\n\n${batch.message}`
                 : batch.message
             if (!this.instructionsSent && !isSlashCommand) {
                 text = `${getGrokTitleInstruction()}\n\n${text}`
-                this.instructionsSent = true
             }
             const promptContent: PromptContent[] = [{ type: 'text', text }]
             const localId = batch.items
@@ -332,6 +342,23 @@ class GrokRemoteLauncher extends RemoteLauncherBase {
                 if (list) nextPromptIndex = list.length
             } catch {
                 nextPromptIndex = null
+            }
+            if (this.shouldExit) {
+                // Terminal teardown reset the queue while the rewind-points
+                // read awaited: drop the already-ACKed batch and end.
+                break
+            }
+            if (waitSignal.aborted) {
+                // Same plain-Stop preservation as above; the echo below has
+                // not run yet, so the re-dispatch echoes exactly once.
+                session.queue.unshiftBatch(batch)
+                continue
+            }
+            this.messageBuffer.addMessage(batch.message, 'user')
+            if (!this.instructionsSent && !isSlashCommand) {
+                // Consumed only at the dispatch commit point: a pre-dispatch
+                // bail-out requeues the batch and the retry re-injects.
+                this.instructionsSent = true
             }
 
             try {
@@ -528,6 +555,14 @@ class GrokRemoteLauncher extends RemoteLauncherBase {
 
     private async handleSwitchRequest(): Promise<void> {
         await this.requestExit('switch', () => this.handleAbort(true))
+    }
+
+    protected override onTerminalTeardownRejected(): void {
+        // A rejected terminal teardown still owes the queue reset and the
+        // dequeue-signal abort, or an idle waiter parks forever on the
+        // un-aborted signal and start() never reaches cleanup().
+        this.session.queue.reset()
+        this.abortController.abort()
     }
 }
 

@@ -1022,3 +1022,26 @@ for (const queued of [false, true]) {
         expect(f.state().steeringActive).toBe(true);
     });
 }
+
+it('splits queued user messages across a settings-changing slash command', async () => {
+    const f = await fixture();
+    await f.root.activate();
+    // All three callbacks fire before the serial work queue reaches them: the
+    // batch key for 'done' must be computed when it enqueues (after /plan
+    // updated the settings), not when its callback arrived.
+    f.submit('hello', 'm1');
+    f.submit('/plan', 'cmd');
+    f.submit('done', 'm2');
+    await vi.waitFor(() => expect(f.native.queue.length).toBe(2));
+    const texts = f.native.queue.map(entry => {
+        const input = entry.input as Array<{ text?: string }> | { content?: Array<{ text?: string }> } | string;
+        const text = Array.isArray(input)
+            ? input.map(part => part.text ?? '').join('')
+            : typeof input === 'string' ? input : input.content?.map(part => part.text ?? '').join('') ?? '';
+        return text;
+    });
+    // 'done' must NOT merge into 'hello' across the collaboration-mode change.
+    expect(texts[0]).not.toContain('done');
+    expect(texts[0]).toContain('hello');
+    expect(texts[1]).toContain('done');
+});

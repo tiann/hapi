@@ -248,13 +248,19 @@ export abstract class RemoteLauncherBase {
      * invoked synchronously so its synchronous prefix (state flips, the
      * cancel wire call) lands before the caller's first await. */
     protected runAbortUnderBarrier(run: () => Promise<void>): Promise<void> {
+        const prior = this.abortInFlight ?? Promise.resolve();
         let release!: () => void;
         const barrier = new Promise<void>((resolve) => { release = resolve; });
         this.abortInFlight = barrier;
         const settled = run();
         const finish = () => {
-            release();
-            if (this.abortInFlight === barrier) this.abortInFlight = null;
+            // Chain the release onto the prior barrier: an earlier Abort
+            // teardown must settle before waitForAbortBarrier() unblocks, even
+            // when this (typically terminal) teardown finishes first.
+            void prior.catch(() => {}).then(() => {
+                release();
+                if (this.abortInFlight === barrier) this.abortInFlight = null;
+            });
         };
         settled.then(finish, finish);
         return settled;
@@ -295,6 +301,19 @@ export abstract class RemoteLauncherBase {
      */
     protected onLeavingRemote(): void {}
 
+    /**
+     * Called when the terminal (switch/exit) teardown handler passed to
+     * requestExit rejects — e.g. a cancelPrompt or cancelAll rejection after
+     * shouldExit was already set. A successful teardown performs this cleanup
+     * itself; a rejected one must not skip it, or an idle runMainLoop parks
+     * forever on the un-aborted dequeue signal and start() never reaches
+     * cleanup(). The base owns no queue or controller, so flavors override
+     * this to clear unsent queued rows and abort the signal; flavors whose
+     * teardown already guarantees the cleanup on every path override it to a
+     * no-op.
+     */
+    protected onTerminalTeardownRejected(): void {}
+
     protected async requestExit(
         reason: RemoteLauncherExitReason,
         handler: () => void | Promise<void>
@@ -304,7 +323,12 @@ export abstract class RemoteLauncherBase {
             this.exitReason = reason;
         }
         this.shouldExit = true;
-        await handler();
+        try {
+            await handler();
+        } catch (error) {
+            this.onTerminalTeardownRejected();
+            throw error;
+        }
     }
 
     protected finalizeTerminal(): void {

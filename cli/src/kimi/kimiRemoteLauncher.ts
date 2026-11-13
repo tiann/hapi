@@ -201,6 +201,18 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
                 this.captureEffortBaseline(acpSessionId);
             }
             await this.applyQueuedEffort(acpSessionId, batch.mode);
+            if (this.shouldExit) {
+                // Terminal teardown reset the queue: drop the already-ACKed
+                // batch and end.
+                break;
+            }
+            if (waitSignal.aborted) {
+                // A plain Stop preserves the queue, but this batch was already
+                // dequeued and hub-ACKed: put it back so it drains once the
+                // Stop settles instead of dispatching a cancelled turn.
+                session.queue.unshiftBatch(batch);
+                continue;
+            }
 
             this.applyDisplayMode(batch.mode.permissionMode, batch.mode.model);
             messageBuffer.addMessage(batch.message, 'user');
@@ -412,6 +424,14 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
 
     private async handleSwitchRequest(): Promise<void> {
         await this.requestExit('switch', () => this.handleAbort(true));
+    }
+
+    protected override onTerminalTeardownRejected(): void {
+        // A rejected terminal teardown still owes the queue reset and the
+        // dequeue-signal abort, or an idle waiter parks forever on the
+        // un-aborted signal and start() never reaches cleanup().
+        this.session.queue.reset();
+        this.abortController.abort();
     }
 }
 

@@ -522,6 +522,27 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     return { steered: false, error: 'Steer state is indeterminate' };
                 }
                 const restoreQueuedReservation = async (): Promise<boolean> => {
+                    if (this.shouldExit) {
+                        // Terminal switch/exit resets the shared queue without
+                        // waiting for this handler, so re-admitting would
+                        // bounce the terminal straight back into remote mode.
+                        // Leaving must still undo this steer's 'dispatching'
+                        // stamp: persist 'queued' so the hub row reads like any
+                        // other queued row the terminal reset dropped, and
+                        // release the held reservation so a later Cancel works
+                        // in local mode.
+                        if (!taken.originIndeterminate) {
+                            const persisted = await session.client.setSteerDeliveryState([localId], 'queued');
+                            if (!persisted) {
+                                session.queue.markReservationIndeterminate(taken);
+                                session.client.emitSteerIndeterminate([localId]);
+                                return false;
+                            }
+                        }
+                        session.queue.markReservationIndeterminate(taken);
+                        session.queue.cancelByLocalId(localId);
+                        return false;
+                    }
                     if (!taken.originIndeterminate) {
                         const persisted = await session.client.setSteerDeliveryState([localId], 'queued');
                         if (!persisted) {
@@ -695,22 +716,30 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             if (this.acpRelaunchPromise) {
                 await this.acpRelaunchPromise;
             }
+            if (this.shouldExit) {
+                // Terminal teardown already reset the queue; the batch was
+                // dequeued but never hub-ACKed (the ACK is deferred to the
+                // dispatch point below) — drop it and end.
+                break;
+            }
+            if (waitSignal.aborted) {
+                // A plain Stop preserves the queue: this batch was dequeued
+                // but never hub-ACKed — put it back so it drains once the
+                // Stop settles.
+                session.queue.unshiftBatch(batch);
+                continue;
+            }
 
             // Re-read after model apply / concurrent relaunch - do not prompt on a
             // backend captured before an in-place Auto respawn (#1908 bot Majors).
             const liveBackend = this.backend;
             const liveSessionId: string | null = this.acpSessionId;
             if (!liveBackend || !liveSessionId) {
-                // Never hub-acked — put the turn back for resume/recovery.
-                for (let i = batch.items.length - 1; i >= 0; i -= 1) {
-                    const item = batch.items[i]!;
-                    if (batch.isolate) {
-                        session.queue.unshiftIsolated(item.message, batch.mode, item.localId, {
-                            internal: item.internal
-                        });
-                    } else {
-                        session.queue.unshift(item.message, batch.mode, item.localId);
-                    }
+                // Never hub-acked — put the turn back for resume/recovery. On
+                // switch/exit the terminal reset already cleared the queue;
+                // leave it cleared.
+                if (!this.shouldExit) {
+                    session.queue.unshiftBatch(batch);
                 }
                 if (!this.shouldExit) {
                     this.surfacePromptFailure(
@@ -731,13 +760,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 )
             ) {
                 continue;
-            }
-
-            const consumedLocalIds = batch.items
-                .map((item) => item.localId)
-                .filter((id): id is string => typeof id === 'string');
-            if (consumedLocalIds.length > 0) {
-                acknowledgeBatch?.(consumedLocalIds);
             }
 
             // Hold promptInFlight before mode apply so a concurrent Auto relaunch
@@ -765,6 +787,29 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 } else {
                     await applyCursorAcpMode(liveBackend, liveSessionId, batch.mode.permissionMode as PermissionMode);
                     this.applyDisplayMode(batch.mode.permissionMode as PermissionMode);
+                    if (this.shouldExit) {
+                        // Terminal teardown ran while mode-apply awaited: end
+                        // without dispatching (the queue was reset and the
+                        // batch was never hub-ACKed).
+                        break;
+                    }
+                    if (waitSignal.aborted) {
+                        // A plain Stop preserves the queue: the batch was
+                        // dequeued but never hub-ACKed — put it back so it
+                        // drains once the Stop settles.
+                        session.queue.unshiftBatch(batch);
+                        continue;
+                    }
+
+                    // Hub ack lands at the dispatch commit point: every
+                    // pre-dispatch bail-out above requeues the never-ACKed
+                    // batch instead of losing it.
+                    const consumedLocalIds = batch.items
+                        .map((item) => item.localId)
+                        .filter((id): id is string => typeof id === 'string');
+                    if (consumedLocalIds.length > 0) {
+                        acknowledgeBatch?.(consumedLocalIds);
+                    }
 
                     const specialCommand = parseCursorSpecialCommand(batch.message);
                     if (specialCommand.type === 'pass-through') {
@@ -875,15 +920,10 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             }
 
             if (requeueBatch) {
-                for (let i = batch.items.length - 1; i >= 0; i -= 1) {
-                    const item = batch.items[i]!;
-                    if (batch.isolate) {
-                        session.queue.unshiftIsolated(item.message, batch.mode, item.localId, {
-                            internal: item.internal
-                        });
-                    } else {
-                        session.queue.unshift(item.message, batch.mode, item.localId);
-                    }
+                // Never hub-ACKed — put the turn back for resume/recovery. On
+                // switch/exit the terminal reset already cleared the queue.
+                if (!this.shouldExit) {
+                    session.queue.unshiftBatch(batch);
                 }
                 continue;
             }
@@ -1630,6 +1670,14 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
     private async handleSwitchRequest(): Promise<void> {
         await this.requestExit('switch', () => this.handleAbort(true));
+    }
+
+    protected override onTerminalTeardownRejected(): void {
+        // A rejected terminal teardown still owes the queue reset and the
+        // dequeue-signal abort, or an idle waiter parks forever on the
+        // un-aborted signal and start() never reaches cleanup().
+        this.session.queue.reset({ preserveDispatchingReservations: true });
+        this.abortController.abort();
     }
 }
 

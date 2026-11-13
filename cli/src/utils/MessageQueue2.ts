@@ -307,6 +307,25 @@ export class MessageQueue2<T> {
     }
 
     /**
+     * Put a batch previously returned by
+     * {@link waitForMessagesAndGetAsString} back at the queue head, in its
+     * original order, with each item's localId and internal flag intact, so a
+     * retry stays connected to its hub row (collectBatch joins same-mode items
+     * into one string but still returns the per-item breakdown). Fires no
+     * consumed ACK: the re-collected batch is ACKed exactly like a fresh one.
+     */
+    unshiftBatch(batch: { mode: T; isolate: boolean; items: Array<{ message: string; localId?: string; internal?: boolean }> }): void {
+        for (let i = batch.items.length - 1; i >= 0; i -= 1) {
+            const item = batch.items[i]!;
+            if (batch.isolate) {
+                this.unshiftIsolated(item.message, batch.mode, item.localId, { internal: item.internal });
+            } else {
+                this.unshift(item.message, batch.mode, item.localId);
+            }
+        }
+    }
+
+    /**
      * Remove the first queued message that matches the given localId.
      * Returns true if a message was removed, false if not found.
      * Best-effort: if the CLI is offline when cancel is issued, the message

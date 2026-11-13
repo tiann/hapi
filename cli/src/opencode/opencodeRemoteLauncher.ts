@@ -2920,27 +2920,15 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
 
     /**
      * Requeue a batch that was dequeued and hub-ACKed but never dispatched,
-     * in its original order with each item's localId intact, so the retry
-     * stays connected to its hub row (same restore shape as
-     * cursorAcpRemoteLauncher's pre-prompt requeue).
+     * so the retry stays connected to its hub row. A queue closed mid-prep
+     * means the session is ending; the row goes with it.
      */
     private requeueUndeliveredBatch(
         session: OpencodeSession,
         batch: { mode: OpencodeMode; isolate: boolean; items: Array<{ message: string; localId?: string; internal?: boolean }> }
     ): void {
-        if (session.queue.isClosed()) {
-            // A queue closed mid-prep means the session is ending; the row
-            // goes with it.
-            return;
-        }
-        for (let i = batch.items.length - 1; i >= 0; i -= 1) {
-            const item = batch.items[i]!;
-            if (batch.isolate) {
-                session.queue.unshiftIsolated(item.message, batch.mode, item.localId, { internal: item.internal });
-            } else {
-                session.queue.unshift(item.message, batch.mode, item.localId);
-            }
-        }
+        if (session.queue.isClosed()) return
+        session.queue.unshiftBatch(batch)
     }
 
     /**
