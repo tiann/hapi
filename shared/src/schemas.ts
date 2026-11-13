@@ -12,6 +12,18 @@ export const CopilotAgentModeSchema = z.union([
     z.literal('fleet').transform((): CopilotAgentMode => 'interactive'),
 ])
 export const SessionEndReasonSchema = z.enum(['completed', 'terminated', 'error', 'handoff', 'cleared'])
+/** OpenCode-only durable operation. No native identity change or filesystem rewind. */
+export const OpenCodeRewindSchema = z.object({
+    operationId: z.string().min(1), nativeSessionId: z.string().min(1), workerId: z.string().min(1),
+    workerPid: z.number().int().positive().optional(), workerStartMarker: z.string().min(1).optional(),
+    requestedLocalId: z.string().min(1), nativeMessageId: z.string().min(1),
+    cutoffSeq: z.number().int().positive(), sourceEpoch: z.number().int().nonnegative(),
+    sourceMaxSeq: z.number().int().nonnegative(), reservationVersion: z.number().int().nonnegative(),
+    sourceTranscriptHash: z.string().regex(/^[a-f0-9]{64}$/),
+    phase: z.enum(['reserved', 'prepared', 'unknown', 'committed', 'rejected']),
+    sourceHash: z.string().optional(), prefixHash: z.string().optional()
+})
+export type OpenCodeRewindOperation = z.infer<typeof OpenCodeRewindSchema>
 export type SessionEndReason = z.infer<typeof SessionEndReasonSchema>
 
 const MetadataSummarySchema = z.object({
@@ -187,6 +199,20 @@ export const MetadataSchema = z.object({
     // Native locators for historical fork/rewind (e.g. Grok prompt indexes).
     // Kept separately from the boolean UI markers above.
     conversationHistoryIndexes: z.record(z.string(), z.number().int().nonnegative()).optional(),
+    opencodeHistoryCheckpoint: z.object({
+        sessionId: z.string().min(1),
+        messageIds: z.array(z.string().min(1)),
+        userMessageIds: z.array(z.string().min(1)),
+        // Present even when empty once local publication tracking is enabled.
+        localMessageIds: z.array(z.string().min(1)).optional(),
+        localPublicationPending: z.literal(true).optional()
+    }).optional(),
+    // Hub-owned until the child's first validated session-ready is committed.
+    opencodeForkPending: z.literal(true).optional(),
+    opencodeWorkerId: z.string().optional(),
+    opencodeWorkerProcess: z.object({ workerId: z.string().min(1), pid: z.number().int().positive(),
+        startMarker: z.string().min(1) }).optional(),
+    opencodeRewind: OpenCodeRewindSchema.optional(),
     // Codex localId → turnId mapping (durable across runner relaunches).
     conversationHistoryTurns: z.record(z.string(), z.string().min(1)).optional(),
     // Pi localId → append-only session entry id mapping. Pi entry ids are the
@@ -223,7 +249,33 @@ export const MetadataSchema = z.object({
     // field stores only modelId (shared across all flavors); this preserves
     // the provider so web can resolve the exact model when two providers
     // share a modelId.
-    piSelectedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().optional()
+    piSelectedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().optional(),
+    lastModelError: z.object({
+        /** Stable identity for this error event (not wall-clock order). */
+        eventId: z.string().min(1),
+        kind: z.string(),
+        transient: z.boolean(),
+        rawSnippet: z.string(),
+        /** Display / telemetry timestamp only — not used for notify/ack identity. */
+        atTs: z.number(),
+        priorAssistantClaimsDone: z.boolean(),
+        lastUserMessage: z.string().optional(),
+        bridgedForEventId: z.string().optional(),
+        retriedAndFailed: z.boolean().optional(),
+        /**
+         * Set when a non-bridge user turn starts after this error was recorded.
+         * Blocks Bridge so a later retry cannot replay work the newer turn already handled.
+         */
+        supersededByUserTurn: z.boolean().optional(),
+        /**
+         * Explicit false blocks Bridge (idle stderr after a successful turn).
+         * Omitted / true keeps the existing transient gate.
+         */
+        bridgeable: z.boolean().optional(),
+        acknowledgedAt: z.number().optional(),
+        /** Hub-owned: successful push/FCM/Telegram delivery watermark. */
+        notifiedAt: z.number().optional()
+    }).optional()
 })
 
 export type Metadata = z.infer<typeof MetadataSchema>

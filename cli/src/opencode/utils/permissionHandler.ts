@@ -136,7 +136,7 @@ export class OpencodePermissionHandler extends BasePermissionHandler<PermissionR
             this.addPendingRequest(id, QUESTION_DISPLAY_TOOL_NAME, toAskUserQuestionInput(questions), {
                 resolve: () => {},
                 reject: () => settle({ action: 'cancel' })
-            });
+            }, request.toolCallId ?? undefined);
             logger.debug(`[Opencode] Question form queued (${id})`);
         });
     }
@@ -186,7 +186,7 @@ export class OpencodePermissionHandler extends BasePermissionHandler<PermissionR
         this.addPendingRequest(request.id, toolName, toolInput, {
             resolve: () => {},
             reject: () => {}
-        });
+        }, request.toolCallId);
 
         logger.debug(`[Opencode] Permission request queued for ${toolName} (${request.id})`);
     }

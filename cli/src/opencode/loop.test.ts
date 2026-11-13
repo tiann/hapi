@@ -59,6 +59,12 @@ function baseOpts(overrides: Record<string, unknown> = {}) {
 }
 
 describe('opencodeLoop compact availability wiring', () => {
+    it.each(['local', 'remote'] as const)('publishes a resumed native id immediately only for %s entry', async startingMode => {
+        await opencodeLoop(baseOpts({ startingMode, resumeSessionId: 'native-resume' }) as Parameters<typeof opencodeLoop>[0]);
+        const { session } = harness.runLocalRemoteArgs.at(-1) as { session: { onSessionFound: ReturnType<typeof vi.fn> } };
+        if (startingMode === 'local') expect(session.onSessionFound).toHaveBeenCalledWith('native-resume');
+        else expect(session.onSessionFound).not.toHaveBeenCalled();
+    });
     // Resetting availability to false used to be loop.ts's job, done here in
     // runLocal right before every local-mode entry. That left a window
     // between "a switch/exit was requested" and "runLocal actually ran"

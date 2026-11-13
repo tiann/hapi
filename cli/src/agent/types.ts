@@ -18,10 +18,22 @@ export type AgentSessionConfig = {
     mcpServers: McpServerStdio[];
 };
 
-export type PromptContent = {
-    type: 'text';
-    text: string;
-};
+/**
+ * ACP prompt content blocks. Text blocks are universal; image blocks carry
+ * the canonical base64 form and are only accepted by agents that advertise
+ * `agentCapabilities.promptCapabilities.image` in their initialize result
+ * (e.g. DSH 0.2.2+).
+ */
+export type PromptContent =
+    | {
+        type: 'text';
+        text: string;
+    }
+    | {
+        type: 'image';
+        data: string;
+        mimeType: string;
+    };
 
 export type PlanItem = {
     content: string;
@@ -78,7 +90,7 @@ export type AgentMessage =
     }
     | { type: 'plan'; items: PlanItem[] }
     | { type: 'generated_image'; imageId: string; fileName: string; mimeType: string; source?: InlineMediaSource }
-    | { type: 'turn_complete'; stopReason: string }
+    | { type: 'turn_complete'; stopReason: string; numTurns?: number }
     | { type: 'round_summary'; summary: AgentRoundSummary }
     | { type: 'error'; message: string };
 
@@ -150,7 +162,12 @@ export interface AgentBackend {
     setConfigOption?(sessionId: string, configId: string, value: string): Promise<void>;
     getSessionModelsMetadata?(sessionId: string): AgentSessionModelsMetadata | undefined;
     getThoughtLevelConfigOption?(sessionId: string): AgentSessionConfigOptionDescriptor | undefined;
-    prompt(sessionId: string, content: PromptContent[], onUpdate: (msg: AgentMessage) => void): Promise<void>;
+    prompt(
+        sessionId: string,
+        content: PromptContent[],
+        onUpdate: (msg: AgentMessage) => void,
+        options?: { shouldSend?: () => boolean }
+    ): Promise<void | boolean>;
     cancelPrompt(sessionId: string): Promise<void>;
     respondToPermission(sessionId: string, request: PermissionRequest, response: PermissionResponse): Promise<void>;
     onPermissionRequest(handler: (request: PermissionRequest) => void): void;

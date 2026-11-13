@@ -1,7 +1,9 @@
 import { compareSessionSummaries } from '@hapi/protocol'
 import {
+    AcknowledgeModelErrorRequestSchema,
     AttachedJobPatchSchema,
     AttachedJobUpsertSchema,
+    BridgeModelErrorRequestSchema,
     SessionReadStateRequestSchema,
     CursorMigrateToAcpRequestSchema,
     DeleteUploadRequestSchema,
@@ -407,7 +409,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 : result.code === 'access_denied' ? 403
                     : result.code === 'resume_unavailable' ? 409
                         : result.code === 'no_machine_online' ? 503
-                            : 502
+                            : 500
             return c.json({ error: result.message, code: result.code }, status)
         }
 
@@ -686,6 +688,125 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         return c.json({ ok: true })
     })
 
+    app.post('/sessions/:id/model-error/acknowledge', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = AcknowledgeModelErrorRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body', issues: parsed.error.issues }, 400)
+        }
+
+        try {
+            await engine.acknowledgeModelError(sessionResult.sessionId, parsed.data.eventId)
+            return c.json({ ok: true })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to acknowledge model error'
+            if (
+                message.includes('concurrently')
+                || message.includes('version')
+                || message.includes('changed')
+            ) {
+                return c.json({ error: message }, 409)
+            }
+            return c.json({ error: message }, 500)
+        }
+    })
+
+    app.post('/sessions/:id/model-error/bridge', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        // Bridge needs a live CLI RPC target; inactive → 409 session_inactive.
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'cursor') {
+            return c.json({ error: 'Model error bridge is only supported for Cursor sessions' }, 400)
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = BridgeModelErrorRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body', issues: parsed.error.issues }, 400)
+        }
+
+        try {
+            const result = await engine.bridgeModelError(
+                sessionResult.sessionId,
+                parsed.data.eventId
+            )
+            if (!result.ok) {
+                return c.json({ ok: false, reason: result.reason ?? 'not_bridgeable' }, 409)
+            }
+            return c.json({ ok: true })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to bridge model error'
+            if (
+                message.includes('not active')
+                || message.includes('not transient')
+                || message.includes('already bridged')
+                || message.includes('already failed')
+                || message.includes('changed')
+                || message.includes('superseded')
+                || message.includes('not bridgeable')
+            ) {
+                return c.json({ error: message }, 409)
+            }
+            return c.json({ error: message }, 500)
+        }
+    })
+
+    app.post('/sessions/:id/model-error/auto-bridge-setting', async (c) => {
+        // Owner-only — matches CLI create/get which force false for tenants.
+        if (c.get('namespace') !== 'default') {
+            return c.json({ error: 'Model error auto-bridge is only available to the hub owner' }, 403)
+        }
+
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
+        if (flavor !== 'cursor') {
+            return c.json({ error: 'Model error auto-bridge is only supported for Cursor sessions' }, 400)
+        }
+
+        const body = await c.req.json().catch(() => null)
+        if (!body || typeof body !== 'object' || typeof body.enabled !== 'boolean') {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        try {
+            await engine.applySessionConfig(sessionResult.sessionId, {
+                autoBridgeTransientModelErrors: body.enabled
+            })
+            return c.json({ ok: true })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : 'Failed to apply auto-bridge setting'
+            return c.json({ error: message }, 409)
+        }
+    })
+
     app.post('/sessions/:id/migrate-to-acp', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {
@@ -748,7 +869,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             ok: false as const, code: 'indeterminate' as const,
             error: 'Plan implementation could not be confirmed. Reconnect and check the mode, queue and conversation before retrying.'
         }))
-        const status = result.ok ? 200 : result.code === 'indeterminate' ? 503 : result.code === 'failed' ? 502 : 409
+        const status = result.ok ? 200 : result.code === 'indeterminate' ? 503 : result.code === 'failed' ? 500 : 409
         return c.json(result, status)
     })
 
@@ -962,8 +1083,8 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         }
 
         const flavor = sessionResult.session.metadata?.flavor ?? 'claude'
-        if (flavor !== 'codex' && flavor !== 'opencode') {
-            return c.json({ error: 'Model reasoning effort is only supported for Codex and OpenCode sessions' }, 400)
+        if (flavor !== 'codex' && flavor !== 'opencode' && flavor !== 'dsh') {
+            return c.json({ error: 'Model reasoning effort is only supported for Codex, OpenCode, and DSH sessions' }, 400)
         }
         if (sessionResult.session.agentState?.controlledByUser === true && !sessionResult.session.metadata?.capabilities?.concurrentClients) {
             return c.json({ error: 'Model reasoning effort can only be changed for remote sessions' }, 409)
@@ -1104,7 +1225,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             if (error instanceof TitleSuggestionError) {
                 return c.json({ error: error.message }, error.status)
             }
-            return c.json({ error: 'Failed to generate a session title' }, 502)
+            return c.json({ error: 'Failed to generate a session title' }, 500)
         }
     })
 
