@@ -9,10 +9,12 @@ import {
     DeleteUploadRequestSchema,
     ForkConversationRequestSchema,
     ImplementCodexPlanRequestSchema,
+    InitChunkedUploadRequestSchema,
     getPermissionModesForFlavor,
     isLiveLifecycleState,
     isPermissionModeAllowedForFlavor,
     RenameSessionRequestSchema,
+    resolveMaxUploadBytes,
     SetSessionPinnedRequestSchema,
     ResumeSessionRequestSchema,
     RewindConversationRequestSchema,
@@ -30,6 +32,7 @@ import {
     supportsModelChange,
     supportsEffort,
     toSessionSummary,
+    UPLOAD_CHUNK_MAX_BYTES,
     UploadFileRequestSchema
 } from '@hapi/protocol'
 import { RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol/rpcMethods'
@@ -50,10 +53,112 @@ import { ArchiveCleanupError } from '../../sync/archiveCleanupError'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+const UPLOAD_ID_RE = /^[A-Za-z0-9_-]{1,128}$/
 // Leave room for the query, limit, and JSON envelope; the serialized session
 // scope itself remains bounded by MAX_CONTENT_SEARCH_SESSION_SCOPE_BYTES.
 const MAX_CONTENT_SEARCH_REQUEST_BYTES = MAX_CONTENT_SEARCH_SESSION_SCOPE_BYTES + 4 * 1024
 const MAX_CONTENT_SEARCH_QUERY_CHARACTERS = 200
+
+function uploadErrorStatus(code?: string): 400 | 404 | 409 | 413 | 500 | 503 {
+    switch (code) {
+        case 'upload_too_large':
+        case 'upload_chunk_too_large':
+            return 413
+        case 'upload_not_found':
+            return 404
+        case 'upload_conflict':
+        case 'upload_incomplete':
+        case 'upload_size_mismatch':
+            return 409
+        case 'upload_invalid_chunk':
+            return 400
+        case RPC_TARGET_MISSING_ERROR_CODE:
+            return 503
+        default:
+            return 500
+    }
+}
+
+async function readBoundedChunkBytes(
+    raw: Request,
+    maxBytes: number
+): Promise<{ ok: true; bytes: Uint8Array } | { ok: false; status: 400 | 413; code: string; error: string }> {
+    const rawLength = raw.headers.get('content-length')
+    if (rawLength !== null && rawLength.trim().length > 0) {
+        const trimmed = rawLength.trim()
+        if (!/^\d+$/.test(trimmed)) {
+            return {
+                ok: false,
+                status: 400,
+                code: 'upload_invalid_chunk',
+                error: 'Invalid Content-Length header'
+            }
+        }
+        if (Number(trimmed) > maxBytes) {
+            return {
+                ok: false,
+                status: 413,
+                code: 'upload_chunk_too_large',
+                error: 'Chunk exceeds maximum size (8MB)'
+            }
+        }
+    }
+
+    const body = raw.body
+    if (!body) {
+        return {
+            ok: false,
+            status: 400,
+            code: 'upload_invalid_chunk',
+            error: 'Chunk body must not be empty'
+        }
+    }
+
+    const reader = body.getReader()
+    const chunks: Uint8Array[] = []
+    let totalBytes = 0
+    try {
+        while (true) {
+            const { done, value } = await reader.read()
+            if (done) {
+                break
+            }
+            if (!value || value.byteLength === 0) {
+                continue
+            }
+            totalBytes += value.byteLength
+            if (totalBytes > maxBytes) {
+                await reader.cancel().catch(() => {})
+                return {
+                    ok: false,
+                    status: 413,
+                    code: 'upload_chunk_too_large',
+                    error: 'Chunk exceeds maximum size (8MB)'
+                }
+            }
+            chunks.push(value)
+        }
+    } finally {
+        reader.releaseLock()
+    }
+
+    if (totalBytes === 0) {
+        return {
+            ok: false,
+            status: 400,
+            code: 'upload_invalid_chunk',
+            error: 'Chunk body must not be empty'
+        }
+    }
+
+    const combined = new Uint8Array(totalBytes)
+    let offset = 0
+    for (const chunk of chunks) {
+        combined.set(chunk, offset)
+        offset += chunk.byteLength
+    }
+    return { ok: true, bytes: combined }
+}
 
 function commandsFromMetadataSlashCommands(names: readonly string[] | undefined): SlashCommand[] {
     if (!names?.length) {
@@ -528,6 +633,184 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to upload file'
+            }, 500)
+        }
+    })
+
+    app.post('/sessions/:id/uploads', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = InitChunkedUploadRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ success: false, error: 'Invalid body' }, 400)
+        }
+
+        const maxUploadBytes = resolveMaxUploadBytes(process.env.HAPI_MAX_UPLOAD_BYTES)
+        if (parsed.data.size > maxUploadBytes) {
+            return c.json({
+                success: false,
+                error: `File too large (max ${Math.floor(maxUploadBytes / (1024 * 1024))}MB)`,
+                code: 'upload_too_large'
+            }, 413)
+        }
+
+        try {
+            const result = await engine.initChunkedUpload(sessionResult.sessionId, parsed.data)
+            if (!result.success) {
+                return c.json(result, uploadErrorStatus(result.code))
+            }
+            return c.json(result)
+        } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                return c.json({
+                    success: false,
+                    error: error.message,
+                    code: RPC_TARGET_MISSING_ERROR_CODE
+                }, 503)
+            }
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to initialize upload'
+            }, 500)
+        }
+    })
+
+    app.post('/sessions/:id/uploads/:uploadId/chunk', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const uploadId = c.req.param('uploadId') ?? ''
+        if (!UPLOAD_ID_RE.test(uploadId)) {
+            return c.json({ success: false, error: 'Invalid uploadId', code: 'upload_invalid_chunk' }, 400)
+        }
+
+        const indexRaw = c.req.query('index')
+        if (indexRaw === undefined || !/^\d+$/.test(indexRaw) || !Number.isSafeInteger(Number(indexRaw))) {
+            return c.json({ success: false, error: 'Invalid chunk index', code: 'upload_invalid_chunk' }, 400)
+        }
+
+        const chunkRead = await readBoundedChunkBytes(c.req.raw, UPLOAD_CHUNK_MAX_BYTES)
+        if (!chunkRead.ok) {
+            return c.json({
+                success: false,
+                error: chunkRead.error,
+                code: chunkRead.code
+            }, chunkRead.status)
+        }
+
+        try {
+            const content = Buffer.from(chunkRead.bytes).toString('base64')
+            const result = await engine.uploadFileChunk(
+                sessionResult.sessionId,
+                uploadId,
+                Number(indexRaw),
+                content
+            )
+            if (!result.success) {
+                return c.json(result, uploadErrorStatus(result.code))
+            }
+            return c.json(result)
+        } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                return c.json({
+                    success: false,
+                    error: error.message,
+                    code: RPC_TARGET_MISSING_ERROR_CODE
+                }, 503)
+            }
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to upload chunk'
+            }, 500)
+        }
+    })
+
+    app.post('/sessions/:id/uploads/:uploadId/finalize', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const uploadId = c.req.param('uploadId') ?? ''
+        if (!UPLOAD_ID_RE.test(uploadId)) {
+            return c.json({ success: false, error: 'Invalid uploadId', code: 'upload_invalid_chunk' }, 400)
+        }
+
+        try {
+            const result = await engine.finalizeChunkedUpload(sessionResult.sessionId, uploadId)
+            if (!result.success) {
+                return c.json(result, uploadErrorStatus(result.code))
+            }
+            return c.json(result)
+        } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                return c.json({
+                    success: false,
+                    error: error.message,
+                    code: RPC_TARGET_MISSING_ERROR_CODE
+                }, 503)
+            }
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to finalize upload'
+            }, 500)
+        }
+    })
+
+    app.post('/sessions/:id/uploads/:uploadId/abort', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const uploadId = c.req.param('uploadId') ?? ''
+        if (!UPLOAD_ID_RE.test(uploadId)) {
+            return c.json({ success: false, error: 'Invalid uploadId', code: 'upload_invalid_chunk' }, 400)
+        }
+
+        try {
+            const result = await engine.abortChunkedUpload(sessionResult.sessionId, uploadId)
+            if (!result.success) {
+                return c.json(result, uploadErrorStatus(result.code))
+            }
+            return c.json(result)
+        } catch (error) {
+            if (error instanceof RpcTargetMissingError) {
+                return c.json({
+                    success: false,
+                    error: error.message,
+                    code: RPC_TARGET_MISSING_ERROR_CODE
+                }, 503)
+            }
+            return c.json({
+                success: false,
+                error: error instanceof Error ? error.message : 'Failed to abort upload'
             }, 500)
         }
     })

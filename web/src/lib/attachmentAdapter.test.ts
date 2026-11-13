@@ -310,4 +310,169 @@ describe('attachmentAdapter image previews', () => {
         expect(onSessionResolved).toHaveBeenCalled()
         expect(uploadFile).not.toHaveBeenCalled()
     })
+
+    it('streams files above CHUNKED_UPLOAD_THRESHOLD_BYTES without reading them into FileReader', async () => {
+        const { createAttachmentAdapter } = await import('./attachmentAdapter')
+        const tenMiB = 10 * 1024 * 1024
+        const fourMiB = 4 * 1024 * 1024
+        const file = new File([new Uint8Array(tenMiB)], 'archive.zip', { type: 'application/zip' })
+        const readSpy = vi.spyOn(FileReader.prototype, 'readAsDataURL')
+        readSpy.mockClear()
+
+        const initChunkedUpload = vi.fn().mockResolvedValue({
+            success: true,
+            uploadId: 'upload-123',
+            chunkSize: fourMiB,
+        })
+        const chunkSizes: number[] = []
+        const uploadFileChunk = vi.fn(async (_sid: string, _uid: string, _index: number, chunk: Blob) => {
+            chunkSizes.push(chunk.size)
+            return { success: true, receivedBytes: chunkSizes.reduce((sum, size) => sum + size, 0) }
+        })
+        const finalizeChunkedUpload = vi.fn().mockResolvedValue({
+            success: true,
+            path: '/uploads/archive.zip',
+        })
+        const uploadFile = vi.fn()
+
+        const adapter = createAttachmentAdapter({
+            uploadFile,
+            initChunkedUpload,
+            uploadFileChunk,
+            finalizeChunkedUpload,
+        } as never, 'session-1')
+
+        const emitted: Record<string, unknown>[] = []
+        for await (const item of adapter.add({ file }) as AsyncIterable<Record<string, unknown>>) {
+            emitted.push(item)
+        }
+
+        expect(readSpy).not.toHaveBeenCalled()
+        expect(uploadFile).not.toHaveBeenCalled()
+        expect(initChunkedUpload).toHaveBeenCalledWith(
+            'session-1',
+            { filename: 'archive.zip', size: tenMiB, mimeType: 'application/zip' },
+            expect.objectContaining({ signal: expect.any(AbortSignal) })
+        )
+        expect(uploadFileChunk).toHaveBeenCalledTimes(3)
+        expect(chunkSizes).toEqual([fourMiB, fourMiB, 2 * 1024 * 1024])
+        expect(finalizeChunkedUpload).toHaveBeenCalledWith(
+            'session-1',
+            'upload-123',
+            expect.objectContaining({ signal: expect.any(AbortSignal) })
+        )
+        expect(emitted.at(-1)).toMatchObject({
+            status: { type: 'requires-action', reason: 'composer-send' },
+            path: '/uploads/archive.zip',
+        })
+    })
+
+    it('marks server 413 upload_too_large rejections as non-retryable without sending chunks', async () => {
+        const { ApiError } = await import('@/api/client')
+        const { createAttachmentAdapter } = await import('./attachmentAdapter')
+        const file = new File([new Uint8Array(9 * 1024 * 1024)], 'huge.bin', { type: 'application/octet-stream' })
+
+        const initChunkedUpload = vi.fn().mockRejectedValue(
+            new ApiError('HTTP 413 Payload Too Large', 413, 'upload_too_large')
+        )
+        const uploadFileChunk = vi.fn()
+
+        const adapter = createAttachmentAdapter({
+            initChunkedUpload,
+            uploadFileChunk,
+        } as never, 'session-1')
+
+        const emitted: Record<string, unknown>[] = []
+        for await (const item of adapter.add({ file }) as AsyncIterable<Record<string, unknown>>) {
+            emitted.push(item)
+        }
+
+        expect(uploadFileChunk).not.toHaveBeenCalled()
+        expect(emitted.at(-1)).toMatchObject({
+            status: { type: 'incomplete', reason: 'error' },
+            retryable: false,
+        })
+    })
+
+    it('aborts the HTTP signal and calls abortChunkedUpload when removed mid-stream', async () => {
+        const { createAttachmentAdapter } = await import('./attachmentAdapter')
+        const file = new File([new Uint8Array(10 * 1024 * 1024)], 'video.mp4', { type: 'video/mp4' })
+
+        const initChunkedUpload = vi.fn().mockResolvedValue({
+            success: true,
+            uploadId: 'upload-abort',
+            chunkSize: 4 * 1024 * 1024,
+        })
+        let resolveFirstChunkStarted!: (signal: AbortSignal) => void
+        const firstChunkStarted = new Promise<AbortSignal>((resolve) => {
+            resolveFirstChunkStarted = resolve
+        })
+        const uploadFileChunk = vi.fn((_sid: string, _uid: string, _idx: number, _chunk: Blob, opts?: { signal?: AbortSignal }) => {
+            return new Promise((_resolve, reject) => {
+                resolveFirstChunkStarted(opts!.signal!)
+                opts?.signal?.addEventListener('abort', () => {
+                    reject(new DOMException('Aborted', 'AbortError'))
+                })
+            })
+        })
+        const abortChunkedUpload = vi.fn().mockResolvedValue({ success: true })
+
+        const adapter = createAttachmentAdapter({
+            initChunkedUpload,
+            uploadFileChunk,
+            abortChunkedUpload,
+        } as never, 'session-1')
+
+        const emitted: Record<string, unknown>[] = []
+        const consumption = (async () => {
+            for await (const item of adapter.add({ file }) as AsyncIterable<Record<string, unknown>>) {
+                emitted.push(item)
+            }
+        })()
+
+        const signal = await firstChunkStarted
+        const initialAttachment = emitted[0]!
+        await adapter.remove(initialAttachment as never)
+        await consumption
+
+        expect(signal.aborted).toBe(true)
+        expect(abortChunkedUpload).toHaveBeenCalledWith('session-1', 'upload-abort')
+        expect(emitted.some((item) => (item.status as { type?: string })?.type === 'incomplete')).toBe(false)
+    })
+
+    it('falls back to legacy uploadFile for 9-50 MiB files on older runners and refuses >50 MiB cleanly', async () => {
+        const { ApiError } = await import('@/api/client')
+        const { createAttachmentAdapter } = await import('./attachmentAdapter')
+        const initChunkedUpload = vi.fn().mockRejectedValue(
+            new ApiError('HTTP 503 Service Unavailable', 503, 'rpc_target_missing')
+        )
+        const uploadFile = vi.fn().mockResolvedValue({ success: true, path: '/uploads/legacy.bin' })
+
+        const tenMiBFile = new File([new Uint8Array(10 * 1024 * 1024)], 'legacy.bin', { type: 'application/octet-stream' })
+        const adapter = createAttachmentAdapter({ initChunkedUpload, uploadFile } as never, 'session-1')
+        const emittedFallback: Record<string, unknown>[] = []
+        for await (const item of adapter.add({ file: tenMiBFile }) as AsyncIterable<Record<string, unknown>>) {
+            emittedFallback.push(item)
+        }
+        expect(uploadFile).toHaveBeenCalledTimes(1)
+        expect(emittedFallback.at(-1)).toMatchObject({
+            status: { type: 'requires-action', reason: 'composer-send' },
+            path: '/uploads/legacy.bin',
+        })
+
+        const sixtyMiBFile = new File(['x'], 'too-big-legacy.bin', { type: 'application/octet-stream' })
+        Object.defineProperty(sixtyMiBFile, 'size', { value: 60 * 1024 * 1024 })
+        const readSpy = vi.spyOn(FileReader.prototype, 'readAsDataURL')
+        readSpy.mockClear()
+        const emittedTooBig: Record<string, unknown>[] = []
+        for await (const item of adapter.add({ file: sixtyMiBFile }) as AsyncIterable<Record<string, unknown>>) {
+            emittedTooBig.push(item)
+        }
+        expect(readSpy).not.toHaveBeenCalled()
+        expect(uploadFile).toHaveBeenCalledTimes(1)
+        expect(emittedTooBig.at(-1)).toMatchObject({
+            status: { type: 'incomplete', reason: 'error' },
+            retryable: false,
+        })
+    })
 })
