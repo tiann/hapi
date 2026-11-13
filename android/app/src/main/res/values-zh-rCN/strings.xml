@@ -411,8 +411,10 @@
     <string name="chat_empty_snippet">（空）</string>
     <string name="chat_result">结果</string>
     <string name="chat_result_error">结果 · 错误</string>
-    <string name="chat_reasoning_expanded">💭 思考 ▾</string>
-    <string name="chat_reasoning_collapsed">💭 思考 ▸</string>
+    <string name="chat_reasoning_expanded">思考</string>
+    <string name="chat_reasoning_collapsed">思考…</string>
+    <string name="chat_reasoning_state_expanded">已展开</string>
+    <string name="chat_reasoning_state_collapsed">已收起</string>
     <string name="chat_not_delivered_retry">未送达 — 点按重试</string>
     <string name="chat_not_delivered">未送达</string>
     <string name="chat_review_title">Code review</string>

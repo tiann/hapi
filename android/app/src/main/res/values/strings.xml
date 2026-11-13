@@ -404,8 +404,10 @@
     <string name="chat_empty_snippet">(empty)</string>
     <string name="chat_result">Result</string>
     <string name="chat_result_error">Result · error</string>
-    <string name="chat_reasoning_expanded">💭 Reasoning ▾</string>
-    <string name="chat_reasoning_collapsed">💭 Reasoning ▸</string>
+    <string name="chat_reasoning_expanded">Reasoning</string>
+    <string name="chat_reasoning_collapsed">Reasoning…</string>
+    <string name="chat_reasoning_state_expanded">Expanded</string>
+    <string name="chat_reasoning_state_collapsed">Collapsed</string>
     <string name="chat_not_delivered_retry">Not delivered — tap to retry</string>
     <string name="chat_not_delivered">Not delivered</string>
     <string name="chat_review_title">Code review</string>

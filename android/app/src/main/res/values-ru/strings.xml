@@ -404,8 +404,10 @@
     <string name="chat_empty_snippet">(пусто)</string>
     <string name="chat_result">Результат</string>
     <string name="chat_result_error">Результат · ошибка</string>
-    <string name="chat_reasoning_expanded">💭 Рассуждения ▾</string>
-    <string name="chat_reasoning_collapsed">💭 Рассуждения ▸</string>
+    <string name="chat_reasoning_expanded">Рассуждения</string>
+    <string name="chat_reasoning_collapsed">Рассуждения…</string>
+    <string name="chat_reasoning_state_expanded">Развёрнуто</string>
+    <string name="chat_reasoning_state_collapsed">Свёрнуто</string>
     <string name="chat_not_delivered_retry">Не доставлено — нажмите, чтобы повторить</string>
     <string name="chat_not_delivered">Не доставлено</string>
     <string name="chat_review_title">Ревью кода</string>

@@ -5,10 +5,10 @@ import android.content.ClipboardManager
 import android.content.Intent
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
@@ -19,6 +19,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import app.hapi.companion.R
+import app.hapi.companion.ui.theme.hapi
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -79,10 +80,14 @@ internal fun FullTextAction(source: String, compact: Boolean = false) {
     if (compact) {
         // Compact artwork, not a smaller touch target. Keep all states the
         // same size so copying/exporting never changes the code header layout.
-        IconButton(enabled = !busy, onClick = action, modifier = Modifier.size(48.dp)) {
-            val iconModifier = Modifier.size(18.dp)
-            if (export || copied) Icon(if (export) Icons.Default.Share else Icons.Default.Check, label, iconModifier)
-            else Icon(painterResource(R.drawable.ic_content_copy), label, iconModifier)
+        IconButton(enabled = !busy, onClick = action, modifier = Modifier.size(44.dp)) {
+            val iconModifier = Modifier.size(16.dp)
+            val tint = if (copied && !export) MaterialTheme.colorScheme.primary else MaterialTheme.hapi.textSecondary
+            when {
+                export -> Icon(Icons.Default.Share, label, iconModifier, tint = tint)
+                copied -> Icon(painterResource(R.drawable.ic_sym_check), label, iconModifier, tint = tint)
+                else -> Icon(painterResource(R.drawable.ic_sym_content_copy), label, iconModifier, tint = tint)
+            }
         }
     } else {
         TextButton(enabled = !busy, onClick = action) { Text(label) }
