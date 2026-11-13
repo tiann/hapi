@@ -1,6 +1,7 @@
 import type { ChildProcess } from 'node:child_process';
 import spawn from 'cross-spawn';
 import { readFileSync } from 'node:fs';
+import { monotonicTimeMs } from '@/utils/time';
 import { stopWindowsProcessTree, type WindowsStopReport } from './windowsProcessStop';
 
 export const isWindows = (): boolean => process.platform === 'win32';
@@ -233,10 +234,11 @@ function getPosixProcessCommandLine(pid: number): string | null {
   return commandLine.trim() ? commandLine : null;
 }
 
-function killProcessWindows(pid: number, force: boolean): boolean {
+function killProcessWindows(pid: number, force: boolean, deadlineMs?: number): boolean {
   if (!isProcessAlive(pid)) {
     return true;
   }
+  if (!signalAllowed(deadlineMs)) return false;
 
   const args = ['/T', '/PID', pid.toString()];
   if (force) {
@@ -343,22 +345,27 @@ export function collectWindowsProcessTree(pid: number): number[] | 'scan_failed'
   return parseWindowsProcessTreeStdout((result.stdout ?? '').toString(), n)
 }
 
-async function signalAndWaitWindowsRoot(pid: number, force: boolean): Promise<void> {
-  if (force) {
-    killProcessWindows(pid, true);
-    await waitForProcessToDie(pid, true);
-    return;
-  }
-  const softOk = killProcessWindows(pid, false);
-  if (!softOk && isProcessAlive(pid)) {
-    killProcessWindows(pid, true);
-    await waitForProcessToDie(pid, true);
-    return;
-  }
-  await waitForProcessToDie(pid, false);
+function signalAllowed(deadlineMs?: number): boolean {
+  return deadlineMs === undefined || monotonicTimeMs() < deadlineMs;
 }
 
-export async function killProcess(pid: number, force: boolean = false): Promise<boolean> {
+async function signalAndWaitWindowsRoot(pid: number, force: boolean, deadlineMs?: number): Promise<void> {
+  if (!signalAllowed(deadlineMs)) return;
+  if (force) {
+    killProcessWindows(pid, true, deadlineMs);
+    await waitForProcessToDie(pid, true, deadlineMs);
+    return;
+  }
+  const softOk = killProcessWindows(pid, false, deadlineMs);
+  if (!softOk && isProcessAlive(pid) && signalAllowed(deadlineMs)) {
+    killProcessWindows(pid, true, deadlineMs);
+    await waitForProcessToDie(pid, true, deadlineMs);
+    return;
+  }
+  await waitForProcessToDie(pid, false, deadlineMs);
+}
+
+export async function killProcess(pid: number, force: boolean = false, deadlineMs?: number): Promise<boolean> {
   const n = typeof pid === 'number' ? pid : Number(pid)
   if (!Number.isFinite(n) || n <= 0) {
     return false;
@@ -371,14 +378,15 @@ export async function killProcess(pid: number, force: boolean = false): Promise<
     // but the PID is still draining, honor the grace wait before /F so archive
     // flush can finish.
     // Root-only verify — callers that need full-tree proof use killProcessTreeByPid.
-    await signalAndWaitWindowsRoot(n, force);
+    await signalAndWaitWindowsRoot(n, force, deadlineMs);
     return !isProcessAlive(n);
   }
 
   try {
+    if (!signalAllowed(deadlineMs)) return !isProcessAlive(n);
     process.kill(n, force ? 'SIGKILL' : 'SIGTERM');
-    await waitForProcessToDie(n, force);
-    return true;
+    await waitForProcessToDie(n, force, deadlineMs);
+    return deadlineMs === undefined || !isProcessAlive(n);
   } catch {
     return false;
   }
@@ -425,27 +433,32 @@ function collectProcessTree(pid: number): number[] | 'scan_failed' {
  * Signals are sent synchronously (children first) to work in exit handlers,
  * then waits asynchronously for processes to die.
  */
-async function killProcessTree(pid: number, force: boolean): Promise<boolean> {
+async function killProcessTree(pid: number, force: boolean, deadlineMs?: number,
+  signal: NodeJS.Signals = 'SIGTERM'): Promise<boolean> {
   // Collect all PIDs first (sync) - returns in child-first order
   const pids = collectProcessTree(pid);
   if (pids === 'scan_failed') {
     // Signal the known root anyway (partial kill > zero kill), but never claim
     // stopped without a full-tree verify (#1911 Opus Major / debian-slim no pgrep).
-    const signal = force ? 'SIGKILL' : 'SIGTERM';
+    const killSignal = force ? 'SIGKILL' : signal;
     try {
-      process.kill(pid, signal);
+      if (!signalAllowed(deadlineMs)) return false;
+      process.kill(pid, killSignal);
     } catch {
       // already gone
     }
-    await waitForProcessToDie(pid, force);
+    await waitForProcessToDie(pid, force, deadlineMs);
     return false;
   }
 
-  // Signal all processes synchronously (children first, then root)
-  const signal = force ? 'SIGKILL' : 'SIGTERM';
+  // Signal all processes synchronously (children first, then root).
+  // Preserve the caller's signal when soft-killing so Ctrl-C stays SIGINT
+  // (exit 130) instead of always remapping to SIGTERM (exit 143).
+  const killSignal = force ? 'SIGKILL' : signal;
   for (const p of pids) {
     try {
-      process.kill(p, signal);
+      if (!signalAllowed(deadlineMs)) return false;
+      process.kill(p, killSignal);
     } catch {
       // Process may have already exited
     }
@@ -453,27 +466,41 @@ async function killProcessTree(pid: number, force: boolean): Promise<boolean> {
 
   // Wait for processes to die (async) - wait for root last
   for (const p of pids) {
-    await waitForProcessToDie(p, force);
+    await waitForProcessToDie(p, force, deadlineMs);
   }
 
   return pids.every((candidate) => !isProcessAlive(candidate));
 }
 
 /** Kill a PID and all descendants, verifying the complete tree is gone. */
-export async function killProcessTreeByPid(pid: number, force: boolean = false, report?: (result: WindowsStopReport) => void): Promise<boolean> {
+export async function killProcessTreeByPid(
+  pid: number,
+  force: boolean = false,
+  // 3rd arg: soft POSIX signal (#1424 job Ctrl-C → exit 130) OR Windows stop report (#1911).
+  signalOrReport: NodeJS.Signals | ((report: WindowsStopReport) => void) = 'SIGTERM',
+  // 4th arg: stop deadline (signal-lease budget) when numeric, else the Windows
+  // report fallback used when the 3rd arg is a signal (#1911).
+  deadlineOrFallbackReport?: number | ((report: WindowsStopReport) => void),
+  fallbackReport?: (report: WindowsStopReport) => void
+): Promise<boolean> {
+  const deadlineMs = typeof deadlineOrFallbackReport === 'number' ? deadlineOrFallbackReport : undefined;
+  const onReport = typeof signalOrReport === 'function' ? signalOrReport
+    : typeof deadlineOrFallbackReport === 'function' ? deadlineOrFallbackReport
+    : fallbackReport;
+  const signal: NodeJS.Signals = typeof signalOrReport === 'function' ? 'SIGTERM' : signalOrReport;
   const n = typeof pid === 'number' ? pid : Number(pid)
   if (!Number.isFinite(n) || n <= 0) return false;
   if (isWindows()) {
-    return stopWindowsProcessTree(n, force, report);
+    return stopWindowsProcessTree(n, force, onReport, deadlineMs);
   }
-  return killProcessTree(n, force);
+  return killProcessTree(n, force, deadlineMs, signal);
 }
 
 /**
  * Waits for a process to die, escalating if the graceful signal didn't work.
  * POSIX: SIGTERM → SIGKILL. Windows: taskkill /T → taskkill /F /T.
  */
-async function waitForProcessToDie(pid: number, force: boolean): Promise<void> {
+async function waitForProcessToDie(pid: number, force: boolean, deadlineMs?: number): Promise<void> {
   const maxWait = 2000;
   // Windows isProcessAlive shells out to tasklist; keep the poll coarse so a
   // stop cannot burn the runner event loop for seconds (#1911 Overseer).
@@ -490,10 +517,10 @@ async function waitForProcessToDie(pid: number, force: boolean): Promise<void> {
   }
 
   // Graceful kill didn't finish — escalate (same structure on both platforms).
-  if (!force && isProcessAlive(pid)) {
+  if (!force && isProcessAlive(pid) && signalAllowed(deadlineMs)) {
     try {
       if (isWindows()) {
-        killProcessWindows(pid, true);
+        killProcessWindows(pid, true, deadlineMs);
       } else {
         process.kill(pid, 'SIGKILL');
       }
@@ -512,13 +539,17 @@ async function waitForProcessToDie(pid: number, force: boolean): Promise<void> {
 export async function killProcessByChildProcess(
   child: ChildProcess,
   force: boolean = false,
-  report?: (result: WindowsStopReport) => void
+  signalOrReport: NodeJS.Signals | ((report: WindowsStopReport) => void) = 'SIGTERM',
+  deadlineOrFallbackReport?: number | ((report: WindowsStopReport) => void),
+  fallbackReport?: (report: WindowsStopReport) => void
 ): Promise<boolean> {
   const pid = child.pid;
   if (!pid) {
     return false;
   }
 
-  // Both platforms: tree-kill + full-tree verify (win32 must not trust root-only).
-  return killProcessTreeByPid(pid, force, report);
+  // Both platforms: tree-kill + full-tree verify (win32 must not trust
+  // root-only). The soft signal rides along on POSIX so job Ctrl-C stays
+  // exit 130 (#1424).
+  return killProcessTreeByPid(pid, force, signalOrReport, deadlineOrFallbackReport, fallbackReport);
 }

@@ -54,6 +54,16 @@ const initialSessions: SessionSummary[] = [
         },
     },
     {
+        ...base, id: 'running-completed-source', thinking: true,
+        metadata: { path: '/work/completed', name: '运行中已有历史', flavor: 'codex',
+            conversationHistory: { forkCurrent: true, forkLatestCompleted: true } },
+    },
+    {
+        ...base, id: 'running-empty-source', thinking: true,
+        metadata: { path: '/work/empty', name: '首轮运行中', flavor: 'codex',
+            conversationHistory: { forkCurrent: true, forkLatestCompleted: false } },
+    },
+    {
         ...base,
         id: 'archived-source',
         active: false,
@@ -72,7 +82,8 @@ const initialSessions: SessionSummary[] = [
 function Fixture() {
     const [selected, setSelected] = useState<string | null>(null)
     const api = {
-        forkConversation: async (sessionId: string) => {
+        forkConversation: async (sessionId: string, _message?: string, latestCompleted?: boolean) => {
+            document.body.dataset.latestCompleted = String(latestCompleted)
             document.body.dataset.forkSource = sessionId
             return { sessionId: 'fork-child' }
         },

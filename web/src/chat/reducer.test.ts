@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { reduceChatBlocks } from './reducer'
 import { reconcileChatBlocks } from './reconcile'
+import { buildVisibleChatBlocks, type VisibleChatBlock } from './toolGroups'
+import { aggregateResponseGroups, assignThreadMessageIdsWithStableWrappers, type BlockWithThreadMessageId } from '@/lib/assistant-runtime'
 import { normalizeDecryptedMessage } from './normalize'
 import type { AgentTextBlock, NormalizedMessage } from './types'
 import type { DecryptedMessage } from '@/types/api'
@@ -426,6 +428,62 @@ describe('reduceChatBlocks', () => {
         expect(reduced.blocks.some(b => b.kind === 'tool-call' && b.id === 'ask-done')).toBe(false)
     })
 
+    describe('question card free-text flag from the pending request', () => {
+        const toolCall = (input: unknown): NormalizedMessage => ({
+            id: 'agent-ask', localId: null, createdAt: 1_700_000_000_100, role: 'agent', isSidechain: false,
+            content: [{
+                type: 'tool-call', id: 'call_q', name: 'AskUserQuestion', input,
+                description: null, uuid: 'u-ask', parentUUID: null
+            }]
+        })
+        const pending = (allowFreeText?: boolean) => ({
+            requests: {
+                call_q: {
+                    tool: 'AskUserQuestion',
+                    arguments: { questions: [{ question: 'Pick?', options: [{ label: 'A' }], ...(allowFreeText === undefined ? {} : { allowFreeText }) }] },
+                    createdAt: 1_700_000_000_200
+                }
+            },
+            completedRequests: {}
+        }) as unknown as AgentState
+        const renderedFlag = (agentState: AgentState) => {
+            // agy's tool call input carries no flag: the form arrives later.
+            const reduced = reduceChatBlocks([
+                userMessage('u1', 'hello', 1_700_000_000_000),
+                toolCall({ questions: [{ question: 'Pick?', header: null, options: [{ label: 'A', description: null }], multiSelect: false }] })
+            ], agentState)
+            const block = reduced.blocks.find(b => b.kind === 'tool-call' && b.id === 'call_q')
+            const input = block?.kind === 'tool-call' ? block.tool.input as { questions: Array<{ allowFreeText?: boolean }> } : null
+            return input?.questions[0]?.allowFreeText
+        }
+
+        it('carries allowFreeText=false from the pending request onto the tool call input', () => {
+            expect(renderedFlag(pending(false))).toBe(false)
+        })
+
+        it('leaves the input without a flag when the request has none', () => {
+            expect(renderedFlag(pending())).toBeUndefined()
+        })
+    })
+
+    it('synthesizes the selected live-only request even when it predates the window', () => {
+        const messages = [userMessage('u1', 'hello', 1_700_000_000_000)]
+        const agentState = {
+            requests: {
+                'cursor-old': { tool: 'CursorAskQuestion', toolCallId: 'cursor-tool-call', arguments: { prompt: 'Pick one' }, createdAt: 1_600_000_000_000 },
+                'other-old': { tool: 'Bash', arguments: {}, createdAt: 1_600_000_000_100 }
+            },
+            completedRequests: {}
+        } as unknown as AgentState
+
+        const reduced = reduceChatBlocks(messages, agentState, { pendingRequestTargetId: 'cursor-old' })
+        const rendered = reduced.blocks.filter((block) => block.kind === 'tool-call').map((block) => block.kind === 'tool-call' ? block.id : null)
+        expect(rendered).toContain('cursor-tool-call')
+        const selectedBlock = reduced.blocks.find((block) => block.kind === 'tool-call' && block.id === 'cursor-tool-call')
+        expect(selectedBlock?.kind === 'tool-call' ? selectedBlock.tool.permission?.id : null).toBe('cursor-old')
+        expect(rendered).not.toContain('other-old')
+    })
+
     it('still synthesizes a card for a pending request with no message in the window', () => {
         const messages = [userMessage('u1', 'hello', 1_700_000_000_000)]
         const agentState = {
@@ -555,6 +613,10 @@ describe('reduceChatBlocks', () => {
                 content: [{ type: 'text', text: 'answer', uuid: 'a2', parentUUID: 'a1' }]
             },
             {
+                id: 'title-event', localId: null, createdAt: 4, role: 'event', isSidechain: false,
+                content: { type: 'message', message: 'fixture title' } as any
+            },
+            {
                 id: 'summary', localId: null, createdAt: 4, role: 'event', isSidechain: false,
                 content: { type: 'turn-summary', summary } as any
             }
@@ -639,6 +701,59 @@ describe('reduceChatBlocks', () => {
         const assistant = reconciled.blocks.find(block => block.kind === 'agent-text')
         expect(assistant?.kind === 'agent-text' ? assistant.roundSummary : undefined).toEqual(summary)
     })
+    it('keeps a late Codex round summary on the first visible response block through tool updates and title event', () => {
+        const wire = [
+            decryptedMessage('u', { role: 'user', content: { type: 'text', text: 'prompt' } }, 1),
+            decryptedMessage('tool-pending', { role: 'agent', content: { type: 'codex', data: { type: 'tool-call', name: 'unknown', callId: 'call_fixture', input: {}, status: 'pending' } } }, 2),
+            decryptedMessage('tool-running-1', { role: 'agent', content: { type: 'codex', data: { type: 'tool-call', name: 'read_file', callId: 'call_fixture', input: { path: 'fixture.txt' }, status: 'in_progress' } } }, 3),
+            decryptedMessage('tool-running-2', { role: 'agent', content: { type: 'codex', data: { type: 'tool-call', name: 'read_file', callId: 'call_fixture', input: { path: 'fixture.txt' }, progress: { completed: 1 }, status: 'in_progress' } } }, 4),
+            decryptedMessage('tool-running-3', { role: 'agent', content: { type: 'codex', data: { type: 'tool-call', name: 'Read', callId: 'call_fixture', input: { path: 'fixture.txt' }, status: 'in_progress' } } }, 5),
+            decryptedMessage('result', { role: 'agent', content: { type: 'codex', data: { type: 'tool-call-result', callId: 'call_fixture', output: 'ok' } } }, 6),
+            decryptedMessage('usage1', { role: 'agent', content: { type: 'codex', data: { type: 'token_count', info: { total: { inputTokens: 1, outputTokens: 1 } } } } }, 7),
+            decryptedMessage('answer', { role: 'agent', content: { type: 'codex', data: { type: 'message', message: 'fixture final answer' } } }, 8),
+            decryptedMessage('usage2', { role: 'agent', content: { type: 'codex', data: { type: 'token_count', info: { total: { inputTokens: 2, outputTokens: 2 } } } } }, 9),
+            decryptedMessage('title', { role: 'agent', content: { type: 'output', data: { type: 'summary', summary: 'title' } } }, 10),
+            decryptedMessage('round', { role: 'agent', content: { type: 'codex', data: { type: 'round-summary', summary: { usage: { input_tokens: 3, output_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 }, modelUsage: { 'fixture/model': { inputTokens: 3, outputTokens: 2, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } }, num_turns: 2, duration_ms: 10, generation_ms: 500, generation_output_tokens: 2 } } } }, 11),
+            decryptedMessage('ready', { role: 'agent', content: { type: 'codex', data: { type: 'ready' } } }, 12)
+        ].map(normalizeDecryptedMessage).filter((message): message is NormalizedMessage => message !== null)
+        const before = reduceChatBlocks(wire.slice(0, -2), null)
+        const after = reduceChatBlocks(wire, null)
+        const reconciled = reconcileChatBlocks(after.blocks, new Map(before.blocks.map(block => [block.id, block])))
+        const beforeVisible = buildVisibleChatBlocks(before.blocks, { hasMoreMessages: false })
+        const visible = buildVisibleChatBlocks(reconciled.blocks, { hasMoreMessages: false })
+
+        expect(visible.map(block => block.kind)).toEqual(['user-text', 'tool-call', 'agent-text', 'agent-event'])
+        const firstVisibleAssistant = visible.find(block => block.kind === 'tool-call')
+        expect(firstVisibleAssistant?.kind === 'tool-call' ? firstVisibleAssistant.id : null).toBe('call_fixture')
+        expect(firstVisibleAssistant?.kind === 'tool-call' ? firstVisibleAssistant.tool.name : null).toBe('Read')
+        expect(firstVisibleAssistant?.kind === 'tool-call' ? firstVisibleAssistant.tool.state : null).toBe('completed')
+        expect(firstVisibleAssistant?.kind === 'tool-call' ? firstVisibleAssistant.roundSummary : undefined).toMatchObject({ numTurns: 2, durationMs: 10, generationMs: 500, generationOutputTokens: 2 })
+
+        const aggregate = aggregateResponseGroups(visible).get('call_fixture')
+        expect(aggregate?.roundSummary).toMatchObject({ numTurns: 2, durationMs: 10, generationMs: 500, generationOutputTokens: 2 })
+
+        const beforeFirst = beforeVisible.find(block => block.kind === 'tool-call')
+        const afterFirst = visible.find(block => block.kind === 'tool-call')
+        expect(afterFirst).not.toBe(beforeFirst)
+        const wrapperCache = new WeakMap<VisibleChatBlock, BlockWithThreadMessageId>()
+        const beforeWrapper = assignThreadMessageIdsWithStableWrappers(beforeVisible, wrapperCache).find(({ block }) => block.kind === 'tool-call')
+        const afterWrapper = assignThreadMessageIdsWithStableWrappers(visible, wrapperCache).find(({ block }) => block.kind === 'tool-call')
+        expect(afterWrapper).not.toBe(beforeWrapper)
+    })
+
+    it('does not attach a summary across the latest user boundary', () => {
+        const summary = { modelUsage: { 'fixture/model': { inputTokens: 3, outputTokens: 2 } }, numTurns: 2, durationMs: 10 }
+        const reduced = reduceChatBlocks([
+            userMessage('first-user', 'first prompt', 1),
+            { id: 'first-answer', localId: null, createdAt: 2, role: 'agent', isSidechain: false, content: [{ type: 'text', text: 'first answer', uuid: 'first-answer', parentUUID: null }] },
+            userMessage('second-user', 'second prompt', 3),
+            eventMessage('title-event', 'fixture title', 4),
+            { id: 'summary', localId: null, createdAt: 5, role: 'event', isSidechain: false, content: { type: 'turn-summary', summary } as any }
+        ], null)
+        const firstAnswer = reduced.blocks.find(block => block.kind === 'agent-text' && block.text === 'first answer')
+        expect(firstAnswer?.kind === 'agent-text' ? firstAnswer.roundSummary : undefined).toBeUndefined()
+    })
+
 
     it('keeps terminal stream source IDs when reconciling unchanged text', () => {
         const previous: AgentTextBlock = {

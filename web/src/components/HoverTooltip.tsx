@@ -57,6 +57,7 @@ export function HoverTooltip(props: {
     return (
         <span
             ref={props.containerRef}
+            data-hover-tooltip-anchor=""
             className={cn(
                 spansRow ? 'static' : 'relative',
                 'inline-flex group',

@@ -240,7 +240,7 @@ export function NewSession(props: {
         setEffort('auto')
         setModelReasoningEffort('default')
         setGrokPermissionMode('default')
-        setNativePermissionMode('default')
+        setNativePermissionMode(resolvePermissionModeForFlavor('default', agent))
         setServiceTier('standard')
         setCollaborationMode('default')
         setCopilotAgentMode('interactive')
@@ -364,7 +364,7 @@ export function NewSession(props: {
             ) {
                 const bridged = legacyYoloBridge.enabled
                     ? resolveHapiYoloPermissionMode(targetAgent)
-                    : 'default'
+                    : resolvePermissionModeForFlavor('default', targetAgent)
                 if (bridged) {
                     setNativePermissionMode(bridged)
                 }
@@ -1121,8 +1121,9 @@ export function NewSession(props: {
         )
         setEffort(preferred.effort)
         setModelReasoningEffort(preferred.modelReasoningEffort)
+        setServiceTier(agent === 'codex' ? preferred.serviceTier ?? 'standard' : 'standard')
         if (usesSharedPermissionMode) {
-            setNativePermissionMode(preferred.permissionMode ?? 'default')
+            setNativePermissionMode(preferred.permissionMode ?? resolvePermissionModeForFlavor('default', agent))
         }
         if (agent === 'grok' && !editedPermissionRef.current) {
             const hubMode = hubPermissionModeRef.current
@@ -1982,6 +1983,7 @@ export function NewSession(props: {
                 cursorSelectedBase,
                 effort,
                 modelReasoningEffort,
+                ...(agent === 'codex' && showCodexFastMode ? { serviceTier } : {}),
                 ...(usesSharedPermissionMode ? { permissionMode: nativePermissionMode } : {})
             }
             const resolvedServiceTier = agent === 'codex' && showCodexFastMode
