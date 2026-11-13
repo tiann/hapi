@@ -519,6 +519,15 @@ html:has(.chat-scroll-y) #root {
     opacity: 1;
 }
 
+/* Hover tooltips are absolutely positioned inside a row, but the collapsible
+ * shell must keep overflow hidden during its height animation. Once a row
+ * tooltip is active, let that shell expose it so the tooltip's lower edge is
+ * not clipped by the group boundary. */
+.collapsible-panel[data-open] > .collapsible-inner:has([data-hover-tooltip-anchor]:hover),
+.collapsible-panel[data-open] > .collapsible-inner:has(.session-list-item:focus-visible) {
+    overflow: visible;
+}
+
 /* Scale content area to use available space on wide screens */
 @media (min-width: 1280px) {
     :root {
@@ -623,6 +632,22 @@ html:has(.chat-scroll-y) #root {
 .hapi-message-search-target {
     background-color: var(--app-chat-user-chip-bg);
     border-radius: 0.35rem;
+}
+
+.hapi-message-pending-target {
+    border-radius: 0.5rem;
+    animation: hapi-pending-target-highlight 1.8s ease-out both;
+}
+
+@keyframes hapi-pending-target-highlight {
+    0% {
+        background-color: rgba(255, 149, 0, 0.18);
+        box-shadow: 0 0 0 3px rgba(255, 149, 0, 0.55);
+    }
+    100% {
+        background-color: transparent;
+        box-shadow: 0 0 0 0 transparent;
+    }
 }
 
 mark.hapi-message-search-target {

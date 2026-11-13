@@ -17,7 +17,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { z } from 'zod';
 import { PeerDeliveryModeSchema } from '@/modules/pingPeer/deliveryMode';
-import { DISPLAY_IMAGE_PROMPT_CURSOR, DISPLAY_MEDIA_PROMPT_CURSOR, DISPLAY_VIDEO_PROMPT_CURSOR } from '@/modules/common/displayImagePrompt';
+import { DISPLAY_IMAGE_TOOL_DESCRIPTION, DISPLAY_MEDIA_TOOL_DESCRIPTION, DISPLAY_VIDEO_TOOL_DESCRIPTION } from '@/modules/common/displayToolDescriptions';
 import {
   INSPECT_PEER_TOOL_DESCRIPTION,
   LIST_PEERS_INCLUDE_INACTIVE_PARAM_DESCRIPTION,
@@ -156,7 +156,7 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       server.registerTool<any, any>(
         'display_image',
         {
-          description: `Display a local image file to the human user inline in the current HAPI chat session. ${DISPLAY_IMAGE_PROMPT_CURSOR}`,
+          description: DISPLAY_IMAGE_TOOL_DESCRIPTION,
           title: 'Display Image',
           inputSchema: displayImageInputSchema,
         },
@@ -186,7 +186,7 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       server.registerTool<any, any>(
         'display_video',
         {
-          description: `Display a local mp4 or webm file inline in the current HAPI chat session. ${DISPLAY_VIDEO_PROMPT_CURSOR}`,
+          description: DISPLAY_VIDEO_TOOL_DESCRIPTION,
           title: 'Display Video',
           inputSchema: displayVideoInputSchema,
         },
@@ -216,7 +216,7 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       server.registerTool<any, any>(
         'display_media',
         {
-          description: `Send a local image, video, audio, or other file to the current HAPI chat session. ${DISPLAY_MEDIA_PROMPT_CURSOR}`,
+          description: DISPLAY_MEDIA_TOOL_DESCRIPTION,
           title: 'Display Media',
           inputSchema: displayMediaInputSchema,
         },

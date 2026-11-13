@@ -25,7 +25,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -33,6 +32,7 @@ import androidx.compose.ui.unit.sp
 import app.hapi.companion.R
 import app.hapi.companion.ui.markdown.Markdown
 import app.hapi.companion.ui.theme.HapiTheme
+import app.hapi.companion.ui.theme.HapiTypography
 import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.CodexReview
 import app.hapi.protocol.chat.CodexReviewBlock
@@ -177,7 +177,7 @@ private fun FindingRow(finding: CodexReviewFinding) {
             formatLocation(finding)?.let { location ->
                 Text(
                     text = location,
-                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace, fontSize = 10.sp),
+                    style = MaterialTheme.typography.labelSmall.copy(fontFamily = HapiTypography.monoFamily, fontSize = 10.sp),
                     color = colors.hint,
                     modifier = Modifier.padding(top = 4.dp),
                 )
