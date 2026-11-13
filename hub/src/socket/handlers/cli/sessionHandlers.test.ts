@@ -493,9 +493,10 @@ describe('cli session handlers', () => {
         expect(uuids).toEqual(['msg-1', 'msg-2'])
     })
 
-    it.each([
+it.each([
         ['supersededBySessionId', 'foreign-session'],
         ['opencodeClearOperation', { replacementSessionId: 'foreign-session', state: 'reserved', updatedAt: Date.now() }],
+        ['opencodeForkPending', true],
         ['titleSuggestionAutoAttemptedAt', 1234],
         ['titleSuggestionTurn', { first: false, completed: true }],
         ['promptTitle', 'Forged title'],
@@ -531,6 +532,7 @@ describe('cli session handlers', () => {
         const session = store.sessions.getOrCreateSession('preserve-clear-link', {
             supersededBySessionId: 'owned-target',
             opencodeClearOperation: operation,
+            opencodeForkPending: true,
             jobsAcceptedFromSessionIds: ['old-session'],
             jobsTransferredToSessionId: 'merge-target',
             jobKeyRedirects: { 'old-session/beets': 'beets.oldsess1' },
@@ -546,7 +548,7 @@ describe('cli session handlers', () => {
             expectedVersion: session.metadataVersion,
             metadata: {
                 lifecycleState: 'archived',
-                supersededBySessionId: 'forged-target',
+                supersededBySessionId: 'forged-target', opencodeForkPending: false,
                 opencodeClearOperation: { replacementSessionId: 'forged-target', state: 'reserved', updatedAt: 0 },
                 jobsAcceptedFromSessionIds: ['forged-session'],
                 jobsTransferredToSessionId: 'forged-target',
@@ -556,6 +558,7 @@ describe('cli session handlers', () => {
         expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).toMatchObject({
             supersededBySessionId: 'owned-target',
             opencodeClearOperation: operation,
+            opencodeForkPending: true,
             jobsAcceptedFromSessionIds: ['old-session'],
             jobsTransferredToSessionId: 'merge-target',
             jobKeyRedirects: { 'old-session/beets': 'beets.oldsess1' },

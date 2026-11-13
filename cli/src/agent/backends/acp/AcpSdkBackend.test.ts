@@ -1903,6 +1903,113 @@ describe('AcpSdkBackend', () => {
         expect(turn1.some((m) => m.type === 'plan')).toBe(true);
     });
 
+    it('starts the suppression quiet window at operation completion when the previous turn was already idle', async () => {
+        backendStatics.UPDATE_QUIET_PERIOD_MS = 5;
+        backendStatics.UPDATE_DRAIN_TIMEOUT_MS = 100;
+        backendStatics.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS = 30;
+        backendStatics.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS = 300;
+        backendStatics.LATE_FLUSH_INTERVAL_MS = 5;
+        backendStatics.LATE_FLUSH_QUIET_PERIOD_MS = 5;
+        backendStatics.LATE_FLUSH_WINDOW_MS = 30;
+        const backend = new AcpSdkBackend({ command: 'opencode', flavor: 'opencode', textChunkMode: 'delta' });
+        const internal = backend as unknown as {
+            transport: unknown;
+            handleNotification(method: string, params: unknown): void;
+            sessionUpdateQueue: Promise<void>;
+            lastSessionUpdateAt: number;
+        };
+        internal.transport = { sendRequest: async () => ({ stopReason: 'end_turn' }), close: async () => {} };
+        const updates: AgentMessage[] = [];
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let delivered!: () => void;
+        const notificationDelivered = new Promise<void>(resolve => { delivered = resolve; });
+        const emitPlan = (text: string) => internal.handleNotification('session/update', {
+            sessionId: 'session-1', update: { sessionUpdate: ACP_SESSION_UPDATE_TYPES.plan,
+                entries: [{ content: text, priority: 'medium', status: 'pending' }] }
+        });
+        try {
+            await backend.prompt('session-1', [{ type: 'text', text: 'completed turn' }], update => updates.push(update));
+            // No notification has arrived during a long idle period before reload.
+            internal.lastSessionUpdateAt = Date.now() - 1_000;
+            const idleActivity = backend.getLastSessionUpdateAt();
+            const result = await backend.suppressUpdatesDuring(async () => {
+                timer = setTimeout(() => { emitPlan('late-reload-history'); delivered(); }, 15);
+                return 'loaded';
+            });
+            await notificationDelivered;
+            await internal.sessionUpdateQueue;
+            expect(result).toBe('loaded');
+            expect(JSON.stringify(updates)).not.toContain('late-reload-history');
+            expect(backend.getLastSessionUpdateAt()).toBeGreaterThan(idleActivity);
+            emitPlan('ordinary-update-after-reload');
+            await internal.sessionUpdateQueue;
+            expect(JSON.stringify(updates)).toContain('ordinary-update-after-reload');
+        } finally {
+            if (timer) clearTimeout(timer);
+            await backend.disconnect();
+        }
+    });
+
+    it('restores suppression after a load failure without discarding metadata, usage or the next response', async () => {
+        backendStatics.UPDATE_QUIET_PERIOD_MS = 5;
+        backendStatics.UPDATE_DRAIN_TIMEOUT_MS = 100;
+        backendStatics.PRE_PROMPT_UPDATE_QUIET_PERIOD_MS = 30;
+        backendStatics.PRE_PROMPT_UPDATE_DRAIN_TIMEOUT_MS = 300;
+        backendStatics.LATE_FLUSH_INTERVAL_MS = 5;
+        backendStatics.LATE_FLUSH_QUIET_PERIOD_MS = 5;
+        backendStatics.LATE_FLUSH_WINDOW_MS = 30;
+        const retryOptions = (AcpSdkBackend as unknown as { INIT_RETRY_OPTIONS: { maxAttempts: number } }).INIT_RETRY_OPTIONS;
+        const originalMaxAttempts = retryOptions.maxAttempts;
+        retryOptions.maxAttempts = 1;
+        const backend = new AcpSdkBackend({ command: 'opencode', flavor: 'opencode', textChunkMode: 'delta' });
+        const internal = backend as unknown as {
+            transport: unknown;
+            handleNotification(method: string, params: unknown): void;
+            sessionUpdateQueue: Promise<void>;
+            messageHandler: unknown;
+            latestUsageUpdate: unknown;
+        };
+        const emit = (update: unknown) => internal.handleNotification('session/update', { sessionId: 'session-1', update });
+        let promptCount = 0;
+        internal.transport = {
+            close: async () => {},
+            sendRequest: async (method: string) => {
+                if (method === 'session/load') {
+                    emit({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'failed-load-replay' } });
+                    emit({ sessionUpdate: 'session_info_update', title: 'loaded-session-title' });
+                    emit({ sessionUpdate: 'usage_update', used: 4_200, size: 200_000 });
+                    throw new Error('fixture load rejection');
+                }
+                if (++promptCount === 2) emit({ sessionUpdate: 'agent_message_chunk',
+                    content: { type: 'text', text: 'normal-after-load-failure' } });
+                return { stopReason: 'end_turn' };
+            }
+        };
+        const previous: AgentMessage[] = [];
+        const titles: unknown[] = [];
+        backend.setSessionInfoUpdateListener(update => titles.push(update));
+        try {
+            await backend.prompt('session-1', [{ type: 'text', text: 'previous prompt' }], update => previous.push(update));
+            const previousHandler = internal.messageHandler;
+            await expect(backend.suppressUpdatesDuring(() => backend.loadSession({
+                sessionId: 'session-1', cwd: '/tmp/project', mcpServers: []
+            }))).rejects.toThrow('fixture load rejection');
+            await internal.sessionUpdateQueue;
+            expect(internal.messageHandler).toBe(previousHandler);
+            expect(JSON.stringify(previous)).not.toContain('failed-load-replay');
+            expect(titles).toEqual([{ sessionId: 'session-1', title: 'loaded-session-title' }]);
+            expect(internal.latestUsageUpdate).toMatchObject({ contextTokens: 4_200, contextWindow: 200_000 });
+            const next: AgentMessage[] = [];
+            await backend.prompt('session-1', [{ type: 'text', text: 'next prompt' }], update => next.push(update));
+            expect(JSON.stringify(previous)).not.toContain('failed-load-replay');
+            expect(JSON.stringify(next)).toContain('normal-after-load-failure');
+            expect(JSON.stringify(next)).not.toContain('failed-load-replay');
+        } finally {
+            retryOptions.maxAttempts = originalMaxAttempts;
+            await backend.disconnect();
+        }
+    });
+
     it('drops updates enqueued while suppressed even if the queue drains after the handler is restored', async () => {
         // If handleSessionUpdate looked up this.messageHandler when the queued
         // microtask ran (instead of capturing it at enqueue), a compact-era
