@@ -14,35 +14,29 @@ struct SessionFilterMenu: View {
 
     var body: some View {
         Menu {
+            // Native Pickers and Toggles share the system checkmark column, so
+            // every row's text lines up and selection reads the same way.
             Section("Sort By") {
-                choice("Last Message", selected: model.order.sort == .lastMessage) {
-                    model.setSort(.lastMessage)
+                Picker("Sort By", selection: Binding(get: { model.order.sort }, set: { model.setSort($0) })) {
+                    Text("Last Message").tag(SessionListSort.lastMessage)
+                    Text("Date Created").tag(SessionListSort.created)
                 }
-                choice("Date Created", selected: model.order.sort == .created) {
-                    model.setSort(.created)
-                }
-                Toggle(isOn: Binding(get: { model.order.activeFirst }, set: { model.setActiveFirst($0) })) {
-                    Label("Active First", systemImage: "arrow.up.to.line")
-                }
-                .accessibilityIdentifier("home.filters.active-first")
+                .pickerStyle(.inline)
+                Toggle("Active First", isOn: Binding(get: { model.order.activeFirst }, set: { model.setActiveFirst($0) }))
+                    .accessibilityIdentifier("home.filters.active-first")
             }
             Section("Show") {
-                choice("All Sessions", selected: model.filters.status == .all) {
-                    model.setStatus(.all)
+                Picker("Show", selection: Binding(get: { model.filters.status }, set: { model.setStatus($0) })) {
+                    Text("All Sessions").tag(SessionListStatus.all)
+                    Text("Active Only").tag(SessionListStatus.active)
+                    Text("Archived Only").tag(SessionListStatus.archived)
                 }
-                choice("Active Only", selected: model.filters.status == .active) {
-                    model.setStatus(.active)
-                }
-                choice("Archived Only", selected: model.filters.status == .archived) {
-                    model.setStatus(.archived)
-                }
-                Toggle(isOn: Binding(get: { model.filters.unreadOnly }, set: { model.setUnreadOnly($0) })) {
-                    Label("Unread Only", systemImage: "circle.inset.filled")
-                }
-                .accessibilityIdentifier("home.filters.unread")
+                .pickerStyle(.inline)
+                Toggle("Unread Only", isOn: Binding(get: { model.filters.unreadOnly }, set: { model.setUnreadOnly($0) }))
+                    .accessibilityIdentifier("home.filters.unread")
             }
             if model.showsMachineFilter {
-                machineSection
+                Section { machineMenu }
             }
             Section {
                 Button("Mark All as Read", systemImage: "checkmark.circle") {
@@ -78,39 +72,36 @@ struct SessionFilterMenu: View {
         }
     }
 
-    /// Single-choice row with the same checkmark presentation as the
-    /// machine options (a Picker would discard the native layout we rely on).
-    private func choice(_ title: LocalizedStringKey, selected: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-            if selected { Image(systemName: "checkmark") }
+    /// Machines live in a submenu so a long roster never pushes the rest of
+    /// the menu off screen; the row's subtitle names the current choice.
+    private var machineMenu: some View {
+        let selected = model.activeMachineFilter
+        let selectedLabel = selected.flatMap { id in model.machineFilters.first { $0.id == id }?.label }
+        return Menu {
+            Toggle("All Machines", isOn: machineBinding(nil))
+            Section {
+                ForEach(model.machineFilters) { machine in
+                    Toggle(isOn: machineBinding(machine.id)) {
+                        // The second Text becomes the native menu subtitle.
+                        Text(machine.label)
+                        Text("\(machine.sessionCount, specifier: "%lld") sessions")
+                    }
+                    .accessibilityLabel(Text("\(machine.label), \(machine.sessionCount, specifier: "%lld") sessions"))
+                }
+            }
+        } label: {
+            Text("Machine")
+            Text(selectedLabel ?? String(localized: "All Machines"))
         }
-        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityIdentifier("home.filters.machine")
     }
 
-    private var machineSection: some View {
-        Section("Machine") {
-            Button {
-                model.selectMachine(nil)
-            } label: {
-                Text("All Machines")
-                if model.activeMachineFilter == nil { Image(systemName: "checkmark") }
-            }
-            .accessibilityAddTraits(model.activeMachineFilter == nil ? .isSelected : [])
-            ForEach(model.machineFilters) { machine in
-                Button {
-                    model.selectMachine(machine.id)
-                } label: {
-                    // Native Menu buttons turn the second Text into a
-                    // subtitle; Picker options silently discard it.
-                    Text(machine.label)
-                    Text("\(machine.sessionCount, specifier: "%lld") sessions")
-                    if model.activeMachineFilter == machine.id { Image(systemName: "checkmark") }
-                }
-                .accessibilityLabel(Text("\(machine.label), \(machine.sessionCount, specifier: "%lld") sessions"))
-                .accessibilityAddTraits(model.activeMachineFilter == machine.id ? .isSelected : [])
-            }
-        }
+    /// Radio semantics over a Toggle: turning the checked row off is a no-op.
+    private func machineBinding(_ id: String?) -> Binding<Bool> {
+        Binding(
+            get: { model.activeMachineFilter == id },
+            set: { isOn in if isOn { model.selectMachine(id) } }
+        )
     }
 }
 
