@@ -64,6 +64,14 @@ const currentResponse: ForkPreviewResponse = {
     counts: { kept: 4, excluded: 0 }
 }
 
+const latestCompletedResponse: ForkPreviewResponse = {
+    mode: 'latestCompleted',
+    boundary: { v: 1, mode: 'latestCompleted', epoch: 1, tailSeq: 4 },
+    keptTail: baseRows,
+    excluded: [],
+    counts: { kept: 4, excluded: 0 }
+}
+
 describe('fork preview error display in the chat', () => {
     afterEach(() => {
         cleanup()
@@ -149,5 +157,47 @@ describe('fork preview error display in the chat', () => {
         // close button, not a Retry action).
         expect(within(errorDialog).getByRole('button', { name: 'Close' })).toBeTruthy()
         expect(within(errorDialog).queryByRole('button', { name: 'Retry' })).toBeNull()
+    })
+
+    it('replaces a stale preview with the error dialog when the refresh fails', async () => {
+        const fork = vi.fn(async () => ({ sessionId: 'ses-child' }))
+        const forkPreview = vi.fn()
+        forkPreview.mockResolvedValueOnce(currentResponse)
+        forkPreview.mockRejectedValueOnce(new ApiError('HTTP 409 Conflict: {"error":"Session is busy"}', 409, undefined, '{"error":"Session is busy"}'))
+
+        const view = render(shell(forkPreview, fork, makeSession(false), baseRows))
+        fireEvent.click((await screen.findAllByRole('button', { name: 'Fork' })).at(-1)!)
+        await screen.findByTestId('fork-preview-thread')
+
+        // A thinking edge while the dialog is open re-asks the hub; when that
+        // refresh fails, the error dialog must replace the outdated preview
+        // instead of hiding behind it.
+        view.rerender(shell(forkPreview, fork, makeSession(true), baseRows))
+        const errorDialog = await screen.findByRole('dialog', { name: 'Fork conversation' })
+        expect(within(errorDialog).getByText(/Session is busy/)).toBeTruthy()
+        expect(screen.queryByTestId('fork-preview-thread')).toBeNull()
+    })
+
+    it('re-asks the hub when the source starts running while the first preview is loading', async () => {
+        const fork = vi.fn(async () => ({ sessionId: 'ses-child' }))
+        let resolveFirst!: (value: ForkPreviewResponse) => void
+        const forkPreview = vi.fn()
+        forkPreview.mockImplementationOnce(() => new Promise<ForkPreviewResponse>(resolve => { resolveFirst = resolve }))
+        forkPreview.mockResolvedValueOnce(latestCompletedResponse)
+
+        const view = render(shell(forkPreview, fork, makeSession(false), baseRows))
+        fireEvent.click((await screen.findAllByRole('button', { name: 'Fork' })).at(-1)!)
+
+        // The turn starts while the request is in flight: the edge must
+        // re-issue the preview request instead of being consumed before the
+        // stale answer lands.
+        view.rerender(shell(forkPreview, fork, makeSession(true), baseRows))
+        await waitFor(() => expect(forkPreview).toHaveBeenCalledTimes(2))
+        resolveFirst(currentResponse)
+
+        // The stale first answer is discarded; the refreshed latestCompleted
+        // boundary is what the dialog shows.
+        await screen.findByTestId('fork-preview-thread')
+        expect(screen.getByText(/Copies up to the last completed turn/)).toBeTruthy()
     })
 })

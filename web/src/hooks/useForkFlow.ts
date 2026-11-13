@@ -88,6 +88,8 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
     const [legacyRequest, setLegacyRequest] = useState<ForkFlow['legacyRequest']>(null)
     const [stale, setStale] = useState(false)
     const lastFailedRequestRef = useRef<ForkFlow['legacyRequest']>(null)
+    const pendingRequestRef = useRef<ForkFlow['legacyRequest']>(null)
+    const confirmingRef = useRef(false)
     const requestSeq = useRef(0)
     const sessionRef = useRef(options.session)
     sessionRef.current = options.session
@@ -96,6 +98,7 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
 
     const closePreview = useCallback(() => {
         requestSeq.current += 1
+        pendingRequestRef.current = null
         setState(null)
         setLoading(false)
         setErrorMessage(null)
@@ -107,16 +110,19 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
 
     const fetchPreview = useCallback(async (intent: ForkPreviewIntent, messageLocalId?: string) => {
         const seq = ++requestSeq.current
+        pendingRequestRef.current = { intent, messageLocalId }
         setLoading(true)
         setErrorMessage(null)
         setErrorWasConnectFailure(false)
         try {
             const response = await api.forkPreview(sessionRef.current.id, intent, messageLocalId)
             if (seq !== requestSeq.current) return
+            pendingRequestRef.current = null
             lastFailedRequestRef.current = null
             setState({ intent, messageLocalId, response, view: buildForkPreviewView(response) })
         } catch (error) {
             if (seq !== requestSeq.current) return
+            pendingRequestRef.current = null
             if (error instanceof ApiError && error.status === 404) {
                 // Older hub without the preview route: keep the requested
                 // boundary for the legacy confirm dialog.
@@ -124,13 +130,19 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
                 setState(null)
                 return
             }
+            // Drop the previous preview so the error dialog is not masked by
+            // the outdated boundary still being mounted.
+            setState(null)
             // Connect-level failures (no hub answer) are retryable; hub
             // rejections answer with an ApiError and stay dismiss-only.
             setErrorWasConnectFailure(!(error instanceof ApiError))
             lastFailedRequestRef.current = { intent, messageLocalId }
             setErrorMessage(apiErrorText(error, t('dialog.error.default')))
         } finally {
-            if (seq === requestSeq.current) setLoading(false)
+            if (seq === requestSeq.current) {
+                pendingRequestRef.current = null
+                setLoading(false)
+            }
         }
     }, [api, t])
 
@@ -202,18 +214,22 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
 
     // The hub resolves the mode from the live session. Re-answer the preview
     // while the dialog is open when the source starts or stops running, so the
-    // shown boundary never outlives the state it was computed from.
+    // shown boundary never outlives the state it was computed from. The
+    // in-flight request is tracked in a ref so an edge that lands before the
+    // answer still re-issues it, and a confirm in flight is left alone.
     const thinking = options.session.thinking
     const lastThinkingRef = useRef(thinking)
     useEffect(() => {
         const wasThinking = lastThinkingRef.current
         lastThinkingRef.current = thinking
         if (wasThinking === thinking) return
+        if (confirmingRef.current) return
         const current = stateRef.current
-        if (!current && !loading) return
-        const intent = current?.intent ?? legacyRequest?.intent
+        const pending = pendingRequestRef.current
+        if (!current && !pending && !loading) return
+        const intent = current?.intent ?? pending?.intent ?? legacyRequest?.intent
         if (!intent) return
-        void fetchPreview(intent, current?.messageLocalId ?? legacyRequest?.messageLocalId)
+        void fetchPreview(intent, current?.messageLocalId ?? pending?.messageLocalId ?? legacyRequest?.messageLocalId)
     }, [fetchPreview, legacyRequest, loading, thinking])
 
     return {
