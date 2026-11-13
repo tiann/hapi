@@ -250,4 +250,25 @@ describe('PermissionHandler — steer while a request is pending', () => {
         expect(getAgentState().completedRequests?.['tc-1']).toMatchObject({ status: 'denied' });
         expect(handler.isAborted('tc-1')).toBe(false);
     });
+
+    it('keeps the turn running when the pending request is a plan exit', async () => {
+        const { session } = createFakeSession();
+        const handler = new PermissionHandler(session);
+
+        handler.onMessage({
+            type: 'assistant',
+            message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tc-plan', name: 'ExitPlanMode', input: {} }] },
+        } as any);
+        const resultPromise = handler.handleToolCall(
+            'ExitPlanMode',
+            {},
+            { permissionMode: 'plan' } as any,
+            { signal: new AbortController().signal }
+        );
+
+        handler.denyPendingForSteer();
+
+        await expect(resultPromise).resolves.toMatchObject({ behavior: 'deny' });
+        expect(handler.isAborted('tc-plan')).toBe(false);
+    });
 });
