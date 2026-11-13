@@ -183,9 +183,10 @@ for (const touch of [false, true]) {
             await item(page, 'photo').getByTitle('Click to zoom').click()
             await page.getByRole('dialog').getByTitle('Zoom in', { exact: true }).click()
             // Parent updates arrive while an image viewer is open.
-            await page.getByRole('button', { name: 'Toggle save failure' }).evaluate((button: HTMLButtonElement) => button.click())
+            await page.evaluate(() => (window as unknown as { scratchlistAttachmentFixture: { setFailSave(value: boolean): void } }).scratchlistAttachmentFixture.setFailSave(true))
+            await expect(page.getByTestId('fail-save')).toHaveText('true')
             await item(page, 'file').getByTestId('scratchlist-attachment-drag-handle').dispatchEvent('keydown', { key: 'Home' })
-            await expect(page.getByRole('alert')).toHaveText('Save failed')
+            await expect(page.locator('[role=alert]')).toHaveText('Save failed')
             await expect(page.getByTestId('order')).toHaveText('["photo","file"]')
             await expect(page.getByRole('dialog', { name: 'photo.png' })).toBeVisible()
             await expect(page.getByRole('dialog').getByTitle('Reset zoom')).toHaveText('125%')

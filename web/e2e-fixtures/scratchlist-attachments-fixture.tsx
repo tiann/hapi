@@ -30,6 +30,11 @@ const api = {
     async deleteScratchlistAttachment() {},
 } as unknown as ApiClient
 
+declare global {
+    interface Window {
+        scratchlistAttachmentFixture: { setFailSave(value: boolean): void }
+    }
+}
 function App() {
     const [entries, setEntries] = useState<ScratchlistEntry[]>(() => JSON.parse(localStorage.getItem(storageKey) ?? 'null') ?? [{ id: 'draft', text: 'Draft note', createdAt: 1, attachments: [] }])
     const [updates, setUpdates] = useState(0)
@@ -37,6 +42,7 @@ function App() {
     const [activeActions, setActiveActions] = useState(true)
     const [action, setAction] = useState('')
     const save = (next: ScratchlistEntry[]) => { localStorage.setItem(storageKey, JSON.stringify(next)); setEntries(next) }
+    window.scratchlistAttachmentFixture = { setFailSave }
     return <I18nProvider><main className="mx-auto max-w-2xl p-4">
         <div className="mb-4 flex flex-wrap gap-3">
             <button onClick={() => save([{ ...entries[0]!, attachments: [image] }])}>Single image</button>
@@ -59,6 +65,7 @@ function App() {
             }}
             onDelete={(id) => save(entries.filter((entry) => entry.id !== id))}
             onReorder={() => { throw new Error('Attachment gestures must not reorder draft rows') }} />
+        <output data-testid="fail-save">{String(failSave)}</output>
         <output data-testid="updates">{updates}</output>
         <output data-testid="order">{JSON.stringify(entries[0]?.attachments?.map((a) => a.id))}</output>
         <output data-testid="action">{action}</output>
