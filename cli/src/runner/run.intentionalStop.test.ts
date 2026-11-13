@@ -60,6 +60,11 @@ vi.mock('@/utils/process', async importOriginal => ({
     isWindows: () => false,
     isProcessAlive: mocks.isProcessAlive,
     getProcessStartMarker: () => 'generation',
+    // The probe reads /proc/<pid>/status on Linux: a busy shared host can have
+    // an unrelated non-leader task owning PID_GONE's TID, which would classify
+    // the durable record as exited (dropping it without a tombstone) before
+    // the stop even runs. Keep generation probing deterministic here.
+    getProcessThreadGroupId: () => null,
     killProcess: mocks.kill,
     killProcessTreeByPid: mocks.kill,
     killProcessByChildProcess: mocks.kill,

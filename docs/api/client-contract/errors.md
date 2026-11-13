@@ -40,13 +40,13 @@ When no `code` is present, branch on status alone and treat the failure generica
 | 409 | — | `sessions.ts` delete-while-active, archive of plain inactive row, fork/rewind refusals, remote-only config on terminal-controlled sessions (`controlledByUser`) | Surface message; refresh session state |
 | 413 | — | `sessions.ts` upload (> 50 MB decoded), export too large (`{error, count, limit}`); `voice.ts` transcription (`Audio file too large`, 25 MB audio / ~26 MB body) | Reduce payload |
 | 413 | `scratchlist_attachment_too_large` | `sessions.ts` scratchlist upload | Reduce attachment |
-| 422 | — | `sessions.ts` reopen with incomplete metadata (`{error, missing[]}`); title-suggestion pass-through (`TitleSuggestionError`, statuses 422/429/502/503) | Not reopenable / feature unavailable |
+| 422 | — | `sessions.ts` reopen with incomplete metadata (`{error, missing[]}`); title-suggestion pass-through (`TitleSuggestionError`, statuses 422/429/500/503) | Not reopenable / feature unavailable |
 | 429 | — | Title suggestion (provider rate limit) | Back off |
-| 500 | — | Catch-all in most routes (`{error: message}`) | Log; generic failure UI |
-| 502 | — | Title suggestion upstream failure; restart-runner unknown error | Retry later |
+| 500 | — | Catch-all in most routes (`{error: message}`); upstream failures: title suggestion, voice transcription/realtime token, restart-runner and cursor-chat-store unknown errors (with `code` when the source has one), Codex plan implement `failed` | Log; surface the body's `error` |
 | 503 | — | `guards.ts` `requireSyncEngine` → `{error: 'Not connected'}` — hub subsystems not up (startup/shutdown window); also Telegram-disabled on `/api/auth` initData path | Retry with backoff |
 | 503 | `no_machine_online` | resume/reopen/spawn-flow result mapping (`sessions.ts`) | The machine that owns the session is offline — tell the user to start the runner |
 | 503 | `machine_offline` | `machines.ts` restart-runner | Same |
+| 503 | `archive-cleanup-unavailable`, `archive-cleanup-timeout` | `sessions.ts` archive (Runner cleanup unconfirmed) | Retry to verify the cleanup result; branch on `code`, not status |
 | 503 | `rpc_target_missing` | `machines.ts` pi/codex model catalogs (`RPC_TARGET_MISSING_ERROR_CODE` in `shared/src/rpcMethods.ts` — RPC handler unregistered or socket disconnected) | CLI-side target gone — treat as offline |
 
 ## RPC-wrapped endpoints
@@ -66,11 +66,13 @@ One route qualifies that rule. `GET /api/machines/:id/agy-models` keeps serving 
 
 When that background re-check lands a different listing, the machine says so over the existing event stream rather than making clients ask: `machine-agy-models-updated` (see [SSE](./sse.md)) carries the `machineId` and nothing else. Refetch that machine's route on it — the answer comes from the machine's cache, so it costs no `agy` run and produces no further event. It is emitted whenever the re-check changes what this route would answer — a different listing, **or** a sign-in warning that appeared or cleared — and not when it changes neither, so a failed re-check that raises a warning does announce. The machine's very first listing is never announced: whoever triggered it is already awaiting it. Requests during that window are answered from the machine's cache and do not launch agy.
 
+The hub does not answer 502 or 504: Cloudflare Tunnel replaces those bodies with `text/plain` `error code: 502/504`, so a client seeing either one is looking at a proxy, not a hub error.
+
 ## Retry guidance
 
 | Class | Retry? |
 |-------|--------|
 | 400 / 403 / 404 / 409 / 413 / 422 | No (fix input, refresh state, or hide surface) |
 | 401 (middleware) | Once, after silent re-auth ([Auth](./auth.md#silent-re-auth-401-handling)) |
-| 429 / 502 / 503 | Reads: retry with backoff. Mutations: follow the endpoint's recovery contract; do not replay a write whose outcome is unknown |
+| 429 / 503 | Reads: retry with backoff. Mutations: follow the endpoint's recovery contract; do not replay a write whose outcome is unknown |
 | 200 `{success: false}` | Inspect the error and endpoint contract; manual retry only when safe. This envelope can also represent a missing RPC target or timeout |

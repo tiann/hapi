@@ -120,6 +120,7 @@ class MessageWindowStoreTest {
         val requests = mutableListOf<MessagesQuery>()
         val contextRequests = mutableListOf<String>()
         val contextResponses = ArrayDeque<MessageContextResponse?>()
+        var contextFailures = 0
         private val responses = Channel<MessagesResponse>(Channel.UNLIMITED)
 
         fun release(response: MessagesResponse) {
@@ -136,6 +137,10 @@ class MessageWindowStoreTest {
 
         override suspend fun getMessageContext(sessionId: String, messageId: String): MessageContextResponse? {
             contextRequests += messageId
+            if (contextFailures > 0) {
+                contextFailures -= 1
+                throw RuntimeException("context fetch failed")
+            }
             return if (contextResponses.isEmpty()) null else contextResponses.removeFirst()
         }
     }
@@ -710,5 +715,51 @@ class MessageWindowStoreTest {
         assertEquals(stale.content, state.messages.first { it.id == "call-row" }.wire.content)
         assertTrue(state.warning != null)
         assertEquals(false, state.isSyncingTail)
+    }
+
+    @Test
+    fun `an ordinary sync retries the sweep when the context refresh fails`() = runTest {
+        val stale = toolCallRow("call-row", 10, 10_000, "in_progress")
+        val merged = toolCallRow("call-row", 10, 10_000, "completed")
+        val cachedTail = (1L..9L).map { agentRow("r-$it", it, it * 1000) }
+        val missed = (11L..310L).map { agentRow("r-$it", it, it * 1000) }
+        val latestPageRows = (111L..310L).map { agentRow("r-$it", it, it * 1000) }
+        val api = GatedMessagesApi()
+        val store = MessageWindowStore("gap-sweep-retry", api, backgroundScope, initialState = MessageWindowState(
+            sessionId = "gap-sweep-retry", epoch = 1, hasMore = true,
+            oldestPosition = MessagePosition(1000, 1), newestPosition = MessagePosition(10_000, 10),
+            messages = cachedTail.map { it.asWindowMessage() } + stale.asWindowMessage(),
+        ))
+        api.release(afterPage(missed, epoch = 1, nextAfter = 310_000L to 310L, hasMore = false))
+        api.release(latestPage(latestPageRows, epoch = 1))
+        api.contextFailures = 1
+
+        store.recoverAfterGapResume()
+
+        // The failed refresh surfaces the warning and leaves the recovery
+        // pending, so the next ORDINARY sync retries the sweep instead of
+        // leaving the enriched cached call stale with no retry path.
+        assertEquals(listOf("call-row"), api.contextRequests)
+        val failed = store.state.value
+        assertTrue(failed.warning != null)
+        assertTrue(failed.pendingGapRecovery)
+
+        api.release(afterPage(missed, epoch = 1, nextAfter = 310_000L to 310L, hasMore = false))
+        api.release(latestPage(latestPageRows, epoch = 1))
+        api.contextResponses += MessageContextResponse(
+            messages = listOf(merged),
+            targetMessageId = "call-row",
+            page = MessageContextPage(
+                epoch = 1, nextBeforeSeq = 1, nextBeforeAt = 1000,
+                snapshotHeadSeq = 310, snapshotHeadAt = 310_000, hasMore = false,
+            ),
+        )
+        store.syncTail()
+
+        val state = store.state.value
+        assertEquals(2, api.contextRequests.size)
+        assertEquals(merged.content, state.messages.first { it.id == "call-row" }.wire.content)
+        assertEquals(false, state.pendingGapRecovery)
+        assertNull(state.warning)
     }
 }
