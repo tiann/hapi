@@ -111,7 +111,7 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
             expect(result.status).toBe('rejected')
             if (result.status === 'rejected') {
                 expect(result.reason).toBeInstanceOf(ArchiveCleanupError)
-                expect(result.reason.status).toBe(504)
+                expect(result.reason.status).toBe(503)
             }
         }
         expect(cache().getSession(id)?.active).toBe(true)
