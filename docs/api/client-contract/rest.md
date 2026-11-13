@@ -234,14 +234,18 @@ The image id is an immutable content fingerprint, so it doubles as the ETag: sen
 
 ### Uploads (message attachments)
 
-Source: `hub/src/web/routes/sessions.ts` (`UploadFileRequestSchema`).
+Source: `hub/src/web/routes/sessions.ts` (`UploadFileRequestSchema`, `InitChunkedUploadRequestSchema`).
 
 | Method & path | Request | Response |
 |---|---|---|
 | `POST /api/sessions/:id/upload` | JSON `{filename, content, mimeType}` — `content` is **base64**; decoded size limit 50 MB → `413` | `{success, path?, error?}` — pass the resulting metadata in `attachments` of send-message |
+| `POST /api/sessions/:id/uploads` | JSON `{filename, size, mimeType}` (`size ≥ 0`) — starts a chunked upload session; oversized `size` → `413` (`upload_too_large`), older CLI runner → `503` (`rpc_target_missing`) | `{success, uploadId?, chunkSize?, maxUploadBytes?, error?, code?}` |
+| `POST /api/sessions/:id/uploads/:uploadId/chunk?index=<n>` | Raw binary body (`Content-Type: application/octet-stream`, `1 B – 8 MB`) for zero-based sequential chunk index `n` | `{success, receivedBytes?, error?, code?}` (`413` `upload_chunk_too_large`, `400` `upload_invalid_chunk`, `409` `upload_size_mismatch`/`upload_conflict`, `404` `upload_not_found`) |
+| `POST /api/sessions/:id/uploads/:uploadId/finalize` | — | `{success, path?, error?, code?}` (`409` `upload_incomplete`) |
+| `POST /api/sessions/:id/uploads/:uploadId/abort` | — | `{success, error?, code?}` (idempotent when already aborted/missing) |
 | `POST /api/sessions/:id/upload/delete` | `{path}` | `{success, error?}` |
 
-Uploads are JSON+base64, **not** multipart. Both require an active session.
+All upload endpoints require an active session. Small files (`≤ 8 MB` in the web client) use single-request `POST /api/sessions/:id/upload`, while larger files stream sequentially via `/uploads` to avoid whole-file base64 memory amplification and Socket.IO's 48 MB RPC frame limit. Set `HAPI_MAX_UPLOAD_BYTES` on both Hub and CLI runner to configure the chunked upload ceiling (default `536870912` = 512 MiB, clamped to 10 GiB).
 
 ### Scratchlist
 

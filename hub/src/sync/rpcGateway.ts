@@ -19,6 +19,7 @@ import {
     ListPiSessionsRpcResponseSchema
 } from '@hapi/protocol/apiTypes'
 import type {
+    AbortChunkedUploadResponse,
     AgyModelsResponse,
     ClaudeModelsResponse,
     AgentAvailabilityResponse,
@@ -35,6 +36,8 @@ import type {
     FileReadResponse,
     GeneratedImageResponse,
     ImplementCodexPlanResult,
+    InitChunkedUploadRequest,
+    InitChunkedUploadResponse,
     CopilotModelsResponse,
     CopilotReasoningEffortResponse,
     GrokModelsResponse,
@@ -54,6 +57,7 @@ import type {
     PiModelsResponse,
     SlashCommandsResponse,
     StatFilesResponse,
+    UploadChunkResponse,
     UploadFileResponse,
     WorkspaceReadFileRequest,
     WorkspaceListDirectoryRequest,
@@ -69,6 +73,7 @@ import type { RpcRegistry } from '../socket/rpcRegistry'
 const MODEL_LIST_RPC_TIMEOUT_MS = 120_000
 // Codex can spend 30s awaiting startup after preflight and process creation.
 const CODEX_SPAWN_RPC_TIMEOUT_MS = 60_000
+const UPLOAD_CHUNK_RPC_TIMEOUT_MS = 60_000
 
 export class RunnerStopRpcError extends Error {
     constructor(readonly timedOut: boolean, cause: unknown) {
@@ -540,6 +545,32 @@ export class RpcGateway {
 
     async uploadFile(sessionId: string, filename: string, content: string, mimeType: string): Promise<RpcUploadFileResponse> {
         return await this.sessionRpc(sessionId, RPC_METHODS.UploadFile, { sessionId, filename, content, mimeType }) as RpcUploadFileResponse
+    }
+
+    async initChunkedUpload(sessionId: string, request: InitChunkedUploadRequest): Promise<InitChunkedUploadResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.UploadInit, { sessionId, ...request }) as InitChunkedUploadResponse
+    }
+
+    async uploadFileChunk(sessionId: string, uploadId: string, index: number, content: string): Promise<UploadChunkResponse> {
+        return await this.sessionRpc(
+            sessionId,
+            RPC_METHODS.UploadChunk,
+            { sessionId, uploadId, index, content },
+            UPLOAD_CHUNK_RPC_TIMEOUT_MS
+        ) as UploadChunkResponse
+    }
+
+    async finalizeChunkedUpload(sessionId: string, uploadId: string): Promise<RpcUploadFileResponse> {
+        return await this.sessionRpc(
+            sessionId,
+            RPC_METHODS.UploadFinalize,
+            { sessionId, uploadId },
+            UPLOAD_CHUNK_RPC_TIMEOUT_MS
+        ) as RpcUploadFileResponse
+    }
+
+    async abortChunkedUpload(sessionId: string, uploadId: string): Promise<AbortChunkedUploadResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.UploadAbort, { sessionId, uploadId }) as AbortChunkedUploadResponse
     }
 
     async deleteUploadFile(sessionId: string, path: string): Promise<RpcDeleteUploadResponse> {
