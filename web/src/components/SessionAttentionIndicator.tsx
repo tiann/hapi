@@ -61,7 +61,7 @@ export function SessionAttentionIndicator(props: {
             id={props.tooltipId}
             target={dot}
             side="bottom"
-            align="start"
+            align="end"
             className="shrink-0"
             revealOnParentFocusClass={SESSION_ROW_TOOLTIP_FOCUS_CLASS}
         >
