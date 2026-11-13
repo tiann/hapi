@@ -71,8 +71,10 @@ const updateStateSchema = z.object({
 // Hub-only merge/clear/title links. CLI update-metadata must not forge or erase them
 // (same strip/restore as supersededBySessionId — see sessionHandlers.test.ts).
 const HUB_OWNED_METADATA_KEYS = [
+    'opencodeRewind',
     'supersededBySessionId',
     'opencodeClearOperation',
+    'opencodeForkPending',
     'titleSuggestionAutoAttemptedAt',
     'titleSuggestionTurn',
     'jobsAcceptedFromSessionIds',
@@ -90,6 +92,10 @@ function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown 
     for (const key of HUB_OWNED_METADATA_KEYS) {
         if (Object.prototype.hasOwnProperty.call(existing, key)) next[key] = existing[key]
         else delete next[key]
+    }
+    const rewind = existing.opencodeRewind as { phase?: string } | undefined
+    if (rewind && ['reserved', 'prepared', 'unknown'].includes(rewind.phase ?? '')) {
+        for (const key of ['opencodeHistoryCheckpoint', 'conversationHistoryIndexes', 'conversationHistoryPoints']) next[key] = existing[key]
     }
     return next
 }
@@ -199,9 +205,15 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         // (setSessionTodos/setSessionTeamState gate on *_updated_at < candidate),
         // so stamp them at merge time instead.
         const derivedAt = stored.updated ? Math.max(Date.now(), msg.createdAt + 1) : msg.createdAt
-        // Native reconnect/cold-resume replays stable local IDs. The stored row
-        // already produced these effects; replay must not re-ingest summaries,
-        // broadcast the same message or count historical work as live progress.
+        // A merged row keeps its first snapshot's createdAt for stable
+        // ordering, but each repeated tick must still advance the
+        // keepalive-idle clock: feeding onAgentProgress the frozen
+        // first-snapshot timestamp lets an ACP call with thinking=false and
+        // no background task be marked idle despite fresh updates.
+        const progressAt = stored.updated ? Date.now() : msg.createdAt
+        // Native reconnect/cold-resume replays stable local IDs, and an
+        // insertion conflict also duplicates work that already ran. Neither
+        // may re-ingest summaries, broadcast, or count as fresh progress.
         if (wasStored || !stored.inserted) return
 
         // A reasoning stream arrives as a series of growing snapshots under one
@@ -219,7 +231,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         // tiann/hapi#1820: every stored message proves the agent is doing
         // something, so it refreshes the keepalive-idle clock. Only human
         // turns additionally bump `updatedAt` (list ordering).
-        onAgentProgress?.(sid, msg.createdAt)
+        onAgentProgress?.(sid, progressAt)
 
         if (shouldRecordSessionActivity(content)) {
             onSessionActivity?.(sid, msg.createdAt)

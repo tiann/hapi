@@ -42,6 +42,31 @@ function makeRequest(overrides: Partial<PendingRequest> & { id: string; kind: Pe
 }
 
 describe('SessionAttentionIndicator tooltip', () => {
+    it('keeps background tooltips left-anchored while pending tooltips stay inside the right edge', () => {
+        const pending = renderWithI18n(
+            <SessionAttentionIndicator
+                attention={{ kind: 'input' }}
+                summary={makeSummary({ id: 'pending' })}
+                label="Awaiting your answer"
+                tooltipId="pending-alignment"
+            />
+        )
+        expect(screen.getByRole('tooltip', { hidden: true })).toHaveClass('right-0')
+        expect(screen.getByRole('tooltip', { hidden: true })).not.toHaveClass('left-0')
+        pending.unmount()
+
+        renderWithI18n(
+            <SessionAttentionIndicator
+                attention={{ kind: 'background' }}
+                summary={makeSummary({ id: 'background', backgroundTaskCount: 1 })}
+                label="Background tasks running"
+                tooltipId="background-alignment"
+            />
+        )
+        expect(screen.getByRole('tooltip', { hidden: true })).toHaveClass('left-0')
+        expect(screen.getByRole('tooltip', { hidden: true })).not.toHaveClass('right-0')
+    })
+
     it('renders permission tooltip body listing each pending tool', () => {
         const summary = makeSummary({
             id: 's1',

@@ -3,23 +3,29 @@ package app.hapi.companion.feature.sessions
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.*
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
+import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.wire.SessionListSort
 import kotlinx.coroutines.launch
 
@@ -31,9 +37,11 @@ internal fun machineFilterLabel(filter: MachineFilterUi): String = when {
 }
 
 /**
- * One sheet for every list view choice (web "Sort and filter"): the machine /
- * date / status / unread filters (transient), then sort key and Active first
- * (persisted). Choices apply immediately; Reset clears filters only.
+ * One compact sheet for every list view choice (web "Sort and filter", iOS
+ * filter menu): each multi-way choice is a single "label … value ▾" row that
+ * opens a menu, booleans are switches, so the whole sheet fits without
+ * scrolling. Filters (machine, dates, status, unread) are transient; sort and
+ * Active first persist. Choices apply immediately; Reset clears filters only.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -56,7 +64,7 @@ internal fun SessionFilterSheet(
         sheetState = sheetState,
     ) {
         Row(
-            Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp),
+            Modifier.fillMaxWidth().padding(start = 24.dp, end = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
@@ -67,91 +75,87 @@ internal fun SessionFilterSheet(
             TextButton(onClick = onReset, enabled = state.hasActiveFilters) {
                 Text(stringResource(R.string.sessions_filters_reset))
             }
+            TextButton(onClick = { scope.launch { sheetState.hide(); onDismiss() } }) {
+                Text(stringResource(R.string.sessions_filters_done))
+            }
         }
         LazyColumn(
-            Modifier.fillMaxWidth().weight(1f, fill = false).heightIn(max = 480.dp)
-                .testTag("session-filters"),
+            Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 16.dp).testTag("session-filters"),
         ) {
+            item("filter-title") { SectionTitle(stringResource(R.string.sessions_filter_section)) }
             if (state.hasMachineFilters) {
-                item("machines-title") {
-                    Text(
-                        stringResource(R.string.sessions_filter_machines),
-                        style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                    )
-                }
                 item("machines") {
-                    Column(Modifier.selectableGroup()) {
-                        FilterOption(stringResource(R.string.sessions_filter_all), state.activeMachineFilter == null) { onSelectMachine(null) }
+                    val selected = state.machineFilters.firstOrNull { it.id == state.activeMachineFilter }
+                    ChoiceRow(
+                        label = stringResource(R.string.sessions_filter_machines),
+                        value = selected?.let { machineFilterLabel(it) } ?: stringResource(R.string.sessions_filter_all),
+                        tag = "session-machine-filter",
+                    ) { close ->
+                        MenuChoice(stringResource(R.string.sessions_filter_all), selected == null) {
+                            close(); onSelectMachine(null)
+                        }
+                        HorizontalDivider()
                         state.machineFilters.forEach { filter ->
-                            FilterOption("${machineFilterLabel(filter)} · ${filter.sessionCount}", state.activeMachineFilter == filter.id) {
-                                onSelectMachine(filter.id)
-                            }
+                            MenuChoice(
+                                machineFilterLabel(filter), filter.id == state.activeMachineFilter,
+                                trailing = filter.sessionCount.toString(),
+                            ) { close(); onSelectMachine(filter.id) }
                         }
                     }
                 }
-                item("divider") { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
             }
             item("dates") {
                 val range = state.dateRange
-                ListItem(
-                    headlineContent = { Text(stringResource(R.string.sessions_filter_dates)) },
-                    supportingContent = {
-                        Text(
-                            if (range == null) stringResource(R.string.sessions_filter_any_date)
-                            else stringResource(
-                                R.string.sessions_time_filter_summary,
-                                formatEpochDayLocalized(range.startEpochDay),
-                                formatEpochDayLocalized(range.endEpochDay),
-                            ),
-                        )
-                    },
-                    leadingContent = { Icon(painterResource(R.drawable.ic_calendar), contentDescription = null) },
-                    trailingContent = {
-                        if (range != null) {
-                            IconButton(onClick = onClearDates, modifier = Modifier.size(48.dp)) {
-                                Icon(Icons.Default.Close, stringResource(R.string.sessions_filter_clear_dates))
-                            }
-                        }
-                    },
-                    modifier = Modifier.clickable {
+                SettingRow(
+                    label = stringResource(R.string.sessions_filter_dates),
+                    onClick = {
                         // Finish the sheet transition before opening another window.
                         scope.launch {
                             sheetState.hide()
                             onOpenDates()
                         }
-                    }.testTag("session-date-filter"),
-                )
+                    },
+                    tag = "session-date-filter",
+                ) {
+                    ValueText(
+                        if (range == null) stringResource(R.string.sessions_filter_any_date)
+                        else stringResource(
+                            R.string.sessions_time_filter_summary,
+                            formatEpochDayLocalized(range.startEpochDay),
+                            formatEpochDayLocalized(range.endEpochDay),
+                        ),
+                        active = range != null,
+                    )
+                    if (range != null) {
+                        IconButton(onClick = onClearDates, modifier = Modifier.size(40.dp)) {
+                            Icon(
+                                painterResource(R.drawable.ic_sym_close),
+                                stringResource(R.string.sessions_filter_clear_dates),
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    } else {
+                        Chevron(opensDialog = true)
+                    }
+                }
             }
-            // Filters first (machines and dates keep their place), then the
-            // rarely changed ordering at the bottom.
-            item("status-divider") { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
-            item("status-title") { SectionTitle(stringResource(R.string.sessions_view_status)) }
             item("status") {
-                Column(Modifier.selectableGroup()) {
-                    FilterOption(stringResource(R.string.sessions_view_status_all), state.statusFilter == SessionListStatus.All) {
-                        onSelectStatus(SessionListStatus.All)
-                    }
-                    FilterOption(stringResource(R.string.sessions_view_status_active), state.statusFilter == SessionListStatus.Active) {
-                        onSelectStatus(SessionListStatus.Active)
-                    }
-                    FilterOption(stringResource(R.string.sessions_view_status_archived), state.statusFilter == SessionListStatus.Archived) {
-                        onSelectStatus(SessionListStatus.Archived)
+                val statusLabel = statusLabel(state.statusFilter)
+                ChoiceRow(stringResource(R.string.sessions_view_status), statusLabel, "session-status-filter") { close ->
+                    SessionListStatus.entries.forEach { status ->
+                        MenuChoice(statusLabel(status), status == state.statusFilter) { close(); onSelectStatus(status) }
                     }
                 }
             }
             item("unread-only") {
                 SwitchOption(stringResource(R.string.sessions_view_unread_only), state.unreadOnly, onSetUnreadOnly, "session-unread-only")
             }
-            item("sort-divider") { HorizontalDivider(Modifier.padding(vertical = 8.dp)) }
-            item("sort-title") { SectionTitle(stringResource(R.string.sessions_view_sort)) }
+            item("sort-title") { SectionTitle(stringResource(R.string.sessions_sort_section)) }
             item("sort") {
-                Column(Modifier.selectableGroup()) {
-                    FilterOption(stringResource(R.string.sessions_view_sort_last_message), state.order.sort == SessionListSort.LastMessage) {
-                        onSelectSort(SessionListSort.LastMessage)
-                    }
-                    FilterOption(stringResource(R.string.sessions_view_sort_created), state.order.sort == SessionListSort.Created) {
-                        onSelectSort(SessionListSort.Created)
+                val sortLabel = sortLabel(state.order.sort)
+                ChoiceRow(stringResource(R.string.sessions_view_sort), sortLabel, "session-sort") { close ->
+                    SessionListSort.entries.forEach { sort ->
+                        MenuChoice(sortLabel(sort), sort == state.order.sort) { close(); onSelectSort(sort) }
                     }
                 }
             }
@@ -159,21 +163,119 @@ internal fun SessionFilterSheet(
                 SwitchOption(stringResource(R.string.sessions_view_active_first), state.order.activeFirst, onSetActiveFirst, "session-active-first")
             }
         }
-        Button(
-            onClick = { scope.launch { sheetState.hide(); onDismiss() } },
-            modifier = Modifier.fillMaxWidth().padding(16.dp),
-        ) {
-            Text(stringResource(R.string.sessions_filters_done))
-        }
     }
 }
+
+@Composable
+private fun statusLabel(status: SessionListStatus): String = stringResource(
+    when (status) {
+        SessionListStatus.All -> R.string.sessions_view_status_all
+        SessionListStatus.Active -> R.string.sessions_view_status_active
+        SessionListStatus.Archived -> R.string.sessions_view_status_archived
+    },
+)
+
+@Composable
+private fun sortLabel(sort: SessionListSort): String = stringResource(
+    when (sort) {
+        SessionListSort.LastMessage -> R.string.sessions_view_sort_last_message
+        SessionListSort.Created -> R.string.sessions_view_sort_created
+    },
+)
 
 @Composable
 private fun SectionTitle(text: String) {
     Text(
         text,
-        style = MaterialTheme.typography.titleSmall,
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.hapi.textSecondary,
+        modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 12.dp, bottom = 4.dp),
+    )
+}
+
+/** One 56dp row: label on the left, [trailing] (value, chevron, switch) on the right. */
+@Composable
+private fun SettingRow(
+    label: String,
+    onClick: () -> Unit,
+    tag: String,
+    modifier: Modifier = Modifier,
+    trailing: @Composable RowScope.() -> Unit,
+) {
+    Row(
+        modifier.fillMaxWidth().clickable(role = Role.Button, onClick = onClick)
+            .heightIn(min = 56.dp).padding(start = 24.dp, end = 16.dp).testTag(tag),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f).padding(end = 16.dp))
+        trailing()
+    }
+}
+
+@Composable
+private fun ValueText(text: String, active: Boolean = false) {
+    Text(
+        text,
+        style = MaterialTheme.typography.bodyMedium,
+        color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.hapi.textSecondary,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        textAlign = TextAlign.End,
+        modifier = Modifier.widthIn(max = 200.dp),
+    )
+}
+
+@Composable
+private fun Chevron(expanded: Boolean = false, opensDialog: Boolean = false) {
+    Icon(
+        painterResource(if (opensDialog) R.drawable.ic_sym_chevron_right else R.drawable.ic_sym_expand_more),
+        contentDescription = null,
+        tint = MaterialTheme.hapi.textSecondary,
+        modifier = Modifier.padding(start = 4.dp).size(20.dp).rotate(if (expanded) 180f else 0f),
+    )
+}
+
+/** A [SettingRow] whose value opens an anchored menu of [options]; pass `close` before acting. */
+@Composable
+private fun ChoiceRow(
+    label: String,
+    value: String,
+    tag: String,
+    options: @Composable ColumnScope.(close: () -> Unit) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        SettingRow(label, onClick = { open = true }, tag = tag) {
+            ValueText(value)
+            Chevron(open)
+        }
+        // Anchored under the row's trailing edge, where the value sits.
+        Box(Modifier.align(Alignment.BottomEnd).padding(end = 16.dp)) {
+            DropdownMenu(
+                expanded = open,
+                onDismissRequest = { open = false },
+                shape = RoundedCornerShape(12.dp),
+            ) { options { open = false } }
+        }
+    }
+}
+
+@Composable
+private fun MenuChoice(label: String, selected: Boolean, trailing: String? = null, onClick: () -> Unit) {
+    DropdownMenuItem(
+        text = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+        onClick = onClick,
+        leadingIcon = {
+            Box(Modifier.size(20.dp)) {
+                if (selected) Icon(painterResource(R.drawable.ic_sym_check), contentDescription = null, modifier = Modifier.size(20.dp))
+            }
+        },
+        trailingIcon = trailing?.let {
+            { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.hapi.textSecondary) }
+        },
+        modifier = Modifier
+            .widthIn(min = 200.dp)
+            .semantics { this.selected = selected },
     )
 }
 
@@ -181,22 +283,10 @@ private fun SectionTitle(text: String) {
 private fun SwitchOption(label: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit, tag: String) {
     Row(
         Modifier.fillMaxWidth().toggleable(checked, role = Role.Switch, onValueChange = onCheckedChange)
-            .heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 8.dp).testTag(tag),
+            .heightIn(min = 56.dp).padding(start = 24.dp, end = 16.dp).testTag(tag),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, modifier = Modifier.weight(1f))
+        Text(label, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
         Switch(checked = checked, onCheckedChange = null)
-    }
-}
-
-@Composable
-private fun FilterOption(label: String, selected: Boolean, select: () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().selectable(selected, role = Role.RadioButton, onClick = select)
-            .heightIn(min = 56.dp).padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        RadioButton(selected = selected, onClick = null)
-        Text(label, modifier = Modifier.padding(start = 12.dp))
     }
 }
