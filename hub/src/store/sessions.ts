@@ -941,6 +941,23 @@ export function getSessionsByNamespace(db: Database, namespace: string): StoredS
     return rows.map(toStoredSession)
 }
 
+/**
+ * Machine-spawn stubs created before `before` — rows the hub preallocated for a
+ * runner spawn that never turned into a real session.
+ *
+ * `tag` is the only reliable marker: the hub mints `machine-spawn:<id>` before
+ * it asks the runner to start anything, and the CLI replaces it once it has
+ * actually booted. A row still carrying that tag has never been booted.
+ */
+export function listStaleMachineSpawnStubs(db: Database, before: number): StoredSession[] {
+    const rows = prepareCached(db, `
+        SELECT * FROM sessions
+        WHERE tag = 'machine-spawn:' || id AND created_at < ?
+        ORDER BY created_at ASC
+    `).all(before) as DbSessionRow[]
+    return rows.map(toStoredSession)
+}
+
 export function deleteSession(db: Database, id: string, namespace: string): boolean {
     // Refuse while a running attached job exists — CASCADE would erase the live
     // meter for idle (active=false) outliving work. Callers must transfer/clear first.
