@@ -2507,6 +2507,17 @@ export class SyncEngine {
             return this.buildForkPreviewResponse(sessionId, source, flavor, 'rewind', messageLocalId)
         }
 
+        // Mirror forkConversation's admission guards on the fork intents: the
+        // preview must never open a dialog whose confirm the engine refuses
+        // outright. (The rewind confirm runs its own guards, so rewind
+        // previews keep theirs.)
+        if (source.metadata?.codexResumePending) {
+            return { type: 'error', message: 'Codex resume startup is unconfirmed; retry resume or archive to confirm its process stopped before forking' }
+        }
+        if (this.archivedForkPending(sessionId, namespace) && (!source.metadata?.codexArchivedFork || source.active)) {
+            return { type: 'error', message: 'Archived fork is pending; wait for its child binding before creating another branch' }
+        }
+
         if (!source.active) {
             // Archived fork is hub-decided and the transcript is static; run
             // the same admission guards as the confirm so the preview cannot
@@ -2521,6 +2532,14 @@ export class SyncEngine {
                     this.assertInvokedHistoryBoundary(sessionId, messageLocalId!)
                 } catch (error) {
                     return guardError(error)
+                }
+                // forkArchivedCodexSession resolves the native turn from a
+                // pending attempt or the conversationHistoryTurns map and
+                // throws 'No native history point' without either; refuse the
+                // same message up front.
+                if (!source.metadata?.codexArchivedFork
+                    && !source.metadata?.conversationHistoryTurns?.[messageLocalId!]) {
+                    return { type: 'error', message: 'No native history point for this message' }
                 }
             }
             return this.buildForkPreviewResponse(sessionId, source, flavor, intent === 'message' ? 'message' : 'current', messageLocalId)

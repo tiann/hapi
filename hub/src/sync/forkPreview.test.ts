@@ -136,6 +136,38 @@ describe('fork preview', () => {
             type: 'error', message: 'Conversation history is diverged; refuse further fork/rewind'
         })
     })
+
+    it('refuses the preview while codex resume startup is unconfirmed', async () => {
+        const { store, engine, source, preview } = fixture()
+        const row = store.sessions.getSession(source.id)!
+        store.sessions.updateSessionMetadata(source.id, {
+            ...(row.metadata as Record<string, unknown>),
+            codexResumePending: { machineId: 'machine', nativeSessionId: 'native-1' }
+        }, row.metadataVersion, 'default', { touchUpdatedAt: false })
+        ;(engine as unknown as { sessionCache: { refreshSession(id: string): void } }).sessionCache.refreshSession(source.id)
+        // forkConversation refuses the confirm outright while a resume is
+        // unconfirmed; the preview must refuse it too instead of opening a
+        // dialog whose confirm always fails.
+        expect(await preview('current')).toEqual({
+            type: 'error', message: 'Codex resume startup is unconfirmed; retry resume or archive to confirm its process stopped before forking'
+        })
+    })
+
+    it('refuses the preview of an active source with a pending archived fork', async () => {
+        const { store, engine, source, preview } = fixture()
+        const row = store.sessions.getSession(source.id)!
+        store.sessions.updateSessionMetadata(source.id, {
+            ...(row.metadata as Record<string, unknown>),
+            codexArchivedFork: {
+                operationId: '00000000-0000-4000-8000-000000000001',
+                childSessionId: '00000000-0000-4000-8000-000000000002'
+            }
+        }, row.metadataVersion, 'default', { touchUpdatedAt: false })
+        ;(engine as unknown as { sessionCache: { refreshSession(id: string): void } }).sessionCache.refreshSession(source.id)
+        expect(await preview('current')).toEqual({
+            type: 'error', message: 'Archived fork is pending; wait for its child binding before creating another branch'
+        })
+    })
 })
 
 describe('fork preview boundary tokens on confirm', () => {
@@ -434,6 +466,26 @@ describe('preview-capable shared runtime', () => {
         store.messages.markMessagesInvoked(source.id, ['u1'], Date.now())
         const result = await engine.forkPreview(source.id, 'default', 'current')
         expect(result).toMatchObject({ type: 'success', preview: { mode: 'current' } })
+    })
+
+    it('refuses an archived message preview without a native history point', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        engine.getOrCreateMachine('machine', { host: 'test', platform: 'win32', happyCliVersion: '1',
+            capabilities: [MACHINE_CAPABILITIES.ForkArchivedCodex] }, null, 'default')
+        engine.handleMachineAlive({ machineId: 'machine', time: Date.now() })
+        const source = engine.getOrCreateSession('source', {
+            path: '/tmp/work', host: 'test', machineId: 'machine', hostPid: 42, flavor: 'codex',
+            lifecycleState: 'archived', codexSessionId: 'native-source',
+            capabilities: { conversationHistory: { forkCurrent: true, forkAtMessage: true } }
+        }, { controlledByUser: false }, 'default')
+        store.messages.addMessage(source.id, { role: 'user', content: { type: 'text', text: 'u1' } }, 'u1')
+        store.messages.markMessagesInvoked(source.id, ['u1'], Date.now())
+        // forkArchivedCodexSession resolves the native turn from a pending
+        // attempt or the conversationHistoryTurns map and throws without
+        // either; the preview must refuse the same message up front.
+        const result = await engine.forkPreview(source.id, 'default', 'message', 'u1')
+        expect(result).toEqual({ type: 'error', message: 'No native history point for this message' })
     })
 
     it('rejects a latestCompleted token once the source stops running, with boundary_moved', async () => {
