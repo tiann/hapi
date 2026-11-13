@@ -43,6 +43,7 @@ vi.mock('@/cursor/cursorChatStoreStatus', () => ({
     inspectCursorChatStore: inspectCursorChatStoreMock
 }))
 
+import { ListCodexSessionsRpcResponseSchema } from '@hapi/protocol/apiTypes'
 import { ApiMachineClient, normalizeWindowsDriveRoot } from './apiMachine'
 import type { Machine } from './types'
 
@@ -620,6 +621,28 @@ describe('ApiMachineClient Codex transcript handlers', () => {
             const sessions = (result as { sessions: Array<{ id: string; messages?: unknown[] }> }).sessions
             expect(sessions.map((session) => session.id)).toEqual(['allowed-session-id'])
             expect(sessions[0]?.messages).toHaveLength(1)
+        } finally {
+            client.shutdown()
+        }
+    })
+
+    it('returns incomplete Codex fork history as an RPC error response', async () => {
+        writeCodexTranscript(codexHome, 'fork.jsonl', {
+            id: 'fork-session-id',
+            cwd: workspaceRoot,
+            history_base: { thread_id: 'missing-parent-rollout', end_ordinal_exclusive: 2 }
+        }, 'later prompt')
+
+        const machine = makeMachine('codex-machine-fork')
+        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
+
+        try {
+            const result = await callListCodexSessions(client, machine.id, { sessionIds: ['fork-session-id'] })
+
+            expect(ListCodexSessionsRpcResponseSchema.parse(result)).toEqual({
+                success: false,
+                error: 'Codex fork history is incomplete: parent rollout missing-parent-rollout not found'
+            })
         } finally {
             client.shutdown()
         }
