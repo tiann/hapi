@@ -78,10 +78,10 @@ describe('fork preview fed by the hub while the dialog stays open', () => {
         vi.restoreAllMocks()
     })
 
-    function shell(forkPreview: ReturnType<typeof vi.fn>, fork: ReturnType<typeof vi.fn>, session: Session, messages: DecryptedMessage[]): ReactNode {
+    function shell(forkPreview: ReturnType<typeof vi.fn>, fork: ReturnType<typeof vi.fn>, session: Session, messages: DecryptedMessage[], rewind?: ReturnType<typeof vi.fn>): ReactNode {
         const api = {
             forkConversation: fork,
-            rewindConversation: fork,
+            rewindConversation: rewind ?? fork,
             forkPreview,
             fetchTranscriptionProviders: vi.fn(async () => [])
         } as unknown as ApiClient
@@ -243,6 +243,30 @@ describe('fork preview fed by the hub while the dialog stays open', () => {
         fireEvent.click(within(fallbackDialog).getByRole('button', { name: 'Fork here' }))
         await waitFor(() => expect(screen.getByTestId('fork-preview-thread')).toBeTruthy())
         expect(forkPreview).toHaveBeenLastCalledWith('ses-1', 'message', 'u2-local')
+    })
+
+    it('offers the fork fallback when the legacy rewind reports a fork-safe ambiguous boundary', async () => {
+        // Old hub: every preview 404s, so the rewind runs through the legacy
+        // confirm dialog instead of the preview token.
+        const forkPreview = vi.fn(async () => { throw new ApiError('HTTP 404 Not Found', 404) })
+        const rewind = vi.fn(async () => {
+            throw new ApiError('HTTP 409 Conflict: {"code":"ambiguous_native_boundary_fork_safe"}', 409,
+                'ambiguous_native_boundary_fork_safe', '{"code":"ambiguous_native_boundary_fork_safe"}')
+        })
+        const fork = vi.fn(async () => ({ sessionId: 'ses-child' }))
+
+        render(shell(forkPreview, fork, makeSession(false), baseRows, rewind))
+        const rewindButtons = await screen.findAllByRole('button', { name: 'Rewind' })
+        fireEvent.click(rewindButtons.at(-1)!)
+
+        const legacyDialog = await screen.findByRole('dialog', { name: 'Rewind conversation' })
+        fireEvent.click(within(legacyDialog).getByRole('button', { name: 'Rewind' }))
+
+        // The runner can only fork here: the legacy rewind must offer the
+        // same fork fallback the preview confirm offers.
+        const fallbackDialog = await screen.findByRole('dialog', { name: 'Rewind unavailable' })
+        fireEvent.click(within(fallbackDialog).getByRole('button', { name: 'Fork here' }))
+        await waitFor(() => expect(forkPreview).toHaveBeenLastCalledWith('ses-1', 'message', 'u2-local'))
     })
 
 })

@@ -174,7 +174,19 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
         setConfirming(true)
         try {
             if (request.intent === 'rewind') {
-                await api.rewindConversation(target.id, request.messageLocalId!)
+                try {
+                    await api.rewindConversation(target.id, request.messageLocalId!)
+                } catch (error) {
+                    // Mirror the preview confirm: an ambiguous native boundary
+                    // that is fork-safe offers the fork-at-boundary fallback
+                    // instead of failing the rewind.
+                    if (error instanceof ApiError && error.code === 'ambiguous_native_boundary_fork_safe') {
+                        closePreview()
+                        onRewindForkSafeFallback?.(request.messageLocalId!)
+                        return
+                    }
+                    throw error
+                }
                 closePreview()
                 await onRewound?.(request.messageLocalId!)
                 return
@@ -200,7 +212,7 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
             confirmingRef.current = false
             setConfirming(false)
         }
-    }, [api, closePreview, legacyRequest, onForked, onRewound, state])
+    }, [api, closePreview, legacyRequest, onForked, onRewindForkSafeFallback, onRewound, state])
 
     const confirmPreview = useCallback(async () => {
         const current = stateRef.current
