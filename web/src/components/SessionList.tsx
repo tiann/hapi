@@ -129,6 +129,8 @@ import { SessionRowSummary } from '@/components/SessionRowSummary'
 import { Spinner } from '@/components/Spinner'
 import { transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import { useToast } from '@/lib/toast-context'
+import { SESSION_MENTION_DRAG_MIME } from '@/lib/sessionMentionDrag'
+import { isMentionableSession } from '@/lib/sessionReference'
 import {
     shedToolbarSlots,
     toolbarActionBudget,
@@ -1092,7 +1094,7 @@ const SessionItem = memo(function SessionItem(props: {
         targetMessageQuery,
         lastSeenVersion
     } = props
-    const { haptic } = usePlatform()
+    const { haptic, isTouch } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
     const [renameOpen, setRenameOpen] = useState(false)
@@ -1284,6 +1286,17 @@ const SessionItem = memo(function SessionItem(props: {
                             && event.target.closest('[data-session-pending-request-id]') !== null
                     }}
                     data-session-scroll-anchor
+                    draggable={!isTouch && isMentionableSession(s)}
+                    onDragStart={(event) => {
+                        // Native drag swallows mouseup: cancel the pending long-press.
+                        longPressHandlers.onMouseLeave(event)
+                        setMenuOpen(false)
+                        event.dataTransfer.effectAllowed = 'copy'
+                        event.dataTransfer.setData(SESSION_MENTION_DRAG_MIME, JSON.stringify({
+                            id: s.id,
+                            title: sessionName || s.id.slice(0, 8),
+                        }))
+                    }}
                     className={`session-list-item group/session-row flex w-full flex-col gap-1 py-2 pl-2.5 pr-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none rounded-lg ${selected ? 'bg-[var(--app-secondary-bg)]' : ''}`}
                     style={{ WebkitTouchCallout: 'none' }}
                     aria-current={selected ? 'page' : undefined}
