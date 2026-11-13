@@ -175,6 +175,9 @@ dependencies {
     // media (video/audio/file) through the same authed hub client Coil uses.
     implementation(libs.okhttp)
 
+    // Wear relay (phone side of the Data Layer bridge to :wear).
+    implementation(libs.play.services.wearable)
+
     // FCM push + notification actions (B-M4a). firebase-messaging is always on
     // the classpath; whether it *activates* depends on google-services.json
     // (conditional plugin above) — PushBinding gates every use at runtime.
