@@ -76,7 +76,12 @@ export function ForkPreviewDialog({ isOpen, view, prefixMayHaveMore = false, sta
                             {t(prefixMayHaveMore ? 'forkPreview.noTextPreview' : rewind ? 'forkPreview.rewindEmptyPrefix' : 'forkPreview.emptyPrefix')}
                         </div>
                     )}
-                    {view.kind !== 'current' ? (
+                    {/* A current-mode preview can still carry a cut: the CLI
+                        answers mode 'current' with the last completed turn
+                        while a turn is running (before the hub saw thinking),
+                        and confirm pins that turn. Mark the boundary instead
+                        of claiming a full conversation copy. */}
+                    {(view.kind !== 'current' || view.boundaryText !== null || view.counts.excluded > 0) ? (
                         <>
                             <div className="my-3 flex items-center gap-2" data-testid="fork-preview-boundary">
                                 <span className="h-px flex-1 bg-[var(--app-link)]" />
@@ -120,7 +125,7 @@ export function ForkPreviewDialog({ isOpen, view, prefixMayHaveMore = false, sta
                 <p className="text-xs text-[var(--app-hint)]">
                     {t(rewind ? 'forkPreview.rewindBelow'
                         : view.kind === 'message' ? 'forkPreview.below'
-                        : view.kind === 'latestCompleted' ? 'forkPreview.latestCompletedTail' : 'forkPreview.currentTail')}
+                        : view.kind === 'latestCompleted' || (view.kind === 'current' && view.counts.excluded > 0) ? 'forkPreview.latestCompletedTail' : 'forkPreview.currentTail')}
                 </p>
                 {stale ? (
                     <div className="rounded-md bg-[var(--app-subtle-bg)] p-3 text-sm" data-testid="fork-preview-stale">

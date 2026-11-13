@@ -78,4 +78,35 @@ describe('ForkPreviewDialog error and footer handling', () => {
         // summary (the truncated count) must still render.
         expect(screen.getByText(/and 3 more messages would be removed/)).toBeTruthy()
     })
+
+    it('shows the fork boundary for a current preview that excludes the running turn', () => {
+        // The CLI can cut a current-mode preview at the last completed turn
+        // while a turn is running (before the hub saw thinking): the dialog
+        // must mark the fork point instead of claiming a full conversation
+        // copy that silently drops the running turn.
+        const view: ForkPreviewView = {
+            ...messageView,
+            kind: 'current',
+            boundaryText: 'running prompt',
+            counts: { kept: 2, excluded: 1 }
+        }
+        renderDialog(view, vi.fn(async () => {}))
+
+        expect(screen.getByTestId('fork-preview-boundary')).toBeTruthy()
+        expect(screen.getByTestId('fork-preview-boundary-message')).toHaveTextContent('running prompt')
+        expect(screen.getByText('Copies up to the last completed turn · The reply still running in the source is not included · The original session is unchanged')).toBeTruthy()
+    })
+
+    it('keeps the plain current-tail footer for a current preview without a cut', () => {
+        const view: ForkPreviewView = {
+            ...messageView,
+            kind: 'current',
+            boundaryText: null,
+            counts: { kept: 2, excluded: 0 }
+        }
+        renderDialog(view, vi.fn(async () => {}))
+
+        expect(screen.queryByTestId('fork-preview-boundary')).toBeNull()
+        expect(screen.getByText('A copy of this conversation becomes a new session · The original session is unchanged')).toBeTruthy()
+    })
 })
