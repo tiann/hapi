@@ -1571,7 +1571,7 @@ export async function loadMessageContext(
         }
 
         const retained = response.messages.filter(shouldRetainWindowMessage)
-        if (!retained.some((message) => message.id === messageId)) {
+        if (!retained.some((message) => message.id === response.targetMessageId)) {
             updateState(sessionId, (previous) => {
                 if (previous.olderGeneration !== generation) return previous
                 return buildState(previous, {

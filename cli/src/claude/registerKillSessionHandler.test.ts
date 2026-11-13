@@ -1,6 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
-import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
+import { getSessionStopPreparationMethod, RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import { registerKillSessionHandler } from './registerKillSessionHandler'
+import { monotonicTimeMs } from '@/utils/time'
+
+vi.mock('@/utils/time', async (original) => ({
+    ...await original<typeof import('@/utils/time')>(), monotonicTimeMs: () => Date.now()
+}))
+vi.mock('@/utils/process', async (original) => ({
+    ...await original<typeof import('@/utils/process')>(), getProcessStartMarker: () => 'generation'
+}))
 
 // tiann/hapi#914: the KillSession RPC is the authoritative "user-terminated"
 // signal because the hub only sends it when the operator clicks Archive in
@@ -46,6 +54,62 @@ describe('registerKillSessionHandler (tiann/hapi#914)', () => {
         expect(setReasonOrder).toBeLessThan(cleanupOrder)
         expect(lifecycle.setArchiveReason).toHaveBeenCalledWith('User terminated')
         expect(lifecycle.cleanupAndExit).toHaveBeenCalled()
+    })
+
+    it('keeps the process alive after prepare-only ACK so the runner can collect and terminate its tree', async () => {
+        const registry = makeRegistry()
+        const beforeKill = vi.fn(async () => {})
+        const cleanupAndExit = vi.fn(async () => {})
+        registerKillSessionHandler(registry as never, { beforeKill, cleanupAndExit })
+        const result = await registry.handlers.get(RPC_METHODS.KillSession)?.({ prepareOnly: true,
+            preparationLease: { id: 'fixture', expiresAt: monotonicTimeMs() + 30000 } }) as { success: boolean }
+        expect(result.success).toBe(true)
+        expect(beforeKill).toHaveBeenCalledOnce()
+        expect(cleanupAndExit).not.toHaveBeenCalled()
+    })
+
+    it('registers an immutable machine/PID preparation alias with generation validation', async () => {
+        const registry = makeRegistry()
+        const beforeKill = vi.fn(async () => true)
+        const cleanupAndExit = vi.fn(async () => {})
+        const lifecycle = { machineId: 'machine/one', beforeKill, cleanupAndExit }
+        registerKillSessionHandler(registry as never, lifecycle)
+        lifecycle.machineId = 'changed-metadata-machine'
+        const handler = registry.handlers.get(getSessionStopPreparationMethod('machine/one', process.pid))!
+        expect(handler).toBeDefined()
+        const request = { prepareOnly: true, expectedMachineId: 'machine/one', expectedPid: process.pid,
+            expectedProcessStartMarker: 'generation', preparationLease: { id: 'fixture', expiresAt: monotonicTimeMs() + 30000 } }
+        const response = await handler(request) as { success: boolean; machineId: string; pid: number }
+        expect(response).toMatchObject({ success: true, machineId: 'machine/one', pid: process.pid })
+        expect(beforeKill).toHaveBeenCalledOnce()
+        expect(cleanupAndExit).not.toHaveBeenCalled()
+        await expect(handler({ ...request, expectedProcessStartMarker: 'other-generation' })).rejects.toThrow('generation')
+        await expect(handler({ ...request, expectedMachineId: 'other-machine' })).rejects.toThrow('exact preparation target')
+        await expect(handler({ ...request, prepareOnly: false })).rejects.toThrow('exact preparation target')
+        expect(beforeKill).toHaveBeenCalledOnce()
+    })
+
+    it('rejects unconfirmed drains and mismatched process targets before cleanup', async () => {
+        const registry = makeRegistry()
+        const cleanupAndExit = vi.fn(async () => {})
+        const beforeKill = vi.fn(async () => false)
+        registerKillSessionHandler(registry as never, { beforeKill, cleanupAndExit })
+        const handler = registry.handlers.get(RPC_METHODS.KillSession)!
+        await expect(handler({ prepareOnly: true, expectedPid: process.pid + 1, expectedProcessStartMarker: 'other' })).rejects.toThrow('generation')
+        expect(beforeKill).not.toHaveBeenCalled()
+        await expect(handler({ prepareOnly: true, preparationLease: { id: 'fixture', expiresAt: monotonicTimeMs() + 30000 } })).rejects.toThrow('not confirmed')
+        expect(cleanupAndExit).not.toHaveBeenCalled()
+    })
+
+    it('rejects locally without starting cleanup when the pre-kill drain rejects', async () => {
+        const registry = makeRegistry()
+        const cleanupAndExit = vi.fn(async () => {})
+        registerKillSessionHandler(registry as never, {
+            cleanupAndExit,
+            beforeKill: async () => { throw new Error('drain unavailable') }
+        })
+        await expect(registry.handlers.get(RPC_METHODS.KillSession)?.()).rejects.toThrow('drain unavailable')
+        expect(cleanupAndExit).not.toHaveBeenCalled()
     })
 
     it('still works with the legacy `(cleanupAndExit: () => Promise<void>)` call shape', async () => {

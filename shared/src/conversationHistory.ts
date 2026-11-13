@@ -65,6 +65,12 @@ export const GROK_CONVERSATION_HISTORY_INITIAL: ConversationHistoryCapabilitySta
     rewindToMessage: 'unknown'
 }
 
+export const OPENCODE_CONVERSATION_HISTORY_INITIAL: ConversationHistoryCapabilityStates = {
+    forkCurrent: 'unknown',
+    forkAtMessage: 'unknown',
+    rewindToMessage: 'unknown'
+}
+
 export const PI_CONVERSATION_HISTORY_INITIAL: ConversationHistoryCapabilityStates = {
     forkCurrent: 'unknown',
     forkAtMessage: 'unknown',

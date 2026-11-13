@@ -156,6 +156,7 @@ afterEach(() => {
 function renderSearchThread(options: {
     initialTargetMessageId?: string
     initialTargetMessageQuery?: string
+    targetHighlightKind?: 'search' | 'pending-request'
     searchRequestId?: number
     onLoadMessageContext: (messageId: string) => Promise<boolean>
     onInitialTargetConsumed: () => void
@@ -184,7 +185,7 @@ function renderSearchThread(options: {
             total: options.initialTargetMessageId ? 1 : 0
         })
     } as unknown as ApiClient
-    const renderHappyThread = () => (
+    const renderHappyThread = (targetMessageId: string | null = options.initialTargetMessageId ?? null) => (
         <QueryClientProvider client={queryClient}>
             <I18nProvider>
                 <HappyThread
@@ -210,8 +211,9 @@ function renderSearchThread(options: {
                     outlineOpen={false}
                     outlineItems={[]}
                     onOutlineOpenChange={vi.fn()}
-                    initialTargetMessageId={options.initialTargetMessageId}
+                    initialTargetMessageId={targetMessageId ?? undefined}
                     initialTargetMessageQuery={options.initialTargetMessageQuery}
+                    targetHighlightKind={options.targetHighlightKind}
                     searchRequestId={options.searchRequestId}
                     onLoadMessageContext={options.onLoadMessageContext}
                     onInitialTargetConsumed={options.onInitialTargetConsumed}
@@ -603,6 +605,78 @@ describe('search target loading', () => {
         expect(onInitialTargetConsumed).toHaveBeenCalledTimes(1)
     })
 
+    it('uses the transient pending-request highlight for a tool-card target', async () => {
+        const onLoadMessageContext = vi.fn().mockResolvedValue(true)
+        const onInitialTargetConsumed = vi.fn()
+        searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 0 }
+        searchTargetTestState.renderMessages = () => (
+            <details>
+                <summary>Collapsed details</summary>
+                <div id="hapi-message-tool-call:call-1" data-hapi-source-message-id="tool-call:call-1">tool card</div>
+            </details>
+        )
+
+        const { renderHappyThread } = renderSearchThread({
+            initialTargetMessageId: 'tool-call:call-1',
+            targetHighlightKind: 'pending-request',
+            onLoadMessageContext,
+            onInitialTargetConsumed,
+            messagesVersion: 1,
+            historyVersion: 0,
+            rawMessagesCount: 1,
+        })
+        const scrollTo = vi.spyOn(HTMLElement.prototype, 'scrollTo')
+        const result = render(renderHappyThread())
+
+        await act(async () => {
+            await Promise.resolve()
+            await Promise.resolve()
+        })
+
+        expect(scrollTo).toHaveBeenCalledWith(expect.objectContaining({ behavior: 'smooth' }))
+        result.rerender(renderHappyThread(null))
+        scrollTo.mockClear()
+        act(() => {
+            for (const callback of resizeCallbacks) callback()
+        })
+        expect(scrollTo).not.toHaveBeenCalledWith(expect.objectContaining({ behavior: 'instant' }))
+        const target = result.container.querySelector<HTMLElement>('[data-hapi-source-message-id="tool-call:call-1"]')
+        expect(result.container.querySelector('details')).toHaveProperty('open', true)
+        expect(target).toHaveClass('hapi-message-pending-target')
+        expect(target).not.toHaveClass('hapi-message-search-target')
+        act(() => { vi.advanceTimersByTime(1_800) })
+        expect(target).not.toHaveClass('hapi-message-pending-target')
+    })
+
+    it('navigates a synthesized pending card without loading transcript context', async () => {
+        const onLoadMessageContext = vi.fn().mockResolvedValue(false)
+        const onInitialTargetConsumed = vi.fn()
+        searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 0 }
+        searchTargetTestState.renderMessages = () => (
+            <div data-hapi-source-message-id="tool-call:cursor-question">synthesized question</div>
+        )
+
+        const { renderHappyThread } = renderSearchThread({
+            initialTargetMessageId: 'tool-call:cursor-question',
+            targetHighlightKind: 'pending-request',
+            onLoadMessageContext,
+            onInitialTargetConsumed,
+            messagesVersion: 1,
+            historyVersion: 0,
+            rawMessagesCount: 1,
+        })
+        const result = render(renderHappyThread())
+
+        await act(async () => {
+            await Promise.resolve()
+            await Promise.resolve()
+        })
+
+        const target = result.container.querySelector<HTMLElement>('[data-hapi-source-message-id="tool-call:cursor-question"]')
+        expect(target).toHaveClass('hapi-message-pending-target')
+        expect(onLoadMessageContext).not.toHaveBeenCalled()
+        expect(onInitialTargetConsumed).toHaveBeenCalledOnce()
+    })
     it('clears a fallback card highlight when the search target is dismissed', async () => {
         const onLoadMessageContext = vi.fn().mockResolvedValue(true)
         const onInitialTargetConsumed = vi.fn()

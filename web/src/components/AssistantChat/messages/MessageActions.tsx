@@ -86,7 +86,7 @@ export function MessageActions({
                 <MessageActionButton
                     label={t('message.fork')}
                     data-testid="message-fork"
-                    onClick={() => { void onFork() }}
+onClick={() => { void onFork() }}
                 >
                     <ForkIcon className="h-3.5 w-3.5" />
                 </MessageActionButton>
