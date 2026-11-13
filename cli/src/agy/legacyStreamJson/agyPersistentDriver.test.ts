@@ -20,6 +20,8 @@ const modelLookup = vi.hoisted(() => vi.fn(async (_id: unknown, indexes: readonl
 )));
 vi.mock('./agyConversationModel', () => ({ resolveAgyTurnModels: modelLookup }));
 vi.mock('./agySessionTitle', () => ({ readAgyConversationTitle: async () => null }));
+const historicalError = vi.hoisted(() => vi.fn(async () => false));
+vi.mock('./agyHistoricalError', () => ({ isHistoricalAgyError: historicalError }));
 
 const CONVERSATION = '12345678-1234-4234-8234-123456789abc';
 const MODE: AgyMode = { permissionMode: 'request-review', model: 'gemini-4-argon', effort: 'medium' };
@@ -91,7 +93,7 @@ class PersistentChild extends EventEmitter {
     }
 }
 
-function createHarness(configureChild?: (child: PersistentChild, index: number) => void) {
+function createHarness(configureChild?: (child: PersistentChild, index: number) => void, sessionId: string | null = null) {
     const sent: unknown[][] = [];
     const client = {
         agyTranscript: (...args: unknown[]) => { sent.push(args); },
@@ -106,7 +108,7 @@ function createHarness(configureChild?: (child: PersistentChild, index: number) 
     const queue = new MessageQueue2<AgyMode>((mode) => JSON.stringify(mode));
     const session = new AgySession({
         api: {} as never, client: client as never, path: tmpdir(),
-        logPath: `${tmpdir()}/agy-persistent.log`, sessionId: null,
+        logPath: `${tmpdir()}/agy-persistent.log`, sessionId,
         messageQueue: queue, onModeChange: () => {}, startedBy: 'runner',
     });
     const children: PersistentChild[] = [];
@@ -144,6 +146,8 @@ async function flushTasks(): Promise<void> {
 afterEach(async () => {
     releases.splice(0).forEach((release) => release());
     for (const cleanup of cleanups.splice(0)) await cleanup();
+    historicalError.mockReset();
+    historicalError.mockResolvedValue(false);
     modelLookup.mockReset();
     modelLookup.mockImplementation(async (_id, indexes) => new Map(indexes.map((index) => [index, null])));
 });
@@ -383,5 +387,33 @@ describe('Agy persistent stream lifecycle', () => {
         expect(h.client.sendSessionEvent.mock.calls.filter(([event]) => event.type === 'abort-restore')).toEqual([]);
         expect(h.client.sendSessionEvent.mock.calls.filter(([event]) => event.message === 'Turn aborted')).toEqual([]);
         expect(h.client.emitMessagesConsumed.mock.calls).toEqual([[['first-id']]]);
+    });
+});
+
+
+describe('stale agy result errors', () => {
+    it.each([
+        { historyMatches: true, currentError: false, expectError: false },
+        { historyMatches: false, currentError: false, expectError: true },
+        { historyMatches: true, currentError: true, expectError: true },
+    ])('only suppresses a confirmed historical error: %j', async ({ historyMatches, currentError, expectError }) => {
+        historicalError.mockResolvedValue(historyMatches);
+        const h = createHarness(undefined, CONVERSATION);
+        h.queue.push('question', MODE, 'question-id');
+        await waitFor(() => expect(h.children[0]?.prompts).toEqual(['question']));
+        const child = h.children[0]!;
+        child.accept(10);
+        child.feed({ event: 'step_update', step_update: { conversation_id: CONVERSATION, step_index: 11,
+            step_type: 'agent_response', state: 'DONE', text_delta: 'The answer' } });
+        if (currentError) child.feed({ event: 'step_update', step_update: { conversation_id: CONVERSATION,
+            step_index: 12, step_type: 'error_message', state: 'DONE' } });
+        child.feed({ event: 'result', result: { conversation_id: CONVERSATION, status: 'ERROR',
+            response: 'The answer', error: 'Previous quota failure' } });
+        await waitFor(() => expect(readyCount(h.client)).toBe(1));
+        const errors = h.client.sendSessionEvent.mock.calls.filter(([event]) => event.type === 'error');
+        expect(errors.length > 0).toBe(expectError);
+        if (expectError) expect(errors[0][0].message).toBe('Previous quota failure');
+        if (currentError) expect(historicalError).not.toHaveBeenCalled();
+        else expect(historicalError).toHaveBeenCalledWith(CONVERSATION, 10, 11, 'Previous quota failure', 'The answer');
     });
 });

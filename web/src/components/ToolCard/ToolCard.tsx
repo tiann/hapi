@@ -125,21 +125,38 @@ export function ToolTimingSummary(props: {
 }
 
 function ToolCardTimingSummary(props: { tool: ChatToolCall }) {
-    const active = props.tool.state === 'running'
+    const tool = props.tool
     const [now, setNow] = useState(() => Date.now())
+
+    // A pending question card counts its elapsed waiting time live, the same
+    // treatment as any running tool. When the transcript tool-call has not
+    // loaded, the card is synthesized from the permission alone: it keeps the
+    // 'pending' state with no startedAt, so the wait counts from the
+    // permission request's own createdAt — the moment the question was asked.
+    // With neither, show no time rather than a misleading 0s. The waiting
+    // sentence itself lives in the open answer area (the question footers),
+    // not in the header.
+    const isPendingQuestion = tool.state === 'pending'
+        && tool.permission?.status === 'pending'
+        && (isAskUserQuestionToolName(tool.name) || isRequestUserInputToolName(tool.name))
+    const askedAt = isPendingQuestion
+        ? tool.startedAt ?? tool.permission?.createdAt ?? null
+        : tool.startedAt ?? tool.createdAt
+    const active = tool.state === 'running' || isPendingQuestion
 
     useEffect(() => {
         if (!active) return
         setNow(Date.now())
         const id = setInterval(() => setNow(Date.now()), ELAPSED_INTERVAL_MS)
         return () => clearInterval(id)
-    }, [active, props.tool.startedAt, props.tool.createdAt])
+    }, [active, tool.startedAt, tool.createdAt, tool.permission?.createdAt])
 
-    // A pending question card stays in the 'running' tool state until its
-    // reply lands, so this counts the elapsed waiting time live — the same
-    // treatment as any running tool. The waiting sentence itself lives in the
-    // open answer area (the question footers), not in the header.
-    return <ToolTimingSummary {...getToolTimingDetails(props.tool, now)} />
+    if (isPendingQuestion) {
+        if (askedAt == null) return null
+        return <ToolTimingSummary startedAt={askedAt} completedAt={null} durationMs={Math.max(0, now - askedAt)} />
+    }
+
+    return <ToolTimingSummary {...getToolTimingDetails(tool, now)} />
 }
 
 function ToolTimingDetails(props: { block: ToolCallBlock }) {
@@ -541,7 +558,7 @@ function ToolCardInner(props: ToolCardProps) {
     )
 
     return (
-        <Card className="overflow-hidden rounded-[20px] bg-[var(--app-tool-card-bg)] shadow-none">
+        <Card data-hapi-source-message-id={`tool-call:${props.block.id}`} className="overflow-hidden rounded-[20px] bg-[var(--app-tool-card-bg)] shadow-none">
             <CardHeader className={cn('space-y-0 p-3', subtitle ? 'pb-2' : null)}>
                 <Dialog open={detailsOpen} onOpenChange={setDetailsOpen}>
                     <DialogTrigger asChild>

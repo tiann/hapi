@@ -126,7 +126,7 @@ describe('AgyAcpRemoteLauncher replaying a recorded agy 1.5.3 question', () => {
 
         await vi.waitFor(() => expect(agentRequests(client).call_q).toMatchObject({
             tool: 'AskUserQuestion',
-            arguments: { questions: [{ question: 'Do you prefer RED or BLUE?', multiSelect: false, options: [{ label: '(Recommended) RED' }, { label: 'BLUE' }] }] }
+            arguments: { questions: [{ question: 'Do you prefer RED or BLUE?', multiSelect: false, allowFreeText: true, options: [{ label: '(Recommended) RED' }, { label: 'BLUE' }] }] }
         }), { timeout: 5000 });
         expect(transport.initializeParams).toMatchObject({ clientCapabilities: { elicitation: { form: {} } } });
         expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'tool-call', callId: 'call_q', name: 'AskUserQuestion' }));

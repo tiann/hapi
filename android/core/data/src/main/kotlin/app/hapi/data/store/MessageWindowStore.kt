@@ -377,7 +377,14 @@ class MessageWindowStore(
                                 || (previous.epoch != null && response.page.epoch != previous.epoch),
                             requestBaseline = requestBaseline,
                             trimLimit = trimLimit,
-                        ).copy(pendingGapRecovery = false, preferLatestOnActivation = false)
+                        )
+                        // The activation flag is consumed here — the upsert
+                        // subsumed its refresh — but the recovery stays
+                        // pending until the row sweep below succeeds, so a
+                        // failed context request retries on the next sync
+                        // instead of leaving the enriched cached call stale
+                        // with no retry path.
+                            .copy(preferLatestOnActivation = false)
                     }
 
                     // A tool-call row the client cached before the gap can be
@@ -431,6 +438,13 @@ class MessageWindowStore(
                                 MessageWindowLogic.mergeRefreshedRow(previous, refreshed)
                             }
                         }
+                    }
+
+                    // The catch-up, the upsert, and every row refresh
+                    // succeeded: only now is the recovery complete.
+                    update { previous ->
+                        if (previous.syncGeneration != generation) return@update previous
+                        previous.copy(pendingGapRecovery = false)
                     }
                 }
             }

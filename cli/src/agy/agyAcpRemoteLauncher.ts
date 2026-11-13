@@ -1,5 +1,6 @@
 import React from 'react';
 import { randomUUID } from 'node:crypto';
+import type { RawJSONLines } from '@/claude/types';
 import { watch, type FSWatcher } from 'node:fs';
 import { RPC_METHODS, splitAgyModelSelection } from '@hapi/protocol';
 import { logger } from '@/ui/logger';
@@ -37,6 +38,8 @@ import {
 } from './agyReactiveWakeup';
 import type { AgyMode, PermissionMode } from './types';
 import { createAgyAcpBackend } from './utils/agyAcpBackend';
+import { applyAgySessionTitleFallback } from './agySessionTitle';
+import { readAgyConversationTitle } from './agyNativeTitle';
 import {
     QUESTION_TOOL_NAME,
     agyQuestionContent,
@@ -106,7 +109,8 @@ export function agyRoundSummary(
     usage: UsageMessage,
     durationMs: number | null,
     model: string | null,
-    generationMs: number | null = null
+    generationMs: number | null = null,
+    numTurns: number | null = null
 ) {
     // Thinking is generated too, as in OpenCode's tok/s.
     const generatedTokens = usage.outputTokens + (usage.thoughtTokens ?? 0);
@@ -126,9 +130,22 @@ export function agyRoundSummary(
                 ...(usage.totalTokens !== undefined ? { total_tokens: usage.totalTokens } : {})
             },
             ...(durationMs !== null ? { duration_ms: durationMs } : {}),
+            // Model calls of this round alone (google-antigravity/antigravity-cli#1045):
+            // a reactive wakeup emits its own summary and counts its own turns.
+            ...(numTurns !== null && numTurns > 0 ? { num_turns: numTurns } : {}),
             ...generation
         }
     } as const;
+}
+
+function backgroundTaskDescription(message: Extract<AgentMessage, { type: 'tool_call' }>): string {
+    const command = message.nativeArgs && typeof message.nativeArgs === 'object'
+        && !Array.isArray(message.nativeArgs)
+        ? (message.nativeArgs as { CommandLine?: unknown }).CommandLine
+        : undefined;
+    if (typeof command === 'string' && command.trim().length > 0) return command;
+    if (typeof message.title === 'string' && message.title.trim().length > 0) return message.title;
+    return message.name;
 }
 
 function normalizeEcho(text: string): string {
@@ -167,6 +184,9 @@ type AgyTurn = {
     // Commands agy has not reported an end for; one still open at end_turn was
     // moved to the background.
     openCommands: Set<string>;
+    // Display text per open run_command (the command line agy was given), for
+    // the hub's background-task indicator.
+    bgTaskDescriptions: Map<string, string>;
     // All `run_command` call IDs seen in this turn in arrival order, kept even
     // if an earlier command completes during a steer so call ordinals stay 1:1
     // with transcript `PLANNER_RESPONSE.tool_calls` entries.
@@ -185,6 +205,10 @@ type AgyTurn = {
     // Settled non-live assistant text segments streamed during this turn, used
     // to distinguish intra-turn SYSTEM_MESSAGE folds from post-turn wakeups.
     streamedTextCounts: Map<string, number>;
+    // Turn count for the round footer: agy's own report when its ACP result
+    // carries one, else this turn's transcript model calls.
+    numTurns: number | undefined;
+    transcriptNumTurns: number | undefined;
     usage: UsageMessage | null;
     // Any agent output proves agy accepted the prompt.
     sawActivity: boolean;
@@ -239,6 +263,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }> = [];
     // Background `run_command` entries awaiting completion across turns.
     private readonly backgroundCommands: AgyOpenBackgroundCommand[] = [];
+    // The hub's background-task indicator state: the commands agy left
+    // running, keyed by ACP call id, mirrored to the hub as a full
+    // system/background_tasks_changed snapshot on every membership change.
+    private readonly activeBgTasks = new Map<string, string>();
+    private lastBgSnapshotIds: string[] = [];
     private acpSessionId: string | null = null;
     private lastTranscriptStepIndex = -1;
     // Latest step_index seen when an unfinished wakeup hit `maxIdleMs`, so
@@ -246,6 +275,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private pausedWakeupStepIndex: number | null = null;
     private lastTurnTranscriptState: {
         turnStartStepIndex: number;
+        // Optional wider counting boundary for an internal wakeup reattach:
+        // the wakeup's pre-approval model calls sit before turnStartStepIndex.
+        countFromStepIndex?: number;
         streamedTextCounts: Map<string, number>;
     } | null = null;
     private reactiveWakeupAbort: AbortController | null = null;
@@ -373,21 +405,24 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         this.pausedWakeupStepIndex = null;
     }
 
-    private syncTurnTranscriptCursor(turn: AgyTurn, turnStartStepIndex: number): void {
+    private syncTurnTranscriptCursor(turn: AgyTurn, turnStartStepIndex: number, countFromStepIndex?: number): void {
         const acpSessionId = this.acpSessionId;
         if (!acpSessionId) return;
         this.lastTurnTranscriptState = {
             turnStartStepIndex,
+            ...(countFromStepIndex !== undefined && countFromStepIndex < turnStartStepIndex
+                ? { countFromStepIndex }
+                : {}),
             streamedTextCounts: new Map(turn.streamedTextCounts)
         };
-        this.advanceCursorFromLastTurnState();
+        this.advanceCursorFromLastTurnState(turn);
         this.pausedWakeupStepIndex = null;
     }
 
-    private advanceCursorFromLastTurnState(): void {
+    private advanceCursorFromLastTurnState(turn?: AgyTurn): number | null {
         const acpSessionId = this.acpSessionId;
         const state = this.lastTurnTranscriptState;
-        if (!acpSessionId || !state) return;
+        if (!acpSessionId || !state) return null;
         const stepsAfterStart = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, state.turnStartStepIndex);
         const nextCursor = advanceAgyTurnTranscriptCursor(
             stepsAfterStart,
@@ -397,6 +432,27 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (nextCursor > this.lastTranscriptStepIndex) {
             this.lastTranscriptStepIndex = nextCursor;
         }
+        if (turn) {
+            // Round footer turn count (google-antigravity/antigravity-cli#1045):
+            // count this turn's own model calls from the transcript the cursor
+            // walk just bounded. Steps past that boundary belong to a reactive
+            // wakeup, which counts its own round. An internal wakeup reattach
+            // counts from the preserved wakeup boundary instead: the cursor was
+            // synchronized before prompting, so it already sits past the
+            // wakeup's pre-approval model calls, which this round owns.
+            const countFrom = state.countFromStepIndex ?? state.turnStartStepIndex;
+            const countSteps = countFrom < state.turnStartStepIndex
+                ? readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, countFrom)
+                : stepsAfterStart;
+            turn.transcriptNumTurns = countSteps.filter((step) =>
+                step.source === 'MODEL'
+                && step.type === 'PLANNER_RESPONSE'
+                && step.status === 'DONE'
+                && step.step_index > countFrom
+                && step.step_index <= nextCursor
+            ).length;
+        }
+        return nextCursor;
     }
 
     private hasPendingReactiveWakeup(): boolean {
@@ -643,9 +699,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     for (const msg of converted.messages) {
                         this.forwardAgentMessage(this.showQuestionCard(msg));
                     }
+                    this.registerTranscriptBackgroundTasks();
+                    this.retireSettledBackgroundTasks();
                     if (converted.usage) {
+                        const wakeupNumTurns = inspection.steps.filter((step) =>
+                            step.source === 'MODEL' && step.type === 'PLANNER_RESPONSE' && step.status === 'DONE'
+                        ).length;
                         session.sendAgentMessage(
-                            agyRoundSummary(converted.usage, converted.durationMs, this.currentModelId, null)
+                            agyRoundSummary(converted.usage, converted.durationMs, this.currentModelId, null, wakeupNumTurns)
                         );
                     }
                     session.onThinkingChange(false);
@@ -742,6 +803,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             this.syncTranscriptCursor();
             session.onSessionFound(acpSessionId);
             session.client.emitSessionReady();
+            if (resumeSessionId === acpSessionId) {
+                const existingTitle = await readAgyConversationTitle(acpSessionId);
+                if (existingTitle) applyAgySessionTitleFallback(session.client, existingTitle);
+            }
 
             const reported = backend.getSessionModelsMetadata(acpSessionId)?.currentModelId ?? null;
             this.currentModelId = reported;
@@ -839,6 +904,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const internalWakeup = opts.internalWakeup === true;
         const session = this.session;
         if (!internalWakeup) {
+            applyAgySessionTitleFallback(session.client, message);
             this.lastTurnMode = mode;
             this.lastSessionModeSnapshot = {
                 permissionMode: session.getPermissionMode() as PermissionMode | undefined,
@@ -864,6 +930,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             answeredAt: null,
             generation: new GenerationClock(),
             openCommands: new Set(),
+            bgTaskDescriptions: new Map(),
             commandCallIds: [],
             commandArrivalOrder: [],
             priorBackgroundCallIds: new Set(this.backgroundCommands.map((entry) => entry.callId)),
@@ -871,6 +938,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             corroboratedSyntheticMatches: 0,
             turnStartStepIndex: this.lastTranscriptStepIndex,
             streamedTextCounts: new Map(),
+            numTurns: undefined,
+            transcriptNumTurns: undefined,
             usage: null,
             sawActivity: false,
             // AgySession does not acknowledge on dequeue: a message counts as
@@ -956,10 +1025,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             session.client.updateAgentState((state) => ({ ...state, steeringActive: true }));
             try {
                 await backend.prompt(acpSessionId, prompt, (update) => this.handleTurnUpdate(turn, update), {
-                    onSent: () => { turn.sentAt = Date.now(); },
-                    onAnswered: () => {
-                        turn.answeredAt = Date.now();
-                        turn.answerMain();
+                    timing: {
+                        onSent: () => { turn.sentAt = Date.now(); },
+                        onAnswered: () => {
+                            turn.answeredAt = Date.now();
+                            turn.answerMain();
+                        }
                     }
                 });
                 // agy answers a cancel with a normal `cancelled` result; with no
@@ -985,7 +1056,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             await this.waitForSteers(turn);
             this.flushDeferredLiveCommandCalls(turn);
             if (!turn.aborted && !this.backendLost) {
-                this.syncTurnTranscriptCursor(turn, turnStartStepIndex);
+                this.syncTurnTranscriptCursor(turn, turnStartStepIndex, internalWakeup ? commandWindowAfterStepIndex : undefined);
             }
             this.closeBackgroundCommands(turn, commandWindowAfterStepIndex);
         } finally {
@@ -1012,7 +1083,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     ? Math.max(0, turn.answeredAt - turn.sentAt)
                     : null;
                 const generationMs = turn.generation.generationMs(turn.sentAt, turn.answeredAt);
-                session.sendAgentMessage(agyRoundSummary(turn.usage, durationMs, this.currentModelId, generationMs));
+                session.sendAgentMessage(agyRoundSummary(turn.usage, durationMs, this.currentModelId, generationMs, turn.numTurns ?? turn.transcriptNumTurns ?? null));
             }
             session.onThinkingChange(false);
             await this.permissionHandler?.cancelAll('Prompt finished');
@@ -1061,6 +1132,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             );
             if (placeholder) this.session.sendAgentMessage(placeholder);
         }
+        // The background-task indicator mirrors these cards: register every
+        // command agy left open at end_turn so the hub shows it running until
+        // its real result lands.
+        for (const id of openIds) {
+            const description = turn.bgTaskDescriptions.get(id);
+            if (description !== undefined) this.activeBgTasks.set(id, description);
+        }
+        if (openIds.length > 0) this.emitBackgroundTasksSnapshot();
         turn.openCommands.clear();
     }
 
@@ -1335,6 +1414,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     } else {
                         const bgIdx = this.backgroundCommands.findIndex((entry) => entry.callId === match.entry.callId);
                         if (bgIdx >= 0) this.backgroundCommands.splice(bgIdx, 1);
+                        this.noteBackgroundTaskSettled(match.entry.callId);
                     }
                     this.forwardAgentMessage(this.showQuestionCard(effectiveResult));
                 } else if (match.kind === 'none') {
@@ -1457,6 +1537,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 return;
             case 'turn_complete':
                 turn.stopReason = message.stopReason;
+                if (typeof message.numTurns === 'number' && Number.isFinite(message.numTurns) && message.numTurns > 0) {
+                    turn.numTurns = message.numTurns;
+                }
                 return;
             default: {
                 turn.sawActivity = true;
@@ -1544,11 +1627,83 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // for approval (pending) did not start, whatever happens to the turn.
         if (message.type === 'tool_call' && message.nativeName === 'run_command' && message.status === 'in_progress') {
             turn.openCommands.add(message.id);
+            turn.bgTaskDescriptions.set(message.id, backgroundTaskDescription(message));
         } else if (message.status !== 'in_progress') {
             turn.openCommands.delete(message.id);
             const bgIdx = this.backgroundCommands.findIndex((entry) => entry.callId === message.id);
             if (bgIdx >= 0) this.backgroundCommands.splice(bgIdx, 1);
+            this.noteBackgroundTaskSettled(message.id);
         }
+    }
+
+    /**
+     * The hub's background-task indicator reads Claude's
+     * `system/background_tasks_changed` snapshot off the agent output stream
+     * (hub/src/sync/backgroundTasks.ts); agy reuses the shape so hub and web
+     * need no changes. Full snapshot on every membership change, empty once
+     * nothing runs — the launcher skips redundant snapshots itself, and the
+     * hub drops identical ones.
+     */
+    private emitBackgroundTasksSnapshot(): void {
+        const ids = [...this.activeBgTasks.keys()];
+        if (ids.length === this.lastBgSnapshotIds.length
+            && ids.every((id, index) => id === this.lastBgSnapshotIds[index])) return;
+        this.lastBgSnapshotIds = ids;
+        this.session.client.sendClaudeSessionMessage({
+            type: 'system',
+            uuid: randomUUID(),
+            subtype: 'background_tasks_changed',
+            tasks: ids.map((id) => ({
+                task_id: id,
+                task_type: 'local_bash',
+                description: this.activeBgTasks.get(id) ?? ''
+            }))
+        } as RawJSONLines);
+    }
+
+    /** One background command reported its end; an empty list once none remain. */
+    private noteBackgroundTaskSettled(callId: string): void {
+        if (!this.activeBgTasks.delete(callId)) return;
+        this.emitBackgroundTasksSnapshot();
+    }
+
+    /** Drops indicator entries whose command the transcript state already settled. */
+    private retireSettledBackgroundTasks(): void {
+        let changed = false;
+        for (const id of [...this.activeBgTasks.keys()]) {
+            if (!this.backgroundCommands.some((entry) => entry.callId === id)) {
+                this.activeBgTasks.delete(id);
+                changed = true;
+            }
+        }
+        if (changed) this.emitBackgroundTasksSnapshot();
+    }
+
+    /**
+     * Registers background commands the transcript shows as still running but
+     * the indicator does not know yet: a completed reactive wakeup can start
+     * another background command while no ACP turn is open, so
+     * closeBackgroundCommands never sees it. Mirrors that registration — the
+     * command line as the description — and emits the complete snapshot.
+     */
+    private registerTranscriptBackgroundTasks(): void {
+        let changed = false;
+        for (const entry of this.backgroundCommands) {
+            if (this.activeBgTasks.has(entry.callId)) continue;
+            const description = typeof entry.commandLine === 'string' && entry.commandLine.trim().length > 0
+                ? entry.commandLine
+                : entry.callId;
+            this.activeBgTasks.set(entry.callId, description);
+            changed = true;
+        }
+        if (changed) this.emitBackgroundTasksSnapshot();
+    }
+
+    /** Abort and session end clear the indicator with an empty snapshot. */
+    private clearBackgroundTasksSnapshot(): void {
+        if (this.activeBgTasks.size === 0 && this.lastBgSnapshotIds.length === 0) return;
+        this.activeBgTasks.clear();
+        this.emitBackgroundTasksSnapshot();
     }
 
     private forwardAgentMessage(message: AgentMessage): void {
@@ -1697,6 +1852,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private async handleAbort(): Promise<void> {
         const hadTurn = this.turn !== null || this.reactiveWakeupAbort !== null;
         await this.cancelActiveTurn();
+        this.clearBackgroundTasksSnapshot();
         this.abortController.abort();
         this.abortController = new AbortController();
         if (hadTurn) {
@@ -1711,6 +1867,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
     private async handleKill(): Promise<void> {
         const turnSettled = this.turnSettled;
+        this.clearBackgroundTasksSnapshot();
         await this.requestExit('exit', () => this.handleAbort());
         await this.backend?.disconnect();
         // The runner ends the session and closes the client as soon as kill

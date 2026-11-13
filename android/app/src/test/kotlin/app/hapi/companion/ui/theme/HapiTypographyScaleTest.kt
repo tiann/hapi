@@ -2,14 +2,15 @@ package app.hapi.companion.ui.theme
 
 import androidx.compose.material3.Typography
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.sp
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
  * Contract of the app-wide Material type scale: the reading tokens drive
- * their anchored slots, every other slot stays byte-for-byte at the Material
- * platform default, and the monospace code token never reaches a reading slot.
+ * their anchored slots, body slots drop Material's tracking, every other slot
+ * stays byte-for-byte at the Material platform default, and the bundled
+ * monospace code family never reaches a reading slot.
  */
 class HapiTypographyScaleTest {
 
@@ -30,14 +31,21 @@ class HapiTypographyScaleTest {
     }
 
     @Test
-    fun `anchored slots keep Material weight, tracking and family`() {
+    fun `anchored slots keep Material weight and family`() {
         val scale = HapiTypography.scale
         assertEquals(platformDefaults.bodyLarge.fontWeight, scale.bodyLarge.fontWeight)
-        assertEquals(platformDefaults.bodyLarge.letterSpacing, scale.bodyLarge.letterSpacing)
         assertEquals(platformDefaults.bodyLarge.fontFamily, scale.bodyLarge.fontFamily)
         assertEquals(platformDefaults.bodySmall.fontWeight, scale.bodySmall.fontWeight)
-        assertEquals(platformDefaults.bodySmall.letterSpacing, scale.bodySmall.letterSpacing)
         assertEquals(platformDefaults.bodySmall.fontFamily, scale.bodySmall.fontFamily)
+    }
+
+    @Test
+    fun `body slots drop Material tracking, all else stays default`() {
+        val scale = HapiTypography.scale
+        assertEquals(0.sp, scale.bodyLarge.letterSpacing)
+        assertEquals(0.sp, scale.bodyMedium.letterSpacing)
+        assertEquals(0.sp, scale.bodySmall.letterSpacing)
+        assertEquals(platformDefaults.bodyMedium.copy(letterSpacing = 0.sp), scale.bodyMedium)
     }
 
     @Test
@@ -53,7 +61,6 @@ class HapiTypographyScaleTest {
             "titleLarge" to (platformDefaults.titleLarge to scale.titleLarge),
             "titleMedium" to (platformDefaults.titleMedium to scale.titleMedium),
             "titleSmall" to (platformDefaults.titleSmall to scale.titleSmall),
-            "bodyMedium" to (platformDefaults.bodyMedium to scale.bodyMedium),
             "labelLarge" to (platformDefaults.labelLarge to scale.labelLarge),
             "labelMedium" to (platformDefaults.labelMedium to scale.labelMedium),
             "labelSmall" to (platformDefaults.labelSmall to scale.labelSmall),
@@ -65,7 +72,7 @@ class HapiTypographyScaleTest {
 
     @Test
     fun `code token stays monospaced and out of the reading slots`() {
-        assertEquals(FontFamily.Monospace, HapiTypography.code.fontFamily)
+        assertEquals(HapiTypography.monoFamily, HapiTypography.code.fontFamily)
         // Reading slots keep whatever family Material ships with (SansSerif
         // in this version); the monospace family lives only in the code token.
         assertEquals(platformDefaults.bodyLarge.fontFamily, HapiTypography.scale.bodyLarge.fontFamily)
