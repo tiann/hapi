@@ -573,6 +573,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
                 nativeArgs: { CommandLine: 'sleep 5 && echo READY', toolSummary: 'Background check' }
             });
             onUpdate({ type: 'text', text: 'Waiting for background task...' });
+            onUpdate({ type: 'usage', inputTokens: 40, outputTokens: 10 });
             onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
             writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
                 { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'run check' },
@@ -607,6 +608,19 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         await vi.waitFor(() => {
             expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
         });
+
+        // The hub's background-task indicator mirrors the commands agy left
+        // open at end_turn, keyed by their ACP call id.
+        const claudeMessages = client.sendClaudeSessionMessage.mock.calls.map(([msg]) => msg);
+        expect(claudeMessages).toContainEqual(expect.objectContaining({
+            type: 'system',
+            subtype: 'background_tasks_changed',
+            tasks: [expect.objectContaining({
+                task_id: 'call-bg-1',
+                task_type: 'local_bash',
+                description: 'sleep 5 && echo READY'
+            })]
+        }));
 
         const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
         client.sendSessionEvent.mockClear();
@@ -643,6 +657,14 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
         });
 
+        // The wakeup's real completion retires the indicator entry: an empty
+        // snapshot follows so the hub stops showing the command as running.
+        expect(client.sendClaudeSessionMessage.mock.calls.map(([msg]) => msg)).toContainEqual(expect.objectContaining({
+            type: 'system',
+            subtype: 'background_tasks_changed',
+            tasks: []
+        }));
+
         // Thinking transitioned true -> false during the reactive wakeup.
         const thinkingTransitions = client.keepAlive.mock.calls.map(([thinking]) => thinking);
         expect(thinkingTransitions[0]).toBe(true);
@@ -662,8 +684,53 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             type: 'round-summary',
             summary: expect.objectContaining({
                 provider: 'agy',
+                num_turns: 1,
                 agy_usage: expect.objectContaining({ input_tokens: 80, output_tokens: 15 })
             })
+        }));
+        // The prompt round counts its own model calls (the transcript's DONE
+        // PLANNER_RESPONSE steps inside the turn), not the wakeup's.
+        expect(sentMessages).toContainEqual(expect.objectContaining({
+            type: 'round-summary',
+            summary: expect.objectContaining({ provider: 'agy', num_turns: 2 })
+        }));
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('prefers an ACP-reported turn count over the transcript count in the prompt round summary', async () => {
+        const backend = new WakeupTestBackend();
+        const { session, queue, client } = makeHarness('always-proceed');
+
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'usage', inputTokens: 12, outputTokens: 4 });
+            onUpdate({ type: 'text', text: 'Done.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn', numTurns: 9 });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'summarize' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Done.' }
+            ]);
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 60
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('summarize', { permissionMode: 'always-proceed' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        const sentMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        expect(sentMessages).toContainEqual(expect.objectContaining({
+            type: 'round-summary',
+            summary: expect.objectContaining({ provider: 'agy', num_turns: 9 })
         }));
 
         queue.close();
@@ -1553,6 +1620,8 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
 
         const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
         // Wakeup 1: starts a background run_command (`task-5`) and finishes its wakeup turn.
+        // The hub's background-task indicator must register the chained command even
+        // though no ACP turn is open (it was started by the transcript-only wakeup).
         appendFileSync(
             compactPath,
             [
@@ -1591,6 +1660,23 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         await vi.waitFor(() => {
             expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
         });
+
+        // The chained command registers into the indicator with its command line,
+        // mirroring what closeBackgroundCommands does for ACP-turn commands.
+        const chainedCallId = `agy-wakeup-${backend.sessionIdToCreate}-3-0`;
+        await vi.waitFor(() => {
+            expect(client.sendClaudeSessionMessage.mock.calls.map(([msg]) => msg)).toContainEqual(
+                expect.objectContaining({
+                    type: 'system',
+                    subtype: 'background_tasks_changed',
+                    tasks: [expect.objectContaining({
+                        task_id: chainedCallId,
+                        task_type: 'local_bash',
+                        description: 'sleep 3 && echo CHAINED_BG_OK'
+                    })]
+                })
+            );
+        });
         client.sendSessionEvent.mockClear();
         client.sendAgentMessage.mockClear();
 
@@ -1627,6 +1713,16 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             is_error: false,
             output: { stdout: 'CHAINED_BG_OK', exit_code: 0 }
         }));
+
+        // The wakeup that settled the chained command also retires its indicator
+        // entry: an empty snapshot follows so the hub stops showing it running.
+        expect(client.sendClaudeSessionMessage.mock.calls.map(([msg]) => msg)).toContainEqual(
+            expect.objectContaining({
+                type: 'system',
+                subtype: 'background_tasks_changed',
+                tasks: []
+            })
+        );
 
         queue.close();
         await runPromise;
@@ -1760,6 +1856,112 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             callId: 'call-replayed-bg',
             is_error: false,
             output: { stdout: 'REPLAYED_BG_DONE', exit_code: 0 }
+        }));
+
+        queue.close();
+        await runPromise;
+    });
+
+    it('counts pre-approval model calls in a reattached wakeup round summary', async () => {
+        const backend = new WakeupTestBackend();
+        const { session, queue, client } = makeHarness('always-proceed');
+
+        // Turn 1 ends; its transcript has steps 0-1.
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'Waiting on subagent...' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, backend.sessionIdToCreate, [
+                { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'start' },
+                { step_index: 1, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Waiting on subagent...' }
+            ]);
+        });
+
+        // Reattached internal turn: the gated command is approved and completes
+        // in-turn, then the wakeup answers. Its transcript appends the final
+        // planner response (step 4); the pre-approval planner call (step 3)
+        // already sat in the transcript when this turn's cursor was synced.
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'call-approved-1',
+                name: 'echo hi',
+                title: 'echo hi',
+                status: 'in_progress',
+                input: {},
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'echo hi' }
+            });
+            onUpdate({ type: 'tool_result', id: 'call-approved-1', output: { stdout: 'hi', exit_code: 0 }, status: 'completed' });
+            onUpdate({ type: 'usage', inputTokens: 20, outputTokens: 6 });
+            onUpdate({ type: 'text', text: 'Approved command finished.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+            appendFileSync(
+                compactPath,
+                [
+                    JSON.stringify({
+                        step_index: 4,
+                        source: 'MODEL',
+                        type: 'PLANNER_RESPONSE',
+                        status: 'DONE',
+                        content: 'Approved command finished.'
+                    })
+                ].join('\n') + '\n',
+                'utf8'
+            );
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 40
+        });
+        const runPromise = launcher.launch();
+
+        queue.push('start', { permissionMode: 'always-proceed' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+        client.sendSessionEvent.mockClear();
+        client.sendAgentMessage.mockClear();
+
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, backend.sessionIdToCreate)!;
+        // Wakeup slice: SYSTEM_MESSAGE (step 2), then the planner call that
+        // requests the gated command (step 3) parks on approval.
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 2,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: '<SYSTEM_MESSAGE>Subagent ready</SYSTEM_MESSAGE>'
+                }),
+                JSON.stringify({
+                    step_index: 3,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [{ name: 'run_command', args: { CommandLine: '"echo hi"' } }]
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        await vi.waitFor(() => {
+            expect(backend.prompts).toHaveLength(2);
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        // The reattached round counts the whole wakeup: the pre-approval
+        // planner call (step 3) plus the final response (step 4) = 2 turns.
+        const sentMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        expect(sentMessages).toContainEqual(expect.objectContaining({
+            type: 'round-summary',
+            summary: expect.objectContaining({ provider: 'agy', num_turns: 2 })
         }));
 
         queue.close();

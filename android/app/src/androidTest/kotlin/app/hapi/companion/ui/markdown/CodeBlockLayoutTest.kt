@@ -56,6 +56,6 @@ class CodeBlockLayoutTest {
         assertEquals("Action stays at the trailing edge", block.right.value - 4, bounds.right.value, 1f)
         button.assertWidthIsEqualTo(48.dp).assertHeightIsEqualTo(48.dp)
         compose.onNodeWithContentDescription(label, useUnmergedTree = true)
-            .assertWidthIsEqualTo(18.dp).assertHeightIsEqualTo(18.dp)
+            .assertWidthIsEqualTo(16.dp).assertHeightIsEqualTo(16.dp)
     }
 }

@@ -13,12 +13,14 @@ import {
     isMachineCapabilitySkewed,
 } from '@hapi/protocol/runnerCapabilities'
 import type { CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, MessageContextResponse, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
+import type { UsageQueryAgent, UsageQueryAgentSettings, UsageQueryResult, UsageQuerySettingsResponse, UsageQueryTemplate } from '@hapi/protocol/usageQuery'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
+import type { SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
 import type { CopilotReasoningEffortResponse, ImplementCodexPlanResult, KimiReasoningEffortResponse } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, BackgroundTask, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { hasConversationMessageContent, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import type { Store, CancelQueuedMessageResult } from '../store'
 import type {
     MessageContentSearchMatch,
@@ -86,6 +88,14 @@ import { AutomaticTitleSuggestionService } from './automaticTitleSuggestion'
 import { extractMessageEventType } from '../notifications/eventParsing'
 import { SessionEnumerationCache } from './sessionEnumerationCache'
 import { ingestNotifySummaryFromMessage } from './workGraphNotifyIngest'
+import { MetadataSchema, type OpenCodeRewindOperation } from '@hapi/protocol/schemas'
+import type { OpenCodeRewindReport } from '@hapi/protocol/apiTypes'
+import { extractSessionTodosFromMessageContent } from './todos'
+import {
+    readAutoBridgeTransientModelErrorsEnabled,
+    writeAutoBridgeTransientModelErrorsEnabled
+} from '../config/autoBridgeTransientModelErrors'
+import { getConfiguration } from '../configuration'
 
 type PiResumeAttempt = NonNullable<NonNullable<Session['metadata']>['piResumeAttempt']>
 type PtyResumeAttempt = NonNullable<NonNullable<Session['metadata']>['ptyResumeAttempt']>
@@ -210,6 +220,11 @@ function extractClaudeUserMessageTextFromAgentOutput(content: unknown): string |
 
 export class SyncEngine {
     private readonly archiveRequests = new Map<string, Promise<void>>()
+    // KillSession's beforeKill drain completes before the CLI's async cleanup
+    // closes the session socket, so a runner prepare-stop that loses that race
+    // can still be honored for the exact killed generation while its archive
+    // is in flight.
+    private readonly archiveDrainedGenerations = new Map<string, { machineId: string; pid: number; processStartMarker: string }>()
     private readonly eventPublisher: EventPublisher
     private readonly sessionCache: SessionCache
     private readonly machineCache: MachineCache
@@ -295,6 +310,15 @@ export class SyncEngine {
      * Defaults to "1" for unit tests; startHub overwrites with getOrCreateOwnerId().
      */
     private hubOwnerUserId: string = '1'
+    /** Test-only settings root so session-ready reconcile can run without full hub boot. */
+    private settingsDataDirForTests: string | null = null
+    /** Serialize settings write/fanout with first-activation / session-ready reconcile. */
+    private autoBridgeConfigTail: Promise<unknown> = Promise.resolve()
+    /**
+     * Active Cursor sessions whose last auto-bridge Settings RPC failed.
+     * Heartbeats retry persisted desired state until reconcile succeeds.
+     */
+    private readonly pendingAutoBridgeReconcile = new Set<string>()
 
     constructor(
         private readonly store: Store,
@@ -674,6 +698,7 @@ export class SyncEngine {
     }
 
     getDeliverableMessagesAfter(sessionId: string, options: { afterSeq: number; limit: number; now: number }): DecryptedMessage[] {
+        if (this.openCodeRewindPending(sessionId)) return []
         return this.messageService.getDeliverableMessagesAfter(sessionId, options)
     }
 
@@ -810,7 +835,9 @@ export class SyncEngine {
         serviceTier?: string | null
         collaborationMode?: CodexCollaborationMode
     }): void {
-        const wasThinking = this.sessionCache.getSession(payload.sid)?.thinking === true
+        const before = this.sessionCache.getSession(payload.sid)
+        const wasActive = before?.active === true
+        const wasThinking = before?.thinking === true
         if (!wasThinking && payload.thinking === true) {
             this.automaticTitleSuggestionService.onTurnStarted(payload.sid)
         }
@@ -821,11 +848,27 @@ export class SyncEngine {
         }
         this.messageService.replayImmediateQueuedMessages(payload.sid)
         this.triggerDedupIfNeeded(payload.sid)
+        // First inactive → active: catch toggles while inactive (fanout is
+        // active-only). Also retry sessions whose prior fanout/rollback RPC failed.
+        if (!wasActive || this.pendingAutoBridgeReconcile.has(payload.sid)) {
+            void this.reconcileCursorAutoBridgeSetting(payload.sid)
+        }
     }
 
     handleSessionReady(payload: { sid: string; time: number }): void {
-        this.sessionReadyIds.add(payload.sid)
         const session = this.sessionCache.getSession(payload.sid)
+        if (session?.metadata?.flavor === 'opencode' && session.metadata.opencodeForkPending) {
+            if (session.metadata.conversationHistoryDiverged
+                || session.metadata.opencodeHistoryCheckpoint?.sessionId !== session.metadata.opencodeSessionId
+                || session.metadata.opencodeHistoryCheckpoint?.localMessageIds?.length !== 0
+                || session.metadata.opencodeHistoryCheckpoint?.localPublicationPending) return
+            try {
+                this.completeOpencodeForkValidation(payload.sid, session.namespace)
+            } catch {
+                return
+            }
+        }
+        this.sessionReadyIds.add(payload.sid)
         if (session?.active && session.metadata?.codexResumePending
             && session.metadata.codexResumePending.nativeSessionId === session.metadata.codexSessionId) {
             this.writeCodexResumePending(session.id, session.namespace, undefined)
@@ -838,7 +881,121 @@ export class SyncEngine {
                 })
                 .catch(() => {})
         }
+        // session-ready fires after set-session-config is registered (alive can
+        // race earlier). Re-read under the same lock as Settings fanout.
+        void this.reconcileCursorAutoBridgeSetting(payload.sid)
         this.triggerDedupIfNeeded(payload.sid)
+    }
+
+    /** @internal test hook — hub settings dataDir without createConfiguration(). */
+    setSettingsDataDirForTests(dataDir: string | null): void {
+        this.settingsDataDirForTests = dataDir
+    }
+
+    /**
+     * Owner hub setting changed: push to every active default-namespace Cursor CLI.
+     * Serialized with first-activation / session-ready reconcile.
+     */
+    async fanoutAutoBridgeTransientModelErrors(enabled: boolean): Promise<void> {
+        await this.withAutoBridgeConfigLock(async () => {
+            await this.pushAutoBridgeSettingToActiveCursorSessions(enabled)
+        })
+    }
+
+    /**
+     * Persist the owner auto-bridge pref and fanout under one lock so concurrent
+     * Settings PUTs cannot interleave disk write / rollback / RPC push.
+     */
+    async applyAutoBridgeTransientModelErrorsSetting(
+        dataDir: string,
+        enabled: boolean
+    ): Promise<void> {
+        await this.withAutoBridgeConfigLock(async () => {
+            const previous = await readAutoBridgeTransientModelErrorsEnabled(dataDir)
+            await writeAutoBridgeTransientModelErrorsEnabled(dataDir, enabled)
+            try {
+                await this.pushAutoBridgeSettingToActiveCursorSessions(enabled)
+            } catch (error) {
+                await writeAutoBridgeTransientModelErrorsEnabled(dataDir, previous)
+                await this.pushAutoBridgeSettingToActiveCursorSessions(previous).catch(() => {})
+                throw error
+            }
+        })
+    }
+
+    private async pushAutoBridgeSettingToActiveCursorSessions(enabled: boolean): Promise<void> {
+        const targets = this.sessionCache.getSessions().filter(
+            (session) => session.active
+                && session.namespace === 'default'
+                && session.metadata?.flavor === 'cursor'
+        )
+        const results = await Promise.allSettled(
+            targets.map((session) => this.rpcGateway.requestSessionConfig(session.id, {
+                autoBridgeTransientModelErrors: enabled
+            }))
+        )
+        results.forEach((result, index) => {
+            const id = targets[index]!.id
+            if (result.status === 'rejected') {
+                this.pendingAutoBridgeReconcile.add(id)
+            } else {
+                this.pendingAutoBridgeReconcile.delete(id)
+            }
+        })
+        if (results.some((result) => result.status === 'rejected')) {
+            throw new Error('Failed to update every active Cursor session')
+        }
+    }
+
+    /**
+     * Push the current owner hub auto-bridge pref to one Cursor CLI.
+     * Best-effort: never throws into the socket path.
+     */
+    async reconcileCursorAutoBridgeSetting(sessionId: string): Promise<void> {
+        try {
+            await this.withAutoBridgeConfigLock(async () => {
+                const session = this.sessionCache.getSession(sessionId)
+                    ?? this.sessionCache.refreshSession(sessionId)
+                if (!session) {
+                    return
+                }
+                if (session.namespace !== 'default' || session.metadata?.flavor !== 'cursor') {
+                    return
+                }
+                const dataDir = this.resolveSettingsDataDir()
+                if (!dataDir) {
+                    return
+                }
+                const enabled = await readAutoBridgeTransientModelErrorsEnabled(dataDir)
+                await this.rpcGateway.requestSessionConfig(sessionId, {
+                    autoBridgeTransientModelErrors: enabled
+                })
+                this.pendingAutoBridgeReconcile.delete(sessionId)
+            })
+        } catch (error) {
+            this.pendingAutoBridgeReconcile.add(sessionId)
+            console.warn(
+                `[sync] failed to reconcile auto-bridge setting for session ${sessionId}`,
+                error
+            )
+        }
+    }
+
+    private withAutoBridgeConfigLock<T>(fn: () => Promise<T>): Promise<T> {
+        const run = this.autoBridgeConfigTail.then(fn, fn)
+        this.autoBridgeConfigTail = run.then(() => undefined, () => undefined)
+        return run
+    }
+
+    private resolveSettingsDataDir(): string | null {
+        if (this.settingsDataDirForTests) {
+            return this.settingsDataDirForTests
+        }
+        try {
+            return getConfiguration().dataDir
+        } catch {
+            return null
+        }
     }
 
     clearQueuedThinkingGrace(sessionId: string): void {
@@ -1699,7 +1856,9 @@ export class SyncEngine {
         this.sessionCache.reconcileKeepaliveIdle()
         // Piggybacked on the inactivity tick; not a logical part of expireInactive
         // but shares its 5s cadence (avoids a second timer).
-        this.messageService.releaseMatureScheduledMessages(Date.now(), this.historyActionsInFlight)
+        const held = new Set(this.historyActionsInFlight)
+        for (const session of this.sessionCache.getSessions()) if (this.openCodeRewindPending(session.id)) held.add(session.id)
+        this.messageService.releaseMatureScheduledMessages(Date.now(), held)
         void this.reconcileOpenCodeClears()
     }
 
@@ -1730,6 +1889,25 @@ export class SyncEngine {
     private reloadAll(): void {
         this.sessionCache.reloadAll()
         this.machineCache.reloadAll()
+        this.queuePersistedActiveCursorAutoBridgeReconcile()
+    }
+
+    /**
+     * Hub restart: in-memory pendingAutoBridgeReconcile is empty. If SQLite
+     * restored a Cursor row as already active, the first heartbeat is not an
+     * inactive→active transition — seed those ids so handleSessionAlive still
+     * pushes persisted settings.json.
+     */
+    private queuePersistedActiveCursorAutoBridgeReconcile(): void {
+        for (const session of this.sessionCache.getSessions()) {
+            if (
+                session.active
+                && session.namespace === 'default'
+                && session.metadata?.flavor === 'cursor'
+            ) {
+                this.pendingAutoBridgeReconcile.add(session.id)
+            }
+        }
     }
 
     getOrCreateSession(
@@ -1798,7 +1976,7 @@ export class SyncEngine {
             deliveryMode?: MessageDeliveryMode
         }
     ): Promise<void> {
-        if (this.historyActionsInFlight.has(sessionId)) {
+        if (this.historyActionsInFlight.has(sessionId) || this.openCodeRewindPending(sessionId)) {
             throw new Error('Conversation history action already in progress')
         }
         if (!this.sessionCache.getSession(sessionId)?.thinking) {
@@ -1820,6 +1998,7 @@ export class SyncEngine {
         sessionId: string,
         messageId: string
     ): Promise<RetryIndeterminateMessageResult> {
+        if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         return this.messageService.retryIndeterminateMessage(sessionId, messageId)
     }
 
@@ -1834,6 +2013,7 @@ export class SyncEngine {
         sessionId: string,
         messageId: string
     ): Promise<SteerQueuedMessageResponse> {
+        if (this.openCodeRewindPending(sessionId)) return { status: 'failed', error: 'OpenCode rewind requires reconciliation', localId: null }
         const session = this.getSession(sessionId)
         if (!session) {
             return { status: 'failed', error: 'Session not found', localId: null }
@@ -1911,6 +2091,10 @@ export class SyncEngine {
         decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort',
         answers?: Record<string, string[]> | Record<string, { answers: string[] }>
     ): Promise<void> {
+        // Do not clear agentState.requests here on PermissionRequestNotFoundError.
+        // A concurrent first answer may still be finalizing asynchronously; hub-side
+        // cancel would race it into "canceled" and drop the real decision
+        // (tiann/hapi#2415 review). CLI orphan finalize owns sticky-badge cleanup.
         await this.rpcGateway.approvePermission(sessionId, requestId, mode, allowTools, decision, answers)
     }
 
@@ -1923,10 +2107,12 @@ export class SyncEngine {
     }
 
     async abortSession(sessionId: string): Promise<void> {
+        if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         await this.rpcGateway.abortSession(sessionId)
     }
 
     private assertConversationHistoryIdle(session: Session, allowRunningHistoricalFork = false): void {
+        if (this.openCodeRewindPending(session.id)) throw new Error('OpenCode rewind requires reconciliation')
         if (!session.active) {
             throw new Error('Session must be active')
         }
@@ -2015,7 +2201,7 @@ export class SyncEngine {
     private async waitForExactNativeForkBound(
         childId: string,
         expectedNativeSessionId: string,
-        metadataKey: 'grokSessionId' | 'piSessionId' | 'codexSessionId',
+        metadataKey: 'grokSessionId' | 'piSessionId' | 'opencodeSessionId' | 'codexSessionId',
         requireSessionReady: boolean,
         timeoutMs: number = 60_000
     ): Promise<boolean> {
@@ -2126,6 +2312,22 @@ export class SyncEngine {
             if (result.result !== 'version-mismatch') return
             this.sessionCache.refreshSession(sessionId)
         }
+    }
+
+    private completeOpencodeForkValidation(sessionId: string, namespace: string): void {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const session = this.sessionCache.refreshSession(sessionId)
+            if (!session?.metadata || session.namespace !== namespace) throw new Error('OpenCode fork child disappeared')
+            if (!session.metadata.opencodeForkPending) return
+            const result = this.store.sessions.updateSessionMetadata(sessionId,
+                { ...session.metadata, opencodeForkPending: undefined }, session.metadataVersion, namespace, { touchUpdatedAt: false })
+            if (result.result === 'success') {
+                this.sessionCache.refreshSession(sessionId)
+                return
+            }
+            if (result.result !== 'version-mismatch') break
+        }
+        throw new Error('OpenCode fork child validation could not be committed')
     }
 
     private markConversationHistoryDiverged(sessionId: string, namespace: string): void {
@@ -2415,6 +2617,12 @@ export class SyncEngine {
         source = refreshedSource
 
         const flavor = this.resolveFlavor(source)
+        if (flavor === 'opencode'
+            && (rpcResult.opencodeHistoryCheckpoint?.sessionId !== rpcResult.nativeSessionId
+                || rpcResult.opencodeHistoryCheckpoint.localMessageIds?.length !== 0
+                || rpcResult.opencodeHistoryCheckpoint.localPublicationPending)) {
+            return { type: 'error', message: 'OpenCode fork did not return a verified child history checkpoint' }
+        }
         const childId = randomUUID()
         let prefix
         try {
@@ -2454,6 +2662,9 @@ export class SyncEngine {
         }
         if (flavor === 'codex') {
             childMetadata.codexSessionId = rpcResult.nativeSessionId
+        } else if (flavor === 'opencode') {
+            childMetadata.opencodeHistoryCheckpoint = rpcResult.opencodeHistoryCheckpoint
+            childMetadata.opencodeForkPending = true
         } else if (flavor === 'grok') {
             childMetadata.grokSessionId = rpcResult.nativeSessionId
         } else if (flavor === 'pi') {
@@ -2559,6 +2770,19 @@ export class SyncEngine {
                 }
             }
 
+            if (flavor === 'opencode') {
+                // The CLI seeds opencodeSessionId from the resume id before ACP
+                // initialize, so only the validated session-ready fence proves
+                // the forked native session actually loaded.
+                const bound = await this.waitForExactNativeForkBound(
+                    childId, rpcResult.nativeSessionId, 'opencodeSessionId', true
+                )
+                if (!bound) {
+                    throw new Error('OpenCode fork could not load the forked native session')
+                }
+                this.completeOpencodeForkValidation(childId, namespace)
+            }
+
             return { type: 'success', sessionId: childId }
         } catch (error) {
             if (childCreated) {
@@ -2632,6 +2856,8 @@ export class SyncEngine {
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
         }
 
+        if (session.metadata?.flavor === 'opencode') return await this.rewindOpenCode(session, namespace, messageLocalId)
+
         let rpcResult: Awaited<ReturnType<RpcGateway['rewindConversation']>>
         try {
             rpcResult = await this.rpcGateway.rewindConversation(sessionId, { messageLocalId })
@@ -2683,13 +2909,167 @@ export class SyncEngine {
         }
     }
 
+    private openCodeRewindPending(sessionId: string): boolean {
+        const phase = (this.store.sessions.getSession(sessionId)?.metadata as Session['metadata'])?.opencodeRewind?.phase
+        return phase === 'reserved' || phase === 'prepared' || phase === 'unknown'
+    }
+
+    private async rewindOpenCode(session: Session, namespace: string, localId: string): Promise<{ type: 'success' } | { type: 'error'; message: string }> {
+        const current = this.store.sessions.getSession(session.id)!
+        const metadata = MetadataSchema.parse(current.metadata)
+        const checkpoint = metadata.opencodeHistoryCheckpoint
+        const index = metadata.conversationHistoryIndexes?.[localId]
+        const nativeMessageId = index === undefined ? undefined : checkpoint?.userMessageIds[index]
+        if (!metadata.opencodeWorkerId || !metadata.opencodeWorkerProcess
+            || metadata.opencodeWorkerProcess.workerId !== metadata.opencodeWorkerId
+            || !checkpoint || !nativeMessageId || checkpoint.localPublicationPending
+            || checkpoint.localMessageIds === undefined || checkpoint.sessionId !== metadata.opencodeSessionId) {
+            return { type: 'error', message: 'OpenCode rewind requires a verified native boundary and worker' }
+        }
+        const messages = this.store.messages.getAllMessages(session.id)
+        const boundary = messages.find(m => m.localId === localId && m.invokedAt != null)
+        if (!boundary) return { type: 'error', message: 'History boundary is not invoked' }
+        const operation: OpenCodeRewindOperation = { operationId: randomUUID(), nativeSessionId: checkpoint.sessionId,
+            workerId: metadata.opencodeWorkerId, workerPid: metadata.opencodeWorkerProcess.pid, workerStartMarker: metadata.opencodeWorkerProcess.startMarker,
+            requestedLocalId: localId, nativeMessageId, cutoffSeq: boundary.seq,
+            sourceEpoch: this.store.messages.getMessageEpoch(session.id), sourceMaxSeq: Math.max(0, ...messages.map(m => m.seq)),
+            sourceTranscriptHash: createHash('sha256').update(JSON.stringify(messages)).digest('hex'),
+            reservationVersion: current.metadataVersion + 1, phase: 'reserved' }
+        // Durable reservation before the first native/RPC await. No generic
+        // metadata retry can reserve against a different source version.
+        const reserved = this.store.sessions.updateSessionMetadata(session.id, { ...metadata, opencodeRewind: operation }, current.metadataVersion, namespace)
+        if (reserved.result !== 'success') return { type: 'error', message: 'OpenCode source metadata changed before reservation' }
+        this.sessionCache.refreshSession(session.id)
+        try {
+            await this.rpcGateway.rewindConversation(session.id, { messageLocalId: localId, opencodeRewind: operation })
+        } catch { /* durable state below is authoritative, never an RPC success alone */ }
+        const latest = (this.store.sessions.getSession(session.id)?.metadata as Session['metadata'])?.opencodeRewind
+        if (latest?.operationId === operation.operationId && latest.phase === 'committed') return { type: 'success' }
+        return { type: 'error', message: 'OpenCode rewind remains blocked pending native/Hub reconciliation' }
+    }
+
+    reportOpenCodeRewind(sessionId: string, namespace: string, report: OpenCodeRewindReport, expectedVersion: number): OpenCodeRewindOperation {
+        let invalidated = false
+        const operation = this.store.runInTransaction(() => {
+            const current = this.store.sessions.getSession(sessionId)
+            if (!current || current.namespace !== namespace) throw new Error('Session access denied')
+            const metadata = MetadataSchema.parse(current.metadata)
+            const op = metadata.opencodeRewind
+            const incoming = report.operation
+            const keys = ['operationId', 'nativeSessionId', 'workerId', 'workerPid', 'workerStartMarker', 'requestedLocalId', 'nativeMessageId',
+                'cutoffSeq', 'sourceEpoch', 'sourceMaxSeq', 'reservationVersion', 'sourceTranscriptHash'] as const
+            if (!op || keys.some(key => op[key] !== incoming[key]) || metadata.opencodeSessionId !== op.nativeSessionId) throw new Error('OpenCode rewind operation mismatch')
+            // Check the operation tombstone BEFORE the optimistic version/cutoff.
+            // An old report after a new turn cannot truncate that turn again.
+            if (op.phase === 'committed') {
+                if (report.phase === 'applied' && (report.sourceHash !== op.sourceHash || report.prefixHash !== op.prefixHash)) throw new Error('Committed proof mismatch')
+                return op
+            }
+            if (op.phase === 'rejected') return op
+            if (current.metadataVersion !== expectedVersion) throw new Error('OpenCode rewind metadata version changed')
+            let next: OpenCodeRewindOperation = { ...op }
+            let nextMetadata = metadata
+            // A reserved operation has not durably authorized native mutation.
+            // Keep it rejectable when preparation failed before persistence.
+            if (report.phase === 'unknown') next.phase = op.phase === 'reserved' ? 'reserved' : 'unknown'
+            else if (report.phase === 'rejected') {
+                if (op.phase !== 'reserved' && !(report.unchanged && op.sourceHash === report.sourceHash && op.prefixHash === report.prefixHash)) {
+                    throw new Error('Native mutation cannot be rejected without recovery evidence')
+                }
+                next.phase = 'rejected'
+            } else {
+                const rows = this.store.messages.getAllMessages(sessionId)
+                const hubBoundary = rows.find(m => m.localId === op.requestedLocalId && m.seq === op.cutoffSeq && m.invokedAt != null)
+                if (this.store.messages.getMessageEpoch(sessionId) !== op.sourceEpoch
+                    || createHash('sha256').update(JSON.stringify(rows)).digest('hex') !== op.sourceTranscriptHash
+                    || Math.max(0, ...rows.map(m => m.seq)) !== op.sourceMaxSeq
+                    || !hubBoundary
+                    || this.store.messages.getUninvokedLocalMessages(sessionId).length) throw new Error('OpenCode source transcript changed')
+                if (!report.sourceHash?.match(/^[a-f0-9]{64}$/) || !report.prefixHash?.match(/^[a-f0-9]{64}$/)) throw new Error('Missing native source/prefix proof')
+                if (report.phase === 'prepared') {
+                    if (op.phase !== 'reserved') throw new Error('OpenCode preparation is not repeatable after mutation')
+                    next = { ...op, phase: 'prepared', sourceHash: report.sourceHash, prefixHash: report.prefixHash }
+                } else {
+                    if (op.sourceHash !== report.sourceHash || op.prefixHash !== report.prefixHash) throw new Error('Native proof does not match the prepared operation')
+                    const checkpoint = report.checkpoint
+                    const source = metadata.opencodeHistoryCheckpoint
+                    const boundary = source?.messageIds.indexOf(op.nativeMessageId) ?? -1
+                    const expected = source?.messageIds.slice(0, boundary)
+                    if (!checkpoint || boundary < 0 || checkpoint.sessionId !== op.nativeSessionId || checkpoint.localPublicationPending
+                        || checkpoint.localMessageIds === undefined || JSON.stringify(checkpoint.messageIds) !== JSON.stringify(expected)
+                        || JSON.stringify(checkpoint.userMessageIds) !== JSON.stringify(source!.userMessageIds.slice(0, source!.userMessageIds.indexOf(op.nativeMessageId)))) {
+                        throw new Error('Retained native checkpoint does not match the requested boundary')
+                    }
+                    const indexes: Record<string, number> = {}
+                    for (const [local, index] of Object.entries(metadata.conversationHistoryIndexes ?? {})) {
+                        const target = source!.userMessageIds[index]
+                        const nextIndex = checkpoint.userMessageIds.indexOf(target!)
+                        if (nextIndex >= 0) indexes[local] = nextIndex
+                    }
+                    if (JSON.stringify(Object.entries(indexes).sort()) !== JSON.stringify(Object.entries(report.indexes ?? {}).sort())) throw new Error('Retained locator mismatch')
+                    this.store.messages.truncateOpenCodeRewind(sessionId, op.cutoffSeq, hubBoundary.id)
+                    next = { ...op, phase: 'committed' }
+                    nextMetadata = { ...metadata, opencodeHistoryCheckpoint: checkpoint, conversationHistoryIndexes: indexes,
+                        conversationHistoryPoints: Object.fromEntries(Object.keys(indexes).map(key => [key, true as const])) }
+                    invalidated = true
+                }
+            }
+            const updated = this.store.sessions.updateSessionMetadata(sessionId, { ...nextMetadata, opencodeRewind: next }, current.metadataVersion, namespace)
+            if (updated.result !== 'success') throw new Error('OpenCode rewind metadata CAS failed')
+            if (invalidated) {
+                const todos = this.store.messages.getAllMessages(sessionId).map(m => extractSessionTodosFromMessageContent(m.content)).filter(Boolean).at(-1) ?? null
+                this.store.sessions.replaceSessionTodos(sessionId, todos, namespace)
+            }
+            return next
+        })
+        // Only publish after the encompassing database transaction commits.
+        this.sessionCache.refreshSession(sessionId)
+        if (invalidated) this.eventPublisher.emit({ type: 'messages-invalidated', sessionId, namespace, reason: 'rewind', truncateFromLocalId: operation.requestedLocalId })
+        return operation
+    }
+
+    async prepareOpenCodeSessionStop(sessionId: string, pid: number, processStartMarker: string,
+        preparationLease: SessionStopPreparationLease, machineId: string): Promise<'ready' | 'not_required'> {
+        if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
+        const metadata = this.sessionCache.getSession(sessionId)?.metadata
+        if (metadata?.machineId !== machineId) throw new Error('Session machine does not match runner')
+        if (metadata?.flavor !== 'opencode') return 'not_required'
+        // Only request the session RPC here. Calling archiveSession would
+        // recurse into the runner's StopSession handler that is awaiting us.
+        const requestPreparation = async () => this.rpcGateway.killSession(sessionId, {
+            prepareOnly: true, expectedMachineId: machineId, expectedPid: pid, expectedProcessStartMarker: processStartMarker, preparationLease
+        })
+        let result: Awaited<ReturnType<typeof requestPreparation>>
+        try {
+            result = await requestPreparation()
+        } catch (error) {
+            // KillSession's beforeKill drain may already have completed while
+            // the CLI's async cleanup closed the session socket: honor the
+            // remembered drained generation for this exact target instead of
+            // failing the runner's stop coordination.
+            const drained = this.archiveDrainedGenerations.get(sessionId)
+            if (!drained || drained.machineId !== machineId || drained.pid !== pid
+                || drained.processStartMarker !== processStartMarker) throw error
+            result = { pid, machineId, processStartMarker, preparationLease }
+        }
+        if (result.pid !== pid || result.processStartMarker !== processStartMarker || result.machineId !== machineId) {
+            throw new Error('Session shutdown preparation did not confirm the target generation')
+        }
+        if (result.preparationLease?.id !== preparationLease.id || result.preparationLease.expiresAt !== preparationLease.expiresAt) {
+            throw new Error('Session shutdown preparation did not confirm the lease')
+        }
+        return 'ready'
+    }
+
     async archiveSession(sessionId: string): Promise<void> {
+        if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         const existing = this.archiveRequests.get(sessionId)
         if (existing) return existing
         const operation = this.archiveSessionOnce(sessionId)
         this.archiveRequests.set(sessionId, operation)
         try { await operation } finally {
             if (this.archiveRequests.get(sessionId) === operation) this.archiveRequests.delete(sessionId)
+            this.archiveDrainedGenerations.delete(sessionId)
         }
     }
 
@@ -2741,6 +3121,12 @@ export class SyncEngine {
 
         const sessionMeta = this.sessionCache.getSession(sessionId)?.metadata
         const machineId = sessionMeta?.codexResumePending?.machineId ?? sessionMeta?.machineId
+        // Remember the drained generation so a concurrent prepare-stop can
+        // still be honored after the CLI's cleanup disconnects the socket.
+        if (machineId && typeof killPid === 'number' && killPid > 0
+            && typeof killProcessStartMarker === 'string' && killProcessStartMarker.length > 0) {
+            this.archiveDrainedGenerations.set(sessionId, { machineId, pid: killPid, processStartMarker: killProcessStartMarker })
+        }
         const runnerSpawned = Boolean(sessionMeta?.codexResumePending) || sessionMeta?.startedBy === 'runner'
             || sessionMeta?.startedFromRunner === true
         if (machineId && runnerSpawned) {
@@ -3030,6 +3416,7 @@ export class SyncEngine {
     }
 
     async clearConversation(sessionId: string, namespace: string): Promise<{ sessionId: string }> {
+        if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok || !access.session.active || !access.session.metadata?.capabilities?.concurrentClients) {
             throw new Error('Clear requires an active shared session')
@@ -3053,6 +3440,7 @@ export class SyncEngine {
     }
 
     async switchSession(sessionId: string, to: 'remote' | 'local'): Promise<void> {
+        if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         if (this.getSession(sessionId)?.metadata?.capabilities?.concurrentClients) throw new Error('control_mode_not_applicable')
         if (this.historyActionsInFlight.has(sessionId)) {
             throw new Error('Conversation history action already in progress')
@@ -3072,7 +3460,63 @@ export class SyncEngine {
         await this.sessionCache.updateSessionSummary(sessionId, text, titleLocked)
     }
 
+    async acknowledgeModelError(sessionId: string, eventId: string): Promise<void> {
+        await this.sessionCache.acknowledgeModelError(sessionId, eventId)
+    }
+
+    async markModelErrorNotified(sessionId: string, eventId: string): Promise<void> {
+        await this.sessionCache.markModelErrorNotified(sessionId, eventId)
+    }
+
+    async bridgeModelError(sessionId: string, eventId: string): Promise<{ ok: boolean; reason?: string }> {
+        const session = this.sessionCache.refreshSession(sessionId)
+            ?? this.sessionCache.getSession(sessionId)
+        if (!session) {
+            throw new Error('Session not found')
+        }
+
+        const err = session.metadata?.lastModelError
+        if (!err) {
+            throw new Error('No model error to bridge')
+        }
+        if (err.eventId !== eventId) {
+            throw new Error('Model error changed; refresh before bridging.')
+        }
+        if (!err.transient) {
+            throw new Error('Model error is not transient')
+        }
+        if (err.bridgedForEventId === err.eventId) {
+            throw new Error('Model error was already bridged')
+        }
+        if (err.retriedAndFailed) {
+            throw new Error('Bridge already failed for this error')
+        }
+        if (err.supersededByUserTurn) {
+            throw new Error('Model error was superseded by a newer turn')
+        }
+        if (err.bridgeable === false) {
+            throw new Error('Model error is not bridgeable')
+        }
+
+        // Do not mark bridgedForEventId here — CLI persists recovery only after
+        // the bridge prompt actually succeeds.
+        return await this.rpcGateway.bridgeModelError(sessionId, {
+            eventId: err.eventId,
+            atTs: err.atTs,
+            kind: err.kind,
+            rawSnippet: err.rawSnippet,
+            lastUserMessage: err.lastUserMessage,
+            priorAssistantClaimsDone: err.priorAssistantClaimsDone,
+            transient: err.transient,
+            bridgedForEventId: err.bridgedForEventId,
+            retriedAndFailed: err.retriedAndFailed,
+            supersededByUserTurn: err.supersededByUserTurn,
+            bridgeable: err.bridgeable
+        })
+    }
+
     async deleteSession(sessionId: string): Promise<void> {
+        if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         if (this.sessionCache.getSession(sessionId)?.metadata?.codexResumePending) throw new Error('Codex resume startup is unconfirmed; archive to confirm termination before deleting')
         if (this.historyActionsInFlight.has(sessionId) || this.archivedForkPending(sessionId)) {
             throw new Error('Archived fork is pending; reconcile it before deleting the source')
@@ -3093,9 +3537,11 @@ export class SyncEngine {
             serviceTier?: string | null
             collaborationMode?: CodexCollaborationMode
             copilotAgentMode?: CopilotAgentMode
+            autoBridgeTransientModelErrors?: boolean
         }
     ): Promise<void> {
         const session = this.sessionCache.getSession(sessionId)
+        if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         if (!session?.active) {
             // For inactive sessions, update the in-memory cache directly without
             // an RPC call — the CLI is not running yet. The updated value will be
@@ -3284,6 +3730,7 @@ export class SyncEngine {
      * source still owns an in-flight OpenCode turn or native compaction.
      */
     async clearOpenCodeSession(sessionId: string, namespace: string): Promise<ClearOpencodeSessionResult> {
+        if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         const clearTailKey = `${namespace}:${sessionId}`
         const existing = this.opencodeClearTails.get(clearTailKey)
         if (existing) {
@@ -4855,6 +5302,7 @@ export class SyncEngine {
     }
 
     async handoffSessionToLocal(sessionId: string, namespace: string): Promise<LocalHandoffResult> {
+        if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return {
@@ -5388,6 +5836,34 @@ export class SyncEngine {
 
     async getAgentAvailability(machineId: string): ReturnType<RpcGateway['getAgentAvailability']> {
         return await this.rpcGateway.getAgentAvailability(machineId)
+    }
+
+    async getUsageQuerySettings(machineId: string, agent: UsageQueryAgent): Promise<UsageQuerySettingsResponse> {
+        return await this.rpcGateway.getUsageQuerySettings(machineId, agent)
+    }
+
+    async saveUsageQuerySettings(
+        machineId: string,
+        agent: UsageQueryAgent,
+        settings: UsageQueryAgentSettings
+    ): Promise<UsageQuerySettingsResponse> {
+        return await this.rpcGateway.saveUsageQuerySettings(machineId, agent, settings)
+    }
+
+    async testUsageQueryTemplate(
+        machineId: string,
+        agent: UsageQueryAgent,
+        template: UsageQueryTemplate
+    ): Promise<UsageQueryResult> {
+        return await this.rpcGateway.testUsageQueryTemplate(machineId, agent, template)
+    }
+
+    async queryUsage(
+        machineId: string,
+        agent: UsageQueryAgent,
+        force = false
+    ): Promise<UsageQueryResult> {
+        return await this.rpcGateway.queryUsage(machineId, agent, force)
     }
 
     async getAgentQuotas(machineId: string, options?: { refresh?: boolean }): ReturnType<RpcGateway['getAgentQuotas']> {
