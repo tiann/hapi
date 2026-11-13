@@ -7,7 +7,6 @@
 
 import { trimIdent } from '@/utils/trimIdent';
 import { buildSessionCitationSteerInstruction, SESSION_CITATION_DISABLED_STEER } from '@hapi/protocol/sessionCitation';
-import { DISPLAY_IMAGE_PROMPT_CODEX, DISPLAY_MEDIA_PROMPT_CODEX, DISPLAY_VIDEO_PROMPT_CODEX } from '@/modules/common/displayImagePrompt';
 import { isPeerToolsDisabled } from '@/modules/common/peerTools';
 import { withSessionJobInstruction } from '@/modules/common/sessionJobInstruction';
 import { withSessionSummaryInstruction } from '@/modules/common/sessionSummaryInstruction';
@@ -23,9 +22,6 @@ export const TITLE_INSTRUCTION = trimIdent(`
     If that exact tool name is unavailable, call an equivalent alias such as hapi__change_title, mcp__hapi__change_title, or hapi_change_title.
     Do not rename the chat for routine progress, substeps, implementation details, or a slightly better wording.
     Rename only when the user's primary objective changes substantially and the existing title would be misleading.
-    ${DISPLAY_IMAGE_PROMPT_CODEX}
-    ${DISPLAY_VIDEO_PROMPT_CODEX}
-    ${DISPLAY_MEDIA_PROMPT_CODEX}
     ${isPeerToolsDisabled() ? SESSION_CITATION_DISABLED_STEER : buildSessionCitationSteerInstruction({
         inspectTool: 'functions.hapi__inspect_peer',
         pingTool: 'functions.hapi__ping_peer',

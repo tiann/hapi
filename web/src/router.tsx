@@ -60,7 +60,7 @@ import { isOnSessionPage, resolveVoiceSession } from '@/lib/dictationSend'
 import { configureSessionReadState, observeSessionReadStates } from '@/lib/sessionLastSeen'
 import { useSessionBrowserTitle } from '@/hooks/useSessionBrowserTitle'
 import { clearCodexImportedSession } from '@/lib/codexImportedSessions'
-import { getSupersedingSessionId, prepareFollowSupersedingSession, shouldFollowSupersedingSession } from '@/routes/sessions/followSupersedingSession'
+import { getMergedSessionRedirectId, getSupersedingSessionId, prepareFollowSupersedingSession, shouldFollowSupersedingSession } from '@/routes/sessions/followSupersedingSession'
 import { migrateSuppressedSendError } from '@/lib/suppressed-send-error'
 import { useConsumedMessageTarget } from '@/lib/useConsumedMessageTarget'
 import { normalizeMessageSearchTarget } from '@/lib/messageSearchTarget'
@@ -237,8 +237,22 @@ function SessionsPage() {
     const handleSelectSession = useCallback((
         sessionId: string,
         targetMessageId?: string,
-        targetMessageQuery?: string
+        targetMessageQuery?: string,
+        pendingRequestId?: string
     ) => {
+        if (pendingRequestId) {
+            navigate({
+                to: '/sessions/$sessionId',
+                params: { sessionId },
+                search: {
+                    ...(isSessionSidebarHidden(sidebarSearch) ? { sidebar: 'hidden' as const } : {}),
+                    pendingRequestId,
+                },
+                ...PRESERVE_SESSION_SIDEBAR_SCROLL,
+            })
+            return
+        }
+
         // A content-search hit carries the message it matched, so the session
         // opens on that message rather than the tail.
         if (targetMessageId) {
@@ -409,7 +423,7 @@ function SessionPage() {
     const queryClient = useQueryClient()
     const { addToast } = useToast()
     const { sessionId } = useParams({ from: '/sessions/$sessionId' })
-    const { outline, messageId, messageQuery } = useSearch({ from: '/sessions/$sessionId' })
+    const { outline, messageId, messageQuery, pendingRequestId } = useSearch({ from: '/sessions/$sessionId' })
     const {
         effectiveMessageId: effectiveInitialMessageId,
         effectiveMessageQuery: effectiveInitialMessageQuery,
@@ -868,6 +882,15 @@ function SessionPage() {
         })
     }, [navigate, sessionId])
 
+    const handleInitialPendingRequestConsumed = useCallback(() => {
+        navigate({
+            to: '/sessions/$sessionId',
+            params: { sessionId },
+            replace: true,
+            ...PRESERVE_SESSION_SIDEBAR_SCROLL,
+        })
+    }, [navigate, sessionId])
+
     const handleInitialMessageConsumed = useCallback(() => {
         if (messageId) {
             consumeMessageTarget()
@@ -965,6 +988,8 @@ function SessionPage() {
             initialTargetMessageId={hasCompleteInitialMessageTarget ? effectiveInitialMessageId : undefined}
             initialTargetMessageQuery={hasCompleteInitialMessageTarget ? effectiveInitialMessageQuery : undefined}
             searchRequestId={searchRequestId}
+            initialPendingRequestId={pendingRequestId}
+            onInitialPendingRequestConsumed={handleInitialPendingRequestConsumed}
             onLoadMessageContext={loadMessageContextForSession}
             onInitialTargetConsumed={handleInitialMessageConsumed}
             onSearchTargetDismissed={handleSearchTargetDismissed}
@@ -1023,6 +1048,20 @@ function SessionDetailRoute() {
         })
     }, [navigate, session, sessionId, supersedingSessionId])
 
+    // A merged-away id resolves to the surviving session on the hub; move the
+    // URL there so SSE updates (keyed by the live id) reach this view.
+    const mergedRedirectId = getMergedSessionRedirectId(sessionId, session)
+    useEffect(() => {
+        if (!mergedRedirectId) return
+        prepareFollowSupersedingSession(sessionId, mergedRedirectId)
+        navigate({
+            to: '/sessions/$sessionId',
+            params: { sessionId: mergedRedirectId },
+            replace: true,
+            ...PRESERVE_SESSION_SIDEBAR_SCROLL,
+        })
+    }, [navigate, mergedRedirectId, sessionId])
+
     useEffect(() => {
         if (!sessionNotFound) {
             return
@@ -1033,6 +1072,14 @@ function SessionDetailRoute() {
             ...PRESERVE_SESSION_SIDEBAR_SCROLL,
         })
     }, [navigate, sessionNotFound, sessionId])
+
+    if (mergedRedirectId) {
+        return (
+            <div className="flex-1 flex items-center justify-center p-4">
+                <LoadingState label="Opening session…" className="text-sm" />
+            </div>
+        )
+    }
 
     if (sessionNotFound) {
         return (
@@ -1207,14 +1254,18 @@ const sessionsIndexRoute = createRoute({
 const sessionDetailRoute = createRoute({
     getParentRoute: () => sessionsRoute,
     path: '$sessionId',
-    validateSearch: (search: Record<string, unknown>): { outline?: boolean; sidebar?: 'hidden'; messageId?: string; messageQuery?: string } => {
+    validateSearch: (search: Record<string, unknown>): { outline?: boolean; sidebar?: 'hidden'; messageId?: string; messageQuery?: string; pendingRequestId?: string } => {
         const outline = search.outline === true || search.outline === 'true'
         const sidebar = search.sidebar === 'hidden' ? 'hidden' : undefined
         const messageTarget = normalizeMessageSearchTarget(search.messageId, search.messageQuery)
+        const pendingRequestId = typeof search.pendingRequestId === 'string' && search.pendingRequestId.trim()
+            ? search.pendingRequestId.trim()
+            : undefined
         return {
             ...(outline ? { outline: true } : {}),
             ...(sidebar ? { sidebar } : {}),
             ...messageTarget,
+            ...(pendingRequestId ? { pendingRequestId } : {}),
         }
     },
     component: SessionDetailRoute,
@@ -1451,10 +1502,16 @@ export const routeTree = rootRoute.addChildren([
 
 type RouterHistory = Parameters<typeof createRouter>[0]['history']
 
-export function createAppRouter(history?: RouterHistory) {
+function normalizeRouterBasepath(baseUrl: string): string {
+    const normalized = baseUrl.replace(/\/+$/, '')
+    return normalized || '/'
+}
+
+export function createAppRouter(history?: RouterHistory, basepath = normalizeRouterBasepath(import.meta.env.BASE_URL)) {
     return createRouter({
         routeTree,
         history,
+        basepath,
         scrollRestoration: true,
         getScrollRestorationKey,
     })
