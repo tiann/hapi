@@ -325,7 +325,7 @@ export function SessionRowSummary(props: {
                             </span>
                         ) : null}
                         {timeLabel ? (
-                            <span className={`min-w-0 truncate whitespace-nowrap tabular-nums ${
+                            <span className={`min-w-0 translate-y-[0.5px] truncate whitespace-nowrap tabular-nums ${
                                 emphasizeUnread ? 'font-semibold text-[var(--app-link)]' : 'text-[var(--app-hint)]'
                             }`}>{timeLabel}</span>
                         ) : null}
