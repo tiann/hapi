@@ -44,6 +44,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -76,6 +77,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.hapi.companion.R
+import app.hapi.companion.ui.components.softShadow
 import app.hapi.companion.feature.chat.ComposerUiState
 import app.hapi.companion.feature.chat.attachments.ComposerAttachmentStatus
 import app.hapi.companion.feature.chat.attachments.ComposerAttachmentUi
@@ -179,10 +181,10 @@ fun ChatComposer(
         !schedulePickerOpen && recording == null && !dictationBusy && !state.isImportingShare
     val composerSurface = MaterialTheme.hapi.composerSurface
 
-    Surface(color = MaterialTheme.colorScheme.background, modifier = modifier.fillMaxWidth()) {
-        // Room above a suggestion popup so its shadow is not clipped by this strip.
-        val popupShown = slashSuggestions.isNotEmpty() || mentionSuggestions.isNotEmpty()
-        Column(modifier = Modifier.padding(top = if (popupShown) 10.dp else 4.dp, bottom = 8.dp)) {
+    // Opaque strip, deliberately not a Surface: Surface clips its content, which
+    // cut the card's and popups' soft shadows into a hard top edge.
+    Box(modifier = modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)) {
+        Column(modifier = Modifier.padding(top = 6.dp, bottom = 8.dp)) {
             if (slashSuggestions.isNotEmpty()) {
                 SlashCommandDropdown(
                     suggestions = slashSuggestions,
@@ -206,12 +208,15 @@ fun ChatComposer(
                     modifier = Modifier.padding(bottom = 6.dp),
                 )
             }
+            val dark = MaterialTheme.hapi.isDark
             Surface(
                 color = composerSurface,
                 shape = ComposerCardShape,
-                shadowElevation = if (MaterialTheme.hapi.isDark) 0.dp else 3.dp,
                 border = BorderStroke(0.5.dp, MaterialTheme.hapi.divider),
-                modifier = Modifier.fillMaxWidth(),
+                // iOS: black 8%, 8pt blur, 2pt down. Dark relies on the lighter fill.
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(if (dark) Modifier else Modifier.drawWithCache { softShadow(composerSurface, ComposerCornerRadius) }),
             ) {
                 Column(Modifier.animateContentSize()) {
                     if (state.isImportingShare) {
@@ -370,7 +375,8 @@ fun ChatComposer(
     }
 }
 
-private val ComposerCardShape = RoundedCornerShape(22.dp)
+private val ComposerCornerRadius = 22.dp
+private val ComposerCardShape = RoundedCornerShape(ComposerCornerRadius)
 
 // ------------------------------------------------------------- send gate --
 
@@ -631,12 +637,18 @@ private val PopupShape = RoundedCornerShape(16.dp)
 /** Suggestion popup chrome (iOS: composer surface, 16pt corners, soft shadow). */
 @Composable
 private fun SuggestionPopup(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    val fill = MaterialTheme.hapi.composerSurface
     Surface(
-        color = MaterialTheme.hapi.composerSurface,
+        color = fill,
         shape = PopupShape,
-        shadowElevation = if (MaterialTheme.hapi.isDark) 0.dp else 4.dp,
         border = BorderStroke(0.5.dp, MaterialTheme.hapi.divider),
-        modifier = modifier.fillMaxWidth(),
+        // iOS popup: black 6%, 6pt blur, 2pt down.
+        modifier = modifier
+            .fillMaxWidth()
+            .then(
+                if (MaterialTheme.hapi.isDark) Modifier
+                else Modifier.drawWithCache { softShadow(fill, 16.dp, Color.Black.copy(alpha = 0.06f), blur = 6.dp) },
+            ),
         content = content,
     )
 }
