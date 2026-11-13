@@ -1,11 +1,19 @@
 package app.hapi.companion.feature.newsession
 
 import app.hapi.data.api.HapiApi
+import app.hapi.protocol.wire.CodexArchiveSessionResponse
+import app.hapi.protocol.wire.CodexDesktopScriptResponse
+import app.hapi.protocol.wire.CodexDesktopStatusResponse
+import app.hapi.protocol.wire.CodexDesktopSyncRequest
+import app.hapi.protocol.wire.CodexDuplicateSessionsResponse
+import app.hapi.protocol.wire.CodexLocalSessionsResponse
+import app.hapi.protocol.wire.CodexMergeDuplicateSessionsResponse
 import app.hapi.protocol.wire.CodexModelsResponse
 import app.hapi.protocol.wire.AgentAvailabilityResponse
 import app.hapi.protocol.wire.GrokModelsResponse
 import app.hapi.protocol.wire.MachineListDirectoryResponse
 import app.hapi.protocol.wire.MachinePathsExistsResponse
+import app.hapi.protocol.wire.ResumeSessionResponse
 import app.hapi.protocol.wire.SpawnResponse
 import app.hapi.protocol.wire.SpawnSessionRequest
 
@@ -35,6 +43,55 @@ interface NewSessionGateway {
 
     /** `GET /api/machines/:id/grok-models?cwd=` (RPC-wrapped) — Auto-mode capability probe. */
     suspend fun grokModels(machineId: String, cwd: String): GrokModelsResponse
+    /**
+     * `GET /api/codex/sessions` (codex import, slice A). Soft failures arrive
+     * as HTTP 200 `{success:false, sessions:[]}` — the silent-empty policy
+     * lives in [CodexImportController], not here.
+     */
+    suspend fun getCodexSessions(
+        cwd: String? = null,
+        machineId: String? = null,
+    ): CodexLocalSessionsResponse
+
+    /** `POST /api/codex/sync-session` — HTTP 200 + `success:false` on failure; check the flag. */
+    suspend fun syncCodexSession(sync: CodexDesktopSyncRequest): CodexDesktopScriptResponse
+
+    /**
+     * `POST /api/sessions/:id/resume` — import-at-create hands the imported
+     * session back to the caller via the same resume path a reopened session
+     * takes. `permissionMode` travels only when the form selected one.
+     */
+    suspend fun resumeSession(sessionId: String, permissionMode: String? = null): ResumeSessionResponse
+
+    /**
+     * `POST /api/codex/archive-session` (slice B) — archive one local Codex
+     * transcript; `machineId` is omitted from the body when null. Failure is
+     * HTTP 200 `success:false`; the caller rethrows it into the dialog's red
+     * archive banner.
+     */
+    suspend fun archiveCodexSession(
+        sessionId: String,
+        machineId: String? = null,
+    ): CodexArchiveSessionResponse
+
+    /**
+     * `GET /api/codex/status` (slice B) — `codexClientAvailable=false` means
+     * the restart call must not be made (not installed / not found).
+     */
+    suspend fun getCodexDesktopStatus(): CodexDesktopStatusResponse
+
+    /**
+     * `POST /api/codex/duplicate-sessions` (slice B) — duplicates among the
+     * batch carried by [payload]; the web caller passes only `sessionIds` so
+     * detection scope == execution scope.
+     */
+    suspend fun getCodexDuplicateSessions(payload: CodexDesktopSyncRequest): CodexDuplicateSessionsResponse
+
+    /** `POST /api/codex/merge-duplicate-sessions` (slice B) — execute the confirmed merge. */
+    suspend fun mergeCodexDuplicateSessions(payload: CodexDesktopSyncRequest): CodexMergeDuplicateSessionsResponse
+
+    /** `POST /api/codex/restart-desktop` (slice B) — script envelope; check `success`. */
+    suspend fun restartCodexDesktop(): CodexDesktopScriptResponse
 }
 
 /** Production adapter over the hub's [HapiApi]. */
@@ -59,4 +116,31 @@ class ApiNewSessionGateway(private val api: HapiApi) : NewSessionGateway {
 
     override suspend fun grokModels(machineId: String, cwd: String): GrokModelsResponse =
         api.getMachineGrokModelsForCwd(machineId, cwd)
+    override suspend fun getCodexSessions(
+        cwd: String?,
+        machineId: String?,
+    ): CodexLocalSessionsResponse = api.getCodexSessions(cwd, machineId)
+
+    override suspend fun syncCodexSession(sync: CodexDesktopSyncRequest): CodexDesktopScriptResponse =
+        api.syncCodexSession(sync)
+
+    override suspend fun resumeSession(sessionId: String, permissionMode: String?): ResumeSessionResponse =
+        api.resumeSession(sessionId, permissionMode)
+
+    override suspend fun archiveCodexSession(
+        sessionId: String,
+        machineId: String?,
+    ): CodexArchiveSessionResponse = api.archiveCodexSession(sessionId, machineId)
+
+    override suspend fun getCodexDesktopStatus(): CodexDesktopStatusResponse =
+        api.getCodexDesktopStatus()
+
+    override suspend fun getCodexDuplicateSessions(payload: CodexDesktopSyncRequest): CodexDuplicateSessionsResponse =
+        api.getCodexDuplicateSessions(payload)
+
+    override suspend fun mergeCodexDuplicateSessions(payload: CodexDesktopSyncRequest): CodexMergeDuplicateSessionsResponse =
+        api.mergeCodexDuplicateSessions(payload)
+
+    override suspend fun restartCodexDesktop(): CodexDesktopScriptResponse =
+        api.restartCodexDesktop()
 }
