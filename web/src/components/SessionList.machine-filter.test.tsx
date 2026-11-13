@@ -5,10 +5,11 @@ import type { ReactNode } from 'react'
 import type { SessionSummary, Machine } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
 import { ToastProvider } from '@/lib/toast-context'
-import { SessionList } from './SessionList'
+import { SessionList, SessionListSearch } from './SessionList'
 
 const SEARCH_LABEL = 'Search sessions (title, path, Agent, machine name, ID, and more)'
 const SEARCH_PLACEHOLDER = 'Search title/path/Agent/machine/ID…'
+const SEARCH_SCOPE_LABEL = 'Search scope'
 
 afterEach(() => cleanup())
 
@@ -218,4 +219,70 @@ describe('SessionList machine filter', () => {
         expect(screen.queryByTitle('/work/hapi')).toBeNull()
         expect(screen.queryByTitle('/work/docs')).toBeNull()
     })
+
+    it('uses the search scope dropdown to exclude matching sessions', () => {
+        renderSessionList([
+            makeSession({
+                id: 'session-match',
+                updatedAt: 100,
+                metadata: { path: '/work/archive', machineId: 'machine-1', name: 'Archive task' }
+            }),
+            makeSession({
+                id: 'session-keep',
+                updatedAt: 90,
+                metadata: { path: '/work/hapi', machineId: 'machine-1', name: 'Current task' }
+            })
+        ])
+
+        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+        const scopeButton = screen.getByRole('button', { name: SEARCH_SCOPE_LABEL })
+        expect(scopeButton).toHaveAttribute('aria-expanded', 'false')
+        fireEvent.click(scopeButton)
+
+        expect(screen.getByRole('button', { name: 'Default' })).toHaveAttribute('aria-pressed', 'true')
+        fireEvent.click(screen.getByRole('button', { name: 'Exclude' }))
+        expect(scopeButton).toHaveAttribute('aria-expanded', 'false')
+        expect(screen.getByTitle('/work/archive')).toBeTruthy()
+        expect(screen.getByTitle('/work/hapi')).toBeTruthy()
+
+        fireEvent.change(screen.getByPlaceholderText(SEARCH_PLACEHOLDER), { target: { value: 'archive' } })
+
+        expect(screen.queryByTitle('/work/archive')).toBeNull()
+        expect(screen.getByTitle('/work/hapi')).toBeTruthy()
+    })
+
+    it('keeps the reusable search component inclusion-only without the mode callback', () => {
+        renderWithProviders(
+            <SessionListSearch
+                value=""
+                onChange={vi.fn()}
+                expanded
+                onExpandedChange={vi.fn()}
+            />
+        )
+
+        expect(screen.queryByRole('button', { name: SEARCH_SCOPE_LABEL })).toBeNull()
+    })
+
+    it('returns focus to the input so an outside blur still collapses search', () => {
+        renderSessionList([
+            makeSession({
+                id: 'session-focus',
+                updatedAt: 100,
+                metadata: { path: '/work/focus', machineId: 'machine-1', name: 'Focus test' }
+            })
+        ])
+
+        fireEvent.click(screen.getByRole('button', { name: SEARCH_LABEL }))
+        const input = screen.getByPlaceholderText(SEARCH_PLACEHOLDER)
+        fireEvent.click(screen.getByRole('button', { name: SEARCH_SCOPE_LABEL }))
+        fireEvent.click(screen.getByRole('button', { name: 'Exclude' }))
+
+        expect(input).toHaveFocus()
+        fireEvent.blur(input, { relatedTarget: document.body })
+
+        expect(screen.queryByPlaceholderText(SEARCH_PLACEHOLDER)).toBeNull()
+        expect(screen.getByRole('button', { name: SEARCH_LABEL })).toBeTruthy()
+    })
+
 })

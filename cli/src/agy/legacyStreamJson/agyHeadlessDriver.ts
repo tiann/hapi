@@ -13,6 +13,8 @@ import {
 } from '@/modules/common/remote/RemoteLauncherBase';
 import { createNativeSessionTitleMetadataSync } from '@/agent/nativeSessionTitle';
 import { readAgyConversationTitle } from './agySessionTitle';
+import { isHistoricalAgyError } from './agyHistoricalError';
+import { applyAgySessionTitleFallback } from '../agySessionTitle';
 import { resolveAgyTurnModels } from './agyConversationModel';
 import { AgyStreamProcess } from './agyStreamProcess';
 import { sendAgyTranscriptEntry } from './agyTranscript';
@@ -262,7 +264,10 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
     private async syncTitleIfKnown(): Promise<void> {
         if (!this.conversationId) return;
         try {
-            this.syncNativeTitle(await readAgyConversationTitle(this.conversationId));
+            const title = await readAgyConversationTitle(this.conversationId);
+            if (!this.session.client.getMetadata()?.name?.trim() && !this.session.client.getMetadata()?.acpManualTitle) {
+                this.syncNativeTitle(title);
+            }
         } catch {
             // Title sync is best-effort; the conversation DB may not exist yet.
         }
@@ -363,6 +368,7 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
         mode: AgyMode,
         signal: AbortSignal,
     ): Promise<boolean> {
+        applyAgySessionTitleFallback(this.session.client, prompt);
         const onAbort = () => { void this.terminateChild(); };
         signal.addEventListener('abort', onAbort, { once: true });
         const sessionModel = mode.model ?? undefined;
@@ -428,9 +434,15 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
         let accepted = false;
         let resultFailure: string | null = null;
         let sawResult = false;
+        const resumedConversationId = this.conversationId;
+        let currentUserStep = -1;
+        let completedCurrentResponse = false;
+        let sawCurrentError = false;
+        let historicalErrorCandidate: { conversationId: string; userStep: number; responseStep: number; error: string; response: string } | null = null;
         // Flush every pending planner step (result envelope AND turn close, so
         // prose emitted before a pre-result crash is not lost).
         let lastPlannerContent: string | null = null;
+        let lastPlannerStep = -1;
         // Best-effort model resolution for default-model turns: when no explicit
         // --model was selected, the actual generation model is read from agy's
         // conversation DB (mirrors the removed scanner's enrichment).
@@ -472,6 +484,7 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
         };
         const sendPlanner = (entry: AgyTranscriptEntry) => {
             if (typeof entry.content === 'string') lastPlannerContent = entry.content;
+            lastPlannerStep = entry.step_index ?? -1;
             enqueueTranscript(async () => {
                 // Carry the turn's model (display label) on every planner entry so
                 // the web's per-turn attribution survives model switches and
@@ -519,6 +532,10 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
                 if (!deliveryAcked && accepted && localIds.length > 0) {
                     deliveryAcked = true;
                     this.session.client.emitMessagesConsumed(localIds);
+                }
+                if (historicalErrorCandidate && !signal.aborted && resultFailure
+                    && await isHistoricalAgyError(historicalErrorCandidate.conversationId, historicalErrorCandidate.userStep, historicalErrorCandidate.responseStep, historicalErrorCandidate.error, historicalErrorCandidate.response)) {
+                    resultFailure = null;
                 }
                 if (signal.aborted) {
                     if (!sawResult) this.session.client.sendSessionEvent({ type: 'message', message: 'Turn aborted' });
@@ -568,6 +585,7 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
                     break;
                 }
                 case 'user-input': {
+                    currentUserStep = event.stepIndex;
                     // NDJSON's user_input step is the authoritative
                     // delivery confirmation (replaces PTY echo matching).
                     if (event.conversationId) {
@@ -581,6 +599,7 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
                     break;
                 }
                 case 'planner-delta': {
+                    completedCurrentResponse = false;
                     if (event.conversationId) {
                         adoptStreamConversationId(event.conversationId);
                     }
@@ -591,11 +610,13 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
                     accepted = true;
                     const entry = planner.feedDelta(event.stepIndex, event.delta, event.isDone);
                     if (entry) {
+                        completedCurrentResponse = typeof entry.content === 'string' && Boolean(entry.content.trim());
                         void sendPlanner(entry);
                     }
                     break;
                 }
                 case 'tool': {
+                    completedCurrentResponse = false;
                     if (event.conversationId) {
                         adoptStreamConversationId(event.conversationId);
                     }
@@ -607,6 +628,10 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
                     }
                     break;
                 }
+                case 'turn-error':
+                    accepted = true;
+                    sawCurrentError = true;
+                    break;
                 case 'checkpoint':
                 case 'ignored':
                     break;
@@ -645,6 +670,12 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
                     this.turnCompleted = true;
                     // A FAILURE envelope proves the prompt ran but the
                     // turn failed; surface it (exit code may still be 0).
+                    if (event.status === 'ERROR' && event.error?.trim() && event.response?.trim()
+                        && resumedConversationId && resumedConversationId === this.conversationId
+                        && currentUserStep > 0 && lastPlannerStep > currentUserStep && completedCurrentResponse && !sawCurrentError
+                        && event.response.trim() === lastPlannerContent?.trim()) {
+                        historicalErrorCandidate = { conversationId: resumedConversationId, userStep: currentUserStep, responseStep: lastPlannerStep, error: event.error, response: event.response };
+                    }
                     if (event.status !== 'SUCCESS') {
                         // The reason lives in `error`; `response` is the
                         // answer field and stays filled on a failed turn,
@@ -716,6 +747,8 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
         } else {
             messageBuffer.addMessage('Starting agy session...', 'status');
         }
+
+        await this.syncTitleIfKnown();
 
         try {
             let consecutiveUnaccepted = 0;

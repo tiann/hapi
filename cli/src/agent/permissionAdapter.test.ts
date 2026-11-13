@@ -275,7 +275,8 @@ describe('PermissionAdapter', () => {
         expect(harness.respondCalls).toEqual([]);
         expect(harness.getAgentState().requests).toMatchObject({
             'perm-read': {
-                tool: 'Read'
+                tool: 'Read',
+                toolCallId: 'perm-read'
             }
         });
 
