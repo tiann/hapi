@@ -9,15 +9,7 @@ import {
     type UsageQuerySettingsResponse,
     type UsageQueryTemplate
 } from '@hapi/protocol/usageQuery'
-import {
-    UsageQueryResultSchema,
-    UsageQuerySettingsResponseSchema,
-    type UsageQueryAgent,
-    type UsageQueryAgentSettings,
-    type UsageQueryResult,
-    type UsageQuerySettingsResponse,
-    type UsageQueryTemplate
-} from '@hapi/protocol/usageQuery'
+
 import {
     ArchiveCodexSessionRpcResponseSchema,
     AgentAvailabilityResponseSchema,
