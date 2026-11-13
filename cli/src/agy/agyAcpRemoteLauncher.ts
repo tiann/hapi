@@ -38,6 +38,8 @@ import {
 } from './agyReactiveWakeup';
 import type { AgyMode, PermissionMode } from './types';
 import { createAgyAcpBackend } from './utils/agyAcpBackend';
+import { applyAgySessionTitleFallback } from './agySessionTitle';
+import { readAgyConversationTitle } from './agyNativeTitle';
 import {
     QUESTION_TOOL_NAME,
     agyQuestionContent,
@@ -801,6 +803,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             this.syncTranscriptCursor();
             session.onSessionFound(acpSessionId);
             session.client.emitSessionReady();
+            if (resumeSessionId === acpSessionId) {
+                const existingTitle = await readAgyConversationTitle(acpSessionId);
+                if (existingTitle) applyAgySessionTitleFallback(session.client, existingTitle);
+            }
 
             const reported = backend.getSessionModelsMetadata(acpSessionId)?.currentModelId ?? null;
             this.currentModelId = reported;
@@ -898,6 +904,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const internalWakeup = opts.internalWakeup === true;
         const session = this.session;
         if (!internalWakeup) {
+            applyAgySessionTitleFallback(session.client, message);
             this.lastTurnMode = mode;
             this.lastSessionModeSnapshot = {
                 permissionMode: session.getPermissionMode() as PermissionMode | undefined,
