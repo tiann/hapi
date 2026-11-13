@@ -2028,6 +2028,55 @@ describe('sessions routes', () => {
         expect(calls[0]?.[3]).toEqual(boundary)
     })
 
+    it('lets a rewind confirm with a boundary token reach the engine on an inactive source', async () => {
+        const calls: unknown[][] = []
+        const session = createSession({
+            active: false,
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex', capabilities: { conversationHistory: { rewindToMessage: true } } }
+        })
+        const boundary = { v: 1, mode: 'rewind', messageLocalId: 'u2', epoch: 3, tailSeq: 7, sourceActive: true }
+        const { app } = createApp(session, {
+            rewindConversation: async (...args) => {
+                calls.push(args)
+                return { type: 'error', message: 'The source session stopped running since the preview', code: 'boundary_moved' }
+            }
+        })
+        const response = await app.request('/api/sessions/session-1/rewind', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messageLocalId: 'u2', boundary })
+        })
+        // Every rewind token is minted on an active source, so an inactive
+        // confirm is a moved boundary: the engine must re-check it instead of
+        // the route short-circuiting with session_inactive.
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'The source session stopped running since the preview',
+            code: 'boundary_moved',
+            hydrateFailed: false
+        })
+        expect(calls[0]?.[3]).toEqual(boundary)
+    })
+
+    it('keeps the session_inactive 409 for a legacy rewind without a boundary token', async () => {
+        const calls: unknown[][] = []
+        const session = createSession({ active: false })
+        const { app } = createApp(session, {
+            rewindConversation: async (...args) => {
+                calls.push(args)
+                return { type: 'success' }
+            }
+        })
+        const response = await app.request('/api/sessions/session-1/rewind', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messageLocalId: 'u2' })
+        })
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({ error: 'Session is inactive', code: 'session_inactive' })
+        expect(calls).toEqual([])
+    })
+
     it('rewinds via POST /sessions/:id/rewind', async () => {
         const calls: Array<{ sessionId: string; messageLocalId: string }> = []
         const session = createSession({

@@ -649,15 +649,19 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return engine
         }
 
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
-        if (sessionResult instanceof Response) {
-            return sessionResult
-        }
-
         const body = await c.req.json().catch(() => null)
         const parsed = RewindConversationRequestSchema.safeParse(body)
         if (!parsed.success) {
             return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        // Every rewind boundary token is minted on an active source, so a
+        // confirm arriving on an inactive one is a moved boundary the engine
+        // must re-check (boundary_moved refresh), mirroring the fork route.
+        // Legacy token-less rewinds keep the session_inactive 409.
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: !parsed.data.boundary })
+        if (sessionResult instanceof Response) {
+            return sessionResult
         }
 
         const result = await engine.rewindConversation(
