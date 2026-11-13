@@ -1931,6 +1931,10 @@ export class SyncEngine {
         decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort',
         answers?: Record<string, string[]> | Record<string, { answers: string[] }>
     ): Promise<void> {
+        // Do not clear agentState.requests here on PermissionRequestNotFoundError.
+        // A concurrent first answer may still be finalizing asynchronously; hub-side
+        // cancel would race it into "canceled" and drop the real decision
+        // (tiann/hapi#2415 review). CLI orphan finalize owns sticky-badge cleanup.
         await this.rpcGateway.approvePermission(sessionId, requestId, mode, allowTools, decision, answers)
     }
 
