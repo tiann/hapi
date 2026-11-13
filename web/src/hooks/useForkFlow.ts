@@ -179,9 +179,18 @@ export function useForkFlow(options: UseForkFlowOptions): ForkFlow {
                 await onRewound?.(request.messageLocalId!)
                 return
             }
-            const supportsCompletedFork = (target as unknown as {
-                metadata?: { capabilities?: { conversationHistory?: { forkLatestCompleted?: boolean } } }
-            })?.metadata?.capabilities?.conversationHistory?.forkLatestCompleted === true
+            // The full hub Session nests the capability under
+            // metadata.capabilities; the list's SessionSummary flattens it
+            // onto metadata (shared/sessionSummary.ts). The 404 legacy
+            // fallback can come from either surface, so accept both shapes.
+            const metadata = (target as unknown as {
+                metadata?: {
+                    capabilities?: { conversationHistory?: { forkLatestCompleted?: boolean } }
+                    conversationHistory?: { forkLatestCompleted?: boolean }
+                }
+            })?.metadata
+            const supportsCompletedFork = metadata?.capabilities?.conversationHistory?.forkLatestCompleted === true
+                || metadata?.conversationHistory?.forkLatestCompleted === true
             const result = !request.messageLocalId && target.thinking && supportsCompletedFork
                 ? await api.forkConversation(target.id, undefined, true)
                 : await api.forkConversation(target.id, request.messageLocalId)

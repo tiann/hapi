@@ -516,6 +516,37 @@ describe('SessionList fork session action', () => {
         await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('legacy-source', undefined))
         expect(onSelect).toHaveBeenCalledWith('child-session')
     })
+
+    it('forks latest completed on the legacy fallback of a running capable session', async () => {
+        const forkConversation = vi.fn(async () => ({ sessionId: 'child-session' }))
+        const forkPreview = vi.fn(async () => { throw new ApiError('HTTP 404 Not Found', 404) })
+        const onSelect = vi.fn()
+        const session = makeSession({
+            id: 'legacy-source',
+            active: true,
+            thinking: true,
+            metadata: {
+                path: '/work/legacy',
+                name: 'Legacy source',
+                flavor: 'codex',
+                conversationHistory: { forkCurrent: true, forkLatestCompleted: true },
+            },
+        })
+        renderWithProviders(<SessionList sessions={[session]} selectedSessionId={session.id} onSelect={onSelect}
+            onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
+            api={{ forkConversation, forkPreview } as unknown as ApiClient} />)
+
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Legacy source/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Fork session' }))
+        const dialog = await screen.findByRole('dialog')
+        expect(within(dialog).getByRole('heading', { name: 'Fork session' })).toBeInTheDocument()
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }))
+
+        // The summary carries the capability flat on metadata (not under
+        // capabilities): a running session must still fork latest completed.
+        await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('legacy-source', undefined, true))
+        expect(onSelect).toHaveBeenCalledWith('child-session')
+    })
 })
 
 describe('SessionList selection', () => {
