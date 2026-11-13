@@ -202,6 +202,8 @@
     <string name="channel_permission_requests_desc">Агент ждёт, чтобы вы разрешили или отклонили вызов инструмента</string>
     <string name="channel_input_requests">Вопросы к вам</string>
     <string name="channel_input_requests_desc">Агенту нужен ваш ответ на вопрос в сессии</string>
+    <string name="channel_model_errors">Ошибки модели</string>
+    <string name="channel_model_errors_desc">Агент столкнулся со сбоем на стороне модели, который требует внимания</string>
     <string name="channel_ready">Агент готов</string>
     <string name="channel_ready_desc">Агент завершил работу и ждёт ввода</string>
     <string name="channel_other">Другие уведомления</string>

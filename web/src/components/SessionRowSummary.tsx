@@ -18,6 +18,7 @@ import {
     formatAttachedJobProgress,
     isAttachedJobStale
 } from '@/lib/attachedJob'
+import { hasUrgentModelError } from '@/components/ModelErrorBanner'
 
 function BulbIcon(props: { className?: string }) {
     return (
@@ -153,6 +154,8 @@ export function SessionRowSummary(props: {
     const attentionLabel = attention ? getAttentionLabel(attention, t) : null
     const urgentAttention = attention !== null
         && (attention.kind === 'permission' || attention.kind === 'input')
+    const modelErrorActive = hasUrgentModelError(s.metadata)
+    const modelErrorLabel = t('session.modelError.listIndicator')
     const scheduledLabel = s.futureScheduledMessageCount > 1
         ? t('session.item.scheduledMessages', { count: s.futureScheduledMessageCount })
         : t('session.item.scheduledMessage')
@@ -258,6 +261,19 @@ export function SessionRowSummary(props: {
                         >
                             {sessionName}
                         </div>
+                        {/* Model error outranks activity/unread: the turn looked
+                            finished but failed, so this must not be collapsed
+                            into the combined indicator below. */}
+                        {modelErrorActive ? (
+                            <span
+                                className="relative inline-flex h-2 w-2 shrink-0"
+                                title={modelErrorLabel}
+                                aria-label={modelErrorLabel}
+                            >
+                                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-500 opacity-75" />
+                                <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500" />
+                            </span>
+                        ) : null}
                         {hasRunningWork ? (
                             <span data-testid="session-activity" role="img" aria-label={activityLabel} title={activityLabel} className="inline-flex shrink-0">
                                 <LoaderIcon className={`h-3.5 w-3.5 animate-spin-slow ${isUnread ? 'text-blue-500' : 'text-[var(--app-hint)]'}`} />

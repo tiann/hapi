@@ -1,5 +1,15 @@
 import { logger } from "@/ui/logger";
 
+/**
+ * Queue-owned provenance for items HAPI enqueued itself, rather than a
+ * user-authored turn. Tagged so each internal producer stays distinguishable:
+ * `control` is a plain control message (e.g. the Cursor Auto-review toggle
+ * slash); `model-error-bridge` carries the event it is recovering.
+ */
+export type QueueItemInternal =
+    | { kind: 'model-error-bridge'; eventId: string }
+    | { kind: 'control' };
+
 export interface QueueItem<T> {
     message: string;
     mode: T;
@@ -9,14 +19,14 @@ export interface QueueItem<T> {
     /** Stable FIFO key used when an async reservation is restored later. */
     enqueueOrder?: number;
     /**
-     * True when HAPI enqueued this item as an internal control message
-     * (e.g. Cursor Auto-review toggle slash), not a user-authored turn.
+     * Set when HAPI enqueued this item itself, not a user-authored turn.
+     * Queue-owned provenance — never inferred from caller localId.
      */
-    internal?: boolean;
+    internal?: QueueItemInternal;
 }
 
 export type QueueItemOptions = {
-    internal?: boolean;
+    internal?: QueueItemInternal;
 };
 
 export type QueueReservation<T> = {
@@ -28,6 +38,12 @@ export type QueueReservation<T> = {
     originIndeterminate: boolean;
     cancelReason?: 'explicit' | 'queue-reset';
     state: 'reserved' | 'dispatching' | 'indeterminate' | 'cancelled';
+};
+
+export type CollectedQueueItem = {
+    message: string
+    localId?: string
+    internal?: QueueItemInternal
 };
 
 /**
@@ -304,6 +320,39 @@ export class MessageQueue2<T> {
         }
 
         logger.debug(`[MessageQueue2] unshiftIsolated() completed. Queue size: ${this.queue.length}`);
+    }
+
+    /**
+     * True when a user/API turn is already waiting (queued or reserved).
+     * Only items with no `internal` provenance count: every internal kind —
+     * the bridge itself and HAPI-enqueued control slashes alike — is ours,
+     * not a newer user instruction that should supersede a bridge.
+     */
+    hasPendingNonBridgeTurn(): boolean {
+        if (this.queue.some((item) => item.internal === undefined)) {
+            return true;
+        }
+        // Soft-steer takeByLocalId removes the row from queue before
+        // turnHasSteeredInput / softSteerWaiters are set — Bridge guards must
+        // still see that newer instruction while the reservation is live.
+        for (const { item, state } of this.reservations.values()) {
+            if (state === 'cancelled') continue;
+            if (item.internal !== undefined) continue;
+            return true;
+        }
+        return false;
+    }
+
+    /** Drop a pending model-error bridge by its eventId (queue-owned provenance). */
+    cancelModelErrorBridge(eventId: string): boolean {
+        if (!eventId) return false;
+        const idx = this.queue.findIndex(
+            (item) => item.internal?.kind === 'model-error-bridge'
+                && item.internal.eventId === eventId
+        );
+        if (idx === -1) return false;
+        this.queue.splice(idx, 1);
+        return true;
     }
 
     /**
@@ -598,7 +647,7 @@ export class MessageQueue2<T> {
      * Wait for messages and return all messages with the same mode as a single string
      * Returns { message: string, mode: T } or null if aborted/closed
      */
-    async waitForMessagesAndGetAsString(abortSignal?: AbortSignal): Promise<{ message: string, mode: T, isolate: boolean, hash: string, items: Array<{ message: string, localId?: string, internal?: boolean }> } | null> {
+    async waitForMessagesAndGetAsString(abortSignal?: AbortSignal): Promise<{ message: string, mode: T, isolate: boolean, hash: string, items: CollectedQueueItem[] } | null> {
         // If we have messages, return them immediately
         if (this.queue.length > 0) {
             return this.collectBatch();
@@ -622,7 +671,7 @@ export class MessageQueue2<T> {
     /**
      * Collect a batch of messages with the same mode, respecting isolation requirements
      */
-    private collectBatch(): { message: string, mode: T, hash: string, isolate: boolean, items: Array<{ message: string, localId?: string, internal?: boolean }> } | null {
+    private collectBatch(): { message: string, mode: T, hash: string, isolate: boolean, items: CollectedQueueItem[] } | null {
         if (this.queue.length === 0) {
             return null;
         }
@@ -636,7 +685,7 @@ export class MessageQueue2<T> {
         // `message` string below so callers that need to requeue individual
         // messages (e.g. restoring a failed batch with each item's own
         // localId intact) don't have to re-split an already-joined string.
-        const items: Array<{ message: string, localId?: string, internal?: boolean }> = [];
+        const items: CollectedQueueItem[] = [];
         let mode = firstItem.mode;
         let isolate = firstItem.isolate ?? false;
         const targetModeHash = firstItem.modeHash;

@@ -1025,10 +1025,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             session.client.updateAgentState((state) => ({ ...state, steeringActive: true }));
             try {
                 await backend.prompt(acpSessionId, prompt, (update) => this.handleTurnUpdate(turn, update), {
-                    onSent: () => { turn.sentAt = Date.now(); },
-                    onAnswered: () => {
-                        turn.answeredAt = Date.now();
-                        turn.answerMain();
+                    timing: {
+                        onSent: () => { turn.sentAt = Date.now(); },
+                        onAnswered: () => {
+                            turn.answeredAt = Date.now();
+                            turn.answerMain();
+                        }
                     }
                 });
                 // agy answers a cancel with a normal `cancelled` result; with no
