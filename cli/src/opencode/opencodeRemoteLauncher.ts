@@ -1185,6 +1185,13 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             const waitSignal = this.abortController.signal;
             await this.runtimeGate.waitUntilOpen(waitSignal);
             if (waitSignal.aborted) continue;
+            // A plain Stop preserves queued input: park the dequeue until any
+            // in-flight cancellation drain settles, so a preserved row is
+            // neither dequeued+ACKed mid-Stop (the aborted-continue in the
+            // prompt prep below would silently drop it) nor dispatched into
+            // a turn that Stop is still tearing down.
+            await this.runtimeGate.waitUntilCancellationsIdle(waitSignal);
+            if (waitSignal.aborted) continue;
             let batch;
             try {
                 batch = await session.queue.waitForMessagesAndGetAsString(waitSignal);
@@ -1348,7 +1355,13 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 }
 
                 this.applyDisplayMode(batch.mode.permissionMode);
-                messageBuffer.addMessage(batch.message, 'user');
+                if (isCompactBatch) {
+                    // Compact exits at its own continue points below, before
+                    // the dispatch echo; print it here. Regular batches echo
+                    // at the dispatch commit point instead, so a pre-dispatch
+                    // bail-out that requeues the batch does not double-echo it.
+                    messageBuffer.addMessage(batch.message, 'user');
+                }
 
                 // /compact reaches here through the exact same dequeue loop as
                 // any prompt — it was pushed via messageQueue.pushIsolated(...)
@@ -1470,6 +1483,12 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         this.roundSummaryAbortController = null;
                         this.roundSummaryPhase = 'idle';
                     }
+                    if (!this.shouldExit) {
+                        // A plain Stop must not lose input it already dequeued
+                        // and hub-ACKed: put the batch back so it drains once
+                        // the Stop settles.
+                        this.requeueUndeliveredBatch(session, batch);
+                    }
                     session.onThinkingChange(false);
                     if (session.queue.size() === 0 && !this.shouldExit) {
                         sendReady();
@@ -1517,8 +1536,18 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     // second snapshot below verifies the completed native history.
                     const nativeUserCount = await this.conversationHistory.getNativeUserMessageCount(waitSignal);
                     if (waitSignal.aborted || this.shouldExit) {
+                        if (!this.shouldExit) {
+                            // A plain Stop must not lose input it already
+                            // dequeued and hub-ACKed: put the batch back so it
+                            // drains once the Stop settles.
+                            this.requeueUndeliveredBatch(session, batch);
+                        }
                         continue;
                     }
+                    // Echo at the dispatch commit point: every pre-dispatch
+                    // bail-out above requeues the batch, so the next dequeue
+                    // re-runs this prep instead of losing an already-ACKed row.
+                    messageBuffer.addMessage(batch.message, 'user');
                     if (nativeUserCount === null) {
                         logger.warn('[opencode-remote] Native history unavailable; skipping fork point');
                     }
@@ -1712,11 +1741,39 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     return { steered: false, error: 'Steer state is indeterminate' };
                 }
 
-                const restoreQueuedReservation = async (shouldRestore: () => boolean = () => true): Promise<boolean> => {
+                const restoreQueuedReservation = async (shouldRestore: () => boolean = () => !this.shouldExit): Promise<boolean> => {
                     // Includes pre-admission and stall restores, whose native
-                    // entry may not yet exist or predate the active Stop.
+                    // entry may not yet exist or predate the active Stop. A
+                    // terminal switch/exit resets the queue without waiting
+                    // for this handler (it owns no v2Cancellations entry), so
+                    // a restore landing after that reset would re-admit the
+                    // row and bounce the terminal straight back into remote
+                    // mode: leaving remote never re-admits.
                     while (this.v2ResetInProgress) await this.v2ResetInProgress;
-                    if (!shouldRestore()) return false;
+                    if (!shouldRestore()) {
+                        if (this.shouldExit) {
+                            // Terminal switch/exit resets the shared queue
+                            // without waiting for this handler, so re-admitting
+                            // would bounce the terminal straight back into
+                            // remote mode. Leaving must still undo this steer's
+                            // 'dispatching' stamp: persist 'queued' so the hub
+                            // row reads like any other queued row the terminal
+                            // reset dropped, and release the held reservation so
+                            // the shared queue stays usable in local mode (a
+                            // later Cancel must not answer 'in-flight' forever).
+                            if (!taken.originIndeterminate) {
+                                const persisted = await session.client.setSteerDeliveryState([localId], 'queued');
+                                if (!persisted) {
+                                    session.queue.markReservationIndeterminate(taken);
+                                    session.client.emitSteerIndeterminate([localId]);
+                                    return false;
+                                }
+                            }
+                            session.queue.markReservationIndeterminate(taken);
+                            session.queue.cancelByLocalId(localId);
+                        }
+                        return false;
+                    }
                     if (!taken.originIndeterminate) {
                         const persisted = await session.client.setSteerDeliveryState([localId], 'queued');
                         if (!persisted) {
@@ -1726,7 +1783,17 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         }
                     }
                     while (this.v2ResetInProgress) await this.v2ResetInProgress;
-                    if (!shouldRestore()) return false;
+                    if (!shouldRestore()) {
+                        if (this.shouldExit) {
+                            // Same terminal release as above; the 'queued'
+                            // persist already ran (or the row was
+                            // origin-indeterminate), so only the held
+                            // 'dispatching' reservation is left to clean up.
+                            session.queue.markReservationIndeterminate(taken);
+                            session.queue.cancelByLocalId(localId);
+                        }
+                        return false;
+                    }
                     if (taken.state !== 'dispatching' || !session.queue.restoreReservation(taken)) {
                         session.client.emitSteerIndeterminate([localId]);
                         return false;
@@ -2050,8 +2117,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         if (accepted) return { steered: true };
         if (cancelRequested) return { steered: false, error: 'Active turn changed' };
         if (result === 'rejected') {
+            // Detach before restoring: a Stop arriving mid-restore must not
+            // snapshot this entry into v2Cancellations and run a second
+            // concurrent restore — the first restoreReservation deletes the
+            // reservation, and the second would falsely report the row
+            // indeterminate.
+            remove();
             const restored = await restore();
-            release(); remove();
+            release();
             return { steered: false, error: restored ? 'OpenCode rejected steering input' : 'Steer state is indeterminate' };
         }
         if (result !== 'admitted') {
@@ -2846,6 +2919,31 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     }
 
     /**
+     * Requeue a batch that was dequeued and hub-ACKed but never dispatched,
+     * in its original order with each item's localId intact, so the retry
+     * stays connected to its hub row (same restore shape as
+     * cursorAcpRemoteLauncher's pre-prompt requeue).
+     */
+    private requeueUndeliveredBatch(
+        session: OpencodeSession,
+        batch: { mode: OpencodeMode; isolate: boolean; items: Array<{ message: string; localId?: string; internal?: boolean }> }
+    ): void {
+        if (session.queue.isClosed()) {
+            // A queue closed mid-prep means the session is ending; the row
+            // goes with it.
+            return;
+        }
+        for (let i = batch.items.length - 1; i >= 0; i -= 1) {
+            const item = batch.items[i]!;
+            if (batch.isolate) {
+                session.queue.unshiftIsolated(item.message, batch.mode, item.localId, { internal: item.internal });
+            } else {
+                session.queue.unshift(item.message, batch.mode, item.localId);
+            }
+        }
+    }
+
+    /**
      * leavingRemote distinguishes plain Stop (false, stays in this remote
      * session) from switch-to-local/exit (true, tears down the session).
      * Compact and a prompt must never mutate the same OpenCode session
@@ -2868,9 +2966,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             )
             && !this.v2AbortInProgress
         ) {
-            // The Abort entry hook already aborted the dequeue signal to wake an
-            // idle wait. This metadata-only Stop skips performAbort, which is what
-            // normally replaces the controller, so recycle it here: otherwise the
+            // This metadata-only Stop skips performAbort, which is what normally
+            // replaces the controller. If a prior abort left the signal dead
+            // (aborted without a replacement), recycle it here: otherwise the
             // loop re-reads the aborted signal forever and never reaches the
             // queued input.
             if (this.abortController.signal.aborted) this.abortController = new AbortController();
@@ -2881,7 +2979,19 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // or teardown of work that was admitted before the fence.
         const release = this.runtimeGate.enterCancellation();
         if (this.majorVersion !== 'v2') {
-            try { return await this.performAbort(leavingRemote); } finally { release(); }
+            try {
+                return await this.performAbort(leavingRemote);
+            } catch (error) {
+                if (leavingRemote) {
+                    // Mirror the v2 rejection cleanup: a rejected terminal
+                    // teardown still owes the queue reset and the dequeue-signal
+                    // abort, or an idle waiter parks forever on the un-aborted
+                    // signal and start() never reaches cleanup().
+                    this.session.queue.reset({ preserveDispatchingReservations: true });
+                    this.abortController.abort();
+                }
+                throw error;
+            } finally { release(); }
         }
         const inProgress = this.v2AbortInProgress;
         if (inProgress) {
@@ -2922,6 +3032,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             }
         }, error => {
             if (this.v2AbortInProgress === operation) this.v2AbortInProgress = null;
+            if (operation.leavingRemote) {
+                // A rejected teardown still owes the terminal cleanup: clear
+                // unsent rows (steers already escalated to indeterminate keep
+                // their held reservations) and abort the dequeue signal so an
+                // idle waiter wakes and the exit can complete.
+                this.session.queue.reset({ preserveDispatchingReservations: true });
+                this.abortController.abort();
+            }
             reject(error);
         });
         try { await abort; }
@@ -2983,16 +3101,19 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             await this.permissionHandler?.cancelAll('User aborted');
             // A plain Stop preserves queued, not-yet-dispatched input so it
             // drains once the loop is free again; the v2 cancellation drain
-            // below restores a proven-cancelled steer into that queue. Only
-            // terminal cleanup (switch/exit) resets unsent rows, while a
-            // dispatched steer still owns its reservation until a receipt
-            // proves consumption or uncertainty.
-            if (leavingRemote) {
-                this.session.queue.reset({ preserveDispatchingReservations: true });
-            }
+            // below restores a proven-cancelled steer into that queue.
             resetDone = true;
             finishReset();
             await Promise.all(v2Cancellations);
+            // Terminal cleanup (switch/exit) clears unsent rows. It must run
+            // AFTER the drain: a proven-cancelled steer restores into the
+            // queue during the drain, and a pre-drain reset would leave that
+            // re-inserted row behind, bouncing a switch straight back into
+            // remote mode. A dispatched steer still owns its reservation
+            // until a receipt proves consumption or uncertainty.
+            if (leavingRemote) {
+                this.session.queue.reset({ preserveDispatchingReservations: true });
+            }
             this.abortController.abort();
             this.abortController = new AbortController();
             // Re-read here (not the snapshot taken above, before the awaits) in
@@ -3014,7 +3135,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             }
             this.messageBuffer.addMessage(decision.message, 'status');
         } finally {
-            if (!resetDone) for (const entry of this.v2Steers.values()) void entry.cancel('teardown');
+            // Escalate to 'teardown' only when the launcher is actually leaving
+            // remote: a plain Stop that failed mid-teardown keeps running, and
+            // its steers' own cancellations proved 'cancelled' in the inbox, so
+            // they must still take the restore path instead of being stranded
+            // indeterminate.
+            if (!resetDone && (leavingRemote || this.shouldExit)) {
+                for (const entry of this.v2Steers.values()) void entry.cancel('teardown');
+            }
             finishReset();
         }
     }
