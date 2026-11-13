@@ -4,6 +4,7 @@ package app.hapi.companion.feature.newsession
 
 import app.hapi.data.api.ApiError
 import app.hapi.data.store.MachineListStore
+import app.hapi.companion.feature.directorybrowser.DirectoryBrowserPrefs
 import app.hapi.protocol.catalog.AgentFlavor
 import app.hapi.protocol.wire.AgentAvailabilityEntry
 import app.hapi.protocol.wire.AgentAvailabilityResponse
@@ -136,6 +137,19 @@ private class FakePrefs(
     override suspend fun clearDraft() {
         draft = null
         draftCleared = true
+    }
+}
+
+private class FakeBrowserPrefs(
+    var stored: Boolean = false,
+) : DirectoryBrowserPrefs {
+    val writes = mutableListOf<Boolean>()
+
+    override suspend fun readShowHidden(): Boolean = stored
+
+    override suspend fun writeShowHidden(showHidden: Boolean) {
+        writes += showHidden
+        stored = showHidden
     }
 }
 
@@ -545,13 +559,50 @@ class NewSessionViewModelTest {
         prefs: FakePrefs,
         initialMachineId: String? = null,
         scope: CoroutineScope = newVmScope(),
+        browserPrefs: DirectoryBrowserPrefs? = null,
     ): NewSessionViewModel = NewSessionViewModel(
         gateway = gateway,
         machineStore = machines,
         prefs = prefs,
         scope = scope,
         initialMachineId = initialMachineId,
+        browserPrefs = browserPrefs,
     )
+
+    @Test
+    fun `browser show-hidden restores from prefs and persists toggles`() = runTest {
+        val gateway = FakeGateway().apply {
+            entries = listOf(dir("hapi"))
+        }
+        val browserPrefs = FakeBrowserPrefs(stored = true)
+        val vm = buildViewModel(
+            gateway,
+            FakeMachineStore(listOf(machine("m1", homeDir = "/home/dev"))),
+            FakePrefs(),
+            browserPrefs = browserPrefs,
+        )
+        advanceUntilIdle()
+
+        // Seeded from the persisted choice: the first listing includes hidden.
+        vm.openDirectoryBrowser()
+        advanceUntilIdle()
+        assertTrue(vm.directoryBrowser.state.value.includeHidden)
+        assertEquals(true, gateway.includeHiddenCalls.last())
+
+        // Toggling persists the new choice and reloads with it.
+        vm.directoryBrowser.setIncludeHidden(false)
+        advanceUntilIdle()
+        assertEquals(listOf(false), browserPrefs.writes)
+        assertFalse(vm.directoryBrowser.state.value.includeHidden)
+        assertEquals(false, gateway.includeHiddenCalls.last())
+
+        // Reopen re-seeds from the just-persisted value (no reset to default).
+        vm.directoryBrowser.close()
+        vm.openDirectoryBrowser()
+        advanceUntilIdle()
+        assertFalse(vm.directoryBrowser.state.value.includeHidden)
+        assertEquals(false, gateway.includeHiddenCalls.last())
+    }
 
     @Test
     fun `directory autocomplete debounces, lists parent once and reuses the cache`() = runTest {
