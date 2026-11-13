@@ -316,6 +316,19 @@ describe('preview-capable shared runtime', () => {
         expect(result.type).toBe('success')
     })
 
+    it('rejects the preview when a turn completes while the runtime boundary RPC is in flight', async () => {
+        const { store, source, rpc, preview } = sharedFixture()
+        rpc.previewForkBoundary = async () => {
+            // A turn completes between the native cut sampling and the hub
+            // transcript read: the cut no longer describes the rows below.
+            store.messages.addMessage(source.id, { role: 'user', content: 'u3' }, 'u3')
+            store.messages.markMessagesInvoked(source.id, ['u3'], Date.now())
+            return { nativeTurnId: 'turn-2', cutBeforeLocalId: 'u2' }
+        }
+        const result = await preview('current')
+        expect(result.type).toBe('error')
+    })
+
     it('pins the latestCompleted confirm to the previewed turn', async () => {
         const { engine, source, rpc, preview } = sharedFixture()
         const child = engine.getOrCreateSession('child', {

@@ -2523,16 +2523,26 @@ export class SyncEngine {
         // where the native history cut sits instead of mirroring it from hub
         // rows. Every other flavor is hub-decided and answered from rows.
         let nativeCut: { nativeTurnId?: string; cutBeforeLocalId?: string } = {}
+        let rows = this.store.messages.getAllMessages(sessionId)
         if (mode !== 'rewind' && source.active && flavor === 'codex'
             && source.metadata?.capabilities?.conversationHistory?.forkPreview === true) {
+            // The native cut and the hub transcript must describe the same
+            // history: fingerprint the transcript before the boundary RPC and
+            // reject when a turn completes in between, so the token never pins
+            // a tail the sampled cut does not cover (same guard as the
+            // OpenCode rewind reservation).
+            const fingerprintBefore = createHash('sha256').update(JSON.stringify(rows)).digest('hex')
             try {
                 nativeCut = await this.rpcGateway.previewForkBoundary(sessionId,
                     mode === 'message' ? { mode, messageLocalId } : { mode })
             } catch (error) {
                 return { type: 'error', message: error instanceof Error ? error.message : String(error) }
             }
+            rows = this.store.messages.getAllMessages(sessionId)
+            if (createHash('sha256').update(JSON.stringify(rows)).digest('hex') !== fingerprintBefore) {
+                return { type: 'error', message: 'The source conversation changed while the preview was prepared; try again' }
+            }
         }
-        const rows = this.store.messages.getAllMessages(sessionId)
         let resolved: ResolvedBoundary<StoredMessage>
         try {
             resolved = mode === 'rewind'
