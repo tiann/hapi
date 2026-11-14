@@ -82,7 +82,7 @@ export const BUILTIN_SLASH_COMMANDS = {
         { name: 'context', description: 'Show conversation message counts by role', source: 'builtin' },
         { name: 'reset', description: 'Clear conversation history', source: 'builtin' },
         { name: 'compact', description: 'Compress conversation context', source: 'builtin' },
-        { name: 'steer', description: 'Inject guidance into the currently running agent turn', source: 'builtin' },
+        // Hermes prompts are serialized; live /steer delivery is not supported.
         { name: 'queue', description: 'Queue a prompt to run after the current turn finishes', source: 'builtin' },
         { name: 'version', description: 'Show Hermes version', source: 'builtin' },
     ],
