@@ -36,6 +36,7 @@ const runtime = vi.hoisted(() => ({
     sentIntents: [] as ComposerSendIntent[],
     narrowViewport: false,
     toolbarLayout: null as ComposerToolbarLayout | null,
+    cancelRun: vi.fn(),
 }))
 
 vi.mock('@assistant-ui/react', async () => {
@@ -60,7 +61,7 @@ vi.mock('@assistant-ui/react', async () => {
                 },
                 addAttachment: async () => {},
             }),
-            thread: () => ({ cancelRun: () => {} }),
+            thread: () => ({ cancelRun: runtime.cancelRun }),
         }),
         useAuiState: (selector: (state: typeof runtime.snapshot) => unknown) => selector(runtime.snapshot),
         ComposerPrimitive: {
@@ -142,6 +143,9 @@ describe('HappyComposer generic model/effort value buttons', () => {
         runtime.setSnapshot = null
         runtime.narrowViewport = false
         runtime.toolbarLayout = null
+        runtime.snapshot.thread.isRunning = false
+        runtime.cancelRun.mockClear()
+        localStorage.removeItem('hapi.fue.v1.rich-composer-mentions')
         runtime.snapshot.thread.isDisabled = false
         runtime.sentIntents = []
     })
@@ -153,10 +157,81 @@ describe('HappyComposer generic model/effort value buttons', () => {
         expect(screen.getByRole('button', { name: 'Settings' })).toBeTruthy()
     })
 
+    it('shows the AGY model family and its available effort as separate controls', () => {
+        const onEffortChange = vi.fn()
+        renderComposer('agy', {
+            model: 'gemini-4-argon', effort: 'medium',
+            availableModelOptions: [{ value: 'gemini-4-argon', label: 'Gemini 4 Argon' }],
+            availableEffortOptions: [{ value: 'medium', name: 'Medium' }, { value: 'high', name: 'High' }],
+            onEffortChange,
+        })
+        expect(screen.getByRole('button', { name: 'Gemini 4 Argon' })).toBeTruthy()
+        fireEvent.click(screen.getByRole('button', { name: 'Medium' }))
+        expect(screen.queryByRole('button', { name: 'Low' })).toBeNull()
+        fireEvent.click(screen.getByRole('button', { name: 'High' }))
+        expect(onEffortChange).toHaveBeenCalledWith('high')
+    })
+
+    it('hides effort for a fixed AGY model even if a stale effort is stored', () => {
+        renderComposer('agy', {
+            model: 'gpt-oss-120b-medium', effort: 'high',
+            availableModelOptions: [{ value: 'gpt-oss-120b-medium', label: 'GPT-OSS 120B (Medium)' }],
+            availableEffortOptions: [],
+        })
+        expect(screen.getByRole('button', { name: 'GPT-OSS 120B (Medium)' })).toBeTruthy()
+        expect(screen.queryByRole('button', { name: 'High' })).toBeNull()
+        fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+        expect(screen.queryByText('Effort')).toBeNull()
+    })
+
+    it('heads grouped model rows with their group name once', () => {
+        renderComposer('claude', {
+            model: 'opus',
+            availableModelOptions: [
+                { value: 'opus', label: 'Opus 5.5' },
+                { value: 'claude-opus-4-7', label: 'Opus 4.7', group: 'Other models' },
+                { value: 'claude-opus-4-6', label: 'Opus 4.6', group: 'Other models' },
+            ],
+        })
+        fireEvent.click(screen.getByRole('button', { name: 'Opus 5.5' }))
+        expect(screen.getAllByText('Other models')).toHaveLength(1)
+        expect(screen.getByRole('button', { name: 'Opus 4.7' })).toBeTruthy()
+    })
+
+    it('offers only the effort levels the current Claude model accepts', () => {
+        renderComposer('claude', { availableEffortOptions: [{ value: 'low' }, { value: 'high' }] })
+        fireEvent.click(screen.getByRole('button', { name: 'High' }))
+        expect(screen.getByRole('button', { name: 'Low' })).toBeTruthy()
+        expect(screen.queryByRole('button', { name: 'Max' })).toBeNull()
+        expect(screen.queryByRole('button', { name: 'XHigh' })).toBeNull()
+    })
+
     it('shows only the model button for flavors without effort support', () => {
         renderComposer('codex')
         expect(screen.getByRole('button', { name: 'Sonnet 4' })).toBeTruthy()
         expect(screen.queryByRole('button', { name: 'High' })).toBeNull()
+    })
+
+    it('gives Codex reasoning effort the same Effort button and section as Claude', () => {
+        const onModelReasoningEffortChange = vi.fn()
+        renderComposer('codex', {
+            effort: undefined,
+            modelReasoningEffort: 'high',
+            onModelReasoningEffortChange
+        })
+        fireEvent.click(screen.getByRole('button', { name: 'High' }))
+        expect(screen.getByText('Effort')).toBeTruthy()
+        expect(screen.queryByText('Model')).toBeNull()
+        fireEvent.click(screen.getByRole('button', { name: 'Low' }))
+        expect(onModelReasoningEffortChange).toHaveBeenCalledWith('low')
+    })
+
+    it('labels an unset effort as the default effort on every flavor', () => {
+        renderComposer('claude', { effort: null })
+        expect(screen.getByRole('button', { name: 'Default effort' })).toBeTruthy()
+        cleanup()
+        renderComposer('codex', { effort: undefined, modelReasoningEffort: null, onModelReasoningEffortChange: vi.fn() })
+        expect(screen.getByRole('button', { name: 'Default effort' })).toBeTruthy()
     })
 
     it('hides value buttons on narrow viewports, keeping settings', () => {
@@ -174,6 +249,40 @@ describe('HappyComposer generic model/effort value buttons', () => {
         // Anchored open: the other sections stay collapsed.
         expect(screen.queryByText('Permission Mode')).toBeNull()
         expect(screen.queryByText('Effort')).toBeNull()
+    })
+
+    it('offers Codex fast mode in the model picker', () => {
+        const onServiceTierChange = vi.fn()
+        renderComposer('codex', { model: 'gpt-5.6', availableModelOptions: [{ value: 'gpt-5.6', label: 'GPT-5.6' }],
+            serviceTier: 'standard', onServiceTierChange })
+        fireEvent.click(screen.getByRole('button', { name: 'GPT-5.6' }))
+        expect(screen.getByText('Fast Mode')).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'Fast' }))
+        expect(onServiceTierChange).toHaveBeenCalledWith('fast')
+    })
+
+    it('toggles Codex fast mode directly from the composer toolbar', () => {
+        const onServiceTierChange = vi.fn()
+        renderComposer('codex', { serviceTier: 'standard', onServiceTierChange })
+        const fast = screen.getByRole('button', { name: 'Fast Mode' })
+        expect(fast).toHaveAttribute('aria-pressed', 'false')
+        fireEvent.click(fast)
+        expect(onServiceTierChange).toHaveBeenCalledWith('fast')
+    })
+
+    it('offers the fast toggle on narrow screens and turns fast off', () => {
+        runtime.narrowViewport = true
+        const onServiceTierChange = vi.fn()
+        renderComposer('codex', { serviceTier: 'fast', onServiceTierChange })
+        const fast = screen.getByRole('button', { name: 'Fast Mode' })
+        expect(fast).toHaveAttribute('aria-pressed', 'true')
+        fireEvent.click(fast)
+        expect(onServiceTierChange).toHaveBeenCalledWith('standard')
+    })
+
+    it('does not show a fast toggle when it is unavailable', () => {
+        renderComposer('codex', { onServiceTierChange: undefined })
+        expect(screen.queryByRole('button', { name: 'Fast Mode' })).toBeNull()
     })
 
     it('opens only the Effort section from the effort button (anchored open)', () => {
@@ -442,4 +551,80 @@ describe('HappyComposer generic model/effort value buttons', () => {
         fireEvent.click(effortButton)
         expect(screen.queryByText('Effort')).toBeNull()
     })
+    it('first-use Escape dismisses FUE before settings and never aborts the running turn', () => {
+        localStorage.removeItem('hapi.fue.v1.rich-composer-mentions')
+        runtime.snapshot.thread.isRunning = true
+        runtime.cancelRun.mockClear()
+        renderComposer('claude')
+        expect(screen.getByRole('dialog')).toBeTruthy()
+        fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+        fireEvent.keyDown(screen.getByRole('button', { name: 'Settings' }), { key: 'Escape' })
+        expect(screen.queryByRole('dialog')).toBeNull()
+        expect(screen.getByText('Permission Mode')).toBeTruthy()
+        expect(runtime.cancelRun).not.toHaveBeenCalled()
+        fireEvent.keyDown(screen.getByRole('button', { name: 'Settings' }), { key: 'Escape' })
+        expect(screen.queryByText('Permission Mode')).toBeNull()
+        expect(screen.getByRole('button', { name: 'Settings' })).toHaveFocus()
+        expect(runtime.cancelRun).not.toHaveBeenCalled()
+    })
+
+    it('leaves another modal its Escape while settings are open', () => {
+        localStorage.setItem('hapi.fue.v1.rich-composer-mentions', '1')
+        renderComposer('claude')
+        fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+        const modal = document.createElement('div')
+        modal.setAttribute('role', 'dialog')
+        modal.setAttribute('aria-modal', 'true')
+        document.body.appendChild(modal)
+        fireEvent.keyDown(modal, { key: 'Escape' })
+        expect(screen.getByText('Permission Mode')).toBeTruthy()
+        modal.remove()
+        fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Escape' })
+        expect(screen.queryByText('Permission Mode')).toBeNull()
+    })
+
+    it.each(['trigger', 'menu', 'input'])('Escape closes settings from %s without aborting a running turn', origin => {
+        localStorage.setItem('hapi.fue.v1.rich-composer-mentions', '1')
+        runtime.snapshot.thread.isRunning = true
+        runtime.cancelRun.mockClear()
+        renderComposer('claude')
+        const trigger = screen.getByRole('button', { name: 'Settings' })
+        trigger.focus()
+        fireEvent.click(trigger)
+        const target = origin === 'trigger' ? screen.getByRole('button', { name: 'Settings' })
+            : origin === 'menu' ? screen.getAllByRole('button', { name: 'Sonnet 4' }).at(-1)!
+            : screen.getByRole('textbox')
+        target.focus()
+        fireEvent.keyDown(target, { key: 'Escape' })
+        expect(screen.queryByText('Permission Mode')).toBeNull()
+        expect(screen.getByRole('button', { name: 'Settings' })).toHaveFocus()
+        expect(runtime.cancelRun).not.toHaveBeenCalled()
+        runtime.snapshot.thread.isRunning = false
+    })
+    it.each(['Sonnet 4', 'High'])('returns focus to the %s settings trigger', label => {
+        localStorage.setItem('hapi.fue.v1.rich-composer-mentions', '1')
+        renderComposer('claude')
+        const trigger = screen.getByRole('button', { name: label })
+        fireEvent.click(trigger)
+        fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Escape' })
+        expect(trigger).toHaveFocus()
+        expect(screen.queryByText(label === 'High' ? 'Effort' : 'Model')).toBeNull()
+        expect(runtime.cancelRun).not.toHaveBeenCalled()
+    })
+
+    it('keeps settings and input focus during IME Escape', () => {
+        localStorage.setItem('hapi.fue.v1.rich-composer-mentions', '1')
+        runtime.snapshot.thread.isRunning = true
+        renderComposer('claude')
+        fireEvent.click(screen.getByRole('button', { name: 'Settings' }))
+        const input = screen.getByRole('textbox')
+        input.focus()
+        fireEvent.keyDown(input, { key: 'Escape', isComposing: true })
+        expect(screen.getByText('Permission Mode')).toBeTruthy()
+        expect(input).toHaveFocus()
+        expect(runtime.cancelRun).not.toHaveBeenCalled()
+        fireEvent.keyDown(input, { key: 'Escape' })
+        expect(screen.queryByText('Permission Mode')).toBeNull()
+    })
+
 })

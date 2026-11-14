@@ -193,4 +193,82 @@ describe('PermissionHandler — canceled request finalization', () => {
             'Permission request not found or already resolved'
         );
     });
+
+    // tiann/hapi#2414: CLI pending map can lose a request without finalize
+    // (process death mid-wait, dropped update-state while closing). A late
+    // answer must still clear agentState.requests so StatusBar drops
+    // "permission required" instead of sticking after the 409.
+    it('clears a hub-orphaned request from agentState when a late answer arrives', async () => {
+        const { session, getAgentState, deliverRpcResponse } = createFakeSession();
+        new PermissionHandler(session);
+
+        session.client.updateAgentState((state) => ({
+            ...state,
+            requests: {
+                ...state.requests,
+                'tc-orphan': {
+                    tool: 'AskUserQuestion',
+                    arguments: { questions: [] },
+                    createdAt: 1
+                }
+            }
+        }));
+        expect(getAgentState().requests?.['tc-orphan']).toBeDefined();
+
+        await expect(deliverRpcResponse({ id: 'tc-orphan' } as any)).rejects.toThrow(
+            'Permission request not found or already resolved'
+        );
+        expect(getAgentState().requests?.['tc-orphan']).toBeUndefined();
+        expect(getAgentState().completedRequests?.['tc-orphan']).toMatchObject({
+            status: 'canceled',
+            decision: 'abort'
+        });
+    });
+
+});
+
+describe('PermissionHandler — steer while a request is pending', () => {
+    it('denies the pending question so the turn reaches a tool boundary, without aborting the turn', async () => {
+        const { session, getAgentState } = createFakeSession();
+        const handler = new PermissionHandler(session);
+
+        handler.onMessage({
+            type: 'assistant',
+            message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tc-1', name: 'AskUserQuestion', input: { questions: [] } }] },
+        } as any);
+        const resultPromise = handler.handleToolCall(
+            'AskUserQuestion',
+            { questions: [] },
+            { permissionMode: 'default' } as any,
+            { signal: new AbortController().signal }
+        );
+
+        handler.denyPendingForSteer();
+
+        await expect(resultPromise).resolves.toMatchObject({ behavior: 'deny' });
+        expect(getAgentState().requests?.['tc-1']).toBeUndefined();
+        expect(getAgentState().completedRequests?.['tc-1']).toMatchObject({ status: 'denied' });
+        expect(handler.isAborted('tc-1')).toBe(false);
+    });
+
+    it('keeps the turn running when the pending request is a plan exit', async () => {
+        const { session } = createFakeSession();
+        const handler = new PermissionHandler(session);
+
+        handler.onMessage({
+            type: 'assistant',
+            message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tc-plan', name: 'ExitPlanMode', input: {} }] },
+        } as any);
+        const resultPromise = handler.handleToolCall(
+            'ExitPlanMode',
+            {},
+            { permissionMode: 'plan' } as any,
+            { signal: new AbortController().signal }
+        );
+
+        handler.denyPendingForSteer();
+
+        await expect(resultPromise).resolves.toMatchObject({ behavior: 'deny' });
+        expect(handler.isAborted('tc-plan')).toBe(false);
+    });
 });

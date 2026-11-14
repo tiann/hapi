@@ -3,6 +3,43 @@ import { logger } from '@/ui/logger';
 import { AppServerEventConverter } from './appServerEventConverter';
 
 describe('AppServerEventConverter', () => {
+    const footer = 'AGENT_NOTIFY_SUMMARY {"status":"done","summary":"Finished"}';
+
+    it.each(['commentary', 'partial_answer'])('removes a summary footer from %s while preserving progress text', phase => {
+        const converter = new AppServerEventConverter();
+        converter.handleNotification('item/agentMessage/delta', { itemId: 'progress', delta: `Still working.\n${footer}` });
+        expect(converter.handleNotification('item/completed', {
+            item: { id: 'progress', type: 'agentMessage', phase }
+        })).toEqual([{ type: 'agent_message', message: 'Still working.' }]);
+    });
+
+    it.each(['final_answer', undefined, null, 'unknown'])('preserves summary footers when phase is %s', phase => {
+        const converter = new AppServerEventConverter();
+        const message = `Finished.\n${footer}`;
+        expect(converter.handleNotification('item/completed', {
+            item: { id: 'answer', type: 'agentMessage', text: message, phase }
+        })).toEqual([{ type: 'agent_message', message }]);
+    });
+
+    it('suppresses and deduplicates footer-only commentary without suppressing the final answer', () => {
+        const converter = new AppServerEventConverter();
+        const item = { id: 'progress', type: 'agentMessage', text: footer, phase: 'commentary' };
+        expect(converter.handleNotification('item/completed', { item })).toEqual([]);
+        expect(converter.handleNotification('item/completed', { item: { ...item, phase: undefined } })).toEqual([]);
+        expect(converter.handleNotification('item/completed', {
+            item: { ...item, id: 'final', phase: 'final_answer' }
+        })).toEqual([{ type: 'agent_message', message: footer }]);
+    });
+
+    it('leaves literal examples and malformed footers in commentary unchanged', () => {
+        const converter = new AppServerEventConverter();
+        for (const text of [`Example: ${footer}`, `${footer}\nMore explanation.`, 'AGENT_NOTIFY_SUMMARY {invalid}']) {
+            expect(converter.handleNotification('item/completed', {
+                item: { id: text, type: 'agentMessage', text, phase: 'commentary' }
+            })).toEqual([{ type: 'agent_message', message: text }]);
+        }
+    });
+
     it('maps thread/started', () => {
         const converter = new AppServerEventConverter();
         const events = converter.handleNotification('thread/started', { thread: { id: 'thread-1' } });
@@ -175,6 +212,70 @@ describe('AppServerEventConverter', () => {
             output: 'final output',
             exit_code: 0,
             duration_ms: 42
+        }]);
+    });
+
+    it('preserves command identity when completion arrives without a start', () => {
+        const converter = new AppServerEventConverter();
+        const events = converter.handleNotification('item/completed', {
+            item: { id: 'late-command', type: 'commandExecution', command: 'node server.js', cwd: '/repo',
+                status: 'failed', exitCode: -1, durationMs: 16_636_720 }
+        });
+        expect(events).toEqual([expect.objectContaining({ type: 'exec_command_end', call_id: 'late-command',
+            command: 'node server.js', cwd: '/repo', status: 'failed', exit_code: -1, duration_ms: 16_636_720 })]);
+    });
+
+    it('carries item timing on tool events for the generation ledger', () => {
+        const converter = new AppServerEventConverter();
+
+        const command = converter.handleNotification('item/started', {
+            item: { id: 'cmd-1', type: 'commandExecution', command: 'ls', startedAtMs: 1_000 }
+        });
+        expect(command).toEqual([expect.objectContaining({ type: 'exec_command_begin', call_id: 'cmd-1', started_at_ms: 1_000 })]);
+        const commandEnd = converter.handleNotification('item/completed', {
+            item: { id: 'cmd-1', type: 'commandExecution', status: 'completed', durationMs: 500, completedAtMs: 1_500 }
+        });
+        expect(commandEnd).toEqual([expect.objectContaining({
+            type: 'exec_command_end', call_id: 'cmd-1', duration_ms: 500, completed_at_ms: 1_500
+        })]);
+
+        const mcp = converter.handleNotification('item/started', {
+            item: { id: 'mcp-1', type: 'mcpToolCall', server: 's', tool: 't', arguments: {}, startedAtMs: 2_000 }
+        });
+        expect(mcp).toEqual([expect.objectContaining({ type: 'mcp_tool_call_begin', call_id: 'mcp-1', started_at_ms: 2_000 })]);
+        const mcpEnd = converter.handleNotification('item/completed', {
+            item: { id: 'mcp-1', type: 'mcpToolCall', server: 's', tool: 't', result: { Ok: 'done' }, durationMs: 250, completedAtMs: 2_250 }
+        });
+        expect(mcpEnd).toEqual([expect.objectContaining({
+            type: 'mcp_tool_call_end', call_id: 'mcp-1', duration_ms: 250, completed_at_ms: 2_250
+        })]);
+
+        const patch = converter.handleNotification('item/started', {
+            item: { id: 'patch-1', type: 'fileChange', changes: {}, startedAtMs: 3_000 }
+        });
+        expect(patch).toEqual([expect.objectContaining({ type: 'patch_apply_begin', call_id: 'patch-1', started_at_ms: 3_000 })]);
+        const patchEnd = converter.handleNotification('item/completed', {
+            item: { id: 'patch-1', type: 'fileChange', success: true, completedAtMs: 3_400 }
+        });
+        expect(patchEnd).toEqual([expect.objectContaining({ type: 'patch_apply_end', call_id: 'patch-1', completed_at_ms: 3_400 })]);
+
+        const collab = converter.handleNotification('item/started', {
+            item: { id: 'agent-1', type: 'collabAgentToolCall', tool: 'spawn_agent', startedAtMs: 4_000 }
+        });
+        expect(collab).toEqual([expect.objectContaining({ type: 'codex_tool_call_begin', call_id: 'agent-1', started_at_ms: 4_000 })]);
+        const collabEnd = converter.handleNotification('item/completed', {
+            item: { id: 'agent-1', type: 'collabAgentToolCall', tool: 'spawn_agent', status: 'completed', completedAtMs: 5_000 }
+        });
+        expect(collabEnd).toEqual([expect.objectContaining({ type: 'codex_tool_call_end', call_id: 'agent-1', completed_at_ms: 5_000 })]);
+    });
+
+    it('omits item timing keys the agent did not send', () => {
+        const converter = new AppServerEventConverter();
+        const started = converter.handleNotification('item/started', {
+            item: { id: 'cmd-1', type: 'commandExecution', command: 'ls' }
+        });
+        expect(started).toEqual([{
+            type: 'exec_command_begin', call_id: 'cmd-1', command: 'ls'
         }]);
     });
 
@@ -1042,6 +1143,75 @@ describe('AppServerEventConverter', () => {
         ]);
     });
 
+    it('converts compaction start notifications into scoped compaction_started events', () => {
+        const converter = new AppServerEventConverter();
+        const events = converter.handleNotification('item/started', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: { id: 'compact-item-1', type: 'contextCompaction' }
+        });
+
+        expect(events).toEqual([{
+            type: 'compaction_started',
+            thread_id: 'thread-1',
+            turn_id: 'turn-1',
+            compaction_id: 'compact-item-1'
+        }]);
+    });
+
+    it('dedups duplicate compaction starts per compaction id but allows successive compactions', () => {
+        const converter = new AppServerEventConverter();
+        const params = {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: { id: 'compact-item-1', type: 'contextCompaction' }
+        };
+
+        expect(converter.handleNotification('item/started', params)).toHaveLength(1);
+        expect(converter.handleNotification('item/started', params)).toEqual([]);
+        expect(converter.handleNotification('codex/event/item_started', {
+            msg: {
+                type: 'item_started',
+                thread_id: 'thread-1',
+                turn_id: 'turn-1',
+                item_id: 'compact-item-1',
+                item: { id: 'compact-item-1', type: 'contextCompaction' }
+            }
+        })).toEqual([]);
+        expect(converter.handleNotification('item/started', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: { id: 'compact-item-2', type: 'contextCompaction' }
+        })).toHaveLength(1);
+    });
+
+    it('drops malformed compaction starts without an item id', () => {
+        const converter = new AppServerEventConverter();
+        expect(converter.handleNotification('item/started', {
+            threadId: 'thread-1',
+            item: { type: 'contextCompaction' }
+        })).toEqual([]);
+    });
+
+    it('scopes compaction start dedup by thread so a reused item id still announces', () => {
+        const converter = new AppServerEventConverter();
+        expect(converter.handleNotification('item/started', {
+            threadId: 'thread-1',
+            turnId: 'turn-1',
+            item: { id: 'compact-item-1', type: 'contextCompaction' }
+        })).toHaveLength(1);
+        expect(converter.handleNotification('item/started', {
+            threadId: 'thread-2',
+            turnId: 'turn-9',
+            item: { id: 'compact-item-1', type: 'contextCompaction' }
+        })).toEqual([{
+            type: 'compaction_started',
+            thread_id: 'thread-2',
+            turn_id: 'turn-9',
+            compaction_id: 'compact-item-1'
+        }]);
+    });
+
     it('ignores compacted notifications without thread ids', () => {
         const converter = new AppServerEventConverter();
 
@@ -1095,6 +1265,20 @@ describe('AppServerEventConverter', () => {
         expect(JSON.stringify(events)).not.toContain(largeImageResult);
     });
 
+    it('converts completed image views into viewed_image events keyed by the tool call', () => {
+        const converter = new AppServerEventConverter();
+
+        expect(converter.handleNotification('item/started', {
+            item: { id: 'exec-view-1', type: 'imageView', path: '/tmp/shot.png' }
+        })).toEqual([]);
+        expect(converter.handleNotification('item/completed', {
+            item: { id: 'exec-view-1', type: 'imageView', path: '/tmp/shot.png' }
+        })).toEqual([{ type: 'viewed_image', call_id: 'exec-view-1', path: '/tmp/shot.png' }]);
+        expect(converter.handleNotification('item/completed', {
+            item: { id: 'call-view-2', type: 'imageView', path: 'file:///tmp/a%20b.png' }
+        })).toEqual([{ type: 'viewed_image', call_id: 'call-view-2', path: '/tmp/a b.png' }]);
+    });
+
     it('truncates large unhandled notification payloads before logging', () => {
         const converter = new AppServerEventConverter();
         const debug = vi.spyOn(logger, 'debug').mockImplementation(() => undefined);
@@ -1117,5 +1301,19 @@ describe('AppServerEventConverter', () => {
         expect(logged.params?.item?.savedPath).toBe('/tmp/image.png');
 
         debug.mockRestore();
+    });
+
+    it('clears compaction start dedup on reset', () => {
+        const converter = new AppServerEventConverter();
+        const params = { threadId: 'thread-1', turnId: 'turn-1', item: { id: 'compact-item-1', type: 'contextCompaction' } };
+        expect(converter.handleNotification('item/started', params)).toHaveLength(1);
+        converter.reset();
+        expect(converter.handleNotification('item/started', params)).toHaveLength(1);
+    });
+
+    it('announces legacy compaction start without scope', () => {
+        const converter = new AppServerEventConverter();
+        const events = converter.handleNotification('item/started', { item: { id: 'compact-legacy', type: 'contextCompaction' } });
+        expect(events).toEqual([{ type: 'compaction_started', compaction_id: 'compact-legacy' }]);
     });
 });

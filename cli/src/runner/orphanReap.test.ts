@@ -3,9 +3,11 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import {
+    commandMatchesHapiMcpBridgeForSession,
     commandMatchesRunnerSpawnedSession,
     findRunnerSpawnedOrphanTargets,
     findStopSessionOrphanTargets,
+    parseWindowsProcessSnapshot,
     reapRunnerSpawnedOrphans,
     selectOrphanPidsForSession,
     selectOrphanTargetsForSession,
@@ -15,6 +17,17 @@ import {
     windowsProcessListCimCommand,
     windowsProcessMarkerCimCommand,
 } from '@/utils/process'
+
+describe('complete Windows process snapshots', () => {
+    it.each(['', '[]', '{}', 'null', '[{"ProcessId":1},{}]', '[{"ProcessId":0}]'])('rejects unverifiable listing %s', raw => {
+        expect(() => parseWindowsProcessSnapshot(raw)).toThrow();
+    });
+    it('retains missing creation times as unknown rather than treating the PID as absent', () => {
+        expect(parseWindowsProcessSnapshot('[{"ProcessId":0},{"ProcessId":42,"CreationDate":null}]')).toEqual([
+            { pid: 42, name: '', cmd: '', startMarker: null }
+        ]);
+    });
+});
 
 describe('orphanReap argv matching', () => {
     const sessionId = 'sess-abc-123'
@@ -43,6 +56,34 @@ describe('orphanReap argv matching', () => {
     it('rejects substring false positives', () => {
         const cmd = `bun src/index.ts claude --started-by runner --existing-session-id ${sessionId}-extra`
         expect(commandMatchesRunnerSpawnedSession(cmd, sessionId)).toBe(false)
+    })
+
+    it('matches stamped HAPI MCP bridge helpers without --started-by (#2003)', () => {
+        const cmd = `hapi-hapi-soup mcp --url http://127.0.0.1:45619/ --tools display_image --hapi-session-id ${sessionId}`
+        expect(commandMatchesHapiMcpBridgeForSession(cmd, sessionId)).toBe(true)
+        expect(commandMatchesRunnerSpawnedSession(cmd, sessionId)).toBe(false)
+    })
+
+    it('rejects MCP helpers for a different session id', () => {
+        const cmd = `hapi mcp --url http://127.0.0.1:1/ --hapi-session-id other-sess`
+        expect(commandMatchesHapiMcpBridgeForSession(cmd, sessionId)).toBe(false)
+    })
+
+    it('rejects unstamped legacy MCP helpers (no session flag)', () => {
+        const cmd = 'hapi mcp --url http://127.0.0.1:1/ --tools display_image'
+        expect(commandMatchesHapiMcpBridgeForSession(cmd, sessionId)).toBe(false)
+    })
+
+    it('selectOrphanPidsForSession includes stamped MCP bridges alongside agent roots', () => {
+        const pids = selectOrphanPidsForSession(
+            [
+                { pid: 10, cmd: `bun src/index.ts cursor --started-by runner --existing-session-id ${sessionId}`, name: 'bun' },
+                { pid: 11, cmd: `hapi mcp --url http://127.0.0.1:9/ --hapi-session-id ${sessionId}`, name: 'hapi' },
+                { pid: 12, cmd: `hapi mcp --url http://127.0.0.1:9/ --hapi-session-id other`, name: 'hapi' },
+            ],
+            sessionId
+        )
+        expect(pids.sort((a, b) => a - b)).toEqual([10, 11])
     })
 
     it('treats empty Windows process-list stdout as scan_failed (not no-orphans)', async () => {
@@ -110,6 +151,48 @@ describe('orphanReap argv matching', () => {
 })
 
 describe('reapRunnerSpawnedOrphans (stopSession orphan path)', () => {
+    it.each(['same', 'reused', 'unknown', 'exited'] as const)('awaits async identity and liveness after preparation (%s)', async state => {
+        let prepared = false
+        const killed: number[] = []
+        const result = await reapRunnerSpawnedOrphans('async-preparation', {
+            findTargets: async () => [{ pid: 4200, startMarker: 'generation' }],
+            getStartMarker: async () => prepared
+                ? state === 'reused' ? 'replacement' : state === 'unknown' ? null : 'generation'
+                : 'generation',
+            isAlive: async () => state !== 'exited',
+            prepare: async () => { prepared = true; return true },
+            killTree: async pid => { killed.push(pid); return true },
+        })
+        expect(prepared).toBe(true)
+        expect(result).toBe(state === 'reused' || state === 'unknown' ? 'still_alive' : 'stopped')
+        expect(killed).toEqual(state === 'same' ? [4200] : [])
+    })
+
+    it('does not signal an orphan whose own preparation was not confirmed', async () => {
+        const killed: number[] = []
+        const status = await reapRunnerSpawnedOrphans('same-session', {
+            findTargets: async () => [{ pid: 123, startMarker: 'gen-a' }],
+            getStartMarker: () => 'gen-a', isAlive: () => true,
+            prepare: async () => false,
+            killTree: async (pid) => { killed.push(pid); return true }
+        })
+        expect(status).toBe('still_alive')
+        expect(killed).toEqual([])
+    })
+
+    it('rechecks an orphan generation after its preparation await', async () => {
+        let generation = 'gen-a'
+        const killed: number[] = []
+        const status = await reapRunnerSpawnedOrphans('same-session', {
+            findTargets: async () => [{ pid: 123, startMarker: 'gen-a' }],
+            getStartMarker: () => generation, isAlive: () => true,
+            prepare: async () => { generation = 'gen-b'; return true },
+            killTree: async (pid) => { killed.push(pid); return true }
+        })
+        expect(status).toBe('still_alive')
+        expect(killed).toEqual([])
+    })
+
     const stableMarker = (marker = 'gen-a') => {
         let reads = 0
         return () => {
@@ -401,7 +484,8 @@ describe('Windows orphan startMarker format agreement', () => {
                     startMarker: iso, // as listWindowsProcessesWithCommandLine would set
                 },
             ],
-            sessionId
+            sessionId,
+            1 // Synthetic self PID: never collide with the fixture PID (4242).
         )
         expect(targets).toEqual([{ pid: 4242, startMarker: iso }])
     })

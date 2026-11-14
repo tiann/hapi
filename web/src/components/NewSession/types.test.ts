@@ -14,17 +14,15 @@ describe('Claude model options', () => {
     })
 
     it('exposes friendly labels for Claude model presets', () => {
-        expect(CLAUDE_MODEL_PRESETS).toEqual(['sonnet', 'sonnet[1m]', 'opus', 'opus[1m]', 'fable', 'fable[1m]'])
-        expect(getClaudeModelLabel('sonnet[1m]')).toBe('Sonnet 1M')
-        expect(getClaudeModelLabel('opus[1m]')).toBe('Opus 1M')
-        expect(getClaudeModelLabel('fable[1m]')).toBe('Fable 1M')
+        expect(CLAUDE_MODEL_PRESETS).toEqual(['opus', 'fable', 'sonnet', 'haiku'])
+        expect(getClaudeModelLabel('haiku')).toBe('Haiku')
     })
 })
 
 describe('Claude effort options', () => {
     it('matches supported effort presets in expected order', () => {
         expect(CLAUDE_EFFORT_OPTIONS).toEqual([
-            { value: 'auto', label: 'Auto' },
+            { value: 'auto', label: 'Default' },
             { value: 'low', label: 'Low' },
             { value: 'medium', label: 'Medium' },
             { value: 'high', label: 'High' },

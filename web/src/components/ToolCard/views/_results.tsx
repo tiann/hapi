@@ -1,4 +1,5 @@
 import type { ToolViewComponent, ToolViewProps } from '@/components/ToolCard/views/_all'
+import type { ToolCallBlock } from '@/chat/types'
 import type { ReactNode } from 'react'
 import { isObject, safeStringify } from '@hapi/protocol'
 import { CodeBlock } from '@/components/CodeBlock'
@@ -7,6 +8,10 @@ import { ChecklistList, extractTodoChecklist } from '@/components/ToolCard/check
 import { basename, resolveDisplayPath } from '@/utils/path'
 import { getInputStringAny } from '@/lib/toolInputUtils'
 import { isGoalToolName, parseGoalToolResult } from '@/components/ToolCard/goalTools'
+import { isAskUserQuestionToolName } from '@/components/ToolCard/askUserQuestion'
+import { isRequestUserInputToolName } from '@/components/ToolCard/requestUserInput'
+import { resolveToolNameAlias } from '@/components/ToolCard/toolNameAliases'
+import { isTerminalToolBlock } from '@/chat/toolGroups'
 import { GoalView } from '@/components/ToolCard/views/GoalView'
 import {
     getCodexAgentActivity,
@@ -311,7 +316,14 @@ function renderText(text: string, opts: { mode: 'markdown' | 'code' | 'auto'; la
     return renderResultBody(renderMarkdown(text, opts.surface), opts.surface)
 }
 
-function placeholderForState(state: ToolViewProps['block']['tool']['state']): string {
+function placeholderForState(block: ToolViewProps['block']): string {
+    const state = block.tool.state
+    // A pending question has no result to show and its state is 'running'
+    // until the reply lands; label it as waiting instead of running.
+    if (state === 'running' && block.tool.permission?.status === 'pending'
+        && (isAskUserQuestionToolName(block.tool.name) || isRequestUserInputToolName(block.tool.name))) {
+        return 'Waiting for your reply'
+    }
     if (state === 'pending') return 'Waiting for permission…'
     if (state === 'running') return 'Running…'
     return '(no output)'
@@ -372,7 +384,7 @@ function extractReadFileContent(result: unknown): { filePath: string | null; con
 }
 
 function isReadFileToolCall(toolName: string, input: unknown): boolean {
-    if (toolName === 'Read' || toolName === 'NotebookRead') return true
+    if (toolName === 'Read' || toolName === 'NotebookRead' || toolName === 'read') return true
 
     const normalizedName = toolName.toLowerCase()
     if (normalizedName.includes('read_file') || normalizedName.includes('readfile')) return true
@@ -388,7 +400,7 @@ function isReadFileToolCall(toolName: string, input: unknown): boolean {
 function extractReadPathFromInput(input: unknown): string | null {
     if (!isObject(input)) return null
 
-    const directPath = getInputStringAny(input, ['file_path', 'path', 'name'])
+    const directPath = getInputStringAny(input, ['file_path', 'filePath', 'path', 'name'])
     if (directPath) return directPath
 
     if (Array.isArray(input.parsed_cmd)) {
@@ -426,6 +438,16 @@ export function parseNumberedFileLines(text: string): { startLine: number; body:
         body.push(match[2])
     }
     return startLine === null ? null : { startLine, body: body.join('\n') }
+}
+
+export function unwrapOpencodeReadOutput(text: string): { path: string | null; body: string; isOpencodeRead: boolean } {
+    const wrapper = text.match(/^<path>([\s\S]*?)<\/path>\s*<type>file<\/type>\s*<content>\n?([\s\S]*)<\/content>\s*$/)
+    if (!wrapper) return { path: null, body: text, isOpencodeRead: false }
+    return {
+        path: wrapper[1].trim(),
+        body: wrapper[2].replace(/\n\(End of file[^)]*\)\n?$/, ''),
+        isOpencodeRead: true
+    }
 }
 
 function renderReadTextResult(text: string, path: string | null, surface: ToolViewProps['surface'], parseNumberedLines: boolean) {
@@ -488,7 +510,7 @@ const BashResultView: ToolViewComponent = (props: ToolViewProps) => {
     const result = props.block.tool.result
 
     if (result === undefined || result === null) {
-        return <ResultStatusPill text={placeholderForState(props.block.tool.state)} />
+        return <ResultStatusPill text={placeholderForState(props.block)} />
     }
 
     if (typeof result === 'string') {
@@ -537,7 +559,7 @@ const CodexBashResultView: ToolViewComponent = (props: ToolViewProps) => {
     const result = props.block.tool.result
 
     if (result === undefined || result === null) {
-        return <ResultStatusPill text={placeholderForState(props.block.tool.state)} />
+        return <ResultStatusPill text={placeholderForState(props.block)} />
     }
 
     const display = extractCodexBashDisplay(result)
@@ -568,7 +590,7 @@ const MarkdownResultView: ToolViewComponent = (props: ToolViewProps) => {
     const result = props.block.tool.result
 
     if (result === undefined || result === null) {
-        return <ResultStatusPill text={placeholderForState(props.block.tool.state)} />
+        return <ResultStatusPill text={placeholderForState(props.block)} />
     }
 
     const text = extractTextFromResult(result)
@@ -593,7 +615,7 @@ const LineListResultView: ToolViewComponent = (props: ToolViewProps) => {
     const result = props.block.tool.result
 
     if (result === undefined || result === null) {
-        return <ResultStatusPill text={placeholderForState(props.block.tool.state)} />
+        return <ResultStatusPill text={placeholderForState(props.block)} />
     }
 
     const text = extractTextFromResult(result)
@@ -646,7 +668,7 @@ const ReadResultView: ToolViewComponent = (props: ToolViewProps) => {
     const result = props.block.tool.result
 
     if (result === undefined || result === null) {
-        return <ResultStatusPill text={placeholderForState(props.block.tool.state)} />
+        return <ResultStatusPill text={placeholderForState(props.block)} />
     }
 
     const file = extractReadFileContent(result)
@@ -667,11 +689,12 @@ const ReadResultView: ToolViewComponent = (props: ToolViewProps) => {
 
     const text = extractTextFromResult(result)
     if (text) {
-        const path = extractReadPathFromInput(props.block.tool.input)
+        const unwrapped = unwrapOpencodeReadOutput(text)
+        const path = unwrapped.path ?? extractReadPathFromInput(props.block.tool.input)
         const displayPath = path ? resolveDisplayPath(path, props.metadata) : null
         return (
             <>
-                {renderReadTextResult(text, displayPath, props.surface, props.block.tool.nativeKind === 'agy-numbered-read')}
+                {renderReadTextResult(unwrapped.body, displayPath, props.surface, unwrapped.isOpencodeRead || props.block.tool.nativeKind === 'agy-numbered-read')}
                 <RawJsonDevOnly value={result} surface={props.surface} />
             </>
         )
@@ -692,7 +715,7 @@ const MutationResultView: ToolViewComponent = (props: ToolViewProps) => {
         if (state === 'completed') {
             return <ResultStatusPill text="Done" />
         }
-        return <ResultStatusPill text={placeholderForState(state)} />
+        return <ResultStatusPill text={placeholderForState(props.block)} />
     }
 
     const text = extractTextFromResult(result)
@@ -732,7 +755,7 @@ const CodexPatchResultView: ToolViewComponent = (props: ToolViewProps) => {
     if (result === undefined || result === null) {
         return props.block.tool.state === 'completed'
             ? <ResultStatusPill text="Done" />
-            : <ResultStatusPill text={placeholderForState(props.block.tool.state)} />
+            : <ResultStatusPill text={placeholderForState(props.block)} />
     }
 
     return (
@@ -746,7 +769,7 @@ const CodexPatchResultView: ToolViewComponent = (props: ToolViewProps) => {
 const CodexReasoningResultView: ToolViewComponent = (props: ToolViewProps) => {
     const result = props.block.tool.result
     if (result === undefined || result === null) {
-        return <ResultStatusPill text={placeholderForState(props.block.tool.state)} />
+        return <ResultStatusPill text={placeholderForState(props.block)} />
     }
 
     const text = extractTextFromResult(result)
@@ -772,7 +795,7 @@ const CodexDiffResultView: ToolViewComponent = (props: ToolViewProps) => {
     if (result === undefined || result === null) {
         return props.block.tool.state === 'completed'
             ? <ResultStatusPill text="Done" />
-            : <ResultStatusPill text={placeholderForState(props.block.tool.state)} />
+            : <ResultStatusPill text={placeholderForState(props.block)} />
     }
 
     const text = extractTextFromResult(result)
@@ -796,7 +819,7 @@ const CodexDiffResultView: ToolViewComponent = (props: ToolViewProps) => {
 const TodoWriteResultView: ToolViewComponent = (props: ToolViewProps) => {
     const todos = extractTodoChecklist(props.block.tool.input, props.block.tool.result)
     if (todos.length === 0) {
-        return <ResultStatusPill text={placeholderForState(props.block.tool.state)} />
+        return <ResultStatusPill text={placeholderForState(props.block)} />
     }
 
     return <ChecklistList items={todos} />
@@ -816,7 +839,7 @@ const CodexAgentResultView: ToolViewComponent = (props: ToolViewProps) => {
     const showDetails = props.surface === 'dialog'
 
     if (result === undefined || result === null) {
-        return <ResultStatusPill text={getCodexAgentActivity(input) ?? placeholderForState(state)} />
+        return <ResultStatusPill text={getCodexAgentActivity(input) ?? placeholderForState(props.block)} />
     }
 
     if (state === 'error') {
@@ -943,7 +966,7 @@ const CodexAgentResultView: ToolViewComponent = (props: ToolViewProps) => {
     const text = extractTextFromResult(result)
     if (text) {
         if (!showDetails) {
-            return <ResultStatusPill text={state === 'completed' ? 'Done' : placeholderForState(state)} />
+            return <ResultStatusPill text={state === 'completed' ? 'Done' : placeholderForState(props.block)} />
         }
 
         return (
@@ -954,7 +977,7 @@ const CodexAgentResultView: ToolViewComponent = (props: ToolViewProps) => {
         )
     }
 
-    return <ResultStatusPill text={state === 'completed' ? 'Done' : placeholderForState(state)} />
+    return <ResultStatusPill text={state === 'completed' ? 'Done' : placeholderForState(props.block)} />
 }
 
 const SkillResultView: ToolViewComponent = (props: ToolViewProps) => {
@@ -964,7 +987,7 @@ const SkillResultView: ToolViewComponent = (props: ToolViewProps) => {
         if (state === 'completed') {
             return <ResultStatusPill text="Skill loaded" />
         }
-        return <ResultStatusPill text={placeholderForState(state)} />
+        return <ResultStatusPill text={placeholderForState(props.block)} />
     }
 
     // For errors, show the error text
@@ -986,7 +1009,7 @@ const GenericResultView: ToolViewComponent = (props: ToolViewProps) => {
     const result = props.block.tool.result
 
     if (result === undefined || result === null) {
-        return <ResultStatusPill text={placeholderForState(props.block.tool.state)} />
+        return <ResultStatusPill text={placeholderForState(props.block)} />
     }
 
     // Detect codex bash output format and render accordingly
@@ -1022,7 +1045,15 @@ const GenericResultView: ToolViewComponent = (props: ToolViewProps) => {
         return (
             <>
                 {isReadFileToolCall(props.block.tool.name, props.block.tool.input)
-                    ? renderReadTextResult(text, extractReadPathFromInput(props.block.tool.input), props.surface, props.block.tool.nativeKind === 'agy-numbered-read')
+                    ? (() => {
+                        const unwrapped = unwrapOpencodeReadOutput(text)
+                        return renderReadTextResult(
+                            unwrapped.body,
+                            unwrapped.path ?? extractReadPathFromInput(props.block.tool.input),
+                            props.surface,
+                            unwrapped.isOpencodeRead || props.block.tool.nativeKind === 'agy-numbered-read'
+                        )
+                    })()
                     : renderText(text, { mode: 'auto', collapseLongContent: props.surface === 'inline', surface: props.surface })}
                 {typeof result === 'object' ? <RawJsonDevOnly value={result} surface={props.surface} /> : null}
             </>
@@ -1043,6 +1074,7 @@ export const toolResultViewRegistry: Record<string, ToolViewComponent> = {
     Grep: LineListResultView,
     LS: LineListResultView,
     Read: ReadResultView,
+    read: ReadResultView,
     Edit: MutationResultView,
     MultiEdit: MutationResultView,
     Write: MutationResultView,
@@ -1078,10 +1110,20 @@ const GoalResultView: ToolViewComponent = (props) => {
         : <GenericResultView {...props} />
 }
 
-export function getToolResultViewComponent(toolName: string): ToolViewComponent {
+// Skill, todowrite, patch and question deliberately stay unaliased: their
+// dedicated views read Claude-shaped input or result fields.
+export function getToolResultViewComponent(toolName: string, block?: ToolCallBlock): ToolViewComponent {
     if (isGoalToolName(toolName)) return GoalResultView
     if (toolName.startsWith('mcp__')) {
         return GenericResultView
     }
-    return toolResultViewRegistry[toolName] ?? GenericResultView
+    const resolved = toolResultViewRegistry[toolName]
+        ?? toolResultViewRegistry[resolveToolNameAlias(toolName)]
+    if (resolved) return resolved
+    // Generic markdown would collapse the output lines and autolink file
+    // names; shell output reads as a terminal code block instead.
+    if (block && isTerminalToolBlock(block)) {
+        return toolResultViewRegistry.Bash ?? GenericResultView
+    }
+    return GenericResultView
 }

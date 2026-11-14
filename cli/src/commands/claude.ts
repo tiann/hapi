@@ -12,6 +12,66 @@ import { spawnHappyCLI } from '@/utils/spawnHappyCLI'
 import { maybeAutoStartServer } from '@/utils/autoStartServer'
 import { extractErrorInfo } from '@/utils/errorUtils'
 import type { CommandDefinition } from './types'
+import type { ClaudePermissionMode } from '@hapi/protocol/types'
+import { ApiClient } from '@/api/api'
+import { getInvokedCwd } from '@/utils/invokedCwd'
+import { parseClaudeResumeArgs, resolveClaudeResume } from '@/claude/resumeIdentity'
+import { claudeCheckSession } from '@/claude/utils/claudeCheckSession'
+import { prepareLocalResume, selectResumableSession } from './resume'
+
+/**
+ * Terminal `hapi claude --resume/--continue`: when HAPI already owns the
+ * conversation, reopen that HAPI session (same id) instead of creating a new
+ * one. Must run before runClaude because HAPI_SESSION_ID is fixed at bootstrap.
+ */
+async function applyClaudeResumeIdentity(options: StartOptions, machineId: string): Promise<void> {
+    // Runner/web spawns already carry the HAPI id they reopen or reserved.
+    if (options.existingSessionId || options.reservedSessionId || options.startedBy === 'runner') return
+
+    const parsed = parseClaudeResumeArgs(options.claudeArgs ?? [])
+    if (!parsed.request) return
+
+    const api = await ApiClient.create()
+    const workingDirectory = options.workingDirectory ?? getInvokedCwd()
+    const resolution = await resolveClaudeResume(parsed.request, {
+        api,
+        machineId,
+        workingDirectory,
+        isTTY: Boolean(process.stdin.isTTY),
+        selectSession: selectResumableSession
+    })
+    if (resolution.kind !== 'reopen') return
+
+    const { target, notice } = resolution
+    if (target.flavor !== 'claude') {
+        throw new Error(`HAPI session ${target.sessionId} is a ${target.flavor} session; use hapi resume ${target.sessionId}`)
+    }
+    // An explicit resume must never degrade into a fresh conversation under
+    // the existing HAPI id: the local launcher drops a resume id whose
+    // transcript is gone. Check before any handoff or archive change.
+    if (!claudeCheckSession(target.agentSessionId, target.directory)) {
+        throw new Error(
+            `Claude conversation ${target.agentSessionId} of HAPI session ${target.sessionId} `
+            + `has no transcript in ${target.directory}; nothing to resume`
+        )
+    }
+    await prepareLocalResume(api, target, machineId)
+
+    if (notice) console.log(chalk.gray(notice))
+    console.log(chalk.gray(`Reopening HAPI session ${target.sessionId}`))
+
+    options.existingSessionId = target.sessionId
+    options.resumeSessionId = target.agentSessionId
+    options.workingDirectory = target.directory
+    options.startingMode = 'local'
+    options.claudeArgs = parsed.remainingArgs.length > 0 ? parsed.remainingArgs : undefined
+    // Explicit CLI flags win; otherwise keep the session's own settings.
+    options.permissionMode ??= target.permissionMode as ClaudePermissionMode | undefined
+    options.model ??= target.model ?? undefined
+    if (options.effort === undefined && target.effort) {
+        options.effort = target.effort
+    }
+}
 
 export const claudeCommand: CommandDefinition = {
     name: 'claude',
@@ -38,12 +98,12 @@ export const claudeCommand: CommandDefinition = {
                 }
                 options.permissionMode = mode as StartOptions['permissionMode']
                 hasExplicitPermissionMode = true
-            } else if (arg === '--yolo' && !hasExplicitPermissionMode) {
-                options.permissionMode = 'bypassPermissions'
-                unknownArgs.push('--dangerously-skip-permissions')
-            } else if (arg === '--dangerously-skip-permissions' && !hasExplicitPermissionMode) {
-                options.permissionMode = 'bypassPermissions'
-                unknownArgs.push(arg)
+            } else if (arg === '--yolo' || arg === '--dangerously-skip-permissions') {
+                // Not forwarded: Claude lets this flag override --permission-mode,
+                // so a later switch away from Yolo could never reach the TUI.
+                if (!hasExplicitPermissionMode) {
+                    options.permissionMode = 'bypassPermissions'
+                }
             } else if (arg === '--model') {
                 const model = args[++i]
                 if (!model) {
@@ -94,7 +154,7 @@ export const claudeCommand: CommandDefinition = {
 
         await initializeToken()
         await maybeAutoStartServer()
-        await authAndSetupMachineIfNeeded()
+        const { machineId } = await authAndSetupMachineIfNeeded()
 
         logger.debug('Ensuring hapi background service is running & matches our version...')
 
@@ -112,6 +172,7 @@ export const claudeCommand: CommandDefinition = {
         }
 
         try {
+            await applyClaudeResumeIdentity(options, machineId)
             const { runClaude } = await import('@/claude/runClaude')
             await runClaude(options)
         } catch (error) {

@@ -2,6 +2,7 @@ import { render } from 'ink';
 import type { ReactElement } from 'react';
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
 import { restoreTerminalState } from '@/ui/terminalState';
+import { ensureLiveStdin } from '@/utils/stdinLifecycle';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
 export type RemoteLauncherExitReason = 'switch' | 'exit';
@@ -40,7 +41,6 @@ type RpcHandlerManagerLike = {
 
 export abstract class RemoteLauncherBase {
     protected readonly messageBuffer: MessageBuffer;
-    protected readonly hasTTY: boolean;
     protected readonly logPath?: string;
     protected exitReason: RemoteLauncherExitReason | null = null;
     protected shouldExit: boolean = false;
@@ -49,8 +49,17 @@ export abstract class RemoteLauncherBase {
 
     protected constructor(logPath?: string) {
         this.logPath = logPath;
-        this.hasTTY = Boolean(process.stdout.isTTY && process.stdin.isTTY);
         this.messageBuffer = new MessageBuffer();
+    }
+
+    // Computed lazily: stdin may be destroyed while a local-mode child owns
+    // the terminal (see utils/stdinLifecycle) and re-created in setupTerminal.
+    protected get hasTTY(): boolean {
+        return Boolean(
+            process.stdout.isTTY
+            && process.stdin.isTTY
+            && !process.stdin.destroyed
+        );
     }
 
     protected abstract createDisplay(context: RemoteLauncherDisplayContext): ReactElement;
@@ -147,6 +156,10 @@ export abstract class RemoteLauncherBase {
     }
 
     protected setupTerminal(handlers: RemoteLauncherTerminalHandlers): void {
+        // Local mode destroys stdin so the child TUI gets all console input
+        // (Bun keeps reading fd 0 after pause()). Re-create it before the
+        // remote-mode UI reads keys again.
+        ensureLiveStdin();
         if (this.hasTTY) {
             console.clear();
             this.inkInstance = render(this.createDisplay({

@@ -1,9 +1,9 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ensureOpencodeConfig } from './opencodeConfig'
-import { TITLE_INSTRUCTION } from './systemPrompt'
+import { getOpencodeNativeToolInstruction, getTitleInstruction, TITLE_INSTRUCTION } from './systemPrompt'
 
 describe('OpenCode local HAPI instructions', () => {
     let configDirectory: string | null = null
@@ -20,11 +20,56 @@ describe('OpenCode local HAPI instructions', () => {
         const { instructionsPath } = ensureOpencodeConfig(
             configDirectory,
             { command: 'hapi', args: ['mcp'] },
-            TITLE_INSTRUCTION
+            getTitleInstruction({})
         )
 
         const instructions = await readFile(instructionsPath, 'utf8')
         expect(instructions).toContain('$name')
         expect(instructions).toContain('skill_lookup')
+        expect(instructions).toContain('hapi job run')
+        expect(instructions).toContain(TITLE_INSTRUCTION.trim())
+    })
+})
+
+describe('OpenCode ACP title and peer instructions', () => {
+    afterEach(() => {
+        vi.unstubAllEnvs()
+        vi.resetModules()
+    })
+
+    it.each([false, true])('keeps change_title available when peer tools are disabled=%s', async (disabled) => {
+        vi.stubEnv('HAPI_DISABLE_PEER_TOOLS', disabled ? '1' : '')
+        vi.resetModules()
+        const { TITLE_INSTRUCTION, OPENCODE_NATIVE_TOOL_INSTRUCTION } = await import('./systemPrompt')
+
+        for (const prompt of [TITLE_INSTRUCTION, OPENCODE_NATIVE_TOOL_INSTRUCTION]) {
+            expect(prompt).toContain('hapi_change_title')
+            expect(prompt).toContain('skill_lookup')
+            for (const tool of ['hapi_list_peers', 'hapi_inspect_peer', 'hapi_ping_peer']) {
+                if (disabled) {
+                    expect(prompt).not.toContain(tool)
+                } else {
+                    expect(prompt).toContain(tool)
+                }
+            }
+        }
+    })
+})
+
+describe('OpenCode media tool discovery', () => {
+    it('keeps media delivery out of the local and ACP prompt injections', async () => {
+        const dir = await mkdtemp(join(tmpdir(), 'hapi-opencode-display-'))
+        try {
+            const { instructionsPath } = ensureOpencodeConfig(dir, { command: 'hapi', args: ['mcp'] }, getTitleInstruction({}))
+            for (const prompt of [await readFile(instructionsPath, 'utf8'), getOpencodeNativeToolInstruction({})]) {
+                expect(prompt).not.toContain('display_image')
+                expect(prompt).not.toContain('display_video')
+                expect(prompt).not.toContain('display_media')
+                expect(prompt).toContain('hapi_change_title')
+                expect(prompt).toContain('skill_lookup')
+            }
+        } finally {
+            await rm(dir, { recursive: true, force: true })
+        }
     })
 })

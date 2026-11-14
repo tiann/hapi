@@ -29,24 +29,58 @@ const dummyOptions = {
 describe('spawnWithTerminalGuard', () => {
     let stdinPauseSpy: ReturnType<typeof vi.spyOn>;
     let stdinResumeSpy: ReturnType<typeof vi.spyOn>;
+    let stdinDestroySpy: ReturnType<typeof vi.spyOn>;
+    let destroyedDescriptor: PropertyDescriptor | undefined;
+    let isTTYDescriptor: PropertyDescriptor | undefined;
+
+    const setStdinDestroyed = (value: boolean) => {
+        Object.defineProperty(process.stdin, 'destroyed', {
+            configurable: true,
+            get: () => value
+        });
+    };
+
+    const setStdinIsTTY = (value: boolean | undefined) => {
+        Object.defineProperty(process.stdin, 'isTTY', {
+            configurable: true,
+            get: () => value
+        });
+    };
 
     beforeEach(() => {
         vi.clearAllMocks();
         stdinPauseSpy = vi.spyOn(process.stdin, 'pause').mockImplementation(() => process.stdin);
         stdinResumeSpy = vi.spyOn(process.stdin, 'resume').mockImplementation(() => process.stdin);
+        stdinDestroySpy = vi.spyOn(process.stdin, 'destroy').mockImplementation(() => process.stdin);
+        destroyedDescriptor = Object.getOwnPropertyDescriptor(process.stdin, 'destroyed');
+        isTTYDescriptor = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+        setStdinDestroyed(false);
+        setStdinIsTTY(true);
     });
 
     afterEach(() => {
         stdinPauseSpy.mockRestore();
         stdinResumeSpy.mockRestore();
+        stdinDestroySpy.mockRestore();
+        if (destroyedDescriptor) {
+            Object.defineProperty(process.stdin, 'destroyed', destroyedDescriptor);
+        } else {
+            delete (process.stdin as unknown as { destroyed?: unknown }).destroyed;
+        }
+        if (isTTYDescriptor) {
+            Object.defineProperty(process.stdin, 'isTTY', isTTYDescriptor);
+        } else {
+            delete (process.stdin as unknown as { isTTY?: unknown }).isTTY;
+        }
     });
 
-    it('pauses stdin before spawn and resumes after success', async () => {
+    it('releases (pauses and destroys) stdin before spawn and resumes after success', async () => {
         mockSpawnWithAbort.mockResolvedValue();
 
         await spawnWithTerminalGuard(dummyOptions);
 
         expect(stdinPauseSpy).toHaveBeenCalledOnce();
+        expect(stdinDestroySpy).toHaveBeenCalledOnce();
         expect(stdinResumeSpy).toHaveBeenCalledOnce();
         expect(mockRestoreTerminalState).toHaveBeenCalledOnce();
     });
@@ -68,6 +102,17 @@ describe('spawnWithTerminalGuard', () => {
         expect(mockRestoreTerminalState).toHaveBeenCalledOnce();
     });
 
+    it('does not resume stdin when the stream was destroyed', async () => {
+        mockSpawnWithAbort.mockImplementation(async () => {
+            setStdinDestroyed(true);
+        });
+
+        await spawnWithTerminalGuard(dummyOptions);
+
+        expect(stdinResumeSpy).not.toHaveBeenCalled();
+        expect(mockRestoreTerminalState).toHaveBeenCalledOnce();
+    });
+
     it('propagates the original error from spawnWithAbort', async () => {
         const error = new Error('process exited with code 1');
         mockSpawnWithAbort.mockRejectedValue(error);
@@ -75,12 +120,23 @@ describe('spawnWithTerminalGuard', () => {
         await expect(spawnWithTerminalGuard(dummyOptions)).rejects.toThrow(error);
     });
 
-    it('calls pause before spawn, and resume after spawn', async () => {
+    it('preserves piped stdin: pauses without destroying, then resumes', async () => {
+        setStdinIsTTY(undefined);
         mockSpawnWithAbort.mockResolvedValue();
 
         await spawnWithTerminalGuard(dummyOptions);
 
-        expect(stdinPauseSpy.mock.invocationCallOrder[0])
+        expect(stdinPauseSpy).toHaveBeenCalledOnce();
+        expect(stdinDestroySpy).not.toHaveBeenCalled();
+        expect(stdinResumeSpy).toHaveBeenCalledOnce();
+    });
+
+    it('releases stdin before spawn, and resumes after spawn', async () => {
+        mockSpawnWithAbort.mockResolvedValue();
+
+        await spawnWithTerminalGuard(dummyOptions);
+
+        expect(stdinDestroySpy.mock.invocationCallOrder[0])
             .toBeLessThan(mockSpawnWithAbort.mock.invocationCallOrder[0]);
         expect(mockSpawnWithAbort.mock.invocationCallOrder[0])
             .toBeLessThan(stdinResumeSpy.mock.invocationCallOrder[0]);

@@ -310,6 +310,7 @@ struct PaginationFixtureTests {
     private static func projectWindowState(_ state: MessageWindowState) -> JSONValue {
         .object([
             "messages": .array(state.messages.map(projectMessage)),
+            "readThroughRevision": state.readThroughRevision.map { JSONValue.number(Double($0)) } ?? .null,
             "hasMore": .bool(state.hasMore),
             "epoch": state.epoch.map { JSONValue.number(Double($0)) } ?? .null,
             "viewMode": .string(state.viewMode.rawValue),
@@ -328,6 +329,7 @@ struct PaginationFixtureTests {
             "optimistic": .bool(message.isOptimistic),
         ]
         // Wire tri-state: the key appears only when the wire carried it.
+        if let revision = message.contentRevision { projected["contentRevision"] = .number(Double(revision)) }
         switch message.invokedAt {
         case .absent:
             break
@@ -428,6 +430,12 @@ actor ScriptedMessagesProvider: MessagesProviding {
     func queuedState(sessionId: String, localIds: [String]) async throws -> QueuedStateResponse {
         // queued-state ops are replayed via store primitives, like the web runner.
         throw ScriptError(message: "scripted MessagesProviding does not serve queued-state")
+    }
+
+    func messageContext(sessionId: String, messageId: String) async throws -> MessageContextResponse? {
+        // The context endpoint is never scripted: the fixtures do not drive
+        // the recovery sweep.
+        nil
     }
 
     private static func requestJSON(_ query: MessagesPageQuery) -> JSONValue {

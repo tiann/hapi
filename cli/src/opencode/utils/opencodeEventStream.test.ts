@@ -68,6 +68,20 @@ function retryEvent(attempt: number, sessionId = 'ses_ours') {
     };
 }
 
+function scheduledRetryEvent(attempt: number, sessionId = 'ses_ours') {
+    return {
+        id: `evt_retry_${attempt}`,
+        type: 'session.retry.scheduled',
+        data: {
+            sessionID: sessionId,
+            assistantMessageID: 'msg_assistant',
+            attempt,
+            at: NOW + 30_000,
+            error: { message: 'Rate limit exceeded.' }
+        }
+    };
+}
+
 function statusEvent(type: 'busy' | 'idle', sessionId = 'ses_ours') {
     return {
         id: `evt_${type}`,
@@ -79,6 +93,7 @@ function statusEvent(type: 'busy' | 'idle', sessionId = 'ses_ours') {
 function subscribe(options: {
     fetchImpl: (url: string, init?: RequestInit) => Promise<Response>;
     onRetry?: (retry: { attempt: number; message: string }) => void;
+    onEvent?: (type: string, properties: Record<string, unknown>, eventId?: string) => void;
     /** Records the backoff schedule instead of waiting it out. */
     delays?: number[];
     /**
@@ -87,6 +102,8 @@ function subscribe(options: {
      * stop the loop itself.
      */
     stopAfterDelays?: number;
+    headers?: Record<string, string>;
+    mode?: 'v1' | 'v2';
 }) {
     let subscription: { close: () => void } | null = null;
     subscription = subscribeToOpencodeEvents({
@@ -94,6 +111,9 @@ function subscribe(options: {
         directory: SESSION_CWD,
         sessionId: 'ses_ours',
         onRetry: options.onRetry ?? (() => {}),
+        onEvent: options.onEvent,
+        headers: options.headers,
+        mode: options.mode,
         fetchImpl: options.fetchImpl,
         sleep: async (ms: number) => {
             options.delays?.push(ms);
@@ -157,6 +177,161 @@ describe('subscribeToOpencodeEvents', () => {
         expect(fetchImpl.mock.calls[0][0]).toBe(EXPECTED_URL);
 
         subscription.close();
+        sse.close();
+    });
+
+    it('v2 mode: hits /api/event and unwraps the {data} envelope before retry parsing', async () => {
+        // Measured 2026-10-16 (opencode 2.0.29): /event answers with the SPA
+        // HTML fallback; the real stream is /api/event and every payload is
+        // { id, type, data: { …v1-shaped body… } }.
+        const seen: Array<string | null> = [];
+        const sse = createSseStream();
+        const fetchImpl = vi.fn(async (url: string, _init?: RequestInit) => {
+            seen.push(url);
+            return new Response(sse.stream, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+        });
+        const retries: number[] = [];
+        const subscription = subscribe({ fetchImpl, onRetry: (retry) => retries.push(retry.attempt), mode: 'v2' });
+        await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+        expect(seen[0]).toBe(EXPECTED_URL.replace('/event?', '/api/event?'));
+
+        // Real v2 shape (measured): the body inside `data` has NO type
+        // field — the discriminator lives on the envelope only.
+        sse.push({
+            id: 'evt_a',
+            type: 'session.status',
+            data: { sessionID: 'ses_ours', status: { type: 'retry', attempt: 1, message: 'Rate limit exceeded: free-models-per-day.', next: NOW + 30_000 } }
+        });
+
+        await vi.waitFor(() => expect(retries).toEqual([1]));
+        await subscription.close();
+        sse.close();
+    });
+
+    it('reports v2 scheduled retries with HAPI numbering, sampling and step dedupe boundaries', async () => {
+        const sse = createSseStream();
+        const fetchImpl = vi.fn(async () => new Response(sse.stream));
+        const retries: number[] = [];
+        const onEvent = vi.fn();
+        const subscription = subscribe({ fetchImpl, mode: 'v2', onEvent, onRetry: (retry) => retries.push(retry.attempt) });
+        try {
+            sse.push(scheduledRetryEvent(2));
+            sse.push(scheduledRetryEvent(2));
+            sse.push(scheduledRetryEvent(3));
+            sse.push(scheduledRetryEvent(4));
+            sse.push(scheduledRetryEvent(5));
+            sse.push(scheduledRetryEvent(6));
+            sse.push(scheduledRetryEvent(9));
+            sse.push(scheduledRetryEvent(2));
+            sse.push({ type: 'session.step.started', data: { sessionID: 'ses_ours' } });
+            sse.push(scheduledRetryEvent(2));
+            await vi.waitFor(() => expect(retries).toEqual([1, 2, 3, 4, 8, 1, 1]));
+            expect(onEvent).toHaveBeenCalledWith('session.retry.scheduled', scheduledRetryEvent(2).data, 'evt_retry_2');
+        } finally {
+            subscription.close();
+        }
+    });
+
+    it.each([
+        'session.step.started',
+        'session.execution.started',
+        'session.execution.succeeded',
+        'session.execution.failed',
+        'session.execution.interrupted'
+    ])('resets v2 dedupe only for the subscribed session on %s', async (type) => {
+        const sse = createSseStream();
+        const fetchImpl = vi.fn(async () => new Response(sse.stream));
+        const retries: number[] = [];
+        const onEvent = vi.fn();
+        const subscription = subscribe({ fetchImpl, mode: 'v2', onEvent, onRetry: (retry) => retries.push(retry.attempt) });
+        try {
+            sse.push(scheduledRetryEvent(2));
+            sse.push({ type, data: { sessionID: 'ses_other' } });
+            sse.push(scheduledRetryEvent(2));
+            sse.push(scheduledRetryEvent(3, 'ses_other'));
+            sse.push(scheduledRetryEvent(2));
+            sse.push({ type, data: {} });
+            sse.push(scheduledRetryEvent(2));
+            sse.push({ type, data: { sessionID: 'ses_ours' } });
+            sse.push(scheduledRetryEvent(2));
+            await vi.waitFor(() => expect(retries).toEqual([1, 1]));
+            expect(onEvent.mock.calls.every(([, properties]) => properties.sessionID === 'ses_ours')).toBe(true);
+        } finally {
+            subscription.close();
+        }
+    });
+
+    it('validates v2 attempts and message text without resetting dedupe on unreadable retries', async () => {
+        const sse = createSseStream();
+        const fetchImpl = vi.fn(async () => new Response(sse.stream));
+        const retries: Array<{ attempt: number; message: string }> = [];
+        const subscription = subscribe({ fetchImpl, mode: 'v2', onRetry: (retry) => retries.push(retry) });
+        try {
+            sse.push(scheduledRetryEvent(2));
+            for (const attempt of [1, 0, -2, 2.5, '2', null, undefined]) {
+                const event = scheduledRetryEvent(2);
+                sse.push({ ...event, data: { ...event.data, attempt } });
+            }
+            // JSON.stringify turns Infinity into null; send the overflowing literal on the wire.
+            sse.pushRaw('data: {"type":"session.retry.scheduled","data":{"sessionID":"ses_ours","attempt":1e400,"error":{"message":"bad"}}}\n\n');
+            for (const error of [null, {}, { message: '' }, { message: ' \n \t ' }, { message: 42 }]) {
+                const event = scheduledRetryEvent(3);
+                sse.push({ ...event, data: { ...event.data, error } });
+            }
+            sse.push(scheduledRetryEvent(2));
+            const event = scheduledRetryEvent(3);
+            const message = '  Rate\n limit\t ' + 'x'.repeat(OPENCODE_PROVIDER_TEXT_MAX_LENGTH * 2);
+            sse.push({ ...event, data: { ...event.data, error: { message } } });
+            await vi.waitFor(() => expect(retries).toEqual([
+                { attempt: 1, message: 'Rate limit exceeded.' },
+                { attempt: 2, message: truncateOpencodeProviderText('Rate limit ' + 'x'.repeat(OPENCODE_PROVIDER_TEXT_MAX_LENGTH * 2)) }
+            ]));
+            expect(retries[1].message).toHaveLength(OPENCODE_PROVIDER_TEXT_MAX_LENGTH);
+        } finally {
+            subscription.close();
+        }
+    });
+
+    it('never relays v2 error details or malformed payloads into retry callbacks or logs', async () => {
+        const marker = 'synthetic-do-not-relay';
+        const sse = createSseStream();
+        const fetchImpl = vi.fn(async () => new Response(sse.stream));
+        const onRetry = vi.fn();
+        vi.mocked(logger.debug).mockClear();
+        vi.mocked(logger.warn).mockClear();
+        const subscription = subscribe({ fetchImpl, mode: 'v2', onRetry });
+        try {
+            const event = scheduledRetryEvent(2);
+            const details = { response: { body: marker, headers: { authorization: marker } }, status: marker, type: marker };
+            sse.push({ ...event, data: { ...event.data, error: { ...details, message: 'Safe provider message' } } });
+            sse.push({ ...event, data: { ...event.data, attempt: 3, error: { ...details, message: '' } } });
+            sse.pushRaw(`data: {"${marker}": invalid}\n\n`);
+            // Exercise the preserved v1-shaped event path on this same v2 stream as well.
+            sse.push({ type: 'session.status', data: { sessionID: 'ses_ours', status: { type: 'retry', attempt: 3, message: '', response: marker } } });
+            sse.push(scheduledRetryEvent(3));
+            await vi.waitFor(() => expect(onRetry).toHaveBeenCalledTimes(2));
+            expect(onRetry.mock.calls).toEqual([
+                [{ attempt: 1, message: 'Safe provider message' }],
+                [{ attempt: 2, message: 'Rate limit exceeded.' }]
+            ]);
+            const logged = [...vi.mocked(logger.debug).mock.calls, ...vi.mocked(logger.warn).mock.calls];
+            // Include Error.message: JSON.stringify(Error) alone would hide parse-error leakage.
+            expect(JSON.stringify(logged, (_key, value) => value instanceof Error ? value.message : value)).not.toContain(marker);
+            expect(logged.some(([message]) => String(message).includes('retry reporting is live'))).toBe(true);
+        } finally {
+            subscription.close();
+        }
+    });
+
+    it('merges caller headers into every connect attempt (v2 Basic auth)', async () => {
+        const sse = createSseStream();
+        const fetchImpl = vi.fn(async (_url: string, _init?: RequestInit) => new Response(sse.stream, { status: 200 }));
+        const auth = 'Basic ' + Buffer.from('opencode:pw').toString('base64');
+        const subscription = subscribe({ fetchImpl, headers: { authorization: auth } });
+
+        await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+        expect(fetchImpl.mock.calls[0][1]?.headers).toMatchObject({ authorization: auth, accept: 'text/event-stream' });
+        await subscription.close();
         sse.close();
     });
 

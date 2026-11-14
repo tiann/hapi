@@ -2,8 +2,11 @@
 
 HAPI's web interface is a fully-featured PWA that can be installed on your phone for a native app-like experience.
 
-This page covers browser installation. For the SwiftUI/UIKit and Kotlin
-Compose clients, see [Native apps (iOS / Android)](./native-apps.md).
+The web app and PWA are free and full-featured. This page
+covers browser installation. For the paid iOS and Android apps, see
+[Native apps (iOS / Android)](./native-apps.md).
+
+For Markdown image requirements, native-client differences, and display-tool guidance, see [Displaying images](./agents.md#displaying-images).
 
 ## What is PWA?
 
@@ -76,6 +79,10 @@ On Android, HAPI appears in the system share sheet. When you share content to HA
 3. The app is then redirected (303) to the share picker, which reads the stored content
 
 This lets you share images, PDFs, text, and other files directly into a session from any app.
+The share-target session picker starts with recent active sessions; typing a
+query searches the full snapshot. See the [session
+list behavior guide](./session-list.md#share-target-picker) for its ordering
+and matching rules.
 
 ### Native / deep-link ingest
 
@@ -112,9 +119,9 @@ HAPI supports push notifications to alert you when agents need attention.
 
 ### Enable Notifications
 
-1. Open HAPI - a permission popup appears automatically
-2. Tap **Allow** to enable notifications
-3. If you missed the popup, go to system settings to grant permission
+1. Open **Settings → General** and enable **Push notifications on this device**.
+2. Tap **Allow** in the browser permission prompt. On iPhone and iPad, first add HAPI to the Home Screen and open it there.
+3. If permission was blocked, allow notifications in the browser or device settings. You can turn off the subscription from the same HAPI setting.
 
 ### Notification Types
 
@@ -122,12 +129,11 @@ HAPI supports push notifications to alert you when agents need attention.
 |------|-----------|
 | Permission Request | Agent needs your approval |
 | Ready | Agent finished and awaits input |
-| Task completed / Task failed | A background task finishes (success or failure) |
 
 ### Native app notifications
 
 The [native Android and iOS apps](./native-apps.md#notifications) use FCM and
-APNs. Official builds use encrypted push relay delivery by default; private
+APNs. App Store and Google Play builds use encrypted push relay delivery by default; private
 builds need matching provider configuration. If a native provider accepts a
 notification for any device in your namespace, the hub skips the Web Push
 duplicate for that dispatch. Missing registrations or failed sends retain the

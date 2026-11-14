@@ -21,6 +21,49 @@ function createQueryClient(): QueryClient {
 }
 
 describe('useCodexModels query scoping', () => {
+    it('uses a shared session connection before machine discovery', async () => {
+        const getMachineCodexModels = vi.fn()
+        const getSessionCodexModels = vi.fn(async () => ({
+            success: true,
+            models: [{ id: 'session-model', displayName: 'Session Model', isDefault: true }]
+        }))
+        const api = { getMachineCodexModels, getSessionCodexModels } as unknown as ApiClient
+
+        const result = renderHook(() => useCodexModels({
+            api,
+            sessionId: 'session-1',
+            machineId: 'machine-1',
+            preferSession: true,
+            enabled: true
+        }), { wrapper: wrapper(createQueryClient()) })
+
+        await waitFor(() => expect(result.result.current.models[0]?.id).toBe('session-model'))
+        expect(getSessionCodexModels).toHaveBeenCalledWith('session-1')
+        expect(getMachineCodexModels).not.toHaveBeenCalled()
+    })
+
+    it('uses machine discovery when a shared session has no model RPC', async () => {
+        const getSessionCodexModels = vi.fn(async () => {
+            throw new ApiError('session RPC unavailable', 503, RPC_TARGET_MISSING_ERROR_CODE)
+        })
+        const getMachineCodexModels = vi.fn(async () => ({
+            success: true,
+            models: [{ id: 'machine-model', displayName: 'Machine Model', isDefault: true }]
+        }))
+        const api = { getMachineCodexModels, getSessionCodexModels } as unknown as ApiClient
+
+        const result = renderHook(() => useCodexModels({
+            api,
+            sessionId: 'session-1',
+            machineId: 'machine-1',
+            preferSession: true,
+            enabled: true
+        }), { wrapper: wrapper(createQueryClient()) })
+
+        await waitFor(() => expect(result.result.current.models[0]?.id).toBe('machine-model'))
+        expect(getMachineCodexModels).toHaveBeenCalledTimes(1)
+    })
+
     it('shares machine-backed discovery across sessions on the same machine', async () => {
         const getMachineCodexModels = vi.fn(async () => ({
             success: true,

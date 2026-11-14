@@ -3,6 +3,7 @@ import { chmod, unlink } from 'node:fs/promises';
 import { timingSafeEqual, randomUUID } from 'node:crypto';
 import WebSocket, { WebSocketServer } from 'ws';
 import { z } from 'zod';
+import { CODEX_WEBSOCKET_MAX_PAYLOAD } from '../websocketLimits';
 
 export const EnvelopeSchema = z.object({
     id: z.union([z.string(), z.number()]).optional(),
@@ -30,7 +31,7 @@ export async function startCodexGateway(options: {
     upstream: string; upstreamToken?: string; path?: string; token: string; hooks: GatewayHooks;
 }): Promise<{ endpoint: string; close(): Promise<void> }> {
     const server = createServer((_request, response) => { response.writeHead(404).end(); });
-    const websocket = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 * 1024 });
+    const websocket = new WebSocketServer({ noServer: true, maxPayload: CODEX_WEBSOCKET_MAX_PAYLOAD });
     const connections = new Map<WebSocket, WebSocket>();
     server.on('upgrade', (request, socket, head) => {
         if (!options.path) {
@@ -47,7 +48,7 @@ export async function startCodexGateway(options: {
         const connectionId = randomUUID();
         const upstream = new WebSocket(socketUrl(options.upstream), {
             headers: { Host: 'localhost', ...(options.upstreamToken ? { Authorization: `Bearer ${options.upstreamToken}` } : {}) },
-            handshakeTimeout: 10_000, maxPayload: 64 * 1024 * 1024, perMessageDeflate: false
+            handshakeTimeout: 10_000, maxPayload: CODEX_WEBSOCKET_MAX_PAYLOAD, perMessageDeflate: false
         });
         connections.set(downstream, upstream);
         const pending = new Map<string | number, Envelope>();
