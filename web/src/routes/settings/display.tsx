@@ -8,6 +8,8 @@ import { getSessionListStatusModeOptions, useSessionListStatusMode } from '@/hoo
 import { useShowActiveSessionsOnly } from '@/hooks/useShowActiveSessionsOnly'
 import { useKeepUnreadSessionsVisible } from '@/hooks/useKeepUnreadSessionsVisible'
 import { usePinInProgressSessions } from '@/hooks/usePinInProgressSessions'
+import { getPinInProgressSessionsModeOptions, usePinInProgressSessionsMode } from '@/hooks/usePinInProgressSessionsMode'
+import { getSessionProjectSortModeOptions, useSessionProjectSortMode } from '@/hooks/useSessionProjectSortMode'
 import { MAX_SESSION_PREVIEW_LIMIT, MIN_SESSION_PREVIEW_LIMIT, normalizeSessionPreviewLimit, useSessionPreviewLimit } from '@/hooks/useSessionPreviewLimit'
 import { useThemeColors, type ThemeColorKeyId } from '@/hooks/useThemeColors'
 import { useSessionHeaderMetadata, type SessionHeaderMetadataKey } from '@/hooks/useSessionHeaderMetadata'
@@ -141,6 +143,8 @@ export default function SettingsDisplayPage() {
     const { sessionListStatusMode, setSessionListStatusMode } = useSessionListStatusMode()
     const { showActiveSessionsOnly, setShowActiveSessionsOnly } = useShowActiveSessionsOnly()
     const { pinInProgressMode, setPinInProgressMode } = usePinInProgressSessions()
+    const { pinInProgressSessionsMode, setPinInProgressSessionsMode } = usePinInProgressSessionsMode()
+    const { sessionProjectSortMode, setSessionProjectSortMode } = useSessionProjectSortMode()
     const { keepUnreadSessionsVisible, setKeepUnreadSessionsVisible } = useKeepUnreadSessionsVisible()
     const { appBadgeEnabled, setAppBadgeEnabled } = useAppBadgePreference()
     const { openExternalLinksInNewTab, setOpenExternalLinksInNewTab } = useOpenExternalLinksInNewTab()
@@ -192,6 +196,23 @@ export default function SettingsDisplayPage() {
                         { value: 'all', label: t('settings.display.pinInProgressMode.all') },
                     ]}
                     onChange={setPinInProgressMode}
+                />
+                <div data-testid="pin-in-progress-settings">
+                    <SettingsChoiceGroup
+                        label={t('settings.display.pinInProgressSessions.mode')}
+                        description={t('settings.display.pinInProgressSessions.mode.desc')}
+                        value={pinInProgressSessionsMode}
+                        options={getPinInProgressSessionsModeOptions().map((option) => ({ value: option.value, label: t(option.labelKey) }))}
+                        disabled={pinInProgressMode === 'off'}
+                        onChange={setPinInProgressSessionsMode}
+                    />
+                </div>
+                <SettingsChoiceGroup
+                    label={t('settings.display.projectSort')}
+                    description={t('settings.display.projectSort.desc')}
+                    value={sessionProjectSortMode}
+                    options={getSessionProjectSortModeOptions().map((option) => ({ value: option.value, label: t(option.labelKey) }))}
+                    onChange={setSessionProjectSortMode}
                 />
                 <SettingsSwitch label={t('settings.display.keepUnreadSessionsVisible')} description={t('settings.display.keepUnreadSessionsVisible.desc')} checked={keepUnreadSessionsVisible} onChange={setKeepUnreadSessionsVisible} />
                 <SettingsSwitch label={t('settings.display.appBadge')} description={t('settings.display.appBadge.desc')} checked={appBadgeEnabled} onChange={setAppBadgeEnabled} />

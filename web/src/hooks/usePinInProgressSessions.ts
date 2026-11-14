@@ -19,6 +19,8 @@ export const PIN_IN_PROGRESS_MODES: readonly PinInProgressMode[] = ['off', 'jobs
 /** New default when the preference has never been set. */
 export const DEFAULT_PIN_IN_PROGRESS_MODE: PinInProgressMode = 'jobs'
 
+const PIN_CHANGED_EVENT = 'hapi-pin-in-progress-sessions-changed'
+
 export const PIN_IN_PROGRESS_STORAGE_KEY = 'hapi-pin-in-progress-sessions'
 
 function isBrowser(): boolean {
@@ -122,8 +124,15 @@ export function usePinInProgressSessions(): {
             setPinInProgressModeState(parsePinInProgressMode(event.newValue))
         }
 
+        const onLocalChange = (event: Event) => {
+            if (event instanceof CustomEvent) setPinInProgressModeState(parsePinInProgressMode(event.detail))
+        }
+        window.addEventListener(PIN_CHANGED_EVENT, onLocalChange)
         window.addEventListener('storage', onStorage)
-        return () => window.removeEventListener('storage', onStorage)
+        return () => {
+            window.removeEventListener('storage', onStorage)
+            window.removeEventListener(PIN_CHANGED_EVENT, onLocalChange)
+        }
     }, [])
 
     const setPinInProgressMode = useCallback((value: PinInProgressMode) => {
@@ -131,6 +140,7 @@ export function usePinInProgressSessions(): {
         // Always persist so an explicit Off is distinct from never-set→jobs default
         // after the user has opened Settings and chosen.
         safeSetItem(PIN_IN_PROGRESS_STORAGE_KEY, value)
+        if (isBrowser()) window.dispatchEvent(new CustomEvent(PIN_CHANGED_EVENT, { detail: value }))
     }, [])
 
     const setPinInProgressSessions = useCallback((value: boolean) => {
