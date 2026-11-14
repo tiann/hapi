@@ -7,6 +7,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,6 +37,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -143,6 +149,18 @@ private fun QueuedRow(
                     )
                 }
                 .testTag("chat-queued-row-${row.id}")
+                .focusable(enabled = row.canAct)
+                .onKeyEvent { event ->
+                    if (event.type == KeyEventType.KeyUp
+                        && row.canEdit
+                        && (event.key == Key.Enter || event.key == Key.Spacebar)
+                    ) {
+                        onEdit(row.id)
+                        true
+                    } else {
+                        false
+                    }
+                }
                 .semantics(mergeDescendants = true) {
                     if (!row.canAct) disabled()
                     if (row.canEdit) {
