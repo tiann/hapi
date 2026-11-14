@@ -6,8 +6,9 @@ import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.focusable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -37,11 +38,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onKeyEvent
-import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
@@ -121,6 +117,7 @@ fun QueuedMessagesBar(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun QueuedRow(
     row: QueuedRowUi,
@@ -132,47 +129,38 @@ private fun QueuedRow(
     var menuOpen by remember { mutableStateOf(false) }
     val editLabel = stringResource(R.string.chat_queued_edit)
     val secondary = MaterialTheme.hapi.textSecondary
+    val rowInteraction = if (row.canEdit) {
+        Modifier.combinedClickable(
+            enabled = row.canAct,
+            onClickLabel = editLabel,
+            onClick = { onEdit(row.id) },
+            onLongClick = { menuOpen = true },
+        )
+    } else {
+        Modifier.pointerInput(row.canAct) {
+            detectTapGestures(
+                onLongPress = {
+                    if (row.canAct) menuOpen = true
+                },
+            )
+        }
+    }
     Box {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = 48.dp)
-                .pointerInput(row.canAct, row.canEdit) {
-                    detectTapGestures(
-                        onTap = {
-                            if (row.canEdit) onEdit(row.id)
-                        },
-                        onLongPress = {
-                            if (row.canAct) menuOpen = true
-                        },
-                    )
-                }
+                .then(rowInteraction)
                 .testTag("chat-queued-row-${row.id}")
-                .focusable(enabled = row.canAct)
-                .onKeyEvent { event ->
-                    if (event.type == KeyEventType.KeyDown
-                        && row.canEdit
-                        && (event.key == Key.Enter || event.key == Key.Spacebar)
-                    ) {
-                        onEdit(row.id)
-                        true
-                    } else {
-                        false
-                    }
-                }
                 .semantics(mergeDescendants = true) {
-                    if (!row.canAct) disabled()
-                    if (row.canEdit) {
-                        onClick(label = editLabel) {
-                            onEdit(row.id)
-                            true
-                        }
-                    }
-                    if (row.canAct) {
-                        onLongClick {
-                            menuOpen = true
-                            true
+                    if (!row.canEdit) {
+                        if (!row.canAct) disabled()
+                        if (row.canAct) {
+                            onLongClick {
+                                menuOpen = true
+                                true
+                            }
                         }
                     }
                 }
