@@ -23,7 +23,7 @@ import {
 import { App } from '@/App'
 import { SessionChat } from '@/components/SessionChat'
 import { SessionList } from '@/components/SessionList'
-import { SidebarShowButton } from '@/components/SidebarToggle'
+import { SidebarResizeHandle, SidebarShowButton } from '@/components/SidebarToggle'
 import { NewSession } from '@/components/NewSession'
 import { WorkspaceBrowser } from '@/components/WorkspaceBrowser'
 import { LoadingState } from '@/components/LoadingState'
@@ -292,6 +292,19 @@ function SessionsPage() {
         const nextHref = `${currentPathname}${nextSearch ? `?${nextSearch}` : ''}${hash}`
         router.history.replace(nextHref, state)
     }, [router, setIsSidebarVisible, sidebarHidden])
+    const hideSidebar = useCallback(() => {
+        if (sidebarHidden) return
+        setIsSidebarVisible(false)
+        if (isSessionsIndex) return
+        const { pathname: currentPathname, search, hash, state } = router.history.location
+        const searchParams = new URLSearchParams(search)
+        if (searchParams.get('sidebar') === 'hidden') return
+        searchParams.set('sidebar', 'hidden')
+        router.history.replace(
+            `${currentPathname}?${searchParams.toString()}${hash}`,
+            state,
+        )
+    }, [isSessionsIndex, router, sidebarHidden])
 
     return (
         <>
@@ -364,9 +377,11 @@ function SessionsPage() {
             </div>
 
             {shouldShowSidebar ? (
-                <div
-                    className="sidebar-resize-handle hidden split:block shrink-0"
-                    data-dragging={sidebar.isDragging || undefined}
+                <SidebarResizeHandle
+                    canHide={!isSessionsIndex}
+                    hideLabel={t('session.sidebar.hide')}
+                    isDragging={sidebar.isDragging}
+                    onHide={hideSidebar}
                     onPointerDown={sidebar.onPointerDown}
                 />
             ) : null}
