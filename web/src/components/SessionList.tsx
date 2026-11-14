@@ -11,6 +11,7 @@ import {
     sortSessionsBySearchRelevance,
 } from '@/lib/sessionListSearch'
 import { useLongPress } from '@/hooks/useLongPress'
+import { useProjectGroupCollapse } from '@/hooks/useProjectGroupCollapse'
 import { usePlatform } from '@/hooks/usePlatform'
 import { sessionArchiveMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useIsMutating } from '@tanstack/react-query'
@@ -519,7 +520,6 @@ export function groupSessionsByDirectory(
             )
         })
 }
-
 
 export function expandSelectedSessionCollapseOverrides(
     overrides: Map<string, boolean>,
@@ -1569,6 +1569,7 @@ export function SessionList(props: {
     machineLabelsById?: Record<string, string>
     machinesById?: Record<string, Machine>
     selectedSessionId?: string | null
+    collapseStorageKey?: string | null
 }) {
     const { t } = useTranslation()
     const {
@@ -1956,15 +1957,15 @@ export function SessionList(props: {
         const visibleKeys = new Set(groups.map((group) => group.key))
         return allDirectoryGroups.filter((group) => !visibleKeys.has(group.key))
     }, [groups, allDirectoryGroups, effectivePinInProgressMode])
-    const [collapseOverrides, setCollapseOverrides] = useState<Map<string, boolean>>(
-        () => new Map()
-    )
+    const collapseStorageKey = props.collapseStorageKey ?? null
+    const { collapseOverrides, setManualCollapse, revealGroup } = useProjectGroupCollapse(collapseStorageKey)
     const [filterCollapseOverrides, setFilterCollapseOverrides] = useState<Map<string, boolean>>(
         () => new Map()
     )
     const [runningSectionCollapsed, setRunningSectionCollapsed] = useState(false)
     const [pinnedSectionCollapsed, setPinnedSectionCollapsed] = useState(false)
     const autoExpandedSelectedSessionKeyRef = useRef<string | null>(null)
+    const autoExpandedFilterSelectedSessionKeyRef = useRef<string | null>(null)
     const isGroupCollapsed = (group: SessionGroup): boolean => {
         const override = isFiltering
             ? filterCollapseOverrides.get(group.key)
@@ -1985,16 +1986,20 @@ export function SessionList(props: {
     }
 
     const toggleGroup = (groupKey: string, isCollapsed: boolean) => {
-        const setOverrides = isFiltering ? setFilterCollapseOverrides : setCollapseOverrides
-        setOverrides(prev => {
-            const next = new Map(prev)
-            next.set(groupKey, !isCollapsed)
-            return next
-        })
+        if (isFiltering) {
+            setFilterCollapseOverrides(prev => {
+                const next = new Map(prev)
+                next.set(groupKey, !isCollapsed)
+                return next
+            })
+            return
+        }
+        setManualCollapse(groupKey, !isCollapsed)
     }
 
     useEffect(() => {
         if (isFiltering) return
+        autoExpandedFilterSelectedSessionKeyRef.current = null
         setFilterCollapseOverrides(prev => prev.size === 0 ? prev : new Map())
     }, [isFiltering])
 
@@ -2325,7 +2330,11 @@ export function SessionList(props: {
     // session) reopens a path the user just collapsed.
     useEffect(() => {
         if (!selectedSessionId) {
-            autoExpandedSelectedSessionKeyRef.current = null
+            if (isFiltering) {
+                autoExpandedFilterSelectedSessionKeyRef.current = null
+            } else {
+                autoExpandedSelectedSessionKeyRef.current = null
+            }
             return
         }
 
@@ -2341,40 +2350,28 @@ export function SessionList(props: {
             // (e.g. it moved to the pinned "in progress" section). Drop the
             // guard so it auto-expands again when it transitions back into a
             // group later.
-            if (!isFiltering) {
+            if (isFiltering) {
+                autoExpandedFilterSelectedSessionKeyRef.current = null
+            } else {
                 autoExpandedSelectedSessionKeyRef.current = null
             }
             return
         }
 
-        const autoExpandKey = `${selectedSessionId}::${group.key}`
+        if (isFiltering) {
+            const filterAutoExpandKey = `${selectedSessionId}::${group.key}`
+            if (autoExpandedFilterSelectedSessionKeyRef.current === filterAutoExpandKey) return
+            autoExpandedFilterSelectedSessionKeyRef.current = filterAutoExpandKey
+            setFilterCollapseOverrides(prev => expandSelectedSessionCollapseOverrides(prev, group))
+            return
+        }
+
+        const autoExpandKey = JSON.stringify([collapseStorageKey, selectedSessionId, group.key])
         if (autoExpandedSelectedSessionKeyRef.current === autoExpandKey) return
         autoExpandedSelectedSessionKeyRef.current = autoExpandKey
 
-        const setOverrides = isFiltering ? setFilterCollapseOverrides : setCollapseOverrides
-        setOverrides(prev => expandSelectedSessionCollapseOverrides(prev, group))
-    }, [selectedSessionId, groups, isFiltering])
-
-    // Clean up stale collapse overrides
-    useEffect(() => {
-        setCollapseOverrides(prev => {
-            if (prev.size === 0) return prev
-            const next = new Map(prev)
-            const knownKeys = new Set<string>()
-            for (const g of allGroups) {
-                knownKeys.add(g.key)
-                knownKeys.add(`sessions::${g.key}`)
-            }
-            let changed = false
-            for (const key of next.keys()) {
-                if (!knownKeys.has(key)) {
-                    next.delete(key)
-                    changed = true
-                }
-            }
-            return changed ? next : prev
-        })
-    }, [allGroups])
+        revealGroup(group.key)
+    }, [selectedSessionId, groups, isFiltering, collapseStorageKey, revealGroup])
 
     // Clean up reveal caps for groups that no longer exist.
     useEffect(() => {
