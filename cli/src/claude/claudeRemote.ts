@@ -102,9 +102,6 @@ export async function claudeRemote(opts: {
     onInputSubmitted?: (nativePromptUuid: string) => void,
     onCompletionEvent?: (message: string) => void,
     onSessionReset?: () => void,
-    /** Legacy args-mutation hook, retained until the launchers stop
-     * mutating claudeArgs (removed by the launcher-routing commit). */
-    onUpdateClaudeArgs?: (update: (args: string[] | undefined) => string[] | undefined) => void,
     /** Open while a plain (non-command) turn runs; null otherwise. */
     onSteerTargetChange?: (target: ClaudeSteerTarget | null) => void
 }) {

@@ -86,6 +86,7 @@ function createClientStub() {
         rpcHandlers,
         agentState: () => agentState,
         keepAlive: () => {},
+        getMetadata: () => ({}),
         updateMetadata: (mutator: (metadata: any) => any) => { mutator({}) },
         updateAgentState: (mutator: (state: any) => any) => { agentState = mutator(agentState) },
         emitMessagesConsumed: vi.fn(),

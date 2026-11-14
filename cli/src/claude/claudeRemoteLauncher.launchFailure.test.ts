@@ -36,6 +36,7 @@ function makeClient() {
             })
         },
         updateMetadata: vi.fn(),
+        getMetadata: () => ({}),
         updateAgentState: vi.fn((handler: (state: any) => any) => {
             agentState = handler(agentState);
         }),

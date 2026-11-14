@@ -56,6 +56,7 @@ function createSessionStub() {
             hookSettingsPath: null,
             queue: { size: () => 0, reset: () => {}, setOnMessage: () => {} },
             client: {
+                getMetadata: () => metadata,
                 sendClaudeSessionMessage: (msg: Record<string, unknown>) => { sentMessages.push(msg) },
                 updateMetadata: (handler: (current: Metadata) => Metadata) => {
                     metadata = handler(metadata)

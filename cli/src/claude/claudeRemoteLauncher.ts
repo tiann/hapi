@@ -11,11 +11,12 @@ import { formatClaudeMessageForInk } from "@/ui/messageFormatterInk";
 import { logger } from "@/ui/logger";
 import { SDKToLogConverter } from "./utils/sdkToLogConverter";
 import { PLAN_FAKE_REJECT } from "./sdk/prompts";
-import { claudeProcessModeKey, EnhancedMode } from "./loop";
+import { claudeProcessModeKey, claudeBatchModeHash, EnhancedMode } from "./loop";
 import { OutgoingMessageQueue } from "./utils/OutgoingMessageQueue";
 import type { ClaudePermissionMode } from "@hapi/protocol/types";
 import { RPC_METHODS } from "@hapi/protocol/rpcMethods";
 import { parseSpecialCommand } from "@/parsers/specialCommands";
+import { deriveSpawnArgs } from './conversationHistory';
 import { ClaudeToolResultImages } from './utils/toolResultImages';
 import { applySessionTitleFallback, readNativeSessionTitle, stripAttachmentReferences } from './utils/sessionTitleFallback';
 import {
@@ -440,7 +441,21 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 isolate: boolean;
                 hash: string;
                 items: Array<{ message: string; localId?: string }>;
-            } | null = null;
+            } | null = null as {
+                message: string;
+                mode: EnhancedMode;
+                isolate: boolean;
+                hash: string;
+                items: Array<{ message: string; localId?: string }>;
+            } | null;
+
+            // The full mode of the last batch actually handed to the SDK in any
+            // attempt (fresh delivery or parked-batch replay). A resume-at
+            // respawn is promptless, so claudeRemote's first-mode overwrite
+            // never runs and bootstrapMode is the entire launch configuration;
+            // the process-affecting fields have no session getter, so they are
+            // re-supplied from here.
+            let lastDeliveredMode: EnhancedMode | null = null;
 
             let previousSessionId: string | null = null;
             let immediateFailureCount = 0;
@@ -508,10 +523,54 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 // typecheck with "Property 'isolate' does not exist on type
                 // 'never'" (verified against `bun run typecheck`).
                 let inFlightMessage: InFlightMessage | null = null as InFlightMessage | null;
+                // A resume-at respawn (rewind restart or crash re-arm) starts
+                // query() before any prompt exists, so the first-mode
+                // overwrite inside claudeRemote() never runs and bootstrapMode
+                // is the entire launch configuration. Seed it with the mode of
+                // the batch the respawn will deliver: a parked batch first,
+                // else the queue head (mode fields like customSystemPrompt AND
+                // the RPC-tracked permissionMode/model/effort ride the
+                // message, and the live getters may have changed since the
+                // batch was queued). With an empty queue the getters own the
+                // tracked fields on top of the last delivered mode's
+                // process-affecting ones, so a rewind or crash cannot strip
+                // the launch configuration.
+                // Spawn-time boundary derivation (deriveSpawnArgs): the
+                // durable rewind intent plus a fresh transcript evaluation
+                // decide the boundary; a fork-at-message request's boundary
+                // applies only while the child is unbuilt. session.claudeArgs
+                // is only read, never mutated for the boundary.
+                const { args: spawnArgs, boundary: spawnBoundary } = deriveSpawnArgs({
+                    claudeArgs: session.claudeArgs,
+                    sessionId: session.sessionId,
+                    intent: session.client.getMetadata()?.claudeRewind,
+                    workingDirectory: session.path
+                });
+                const resumeAtArmed = spawnBoundary != null;
+                const resumeAtBootstrapMode: EnhancedMode | null = !resumeAtArmed ? null
+                    : pending?.mode
+                        ?? session.queue.peekNextBatchMode()?.mode
+                        ?? {
+                            ...(lastDeliveredMode ?? {}),
+                            permissionMode: session.getPermissionMode() ?? 'default',
+                            model: session.getModel() ?? undefined,
+                            effort: session.getEffort() ?? undefined,
+                        };
+                if (resumeAtBootstrapMode) {
+                    // The spawned process runs this configuration from its
+                    // first prompt, so the first arriving batch must be gated
+                    // against it exactly like later batches. Without the seed,
+                    // modeHash stays null until the first delivery and a
+                    // config-changed batch arriving on an empty-queue respawn
+                    // is handed straight into the stale-config process.
+                    modeHash = claudeBatchModeHash(resumeAtBootstrapMode);
+                    mode = resumeAtBootstrapMode;
+                }
                 try {
                     await claudeRemote({
                         sessionId: session.sessionId,
                         path: session.path,
+                        claudeArgs: spawnArgs,
                         allowedTools: session.allowedTools ?? [],
                         mcpServers: session.mcpServers,
                         hookSettingsPath: session.hookSettingsPath,
@@ -526,7 +585,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             session.client.sendSessionEvent({ type: 'permission-mode-changed', mode });
                             session.client.sendSessionEvent({ type: 'message', message: reason });
                         },
-                        bootstrapMode: {
+                        bootstrapMode: resumeAtBootstrapMode ?? {
                             permissionMode: session.getPermissionMode() ?? 'default',
                             model: session.getModel() ?? undefined,
                             effort: session.getEffort() ?? undefined,
@@ -554,9 +613,6 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             }));
                             session.onNativeInputSubmitted?.(nativePromptUuid);
                         },
-                        onUpdateClaudeArgs: (update) => {
-                            session.claudeArgs = update(session.claudeArgs);
-                        },
                         nextMessage: async () => {
                             // Flush any pending outgoing messages before consuming the next user
                             // turn. Without this, scheduleProcessing()'s setTimeout(fn,0) fires
@@ -579,6 +635,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 // --permission-mode (e.g. auto silently running as default).
                                 modeHash = p.hash;
                                 mode = p.mode;
+                                lastDeliveredMode = p.mode;
                                 permissionHandler.handleModeChange(p.mode.permissionMode);
                                 // Re-resolve the selected-model seed hint for every turn, not
                                 // just the first: a single claudeRemote() call keeps accepting
@@ -636,6 +693,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 }
                                 modeHash = msg.hash;
                                 mode = msg.mode;
+                                lastDeliveredMode = msg.mode;
                                 permissionHandler.handleModeChange(mode.permissionMode);
                                 sdkToLogConverter.updateSelectedModel(mode.model ?? null);
                                 deliveredMessageThisAttempt = true;
@@ -665,7 +723,6 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         },
                         onThinkingChange: session.onThinkingChange,
                         claudeEnvVars: session.claudeEnvVars,
-                        claudeArgs: session.claudeArgs,
                         onMessage,
                         onContextUsage: (usage) => sdkToLogConverter.applyContextUsage(usage.model, usage.maxTokens),
                         onAccountIdentity: (identity) => sdkToLogConverter.updateAccountIdentity?.(identity),
@@ -700,6 +757,13 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             // next launch would resume the session the user
                             // just asked to clear.
                             session.consumeOneTimeFlags();
+                            // The reset also discards the conversation a
+                            // pending rewind points into: the runner cancels
+                            // the durable intent, and the next spawn's
+                            // boundary derivation sees no intent - the flag
+                            // is never stored on claudeArgs, so there is
+                            // nothing to strip here.
+                            session.onConversationReset?.();
                         },
                         onReady: async (completionEvent?: string, compactSummary?: CompactSummaryPayload, compactContextTokens?: number) => {
                             // Reaching ready at all means this attempt is not an

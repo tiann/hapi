@@ -349,6 +349,18 @@ export class MessageQueue2<T> {
     }
 
     /**
+     * Read-only look at the batch collectBatch() would return next: the head
+     * item's mode (an isolated head wins, matching collection). Consumes
+     * nothing; null when the queue is empty. Lets a caller seed spawn-time
+     * options from the batch that is about to be delivered.
+     */
+    peekNextBatchMode(): { mode: T; isolate: boolean } | null {
+        const firstItem = this.queue[0];
+        if (!firstItem) return null;
+        return { mode: firstItem.mode, isolate: firstItem.isolate ?? false };
+    }
+
+    /**
      * Remove and return a queued item by localId (with its original index),
      * or null if not found. Pair with {@link restoreTakenItem} when an async
      * operation may need to put the item back in order.

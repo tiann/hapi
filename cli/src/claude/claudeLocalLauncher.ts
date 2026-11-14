@@ -1,4 +1,6 @@
 import { claudeLocal } from "./claudeLocal";
+import { deriveSpawnArgs } from './conversationHistory';
+import { claudeCheckSession } from './utils/claudeCheckSession';
 import { Session } from "./session";
 import { createSessionScanner } from "./utils/sessionScanner";
 import { isClaudeChatVisibleMessage } from "./utils/chatVisibility";
@@ -87,6 +89,15 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
         launch: async (abortSignal) => {
             session.localPermissionBridge.start(session.sessionId);
             abortSignal.addEventListener('abort', session.localPermissionBridge.stop, { once: true });
+            // Spawn-time boundary derivation (see deriveSpawnArgs): the
+            // rewind boundary comes from the durable intent, never from a
+            // mutated claudeArgs buffer.
+            const { args: spawnArgs } = deriveSpawnArgs({
+                claudeArgs: session.claudeArgs,
+                sessionId: session.sessionId,
+                intent: session.client.getMetadata()?.claudeRewind,
+                workingDirectory: session.path
+            });
             session.localContextModel = resolveClaudeLaunchModel({
                 model: session.getModel(),
                 cwd: session.path,
@@ -99,7 +110,7 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
                     sessionId: session.sessionId,
                     abort: abortSignal,
                     claudeEnvVars: session.claudeEnvVars,
-                    claudeArgs: session.claudeArgs,
+                    claudeArgs: spawnArgs,
                     model: session.getModel(),
                     permissionMode: session.getPermissionMode(),
                     mcpServers: session.mcpServers,
@@ -112,7 +123,16 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
             }
         },
         onLaunchSuccess: () => {
-            session.consumeOneTimeFlags();
+            // Consume only once the launched session actually materialized on
+            // disk. Launch success fires before the SessionStart hook binds
+            // the id; consuming then would wipe --resume/--fork-session while
+            // the child transcript does not exist, and a switch or crash in
+            // that window could not resume or re-fork the source. The
+            // spawn-time derivation also strips --fork-session once
+            // materialized, so a later respawn cannot re-fork either way.
+            if (session.sessionId && claudeCheckSession(session.sessionId, session.path)) {
+                session.consumeOneTimeFlags();
+            }
         },
         sendFailureMessage: (message) => {
             session.client.sendSessionEvent({ type: 'message', message });
