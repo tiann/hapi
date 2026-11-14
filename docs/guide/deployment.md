@@ -118,6 +118,7 @@ provider) in front of the hub origin, then set three environment variables on
 the hub:
 
 ```bash
+export HAPI_PUBLIC_URL="https://your-domain.example"
 export HAPI_CLOUDFLARE_ACCESS_TEAM_DOMAIN="myteam.cloudflareaccess.com"
 export HAPI_CLOUDFLARE_ACCESS_AUD="your-access-application-audience"
 export HAPI_CLOUDFLARE_ACCESS_USERS='{"alice@example.com":"default","bob@example.com":"work"}'
@@ -129,6 +130,17 @@ hapi hub
   for Docker Compose, use the Hub service's `environment` or `env_file`.
   Restart the Hub after changing them. Browsers and CLI runners do not need
   these variables.
+- Set `HAPI_PUBLIC_URL` to the public `https://` origin exposed by Cloudflare
+  Access (or set `CORS_ORIGINS` explicitly if multiple origins are allowed).
+  Without it, `publicUrl` and `corsOrigins` default to `http://localhost:3006`,
+  which causes Web Terminal Socket.IO connections to fail origin checks and
+  voice WebSocket proxies to emit `ws://` instead of `wss://` behind a
+  TLS-terminating tunnel.
+- Keep the Hub listener private behind Cloudflare Access (`HAPI_LISTEN_HOST`
+  defaults to `127.0.0.1`). In Docker Compose or reverse-proxy deployments, do
+  not publish or firewall-expose the Hub port directly to the public internet:
+  only traffic routed through the Cloudflare Tunnel / Access edge should be
+  able to reach the Hub.
 - `TEAM_DOMAIN` is the team's `<team>.cloudflareaccess.com` hostname without
   `https://` or a path. To find `AUD`, open Cloudflare **Zero Trust → Access
   controls → Applications → your application's Configure → Additional
