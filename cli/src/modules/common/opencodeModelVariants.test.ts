@@ -66,6 +66,99 @@ describe('parseOpencodeProviderVariants', () => {
         expect(parseOpencodeProviderVariants('string')).toEqual({})
         expect(parseOpencodeProviderVariants({})).toEqual({})
         expect(parseOpencodeProviderVariants({ all: 'nope' })).toEqual({})
+        expect(parseOpencodeProviderVariants({ data: 'nope' })).toEqual({})
+    })
+
+    it('parses the OpenCode v2 /api/model payload shape captured from opencode serve', () => {
+        // Captured from `opencode serve` (v2.3.0) GET /api/model and stripped of keys/paths.
+        const v2Payload = {
+            location: {
+                directory: '/tmp/fixture-project'
+            },
+            data: [
+                {
+                    id: 'iceman-free',
+                    modelID: 'iceman-free',
+                    providerID: 'opencode',
+                    type: 'chat',
+                    name: 'Iceman Free',
+                    variants: [],
+                    status: 'active',
+                    enabled: true
+                },
+                {
+                    id: 'flint-40b-free',
+                    modelID: 'flint-40b-free',
+                    providerID: 'opencode',
+                    type: 'chat',
+                    name: 'Flint 40B Free',
+                    variants: [
+                        { id: 'low', settings: { reasoningEffort: 'low' } },
+                        { id: 'medium', settings: { reasoningEffort: 'medium' } },
+                        { id: 'high', settings: { reasoningEffort: 'high' } },
+                        { id: 'xhigh', settings: { reasoningEffort: 'xhigh' } },
+                        { id: 'max', settings: { reasoningEffort: 'max' } }
+                    ],
+                    status: 'active',
+                    enabled: true
+                },
+                {
+                    id: 'minimaxai/minimax-m3.1-flash',
+                    modelID: 'minimaxai/minimax-m3.1-flash',
+                    providerID: 'nvidia',
+                    type: 'chat',
+                    name: 'MiniMax M3.1 Flash (agent)',
+                    variants: [
+                        { id: 'none', body: { chat_template_kwargs: { thinking_mode: 'disabled' } } },
+                        { id: 'thinking', body: { chat_template_kwargs: { thinking_mode: 'enabled' } } }
+                    ],
+                    status: 'active',
+                    enabled: true
+                },
+                {
+                    id: 'deepseek-v4.1-flash-free',
+                    modelID: 'deepseek-v4.1-flash-free',
+                    providerID: 'opencode',
+                    type: 'chat',
+                    name: 'DeepSeek V4.1 Flash Free',
+                    variants: [
+                        { id: 'low', settings: { reasoningEffort: 'low' } },
+                        { id: 'high', settings: { reasoningEffort: 'high' } },
+                        { id: 'max', settings: { reasoningEffort: 'max' } }
+                    ],
+                    status: 'active',
+                    enabled: true
+                }
+            ]
+        }
+
+        expect(parseOpencodeProviderVariants(v2Payload)).toEqual({
+            'opencode/flint-40b-free': ['low', 'medium', 'high', 'xhigh', 'max'],
+            'nvidia/minimaxai/minimax-m3.1-flash': ['none', 'thinking'],
+            'opencode/deepseek-v4.1-flash-free': ['low', 'high', 'max']
+        })
+    })
+
+    it('skips malformed v2 model entries and invalid variant items', () => {
+        const payload = {
+            location: { directory: '/tmp/fixture-project' },
+            data: [
+                'not-an-object',
+                { id: 'missing-provider', variants: [{ id: 'low' }] },
+                { providerID: 'p1', variants: [{ id: 'low' }] },
+                { id: 'bad-variants', providerID: 'p1', variants: 'nope' },
+                { id: 'empty-variants', providerID: 'p1', variants: [] },
+                {
+                    id: 'partial',
+                    providerID: 'p1',
+                    variants: [null, { id: '' }, { id: '  ' }, { nope: true }, { id: 'high' }]
+                }
+            ]
+        }
+
+        expect(parseOpencodeProviderVariants(payload)).toEqual({
+            'p1/partial': ['high']
+        })
     })
 })
 
@@ -253,6 +346,120 @@ describe('listOpencodeModelVariants resident lifecycle', () => {
         hook?.();
         expect(residentServe.kill).toHaveBeenCalled();
         exitSpy.mockRestore();
+    });
+
+    it('authenticates against spawned v2 serve /api/model and ignores HTML /provider on initial spawn and resident reuse', async () => {
+        let capturedEnv: Record<string, string | undefined> | undefined;
+        vi.stubGlobal('Bun', {
+            spawn: vi.fn((argv: string[], opts?: { cwd?: string; env?: Record<string, string | undefined> }) => {
+                const proc = makeProc(argv);
+                if (argv[0] === 'ps') {
+                    proc.stdout = new ReadableStream<Uint8Array>({
+                        start(c) { c.enqueue(new TextEncoder().encode('')); c.close(); }
+                    });
+                } else {
+                    capturedEnv = opts?.env;
+                }
+                procs.push(proc);
+                return proc;
+            })
+        });
+
+        const v2Payload = {
+            location: { directory: '/tmp/fixture-project' },
+            data: [
+                {
+                    id: 'deepseek-v4.1-flash-free',
+                    modelID: 'deepseek-v4.1-flash-free',
+                    providerID: 'opencode',
+                    variants: [{ id: 'low' }, { id: 'high' }, { id: 'max' }]
+                }
+            ]
+        };
+
+        vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+            const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+            if (url.endsWith('/provider')) {
+                return new Response('<!doctype html><html><body>OpenCode</body></html>', {
+                    status: 200,
+                    headers: { 'content-type': 'text/html' }
+                });
+            }
+            if (url.endsWith('/api/model')) {
+                const password = capturedEnv?.OPENCODE_SERVER_PASSWORD ?? capturedEnv?.OPENCODE_PASSWORD;
+                const expectedAuth = password
+                    ? 'Basic ' + Buffer.from(`opencode:${password}`).toString('base64')
+                    : null;
+                const headers = new Headers(init?.headers);
+                if (!expectedAuth || headers.get('authorization') !== expectedAuth) {
+                    return new Response(JSON.stringify({ _tag: 'UnauthorizedError', message: 'Authentication required' }), {
+                        status: 401,
+                        headers: { 'content-type': 'application/json' }
+                    });
+                }
+                return new Response(JSON.stringify(v2Payload), {
+                    status: 200,
+                    headers: { 'content-type': 'application/json' }
+                });
+            }
+            return new Response('Not Found', { status: 404 });
+        }));
+
+        mod = await import('./opencodeModelVariants');
+
+        const first = mod.listOpencodeModelVariants({ cwd: '/tmp/fixture-project' });
+        await vi.advanceTimersByTimeAsync(300);
+        const r1 = await first;
+        expect(r1).toEqual({
+            success: true,
+            variants: { 'opencode/deepseek-v4.1-flash-free': ['low', 'high', 'max'] }
+        });
+        expect(serveProcs().length).toBe(1);
+
+        // Resident reuse must also send the Basic auth header to /api/model.
+        const r2 = await mod.listOpencodeModelVariants({ cwd: '/tmp/fixture-project' });
+        expect(r2).toEqual({
+            success: true,
+            variants: { 'opencode/deepseek-v4.1-flash-free': ['low', 'high', 'max'] }
+        });
+        expect(serveProcs().length).toBe(1);
+    });
+
+    it('falls back to v1 /provider on a live acp server when /api/model returns 404', async () => {
+        vi.stubGlobal('Bun', {
+            spawn: vi.fn((argv: string[]) => {
+                const proc = makeProc(argv);
+                if (argv[0] === 'ps') {
+                    proc.stdout = new ReadableStream<Uint8Array>({
+                        start(c) {
+                            c.enqueue(new TextEncoder().encode('opencode acp --cwd /a --port 42495 --hostname 127.0.0.1'));
+                            c.close();
+                        }
+                    });
+                }
+                procs.push(proc);
+                return proc;
+            })
+        });
+
+        vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+            const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+            if (url.endsWith('/api/model')) {
+                return new Response('Not Found', { status: 404 });
+            }
+            if (url.endsWith('/provider')) {
+                return new Response(JSON.stringify(providerPayload), { status: 200 });
+            }
+            return new Response('Not Found', { status: 404 });
+        }));
+
+        mod = await import('./opencodeModelVariants');
+        const r = await mod.listOpencodeModelVariants({ cwd: '/a' });
+        expect(r).toEqual({
+            success: true,
+            variants: { 'p/m': ['low', 'high'] }
+        });
+        expect(serveProcs().length).toBe(0);
     });
 });
 
