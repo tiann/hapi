@@ -12,7 +12,7 @@ import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
 } from '@hapi/protocol/runnerCapabilities'
-import type { CopilotReasoningEffortResponse, CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, ImplementCodexPlanResult, KimiReasoningEffortResponse, MessageContextResponse, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse } from '@hapi/protocol/apiTypes'
+import type { AbortChunkedUploadResponse, CopilotReasoningEffortResponse, CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, ImplementCodexPlanResult, InitChunkedUploadRequest, InitChunkedUploadResponse, KimiReasoningEffortResponse, MessageContextResponse, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse, UploadChunkResponse } from '@hapi/protocol/apiTypes'
 import type { UsageQueryAgent, UsageQueryAgentSettings, UsageQueryResult, UsageQuerySettingsResponse, UsageQueryTemplate } from '@hapi/protocol/usageQuery'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
@@ -5957,6 +5957,22 @@ export class SyncEngine {
 
     async uploadFile(sessionId: string, filename: string, content: string, mimeType: string): Promise<RpcUploadFileResponse> {
         return await this.rpcGateway.uploadFile(sessionId, filename, content, mimeType)
+    }
+
+    async initChunkedUpload(sessionId: string, request: InitChunkedUploadRequest): Promise<InitChunkedUploadResponse> {
+        return await this.rpcGateway.initChunkedUpload(sessionId, request)
+    }
+
+    async uploadFileChunk(sessionId: string, uploadId: string, index: number, content: string): Promise<UploadChunkResponse> {
+        return await this.rpcGateway.uploadFileChunk(sessionId, uploadId, index, content)
+    }
+
+    async finalizeChunkedUpload(sessionId: string, uploadId: string): Promise<RpcUploadFileResponse> {
+        return await this.rpcGateway.finalizeChunkedUpload(sessionId, uploadId)
+    }
+
+    async abortChunkedUpload(sessionId: string, uploadId: string): Promise<AbortChunkedUploadResponse> {
+        return await this.rpcGateway.abortChunkedUpload(sessionId, uploadId)
     }
 
     async deleteUploadFile(sessionId: string, path: string): Promise<RpcDeleteUploadResponse> {

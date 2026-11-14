@@ -1,6 +1,10 @@
 import type {
     AttachmentMetadata,
+    AbortChunkedUploadResponse,
     AuthResponse,
+    InitChunkedUploadRequest,
+    InitChunkedUploadResponse,
+    UploadChunkResponse,
     CodexLocalSessionsResponse,
     CodexDuplicateSessionsResponse,
     CodexMergeDuplicateSessionsResponse,
@@ -672,6 +676,59 @@ export class ApiClient {
             method: 'POST',
             body: JSON.stringify({ filename, content, mimeType })
         })
+    }
+
+    async initChunkedUpload(
+        sessionId: string,
+        payload: InitChunkedUploadRequest,
+        options?: { signal?: AbortSignal }
+    ): Promise<InitChunkedUploadResponse> {
+        return await this.request<InitChunkedUploadResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/uploads`, {
+            method: 'POST',
+            body: JSON.stringify(payload),
+            signal: options?.signal
+        })
+    }
+
+    async uploadFileChunk(
+        sessionId: string,
+        uploadId: string,
+        index: number,
+        chunk: Blob | ArrayBuffer | Uint8Array,
+        options?: { signal?: AbortSignal }
+    ): Promise<UploadChunkResponse> {
+        return await this.request<UploadChunkResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/uploads/${encodeURIComponent(uploadId)}/chunk?index=${index}`,
+            {
+                method: 'POST',
+                headers: { 'content-type': 'application/octet-stream' },
+                body: chunk as BodyInit,
+                signal: options?.signal
+            }
+        )
+    }
+
+    async finalizeChunkedUpload(
+        sessionId: string,
+        uploadId: string,
+        options?: { signal?: AbortSignal }
+    ): Promise<UploadFileResponse> {
+        return await this.request<UploadFileResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/uploads/${encodeURIComponent(uploadId)}/finalize`,
+            {
+                method: 'POST',
+                signal: options?.signal
+            }
+        )
+    }
+
+    async abortChunkedUpload(sessionId: string, uploadId: string): Promise<AbortChunkedUploadResponse> {
+        return await this.request<AbortChunkedUploadResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/uploads/${encodeURIComponent(uploadId)}/abort`,
+            {
+                method: 'POST'
+            }
+        )
     }
 
     async deleteUploadFile(sessionId: string, path: string): Promise<DeleteUploadResponse> {
