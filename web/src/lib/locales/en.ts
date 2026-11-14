@@ -319,6 +319,7 @@ export default {
   'session.action.unpinProject': 'Unpin from project',
   'session.action.pinGlobal': 'Pin globally',
   'session.action.unpinGlobal': 'Unpin globally',
+  'session.action.unpin': 'Unpin',
   'session.action.pinFailed': 'Could not update pin',
   'sessions.pinnedSection': 'Pinned sessions',
   'session.action.export': 'Export conversation',

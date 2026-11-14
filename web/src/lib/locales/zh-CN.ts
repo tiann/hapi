@@ -319,6 +319,7 @@ export default {
   'session.action.unpinProject': '取消项目置顶',
   'session.action.pinGlobal': '全局置顶',
   'session.action.unpinGlobal': '取消全局置顶',
+  'session.action.unpin': '取消置顶',
   'session.action.pinFailed': '无法更新置顶状态',
   'sessions.pinnedSection': '置顶会话',
   'session.action.export': '导出对话',
