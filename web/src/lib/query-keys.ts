@@ -10,6 +10,8 @@ export const queryKeys = {
     usageQuotas: ['usage-quotas'] as const,
     machineCodexModels: (machineId: string) => ['machine-codex-models', machineId] as const,
     machineAgentAvailability: (machineId: string) => ['machine-agent-availability', machineId] as const,
+    machineUsageQuery: (machineId: string, agent: string) => ['machine-usage-query', machineId, agent] as const,
+    machineUsageQueryResult: (machineId: string, agent: string) => ['machine-usage-query-result', machineId, agent] as const,
     sessionCodexModels: (sessionId: string) => ['session-codex-models', sessionId] as const,
     gitStatus: (sessionId: string) => ['git-status', sessionId] as const,
     sessionFiles: (sessionId: string, query: string) => ['session-files', sessionId, query] as const,
