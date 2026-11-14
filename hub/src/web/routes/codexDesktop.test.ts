@@ -403,6 +403,7 @@ describe('Codex Desktop import routes', () => {
             expect(result.success).toBe(true)
             const session = store.sessions.getSessionsByNamespace('default')[0]
             expect(session).toBeDefined()
+            expect(engine.getSession(session.id)?.metadata?.codexImportedAt).toEqual(expect.any(Number))
             expect(engine.getSession(session.id)?.hasConversationContent).toBe(true)
             const messages = store.messages.getAllMessages(session.id)
             expect(messages).toHaveLength(2)
