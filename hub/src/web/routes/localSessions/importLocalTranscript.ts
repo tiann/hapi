@@ -386,10 +386,19 @@ export function runLocalImportSync(options: {
                             ? { importState: buildImportState(source, transcript, machine.id, 'complete', startedAt) }
                             : {})
                     })
+                    // Merge, never replace: live HAPI turns keep their own
+                    // local-id locators (fork/rewind controls) next to the
+                    // imported native ones.
                     const locators = buildHistoryLocators(transcript, persistedLocalIds)
                     if (locators) {
-                        next.conversationHistoryEntryIds = locators.entryIds
-                        next.conversationHistoryPoints = locators.points
+                        next.conversationHistoryEntryIds = {
+                            ...(asRecord(metadata.conversationHistoryEntryIds) as Record<string, string> | null ?? {}),
+                            ...locators.entryIds
+                        }
+                        next.conversationHistoryPoints = {
+                            ...(asRecord(metadata.conversationHistoryPoints) as Record<string, true> | null ?? {}),
+                            ...locators.points
+                        }
                     }
                     if (cursorKey && transcript.cursor) {
                         next[cursorKey] = transcript.cursor

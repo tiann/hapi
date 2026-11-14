@@ -151,6 +151,43 @@ describe('generic Pi import route', () => {
         for (const store of stores.splice(0)) store.close()
     })
 
+    it('keeps fork/rewind locators of HAPI turns when the session is re-imported', async () => {
+        const { app, store } = harness()
+        stores.push(store)
+        const importOnce = async () => {
+            const response = await app.request('/api/pi/import-sessions', {
+                method: 'POST',
+                body: JSON.stringify({ sessionIds: ['native-1'] })
+            })
+            return (await response.json() as { results: Array<{ hapiSessionId?: string; action?: string }> }).results[0]!
+        }
+        const first = await importOnce()
+        expect(first.action).toBe('created')
+
+        // The session continues in HAPI: the live Pi machinery stores the turn
+        // under a HAPI local id and maps it to its native entry.
+        const session = store.sessions.getSessionByNamespace(first.hapiSessionId!, 'default')!
+        store.messages.addMessage(session.id, userContent('continued in HAPI'), 'hapi-live-1')
+        const metadata = session.metadata as Record<string, unknown>
+        store.sessions.updateSessionMetadata(session.id, {
+            ...metadata,
+            conversationHistoryEntryIds: { ...(metadata.conversationHistoryEntryIds as Record<string, string>), 'hapi-live-1': 'entry-live' },
+            conversationHistoryPoints: { ...(metadata.conversationHistoryPoints as Record<string, true>), 'hapi-live-1': true }
+        }, session.metadataVersion, 'default')
+
+        const again = await importOnce()
+        expect(again.action).toBe('unchanged')
+        const after = store.sessions.getSessionByNamespace(session.id, 'default')!.metadata as Record<string, unknown>
+        expect(after.conversationHistoryEntryIds).toEqual({
+            'pi:native-1:entry-1:user': 'entry-1',
+            'hapi-live-1': 'entry-live'
+        })
+        expect(after.conversationHistoryPoints).toEqual({
+            'pi:native-1:entry-1:user': true,
+            'hapi-live-1': true
+        })
+    })
+
     it('diverges on a gap without a cursor', async () => {
         const { app, store } = harness({
             transcripts: [{
