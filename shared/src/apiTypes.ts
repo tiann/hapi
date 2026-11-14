@@ -138,6 +138,7 @@ export type AuthResponse = {
 }
 
 export type SessionsResponse = { sessions: SessionSummary[] }
+export type ScratchlistSessionIdsResponse = { sessionIds: string[] }
 export type SessionContentMatch = {
     messageId: string
     role: 'user' | 'assistant'
