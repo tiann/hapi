@@ -1194,7 +1194,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             if (waitSignal.aborted) continue;
             let batch;
             try {
-                batch = await session.queue.waitForMessagesAndGetAsString(waitSignal);
+                // Defer hub ACK until the dispatch commit point below so a
+                // batch requeued on Stop or dropped on teardown stays pending
+                // in the hub rather than being stamped invoked prematurely.
+                batch = await session.queue.waitForDeferredBatch(waitSignal);
             } catch (error) {
                 // beforeDequeue acquired no ownership and removed/ACKed no row.
                 // A socket entry can fence the gate while this await is parked.
@@ -1208,13 +1211,26 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 break;
             }
 
-            // Hold the fork busy guard across the whole dequeued batch —
-            // collectBatch() already acked the rows, so the hub can briefly see an
-            // empty queue + thinking=false while model/effort setup or native
-            // mutations are still in flight (same fence as grok).
+            let batchSettled = false;
+            const requeue = () => {
+                if (this.requeueUndeliveredBatch(session, batch)) {
+                    batchSettled = true;
+                }
+            };
+
+            // Hold the fork busy guard across the whole dequeued batch — the
+            // row is removed from the CLI queue before dispatch, so the hub can
+            // briefly see an empty queue + thinking=false while model/effort
+            // setup or native mutations are still in flight (same fence as grok).
             this.conversationHistory.setBusy(true);
             const releaseRuntime = session.takeDequeuedRuntimeRelease?.() ?? this.runtimeGate.enterRuntime();
             try {
+                if (this.shouldExit) {
+                    // Terminal teardown flipped while this batch sat in the wait:
+                    // drop it un-ACKed and end instead of running setup against
+                    // a closing backend.
+                    break;
+                }
 
                 this.settleBackendSoftSteers(backend, null, 'dequeue');
 
@@ -1225,6 +1241,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 // in-flight compact, while clear can only run after one finishes.
                 if (batch.mode.operation === 'clear') {
                     await this.options.onClearRequested?.();
+                    batchSettled = true;
+                    session.queue.commitBatch(batch);
                     this.clearRequested = true;
                     await this.requestExit('exit', async () => {})
                     break;
@@ -1233,6 +1251,13 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 // Install the controller before async model/effort changes so
                 // handleAbort() can cancel this batch even before HTTP work starts.
                 const isCompactBatch = batch.mode.operation === 'compact';
+                if (isCompactBatch) {
+                    // Keep /compact's dequeue-time consumption and cancellation
+                    // semantics separate and unchanged (see runOpencode.ts's
+                    // "No manual emitMessagesConsumed" comment).
+                    batchSettled = true;
+                    session.queue.commitBatch(batch);
+                }
                 const compactAbortController = isCompactBatch ? new AbortController() : null;
                 if (compactAbortController) {
                     this.compactAbortController = compactAbortController;
@@ -1460,7 +1485,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     // awaits must not run a round-snapshot read or blink
                     // thinking/steeringActive for a prompt that never starts.
                     if (!this.shouldExit) {
-                        this.requeueUndeliveredBatch(session, batch);
+                        requeue();
                     }
                     continue;
                 }
@@ -1492,6 +1517,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 if (
                     this.roundSummaryAbortController !== roundSummaryAbortController
                     || roundSummaryAbortController.signal.aborted
+                    || waitSignal.aborted
                     || this.shouldExit
                 ) {
                     if (this.roundSummaryAbortController === roundSummaryAbortController) {
@@ -1499,10 +1525,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         this.roundSummaryPhase = 'idle';
                     }
                     if (!this.shouldExit) {
-                        // A plain Stop must not lose input it already dequeued
-                        // and hub-ACKed: put the batch back so it drains once
-                        // the Stop settles.
-                        this.requeueUndeliveredBatch(session, batch);
+                        // A plain Stop must not lose input it already dequeued:
+                        // put the never-ACKed batch back so it drains once the
+                        // Stop settles (or stays cancellable in the hub).
+                        requeue();
                     }
                     session.onThinkingChange(false);
                     if (session.queue.size() === 0 && !this.shouldExit) {
@@ -1553,15 +1579,15 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     if (waitSignal.aborted || this.shouldExit) {
                         if (!this.shouldExit) {
                             // A plain Stop must not lose input it already
-                            // dequeued and hub-ACKed: put the batch back so it
-                            // drains once the Stop settles.
-                            this.requeueUndeliveredBatch(session, batch);
+                            // dequeued: put the never-ACKed batch back so it
+                            // drains once the Stop settles (or stays cancellable).
+                            requeue();
                         }
                         continue;
                     }
-                    // Echo at the dispatch commit point: every pre-dispatch
-                    // bail-out above requeues the batch, so the next dequeue
-                    // re-runs this prep instead of losing an already-ACKed row.
+                    // Dispatch commit point: every pre-dispatch bail-out above
+                    // requeued or released the never-ACKed batch, so the hub
+                    // ACK and user echo only fire once the turn is really going out.
                     messageBuffer.addMessage(batch.message, 'user');
                     if (nativeUserCount === null) {
                         logger.warn('[opencode-remote] Native history unavailable; skipping fork point');
@@ -1573,6 +1599,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     this.nativeInputWriters.add(nativeInput);
                     promptDispatched = true;
                     if (attachInstructions) this.instructionsSent = true;
+                    batchSettled = true;
+                    session.queue.commitBatch(batch);
                     try {
                         await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
                             this.handleAgentMessage(message);
@@ -1662,6 +1690,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     }
                 }
             } finally {
+                if (!batchSettled) {
+                    session.queue.releaseBatch(batch);
+                }
                 this.conversationHistory.setBusy(false);
                 releaseRuntime();
             }
@@ -2965,16 +2996,17 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     }
 
     /**
-     * Requeue a batch that was dequeued and hub-ACKed but never dispatched,
-     * so the retry stays connected to its hub row. A queue closed mid-prep
-     * means the session is ending; the row goes with it.
+     * Requeue a batch that was dequeued in a deferred-ACK window and never
+     * dispatched, so the retry stays connected to its hub row. A queue closed
+     * mid-prep means the session is ending; the row is released without ACK.
      */
     private requeueUndeliveredBatch(
         session: OpencodeSession,
         batch: { mode: OpencodeMode; isolate: boolean; items: CollectedQueueItem[] }
-    ): void {
-        if (session.queue.isClosed()) return
-        session.queue.unshiftBatch(batch)
+    ): boolean {
+        if (session.queue.isClosed()) return false;
+        session.queue.unshiftBatch(batch);
+        return true;
     }
 
     /**

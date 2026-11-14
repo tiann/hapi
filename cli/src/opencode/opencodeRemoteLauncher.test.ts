@@ -5345,6 +5345,161 @@ describe('selectAbortStatusMessage', () => {
         expect(text).toContain('snapshot abort')
         expect(sessionEvents).toEqual([{ type: 'ready' }])
     })
+
+    it('keeps a pre-prompt snapshot batch unconsumed on Stop so a later Cancel reaches the queue instead of running it', async () => {
+        roundSummaryHarness.snapshotCalls = []
+        harness.promptCount = 0
+        const snapshotGate: { release?: (value: unknown) => void } = {}
+        const cancelGate: { release?: () => void } = {}
+        const heldCancel = new Promise<void>((resolve) => { cancelGate.release = resolve })
+        harness.cancelPromptImpl = async () => { await heldCancel }
+        roundSummaryHarness.snapshotImpl = () => new Promise<unknown>((resolve) => { snapshotGate.release = resolve })
+
+        const { session, rpcHandlers, emitMessagesConsumedCalls } = createSessionStub(
+            [{ message: 'cancelled after snapshot stop', mode: createMode(), localId: 'local-snap-cancel' }],
+            { keepOpen: true }
+        )
+        session.queue.onBatchConsumed = (localIds) => session.client.emitMessagesConsumed(localIds)
+
+        const launchPromise = opencodeRemoteLauncher(session as never)
+        try {
+            await vi.waitFor(() => expect(roundSummaryHarness.snapshotCalls).toHaveLength(1))
+            expect(emitMessagesConsumedCalls).toEqual([])
+            expect(session.queue.cancelByLocalId('local-snap-cancel')).toBe('in-flight')
+
+            const abortHandler = rpcHandlers.get(RPC_METHODS.Abort) as (() => Promise<void>) | undefined
+            expect(abortHandler).toBeDefined()
+            const abortPromise = abortHandler!()
+            await vi.waitFor(() => expect(harness.cancelPrompt).toHaveBeenCalled())
+            snapshotGate.release!({ messageIds: [] })
+
+            // Stop requeues the unsent batch while cancellation settles; the hub row
+            // stays unconsumed so a later Cancel reaches the queue and removes it.
+            await vi.waitFor(() => expect(session.queue.pendingLocalIds()).toEqual(['local-snap-cancel']))
+            expect(emitMessagesConsumedCalls).toEqual([])
+            expect(session.queue.cancelByLocalId('local-snap-cancel')).toBe(true)
+            expect(session.queue.pendingLocalIds()).toEqual([])
+
+            cancelGate.release!()
+            await abortPromise
+            session.queue.close()
+            await launchPromise
+
+            expect(harness.promptCount).toBe(0)
+            expect(emitMessagesConsumedCalls).toEqual([])
+            expect(session.queue.cancelByLocalId('local-snap-cancel')).toBe(false)
+        } finally {
+            harness.cancelPromptImpl = null
+            cancelGate.release?.()
+            snapshotGate.release?.({ messageIds: [] })
+            session.queue.close()
+            await launchPromise.catch(() => {})
+        }
+    })
+
+    it('defers messages-consumed across pre-prompt Stop during history read and commits exactly once at dispatch', async () => {
+        roundSummaryHarness.snapshotImpl = async () => ({ messageIds: [] })
+        harness.promptCount = 0
+        harness.promptContents = []
+        const { OpencodeConversationHistory } = await import('./conversationHistory')
+        let countCalls = 0
+        const countGate: { release?: (value: number | null) => void } = {}
+        const countSpy = vi.spyOn(OpencodeConversationHistory.prototype, 'getNativeUserMessageCount')
+            .mockImplementation(() => {
+                countCalls += 1
+                return countCalls === 1
+                    ? new Promise<number | null>((resolve) => { countGate.release = resolve })
+                    : Promise.resolve(null)
+            })
+
+        const { session, rpcHandlers, emitMessagesConsumedCalls } = createSessionStub(
+            [{ message: 'deferred prompt', mode: createMode(), localId: 'local-hist-1' }],
+            { keepOpen: true }
+        )
+        session.queue.onBatchConsumed = (localIds) => session.client.emitMessagesConsumed(localIds)
+
+        const launchPromise = opencodeRemoteLauncher(session as never)
+        try {
+            await vi.waitFor(() => expect(countCalls).toBe(1))
+            expect(emitMessagesConsumedCalls).toEqual([])
+            expect(session.queue.cancelByLocalId('local-hist-1')).toBe('in-flight')
+
+            const abortHandler = rpcHandlers.get(RPC_METHODS.Abort) as (() => Promise<void>) | undefined
+            expect(abortHandler).toBeDefined()
+            await abortHandler!()
+            expect(emitMessagesConsumedCalls).toEqual([])
+
+            countGate.release!(null)
+            await vi.waitFor(() => expect(harness.promptCount).toBe(1))
+            session.queue.close()
+            await launchPromise
+
+            expect(emitMessagesConsumedCalls).toEqual([{ localIds: ['local-hist-1'], options: undefined }])
+            expect(session.queue.cancelByLocalId('local-hist-1')).toBe(false)
+            const text = (harness.promptContents[0] as Array<{ type: string; text?: string }>)[0]?.text
+            expect(text).toContain('deferred prompt')
+        } finally {
+            countSpy.mockRestore()
+            countGate.release?.(null)
+            session.queue.close()
+            await launchPromise.catch(() => {})
+        }
+    })
+
+    it('releases without consuming when Switch arrives during a blocking pre-prompt read', async () => {
+        roundSummaryHarness.snapshotCalls = []
+        harness.promptCount = 0
+        const snapshotGate: { release?: (value: unknown) => void } = {}
+        roundSummaryHarness.snapshotImpl = () => new Promise<unknown>((resolve) => { snapshotGate.release = resolve })
+
+        const { session, rpcHandlers, emitMessagesConsumedCalls } = createSessionStub(
+            [{ message: 'switch release', mode: createMode(), localId: 'local-switch-1' }]
+        )
+        session.queue.onBatchConsumed = (localIds) => session.client.emitMessagesConsumed(localIds)
+
+        const launchPromise = opencodeRemoteLauncher(session as never)
+        try {
+            await vi.waitFor(() => expect(roundSummaryHarness.snapshotCalls).toHaveLength(1))
+            expect(emitMessagesConsumedCalls).toEqual([])
+
+            const switchHandler = rpcHandlers.get(RPC_METHODS.Switch) as (() => Promise<void>) | undefined
+            expect(switchHandler).toBeDefined()
+            await switchHandler!()
+            snapshotGate.release!({ messageIds: [] })
+            session.queue.close()
+            await launchPromise
+
+            expect(harness.promptCount).toBe(0)
+            expect(emitMessagesConsumedCalls).toEqual([])
+            expect(session.queue.cancelByLocalId('local-switch-1')).toBe(false)
+        } finally {
+            snapshotGate.release?.({ messageIds: [] })
+            session.queue.close()
+            await launchPromise.catch(() => {})
+        }
+    })
+
+    it('releases without consuming when pre-prompt history read throws', async () => {
+        roundSummaryHarness.snapshotImpl = async () => ({ messageIds: [] })
+        harness.promptCount = 0
+        const { OpencodeConversationHistory } = await import('./conversationHistory')
+        const countSpy = vi.spyOn(OpencodeConversationHistory.prototype, 'getNativeUserMessageCount')
+            .mockRejectedValueOnce(new Error('history failed'))
+
+        const { session, emitMessagesConsumedCalls } = createSessionStub(
+            [{ message: 'history error', mode: createMode(), localId: 'local-err-1' }]
+        )
+        session.queue.onBatchConsumed = (localIds) => session.client.emitMessagesConsumed(localIds)
+
+        try {
+            await opencodeRemoteLauncher(session as never)
+            expect(harness.promptCount).toBe(0)
+            expect(emitMessagesConsumedCalls).toEqual([])
+            expect(session.queue.cancelByLocalId('local-err-1')).toBe(false)
+        } finally {
+            countSpy.mockRestore()
+        }
+    })
 });
 
 function indeterminateError(message: string): Error {
