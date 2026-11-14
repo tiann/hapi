@@ -39,6 +39,7 @@ const mocks = vi.hoisted(() => ({
     opencodeVariantsLoading: false,
     opencodeVariantsEnabled: false,
     piDialogSelection: ['pi-native-1'] as string[],
+    claudeDialogSelection: ['claude-native-1'] as string[],
     piModels: [] as PiModelSummary[],
     piModelsLoading: false,
     piModelsError: null as string | null,
@@ -222,6 +223,13 @@ vi.mock('@/components/PiSessionImportDialog', () => ({
                 select pi history
             </button>
         </>
+    ) : null
+}))
+vi.mock('@/components/ClaudeSessionImportDialog', () => ({
+    ClaudeSessionImportDialog: (props: { isOpen: boolean; sessions: Array<{ id: string }>; onConfirm: (ids: string[]) => Promise<void> }) => props.isOpen ? (
+        <button type="button" data-testid="select-claude-history" disabled={props.sessions.length === 0} onClick={() => void props.onConfirm(mocks.claudeDialogSelection)}>
+            select claude history
+        </button>
     ) : null
 }))
 vi.mock('./DirectorySection', () => ({ DirectorySection: () => null }))
@@ -1401,6 +1409,67 @@ describe('NewSession launch preferences', () => {
             machineId: 'machine-1'
         })
         expect(piApi.reopenSession).toHaveBeenCalledWith('hapi-imported-1')
+        expect(mocks.spawnSession).not.toHaveBeenCalled()
+    })
+
+    it('imports the selected Claude history with the chosen launch settings before reopening it', async () => {
+        savePreferredAgent('claude')
+        savePreferredLaunchSettings('machine-1', 'claude', { model: 'sonnet', cursorSelectedBase: 'auto', effort: 'high', modelReasoningEffort: 'default' })
+        const calls: string[] = []
+        const claudeApi = {
+            getClaudeSessions: vi.fn().mockResolvedValue({
+                success: true,
+                machineId: 'machine-1',
+                sessions: [{
+                    id: 'claude-native-1',
+                    title: 'Existing Claude session',
+                    cwd: 'C:\\repo',
+                    file: 'C:\\claude-native-1.jsonl',
+                    modifiedAt: 1,
+                    messageCount: 2
+                }]
+            }),
+            importClaudeSessions: vi.fn().mockImplementation(async () => {
+                calls.push('import')
+                return {
+                    success: true,
+                    machineId: 'machine-1',
+                    results: [{ claudeSessionId: 'claude-native-1', hapiSessionId: 'hapi-claude-1', action: 'created', appended: 2 }]
+                }
+            }),
+            reopenSession: vi.fn().mockImplementation(async () => {
+                calls.push('reopen')
+                return { ok: true, sessionId: 'hapi-claude-1', resumed: true }
+            })
+        } as unknown as ApiClient
+
+        renderWithQuery(
+            <NewSession
+                api={claudeApi}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        fireEvent.click(screen.getByTestId('permission-mode-plan'))
+        fireEvent.click(screen.getByRole('button', { name: 'claudeImport.inline.choose' }))
+        await waitFor(() => expect(screen.getByTestId('select-claude-history')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('select-claude-history'))
+        fireEvent.click(screen.getByTestId('create'))
+
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('hapi-claude-1'))
+        expect(claudeApi.importClaudeSessions).toHaveBeenCalledWith({
+            sessionIds: ['claude-native-1'],
+            cwd: 'C:\\repo',
+            machineId: 'machine-1',
+            model: 'sonnet',
+            effort: 'high',
+            permissionMode: 'plan'
+        })
+        expect(calls).toEqual(['import', 'reopen'])
         expect(mocks.spawnSession).not.toHaveBeenCalled()
     })
 

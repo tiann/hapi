@@ -68,6 +68,7 @@ function harness(overrides: {
 } = {}) {
     const store = new Store(':memory:')
     const calls: Array<{ method: string; payload: unknown }> = []
+    const appliedConfigs: Array<Record<string, unknown>> = []
     const summaries = overrides.summaries ?? [piSummary()]
     const transcripts = overrides.transcripts ?? [piTranscript()]
     const machineInstance = machine('m-1', overrides.machineCapabilities ?? ['local-session-import'])
@@ -89,7 +90,9 @@ function harness(overrides: {
         },
         recordSessionActivity: () => {},
         handleRealtimeEvent: () => {},
-        applySessionConfig: async () => {}
+        applySessionConfig: async (_sessionId: string, config: Record<string, unknown>) => {
+            appliedConfigs.push(config)
+        }
     } as unknown as SyncEngine
     const namespace = overrides.namespace ?? 'default'
     const app = new Hono<WebAppEnv>()
@@ -102,7 +105,7 @@ function harness(overrides: {
         getSyncEngine: () => engine,
         sources: overrides.sources ?? [PI_LOCAL_SESSION_SOURCE, OPENCODE_LOCAL_SESSION_SOURCE, CODEX_LOCAL_SESSION_SOURCE]
     }))
-    return { store, engine, app, calls }
+    return { store, engine, app, calls, appliedConfigs }
 }
 
 describe('generic local session routes', () => {
@@ -217,6 +220,33 @@ describe('generic local session routes', () => {
         const body = await response.json() as { results: Array<Record<string, unknown>> }
         expect(body.results).toHaveLength(1)
         expect(body.results[0]).toMatchObject({ error: { code: 'not_found' } })
+    })
+
+    it('applies the requested Claude model, effort and permission mode to the import', async () => {
+        const claude: LocalTranscript = {
+            flavor: 'claude',
+            id: 'claude-1',
+            title: 'Claude session',
+            lastUserMessage: 'hello',
+            cwd: '/tmp/project',
+            file: '/tmp/claude-1.jsonl',
+            modifiedAt: 1,
+            messages: [{
+                id: 'claude:u1',
+                createdAt: 1,
+                content: { role: 'user', content: { type: 'text', text: 'hello' }, meta: { sentFrom: 'cli' } },
+                anchor: 'u1'
+            }]
+        }
+        const { app, store, appliedConfigs } = harness({ sources: [CLAUDE_LOCAL_SESSION_SOURCE], summaries: [claude], transcripts: [claude] })
+        stores.push(store)
+        const response = await app.request('/api/claude/import-sessions', {
+            method: 'POST',
+            body: JSON.stringify({ sessionIds: ['claude-1'], model: 'opus', effort: 'high', permissionMode: 'plan' })
+        })
+        const body = await response.json() as { results: Array<Record<string, unknown>> }
+        expect(body.results[0]).toMatchObject({ claudeSessionId: 'claude-1', action: 'created' })
+        expect(appliedConfigs).toEqual([{ model: 'opus', effort: 'high', permissionMode: 'plan' }])
     })
 
     it('enforces the claude import limit with a 400 before any RPC', async () => {

@@ -85,6 +85,7 @@ function extractLaunchConfig(body: Record<string, unknown>): {
             ? body.modelReasoningEffort.trim()
             : null
     }
+    if (has('effort')) launch.effort = typeof body.effort === 'string' && body.effort.trim() ? body.effort.trim() : null
     if (has('permissionMode')) {
         launch.permissionMode = typeof body.permissionMode === 'string' && body.permissionMode.trim()
             ? body.permissionMode.trim() as PermissionMode

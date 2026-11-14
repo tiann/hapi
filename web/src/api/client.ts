@@ -504,7 +504,7 @@ export class ApiClient {
         return await this.request<ClaudeLocalSessionsResponse>(`/api/claude/sessions${query}`)
     }
 
-    async importClaudeSessions(payload: { sessionIds: string[]; cwd?: string | null; machineId?: string | null }): Promise<ClaudeImportSessionsResponse> {
+    async importClaudeSessions(payload: { sessionIds: string[]; cwd?: string | null; machineId?: string | null; model?: string | null; effort?: string | null; permissionMode?: PermissionMode }): Promise<ClaudeImportSessionsResponse> {
         return await this.request<ClaudeImportSessionsResponse>('/api/claude/import-sessions', {
             method: 'POST',
             body: JSON.stringify(payload)

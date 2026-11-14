@@ -20,6 +20,8 @@ import type { HubLocalSessionSource } from './sources'
 export type LocalImportLaunchConfig = {
     model?: string | null
     modelReasoningEffort?: string | null
+    /** Claude effort level (Codex/OpenCode use modelReasoningEffort). */
+    effort?: string | null
     permissionMode?: PermissionMode | null
     serviceTier?: string | null
     collaborationMode?: CodexCollaborationMode | null
@@ -516,6 +518,7 @@ async function applyRequestLaunchConfig(options: {
     const config: Parameters<SyncEngine['applySessionConfig']>[1] = {}
     if (Object.prototype.hasOwnProperty.call(launch, 'model')) config.model = launch.model
     if (Object.prototype.hasOwnProperty.call(launch, 'modelReasoningEffort')) config.modelReasoningEffort = launch.modelReasoningEffort
+    if (Object.prototype.hasOwnProperty.call(launch, 'effort')) config.effort = launch.effort
     if (Object.prototype.hasOwnProperty.call(launch, 'permissionMode')) {
         const mode = (launch.permissionMode ?? 'default') as PermissionMode
         // Unknown modes fail the flavor check and are ignored here; the

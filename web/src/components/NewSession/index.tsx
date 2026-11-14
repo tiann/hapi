@@ -2151,10 +2151,15 @@ export function NewSession(props: {
 
             if (agent === 'claude' && selectedClaudeImportSession) {
                 setIsImportingClaudeSession(true)
+                // The reopen launches with the persisted session config, so the
+                // form's selections go through the import first.
                 const result = await props.api.importClaudeSessions({
                     sessionIds: [selectedClaudeImportSession.id],
                     cwd: selectedClaudeImportSession.cwd ?? trimmedDirectory,
-                    machineId: claudeImport.machineId ?? machineId
+                    machineId: claudeImport.machineId ?? machineId,
+                    model: resolvedModel ?? null,
+                    effort: resolvedEffort ?? null,
+                    permissionMode: nativePermissionMode
                 })
                 const imported = result.results.find((item) => item.claudeSessionId === selectedClaudeImportSession.id)
                 if (imported?.error) {
