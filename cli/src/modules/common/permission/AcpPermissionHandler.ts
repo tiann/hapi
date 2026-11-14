@@ -1,6 +1,7 @@
 import type { ApiSessionClient } from '@/api/apiSession'
 import type { AgentBackend, PermissionRequest, PermissionResponse } from '@/agent/types'
 import type { PermissionMode } from '@hapi/protocol/types'
+import { randomUUID } from 'node:crypto'
 import { deriveToolInput, deriveToolName } from '@/agent/utils'
 import { logger } from '@/ui/logger'
 import {
@@ -10,18 +11,51 @@ import {
     type PendingPermissionRequest,
     type PermissionCompletion
 } from './BasePermissionHandler'
+import { mapAskUserAnswers, type AskUserAnswer } from './askUserAnswers'
 
 interface PermissionResponseMessage {
     id: string
     approved: boolean
     decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
     reason?: string
-    answers?: Record<string, string[]>
+    /** AskUserQuestion payloads from web/mobile: Record<questionIndex, string[]>
+     * (labels + free-text "Other" appended). Absent on plain approve/deny. */
+    answers?: Record<string, string[]> | Record<string, { answers: string[] }>
 }
 
 export type UserAnswer = {
     decision: NonNullable<PermissionResponseMessage['decision']>
     answers?: Record<string, string[]>
+}
+
+/** Outcome of a synthetic ask-user escalation surfaced to the HAPI client. */
+export type AcpAskUserOutcome =
+    | { status: 'answered'; answers: AskUserAnswer[] }
+    | { status: 'denied'; reason?: string }
+    | { status: 'canceled'; reason?: string }
+
+/**
+ * Translate the MCP `ask_user_question` spelling onto the card dialect every
+ * HAPI client renders. The MCP schema accepts snake_case (`multi_select`),
+ * while the web/iOS/Android AskUserQuestion cards read camelCase
+ * (`multiSelect`) — without this, a multi-select question silently renders
+ * as single-select and the client forbids choosing more than one option.
+ * Unknown payloads pass through unchanged; `multi_select` is kept alongside
+ * so snake_case consumers keep working.
+ */
+function normalizeAskUserQuestionCardInput(input: unknown): unknown {
+    if (!input || typeof input !== 'object') return input
+    const root = input as { questions?: unknown }
+    if (!Array.isArray(root.questions)) return input
+    return {
+        ...root,
+        questions: root.questions.map((question) => {
+            if (!question || typeof question !== 'object') return question
+            const record = question as Record<string, unknown>
+            if (record.multiSelect !== undefined || typeof record.multi_select !== 'boolean') return question
+            return { ...record, multiSelect: record.multi_select }
+        })
+    }
 }
 
 function pickOptionId(request: PermissionRequest, preferredKinds: string[]): string | null {
@@ -51,6 +85,10 @@ function mapDecisionToOutcome(
 
 /** Shared HAPI permission bridge for ACP agents with one-shot choices. */
 export class AcpPermissionHandler extends BasePermissionHandler<PermissionResponseMessage, void> {
+    /** Synthetic ask-user escalations (MCP ask_user_question bridge). Keyed by
+     * the same request id registered in the agent-state pending map; resolved
+     * from Permission responses that carry `answers`. */
+    private readonly askUserResolvers = new Map<string, (outcome: AcpAskUserOutcome) => void>()
     private readonly pendingBackendRequests = new Map<string, PermissionRequest>()
     private readonly userWaitEnds = new Map<string, () => void>()
     private readonly userQuestions = new Map<string, (answer: UserAnswer) => void>()
@@ -156,16 +194,89 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
         })
     }
 
+    /**
+     * Surface an `ask_user_question` payload to the HAPI user and await the
+     * answer batch.
+     *
+     * For agents whose ACP profile ships no native ask-user tool (DSH's
+     * automation-only profile deliberately omits it — there is no UI to
+     * answer it over raw ACP), the hapi MCP bridge provides the tool instead
+     * and routes the question through this escalation. The pending request is
+     * registered in the agent state under the exact tool name
+     * `ask_user_question` with the questions as arguments, which every HAPI
+     * client (web/iOS/Android) already renders as the interactive
+     * AskUserQuestion card and answers through approvePermission({answers}) —
+     * the same path Claude Code's native AskUserQuestion takes. No backend
+     * request exists for these ids: the response resolves the caller directly
+     * (the MCP tool returns the answer batch to the model in-band).
+     */
+    askUserQuestion(input: unknown): Promise<AcpAskUserOutcome> {
+        return new Promise<AcpAskUserOutcome>((resolve) => {
+            // Supersede: some agents enforce a per-call MCP timeout they
+            // cannot raise (DSH: 60s), so an unanswered question times out and
+            // the model retries the tool call — escalating a SECOND question
+            // while the first card is still pending. Without this, retry
+            // cycles stack interactive cards and the turn-end cancelAll
+            // silently settles cards the user is mid-way through filling. At
+            // most ONE ask-user card may be pending: resolve every prior one
+            // as canceled (state entry moves to completedRequests with the
+            // reason) the instant a newer question arrives.
+            if (this.askUserResolvers.size > 0) {
+                this.cancelPendingRequests({
+                    completedReason: 'Superseded by a newer question',
+                    rejectMessage: 'Superseded by a newer question',
+                    filter: (toolName) => toolName === 'ask_user_question'
+                });
+            }
+            const id = `askuser-${randomUUID()}`
+            this.askUserResolvers.set(id, resolve)
+            this.usedIds.add(id)
+            this.startUserWait(id)
+            this.addPendingRequest(id, 'ask_user_question', normalizeAskUserQuestionCardInput(input), {
+                resolve: () => {},
+                reject: (error) => {
+                    this.askUserResolvers.delete(id)
+                    this.endUserWait(id)
+                    resolve({ status: 'canceled', reason: error.message })
+                }
+            })
+        })
+    }
+
     protected async handlePermissionResponse(
         response: PermissionResponseMessage,
         pending: PendingPermissionRequest<void>
     ): Promise<PermissionCompletion> {
+        const askUserResolver = this.askUserResolvers.get(response.id)
+        if (askUserResolver) {
+            this.askUserResolvers.delete(response.id)
+            this.endUserWait(response.id)
+            if (response.approved) {
+                const answers = mapAskUserAnswers(pending.input, response.answers)
+                const hasAnyAnswer = answers.some((answer) => answer.selected.length > 0 || answer.custom !== undefined)
+                askUserResolver(hasAnyAnswer
+                    ? { status: 'answered', answers }
+                    : { status: 'denied', reason: response.reason ?? 'No answers were provided.' })
+            } else {
+                askUserResolver({ status: 'denied', reason: response.reason })
+            }
+            pending.resolve()
+            return {
+                status: response.approved ? 'approved' : 'denied',
+                decision: response.decision,
+                reason: response.reason,
+                answers: response.answers
+            }
+        }
+
         const question = this.userQuestions.get(response.id)
         if (question) {
             this.userQuestions.delete(response.id)
             const decision = response.decision ?? (response.approved ? 'approved' : 'denied')
             this.endUserWait(response.id)
-            question(response.answers ? { decision, answers: response.answers } : { decision })
+            // UserAnswer keeps the flat dialect; the nested {answers} spelling
+            // is normalized by the ask-user channel (mapAskUserAnswers).
+            question(response.answers ? { decision, answers: response.answers as Record<string, string[]> } : { decision })
             pending.resolve()
             return {
                 status: response.approved ? 'approved' : 'denied',
@@ -216,7 +327,7 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
     }
 
     hasPendingRequests(): boolean {
-        return this.pendingBackendRequests.size > 0 || this.userQuestions.size > 0
+        return this.pendingBackendRequests.size > 0 || this.userQuestions.size > 0 || this.askUserResolvers.size > 0
     }
 
     async cancelAll(reason: string): Promise<void> {

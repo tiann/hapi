@@ -27,6 +27,11 @@ const AUTO_APPROVE_TOOL_NAME_HINTS = [
     'save_memory'
 ];
 const AUTO_APPROVE_EXACT_TOOL_NAMES = new Set([
+    // Asking a question is never dangerous — auto-approve the AGENT-side
+    // approval prompt (if the flavor raises one for the MCP call) so the
+    // user only answers the question card itself, never a double prompt.
+    'ask_user_question',
+    'mcp__hapi__ask_user_question',
     'skill_lookup',
     'hapi_skill_lookup',
     'happy__skill_lookup',
