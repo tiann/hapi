@@ -72,6 +72,31 @@ describe('getCodexComposerReasoningEffortOptions', () => {
         ])
     })
 
+    it('drops provider-default entries from dynamic options so Default is not duplicated', () => {
+        expect(getCodexComposerReasoningEffortOptions('default', 'opencode', [
+            { value: 'low', name: 'Low' },
+            { value: 'high', name: 'High' },
+            { value: 'max', name: 'Max' },
+            { value: 'default', name: 'Default' }
+        ])).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'low', label: 'Low' },
+            { value: 'high', label: 'High' },
+            { value: 'max', label: 'Max' }
+        ])
+
+        expect(getCodexComposerReasoningEffortOptions('', 'dsh', [
+            { value: '', name: 'Provider default' },
+            { value: 'Default', name: 'Default' },
+            { value: 'low', name: 'Low' },
+            { value: 'high', name: 'High' }
+        ])).toEqual([
+            { value: null, label: 'Default' },
+            { value: 'low', label: 'Low' },
+            { value: 'high', label: 'High' }
+        ])
+    })
+
     it('preserves unsupported current OpenCode values in the dropdown', () => {
         expect(getCodexComposerReasoningEffortOptions('high', 'opencode', [
             { value: 'low', name: 'Low' },
