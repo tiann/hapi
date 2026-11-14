@@ -4,6 +4,8 @@ import {
     CodexCollaborationModeSchema,
     CopilotAgentModeSchema,
     DecryptedMessageSchema,
+    ExternalRefSchema,
+    ExternalRefsSchema,
     MachineSchema,
     PermissionModeSchema,
     SessionSchema,
@@ -553,6 +555,27 @@ export const ScratchlistEntryUpdateRequestSchema = z.object({
 )
 
 export type ScratchlistEntryUpdateRequest = z.infer<typeof ScratchlistEntryUpdateRequestSchema>
+
+export const SetExternalRefsRequestSchema = z.object({
+    externalRefs: ExternalRefsSchema
+})
+
+export type SetExternalRefsRequest = z.infer<typeof SetExternalRefsRequestSchema>
+
+/** Atomic primary/secondary attach — hub merges against the latest metadata version. */
+export const UpsertExternalRefRequestSchema = z.object({
+    ref: ExternalRefSchema
+})
+
+export type UpsertExternalRefRequest = z.infer<typeof UpsertExternalRefRequestSchema>
+
+export const FeaturesPatchRequestSchema = z.object({
+    githubPrAwareness: z.boolean().optional()
+}).refine((value) => value.githubPrAwareness !== undefined, {
+    message: 'at least one feature flag is required'
+})
+
+export type FeaturesPatchRequest = z.infer<typeof FeaturesPatchRequestSchema>
 
 /** Dismiss the model-error banner for a specific displayed error (by eventId). */
 export const AcknowledgeModelErrorRequestSchema = z.object({

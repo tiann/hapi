@@ -17,7 +17,7 @@ import type { UsageQueryAgent, UsageQueryAgentSettings, UsageQueryResult, UsageQ
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
 import type { CopilotReasoningEffortResponse, ImplementCodexPlanResult, KimiReasoningEffortResponse } from '@hapi/protocol/apiTypes'
-import type { AgentFlavor, BackgroundTask, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
+import type { AgentFlavor, BackgroundTask, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, ExternalRef, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
 import { hasConversationMessageContent, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
 import { randomUUID, createHash } from 'node:crypto'
@@ -3445,6 +3445,17 @@ export class SyncEngine {
 
     async renameSession(sessionId: string, name: string | undefined, titleLocked?: boolean): Promise<void> {
         await this.sessionCache.renameSession(sessionId, name, titleLocked)
+    }
+
+    async setSessionExternalRefs(sessionId: string, externalRefs: ExternalRef[]): Promise<void> {
+        await this.sessionCache.setSessionExternalRefs(sessionId, externalRefs)
+    }
+
+    async mutateSessionExternalRefs(
+        sessionId: string,
+        mutate: (current: ExternalRef[]) => ExternalRef[]
+    ): Promise<ExternalRef[]> {
+        return await this.sessionCache.mutateSessionExternalRefs(sessionId, mutate)
     }
 
     async suggestSessionTitle(sessionId: string): Promise<string> {

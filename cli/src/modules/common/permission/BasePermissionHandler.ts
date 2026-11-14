@@ -39,6 +39,30 @@ const AUTO_APPROVE_EXACT_TOOL_NAMES = new Set([
     // ACP permission requests often surface MCP tool title, not the snake_case name.
     'list peer sessions'
 ]);
+export type AutoApprovalContext = {
+    /** Set only from trusted transport metadata (e.g. MCP elicitation envelope), never from tool args. */
+    trustedHapiMcp?: boolean;
+};
+
+const HAPI_LINK_PR_TOOL_NAMES = new Set([
+    'link_pr',
+    'link pull request',
+    'happy__link_pr',
+    'hapi_link_pr',
+    'hapi__link_pr',
+    'mcp__hapi__link_pr',
+    'mcp__happy__link_pr'
+]);
+
+function isVerifiedHapiLinkPrTool(toolName: string, context?: AutoApprovalContext): boolean {
+    if (!HAPI_LINK_PR_TOOL_NAMES.has(toolName.toLowerCase())) {
+        return false
+    }
+    if (context?.trustedHapiMcp) {
+        return true
+    }
+    return false
+}
 // session_job is intentionally NOT in this name-only allowlist: ACP titles are
 // spoofable (tool-name derivation prefers backend title). Auto-approve only via
 // trusted HAPI bridge config (Codex tools map / Claude --allowedTools).
@@ -71,7 +95,8 @@ export function resolveToolAutoApprovalDecision(
     mode: PermissionMode | undefined,
     toolName: string,
     toolCallId: string,
-    ruleOverrides?: AutoApprovalRuleSet
+    ruleOverrides?: AutoApprovalRuleSet,
+    context?: AutoApprovalContext
 ): AutoApprovalDecision | null {
     const rules = {
         alwaysToolNameHints: ruleOverrides?.alwaysToolNameHints ?? AUTO_APPROVE_TOOL_NAME_HINTS,
@@ -82,6 +107,16 @@ export function resolveToolAutoApprovalDecision(
     const lowerTool = toolName.toLowerCase();
     const lowerId = toolCallId.toLowerCase();
     const decisionForMode: AutoApprovalDecision = (mode === 'yolo' || mode === 'always-proceed') ? 'approved_for_session' : 'approved';
+
+    // link_pr mutates session metadata — never auto-approve in read-only,
+    // even when the call arrives on a trusted HAPI MCP transport.
+    if (HAPI_LINK_PR_TOOL_NAMES.has(lowerTool) && mode === 'read-only') {
+        return null;
+    }
+
+    if (isVerifiedHapiLinkPrTool(lowerTool, context)) {
+        return decisionForMode;
+    }
 
     if (
         AUTO_APPROVE_EXACT_TOOL_NAMES.has(lowerTool)
@@ -178,9 +213,10 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
         mode: PermissionMode | undefined,
         toolName: string,
         toolCallId: string,
-        ruleOverrides?: AutoApprovalRuleSet
+        ruleOverrides?: AutoApprovalRuleSet,
+        context?: AutoApprovalContext
     ): AutoApprovalDecision | null {
-        return resolveToolAutoApprovalDecision(mode, toolName, toolCallId, ruleOverrides);
+        return resolveToolAutoApprovalDecision(mode, toolName, toolCallId, ruleOverrides, context);
     }
 
     protected addPendingRequest(

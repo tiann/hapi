@@ -1,13 +1,16 @@
 import { mergeClaudeSessionIdHistory, mergeReadState } from '@hapi/protocol'
 import { SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING } from '@hapi/protocol'
-import { AgentStateSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
-import type { BackgroundTask, CodexCollaborationMode, CopilotAgentMode, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
+import { AgentStateSchema, ExternalRefsSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
+import type { BackgroundTask, CodexCollaborationMode, CopilotAgentMode, ExternalRef, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
 import type { SessionTurnEndReason, SessionTurnTrigger, Store } from '../store'
 import type { TransferSessionJobsResult } from '../store/sessionJobs'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
 import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
+import { InvalidExternalRefsError } from './externalRefErrors'
 import { resolveSessionIdleTimeoutMs, shouldClearKeepaliveIdle, shouldMarkKeepaliveIdle } from './sessionIdle'
+
+export { InvalidExternalRefsError } from './externalRefErrors'
 
 const QUEUED_MESSAGE_THINKING_GRACE_MS = 15_000
 // A turn the hub closed when it restarted is picked up again if the agent
@@ -19,6 +22,131 @@ const TURN_RECOVERY_WINDOW_MS = 10 * 60_000
 // HTTP caller as 409 instead of spinning forever.
 const METADATA_RETRY_ATTEMPTS = 5
 type RuntimeConfigKey = 'permissionMode' | 'model' | 'modelReasoningEffort' | 'effort' | 'serviceTier' | 'collaborationMode' | 'copilotAgentMode'
+
+/**
+ * Metadata merge used when consolidating an old session row into a replacement
+ * (resume/reopen). Carry forward display/contribution fields the new row omitted.
+ * Explicit keys on `newMetadata` always win — including empty `externalRefs: []`.
+ * tiann/hapi#1160 / PR #1161.
+ */
+export function mergeSessionMetadataForSessionMerge(
+    oldMetadata: unknown | null,
+    newMetadata: unknown | null
+): unknown | null {
+    if (!oldMetadata || typeof oldMetadata !== 'object') {
+        return newMetadata
+    }
+    if (!newMetadata || typeof newMetadata !== 'object') {
+        return oldMetadata
+    }
+
+    const oldObj = oldMetadata as Record<string, unknown>
+    const newObj = newMetadata as Record<string, unknown>
+    const merged: Record<string, unknown> = { ...newObj }
+    let changed = false
+
+    if (typeof oldObj.name === 'string' && typeof newObj.name !== 'string') {
+        merged.name = oldObj.name
+        changed = true
+    }
+
+    if (typeof oldObj.titleSuggestionAutoAttemptedAt === 'number'
+        && typeof newObj.titleSuggestionAutoAttemptedAt !== 'number') {
+        merged.titleSuggestionAutoAttemptedAt = oldObj.titleSuggestionAutoAttemptedAt
+        changed = true
+    }
+
+    if (oldObj.titleSuggestionTurn && !newObj.titleSuggestionTurn) {
+        merged.titleSuggestionTurn = oldObj.titleSuggestionTurn
+        changed = true
+    }
+
+    if (typeof oldObj.promptTitle === 'string' && typeof newObj.promptTitle !== 'string') {
+        merged.promptTitle = oldObj.promptTitle
+        changed = true
+    }
+
+    const oldSummary = oldObj.summary as { text?: unknown; updatedAt?: unknown } | undefined
+    const newSummary = newObj.summary as { text?: unknown; updatedAt?: unknown } | undefined
+    const oldUpdatedAt = typeof oldSummary?.updatedAt === 'number' ? oldSummary.updatedAt : null
+    const newUpdatedAt = typeof newSummary?.updatedAt === 'number' ? newSummary.updatedAt : null
+    if (oldUpdatedAt !== null && (newUpdatedAt === null || oldUpdatedAt > newUpdatedAt)) {
+        merged.summary = oldSummary
+        changed = true
+    }
+
+    if (oldObj.worktree && !newObj.worktree) {
+        merged.worktree = oldObj.worktree
+        changed = true
+    }
+
+    if (typeof oldObj.path === 'string' && typeof newObj.path !== 'string') {
+        merged.path = oldObj.path
+        changed = true
+    }
+    if (typeof oldObj.host === 'string' && typeof newObj.host !== 'string') {
+        merged.host = oldObj.host
+        changed = true
+    }
+    if (typeof oldObj.preferredPermissionMode === 'string' && typeof newObj.preferredPermissionMode !== 'string') {
+        merged.preferredPermissionMode = oldObj.preferredPermissionMode
+        changed = true
+    }
+    if (typeof oldObj.preferredCopilotAgentMode === 'string' && typeof newObj.preferredCopilotAgentMode !== 'string') {
+        merged.preferredCopilotAgentMode = oldObj.preferredCopilotAgentMode
+        changed = true
+    }
+
+    // Preserve structured PR links when the replacement row never set them.
+    if (Array.isArray(oldObj.externalRefs) && !Object.prototype.hasOwnProperty.call(newObj, 'externalRefs')) {
+        merged.externalRefs = oldObj.externalRefs
+        changed = true
+    }
+
+    const claudeHistory = mergeClaudeSessionIdHistory(oldObj, newObj)
+    if (claudeHistory) {
+        merged.claudeSessionIdHistory = claudeHistory
+        changed = true
+    }
+
+    // Preserve durable model-error alert state across resume/dedup row merges.
+    // Identity is eventId (wall-clock atTs is display-only and can go
+    // backwards after NTP/sleep). Carry old when new has none; when both
+    // share an eventId, merge hub watermarks.
+    type ModelErrorState = {
+        eventId?: string
+        atTs?: number
+        acknowledgedAt?: number
+        notifiedAt?: number
+        [key: string]: unknown
+    }
+    const oldError = oldObj.lastModelError as ModelErrorState | undefined
+    const newError = newObj.lastModelError as ModelErrorState | undefined
+    const oldId = typeof oldError?.eventId === 'string' ? oldError.eventId : null
+    const newId = typeof newError?.eventId === 'string' ? newError.eventId : null
+    if (oldError && oldId && !newError) {
+        merged.lastModelError = oldError
+        changed = true
+    } else if (oldError && newError && oldId && newId && oldId === newId) {
+        merged.lastModelError = {
+            ...oldError,
+            ...newError,
+            acknowledgedAt: newError.acknowledgedAt ?? oldError.acknowledgedAt,
+            notifiedAt: newError.notifiedAt ?? oldError.notifiedAt,
+            bridgedForEventId: newError.bridgedForEventId ?? oldError.bridgedForEventId,
+            retriedAndFailed: newError.retriedAndFailed === true || oldError.retriedAndFailed === true,
+            supersededByUserTurn: newError.supersededByUserTurn === true
+                || oldError.supersededByUserTurn === true,
+            bridgeable: newError.bridgeable === false || oldError.bridgeable === false
+                ? false
+                : (newError.bridgeable ?? oldError.bridgeable),
+            lastUserMessage: newError.lastUserMessage ?? oldError.lastUserMessage
+        }
+        changed = true
+    }
+
+    return changed ? merged : newMetadata
+}
 
 export class SessionCache {
     private readonly sessions: Map<string, Session> = new Map()
@@ -1209,6 +1337,77 @@ export class SessionCache {
         throw new Error('Session was modified concurrently. Please try again.')
     }
 
+    async setSessionExternalRefs(sessionId: string, externalRefs: ExternalRef[]): Promise<void> {
+        await this.mutateSessionExternalRefs(sessionId, () => externalRefs)
+    }
+
+    /**
+     * Apply a pure transform to the latest externalRefs inside the metadata-version
+     * retry loop so concurrent health/classifier updates are not clobbered by a
+     * stale client-side snapshot.
+     */
+    async mutateSessionExternalRefs(
+        sessionId: string,
+        mutate: (current: ExternalRef[]) => ExternalRef[]
+    ): Promise<ExternalRef[]> {
+        // tiann/hapi#1162: same metadata-version retry contract as renameSession.
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+            if (!session) {
+                throw new Error('Session not found')
+            }
+
+            // Prefer the on-disk blob over the cache. refreshSession nulls
+            // metadata when MetadataSchema fails; spreading `{ path: '', host: '' }`
+            // would then wipe name/summary/worktree/etc. on link/unlink.
+            const stored = this.store.sessions.getSessionByNamespace(sessionId, session.namespace)
+            const storedMetadata = stored?.metadata
+            if (
+                !stored
+                || typeof storedMetadata !== 'object'
+                || storedMetadata === null
+                || Array.isArray(storedMetadata)
+            ) {
+                throw new Error('Cannot update external refs while session metadata is invalid')
+            }
+            const currentMetadata = storedMetadata as Record<string, unknown>
+            const currentRefs = Array.isArray(currentMetadata.externalRefs)
+                ? currentMetadata.externalRefs as ExternalRef[]
+                : []
+            const parsedRefs = ExternalRefsSchema.safeParse(mutate(currentRefs))
+            if (!parsedRefs.success) {
+                throw new InvalidExternalRefsError(
+                    parsedRefs.error.issues[0]?.message ?? 'Invalid external refs'
+                )
+            }
+            const externalRefs = parsedRefs.data
+            const newMetadata = { ...currentMetadata, externalRefs }
+
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                newMetadata,
+                stored.metadataVersion,
+                session.namespace,
+                // Hub-authored PR attach must not release the machine-spawn stub
+                // tag; adoptPreallocatedSession still needs it after the write.
+                { touchUpdatedAt: false, preservePreallocation: true }
+            )
+
+            if (result.result === 'error') {
+                throw new Error('Failed to update session metadata')
+            }
+
+            if (result.result === 'success') {
+                this.refreshSession(sessionId)
+                return externalRefs
+            }
+
+            this.refreshSession(sessionId)
+        }
+
+        throw new Error('Session was modified concurrently. Please try again.')
+    }
+
     async updateSessionSummary(sessionId: string, text: string, titleLocked?: boolean): Promise<void> {
         // Keep the generated/native title separate from metadata.name. A
         // manually chosen name must continue to win in the Web title helper,
@@ -1944,7 +2143,6 @@ export class SessionCache {
         // mergeSessionMetadata rebuilds from the stale pre-merge snapshot).
         // Source transfer pointer was installed immediately after job transfer.
         this.recordJobsAcceptedFromSession(newSessionId, oldSessionId, namespace)
-
         if (newStored.model === null && oldStored.model !== null) {
             const updated = this.store.sessions.setSessionModel(newSessionId, oldStored.model, namespace, {
                 touchUpdatedAt: false
@@ -2485,113 +2683,7 @@ export class SessionCache {
     }
 
     private mergeSessionMetadata(oldMetadata: unknown | null, newMetadata: unknown | null): unknown | null {
-        if (!oldMetadata || typeof oldMetadata !== 'object') {
-            return newMetadata
-        }
-        if (!newMetadata || typeof newMetadata !== 'object') {
-            return oldMetadata
-        }
-
-        const oldObj = oldMetadata as Record<string, unknown>
-        const newObj = newMetadata as Record<string, unknown>
-        const merged: Record<string, unknown> = { ...newObj }
-        let changed = false
-
-        if (typeof oldObj.name === 'string' && typeof newObj.name !== 'string') {
-            merged.name = oldObj.name
-            changed = true
-        }
-
-        if (typeof oldObj.titleSuggestionAutoAttemptedAt === 'number'
-            && typeof newObj.titleSuggestionAutoAttemptedAt !== 'number') {
-            merged.titleSuggestionAutoAttemptedAt = oldObj.titleSuggestionAutoAttemptedAt
-            changed = true
-        }
-
-        if (oldObj.titleSuggestionTurn && !newObj.titleSuggestionTurn) {
-            merged.titleSuggestionTurn = oldObj.titleSuggestionTurn
-            changed = true
-        }
-
-        if (typeof oldObj.promptTitle === 'string' && typeof newObj.promptTitle !== 'string') {
-            merged.promptTitle = oldObj.promptTitle
-            changed = true
-        }
-
-        const oldSummary = oldObj.summary as { text?: unknown; updatedAt?: unknown } | undefined
-        const newSummary = newObj.summary as { text?: unknown; updatedAt?: unknown } | undefined
-        const oldUpdatedAt = typeof oldSummary?.updatedAt === 'number' ? oldSummary.updatedAt : null
-        const newUpdatedAt = typeof newSummary?.updatedAt === 'number' ? newSummary.updatedAt : null
-        if (oldUpdatedAt !== null && (newUpdatedAt === null || oldUpdatedAt > newUpdatedAt)) {
-            merged.summary = oldSummary
-            changed = true
-        }
-
-        if (oldObj.worktree && !newObj.worktree) {
-            merged.worktree = oldObj.worktree
-            changed = true
-        }
-
-        if (typeof oldObj.path === 'string' && typeof newObj.path !== 'string') {
-            merged.path = oldObj.path
-            changed = true
-        }
-        if (typeof oldObj.host === 'string' && typeof newObj.host !== 'string') {
-            merged.host = oldObj.host
-            changed = true
-        }
-        if (typeof oldObj.preferredPermissionMode === 'string' && typeof newObj.preferredPermissionMode !== 'string') {
-            merged.preferredPermissionMode = oldObj.preferredPermissionMode
-            changed = true
-        }
-        if (typeof oldObj.preferredCopilotAgentMode === 'string' && typeof newObj.preferredCopilotAgentMode !== 'string') {
-            merged.preferredCopilotAgentMode = oldObj.preferredCopilotAgentMode
-            changed = true
-        }
-
-        const claudeHistory = mergeClaudeSessionIdHistory(oldObj, newObj)
-        if (claudeHistory) {
-            merged.claudeSessionIdHistory = claudeHistory
-            changed = true
-        }
-
-        // Preserve durable model-error alert state across resume/dedup row merges.
-        // Identity is eventId (wall-clock atTs is display-only and can go
-        // backwards after NTP/sleep). Carry old when new has none; when both
-        // share an eventId, merge hub watermarks.
-        type ModelErrorState = {
-            eventId?: string
-            atTs?: number
-            acknowledgedAt?: number
-            notifiedAt?: number
-            [key: string]: unknown
-        }
-        const oldError = oldObj.lastModelError as ModelErrorState | undefined
-        const newError = newObj.lastModelError as ModelErrorState | undefined
-        const oldId = typeof oldError?.eventId === 'string' ? oldError.eventId : null
-        const newId = typeof newError?.eventId === 'string' ? newError.eventId : null
-        if (oldError && oldId && !newError) {
-            merged.lastModelError = oldError
-            changed = true
-        } else if (oldError && newError && oldId && newId && oldId === newId) {
-            merged.lastModelError = {
-                ...oldError,
-                ...newError,
-                acknowledgedAt: newError.acknowledgedAt ?? oldError.acknowledgedAt,
-                notifiedAt: newError.notifiedAt ?? oldError.notifiedAt,
-                bridgedForEventId: newError.bridgedForEventId ?? oldError.bridgedForEventId,
-                retriedAndFailed: newError.retriedAndFailed === true || oldError.retriedAndFailed === true,
-                supersededByUserTurn: newError.supersededByUserTurn === true
-                    || oldError.supersededByUserTurn === true,
-                bridgeable: newError.bridgeable === false || oldError.bridgeable === false
-                    ? false
-                    : (newError.bridgeable ?? oldError.bridgeable),
-                lastUserMessage: newError.lastUserMessage ?? oldError.lastUserMessage
-            }
-            changed = true
-        }
-
-        return changed ? merged : newMetadata
+        return mergeSessionMetadataForSessionMerge(oldMetadata, newMetadata)
     }
 
     private persistPreferredPermissionMode(session: Session, permissionMode: PermissionMode): void {
