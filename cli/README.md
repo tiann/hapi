@@ -199,7 +199,10 @@ The counter includes terminal, runner, lazy/offline sessions, and sessions still
 starting, across agents and hub namespaces in the same home. Temporary network
 disconnections do not free slots. Closing a session releases its slot; after a
 crash, the next launch reclaims leases whose owning process exited (with PID
-reuse checks). Unknown process identity or unreadable leases fail closed.
+reuse checks). Linux leases identify a process by boot ID and `/proc/<pid>/stat`
+start ticks, so session admission does not require `ps`. This lease identity does
+not change the runner metadata marker. Unknown process identity or unreadable
+leases fail closed.
 
 This limits HAPI roots, not native subagents, OS processes, or total memory.
 A Codex engine can briefly start before session admission fails and shuts it

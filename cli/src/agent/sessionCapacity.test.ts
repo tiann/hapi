@@ -5,14 +5,15 @@ import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-const { configuration, getProcessStartMarker, isProcessAlive } = vi.hoisted(() => ({
+const { configuration, getSessionProcessMarker, isProcessAlive } = vi.hoisted(() => ({
     configuration: { happyHomeDir: '' },
-    getProcessStartMarker: vi.fn<(pid: number) => string | null>(),
+    getSessionProcessMarker: vi.fn<(pid: number) => string | null>(),
     isProcessAlive: vi.fn<(pid: number) => boolean>()
 }))
 
 vi.mock('@/configuration', () => ({ configuration }))
-vi.mock('@/utils/process', () => ({ getProcessStartMarker, isProcessAlive }))
+vi.mock('@/utils/process', () => ({ isProcessAlive }))
+vi.mock('./sessionProcessMarker', () => ({ getSessionProcessMarker }))
 vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn() } }))
 
 import { acquireSessionSlot, parseMaxLiveSessions, withSessionCapacity } from './sessionCapacity'
@@ -39,8 +40,8 @@ describe('session capacity leases', () => {
         home = await mkdtemp(join(tmpdir(), 'hapi-session-capacity-'))
         configuration.happyHomeDir = home
         vi.stubEnv('HAPI_MAX_LIVE_SESSIONS', '2')
-        getProcessStartMarker.mockReset()
-        getProcessStartMarker.mockImplementation(pid => `generation-${pid}`)
+        getSessionProcessMarker.mockReset()
+        getSessionProcessMarker.mockImplementation(pid => `generation-${pid}`)
         isProcessAlive.mockReset()
         isProcessAlive.mockReturnValue(true)
     })
@@ -182,7 +183,7 @@ describe('session capacity leases', () => {
     it('retains a live owner whose process generation cannot be probed', async () => {
         vi.stubEnv('HAPI_MAX_LIVE_SESSIONS', '1')
         await seedLease('uncertain', { pid: 123, marker: 'original' })
-        getProcessStartMarker.mockImplementation(pid => pid === 123 ? null : `generation-${pid}`)
+        getSessionProcessMarker.mockImplementation(pid => pid === 123 ? null : `generation-${pid}`)
         await expect(acquire()).rejects.toThrow('Live session limit reached (1/1)')
         expect(await leaseNames()).toEqual(['uncertain.json'])
     })
@@ -213,7 +214,7 @@ describe('session capacity leases', () => {
     })
 
     it('does not create a lease if the acquiring process generation is unavailable', async () => {
-        getProcessStartMarker.mockReturnValue(null)
+        getSessionProcessMarker.mockReturnValue(null)
         await expect(acquire()).rejects.toThrow('Cannot verify this process generation')
         expect(await leaseNames()).toEqual([])
     })

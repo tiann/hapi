@@ -5,8 +5,9 @@ import { join } from 'node:path'
 import { z } from 'zod'
 import { withSettingsFileLock } from '@hapi/protocol/settingsFileLock'
 import { configuration } from '@/configuration'
-import { getProcessStartMarker, isProcessAlive } from '@/utils/process'
+import { isProcessAlive } from '@/utils/process'
 import { logger } from '@/ui/logger'
+import { getSessionProcessMarker } from './sessionProcessMarker'
 
 const LeaseSchema = z.object({
     pid: z.number().int().positive(),
@@ -44,7 +45,7 @@ export async function acquireSessionSlot(): Promise<() => void> {
             let generation = generations.get(lease.pid)
             if (!generation) {
                 const alive = isProcessAlive(lease.pid)
-                generation = { alive, marker: alive ? getProcessStartMarker(lease.pid) : null }
+                generation = { alive, marker: alive ? getSessionProcessMarker(lease.pid) : null }
                 generations.set(lease.pid, generation)
             }
             if (!generation.alive || (generation.marker !== null && generation.marker !== lease.marker)) {
@@ -59,7 +60,7 @@ export async function acquireSessionSlot(): Promise<() => void> {
         if (limit !== 0 && count >= limit) {
             throw new Error(`Live session limit reached (${count}/${limit}). Stop an existing session before starting or resuming another, or raise HAPI_MAX_LIVE_SESSIONS.`)
         }
-        const marker = getProcessStartMarker(process.pid)
+        const marker = getSessionProcessMarker(process.pid)
         if (!marker) throw new Error('Cannot verify this process generation for live session admission')
         const temporary = `${target}.tmp`
         await writeFile(temporary, JSON.stringify({ pid: process.pid, marker }), { mode: 0o600 })
