@@ -6,8 +6,9 @@ import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentState, Metadata } from '@/api/types';
 import type { SessionBootstrapResult } from '@/agent/sessionFactory';
 import { SharedCodexRoot, latestCompletedForkCutoff, type RootHost } from './root';
-import { codexPlanProposalId } from './plan';
+import { codexPlanProposalId, planImplementationMessageId } from './plan';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import { SharedRewindBarrier } from './rewind';
 import { asyncQuestionsForItem } from './asyncQuestions';
 
 type NativeTurn = { id: string; status: string; items: unknown[] };
@@ -16,7 +17,7 @@ type NativeRequest = { id: string | number; method: string; params: unknown };
 vi.mock('../codexAppServerClient', () => ({
     CodexAppServerClient: class {
         initialized = false;
-        thread = { id: 'thread', turns: [] as NativeTurn[] };
+        thread = { id: 'thread', historyMode: 'legacy', turns: [] as NativeTurn[] };
         settings: Record<string, unknown> = { model: 'mock', collaborationMode: { mode: 'default' } };
         queue: Array<{ id: string; clientUserMessageId: unknown; input: unknown }> = [];
         notify?: (method: string, params: unknown) => void;
@@ -31,10 +32,25 @@ vi.mock('../codexAppServerClient', () => ({
         async initialize() { this.initialized = true; }
         isInitialized() { return this.initialized; }
         async disconnect() { this.initialized = false; }
+        async supportsMethod() { return true; }
         async request(method: string, params: Record<string, unknown> = {}) {
             if (method === 'thread/read' || method === 'thread/resume') return { ...this.settings, thread: structuredClone(this.thread) };
             if (method === 'thread/list') return { data: [] };
             if (method === 'thread/queue/list') return { data: this.queue };
+            if (method === 'thread/goal/get') return { goal: null };
+            if (method === 'thread/turns/list') {
+                let turns = structuredClone(this.thread.turns);
+                if (params.sortDirection === 'desc') turns = turns.reverse();
+                if (typeof params.limit === 'number') turns = turns.slice(0, params.limit);
+                return { data: turns };
+            }
+            if (method === 'thread/revert') {
+                const index = this.thread.turns.findIndex(turn => turn.id === params.beforeTurnId);
+                if (index < 0) throw new Error('Invalid boundary');
+                this.thread.turns.splice(index);
+                this.notify?.('thread/reverted', { threadId: 'thread' });
+                return { thread: { ...this.thread, turns: [] } };
+            }
             if (method === 'thread/settings/update') {
                 this.settings = { ...this.settings, ...params };
                 this.notify?.('thread/settings/updated', { threadId: 'thread', threadSettings: this.settings });
@@ -68,6 +84,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     const updateState = vi.fn((fn: (value: AgentState) => AgentState) => { state = fn(state); });
     const rpc = new Map<string, (raw: unknown) => Promise<unknown>>();
     const send = vi.fn();
+    const sendUserMessage = vi.fn();
     const consumed = vi.fn();
     const uncertain = vi.fn();
     const sessionReady = vi.fn();
@@ -84,7 +101,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         },
         rpcHandlerManager: { registerHandler: (name: string, handler: (raw: unknown) => Promise<unknown>) => rpc.set(name, handler) },
         sendSessionEvent() {}, sendAgentMessage: send, emitSessionReady: sessionReady,
-        sendUserMessage() {}, emitMessagesConsumed: consumed, emitSteerIndeterminate: uncertain, syncNativeQueuedMessage() {},
+        sendUserMessage, emitMessagesConsumed: consumed, emitSteerIndeterminate: uncertain, syncNativeQueuedMessage() {},
         sendSessionDeath() {}, async flush() {}, close() {}
     } as unknown as ApiSessionClient;
     const end = opts?.end ?? (async () => { throw new Error('Unexpected root archive'); });
@@ -98,7 +115,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     await root.bind('thread', { model: 'mock', thread: { turns: [] } }, false);
     const native = root.client as unknown as {
         initialized: boolean;
-        thread: { id: string; turns: NativeTurn[] };
+        thread: { id: string; historyMode: string; turns: NativeTurn[] };
         queue: Array<{ id: string; clientUserMessageId: string; input: unknown }>;
         notify(method: string, params: unknown): void;
         abandoned(): void;
@@ -106,7 +123,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         responses: Array<{ id: string | number; result: unknown }>;
     };
     return {
-        session, root, native, rpc, send, consumed, uncertain, sessionReady, metadata: () => metadata, state: () => state, updateState,
+        session, root, native, rpc, send, sendUserMessage, consumed, uncertain, sessionReady, metadata: () => metadata, state: () => state, updateState,
         drain: () => (root as unknown as { notifications: Promise<void> }).notifications,
         reconnect: () => reconnect?.(),
         emitHubArchived: () => { for (const listener of hubArchivedListeners) listener(); },
@@ -421,6 +438,380 @@ async function completePlan(f: Awaited<ReturnType<typeof fixture>>, status = 'co
     return codexPlanProposalId('thread', turn.id, 'plan-item');
 }
 
+describe('shared conversation rewind', () => {
+    async function history() {
+        const f = await fixture();
+        f.native.thread.historyMode = 'paginated';
+        f.native.thread.turns = ['one', 'two', 'three'].map(id => ({ id, status: 'completed', items: [
+            { id: `item-${id}`, type: 'userMessage', clientId: id, content: [{ type: 'inputText', text: id }] }
+        ] }));
+        await f.root.refresh();
+        await f.root.activate();
+        return f;
+    }
+
+    it('reverts the exact native boundary and holds writes until the hub commits', async () => {
+        const f = await history();
+        expect(f.metadata().capabilities?.conversationHistory?.rewindToMessage).toBe(true);
+        const result = await f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: 'two' }) as {
+            success: boolean; rewindToken: string; truncateFromLocalId: string;
+        };
+        expect(result).toMatchObject({ success: true, truncateFromLocalId: 'two', rewindToken: expect.any(String) });
+        expect(f.native.thread.turns.map(t => t.id)).toEqual(['one']);
+        await expect(f.rpc.get(RPC_METHODS.SetSessionConfig)!({ model: 'other' })).rejects.toThrow(/rewind/i);
+        await expect(f.rpc.get('complete-conversation-rewind')!({ rewindToken: 'wrong' })).rejects.toThrow();
+        await f.rpc.get('complete-conversation-rewind')!({ rewindToken: result.rewindToken });
+        expect(f.metadata().conversationHistoryTurns).toEqual({ one: 'one' });
+        await expect(f.rpc.get(RPC_METHODS.SetSessionConfig)!({ model: 'other' })).resolves.toBeDefined();
+    });
+
+    it('reconciles async questions across a blocked rewind and keeps new questions live', async () => {
+        const f = await history()
+        const question = { type: 'agentMessage', id: 'async-rewind', delivery: 'async', text: 'Which client?',
+            questions: [{ title: 'Which client?', options: ['Web', 'Terminal'] }] }
+        f.native.thread.turns[1]!.items.push(question)
+        await f.root.refresh()
+        await f.drain()
+        const oldQuestion = asyncQuestionsForItem('thread', question)[0]
+        await vi.waitFor(() => expect(f.state().requests?.[oldQuestion.id]).toBeDefined())
+
+        const rewind = await f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: 'two' }) as {
+            rewindToken: string
+        }
+        await expect(f.rpc.get(RPC_METHODS.Permission)!({
+            id: oldQuestion.id, approved: true, answers: { [oldQuestion.questionItemId]: ['Web'] }
+        })).rejects.toThrow(/rewind/i)
+        await expect(f.rpc.get(RPC_METHODS.Permission)!({
+            id: oldQuestion.id, approved: false
+        })).rejects.toThrow(/rewind/i)
+
+        await f.rpc.get(RPC_METHODS.CompleteConversationRewind)!({ rewindToken: rewind.rewindToken })
+        expect(f.state().requests?.[oldQuestion.id]).toBeUndefined()
+        expect(f.state().completedRequests?.[oldQuestion.id]).toBeUndefined()
+
+        const newQuestionItem = { type: 'agentMessage', id: 'async-after-rewind', delivery: 'async', text: 'Which now?',
+            questions: [{ title: 'Which now?', options: ['Web', 'Terminal'] }] }
+        f.native.notify('item/completed', { threadId: 'thread', turnId: 'one', item: newQuestionItem })
+        const newQuestion = asyncQuestionsForItem('thread', newQuestionItem)[0]
+        await vi.waitFor(() => expect(f.state().requests?.[newQuestion.id]).toBeDefined())
+
+        const request = f.root.client.request.bind(f.root.client)
+        const answerText = `<send_user_message_question_reply>\n${JSON.stringify([{
+            questionItemId: newQuestion.questionItemId, answer: 'Web', question: newQuestion.title
+        }])}\n</send_user_message_question_reply>`
+        const requestSpy = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (method === 'turn/start') {
+                f.native.notify('item/completed', { threadId: 'thread', turnId: 'one', item: {
+                    type: 'userMessage', id: 'native-after-rewind-answer', content: [{ type: 'text', text: answerText }]
+                } })
+                return {}
+            }
+            return request(method, params)
+        })
+        try {
+            await f.rpc.get(RPC_METHODS.Permission)!({
+                id: newQuestion.id, approved: true, answers: { [newQuestion.questionItemId]: ['Web'] }
+            })
+            await f.drain()
+        } finally {
+            requestSpy.mockRestore()
+        }
+        expect(f.state().requests?.[newQuestion.id]).toBeUndefined()
+        expect(f.state().completedRequests?.[newQuestion.id]).toMatchObject({ status: 'resolved' })
+    })
+
+    it('does not emit retained question results while rebuilding rewind history', async () => {
+        const f = await history()
+        const question = { type: 'agentMessage', id: 'older-retained-question', delivery: 'async', text: 'Which client?',
+            questions: [{ title: 'Which client?', options: ['Web', 'Terminal'] }] }
+        const q = asyncQuestionsForItem('thread', question)[0]
+        const answer = `<send_user_message_question_reply>\n${JSON.stringify([{
+            questionItemId: q.questionItemId, answer: 'Web', question: q.title
+        }])}\n</send_user_message_question_reply>`
+        f.native.thread.turns[0]!.items.push(question, { type: 'userMessage', id: 'older-retained-answer',
+            clientId: 'older-answer-turn', content: [{ type: 'text', text: answer }] })
+        await f.root.refresh()
+        await f.drain()
+        await vi.waitFor(() => expect(f.state().completedRequests?.[q.id]?.status).toBe('resolved'))
+        const resultSends = () => f.send.mock.calls.filter(([message]) => (message as { callId?: string }).callId === q.id)
+        const sentBeforeRewind = resultSends().length
+
+        const rewind = await f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: 'two' }) as {
+            rewindToken: string
+        }
+        await f.rpc.get(RPC_METHODS.CompleteConversationRewind)!({ rewindToken: rewind.rewindToken })
+
+        expect(f.state().completedRequests?.[q.id]?.status).toBe('resolved')
+        expect(resultSends()).toHaveLength(sentBeforeRewind)
+    })
+
+    it('reopens a retained question when rewind removes its answer turn', async () => {
+        const f = await history()
+        const question = { type: 'agentMessage', id: 'retained-question', delivery: 'async', text: 'Which client?',
+            questions: [{ title: 'Which client?', options: ['Web', 'Terminal'] }] }
+        const q = asyncQuestionsForItem('thread', question)[0]
+        const answer = `<send_user_message_question_reply>\n${JSON.stringify([{
+            questionItemId: q.questionItemId, answer: 'Web', question: q.title
+        }])}\n</send_user_message_question_reply>`
+        f.native.thread.turns[0]!.items.push(question)
+        f.native.thread.turns[1]!.items.push({ type: 'userMessage', id: 'retained-answer', clientId: 'answer-turn',
+            content: [{ type: 'text', text: answer }] })
+        await f.root.refresh()
+        await f.drain()
+        await vi.waitFor(() => expect(f.state().completedRequests?.[q.id]?.status).toBe('resolved'))
+        const isResult = (message: unknown) => {
+            const value = message as { type?: string; callId?: string }
+            return value.type === 'tool-call-result' && value.callId === q.id
+        }
+        const resultSends = () => f.send.mock.calls.filter(([message]) => isResult(message))
+        const resultIndex = f.send.mock.calls.findIndex(([message]) => isResult(message))
+        expect(resultIndex).toBeGreaterThanOrEqual(0)
+        expect(resultSends()).toHaveLength(1)
+        const answerIndex = f.sendUserMessage.mock.calls.findIndex(([text]) => String(text).includes(q.title))
+        expect(answerIndex).toBeGreaterThanOrEqual(0)
+        expect(f.send.mock.invocationCallOrder[resultIndex]!).toBeGreaterThan(f.sendUserMessage.mock.invocationCallOrder[answerIndex]!)
+
+        const rewind = await f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: 'two' }) as {
+            rewindToken: string
+        }
+        await f.rpc.get(RPC_METHODS.CompleteConversationRewind)!({ rewindToken: rewind.rewindToken })
+
+        expect(f.state().completedRequests?.[q.id]).toBeUndefined()
+        expect(f.state().requests?.[q.id]).toMatchObject({ tool: 'request_user_input', toolCallId: q.id })
+    })
+
+    it('rejects queued native input without changing history', async () => {
+        const f = await history();
+        f.native.queue.push({ id: 'q', clientUserMessageId: 'queued', input: [] });
+        await expect(f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: 'two' })).resolves.toMatchObject({
+            success: false, outcome: 'rejected'
+        });
+        expect(f.native.thread.turns).toHaveLength(3);
+    });
+
+    it('rejects a cut inside a steered turn without changing history', async () => {
+        const f = await history();
+        f.native.thread.turns[1]!.items.push({ id: 'steer', type: 'userMessage', clientId: 'steer', content: [] });
+        await f.root.refresh();
+        await expect(f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: 'steer' })).resolves.toMatchObject({
+            success: false, outcome: 'rejected'
+        });
+        expect(f.native.thread.turns).toHaveLength(3);
+    });
+
+    it('allows the first user message of a steered turn as an exact native boundary', async () => {
+        const f = await history();
+        f.native.thread.turns[1]!.items.push({ id: 'steer', type: 'userMessage', clientId: 'steer', content: [] });
+        await f.root.refresh();
+        expect(await f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: 'two' })).toMatchObject({ success: true });
+        expect(f.native.thread.turns.map(t => t.id)).toEqual(['one']);
+    });
+
+    it.each(['legacy', 'missing', 'busy', 'inflight'])('rejects %s preconditions before dispatch', async reason => {
+        const f = await history();
+        if (reason === 'legacy') f.native.thread.historyMode = 'legacy';
+        if (reason === 'busy') f.native.thread.turns[2]!.status = 'inProgress';
+        const release = reason === 'inflight' ? f.root.nativeAdmission('turn/start') : () => {};
+        expect(await f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: reason === 'missing' ? 'missing' : 'two' }))
+            .toMatchObject({ success: false, outcome: 'rejected' });
+        release();
+        expect(f.native.thread.turns).toHaveLength(3);
+        if (reason === 'busy') expect(f.state().steeringActive).toBe(true);
+    });
+
+    it('quarantines a failed or unverifiable native mutation and ignores late projection', async () => {
+        const f = await history();
+        const request = f.root.client.request.bind(f.root.client);
+        vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (method === 'thread/revert') throw new Error('Lost native response');
+            return request(method, params);
+        });
+        await expect(f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: 'two' })).rejects.toThrow('Lost native');
+        expect(f.metadata().conversationHistoryDiverged).toBe(true);
+        expect(() => f.root.nativeAdmission('turn/start')).toThrow('rewind');
+        f.send.mockClear();
+        f.native.notify('item/completed', { threadId: 'thread', turnId: 'three', item: {
+            id: 'late', type: 'agentMessage', text: 'stale response'
+        } });
+        await f.root.refresh();
+        expect(f.send).not.toHaveBeenCalled();
+    });
+
+    it('supports repeated rewinds, including removing the first turn', async () => {
+        const f = await history();
+        for (const id of ['three', 'two', 'one']) {
+            const result = await f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: id }) as { rewindToken: string };
+            await f.rpc.get('complete-conversation-rewind')!({ rewindToken: result.rewindToken });
+        }
+        expect(f.native.thread.turns).toEqual([]);
+        expect(f.metadata().conversationHistoryTurns).toEqual({});
+        expect(f.metadata().conversationHistoryPoints).toEqual({});
+    });
+
+    it('rejects active goals and unconfirmed retained history', async () => {
+        const f = await history();
+        const request = f.root.client.request.bind(f.root.client);
+        const spy = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (method === 'thread/goal/get') return { goal: { status: 'active' } };
+            return request(method, params);
+        });
+        expect(await f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: 'two' })).toMatchObject({ success: false });
+        expect(f.native.thread.turns).toHaveLength(3);
+        spy.mockImplementation(async (method, params) => method === 'thread/revert' ? {} : request(method, params));
+        await expect(f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: 'two' })).rejects.toThrow('reconciliation');
+        expect(() => f.root.nativeAdmission('turn/start')).toThrow();
+    });
+
+    it('reconnects after transport loss during rejected read-only rewind preflight', async () => {
+        const f = await history();
+        const planId = await completePlan(f);
+        const request = f.root.client.request.bind(f.root.client);
+        const spy = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (method === 'thread/goal/get') {
+                f.native.initialized = false; f.native.abandoned();
+                throw new Error('Lost preflight connection');
+            }
+            return request(method, params);
+        });
+        expect(await f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: 'two' }))
+            .toMatchObject({ success: false, outcome: 'rejected' });
+        await vi.waitFor(() => expect(f.native.initialized).toBe(true));
+        expect(spy.mock.calls.some(([method]) => method === 'thread/resume')).toBe(true);
+        expect(f.native.thread.turns).toHaveLength(4);
+        spy.mockImplementation(request);
+        // Native initialization precedes queue/history recovery. Wait for the
+        // final UI control publication before exercising the recovered root.
+        await vi.waitFor(() => expect(f.state().codexPlanProposalId).toBe(planId));
+        await expect(f.rpc.get(RPC_METHODS.SetSessionConfig)!({ model: 'reconnected' })).resolves.toBeDefined();
+    });
+
+    it('reconnects after native transport loss during successful rewind completion', async () => {
+        const f = await history()
+        const request = f.root.client.request.bind(f.root.client)
+        const requestSpy = vi.spyOn(f.root.client, 'request').mockImplementation(request)
+        const rewind = await f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: 'two' }) as {
+            rewindToken: string
+        }
+        const flushSpy = vi.spyOn(f.root.session, 'flush').mockImplementation(async () => {
+            f.native.initialized = false
+            f.native.abandoned()
+            return true
+        })
+        await f.rpc.get(RPC_METHODS.CompleteConversationRewind)!({ rewindToken: rewind.rewindToken })
+        flushSpy.mockRestore()
+
+        await vi.waitFor(() => expect(f.native.initialized).toBe(true))
+        expect(requestSpy.mock.calls.some(([method]) => method === 'thread/resume')).toBe(true)
+        await vi.waitFor(() => expect((f.root as unknown as { reconnecting: boolean }).reconnecting).toBe(false))
+        expect(f.metadata().conversationHistoryTurns).toEqual({ one: 'one' })
+        await expect(f.rpc.get(RPC_METHODS.SetSessionConfig)!({ model: 'reconnected' })).resolves.toBeDefined()
+    })
+
+    it('retires native approval resolutions arriving while the rewind marker is being written', async () => {
+        const f = await history();
+        f.native.thread.turns[2]!.status = 'inProgress';
+        f.native.serverRequest({ id: 77, method: 'item/tool/requestUserInput', params: {
+            threadId: 'thread', turnId: 'three', itemId: 'question', questions: [
+                { id: 'q', header: 'Choice', question: 'Choose?', options: [{ label: 'A', description: 'A' }] }
+            ]
+        } });
+        await vi.waitFor(() => expect(Object.keys(f.state().requests ?? {})).toHaveLength(1));
+        const id = Object.keys(f.state().requests!)[0]!;
+        const begin = SharedRewindBarrier.prototype.begin;
+        const spy = vi.spyOn(SharedRewindBarrier.prototype, 'begin').mockImplementation(function(this: SharedRewindBarrier) {
+            const writing = begin.call(this);
+            // begin synchronously closes admission, then awaits its marker write.
+            f.native.notify('serverRequest/resolved', { threadId: 'thread', requestId: 77 });
+            return writing;
+        });
+        try {
+            expect(await f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: 'two' }))
+                .toMatchObject({ success: false, outcome: 'rejected' });
+        } finally { spy.mockRestore(); }
+        expect(f.state().requests).toEqual({});
+        expect(f.state().completedRequests?.[id]?.status).toBe('resolved');
+        f.native.thread.turns[2]!.status = 'completed';
+        await f.root.refresh();
+        expect(await f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: 'two' }))
+            .toMatchObject({ success: true });
+    });
+
+    it.each([false, true])('recovers new requests received during rejected preflight without reviving resolved ones (%s)', async resolved => {
+        const f = await history();
+        f.native.thread.turns[2]!.status = 'inProgress';
+        const begin = SharedRewindBarrier.prototype.begin;
+        const spy = vi.spyOn(SharedRewindBarrier.prototype, 'begin').mockImplementation(function(this: SharedRewindBarrier) {
+            const writing = begin.call(this);
+            f.native.serverRequest({ id: 88, method: 'item/tool/requestUserInput', params: {
+                threadId: 'thread', turnId: 'three', itemId: 'new-question', questions: [
+                    { id: 'new-q', header: 'Choice', question: 'New choice?', options: [{ label: 'A', description: 'A' }] }
+                ]
+            } });
+            if (resolved) f.native.notify('serverRequest/resolved', { threadId: 'thread', requestId: 88 });
+            return writing;
+        });
+        try {
+            expect(await f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: 'two' }))
+                .toMatchObject({ success: false, outcome: 'rejected' });
+        } finally { spy.mockRestore(); }
+        expect(Object.values(f.state().requests ?? {})).toHaveLength(resolved ? 0 : 1);
+        if (!resolved) {
+            expect(Object.values(f.state().requests!)[0]?.toolCallId).toBe('new-question');
+            f.native.notify('serverRequest/resolved', { threadId: 'thread', requestId: 88 });
+        }
+        f.native.thread.turns[2]!.status = 'completed';
+        await f.root.refresh();
+        expect(await f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: 'two' }))
+            .toMatchObject({ success: true });
+    });
+
+    it('succeeds with multiple turns when lazy history is enabled and does not append retained history to Hub', async () => {
+        vi.stubEnv('HAPI_CODEX_LAZY_HISTORY_IDS', 'thread');
+        try {
+            const f = await history();
+            f.sendUserMessage.mockClear();
+
+            // 第一次 rewind：rewind at 'two'
+            const result = await f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: 'two' }) as {
+                success: boolean; rewindToken: string; truncateFromLocalId: string; error?: string;
+            };
+            expect(result.error).toBeUndefined();
+            expect(result).toMatchObject({ success: true, truncateFromLocalId: 'two', rewindToken: expect.any(String) });
+            expect(f.native.thread.turns.map(t => t.id)).toEqual(['one']);
+
+            await f.rpc.get('complete-conversation-rewind')!({ rewindToken: result.rewindToken });
+            expect(f.metadata().conversationHistoryTurns).toEqual({ one: 'one' });
+            // 关键断言：保留的历史 Turn 1 绝不能再次通过 sendUserMessage 追加到 Hub
+            expect(f.sendUserMessage).not.toHaveBeenCalled();
+
+            // 连续第二次 rewind：对剩下的保留 Turn 1 ('one') 执行 rewind
+            const secondResult = await f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: 'one' }) as {
+                success: boolean; rewindToken: string; truncateFromLocalId: string; error?: string;
+            };
+            expect(secondResult.error).toBeUndefined();
+            expect(secondResult).toMatchObject({ success: true, truncateFromLocalId: 'one', rewindToken: expect.any(String) });
+            expect(f.native.thread.turns).toHaveLength(0);
+            await f.rpc.get('complete-conversation-rewind')!({ rewindToken: secondResult.rewindToken });
+            expect(f.metadata().conversationHistoryTurns).toEqual({});
+            expect(f.sendUserMessage).not.toHaveBeenCalled();
+        } finally {
+            vi.unstubAllEnvs();
+        }
+    });
+
+    it('refuses cold recovery before connecting a native client after an interrupted rewind', async () => {
+        const f = await history();
+        await f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: 'two' });
+        await f.root.close(false);
+        const replacement = new SharedCodexRoot(f.root.bootstrap, {
+            directory: f.root.bootstrap.workingDirectory, generation: 'replacement', endpoint: 'mock',
+            settingsFor: () => undefined, create: async () => { throw new Error('Unexpected create'); }, end: async () => {}
+        });
+        await expect(replacement.prepare()).rejects.toThrow('reconciliation');
+        expect(replacement.client.isInitialized()).toBe(false);
+    });
+});
+
 it('keeps the active round measurable when only the hub reconnects', async () => {
         vi.useFakeTimers();
         try {
@@ -570,6 +961,38 @@ describe('shared plan actions', () => {
         expect(request.mock.calls[settingsIndex][1]).toMatchObject({ collaborationMode: { mode: 'default' } });
         expect(f.native.queue[0]).toMatchObject({ input: [{ type: 'text', text: 'Implement the plan.' }] });
         expect(f.state().codexPlanProposalId).toBeNull();
+    });
+
+    it('restores plan actions and submits a fresh implementation after rewinding the implementation turn', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        const planId = await completePlan(f);
+        f.native.thread.historyMode = 'paginated';
+        const action = () => f.rpc.get(RPC_METHODS.ImplementCodexPlan)!({ planId });
+        const request = vi.spyOn(f.root.client, 'request');
+
+        expect(await action()).toEqual({ ok: true });
+        const firstImplementationId = f.native.queue[0]!.clientUserMessageId;
+        expect(firstImplementationId).toBe(planImplementationMessageId(planId));
+
+        const item = { id: 'implementation-user', type: 'userMessage', clientId: firstImplementationId, content: [{ type: 'inputText', text: 'Implement the plan.' }] };
+        const turn = { id: 'implementation-turn', status: 'inProgress', items: [item] };
+        f.native.thread.turns.push(turn);
+        f.native.notify('item/completed', { threadId: 'thread', turnId: turn.id, item });
+        turn.status = 'completed';
+        f.native.notify('turn/completed', { threadId: 'thread', turn: { id: turn.id, status: 'completed' } });
+        await f.drain();
+        f.native.queue = [];
+
+        const rewound = await f.rpc.get(RPC_METHODS.RewindConversation)!({ messageLocalId: firstImplementationId }) as { rewindToken: string };
+        await f.rpc.get(RPC_METHODS.CompleteConversationRewind)!({ rewindToken: rewound.rewindToken });
+        await f.root.applySettings({ collaborationMode: 'plan' });
+
+        expect(f.state().codexPlanProposalId).toBe(planId);
+        expect(await action()).toEqual({ ok: true });
+        expect(f.native.queue).toHaveLength(1);
+        expect(f.native.queue[0]!.clientUserMessageId).not.toBe(firstImplementationId);
+        expect(request.mock.calls.filter(([method]) => method === 'thread/queue/add')).toHaveLength(2);
     });
 
     it('does not let a slow history snapshot resurrect a plan after native continuation', async () => {

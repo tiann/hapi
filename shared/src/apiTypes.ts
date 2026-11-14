@@ -796,6 +796,8 @@ export type OpenCodeRewindReport = z.infer<typeof OpenCodeRewindReportSchema>
 
 export type RewindConversationRpcResult = {
     success: true
+    /** Shared Codex keeps every sender blocked until the hub commits and acknowledges truncation. */
+    rewindToken?: string
     /** Truncate HAPI transcript at/after this localId, then accept rehydrated history. */
     truncateFromLocalId: string
     messages?: Array<{
