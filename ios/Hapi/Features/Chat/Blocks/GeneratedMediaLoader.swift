@@ -52,20 +52,25 @@ final class GeneratedMediaFile: Sendable {
 final class GeneratedMediaLoader {
     typealias Fetch = @Sendable (String) async throws -> (data: Data, mimeType: String?)
     private let fetch: Fetch
+    private let attachmentFetch: Fetch?
     private let images = NSCache<NSString, UIImage>()
     private let files = NSCache<NSString, GeneratedMediaFile>()
     private var imageTasks: [String: Task<UIImage, Error>] = [:]
     private var fileTasks: [String: Task<GeneratedMediaFile, Error>] = [:]
 
     convenience init(api: APIClient, sessionId: String) {
-        self.init { imageId in
+        self.init(fetch: { imageId in
             try await api.generatedImage(sessionId: sessionId, imageId: imageId)
-        }
+        }, attachmentFetch: { attachmentId in
+            try await api.attachment(sessionId: sessionId, attachmentId: attachmentId)
+        })
     }
 
-    init(fetch: @escaping Fetch) {
+    init(fetch: @escaping Fetch, attachmentFetch: Fetch? = nil) {
         self.fetch = fetch
+        self.attachmentFetch = attachmentFetch
         images.countLimit = 40
+        images.totalCostLimit = 64 * 1024 * 1024
         files.countLimit = 8
         files.totalCostLimit = 100 * 1024 * 1024
     }
@@ -88,6 +93,37 @@ final class GeneratedMediaLoader {
         let image = try await task.value
         images.setObject(image, forKey: imageId as NSString)
         return image
+    }
+
+    /// Loads a durable attachment original through the authenticated API.
+    /// Kept separate from generated-image keys so identical ids cannot collide.
+    func attachmentImage(for attachmentId: String) async -> UIImage? {
+        let key = "attachment:\(attachmentId)"
+        if let cached = images.object(forKey: key as NSString) { return cached }
+        if let task = imageTasks[key] { return try? await task.value }
+        guard let attachmentFetch else { return nil }
+        let task = Task {
+            let payload = try await attachmentFetch(attachmentId)
+            return try await Task.detached(priority: .utility) {
+                guard let image = AttachmentPreparer.decodeDownsampled(
+                    payload.data,
+                    maxDimension: AttachmentPolicy.previewMaxDimension
+                ) else {
+                    throw CocoaError(.fileReadCorruptFile)
+                }
+                return UIImage(cgImage: image)
+            }.value
+        }
+        imageTasks[key] = task
+        defer { imageTasks[key] = nil }
+        guard let image = try? await task.value else { return nil }
+        images.setObject(image, forKey: key as NSString, cost: Self.decodedCost(of: image))
+        return image
+    }
+
+    private static func decodedCost(of image: UIImage) -> Int {
+        guard let cgImage = image.cgImage else { return 0 }
+        return cgImage.bytesPerRow * cgImage.height
     }
 
     func file(for imageId: String, fileName: String, mimeType: String?) async throws -> GeneratedMediaFile {

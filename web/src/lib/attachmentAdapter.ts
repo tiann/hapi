@@ -46,6 +46,7 @@ function isUnsupportedChunkedUploadError(error: unknown, code?: string): boolean
 
 type PendingUploadAttachment = PendingAttachment & {
     path?: string
+    attachmentId?: string
     previewUrl?: string
     uploadSessionId?: string
     retryable?: boolean
@@ -63,10 +64,18 @@ export function createAttachmentAdapter(
     const cancelledAttachmentIds = new Set<string>()
     const activeUploads = new Map<string, ActiveUploadEntry>()
 
-    const deleteUpload = async (path?: string, uploadSessionId = sessionId) => {
-        if (!path) return
+    const deleteUpload = async (
+        path?: string,
+        attachmentId?: string,
+        uploadSessionId = sessionId
+    ) => {
+        if (!path && !attachmentId) return
         try {
-            await api.deleteUploadFile(uploadSessionId, path)
+            if (attachmentId) {
+                await api.deleteAttachment(uploadSessionId, attachmentId)
+            } else if (path) {
+                await api.deleteUploadFile(uploadSessionId, path)
+            }
         } catch {
             // Best effort cleanup
         }
@@ -94,7 +103,7 @@ export function createAttachmentAdapter(
             // metadata still supplies a stable id so draft merge cannot
             // duplicate the same File across persistence passes.
             const restored = getRestoredUploadMetadata(file)
-            if (!resolveSessionId && restored?.path) {
+            if (!resolveSessionId && (restored?.path || restored?.attachmentId)) {
                 yield {
                     id: restored.id,
                     type: 'file',
@@ -103,6 +112,7 @@ export function createAttachmentAdapter(
                     file,
                     status: { type: 'requires-action', reason: 'composer-send' },
                     path: restored.path,
+                    attachmentId: restored.attachmentId,
                     previewUrl: restored.previewUrl,
                     uploadSessionId: restored.uploadSessionId,
                 } as PendingUploadAttachment
@@ -154,6 +164,24 @@ export function createAttachmentAdapter(
                 }
 
                 const uploadSessionId = resolveSessionId ? await resolveSessionId() : sessionId
+                if (restored
+                    && restored.uploadSessionId === uploadSessionId
+                    && (restored.path || restored.attachmentId)) {
+                    yield {
+                        id,
+                        type: 'file',
+                        name: file.name,
+                        contentType,
+                        file,
+                        status: { type: 'requires-action', reason: 'composer-send' },
+                        path: restored.path,
+                        attachmentId: restored.attachmentId,
+                        previewUrl: restored.previewUrl,
+                        uploadSessionId,
+                    } as PendingUploadAttachment
+                    return
+                }
+
                 // Resume may already have merged the source session away. Always
                 // hand off with a live cancellation predicate so transfer can
                 // drop this id (even if already persisted on the source draft).
@@ -274,9 +302,9 @@ export function createAttachmentAdapter(
                         )
 
                         if (cancelledAttachmentIds.has(id)) {
-                            if (finalResult.success && finalResult.path) {
+                            if (finalResult.success && (finalResult.path || finalResult.attachmentId)) {
                                 finalized = true
-                                await deleteUpload(finalResult.path, uploadSessionId)
+                                await deleteUpload(finalResult.path, finalResult.attachmentId, uploadSessionId)
                             } else {
                                 activeEntry.finalizing = false
                                 abortActiveChunkedUpload(activeEntry)
@@ -284,7 +312,7 @@ export function createAttachmentAdapter(
                             return
                         }
 
-                        if (!finalResult.success || !finalResult.path) {
+                        if (!finalResult.success || (!finalResult.path && !finalResult.attachmentId)) {
                             activeEntry.finalizing = false
                             abortActiveChunkedUpload(activeEntry)
                             yield makeIncomplete(!isNonRetryableUploadError(undefined, finalResult.code))
@@ -301,6 +329,7 @@ export function createAttachmentAdapter(
                             file,
                             status: { type: 'requires-action', reason: 'composer-send' },
                             path: finalResult.path,
+                            attachmentId: finalResult.attachmentId,
                             previewUrl,
                             uploadSessionId,
                         } as PendingUploadAttachment
@@ -329,13 +358,13 @@ export function createAttachmentAdapter(
 
                     const result = await api.uploadFile(uploadSessionId, file.name, content, contentType)
                     if (cancelledAttachmentIds.has(id)) {
-                        if (result.success && result.path) {
-                            await deleteUpload(result.path, uploadSessionId)
+                        if (result.success && (result.path || result.attachmentId)) {
+                            await deleteUpload(result.path, result.attachmentId, uploadSessionId)
                         }
                         return
                     }
 
-                    if (!result.success || !result.path) {
+                    if (!result.success || (!result.path && !result.attachmentId)) {
                         yield makeIncomplete(!isNonRetryableUploadError(undefined, result.code))
                         return
                     }
@@ -348,6 +377,7 @@ export function createAttachmentAdapter(
                         file,
                         status: { type: 'requires-action', reason: 'composer-send' },
                         path: result.path,
+                        attachmentId: result.attachmentId,
                         previewUrl,
                         uploadSessionId,
                     } as PendingUploadAttachment
@@ -375,25 +405,25 @@ export function createAttachmentAdapter(
                     abortActiveChunkedUpload(active)
                 }
             }
-            const path = (attachment as PendingUploadAttachment).path
-            const uploadSessionId = (attachment as PendingUploadAttachment).uploadSessionId
+            const pending = attachment as PendingUploadAttachment
             // The composer waits for remove() before dropping the chip. Remote
             // cleanup is best effort and must not delay that local update.
-            void deleteUpload(path, uploadSessionId)
+            void deleteUpload(pending.path, pending.attachmentId, pending.uploadSessionId)
         },
 
         async send(attachment: PendingAttachment): Promise<CompleteAttachment> {
             const pending = attachment as PendingUploadAttachment
             const path = pending.path
+            const attachmentId = pending.attachmentId
 
             // Build AttachmentMetadata to be sent with the message
-            const metadata: AttachmentMetadata | undefined = path ? {
+            const metadata: AttachmentMetadata | undefined = (path || attachmentId) ? {
                 id: attachment.id,
                 filename: attachment.name,
                 mimeType: attachment.contentType ?? 'application/octet-stream',
                 size: attachment.file?.size ?? 0,
-                path,
-                previewUrl: pending.previewUrl
+                ...(path ? { path, previewUrl: pending.previewUrl } : {}),
+                ...(attachmentId ? { attachmentId } : {})
             } : undefined
 
             return {

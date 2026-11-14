@@ -2290,9 +2290,14 @@ describe('session model', () => {
             let mergeCalls = 0
             const sessionCache = (engine as any).sessionCache
             const mergeSessions = sessionCache.mergeSessions.bind(sessionCache)
-            sessionCache.mergeSessions = async (oldSessionId: string, newSessionId: string, namespace: string) => {
+            sessionCache.mergeSessions = async (
+                oldSessionId: string,
+                newSessionId: string,
+                namespace: string,
+                options?: { allowLifecycleDeletionGuard?: boolean }
+            ) => {
                 mergeCalls += 1
-                return mergeSessions(oldSessionId, newSessionId, namespace)
+                return mergeSessions(oldSessionId, newSessionId, namespace, options)
             }
             ;(engine as any).rpcGateway.spawnSession = async (
                 _machineId: string,
@@ -2369,9 +2374,14 @@ describe('session model', () => {
             let mergeCalls = 0
             const sessionCache = (engine as any).sessionCache
             const mergeSessions = sessionCache.mergeSessions.bind(sessionCache)
-            sessionCache.mergeSessions = async (oldSessionId: string, newSessionId: string, namespace: string) => {
+            sessionCache.mergeSessions = async (
+                oldSessionId: string,
+                newSessionId: string,
+                namespace: string,
+                options?: { allowLifecycleDeletionGuard?: boolean }
+            ) => {
                 mergeCalls += 1
-                return mergeSessions(oldSessionId, newSessionId, namespace)
+                return mergeSessions(oldSessionId, newSessionId, namespace, options)
             }
 
             ;(engine as any).rpcGateway.spawnSession = async (
@@ -2447,9 +2457,14 @@ describe('session model', () => {
             let mergeCalls = 0
             const sessionCache = (engine as any).sessionCache
             const mergeSessions = sessionCache.mergeSessions.bind(sessionCache)
-            sessionCache.mergeSessions = async (oldSessionId: string, newSessionId: string, namespace: string) => {
+            sessionCache.mergeSessions = async (
+                oldSessionId: string,
+                newSessionId: string,
+                namespace: string,
+                options?: { allowLifecycleDeletionGuard?: boolean }
+            ) => {
                 mergeCalls += 1
-                return mergeSessions(oldSessionId, newSessionId, namespace)
+                return mergeSessions(oldSessionId, newSessionId, namespace, options)
             }
 
             ;(engine as any).rpcGateway.spawnSession = async (
@@ -2907,9 +2922,14 @@ describe('session model', () => {
             let mergeCalls = 0
             const sessionCache = (engine as any).sessionCache
             const mergeSessions = sessionCache.mergeSessions.bind(sessionCache)
-            sessionCache.mergeSessions = async (oldSessionId: string, newSessionId: string, namespace: string) => {
+            sessionCache.mergeSessions = async (
+                oldSessionId: string,
+                newSessionId: string,
+                namespace: string,
+                options?: { allowLifecycleDeletionGuard?: boolean }
+            ) => {
                 mergeCalls += 1
-                return mergeSessions(oldSessionId, newSessionId, namespace)
+                return mergeSessions(oldSessionId, newSessionId, namespace, options)
             }
 
             ;(engine as any).rpcGateway.spawnSession = async () => {
@@ -2974,9 +2994,14 @@ describe('session model', () => {
             let mergeCalls = 0
             const sessionCache = (engine as any).sessionCache
             const mergeSessions = sessionCache.mergeSessions.bind(sessionCache)
-            sessionCache.mergeSessions = async (oldSessionId: string, newSessionId: string, namespace: string) => {
+            sessionCache.mergeSessions = async (
+                oldSessionId: string,
+                newSessionId: string,
+                namespace: string,
+                options?: { allowLifecycleDeletionGuard?: boolean }
+            ) => {
                 mergeCalls += 1
-                return mergeSessions(oldSessionId, newSessionId, namespace)
+                return mergeSessions(oldSessionId, newSessionId, namespace, options)
             }
 
             engine.handleSessionAlive({ sid: spawnedSession.id, time: Date.now() })
@@ -3039,9 +3064,14 @@ describe('session model', () => {
             let mergeCalls = 0
             const sessionCache = (engine as any).sessionCache
             const mergeSessions = sessionCache.mergeSessions.bind(sessionCache)
-            sessionCache.mergeSessions = async (oldSessionId: string, newSessionId: string, namespace: string) => {
+            sessionCache.mergeSessions = async (
+                oldSessionId: string,
+                newSessionId: string,
+                namespace: string,
+                options?: { allowLifecycleDeletionGuard?: boolean }
+            ) => {
                 mergeCalls += 1
-                return mergeSessions(oldSessionId, newSessionId, namespace)
+                return mergeSessions(oldSessionId, newSessionId, namespace, options)
             }
 
             ;(engine as any).rpcGateway.spawnSession = async () => {

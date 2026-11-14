@@ -45,12 +45,15 @@ import type { WebAppEnv } from '../middleware/auth'
 import { loadScratchlistAttachmentLimitsFromEnv } from '../../config/scratchlistAttachmentLimits'
 import { validateScratchlistAttachmentsForWrite, scratchlistSessionBytesBeforeForPut } from '../../scratchlistAttachments/validate'
 import { TitleSuggestionError } from '../../sync/titleSuggestion'
+import { attachmentResponseBody, readAttachmentForDownload } from '../attachmentDownload'
+import { attachmentContentDisposition } from '../attachmentHeaders'
 import {
     MAX_CONTENT_SEARCH_SESSION_SCOPE_BYTES,
     serializeContentSearchSessionIds
 } from '../../store/messageContentSearch'
 import { ArchiveCleanupError } from '../../sync/archiveCleanupError'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
+import { ChunkedUploadStaging, ChunkedUploadStagingError } from '../chunkedUploadStaging'
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 const UPLOAD_ID_RE = /^[A-Za-z0-9_-]{1,128}$/
@@ -193,6 +196,8 @@ function estimateBase64Bytes(base64: string): number {
 
 export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
+    const chunkedUploadStaging = new ChunkedUploadStaging()
+    void chunkedUploadStaging.initialize().catch(() => {})
 
     app.get('/sessions', (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
@@ -620,10 +625,10 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (estimatedBytes > MAX_UPLOAD_BYTES) {
             return c.json({ success: false, error: 'File too large (max 50MB)' }, 413)
         }
-
         try {
-            const result = await engine.uploadFile(
+            const result = await engine.createAttachment(
                 sessionResult.sessionId,
+                c.get('namespace'),
                 parsed.data.filename,
                 parsed.data.content,
                 parsed.data.mimeType
@@ -668,6 +673,22 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             if (!result.success) {
                 return c.json(result, uploadErrorStatus(result.code))
             }
+            if (!result.uploadId) {
+                return c.json({ success: false, error: 'Upload did not return an id' }, 500)
+            }
+            try {
+                await chunkedUploadStaging.begin({
+                    namespace: c.get('namespace'),
+                    sessionId: sessionResult.sessionId,
+                    uploadId: result.uploadId,
+                    filename: parsed.data.filename,
+                    mimeType: parsed.data.mimeType,
+                    size: parsed.data.size
+                })
+            } catch (error) {
+                await engine.abortChunkedUpload(sessionResult.sessionId, result.uploadId).catch(() => {})
+                throw error
+            }
             return c.json(result)
         } catch (error) {
             if (error instanceof RpcTargetMissingError) {
@@ -676,6 +697,9 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                     error: error.message,
                     code: RPC_TARGET_MISSING_ERROR_CODE
                 }, 503)
+            }
+            if (error instanceof ChunkedUploadStagingError) {
+                return c.json({ success: false, error: error.message, code: error.code }, uploadErrorStatus(error.code))
             }
             return c.json({
                 success: false,
@@ -725,6 +749,18 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             if (!result.success) {
                 return c.json(result, uploadErrorStatus(result.code))
             }
+            try {
+                await chunkedUploadStaging.append(
+                    c.get('namespace'),
+                    sessionResult.sessionId,
+                    uploadId,
+                    Number(indexRaw),
+                    chunkRead.bytes
+                )
+            } catch (error) {
+                await engine.abortChunkedUpload(sessionResult.sessionId, uploadId).catch(() => {})
+                throw error
+            }
             return c.json(result)
         } catch (error) {
             if (error instanceof RpcTargetMissingError) {
@@ -733,6 +769,9 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                     error: error.message,
                     code: RPC_TARGET_MISSING_ERROR_CODE
                 }, 503)
+            }
+            if (error instanceof ChunkedUploadStagingError) {
+                return c.json({ success: false, error: error.message, code: error.code }, uploadErrorStatus(error.code))
             }
             return c.json({
                 success: false,
@@ -757,12 +796,31 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ success: false, error: 'Invalid uploadId', code: 'upload_invalid_chunk' }, 400)
         }
 
+        let finalized: Awaited<ReturnType<ChunkedUploadStaging['finalize']>> | null = null
         try {
-            const result = await engine.finalizeChunkedUpload(sessionResult.sessionId, uploadId)
-            if (!result.success) {
-                return c.json(result, uploadErrorStatus(result.code))
+            const cliResult = await engine.finalizeChunkedUpload(sessionResult.sessionId, uploadId)
+            if (!cliResult.success) {
+                return c.json(cliResult, uploadErrorStatus(cliResult.code))
             }
-            return c.json(result)
+            finalized = await chunkedUploadStaging.finalize(
+                c.get('namespace'),
+                sessionResult.sessionId,
+                uploadId
+            )
+            const durable = await engine.createAttachmentFromFile(
+                sessionResult.sessionId,
+                c.get('namespace'),
+                finalized.filename,
+                finalized.path,
+                finalized.mimeType
+            )
+            if (!durable.success) {
+                return c.json(durable, uploadErrorStatus(durable.code))
+            }
+            if (cliResult.path) {
+                void engine.deleteUploadFile(sessionResult.sessionId, cliResult.path).catch(() => {})
+            }
+            return c.json(durable)
         } catch (error) {
             if (error instanceof RpcTargetMissingError) {
                 return c.json({
@@ -771,10 +829,15 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                     code: RPC_TARGET_MISSING_ERROR_CODE
                 }, 503)
             }
+            if (error instanceof ChunkedUploadStagingError) {
+                return c.json({ success: false, error: error.message, code: error.code }, uploadErrorStatus(error.code))
+            }
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to finalize upload'
             }, 500)
+        } finally {
+            if (finalized) await chunkedUploadStaging.discard(finalized)
         }
     })
 
@@ -796,6 +859,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
 
         try {
             const result = await engine.abortChunkedUpload(sessionResult.sessionId, uploadId)
+            await chunkedUploadStaging.abort(c.get('namespace'), sessionResult.sessionId, uploadId)
             if (!result.success) {
                 return c.json(result, uploadErrorStatus(result.code))
             }
@@ -821,7 +885,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return engine
         }
 
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: false })
         if (sessionResult instanceof Response) {
             return sessionResult
         }
@@ -831,9 +895,14 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (!parsed.success) {
             return c.json({ error: 'Invalid body' }, 400)
         }
+        if (!parsed.data.attachmentId && !sessionResult.session.active) {
+            return c.json({ error: 'Session is inactive' }, 409)
+        }
 
         try {
-            const result = await engine.deleteUploadFile(sessionResult.sessionId, parsed.data.path)
+            const result = parsed.data.attachmentId
+                ? await engine.deleteAttachment(sessionResult.sessionId, c.get('namespace'), parsed.data.attachmentId)
+                : await engine.deleteUploadFile(sessionResult.sessionId, parsed.data.path!)
             return c.json(result)
         } catch (error) {
             return c.json({
@@ -841,6 +910,41 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 error: error instanceof Error ? error.message : 'Failed to delete upload'
             }, 500)
         }
+    })
+
+    app.get('/sessions/:id/attachments/:attachmentId/original', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        const attachment = await readAttachmentForDownload(
+            engine,
+            sessionResult.sessionId,
+            c.get('namespace'),
+            c.req.param('attachmentId')
+        )
+        if (!attachment) {
+            return c.json({ error: 'Attachment not found' }, 404)
+        }
+
+        return new Response(attachmentResponseBody(attachment), {
+            headers: {
+                'Content-Type': attachment.mimeType,
+                'Content-Length': String(attachment.size),
+                'Content-Disposition': attachmentContentDisposition(attachment.attachment.filename),
+                'Content-Security-Policy': "sandbox; default-src 'none'",
+                'Cache-Control': 'private, max-age=31536000, immutable',
+                'Vary': 'Authorization',
+                'ETag': `"${attachment.sha256}"`,
+                'X-Hapi-Attachment-Sha256': attachment.sha256,
+                'X-Hapi-Attachment-Size': String(attachment.size),
+                'X-Content-Type-Options': 'nosniff'
+            }
+        })
     })
 
     app.post('/sessions/:id/abort', async (c) => {

@@ -40,6 +40,9 @@ import { cleanupUploadDir, preserveUploadDirOnExit } from '../modules/common/han
 import { TerminalManager } from '@/terminal/TerminalManager'
 import { applyVersionedAck } from './versionedUpdate'
 import { buildHubRequestHeaders, buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
+import { AttachmentMaterializer, type MaterializedAttachmentIdentity } from './attachmentMaterializer'
+
+type UserAttachment = NonNullable<UserMessage['content']['attachments']>[number]
 
 /**
  * XML tags that Claude Code injects as `type:'user'` messages.
@@ -191,6 +194,7 @@ type PendingOutboundEvent = {
 const MAX_PENDING_DROPPABLE_EVENTS = 256
 const MATERIALIZATION_RETRY_MIN_MS = 1_000
 const MATERIALIZATION_RETRY_MAX_MS = 30_000
+const MATERIALIZATION_MAX_ATTEMPTS = 3
 
 function isTransientMaterializationError(error: unknown): boolean {
     if (!axios.isAxiosError(error)) {
@@ -259,14 +263,29 @@ export class ApiSessionClient extends EventEmitter {
     private pendingMessages: { message: UserMessage; localId?: string }[] = []
     private pendingHubPromptEchoes: { text: string; localIds: string[] }[] = []
     private pendingMessageCallback: ((message: UserMessage, localId?: string) => void) | null = null
+    private incomingMessageTail: Promise<void> = Promise.resolve()
+    private incomingMessagePending = 0
+    private readonly materializingLocalIdCounts = new Map<string, number>()
+    private readonly materializingGenerationByLocalId = new Map<string, number>()
+    private readonly cancelledMaterializationThroughGeneration = new Map<string, number>()
+    private readonly cancelledIncomingMessageIds = new Set<string>()
     private cancelQueuedMessageCallback: ((localId: string) => QueueCancelResult | Promise<QueueCancelResult>) | null = null
     private retryQueuedMessageCallback: ((localId: string) => boolean | Promise<boolean>) | null = null
     private readonly incomingFilter = new IncomingMessageFilter()
+    private readonly deferredLiveMessages: Array<{
+        id?: string
+        seq?: number
+        localId?: string | null
+        content: unknown
+    }> = []
     private reconciledRewindOperationId: string | undefined
     private incomingCursorEpoch = 0
     private pendingRewindBackfill: { operationId: string; epoch: number; afterSeq: number } | null = null
     private rewindBackfillScheduled = false
     private backfillInFlight: Promise<void> | null = null
+    private backfillPageLoaded = false
+    private backfillResume: { epoch: number; seq: number } | null = null
+    private backfillRetryTimer: ReturnType<typeof setTimeout> | null = null
     private needsBackfill = false
     private hasConnectedOnce = false
     // Replayed on (re)connect: a volatile heartbeat sent while disconnected is dropped (#2053).
@@ -302,11 +321,13 @@ export class ApiSessionClient extends EventEmitter {
     private agentStateChangedDuringAttempt = false
     private readonly pendingOutboundEvents: PendingOutboundEvent[] = []
     private didWarnPendingQueueFull = false
+    private readonly attachmentMaterializer: AttachmentMaterializer
 
     constructor(token: string, session: Session, options: ApiSessionClientOptions = {}) {
         super()
         this.token = token
         this.sessionId = session.id
+        this.attachmentMaterializer = new AttachmentMaterializer(this.sessionId, token)
         this.metadata = session.metadata
         this.reconcileCommittedRewindCursor(this.metadata)
         this.metadataVersion = session.metadataVersion
@@ -472,7 +493,20 @@ export class ApiSessionClient extends EventEmitter {
                 if (!data.body) return
 
                 if (data.body.t === 'new-message') {
-                    this.handleIncomingMessage(data.body.message)
+                    const holdBehindReconnect = this.backfillInFlight !== null && this.pendingRewindBackfill === null
+                    if (this.backfillPageLoaded || this.deferredLiveMessages.length > 0 || holdBehindReconnect) {
+                        // Preserve reconnect order and allow cancellation while the
+                        // first page loads. A committed rewind has no older retry
+                        // prefix to protect here, so its live rows stay responsive.
+                        if (!this.pendingRewindBackfill) {
+                            this.incomingFilter.accept({ seq: data.body.message.seq })
+                        }
+                        this.deferredLiveMessages.push(data.body.message)
+                        return
+                    }
+                    void this.handleIncomingMessage(data.body.message).catch((error) => {
+                        logger.debug('[API] Failed to materialize incoming attachment', { error })
+                    })
                     return
                 }
 
@@ -493,6 +527,9 @@ export class ApiSessionClient extends EventEmitter {
                         }
                     }
                     if (accepted) {
+                        if (data.body.message.id) {
+                            this.cancelledIncomingMessageIds.delete(data.body.message.id)
+                        }
                         this.handleIncomingMessage(data.body.message, true)
                     }
                     ack?.({ removed: false, accepted })
@@ -500,15 +537,44 @@ export class ApiSessionClient extends EventEmitter {
                 }
 
                 if (data.body.t === 'cancel-queued-message') {
-                    const cancellation = data.body.localId
-                        ? this.cancelQueuedMessage(data.body.localId)
+                    const localId = data.body.localId
+                    let removed = false
+                    if (localId) {
+                        for (let index = this.deferredLiveMessages.length - 1; index >= 0; index -= 1) {
+                            if (this.deferredLiveMessages[index]?.localId === localId) {
+                                this.deferredLiveMessages.splice(index, 1)
+                                removed = true
+                            }
+                        }
+                    }
+                    if (localId && (this.materializingLocalIdCounts.get(localId) ?? 0) > 0) {
+                        // The prompt has not reached the agent queue yet. Mark it
+                        // cancelled so the async attachment download cannot enqueue
+                        // it after the Hub has already acknowledged cancellation.
+                        const generation = this.materializingGenerationByLocalId.get(localId)
+                        if (generation !== undefined) {
+                            this.cancelledMaterializationThroughGeneration.set(localId, generation)
+                        }
+                        removed = true
+                    }
+                    const cancellation = localId
+                        ? this.cancelQueuedMessage(localId)
                         : false
                     const result = cancellation instanceof Promise ? await cancellation : cancellation
+                    removed = removed || result === true
                     // 'in-flight' = the row is inside an async steer: not
                     // removed, but also NOT consumed — the hub must neither
                     // delete it nor stamp invoked_at.
+                    if (removed && typeof result !== 'string' && data.body.messageId) {
+                        this.cancelledIncomingMessageIds.add(data.body.messageId)
+                    } else if (result === 'indeterminate' && data.body.messageId) {
+                        // An explicit retry may reconcile this outcome. Keep
+                        // ordinary redelivery suppressed until that retry is
+                        // accepted, while force=true bypasses this guard.
+                        this.cancelledIncomingMessageIds.add(data.body.messageId)
+                    }
                     ack?.({
-                        removed: result === true,
+                        removed,
                         inFlight: result === 'in-flight',
                         indeterminate: result === 'indeterminate',
                         consumed: result === 'consumed'
@@ -563,6 +629,14 @@ export class ApiSessionClient extends EventEmitter {
 
     isPending(): boolean {
         return this.state === 'pending' || this.state === 'materializing'
+    }
+
+    isMaterializedAttachmentPath(path: string): boolean {
+        return this.attachmentMaterializer.isAuthorizedPath(path)
+    }
+
+    isAuthorizedMaterializedAttachment(path: string, identity: MaterializedAttachmentIdentity): boolean {
+        return this.attachmentMaterializer.isAuthorizedFile(path, identity)
     }
 
     /** Whether hub reads are served live: a null read then is a transient miss, not a waiting socket. */
@@ -832,27 +906,166 @@ export class ApiSessionClient extends EventEmitter {
     private handleIncomingMessage(
         message: { id?: string; seq?: number; localId?: string | null; content: unknown },
         force = false
-    ): void {
+    ): Promise<void> {
+        if (!force && message.localId
+            && this.isMaterializationCancelled(
+                message.localId,
+                this.materializingGenerationByLocalId.get(message.localId) ?? 1
+            )) {
+            return Promise.resolve()
+        }
         const accepted = this.incomingFilter.accept({ id: message.id, seq: message.seq })
-        if (!force && !accepted) {
-            return
+        if (!force && !accepted) return Promise.resolve()
+
+        const parsed = UserMessageSchema.safeParse(message.content)
+        const needsMaterialization = parsed.success
+            && (parsed.data.content.attachments?.some((attachment) => Boolean(attachment.attachmentId && !attachment.path)) ?? false)
+
+        // Preserve the existing synchronous delivery contract for ordinary
+        // messages. Only hub attachment references need an async download.
+        if (this.incomingMessagePending === 0 && !needsMaterialization) {
+            this.deliverIncomingMessage(message, parsed.success ? parsed.data : null, force)
+            return Promise.resolve()
         }
 
-        const userResult = UserMessageSchema.safeParse(message.content)
-        if (userResult.success) {
+        const materializationGeneration = message.localId
+            ? (() => {
+                const previous = this.materializingGenerationByLocalId.get(message.localId)
+                    ?? this.cancelledMaterializationThroughGeneration.get(message.localId)
+                    ?? 0
+                return force ? previous + 1 : previous || 1
+            })()
+            : undefined
+        if (message.localId && materializationGeneration !== undefined) {
+            this.materializingGenerationByLocalId.set(message.localId, materializationGeneration)
+            this.materializingLocalIdCounts.set(
+                message.localId,
+                (this.materializingLocalIdCounts.get(message.localId) ?? 0) + 1
+            )
+        }
+        this.incomingMessagePending += 1
+        const run = this.incomingMessageTail.then(async () => {
+            if (this.isClosed()) return
+            const userResult = UserMessageSchema.safeParse(message.content)
+            if (!userResult.success) {
+                if (message.localId
+                    && materializationGeneration !== undefined
+                    && this.isMaterializationCancelled(message.localId, materializationGeneration)) return
+                this.deliverIncomingMessage(message, null, force)
+                return
+            }
+            let materializationResults: Array<{ attachment: UserAttachment; failure: string | null }> | undefined
+            if (userResult.data.content.attachments) {
+                materializationResults = []
+                for (const attachment of userResult.data.content.attachments) {
+                    if (this.isClosed()) return
+                    let retryDelayMs = MATERIALIZATION_RETRY_MIN_MS
+                    let attempts = 0
+                    for (;;) {
+                        attempts += 1
+                        try {
+                            materializationResults.push({
+                                attachment: await this.attachmentMaterializer.materialize(attachment),
+                                failure: null
+                            })
+                            break
+                        } catch (error) {
+                            logger.debug('[API] Failed to materialize one attachment', {
+                                attachmentId: attachment.attachmentId,
+                                error
+                            })
+                            if (this.isClosed()) return
+                            if (!isTransientMaterializationError(error)
+                                || attempts >= MATERIALIZATION_MAX_ATTEMPTS) {
+                                materializationResults.push({
+                                    attachment,
+                                    failure: `Attachment unavailable: ${attachment.filename}`
+                                })
+                                break
+                            }
+                            await new Promise((resolve) => setTimeout(resolve, retryDelayMs))
+                            retryDelayMs = Math.min(retryDelayMs * 2, MATERIALIZATION_RETRY_MAX_MS)
+                            if (this.isClosed()
+                                || (message.localId
+                                    && materializationGeneration !== undefined
+                                    && this.isMaterializationCancelled(message.localId, materializationGeneration))) {
+                                return
+                            }
+                        }
+                    }
+                }
+            }
+            const materializedAttachments = materializationResults?.map((result) => result.attachment)
+            const materializationFailures = materializationResults
+                ?.flatMap((result) => result.failure ? [result.failure] : []) ?? []
+            const materializedText = materializationFailures.length > 0
+                ? [userResult.data.content.text, ...materializationFailures].filter(Boolean).join('\n\n')
+                : userResult.data.content.text
+            const materializedUser = materializedAttachments
+                ? {
+                    ...userResult.data,
+                    content: {
+                        ...userResult.data.content,
+                        text: materializedText,
+                        attachments: materializedAttachments
+                    }
+                }
+                : userResult.data
+            if (message.localId
+                && materializationGeneration !== undefined
+                && this.isMaterializationCancelled(message.localId, materializationGeneration)) return
+            if (this.isClosed()) return
+            this.deliverIncomingMessage(message, materializedUser, force)
+        }).finally(() => {
+            this.incomingMessagePending -= 1
+            const generation = materializationGeneration
+            if (message.localId && generation !== undefined) {
+                const remaining = (this.materializingLocalIdCounts.get(message.localId) ?? 1) - 1
+                if (remaining <= 0) {
+                    this.materializingLocalIdCounts.delete(message.localId)
+                    const cancelledThrough = this.cancelledMaterializationThroughGeneration.get(message.localId)
+                    if (cancelledThrough === undefined || generation > cancelledThrough) {
+                        this.materializingGenerationByLocalId.delete(message.localId)
+                        this.cancelledMaterializationThroughGeneration.delete(message.localId)
+                    } else {
+                        this.materializingGenerationByLocalId.set(message.localId, generation)
+                    }
+                } else {
+                    this.materializingLocalIdCounts.set(message.localId, remaining)
+                }
+            }
+        })
+        this.incomingMessageTail = run.catch(() => {})
+        return run
+    }
+
+    private isMaterializationCancelled(localId: string, generation: number): boolean {
+        const cancelledThrough = this.cancelledMaterializationThroughGeneration.get(localId)
+        return cancelledThrough !== undefined && generation <= cancelledThrough
+    }
+
+    private deliverIncomingMessage(
+        message: { id?: string; seq?: number; localId?: string | null; content: unknown },
+        userMessage: UserMessage | null,
+        force = false
+    ): void {
+        if (this.isClosed()) return
+        if (!force && message.id && this.cancelledIncomingMessageIds.has(message.id)) {
+            return
+        }
+        if (userMessage) {
             // User messages mirrored from a local agent transcript are history,
             // not new remote input. Keep them in the incoming filter above so
             // reconnect backfill still advances and deduplicates correctly.
-            if (userResult.data.meta?.sentFrom === 'cli'
-                && !(userResult.data.meta.isNativeQueuedMessage === true
+            if (userMessage.meta?.sentFrom === 'cli'
+                && !(userMessage.meta.isNativeQueuedMessage === true
                     && this.metadata?.capabilities?.concurrentClients === true
                     && message.localId)) {
                 return
             }
-            this.enqueueUserMessage(userResult.data, message.localId ?? undefined)
+            this.enqueueUserMessage(userMessage, message.localId ?? undefined)
             return
         }
-
         this.emit('message', message.content)
     }
 
@@ -863,10 +1076,32 @@ export class ApiSessionClient extends EventEmitter {
         try {
             await this.backfillMessages()
             this.needsBackfill = this.pendingRewindBackfill !== null
+            if (!this.needsBackfill) this.clearBackfillRetry()
         } catch (error) {
             logger.debug('[API] Backfill failed', error)
             this.needsBackfill = true
+            this.scheduleBackfillRetry()
         }
+    }
+
+    private clearBackfillRetry(): void {
+        if (!this.backfillRetryTimer) {
+            return
+        }
+        clearTimeout(this.backfillRetryTimer)
+        this.backfillRetryTimer = null
+    }
+
+    private scheduleBackfillRetry(): void {
+        if (this.backfillRetryTimer || !this.socket.connected || this.isClosed()) {
+            return
+        }
+        this.backfillRetryTimer = setTimeout(() => {
+            this.backfillRetryTimer = null
+            if (this.needsBackfill && this.socket.connected && !this.isClosed()) {
+                void this.backfillIfNeeded()
+            }
+        }, 1_000)
     }
 
     private reconcileCommittedRewindCursor(metadata: Metadata | null): void {
@@ -912,7 +1147,6 @@ export class ApiSessionClient extends EventEmitter {
         const phase = this.metadata?.opencodeRewind?.phase
         return !this.socket?.connected || phase === 'reserved' || phase === 'prepared' || phase === 'unknown'
     }
-
     /**
      * Apply a remote metadata snapshot (Socket.IO update-session or reconnect
      * REST reconcile). Advances metadataVersion and emits hub-archived when
@@ -988,6 +1222,19 @@ export class ApiSessionClient extends EventEmitter {
         }
     }
 
+    private async drainDeferredLiveMessages(): Promise<void> {
+        // Drain repeatedly because another socket event can arrive while a
+        // deferred attachment is materializing.
+        while (this.deferredLiveMessages.length > 0) {
+            const deferred = this.deferredLiveMessages.splice(0)
+            await Promise.all(deferred.map((message) => (
+                this.handleIncomingMessage(message).catch((error) => {
+                    logger.debug('[API] Failed to materialize deferred live attachment', { error })
+                })
+            )))
+        }
+    }
+
     /** Read the exact validated REST snapshot for rewind admission decisions. */
     async readRewindMetadata(): Promise<{ metadata: Metadata; version: number } | null> {
         if (this.state !== 'active') return null
@@ -1015,14 +1262,18 @@ export class ApiSessionClient extends EventEmitter {
             return
         }
 
-        const startSeq = this.pendingRewindBackfill?.afterSeq ?? this.incomingFilter.cursorSeq()
+        const startSeq = this.backfillResume?.epoch === this.incomingCursorEpoch
+            ? this.backfillResume.seq
+            : this.pendingRewindBackfill?.afterSeq ?? this.incomingFilter.cursorSeq()
         if (startSeq === null) {
             logger.debug('[API] Skipping backfill because no last-seen message sequence is available')
+            await this.drainDeferredLiveMessages()
             return
         }
 
         const limit = 200
         let attemptedEpoch = this.incomingCursorEpoch
+        let backfillSucceeded = false
         const run = async () => {
             let cursor = startSeq
             let cursorEpoch = this.incomingCursorEpoch
@@ -1054,27 +1305,25 @@ export class ApiSessionClient extends EventEmitter {
                 }
 
                 const messages = parsed.data.messages
-                if (messages.length === 0) {
-                    break
-                }
+                if (messages.length === 0) break
+                this.backfillPageLoaded = true
 
                 let maxSeq = cursor
+                // Register the whole page before awaiting attachment downloads,
+                // so live socket rows cannot overtake the rest of this page.
+                const pending: Promise<void>[] = []
                 for (const message of messages) {
-                    if (typeof message.seq === 'number') {
-                        if (message.seq > maxSeq) {
-                            maxSeq = message.seq
-                        }
-                    }
+                    if (typeof message.seq === 'number' && message.seq > maxSeq) maxSeq = message.seq
                     if (this.pendingRewindBackfill && message.invokedAt != null
                         && UserMessageSchema.safeParse(message.content).success) {
-                        // Hub's queued delivery state also includes durable
-                        // invocation ACKs. A backward rewind scan can outlive
-                        // the bounded ID LRU; never enqueue that input again.
+                        // A backward rewind scan can outlive the bounded ID LRU;
+                        // never enqueue an invoked prompt again.
                         this.incomingFilter.accept({ id: message.id, seq: message.seq })
                         continue
                     }
-                    this.handleIncomingMessage(message)
+                    pending.push(this.handleIncomingMessage(message))
                 }
+                await Promise.all(pending)
 
                 if (this.pendingRewindBackfill && this.rewindBackfillPaused()) return
                 if (cursorEpoch !== this.incomingCursorEpoch) {
@@ -1083,13 +1332,12 @@ export class ApiSessionClient extends EventEmitter {
                     continue
                 }
 
-                // Revisited IDs stay deduplicated, but their scanned positions
-                // still count as progress after a rewind reset the cursor.
                 if (this.pendingRewindBackfill) this.incomingFilter.accept({ seq: maxSeq })
                 const observedSeq = this.incomingFilter.cursorSeq() ?? maxSeq
-                // Do not let a live high-seq delivery skip unread pages in the
-                // post-rewind prefix. The filter still retains that progress.
-                const nextCursor = this.pendingRewindBackfill !== null
+                // Live rows are held until the complete recovery scan ends.
+                // Their sequence can be newer than the fetched page without
+                // making the pages in between visible, so advance by the page.
+                const nextCursor = this.backfillPageLoaded
                     ? maxSeq
                     : Math.max(maxSeq, observedSeq)
                 if (nextCursor <= cursor) {
@@ -1102,26 +1350,29 @@ export class ApiSessionClient extends EventEmitter {
                     break
                 }
 
+                this.backfillResume = { epoch: cursorEpoch, seq: nextCursor }
                 cursor = nextCursor
-                if (messages.length < limit) {
-                    break
-                }
+                if (messages.length < limit) break
             }
             if (this.pendingRewindBackfill?.epoch === cursorEpoch && !this.rewindBackfillPaused()) {
                 this.pendingRewindBackfill = null
             }
+            backfillSucceeded = true
         }
 
         this.backfillInFlight = run().finally(() => {
             this.backfillInFlight = null
-            // A failed old request must not consume the wake for a newer
-            // committed epoch. Retry that new epoch once, not the failed one.
             if (this.pendingRewindBackfill && this.pendingRewindBackfill.epoch !== attemptedEpoch) {
                 this.scheduleRewindBackfill()
             }
         })
 
         await this.backfillInFlight
+        if (backfillSucceeded || this.rewindBackfillPaused()) {
+            await this.drainDeferredLiveMessages()
+            this.backfillPageLoaded = false
+            this.backfillResume = null
+        }
     }
 
     sendClaudeSessionMessage(body: RawJSONLines): void {
@@ -1463,6 +1714,7 @@ export class ApiSessionClient extends EventEmitter {
             if (options?.preserveUploads) preserveUploadDirOnExit(this.sessionId)
             else void cleanupUploadDir(this.sessionId)
         }
+        void this.attachmentMaterializer.close({ preserveFiles: options?.preserveUploads })
         this.emitOrQueue(() => {
             this.socket.emit('session-end', { sid: this.sessionId, time: Date.now(), reason })
         })
@@ -1752,7 +2004,13 @@ export class ApiSessionClient extends EventEmitter {
         this.materializationRetryAbortController?.abort()
         this.materializationRetryAbortController = null
         this.awaitingMaterializedConnection = false
+        this.clearBackfillRetry()
         this.pendingOutboundEvents.length = 0
+        this.materializingLocalIdCounts.clear()
+        this.materializingGenerationByLocalId.clear()
+        this.cancelledMaterializationThroughGeneration.clear()
+        this.cancelledIncomingMessageIds.clear()
+        void this.attachmentMaterializer.close()
         this.rpcHandlerManager.onSocketDisconnect()
         this.terminalManager.closeAll()
         this.socket.disconnect()

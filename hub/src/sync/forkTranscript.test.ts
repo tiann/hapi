@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { selectForkTranscriptPrefix } from './forkTranscript'
+import { selectForkTranscriptPrefix, selectForkTranscriptThrough } from './forkTranscript'
 
 describe('selectForkTranscriptPrefix', () => {
     const messages = [
@@ -43,5 +43,21 @@ describe('selectForkTranscriptPrefix', () => {
         expect(() => selectForkTranscriptPrefix(messages, 'missing')).toThrow(
             'Fork boundary message not found'
         )
+    })
+
+    it('includes the current-tip boundary message and excludes later turns', () => {
+        expect(selectForkTranscriptThrough(messages, 'b').map((message) => message.text)).toEqual([
+            '1', '2', '3'
+        ])
+    })
+
+    it('throws when the current-tip boundary localId is missing', () => {
+        expect(() => selectForkTranscriptThrough(messages, 'missing')).toThrow(
+            'Fork tip boundary message not found'
+        )
+    })
+
+    it('represents an empty current-tip transcript with an empty boundary', () => {
+        expect(selectForkTranscriptThrough(messages, '')).toEqual([])
     })
 })

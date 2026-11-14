@@ -80,7 +80,7 @@ Reference: `web/src/chat/normalizeUser.ts`.
 | Payload | Result |
 |---|---|
 | bare `string` | user text |
-| `{type:'text', text: string, attachments?: AttachmentMetadata[]}` | user text with attachments. Each attachment is accepted only when `id`, `filename`, `mimeType` (strings), `size` (number), `path` (string) are all present; optional `previewUrl`. Invalid entries are skipped, an empty result means "no attachments". |
+| `{type:'text', text: string, attachments?: AttachmentMetadata[]}` | user text with attachments. Each attachment is accepted only when `id`, `filename`, `mimeType` (strings), `size` (number), and either legacy `path` or durable `attachmentId` are present; optional `previewUrl`. Invalid entries are skipped, an empty result means "no attachments". |
 | anything else | user text = stringified payload (**never drop**) |
 
 ---

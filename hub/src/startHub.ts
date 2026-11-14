@@ -178,6 +178,14 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
     }
 
     const store = new Store(config.dbPath)
+    try {
+        const cleaned = await store.cleanupOrphanedAttachments()
+        if (cleaned > 0) {
+            console.log(`[attachments] Reconciled ${cleaned} attachment cleanup item${cleaned === 1 ? '' : 's'}`)
+        }
+    } catch (error) {
+        console.warn('[attachments] Failed to reconcile attachment cleanup; retrying on next Hub start', { error })
+    }
     const jwtSecret = await getOrCreateJwtSecret()
     const vapidKeys = await getOrCreateVapidKeys(config.dataDir)
     const vapidSubject = process.env.VAPID_SUBJECT ?? 'mailto:admin@hapi.run'

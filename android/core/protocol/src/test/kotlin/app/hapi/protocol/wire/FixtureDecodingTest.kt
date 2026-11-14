@@ -3,6 +3,7 @@ package app.hapi.protocol.wire
 import java.io.File
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlin.test.Test
@@ -19,6 +20,10 @@ import kotlin.test.assertTrue
  * fixtures are picked up automatically and must never break wire decoding.
  */
 class FixtureDecodingTest {
+
+    private companion object {
+        const val SUPPORTED_FIXTURE_VERSION = 2
+    }
 
     private val fixturesDir: File by lazy {
         val path = System.getProperty("hapi.fixtures.dir")
@@ -46,8 +51,8 @@ class FixtureDecodingTest {
         // supports (shared/fixtures/README.md policy) — never silently skip.
         val version = File(fixturesDir, "VERSION").readText().trim().toInt()
         assertTrue(
-            version <= SUPPORTED_PROTOCOL_VERSION,
-            "fixtures are version $version but this client supports <= $SUPPORTED_PROTOCOL_VERSION — update the port"
+            version <= SUPPORTED_FIXTURE_VERSION,
+            "fixtures are version $version but this client supports <= $SUPPORTED_FIXTURE_VERSION — update the port"
         )
     }
 
@@ -55,7 +60,7 @@ class FixtureDecodingTest {
     fun `every chat fixture's input messages decode as DecryptedMessage`() {
         for (file in chatFixtures()) {
             val root = HapiJson.parseToJsonElement(file.readText()).jsonObject
-            assertEquals(1, root.getValue("fixtureVersion").intOrNull, "fixtureVersion in ${file.name}")
+            assertEquals(SUPPORTED_FIXTURE_VERSION, root.getValue("fixtureVersion").intOrNull, "fixtureVersion in ${file.name}")
             val rawMessages = root.getValue("input").jsonObject.getValue("messages").jsonArray
             assertTrue(rawMessages.isNotEmpty(), "empty input.messages in ${file.name}")
 
@@ -105,6 +110,23 @@ class FixtureDecodingTest {
             attachments[0]
         )
         assertNull(attachments[1].previewUrl)
+    }
+
+    @Test
+    fun `user-text-with-durable-attachments decodes opaque attachment ids`() {
+        val fixture = readFixture("user-text-with-durable-attachments.json")
+        val messages = HapiJson.decodeFromJsonElement(
+            ListSerializer(DecryptedMessage.serializer()),
+            fixture.getValue("input").jsonObject.getValue("messages")
+        )
+        val attachment = HapiJson.decodeFromJsonElement<List<AttachmentMetadata>>(
+            messages.single().content.jsonObject
+                .getValue("content").jsonObject
+                .getValue("attachments")
+        ).single()
+
+        assertNull(attachment.path)
+        assertEquals("attachment-01HZXK5S", attachment.attachmentId)
     }
 
     @Test

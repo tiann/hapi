@@ -8,13 +8,15 @@ private func projectAttachments(_ attachments: [AttachmentMetadata]?) -> JSONVal
     guard let attachments, !attachments.isEmpty else { return nil }
     // previewUrl is a web-serving convenience — dropped.
     return .array(attachments.map { attachment in
-        .object([
+        var projected: [String: JSONValue] = [
             "id": .string(attachment.id),
             "filename": .string(attachment.filename),
             "mimeType": .string(attachment.mimeType),
             "size": .number(Double(attachment.size)),
-            "path": .string(attachment.path),
-        ])
+        ]
+        if let path = attachment.path { projected["path"] = .string(path) }
+        if let attachmentId = attachment.attachmentId { projected["attachmentId"] = .string(attachmentId) }
+        return .object(projected)
     })
 }
 

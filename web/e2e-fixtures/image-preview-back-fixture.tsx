@@ -4,6 +4,7 @@ import { createBrowserHistory, createRootRoute, createRoute, createRouter, Outle
 import { ImagePreview } from '../src/components/ImagePreview'
 import { MessageAttachments } from '../src/components/AssistantChat/messages/MessageAttachments'
 import { getScrollRestorationKey } from '../src/lib/scrollRestorationKey'
+import { I18nProvider } from '../src/lib/i18n-context'
 import '../src/index.css'
 
 const previewUrl = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="120"><rect width="200" height="120" fill="#1769aa"/></svg>')}`
@@ -20,7 +21,7 @@ function Conversation() {
                 <section aria-label="Sent images">
                     <MessageAttachments attachments={['first.png', 'second.png'].map((filename) => ({
                         id: filename, filename, mimeType: 'image/png', size: 1, path: `/${filename}`, previewUrl,
-                    }))} />
+                    }))} api={{} as never} sessionId="e2e-session" />
                 </section>
                 <div style={{ height: 1000 }}>Later messages</div>
             </div>
@@ -53,4 +54,4 @@ const router = createRouter({
 
 // Use real browser history and the production scroll-restoration policy.
 // StrictMode also exercises blocker registration and cleanup twice.
-ReactDOM.createRoot(document.getElementById('root')!).render(<StrictMode><RouterProvider router={router} /></StrictMode>)
+ReactDOM.createRoot(document.getElementById('root')!).render(<StrictMode><I18nProvider><RouterProvider router={router} /></I18nProvider></StrictMode>)

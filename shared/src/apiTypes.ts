@@ -637,7 +637,11 @@ export type UploadErrorCode = z.infer<typeof UploadErrorCodeSchema>
 export const UploadFileRequestSchema = z.object({
     filename: z.string().min(1).max(255),
     content: z.string().min(1),
-    mimeType: z.string().min(1).max(255)
+    mimeType: z.string()
+        .trim()
+        .min(1)
+        .max(255)
+        .regex(/^[\x21-\x7E]+(?: [\x21-\x7E]+)*$/, 'Invalid MIME type')
 })
 
 export type UploadFileRequest = z.infer<typeof UploadFileRequestSchema>
@@ -651,7 +655,10 @@ export const InitChunkedUploadRequestSchema = z.object({
 export type InitChunkedUploadRequest = z.infer<typeof InitChunkedUploadRequestSchema>
 
 export const DeleteUploadRequestSchema = z.object({
-    path: z.string().min(1)
+    path: z.string().min(1).optional(),
+    attachmentId: z.string().min(1).optional()
+}).refine((value) => Boolean(value.path || value.attachmentId), {
+    message: 'Delete request must include either path or attachmentId'
 })
 
 export type DeleteUploadRequest = z.infer<typeof DeleteUploadRequestSchema>
@@ -971,6 +978,10 @@ export type GeneratedImageResponse = {
 export type UploadFileResponse = {
     success: boolean
     path?: string
+    attachmentId?: string
+    filename?: string
+    mimeType?: string
+    size?: number
     error?: string
     code?: string
 }

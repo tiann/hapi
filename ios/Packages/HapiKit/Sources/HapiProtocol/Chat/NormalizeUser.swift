@@ -3,8 +3,8 @@ import Foundation
 // Port of web/src/chat/normalizeUser.ts.
 
 /// Port of `parseAttachments`: entries are accepted only when `id`,
-/// `filename`, `mimeType` (strings), `size` (number) and `path` (string) are
-/// all present; invalid entries are skipped and an empty result means
+/// `filename`, `mimeType` (strings), `size` (number), and either `path` or
+/// `attachmentId` are present; invalid entries are skipped and an empty result means
 /// "no attachments" (`nil`).
 func parseAttachments(_ raw: JSONValue?) -> [AttachmentMetadata]? {
     guard let items = raw?.arrayValue else { return nil }
@@ -15,17 +15,20 @@ func parseAttachments(_ raw: JSONValue?) -> [AttachmentMetadata]? {
               let filename = object["filename"]?.stringValue,
               let mimeType = object["mimeType"]?.stringValue,
               let size = object["size"]?.numberValue,
-              let path = object["path"]?.stringValue,
               // The wire model stores byte sizes as Int; real sizes are
               // always integral (TS would accept a fractional number).
               let intSize = Int(exactly: size)
         else { continue }
+        let path = object["path"]?.stringValue
+        let attachmentId = object["attachmentId"]?.stringValue
+        guard path != nil || attachmentId != nil else { continue }
         attachments.append(AttachmentMetadata(
             id: id,
             filename: filename,
             mimeType: mimeType,
             size: intSize,
             path: path,
+            attachmentId: attachmentId,
             previewUrl: object["previewUrl"]?.stringValue
         ))
     }

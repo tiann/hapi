@@ -6,7 +6,7 @@ import type { AgentState, DecryptedMessage } from '@/types/api'
  * shared/fixtures/VERSION; native test suites must fail when the on-disk
  * version is newer than the one they support.
  */
-export const FIXTURE_VERSION = 1
+export const FIXTURE_VERSION = 2
 
 /**
  * A hand-authored fixture case: wire-shaped inputs only. Everything under
