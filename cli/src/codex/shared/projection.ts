@@ -53,7 +53,8 @@ export class SharedCodexProjection {
     constructor(private readonly session: ApiSessionClient, readonly threadId: string,
         private readonly committed: (id: string) => Promise<void>, private readonly parentThreadId?: string,
         private readonly readSummaryThread?: () => Promise<unknown>,
-        private readonly observeItem?: (threadId: string, item: unknown) => void) {
+        private readonly observeItem?: (threadId: string, item: unknown) => void,
+        private readonly onTokenUsage?: (info: unknown, model?: string) => void) {
         this.compactionSummaries = new CodexCompactionSummaryLookup(threadId);
         if (!parentThreadId) for (const [id, turn] of Object.entries(session.getMetadata()?.conversationHistoryTurns ?? {})) this.turns.set(id, turn);
     }
@@ -231,6 +232,9 @@ export class SharedCodexProjection {
                 }
             } else if (event.type === 'token_count' || event.type.startsWith('thread_goal_')) {
                 const model = event.type === 'token_count' && turnId ? this.turnModels.get(turnId) : undefined;
+                if (event.type === 'token_count' && !this.parentThreadId) {
+                    this.onTokenUsage?.(event.info, model);
+                }
                 send({ ...event, ...(model ? { model } : {}), flavor: 'codex', scope: { role: 'parent', threadId: this.threadId }, scope_role: 'parent', thread_id: this.threadId }, key);
             } else if (event.type === 'proposed_plan' && turnId && itemId) {
                 const planId = codexPlanProposalId(this.threadId, turnId, itemId);

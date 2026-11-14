@@ -43,6 +43,8 @@ export interface SDKUserMessage extends SDKMessage {
 export interface SDKAssistantMessage extends SDKMessage {
     type: 'assistant'
     parent_tool_use_id?: string
+    model?: string
+    context_usage?: unknown
     message: {
         role: 'assistant'
         content: Array<{
@@ -101,6 +103,7 @@ export interface SDKResultMessage extends SDKMessage {
     duration_api_ms: number
     is_error: boolean
     session_id: string
+    model?: string
     /**
      * Set in-process by claudeRemote on the result of a manual /compact turn,
      * so the log converter can skip tok/s fields for it: a compaction call is
