@@ -1,4 +1,5 @@
 import { getDraft, saveDraft } from '@/lib/composer-drafts'
+import { recordComposerDraftChange } from '@/lib/composer-send-state'
 
 /** Minimal xterm surface needed to extract plain text for the composer. */
 export type TerminalTextSource = {
@@ -101,4 +102,5 @@ export function appendTerminalExcerptToComposerDraft(sessionId: string, excerpt:
     const block = formatTerminalExcerpt(excerpt)
     const existing = getDraft(sessionId).replace(/[ \t\r\n]+$/u, '')
     saveDraft(sessionId, existing.length > 0 ? `${existing}\n\n${block}` : block)
+    recordComposerDraftChange(sessionId)
 }

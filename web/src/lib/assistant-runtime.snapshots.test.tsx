@@ -40,7 +40,13 @@ describe('assistant-ui composer snapshots', () => {
         expect(result.current.snapshot.canCancel).toBe(false)
 
         await act(async () => result.current.composer.send())
-        expect(onSendMessage).toHaveBeenCalledExactlyOnceWith('dictated words', undefined, null, 'default')
+        expect(onSendMessage).toHaveBeenCalledExactlyOnceWith(
+            'dictated words',
+            undefined,
+            null,
+            'default',
+            'dictated words',
+        )
         expect(result.current.snapshot.text).toBe('')
         expect(result.current.composer.getState()).toBe(result.current.snapshot)
     })
