@@ -21,9 +21,11 @@ export function createAuthRoutes(
 ): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
 
-    const cloudflareAccessVerifier = options.cloudflareAccessVerifier !== undefined
-        ? options.cloudflareAccessVerifier
-        : getCloudflareAccessVerifier()
+    const resolveCloudflareAccessVerifier = () => (
+        options.cloudflareAccessVerifier !== undefined
+            ? options.cloudflareAccessVerifier
+            : getCloudflareAccessVerifier()
+    )
 
     app.post('/auth', async (c) => {
         const json = await c.req.json().catch(() => null)
@@ -91,10 +93,11 @@ export function createAuthRoutes(
     })
 
     app.get('/auth/methods', (c) => {
-        return c.json({ cloudflareAccess: cloudflareAccessVerifier !== null }, 200, NO_STORE)
+        return c.json({ cloudflareAccess: resolveCloudflareAccessVerifier() !== null }, 200, NO_STORE)
     })
 
     app.get('/auth/cloudflare', async (c) => {
+        const cloudflareAccessVerifier = resolveCloudflareAccessVerifier()
         if (!cloudflareAccessVerifier) {
             return c.json({ error: 'Cloudflare Access is not configured' }, 404, NO_STORE)
         }

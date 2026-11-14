@@ -69,16 +69,17 @@ export function createCloudflareAccessVerifier(
                 })
                 payload = verified.payload as Record<string, unknown>
             } catch (error) {
-                // JWKSNoMatchingKey means the key service answered successfully but
-                // holds no key for this token — an invalid token.
-                if (error instanceof errors.JWKSNoMatchingKey) {
+                // JWKSNoMatchingKey and JWKSMultipleMatchingKeys mean the key
+                // service answered successfully, but the token has no unique
+                // matching key (e.g. unknown or omitted kid on a multi-key JWKS).
+                if (error instanceof errors.JWKSNoMatchingKey
+                    || error instanceof errors.JWKSMultipleMatchingKeys) {
                     return { kind: 'invalid' }
                 }
-                // Key-service failures: timeout, non-200 response, malformed or
-                // ambiguous JWKS JSON, and network-level fetch errors.
+                // Key-service failures: timeout, non-200 response, malformed
+                // JWKS JSON, and network-level fetch errors.
                 if (error instanceof errors.JWKSTimeout
-                    || error instanceof errors.JWKSInvalid
-                    || error instanceof errors.JWKSMultipleMatchingKeys) {
+                    || error instanceof errors.JWKSInvalid) {
                     return { kind: 'unavailable' }
                 }
                 if (error instanceof errors.JOSEError) {
@@ -135,6 +136,8 @@ let cachedVerifierConfig: CloudflareAccessConfig | null = null
 export function getCloudflareAccessVerifier(): CloudflareAccessVerifier | null {
     const config = getConfiguration().cloudflareAccess
     if (!config) {
+        cachedVerifier = null
+        cachedVerifierConfig = null
         return null
     }
     if (!cachedVerifier || cachedVerifierConfig !== config) {

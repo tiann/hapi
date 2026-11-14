@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { createLocalJWKSet, errors, exportJWK, generateKeyPair, SignJWT, type JWTHeaderParameters } from 'jose'
+import { createConfiguration } from '../configuration'
 import type { CloudflareAccessConfig } from '../config/cloudflareAccess'
-import { createCloudflareAccessVerifier } from './cloudflareAccess'
+import { createCloudflareAccessVerifier, getCloudflareAccessVerifier } from './cloudflareAccess'
 
 const CONFIG: CloudflareAccessConfig = {
     teamDomain: 'synthetic.cloudflareaccess.com',
@@ -235,6 +236,23 @@ describe('createCloudflareAccessVerifier', () => {
         expect(result.kind).toBe('invalid')
     })
 
+    test('reports invalid when a kid-less assertion matches multiple keys in a multi-key JWKS', async () => {
+        await initKeys()
+        const other = await generateKeyPair('RS256')
+        const twoKeyJwks = {
+            keys: [
+                ...jwks.keys,
+                await exportJWK(other.publicKey) as unknown as Record<string, string>
+            ]
+        }
+        const verifier = createCloudflareAccessVerifier(CONFIG, {
+            keyResolver: createLocalJWKSet(twoKeyJwks)
+        })
+        const assertion = await signAssertion({ sub: 'subject-16b', email: 'alice@example.com' })
+        const result = await verifier.verify(assertion)
+        expect(result.kind).toBe('invalid')
+    })
+
     test('failure results never leak the assertion', async () => {
         await initKeys()
         const assertion = await signAssertion({ sub: 'subject-17', email: 'mallory@example.com' })
@@ -328,5 +346,42 @@ describe('createCloudflareAccessVerifier — production remote resolver', () => 
         const result = await verifier.verify(assertion)
         expect(result.kind).toBe('unavailable')
         expect(requestedUrls).toEqual(['https://synthetic.cloudflareaccess.com/cdn-cgi/access/certs'])
+    })
+})
+
+describe('getCloudflareAccessVerifier', () => {
+    let originalCloudflareAccess: CloudflareAccessConfig | null = null
+    let configInitialized = false
+
+    afterEach(async () => {
+        if (configInitialized) {
+            const config = await createConfiguration()
+            ;(config as unknown as { cloudflareAccess: CloudflareAccessConfig | null }).cloudflareAccess = originalCloudflareAccess
+        }
+    })
+
+    test('returns null when disabled and caches one verifier per config reference', async () => {
+        const config = await createConfiguration()
+        originalCloudflareAccess = config.cloudflareAccess
+        configInitialized = true
+        const mutableConfig = config as unknown as { cloudflareAccess: CloudflareAccessConfig | null }
+
+        mutableConfig.cloudflareAccess = null
+        expect(getCloudflareAccessVerifier()).toBeNull()
+
+        const firstConfig: CloudflareAccessConfig = { ...CONFIG }
+        mutableConfig.cloudflareAccess = firstConfig
+        const firstVerifier = getCloudflareAccessVerifier()
+        expect(firstVerifier).not.toBeNull()
+        expect(getCloudflareAccessVerifier()).toBe(firstVerifier)
+
+        const secondConfig: CloudflareAccessConfig = { ...CONFIG, audience: 'other-audience' }
+        mutableConfig.cloudflareAccess = secondConfig
+        const secondVerifier = getCloudflareAccessVerifier()
+        expect(secondVerifier).not.toBeNull()
+        expect(secondVerifier).not.toBe(firstVerifier)
+
+        mutableConfig.cloudflareAccess = null
+        expect(getCloudflareAccessVerifier()).toBeNull()
     })
 })

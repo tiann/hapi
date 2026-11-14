@@ -12,7 +12,10 @@ const JWT_SECRET = new TextEncoder().encode('test-secret')
 const CF_CONFIG: CloudflareAccessConfig = {
     teamDomain: 'synthetic.cloudflareaccess.com',
     audience: 'synthetic-audience',
-    users: { 'alice@example.com': 'default' }
+    users: {
+        'alice@example.com': 'default',
+        'bob@example.com': 'work'
+    }
 }
 
 const ISSUER = 'https://synthetic.cloudflareaccess.com'
@@ -164,6 +167,39 @@ describe('GET /api/auth/cloudflare', () => {
         const payload = decodeJwt(body.token)
         const expectedExp = Math.floor(Date.now() / 1000) + 4 * 3600
         expect(Math.abs((payload.exp as number) - expectedExp)).toBeLessThan(5)
+    })
+
+    test('issues a HAPI JWT in the user-mapped non-default namespace', async () => {
+        const app = createApp({ cloudflareAccessVerifier: await localVerifier() })
+        const assertion = await signAccessAssertion({ sub: 'subject-bob', email: 'Bob@Example.com' })
+        const res = await app.request('/api/auth/cloudflare', {
+            headers: { 'Cf-Access-Jwt-Assertion': assertion }
+        })
+        expect(res.status).toBe(200)
+        const body = await res.json() as { token: string }
+        const payload = decodeJwt(body.token)
+        expect(payload.ns).toBe('work')
+        expect(payload.cfAccessSub).toBe('subject-bob')
+        expect(payload.cfAccessEmail).toBe('bob@example.com')
+    })
+
+    test('resolves getCloudflareAccessVerifier() dynamically per request when no override is injected', async () => {
+        const config = await createConfiguration()
+        const mutableConfig = config as unknown as { cloudflareAccess: CloudflareAccessConfig | null }
+        const original = config.cloudflareAccess
+        try {
+            mutableConfig.cloudflareAccess = null
+            const app = createApp()
+
+            const disabledRes = await app.request('/api/auth/methods')
+            expect(await disabledRes.json()).toEqual({ cloudflareAccess: false })
+
+            mutableConfig.cloudflareAccess = { ...CF_CONFIG }
+            const enabledRes = await app.request('/api/auth/methods')
+            expect(await enabledRes.json()).toEqual({ cloudflareAccess: true })
+        } finally {
+            mutableConfig.cloudflareAccess = original
+        }
     })
 })
 
