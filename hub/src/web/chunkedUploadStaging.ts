@@ -137,14 +137,14 @@ export class ChunkedUploadStaging {
                 throw new ChunkedUploadStagingError('Chunk is empty', 'upload_invalid_chunk')
             }
             if (state.receivedBytes + bytes.length > state.size) {
-                await this.abort(namespace, sessionId, uploadId)
+                await this.removeState(state, false)
                 throw new ChunkedUploadStagingError('Uploaded bytes exceed declared file size', 'upload_size_mismatch')
             }
 
             try {
                 await appendFile(state.path, bytes)
             } catch (error) {
-                await this.abort(namespace, sessionId, uploadId)
+                await this.removeState(state, false)
                 throw error
             }
             state.receivedBytes += bytes.length
@@ -184,14 +184,20 @@ export class ChunkedUploadStaging {
         const key = this.key(namespace, sessionId, uploadId)
         const state = this.uploads.get(key)
         if (!state) return
-        this.uploads.delete(key)
-        clearTimeout(state.timer)
-        await state.tail.catch(() => {})
-        await rm(state.directory, { recursive: true, force: true }).catch(() => {})
+        await this.removeState(state, true)
     }
 
     async discard(finalized: FinalizedChunkedUpload): Promise<void> {
         await rm(finalized.directory, { recursive: true, force: true }).catch(() => {})
+    }
+
+    private async removeState(state: StagedUpload, waitForTail: boolean): Promise<void> {
+        if (this.uploads.get(state.key) === state) {
+            this.uploads.delete(state.key)
+        }
+        clearTimeout(state.timer)
+        if (waitForTail) await state.tail.catch(() => {})
+        await rm(state.directory, { recursive: true, force: true }).catch(() => {})
     }
 
     private armExpiration(state: StagedUpload): void {
