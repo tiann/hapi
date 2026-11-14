@@ -328,7 +328,9 @@ export class RpcGateway {
         // latter is adopt-stub (create/getOrCreate with id), not reopen.
         forkSession?: boolean,
         /** Fresh machine-spawn stub — distinct from reopen existingSessionId. */
-        reservedSessionId?: string
+        reservedSessionId?: string,
+        /** Claude: resume the spawned child truncated to this entry uuid. */
+        resumeSessionAt?: string
     ): Promise<
         | { type: 'success'; sessionId: string }
         | {
@@ -365,7 +367,8 @@ export class RpcGateway {
                     collaborationMode,
                     copilotAgentMode,
                     startingMode,
-                    forkSession: forkSession === true
+                    forkSession: forkSession === true,
+                    resumeSessionAt
                 },
                 agent === 'codex' ? CODEX_SPAWN_RPC_TIMEOUT_MS : DEFAULT_RPC_TIMEOUT_MS
             )

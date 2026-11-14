@@ -28,6 +28,16 @@ export class Session extends AgentSessionBase<EnhancedMode> {
     localLaunchFailure: LocalLaunchFailure | null = null;
     /** Model the local TUI runs, "[1m]" suffix intact: launch seed, then PostModelSwitch. */
     localContextModel: string | null = null;
+    /** Set by the remote launcher: abort the current SDK attempt so the main
+     * loop respawns Claude with fresh one-shot args (history RPC restarts). */
+    requestRemoteRestart: (() => Promise<void>) | null = null;
+    /** Set by the runner: called with the native prompt uuid when the launcher
+     * hands a queued batch to the SDK (rewind branch proof). */
+    onNativeInputSubmitted: ((nativePromptUuid: string) => void) | null = null;
+    /** Set by the runner: called after a /clear-style reset discarded the
+     * conversation, so a pending rewind intent pointing into it can be
+     * cancelled. */
+    onConversationReset: (() => void) | null = null;
     /** Epoch ms of the latest local UserPromptSubmit hook; older interrupt markers are stale. */
     localTurnStartedAt = 0;
     private nativeSkillNames = new Set<string>();
@@ -150,6 +160,13 @@ export class Session extends AgentSessionBase<EnhancedMode> {
      * Handles: --resume (with or without session ID) and --fork-session.
      * `--fork-session` must be one-shot; keeping it across relaunches would
      * branch again off the already-forked native id.
+     *
+     * The rewind boundary (--resume-session-at) is NOT managed through this
+     * buffer at all: spawns derive it fresh from the durable rewind intent
+     * (deriveSpawnArgs), so there is nothing to consume, arm or strip here.
+     * A fork-at-message request's boundary rides claudeArgs until the child
+     * materializes, but spawns filter boundary flags out and re-derive them,
+     * so a stale one on the buffer is inert.
      */
     consumeOneTimeFlags = (): void => {
         if (!this.claudeArgs) return;

@@ -364,6 +364,49 @@ describe('bootstrapExistingSession', () => {
         )
     })
 
+    it('preserves a pending claudeRewind intent when reactivating a session', async () => {
+        const session = createSession()
+        session.metadata = {
+            ...session.metadata!,
+            claudeSessionId: 'claude-thread-1',
+            claudeRewind: {
+                targetLocalId: 'local-2',
+                truncateFromLocalId: 'local-2',
+                keepBoundary: 'keep-boundary-uuid',
+                droppedPrompts: ['prompt-uuid-2']
+            }
+        }
+        const sessionClient = {
+            updateMetadata: vi.fn(),
+            flushMetadata: vi.fn(async () => true)
+        }
+        getSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue(sessionClient)
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        await bootstrapExistingSession({
+            sessionId: 'hapi-session-1',
+            flavor: 'claude',
+            workingDirectory: '/tmp/project'
+        })
+
+        // The durable rewind intent must survive the reopen: runClaude's
+        // reconcilePendingRewind() reads it right after bootstrap and re-arms
+        // the native boundary. Dropping it here resumes the un-rewound JSONL
+        // tail while the hub transcript stays truncated - permanent drift.
+        const updateHandler = sessionClient.updateMetadata.mock.calls[0][0]
+        expect(updateHandler(session.metadata)).toEqual(expect.objectContaining({
+            claudeSessionId: 'claude-thread-1',
+            claudeRewind: {
+                targetLocalId: 'local-2',
+                truncateFromLocalId: 'local-2',
+                keepBoundary: 'keep-boundary-uuid',
+                droppedPrompts: ['prompt-uuid-2']
+            }
+        }))
+    })
+
     it('clears stale history capabilities before reporting a Codex session as started', async () => {
         const session = createSession()
         const existingMetadata = session.metadata

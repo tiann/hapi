@@ -2124,6 +2124,14 @@ export class SyncEngine {
         if (queued.length > 0) {
             throw new Error('Session has queued messages')
         }
+        // A pending Claude rewind means the hub transcript and the native
+        // boundary are mid-handoff: the hub truncated at RPC success and the
+        // CLI is re-arming the native boundary. Forking or rewinding here
+        // would copy rows the native side already dropped (the #1673 class of
+        // drift), so history actions wait for the next prompt to settle it.
+        if (session.metadata?.claudeRewind) {
+            throw new Error('A Claude rewind is pending; send a message to settle it first')
+        }
     }
 
     /** Stale localIds must fail before native fork/rewind mutates agent history. */
@@ -2723,7 +2731,9 @@ export class SyncEngine {
                 source.collaborationMode,
                 undefined,
                 undefined,
-                rpcResult.forkSession === true
+                rpcResult.forkSession === true,
+                undefined,
+                rpcResult.resumeSessionAt
             )
             if (spawn.type !== 'success') {
                 throw new Error(spawn.message)
@@ -2827,6 +2837,48 @@ export class SyncEngine {
         }
     }
 
+    /**
+     * Hub-side half of a rewind: delete the transcript from the keyed localId
+     * on, refresh derived state, and tell clients to refetch. Runs once, at
+     * rewind-RPC success — the native re-arm is the CLI's durable intent, so
+     * no later metadata-driven truncation pass can eat post-rewind turns.
+     */
+    private truncateHubTranscriptFrom(sessionId: string, namespace: string, truncateFromLocalId: string): void {
+        this.store.messages.truncateMessagesFromLocalId(sessionId, truncateFromLocalId)
+        this.scrubHistoryLocators(sessionId, namespace)
+        this.sessionCache.rebuildTodosFromTranscript(sessionId)
+        this.eventPublisher.emit({
+            type: 'messages-invalidated',
+            sessionId,
+            namespace,
+            reason: 'rewind',
+            truncateFromLocalId
+        })
+        this.sessionCache.refreshSession(sessionId)
+    }
+
+    private clearUncommittedClaudeRewind(sessionId: string, namespace: string, messageLocalId: string): void {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const session = this.sessionCache.refreshSession(sessionId)
+            const intent = session?.metadata?.claudeRewind as { truncateFromLocalId?: string } | undefined
+            if (!session?.metadata || intent?.truncateFromLocalId !== messageLocalId) return
+
+            const { claudeRewind: _cleared, ...nextMetadata } = session.metadata
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                nextMetadata,
+                session.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'success') {
+                this.sessionCache.refreshSession(sessionId)
+                return
+            }
+            if (result.result !== 'version-mismatch') return
+        }
+    }
+
     private async rewindConversationUnlocked(
         sessionId: string,
         namespace: string,
@@ -2857,6 +2909,23 @@ export class SyncEngine {
         try {
             rpcResult = await this.rpcGateway.rewindConversation(sessionId, { messageLocalId })
         } catch (error) {
+            // Crash window: the runner persists the durable rewind intent
+            // BEFORE it starts the restart teardown, and the native branch
+            // re-arms from that intent on the next start. If the intent for
+            // exactly this rewind is already visible here, the rewind is
+            // committed - truncate now (idempotent with the success path)
+            // instead of leaving the hub transcript diverged from the native
+            // side that will inevitably cut the same turns.
+            this.sessionCache.refreshSession(sessionId)
+            const intent = this.getSession(sessionId)?.metadata?.claudeRewind as { truncateFromLocalId?: string } | undefined
+            if (intent?.truncateFromLocalId === messageLocalId) {
+                try {
+                    this.truncateHubTranscriptFrom(sessionId, namespace, messageLocalId)
+                    return { type: 'success' }
+                } catch {
+                    // Fall through: the diverged marker below is the honest state.
+                }
+            }
             if (!(error instanceof RpcTargetMissingError)) {
                 this.markConversationHistoryDiverged(sessionId, namespace)
                 return {
@@ -2869,6 +2938,7 @@ export class SyncEngine {
         }
 
         if (rpcResult?.success !== true) {
+            this.clearUncommittedClaudeRewind(sessionId, namespace, messageLocalId)
             return {
                 type: 'error',
                 message: rpcResult?.error ?? 'Native rewind failed',
@@ -2877,21 +2947,7 @@ export class SyncEngine {
         }
 
         try {
-            this.store.messages.truncateMessagesFromLocalId(
-                sessionId,
-                rpcResult.truncateFromLocalId ?? messageLocalId,
-                rpcResult.messages ?? []
-            )
-            this.scrubHistoryLocators(sessionId, namespace)
-            this.sessionCache.rebuildTodosFromTranscript(sessionId)
-            this.eventPublisher.emit({
-                type: 'messages-invalidated',
-                sessionId,
-                namespace,
-                reason: 'rewind',
-                truncateFromLocalId: rpcResult.truncateFromLocalId ?? messageLocalId
-            })
-            this.sessionCache.refreshSession(sessionId)
+            this.truncateHubTranscriptFrom(sessionId, namespace, rpcResult.truncateFromLocalId ?? messageLocalId)
             return { type: 'success' }
         } catch (error) {
             // Native history already changed; refuse further history actions until repaired.
@@ -3598,7 +3654,9 @@ export class SyncEngine {
         startingMode?: 'remote' | 'pty',
         // Required for fresh machine spawns so the runner stamps the HAPI id on
         // argv before the first webhook (#1911 Major: unreapable window).
-        namespace?: string
+        namespace?: string,
+        /** Claude: resume the spawned child truncated to this entry uuid. */
+        resumeSessionAt?: string
     ): ReturnType<RpcGateway['spawnSession']> {
         // Fresh machine spawns historically omitted existingSessionId, so
         // buildCliArgs could not stamp --hapi-session-id / --existing-session-id.
@@ -3653,7 +3711,8 @@ export class SyncEngine {
                 copilotAgentMode,
                 startingMode,
                 undefined,
-                preallocated ? allocatedSessionId : undefined
+                preallocated ? allocatedSessionId : undefined,
+                resumeSessionAt
             )
         } catch (error) {
             // Ambiguous post-dispatch failure — keep the stub (child may exist).

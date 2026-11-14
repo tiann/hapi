@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { Metadata } from '@/api/types'
 
 const harness = vi.hoisted(() => ({
@@ -56,6 +59,7 @@ function createSessionStub() {
             hookSettingsPath: null,
             queue: { size: () => 0, reset: () => {}, setOnMessage: () => {} },
             client: {
+                getMetadata: () => metadata,
                 sendClaudeSessionMessage: (msg: Record<string, unknown>) => { sentMessages.push(msg) },
                 updateMetadata: (handler: (current: Metadata) => Metadata) => {
                     metadata = handler(metadata)
@@ -287,5 +291,40 @@ describe('claudeLocalLauncher context window seed (#1858)', () => {
 
         expect(sentMessages[0]).toMatchObject({ message: { usage: { context_window: 1_000_000 } } })
         expect(sentMessages[1]).toMatchObject({ message: { usage: { context_window: 500_000 } } })
+    })
+
+    it('strips stale --resume <sourceId> and --fork-session from spawnArgs once the child transcript materialized', async () => {
+        const root = mkdtempSync(join(tmpdir(), 'hapi-local-fork-'))
+        const previousConfigDir = process.env.CLAUDE_CONFIG_DIR
+        try {
+            process.env.CLAUDE_CONFIG_DIR = root
+            const projectDir = join(root, 'projects', '/tmp/test'.replace(/[^a-zA-Z0-9]/g, '-'))
+            mkdirSync(projectDir, { recursive: true })
+            writeFileSync(
+                join(projectDir, 'child-session-id.jsonl'),
+                JSON.stringify({ type: 'user', uuid: 'u1', message: { role: 'user', content: 'hi' } }) + '\n'
+            )
+
+            const { session } = createSessionStub()
+            session.sessionId = 'child-session-id'
+            ;(session as { claudeArgs?: string[] }).claudeArgs = [
+                '--resume',
+                'source-session-id',
+                '--fork-session',
+                '--resume-session-at',
+                'fork-boundary'
+            ]
+
+            await claudeLocalLauncher(session as never)
+
+            expect(harness.launches[0]).toMatchObject({
+                sessionId: 'child-session-id',
+                claudeArgs: undefined
+            })
+        } finally {
+            if (previousConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+            else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
+            rmSync(root, { recursive: true, force: true })
+        }
     })
 })

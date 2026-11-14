@@ -98,6 +98,9 @@ export function isExternalUserMessage(body: RawJSONLines): body is Extract<RawJS
     if (text === null) return false
     if (body.isSidechain === true) return false
     if (body.isMeta === true) return false
+    // Synthetic compaction summaries ride the active chain as user records;
+    // they are not human turns and must not become fork/rewind boundaries.
+    if (body.isCompactSummary === true) return false
 
     const trimmed = text.trimStart()
     for (const prefix of SYSTEM_INJECTION_PREFIXES) {

@@ -11,11 +11,12 @@ import { formatClaudeMessageForInk } from "@/ui/messageFormatterInk";
 import { logger } from "@/ui/logger";
 import { SDKToLogConverter } from "./utils/sdkToLogConverter";
 import { PLAN_FAKE_REJECT } from "./sdk/prompts";
-import { claudeProcessModeKey, EnhancedMode } from "./loop";
+import { claudeProcessModeKey, claudeBatchModeHash, EnhancedMode } from "./loop";
 import { OutgoingMessageQueue } from "./utils/OutgoingMessageQueue";
 import type { ClaudePermissionMode } from "@hapi/protocol/types";
 import { RPC_METHODS } from "@hapi/protocol/rpcMethods";
 import { parseSpecialCommand } from "@/parsers/specialCommands";
+import { deriveSpawnArgs, isSessionMaterialized } from './conversationHistory';
 import { ClaudeToolResultImages } from './utils/toolResultImages';
 import { applySessionTitleFallback, readNativeSessionTitle, stripAttachmentReferences } from './utils/sessionTitleFallback';
 import {
@@ -57,6 +58,9 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
     private permissionHandler: PermissionHandler | null = null;
     private handleSessionFound: ((sessionId: string) => void) | null = null;
     /** The running plain turn that can take a steered queue row, if any. */
+    // One-shot respawn requested by a history RPC (rewind): abort the current
+    // attempt so the main loop relaunches Claude with the fresh flags.
+    private restartRequested = false;
     private steerTarget: { target: ClaudeSteerTarget; modeHash: string | null; signal: AbortSignal } | null = null;
 
     constructor(session: Session) {
@@ -121,6 +125,17 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         await this.handleSwitchRequest();
     }
 
+    /**
+     * Abort the current SDK attempt (without an exit reason) so the main loop
+     * respawns Claude with fresh one-shot args. Used by history RPCs that need
+     * a process restart to apply --resume-session-at.
+     */
+    public async requestRestart(): Promise<void> {
+        logger.debug('[remote]: doRestart');
+        this.restartRequested = true;
+        await this.abort();
+    }
+
     public async launch(): Promise<RemoteLauncherExitReason> {
         return this.start({
             onExit: () => this.handleExitFromUi(),
@@ -134,6 +149,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
 
         const session = this.session;
         const messageBuffer = this.messageBuffer;
+
+        session.requestRemoteRestart = () => this.requestRestart();
 
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbortRequest(),
@@ -425,7 +442,21 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 isolate: boolean;
                 hash: string;
                 items: Array<{ message: string; localId?: string }>;
-            } | null = null;
+            } | null = null as {
+                message: string;
+                mode: EnhancedMode;
+                isolate: boolean;
+                hash: string;
+                items: Array<{ message: string; localId?: string }>;
+            } | null;
+
+            // The full mode of the last batch actually handed to the SDK in any
+            // attempt (fresh delivery or parked-batch replay). A resume-at
+            // respawn is promptless, so claudeRemote's first-mode overwrite
+            // never runs and bootstrapMode is the entire launch configuration;
+            // the process-affecting fields have no session getter, so they are
+            // re-supplied from here.
+            let lastDeliveredMode: EnhancedMode | null = null;
 
             let previousSessionId: string | null = null;
             let immediateFailureCount = 0;
@@ -445,6 +476,9 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 }
 
                 previousSessionId = session.sessionId;
+                // A restart flag only concerns the attempt that was aborted; the
+                // fresh attempt must classify its own aborts normally.
+                this.restartRequested = false;
                 const controller = new AbortController();
                 this.abortController = controller;
                 this.abortFuture = new Future<void>();
@@ -490,10 +524,54 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 // typecheck with "Property 'isolate' does not exist on type
                 // 'never'" (verified against `bun run typecheck`).
                 let inFlightMessage: InFlightMessage | null = null as InFlightMessage | null;
+                // A resume-at respawn (rewind restart or crash re-arm) starts
+                // query() before any prompt exists, so the first-mode
+                // overwrite inside claudeRemote() never runs and bootstrapMode
+                // is the entire launch configuration. Seed it with the mode of
+                // the batch the respawn will deliver: a parked batch first,
+                // else the queue head (mode fields like customSystemPrompt AND
+                // the RPC-tracked permissionMode/model/effort ride the
+                // message, and the live getters may have changed since the
+                // batch was queued). With an empty queue the getters own the
+                // tracked fields on top of the last delivered mode's
+                // process-affecting ones, so a rewind or crash cannot strip
+                // the launch configuration.
+                // Spawn-time boundary derivation (deriveSpawnArgs): the
+                // durable rewind intent plus a fresh transcript evaluation
+                // decide the boundary; a fork-at-message request's boundary
+                // applies only while the child is unbuilt. session.claudeArgs
+                // is only read, never mutated for the boundary.
+                const { args: spawnArgs, boundary: spawnBoundary } = deriveSpawnArgs({
+                    claudeArgs: session.claudeArgs,
+                    sessionId: session.sessionId,
+                    intent: session.client.getMetadata()?.claudeRewind,
+                    workingDirectory: session.path
+                });
+                const resumeAtArmed = spawnBoundary != null;
+                const resumeAtBootstrapMode: EnhancedMode | null = !resumeAtArmed ? null
+                    : pending?.mode
+                        ?? session.queue.peekNextBatchMode()?.mode
+                        ?? {
+                            ...(lastDeliveredMode ?? {}),
+                            permissionMode: session.getPermissionMode() ?? 'default',
+                            model: session.getModel() ?? undefined,
+                            effort: session.getEffort() ?? undefined,
+                        };
+                if (resumeAtBootstrapMode) {
+                    // The spawned process runs this configuration from its
+                    // first prompt, so the first arriving batch must be gated
+                    // against it exactly like later batches. Without the seed,
+                    // modeHash stays null until the first delivery and a
+                    // config-changed batch arriving on an empty-queue respawn
+                    // is handed straight into the stale-config process.
+                    modeHash = claudeBatchModeHash(resumeAtBootstrapMode);
+                    mode = resumeAtBootstrapMode;
+                }
                 try {
                     await claudeRemote({
                         sessionId: session.sessionId,
                         path: session.path,
+                        claudeArgs: spawnArgs,
                         allowedTools: session.allowedTools ?? [],
                         mcpServers: session.mcpServers,
                         hookSettingsPath: session.hookSettingsPath,
@@ -508,13 +586,33 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             session.client.sendSessionEvent({ type: 'permission-mode-changed', mode });
                             session.client.sendSessionEvent({ type: 'message', message: reason });
                         },
-                        bootstrapMode: {
+                        bootstrapMode: resumeAtBootstrapMode ?? {
                             permissionMode: session.getPermissionMode() ?? 'default',
                             model: session.getModel() ?? undefined,
                             effort: session.getEffort() ?? undefined,
                         },
                         isAborted: (toolCallId: string) => {
                             return permissionHandler.isAborted(toolCallId);
+                        },
+                        onInputSubmitted: (nativePromptUuid: string) => {
+                            // The submitted batch becomes one native user entry;
+                            // the hub transcript's first localId maps to it, so
+                            // fork-at-message and rewind can resolve boundaries
+                            // and the web can show the per-message affordances.
+                            const localId = inFlightMessage?.items.find((item) => item.localId)?.localId;
+                            if (!localId || !nativePromptUuid) return;
+                            session.client.updateMetadata((metadata) => ({
+                                ...metadata,
+                                conversationHistoryPoints: {
+                                    ...metadata?.conversationHistoryPoints,
+                                    [localId]: true
+                                },
+                                conversationHistoryEntryIds: {
+                                    ...metadata?.conversationHistoryEntryIds,
+                                    [localId]: nativePromptUuid
+                                }
+                            }));
+                            session.onNativeInputSubmitted?.(nativePromptUuid);
                         },
                         nextMessage: async () => {
                             // Flush any pending outgoing messages before consuming the next user
@@ -538,6 +636,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 // --permission-mode (e.g. auto silently running as default).
                                 modeHash = p.hash;
                                 mode = p.mode;
+                                lastDeliveredMode = p.mode;
                                 permissionHandler.handleModeChange(p.mode.permissionMode);
                                 // Re-resolve the selected-model seed hint for every turn, not
                                 // just the first: a single claudeRemote() call keeps accepting
@@ -595,6 +694,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 }
                                 modeHash = msg.hash;
                                 mode = msg.mode;
+                                lastDeliveredMode = msg.mode;
                                 permissionHandler.handleModeChange(mode.permissionMode);
                                 sdkToLogConverter.updateSelectedModel(mode.model ?? null);
                                 deliveredMessageThisAttempt = true;
@@ -614,17 +714,17 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         },
                         onSessionFound: (sessionId) => {
                             session.onSessionFound(sessionId);
-                            // The one-time --resume flag must only be dropped once we know
-                            // Claude actually captured a session id from it. If claudeRemote()
-                            // bails out before this fires (e.g. the initial nextMessage() came
-                            // back null because a relaunch trigger arrived before any turn was
-                            // ever processed), the flag stays in session.claudeArgs so the next
-                            // launch attempt can still resume the original session.
-                            session.consumeOneTimeFlags();
+                            // The one-time --resume/--fork-session flags must only
+                            // be dropped once the launched session materialized on
+                            // disk. If claudeRemote() exits before the transcript
+                            // exists, the flags stay in session.claudeArgs so the
+                            // next attempt can still resume or fork the source.
+                            if (isSessionMaterialized(sessionId, session.path)) {
+                                session.consumeOneTimeFlags();
+                            }
                         },
                         onThinkingChange: session.onThinkingChange,
                         claudeEnvVars: session.claudeEnvVars,
-                        claudeArgs: session.claudeArgs,
                         onMessage,
                         onContextUsage: (usage) => sdkToLogConverter.applyContextUsage(usage.model, usage.maxTokens),
                         onAccountIdentity: (identity) => sdkToLogConverter.updateAccountIdentity?.(identity),
@@ -659,6 +759,13 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             // next launch would resume the session the user
                             // just asked to clear.
                             session.consumeOneTimeFlags();
+                            // The reset also discards the conversation a
+                            // pending rewind points into: the runner cancels
+                            // the durable intent, and the next spawn's
+                            // boundary derivation sees no intent - the flag
+                            // is never stored on claudeArgs, so there is
+                            // nothing to strip here.
+                            session.onConversationReset?.();
                         },
                         onReady: async (completionEvent?: string, compactSummary?: CompactSummaryPayload, compactContextTokens?: number) => {
                             // Reaching ready at all means this attempt is not an
@@ -726,7 +833,11 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     });
 
                     if (!this.exitReason && controller.signal.aborted) {
-                        session.client.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
+                        if (this.restartRequested) {
+                            this.restartRequested = false;
+                        } else {
+                            session.client.sendSessionEvent({ type: 'message', message: 'Aborted by user' });
+                        }
                     }
 
                     // A full attempt completed without throwing. Clear the
@@ -791,7 +902,22 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             immediateFailureCount += 1;
                         }
 
-                        if (immediateFailureCount >= MAX_IMMEDIATE_RESPAWN_FAILURES) {
+                        if (this.restartRequested) {
+                            // Intentional restart (history RPC): the aborted
+                            // in-flight turn belongs to the pre-rewind history.
+                            // Re-delivering it into the respawned process would
+                            // diverge native history from the hub transcript.
+                            for (const item of inFlightMessage?.items ?? []) {
+                                if (item.localId) {
+                                    session.client.discardPendingHubPromptEcho(item.localId)
+                                }
+                            }
+                            if (inFlightMessage?.deliveredText) {
+                                session.client.discardPendingHubPromptEchoText(inFlightMessage.deliveredText)
+                            }
+                            inFlightMessage = null;
+                            this.restartRequested = false;
+                        } else if (immediateFailureCount >= MAX_IMMEDIATE_RESPAWN_FAILURES) {
                             // Give up on retrying *this message*, not the
                             // whole session. Restoring it here would feed it
                             // straight back into another immediate failure on
@@ -802,15 +928,31 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             // Reset the streak and keep the loop (and this OS
                             // process) alive so an unrelated later message
                             // gets its own fresh budget.
-                            for (const item of inFlightMessage?.items ?? []) {
-                                if (item.localId) {
-                                    session.client.discardPendingHubPromptEcho(item.localId)
+                            if (inFlightMessage) {
+                                for (const item of inFlightMessage.items) {
+                                    if (item.localId) {
+                                        session.client.discardPendingHubPromptEcho(item.localId);
+                                    }
+                                }
+                                if (inFlightMessage.deliveredText) {
+                                    session.client.discardPendingHubPromptEchoText(inFlightMessage.deliveredText);
+                                }
+                                inFlightMessage = null;
+                            } else if (pending) {
+                                for (const item of pending.items) {
+                                    if (item.localId) {
+                                        session.client.discardPendingHubPromptEcho(item.localId);
+                                    }
+                                }
+                                pending = null;
+                            } else if (session.queue.size() > 0) {
+                                const dropped = await session.queue.waitForMessagesAndGetAsString(controller.signal);
+                                for (const item of dropped?.items ?? []) {
+                                    if (item.localId) {
+                                        session.client.discardPendingHubPromptEcho(item.localId);
+                                    }
                                 }
                             }
-                            if (inFlightMessage?.deliveredText) {
-                                session.client.discardPendingHubPromptEchoText(inFlightMessage.deliveredText)
-                            }
-                            inFlightMessage = null;
                             session.client.sendSessionEvent({
                                 type: 'message',
                                 message: `Process exited unexpectedly ${MAX_IMMEDIATE_RESPAWN_FAILURES} times in a row: ${detail}. Dropping the queued message; resolve the issue and resend it.`
@@ -855,6 +997,17 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     mode = null;
                 }
             }
+            if (pending) {
+                const { items, mode, isolate } = pending;
+                for (const item of [...items].reverse()) {
+                    if (isolate) {
+                        session.queue.unshiftIsolated(item.message, mode, item.localId);
+                    } else {
+                        session.queue.unshift(item.message, mode, item.localId);
+                    }
+                }
+                pending = null;
+            }
         } finally {
             if (this.permissionHandler) {
                 this.permissionHandler.reset();
@@ -864,6 +1017,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
 
     protected async cleanup(): Promise<void> {
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
+        this.session.requestRemoteRestart = null;
         this.steerTarget = null;
 
         if (this.handleSessionFound) {
