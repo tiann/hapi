@@ -27,8 +27,13 @@ export function matchAnchored(options: {
     transcript: LocalTranscript
     importPrefix: string
     cursor: string | null
+    /** Source-specific compare form (defaults to the full content). */
+    canonicalContent?: (content: unknown) => unknown
 }): AnchoredMatchResult {
     const { storedMessages, transcript, importPrefix, cursor } = options
+    const canonical = options.canonicalContent ?? ((content: unknown) => content)
+    const sameContent = (source: unknown, stored: unknown): boolean =>
+        isDeepStrictEqual(canonical(source), canonical(stored))
     const sourceMessages = transcript.messages
     const sourceIndexById = new Map(sourceMessages.map((message, index) => [message.id, index]))
     const sourceContentById = new Map(sourceMessages.map((message) => [
@@ -58,7 +63,7 @@ export function matchAnchored(options: {
             }
             priorSourceIndex = sourceIndex
         }
-        const changed = imported.find((message) => !isDeepStrictEqual(sourceContentById.get(message.localId!), message.content))
+        const changed = imported.find((message) => !sameContent(sourceContentById.get(message.localId!), message.content))
         if (changed?.localId) {
             return {
                 status: 'transcript_diverged',
@@ -94,7 +99,7 @@ export function matchAnchored(options: {
                 message: `Local transcript changed or dropped imported entry ${stored.localId}`
             }
         }
-        if (!isDeepStrictEqual(sourceContentById.get(source.id), stored.content)) {
+        if (!sameContent(sourceContentById.get(source.id), stored.content)) {
             return {
                 status: 'transcript_diverged',
                 message: `Local transcript changed or dropped imported entry ${stored.localId}`

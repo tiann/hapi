@@ -295,6 +295,7 @@ export function runLocalImportSync(options: {
                     storedMessages: target ? store.messages.getAllMessages(target.id) : [],
                     transcript,
                     importPrefix,
+                    canonicalContent: source.match.canonicalContent,
                     cursor: target && cursorKey
                         ? (typeof storedMetadata(target)[cursorKey] === 'string' ? storedMetadata(target)[cursorKey] as string : null)
                         : null

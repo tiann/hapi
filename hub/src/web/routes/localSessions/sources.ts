@@ -48,7 +48,12 @@ export type HubLocalSessionSource = {
     /** First key is primary; the rest are aliases matched on lookup. */
     nativeIdKeys: LocalSessionNativeIdKey[]
     /** How the target HAPI session and the delta are found. */
-    match: { strategy: 'anchored'; cursorKey?: 'piHistoryLeafEntryId' }
+    match: {
+        strategy: 'anchored'
+        cursorKey?: 'piHistoryLeafEntryId'
+        /** Maps stored and transcript content to the fields that must stay equal. */
+        canonicalContent?: (content: unknown) => unknown
+    }
         | { strategy: 'contentPrefix'; compareKey?: (content: unknown) => string | null }
     /** Lifecycle stamped on create. */
     lifecycleOnCreate: 'archived' | 'imported'
@@ -130,6 +135,34 @@ export function codexCompareKey(content: unknown): string | null {
     return null
 }
 
+/**
+ * Fields Claude Code rewrites when it copies earlier entries into a resumed
+ * transcript (same uuid, new session file) or that describe the process that
+ * wrote the entry rather than the conversation.
+ */
+const CLAUDE_REPLAY_METADATA_KEYS = ['sessionId', 'timestamp', 'cwd', 'gitBranch', 'version'] as const
+
+/**
+ * Claude compare form: a raw transcript entry kept as agent output is
+ * compared without its replay metadata, so a resumed transcript still lines
+ * up with the imported rows; uuid, type and message content stay compared.
+ */
+export function claudeCanonicalContent(content: unknown): unknown {
+    const record = content !== null && typeof content === 'object' && !Array.isArray(content)
+        ? content as Record<string, unknown>
+        : null
+    const body = record?.content !== null && typeof record?.content === 'object' && !Array.isArray(record?.content)
+        ? record.content as Record<string, unknown>
+        : null
+    const data = body?.data !== null && typeof body?.data === 'object' && !Array.isArray(body?.data)
+        ? body.data as Record<string, unknown>
+        : null
+    if (record?.role !== 'agent' || body?.type !== 'output' || !data) return content
+    const entry = { ...data }
+    for (const key of CLAUDE_REPLAY_METADATA_KEYS) delete entry[key]
+    return { ...record, content: { ...body, data: entry } }
+}
+
 function isWithMessages(raw: unknown): raw is PiLocalSessionWithMessages | OpencodeLocalSessionWithMessages | CodexLocalSessionWithMessages {
     return raw !== null && typeof raw === 'object' && Array.isArray((raw as { messages?: unknown }).messages)
 }
@@ -186,7 +219,7 @@ export const CLAUDE_LOCAL_SESSION_SOURCE: HubLocalSessionSource = {
     displayName: 'Claude',
     routeBase: 'claude',
     nativeIdKeys: ['claudeSessionId', 'claudeSessionIdHistory'],
-    match: { strategy: 'anchored' },
+    match: { strategy: 'anchored', canonicalContent: claudeCanonicalContent },
     lifecycleOnCreate: 'archived',
     batch: 'continue',
     importLimit: 200,
