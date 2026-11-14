@@ -1,7 +1,7 @@
 // @vitest-environment-options { "url": "http://hub.test/" }
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/lib/i18n-context'
 import { useAppContext } from '@/lib/app-context'
 import { getMessageWindowState, ingestIncomingMessages } from '@/lib/message-window-store'
@@ -94,6 +94,8 @@ function renderApp(queryClient: QueryClient) {
 }
 
 describe('App — Cloudflare Access authentication & revocation flows', () => {
+    let originalServiceWorkerDescriptor: PropertyDescriptor | undefined
+
     beforeEach(() => {
         localStorage.clear()
         sessionStorage.clear()
@@ -106,7 +108,17 @@ describe('App — Cloudflare Access authentication & revocation flows', () => {
     })
 
     afterEach(() => {
+        cleanup()
         vi.unstubAllGlobals()
+    })
+
+    afterAll(() => {
+        if (originalServiceWorkerDescriptor) {
+            Object.defineProperty(navigator, 'serviceWorker', originalServiceWorkerDescriptor)
+            originalServiceWorkerDescriptor = undefined
+        } else {
+            delete (navigator as unknown as { serviceWorker?: unknown }).serviceWorker
+        }
     })
 
     it('exits authenticated shell to Cloudflare sign-in prompt on mid-session 403 Access denied', async () => {
@@ -164,7 +176,7 @@ describe('App — Cloudflare Access authentication & revocation flows', () => {
         expect(screen.queryByPlaceholderText('Access token')).not.toBeInTheDocument()
     })
 
-    it('clears React Query and message-window caches on silent Cloudflare Access identity switch, but keeps them on same-identity refresh', async () => {
+    it('clears React Query, message-window, and service-worker API caches on silent Cloudflare Access identity switch, but keeps them on same-identity refresh', async () => {
         const exp = Math.floor(Date.now() / 1000) + 3600
         const aliceJwt1 = fakeJwt({
             uid: 1,
@@ -189,6 +201,24 @@ describe('App — Cloudflare Access authentication & revocation flows', () => {
             cfAccessSub: 'bob-sub',
             cfAccessEmail: 'bob@example.com',
             exp: exp + 1200
+        })
+
+        const deleteCache = vi.fn(async () => true)
+        vi.stubGlobal('caches', { delete: deleteCache })
+        const swPostMessage = vi.fn()
+        originalServiceWorkerDescriptor = Object.getOwnPropertyDescriptor(navigator, 'serviceWorker')
+        Object.defineProperty(navigator, 'serviceWorker', {
+            configurable: true,
+            value: {
+                controller: { postMessage: swPostMessage },
+                register: vi.fn(async () => ({
+                    update: vi.fn(async () => {}),
+                    addEventListener: vi.fn(),
+                    removeEventListener: vi.fn()
+                })),
+                addEventListener: vi.fn(),
+                removeEventListener: vi.fn()
+            }
         })
 
         let activeJwt = aliceJwt1
@@ -244,6 +274,8 @@ describe('App — Cloudflare Access authentication & revocation flows', () => {
         expect(queryClient.getQueryData(['machines'])).toEqual([{ id: 'alice-machine' }])
         expect(queryClient.getQueryData(['usage', 'summary'])).toEqual({ totalTokens: 1234 })
         expect(getMessageWindowState('alice-session').messages).toHaveLength(1)
+        expect(deleteCache).not.toHaveBeenCalled()
+        expect(swPostMessage).not.toHaveBeenCalled()
 
         // Silent identity switch (Alice -> Bob): all caches must be cleared.
         activeJwt = bobJwt
@@ -257,5 +289,9 @@ describe('App — Cloudflare Access authentication & revocation flows', () => {
         expect(queryClient.getQueryData(['storage'])).toBeUndefined()
         expect(getMessageWindowState('alice-session').messages).toEqual([])
         expect(sessionStorage.getItem('hapi:message-window:v2:alice-persisted')).toBeNull()
+        expect(deleteCache).toHaveBeenCalledWith('api-sessions')
+        expect(deleteCache).toHaveBeenCalledWith('api-session-detail')
+        expect(deleteCache).toHaveBeenCalledWith('api-machines')
+        expect(swPostMessage).toHaveBeenCalledWith({ type: 'CLEAR_API_CACHES' })
     })
 })

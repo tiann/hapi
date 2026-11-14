@@ -20,6 +20,7 @@ import { queryKeys } from '@/lib/query-keys'
 import { refreshAllAgyCatalogs } from '@/lib/agyCatalogAnnouncement'
 import { AppContextProvider } from '@/lib/app-context'
 import { clearAllMessageWindows, clearMessageWindow, recoverWindowAfterGapResume, rewindMessageWindow, syncTailMessages } from '@/lib/message-window-store'
+import { clearAuthenticatedApiCaches } from '@/lib/swCachePolicy'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useTranslation } from '@/lib/use-translation'
 import { translateInputRequestTitle } from '@/lib/input-request-toast'
@@ -76,19 +77,34 @@ function AppInner() {
     const syncTokenRef = useRef(0)
     const isFirstConnectRef = useRef(true)
     const pushPromptedRef = useRef(false)
+    const hadTokenRef = useRef(false)
     const [identityEpoch, setIdentityEpoch] = useState(0)
-    const handleIdentityChange = useCallback(() => {
+    const clearUserCaches = useCallback(() => {
         isFirstConnectRef.current = true
         syncTokenRef.current = 0
-        pushPromptedRef.current = false
         queryClient.clear()
         clearAllMessageWindows()
-        setIdentityEpoch((epoch) => epoch + 1)
+        void clearAuthenticatedApiCaches()
     }, [queryClient])
+    const handleIdentityChange = useCallback(() => {
+        pushPromptedRef.current = false
+        clearUserCaches()
+        setIdentityEpoch((epoch) => epoch + 1)
+    }, [clearUserCaches])
     const { authSource, isLoading: isAuthSourceLoading, setAccessToken } = useAuthSource(baseUrl)
     const { token, api, isLoading: isAuthLoading, error: authError, needsBinding, bind, retry: retryAuth } = useAuth(authSource, baseUrl, {
         onIdentityChange: handleIdentityChange
     })
+    useEffect(() => {
+        if (token) {
+            hadTokenRef.current = true
+            return
+        }
+        if (hadTokenRef.current) {
+            hadTokenRef.current = false
+            void clearAuthenticatedApiCaches()
+        }
+    }, [token])
     const [titleSuggestionAvailable, setTitleSuggestionAvailable] = useState(false)
     const goBack = useAppGoBack()
     const pathname = useLocation({ select: (location) => location.pathname })
@@ -240,11 +256,8 @@ function AppInner() {
             return
         }
         baseUrlRef.current = baseUrl
-        isFirstConnectRef.current = true
-        syncTokenRef.current = 0
-        queryClient.clear()
-        clearAllMessageWindows()
-    }, [baseUrl, queryClient])
+        clearUserCaches()
+    }, [baseUrl, clearUserCaches])
 
     // Clean up URL params after successful auth (for direct access links and Cloudflare re-auth)
     useEffect(() => {

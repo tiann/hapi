@@ -1,51 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiClient, ApiError } from '@/api/client'
+import { decodeJwtExpMs, decodeJwtIdentityKey, isCloudflareToken } from '@/lib/authIdentity'
 import type { AuthResponse } from '@/types/api'
 
 export type AuthSource =
     | { type: 'telegram'; initData: string }
     | { type: 'accessToken'; token: string }
     | { type: 'cloudflareAccess' }
-
-function decodeJwtPayload(token: string): Record<string, unknown> | null {
-    const parts = token.split('.')
-    if (parts.length < 2) return null
-
-    const payloadBase64Url = parts[1] ?? ''
-    const payloadBase64 = payloadBase64Url
-        .replace(/-/g, '+')
-        .replace(/_/g, '/')
-        .padEnd(Math.ceil(payloadBase64Url.length / 4) * 4, '=')
-
-    try {
-        const decoded = globalThis.atob(payloadBase64)
-        return JSON.parse(decoded) as Record<string, unknown>
-    } catch {
-        return null
-    }
-}
-
-function decodeJwtExpMs(token: string): number | null {
-    const payload = decodeJwtPayload(token)
-    if (payload === null) return null
-    if (typeof payload.exp !== 'number') return null
-    return payload.exp * 1000
-}
-
-function isCloudflareToken(token: string): boolean {
-    return decodeJwtPayload(token)?.authMethod === 'cloudflareAccess'
-}
-
-function decodeJwtIdentityKey(token: string): string | null {
-    const payload = decodeJwtPayload(token)
-    if (!payload) return null
-    const authMethod = typeof payload.authMethod === 'string' ? payload.authMethod : ''
-    const ns = typeof payload.ns === 'string' ? payload.ns : ''
-    const sub = typeof payload.cfAccessSub === 'string' ? payload.cfAccessSub : ''
-    const email = typeof payload.cfAccessEmail === 'string' ? payload.cfAccessEmail.trim().toLowerCase() : ''
-    const uid = typeof payload.uid === 'number' || typeof payload.uid === 'string' ? String(payload.uid) : ''
-    return JSON.stringify([authMethod, ns, sub, email, uid])
-}
 
 async function authenticateWith(client: ApiClient, source: AuthSource): Promise<AuthResponse> {
     if (source.type === 'cloudflareAccess') {

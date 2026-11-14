@@ -9,7 +9,12 @@ import {
     putShareTransfer,
 } from './lib/shareTransfer'
 import { shareTargetPathname } from './lib/sharePath'
-import { cacheOkResponsesOnly, cacheJavaScriptOnly } from './lib/swCachePolicy'
+import {
+    AUTHENTICATED_API_CACHE_NAMES,
+    CLEAR_API_CACHES_MESSAGE_TYPE,
+    authenticatedApiCachePolicy,
+    cacheJavaScriptOnly,
+} from './lib/swCachePolicy'
 import { focusOrOpenNotificationClient, resolveNotificationTarget } from './lib/notificationClick'
 
 const sharePath = shareTargetPathname()
@@ -54,17 +59,42 @@ registerRoute(
     }),
 )
 
+const sessionsExpirationPlugin = new ExpirationPlugin({
+    maxEntries: 10,
+    maxAgeSeconds: 60 * 5
+})
+
+const sessionDetailExpirationPlugin = new ExpirationPlugin({
+    maxEntries: 20,
+    maxAgeSeconds: 60 * 5
+})
+
+const machinesExpirationPlugin = new ExpirationPlugin({
+    maxEntries: 5,
+    maxAgeSeconds: 60 * 10
+})
+
+const apiExpirationPlugins = [
+    sessionsExpirationPlugin,
+    sessionDetailExpirationPlugin,
+    machinesExpirationPlugin,
+] as const
+
+async function clearApiCachesFromServiceWorker(): Promise<void> {
+    await Promise.all(apiExpirationPlugins.map((plugin) => plugin.deleteCacheAndMetadata().catch(() => {})))
+    if (typeof self.caches !== 'undefined') {
+        await Promise.all(AUTHENTICATED_API_CACHE_NAMES.map((cacheName) => self.caches.delete(cacheName).catch(() => false)))
+    }
+}
+
 registerRoute(
     ({ url }) => url.pathname === '/api/sessions',
     new NetworkFirst({
         cacheName: 'api-sessions',
         networkTimeoutSeconds: 10,
         plugins: [
-            cacheOkResponsesOnly,
-            new ExpirationPlugin({
-                maxEntries: 10,
-                maxAgeSeconds: 60 * 5
-            })
+            authenticatedApiCachePolicy,
+            sessionsExpirationPlugin,
         ]
     })
 )
@@ -75,11 +105,8 @@ registerRoute(
         cacheName: 'api-session-detail',
         networkTimeoutSeconds: 10,
         plugins: [
-            cacheOkResponsesOnly,
-            new ExpirationPlugin({
-                maxEntries: 20,
-                maxAgeSeconds: 60 * 5
-            })
+            authenticatedApiCachePolicy,
+            sessionDetailExpirationPlugin,
         ]
     })
 )
@@ -90,11 +117,8 @@ registerRoute(
         cacheName: 'api-machines',
         networkTimeoutSeconds: 10,
         plugins: [
-            cacheOkResponsesOnly,
-            new ExpirationPlugin({
-                maxEntries: 5,
-                maxAgeSeconds: 60 * 10
-            })
+            authenticatedApiCachePolicy,
+            machinesExpirationPlugin,
         ]
     })
 )
@@ -128,6 +152,8 @@ registerRoute(
 self.addEventListener('message', (event) => {
     if (event.data?.type === 'SKIP_WAITING') {
         self.skipWaiting()
+    } else if (event.data?.type === CLEAR_API_CACHES_MESSAGE_TYPE) {
+        event.waitUntil?.(clearApiCachesFromServiceWorker())
     }
 })
 
