@@ -19,7 +19,13 @@ function fixture(overrides: Partial<HappyChatContextValue> = {}) {
         terminalToolDisplayMode: 'compact', showSessionSummaryInChat: false, disabled: false,
         onRefresh: refresh, onContinuePlan: continued, codexPlanProposalId: 'plan',
         hasMoreMessages: false, isSyncingTail: false, isLoadingMoreMessages: false,
-        loadOlderMessagesPreservingScroll: async () => 'loaded', ...overrides
+        loadOlderMessagesPreservingScroll: async () => 'loaded',
+        jumpToPrompt: async () => false,
+        loadingPromptMessageId: null,
+        scrollToConversationStart: async () => false,
+        isLoadingConversationStart: false,
+        isNavigationInFlight: false,
+        ...overrides
     }
     const block: ToolCallBlock = {
         kind: 'tool-call', id: 'plan', localId: null, createdAt: 1, children: [],
