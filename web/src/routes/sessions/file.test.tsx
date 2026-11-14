@@ -92,6 +92,8 @@ describe('FilePage markdown preview', () => {
         await waitFor(() => {
             expect(screen.getByTestId('markdown-preview')).toHaveTextContent('# Heading')
         })
+        expect(screen.getByTestId('file-page-title')).toHaveTextContent('README.md')
+        expect(screen.getByTestId('file-page-path')).toHaveTextContent(filePath)
         expect(screen.getByTestId('markdown-preview').closest('.file-preview-scroll-content')).not.toBeNull()
         expect(screen.getByTestId('markdown-preview').closest('.file-preview-scroll-y')).not.toBeNull()
         expect(screen.getByText(formatFileMetadata(fileSize, fileModified, 'en')!)).toBeInTheDocument()
