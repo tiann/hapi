@@ -310,3 +310,165 @@ describe('RpcGateway permission RPC error surfacing (tiann/hapi#1735)', () => {
         await expect(gateway.approvePermission('session-1', 'request-1')).resolves.toBeUndefined()
     })
 })
+
+// 2026-11-06 postmortem: a runner starved its app-layer RPC handlers while
+// socket.io stayed healthy (pings flowing, activeAt advancing), so every
+// caller burned a full 30s ack timeout for 42 minutes. The watchdog probes
+// the wedged socket and force-reconnects it when even a cheap
+// machine-scoped RPC stops answering.
+describe('RpcGateway RPC stall watchdog', () => {
+    interface StallHarness {
+        gateway: RpcGateway
+        disconnects: number[]
+        probeCalls: number[]
+    }
+
+    /** Socket whose acks only ever settle via their own timer: a normal RPC
+     *  rejects when its timeout elapses (the stall signal), and the probe is
+     *  answerable/failable per test via `probeBehavior`. */
+    function createStallHarness(opts?: {
+        probeBehavior?: 'hang' | 'answer' | 'fast-error'
+        probeTimeoutMs?: number
+        probeCooldownMs?: number
+        enabled?: boolean
+    }): StallHarness {
+        const disconnects: number[] = []
+        const probeCalls: number[] = []
+        const socket = {
+            connected: true,
+            id: 'socket-1',
+            timeout(timeoutMs: number) {
+                return {
+                    emitWithAck(_event: string, payload: { method: string }) {
+                        if (payload.method.endsWith(':agent-availability')) {
+                            probeCalls.push(timeoutMs)
+                            if (opts?.probeBehavior === 'answer') {
+                                return Promise.resolve(JSON.stringify({ agents: [] }))
+                            }
+                            if (opts?.probeBehavior === 'fast-error') {
+                                return Promise.reject(new Error('handler blew up'))
+                            }
+                            return new Promise<never>((_, reject) => {
+                                setTimeout(() => reject(new Error('operation has timed out')), timeoutMs)
+                            })
+                        }
+                        // A wedged runner: the ack never arrives, the socket.io
+                        // budget expires instead.
+                        return new Promise<never>((_, reject) => {
+                            setTimeout(() => reject(new Error('operation has timed out')), timeoutMs)
+                        })
+                    }
+                }
+            },
+            disconnect(close: boolean) {
+                disconnects.push(close ? 1 : 0)
+            }
+        }
+        const io = {
+            of() {
+                return { sockets: { get() { return socket } } }
+            }
+        } as unknown as Server
+        const rpcRegistry = {
+            getSocketIdForMethod() { return 'socket-1' },
+            getMethodsForSocket() { return ['machine-1:agent-availability', 'session-9:abort'] }
+        } as unknown as RpcRegistry
+        const gateway = new RpcGateway(io, rpcRegistry, {
+            probeTimeoutMs: opts?.probeTimeoutMs ?? 20,
+            probeCooldownMs: opts?.probeCooldownMs ?? 60_000,
+            ...(opts?.enabled === undefined ? {} : { enabled: opts.enabled })
+        })
+        return { gateway, disconnects, probeCalls }
+    }
+
+    it('force-reconnects a socket whose probe also times out while connected', async () => {
+        const h = createStallHarness({ probeBehavior: 'hang', probeTimeoutMs: 20 })
+        // 30ms stop budget: the ack times out fast, then the 20ms probe
+        // times out too — wedged app layer on a live transport.
+        await expect(
+            h.gateway.stopRunnerSession('machine-1', 'session-1', { timeoutMs: 30 })
+        ).rejects.toThrow()
+        // The probe runs fire-and-forget; give its timer a beat to land.
+        await new Promise((resolve) => setTimeout(resolve, 80))
+
+        expect(h.probeCalls.length).toBe(1)
+        expect(h.disconnects).toEqual([1])
+    })
+
+    it('does nothing when the probe answers — busy, not wedged', async () => {
+        const h = createStallHarness({ probeBehavior: 'answer', probeTimeoutMs: 20 })
+        await expect(
+            h.gateway.stopRunnerSession('machine-1', 'session-1', { timeoutMs: 30 })
+        ).rejects.toThrow()
+        await new Promise((resolve) => setTimeout(resolve, 40))
+
+        expect(h.probeCalls.length).toBe(1)
+        expect(h.disconnects).toEqual([])
+    })
+
+    it('does nothing when the probe fails fast — the handler answered', async () => {
+        const h = createStallHarness({ probeBehavior: 'fast-error', probeTimeoutMs: 50 })
+        await expect(
+            h.gateway.stopRunnerSession('machine-1', 'session-1', { timeoutMs: 30 })
+        ).rejects.toThrow()
+        await new Promise((resolve) => setTimeout(resolve, 40))
+
+        expect(h.probeCalls.length).toBe(1)
+        expect(h.disconnects).toEqual([])
+    })
+
+    it('skips the probe when a fast error is not a timeout', async () => {
+        // A handler that answers with an error inside the budget is alive;
+        // no probe may fire at all.
+        const socket = {
+            connected: true,
+            id: 'socket-1',
+            timeout() {
+                return {
+                    emitWithAck() {
+                        return Promise.reject(new Error('handler exploded instantly'))
+                    }
+                }
+            },
+            disconnect() { throw new Error('must not disconnect') }
+        }
+        const io = { of() { return { sockets: { get() { return socket } } } } } as unknown as Server
+        const rpcRegistry = {
+            getSocketIdForMethod() { return 'socket-1' },
+            getMethodsForSocket() { return ['machine-1:agent-availability'] }
+        } as unknown as RpcRegistry
+        const gateway = new RpcGateway(io, rpcRegistry, { probeTimeoutMs: 20 })
+
+        // killSession propagates the raw handler error; the default 30s
+        // budget means the instant rejection is classified "alive".
+        await expect(gateway.killSession('session-1')).rejects.toThrow('handler exploded')
+        await new Promise((resolve) => setTimeout(resolve, 40))
+    })
+
+    it('respects the probe cooldown across repeated timeouts', async () => {
+        const h = createStallHarness({ probeBehavior: 'hang', probeTimeoutMs: 20, probeCooldownMs: 60_000 })
+        await expect(
+            h.gateway.stopRunnerSession('machine-1', 'session-a', { timeoutMs: 30 })
+        ).rejects.toThrow()
+        await new Promise((resolve) => setTimeout(resolve, 80))
+        // A second caller times out well inside the cooldown window.
+        await expect(
+            h.gateway.stopRunnerSession('machine-1', 'session-b', { timeoutMs: 30 })
+        ).rejects.toThrow()
+        await new Promise((resolve) => setTimeout(resolve, 80))
+
+        expect(h.probeCalls.length).toBe(1)
+        expect(h.disconnects).toEqual([1])
+    })
+
+    it('can be disabled entirely', async () => {
+        const h = createStallHarness({ probeBehavior: 'hang', enabled: false })
+        await expect(
+            h.gateway.stopRunnerSession('machine-1', 'session-1', { timeoutMs: 30 })
+        ).rejects.toThrow()
+        await new Promise((resolve) => setTimeout(resolve, 40))
+
+        expect(h.probeCalls).toEqual([])
+        expect(h.disconnects).toEqual([])
+    })
+})
