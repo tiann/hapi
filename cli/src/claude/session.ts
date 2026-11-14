@@ -65,7 +65,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
             mode: opts.mode,
             sessionLabel: 'Session',
             sessionIdLabel: 'Claude Code',
-            applySessionIdToMetadata: (metadata, sessionId) => {
+            applySessionIdToMetadata: (metadata, sessionId, extras) => {
                 // Keep rotated-away ids so a later resume by an older Claude id
                 // still finds this HAPI session (hub resume-target-by-agent).
                 const history = appendClaudeSessionIdHistory(
@@ -75,6 +75,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
                 );
                 return {
                     ...metadata,
+                    ...extras,
                     claudeSessionId: sessionId,
                     ...(history.length > 0 ? { claudeSessionIdHistory: history } : {})
                 };
