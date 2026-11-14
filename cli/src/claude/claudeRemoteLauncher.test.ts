@@ -24,6 +24,7 @@ const harness = vi.hoisted(() => ({
     afterFirstCall: null as (() => void) | null,
     afterSecondCall: null as (() => void) | null,
     promptlessCalls: [] as number[],
+    promptlessSessionId: null as string | null,
     compactContextTokens: null as number | null,
     compactSummary: null as { summary: string; tokensBefore?: number; tokensAfter?: number } | null
 }))
@@ -40,7 +41,7 @@ vi.mock('./claudeRemote', () => ({
             // Model a resume-at respawn with an empty queue: query() starts
             // before any prompt exists and this attempt ends without ever
             // delivering a message.
-            opts.onSessionFound('captured-session-id')
+            opts.onSessionFound(harness.promptlessSessionId ?? 'captured-session-id')
             if (harness.callCount === harness.switchAfterCall && harness.triggerSwitch) {
                 harness.triggerSwitch()
             }
@@ -228,6 +229,7 @@ describe('claudeRemoteLauncher resume anchor', () => {
         harness.afterFirstCall = null
         harness.afterSecondCall = null
         harness.promptlessCalls = []
+        harness.promptlessSessionId = null
         harness.compactContextTokens = null
         harness.compactSummary = null
         vi.clearAllMocks()
@@ -656,6 +658,31 @@ describe('claudeRemoteLauncher resume anchor', () => {
             // survive into the spawn args.
             expect(harness.claudeArgsPerCall[0]).toContain('--resume-session-at')
             expect(harness.claudeArgsPerCall[0]).toContain('--fork-session')
+        } finally {
+            session.stopKeepAlive()
+        }
+    })
+
+    it('does not consume one-shot fork flags in onSessionFound before the child transcript materializes on disk', async () => {
+        const client = createClientStub()
+        const forkArgs = ['--resume', 'source-id', '--fork-session', '--resume-session-at', 'fork-boundary']
+        const { session, queue } = createSession(client, [...forkArgs])
+        harness.metadata = {}
+
+        try {
+            harness.switchAfterCall = 2
+            harness.promptlessCalls = [1]
+            harness.promptlessSessionId = 'unmaterialized-child-sess'
+            harness.triggerSwitch = () => {
+                client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+            }
+            queue.push('child prompt', { permissionMode: 'default' }, 'local-1')
+
+            await claudeRemoteLauncher(session as any)
+
+            expect(harness.callCount).toBe(2)
+            expect(harness.claudeArgsPerCall[0]).toEqual(forkArgs)
+            expect(harness.claudeArgsPerCall[1]).toEqual(forkArgs)
         } finally {
             session.stopKeepAlive()
         }

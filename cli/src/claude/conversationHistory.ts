@@ -266,6 +266,37 @@ export function resumeSessionAtFromArgs(args: string[] | undefined): string | nu
 }
 
 /**
+ * Single source of truth for whether a Claude session has materialized on disk
+ * (a transcript `.jsonl` exists and carries at least one `uuid` line).
+ */
+export function isSessionMaterialized(sessionId: string | null | undefined, workingDirectory: string): boolean {
+    return Boolean(sessionId && claudeCheckSession(sessionId, workingDirectory))
+}
+
+/**
+ * Return `args` with one-time session bootstrap flags (`--fork-session` and
+ * `--resume [<session-id>]`) removed, matching `Session.consumeOneTimeFlags()`.
+ */
+export function stripOneTimeFlags(args: string[] | undefined): string[] | undefined {
+    if (!args) return undefined
+    const filtered: string[] = []
+    for (let i = 0; i < args.length; i++) {
+        if (args[i] === '--fork-session') continue
+        if (args[i] === '--resume') {
+            if (i + 1 < args.length) {
+                const nextArg = args[i + 1]!
+                if (!nextArg.startsWith('-') && nextArg.includes('-')) {
+                    i++
+                }
+            }
+            continue
+        }
+        filtered.push(args[i]!)
+    }
+    return filtered.length > 0 ? filtered : undefined
+}
+
+/**
  * The spawn-time resume-at decision — the single source of truth for the
  * boundary flag. Every Claude spawn (remote and local) derives its args
  * here instead of carrying a mutated flag buffer:
@@ -275,9 +306,9 @@ export function resumeSessionAtFromArgs(args: string[] | undefined): string | nu
  *   still on the active chain — evaluated FRESH against the transcript, so
  *   a spawn landing after the proof self-corrects to no boundary.
  * - A fork-at-message request's boundary rides the hub-built spawn args and
- *   applies only while the child has not materialized (no sessionId yet);
-   * once it has, the child file already carries the truncated history and
- *   re-applying would cut post-fork turns from every later respawn.
+ *   applies only while the child has not materialized; once it has, the child
+ *   file already carries the truncated history and re-applying would cut
+ *   post-fork turns from every later respawn.
  *
  * `session.claudeArgs` is only ever READ here: the returned args are a
  * filtered copy with at most one boundary appended, and no code path may
@@ -296,15 +327,17 @@ export function deriveSpawnArgs(options: {
     // still re-derive the fork boundary. This is the single fact every fork
     // decision derives from, matching claudeRemote/claudeLocal's own
     // claudeCheckSession startFrom gate.
-    const materialized = options.sessionId != null && claudeCheckSession(options.sessionId, options.workingDirectory)
+    const materialized = isSessionMaterialized(options.sessionId, options.workingDirectory)
     let baseArgs = stripRewindFlags(options.claudeArgs)
     const forkPending = options.claudeArgs?.includes('--fork-session') === true && !materialized
     const forkBoundary = forkPending ? resumeSessionAtFromArgs(options.claudeArgs) : null
     if (materialized) {
-        // The fork already happened; keeping --fork-session would re-fork the
-        // materialized child on a respawn that races the one-shot consumption
-        // (e.g. the local launcher's launch-success consume).
-        baseArgs = baseArgs?.filter((arg) => arg !== '--fork-session')
+        // Once the session materialized on disk, `options.sessionId` is the
+        // authoritative resume target (startFrom in claudeLocal/claudeRemote).
+        // Stripping both `--fork-session` and `--resume [<id>]` prevents a
+        // respawn that races consumeOneTimeFlags from either re-forking the
+        // child or making claudeLocal resume a stale `--resume <sourceId>`.
+        baseArgs = stripOneTimeFlags(baseArgs)
     }
     const intentSessionId = options.sessionId ?? resumeSessionIdFromClaudeArgs(options.claudeArgs)
     let intentBoundary: string | null = null

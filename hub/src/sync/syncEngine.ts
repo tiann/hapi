@@ -2633,6 +2633,28 @@ export class SyncEngine {
         this.sessionCache.refreshSession(sessionId)
     }
 
+    private clearUncommittedClaudeRewind(sessionId: string, namespace: string, messageLocalId: string): void {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const session = this.sessionCache.refreshSession(sessionId)
+            const intent = session?.metadata?.claudeRewind as { truncateFromLocalId?: string } | undefined
+            if (!session?.metadata || intent?.truncateFromLocalId !== messageLocalId) return
+
+            const { claudeRewind: _cleared, ...nextMetadata } = session.metadata
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                nextMetadata,
+                session.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'success') {
+                this.sessionCache.refreshSession(sessionId)
+                return
+            }
+            if (result.result !== 'version-mismatch') return
+        }
+    }
+
     private async rewindConversationUnlocked(
         sessionId: string,
         namespace: string,
@@ -2690,6 +2712,7 @@ export class SyncEngine {
         }
 
         if (rpcResult?.success !== true) {
+            this.clearUncommittedClaudeRewind(sessionId, namespace, messageLocalId)
             return {
                 type: 'error',
                 message: rpcResult?.error ?? 'Native rewind failed',

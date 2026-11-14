@@ -1,6 +1,5 @@
 import { claudeLocal } from "./claudeLocal";
-import { deriveSpawnArgs } from './conversationHistory';
-import { claudeCheckSession } from './utils/claudeCheckSession';
+import { deriveSpawnArgs, isSessionMaterialized } from './conversationHistory';
 import { Session } from "./session";
 import { createSessionScanner } from "./utils/sessionScanner";
 import { isClaudeChatVisibleMessage } from "./utils/chatVisibility";
@@ -130,7 +129,7 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
             // that window could not resume or re-fork the source. The
             // spawn-time derivation also strips --fork-session once
             // materialized, so a later respawn cannot re-fork either way.
-            if (session.sessionId && claudeCheckSession(session.sessionId, session.path)) {
+            if (isSessionMaterialized(session.sessionId, session.path)) {
                 session.consumeOneTimeFlags();
             }
         },

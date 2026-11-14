@@ -16,7 +16,7 @@ import { OutgoingMessageQueue } from "./utils/OutgoingMessageQueue";
 import type { ClaudePermissionMode } from "@hapi/protocol/types";
 import { RPC_METHODS } from "@hapi/protocol/rpcMethods";
 import { parseSpecialCommand } from "@/parsers/specialCommands";
-import { deriveSpawnArgs } from './conversationHistory';
+import { deriveSpawnArgs, isSessionMaterialized } from './conversationHistory';
 import { ClaudeToolResultImages } from './utils/toolResultImages';
 import { applySessionTitleFallback, readNativeSessionTitle, stripAttachmentReferences } from './utils/sessionTitleFallback';
 import {
@@ -713,13 +713,14 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         },
                         onSessionFound: (sessionId) => {
                             session.onSessionFound(sessionId);
-                            // The one-time --resume flag must only be dropped once we know
-                            // Claude actually captured a session id from it. If claudeRemote()
-                            // bails out before this fires (e.g. the initial nextMessage() came
-                            // back null because a relaunch trigger arrived before any turn was
-                            // ever processed), the flag stays in session.claudeArgs so the next
-                            // launch attempt can still resume the original session.
-                            session.consumeOneTimeFlags();
+                            // The one-time --resume/--fork-session flags must only
+                            // be dropped once the launched session materialized on
+                            // disk. If claudeRemote() exits before the transcript
+                            // exists, the flags stay in session.claudeArgs so the
+                            // next attempt can still resume or fork the source.
+                            if (isSessionMaterialized(sessionId, session.path)) {
+                                session.consumeOneTimeFlags();
+                            }
                         },
                         onThinkingChange: session.onThinkingChange,
                         claudeEnvVars: session.claudeEnvVars,
@@ -926,15 +927,31 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             // Reset the streak and keep the loop (and this OS
                             // process) alive so an unrelated later message
                             // gets its own fresh budget.
-                            for (const item of inFlightMessage?.items ?? []) {
-                                if (item.localId) {
-                                    session.client.discardPendingHubPromptEcho(item.localId)
+                            if (inFlightMessage) {
+                                for (const item of inFlightMessage.items) {
+                                    if (item.localId) {
+                                        session.client.discardPendingHubPromptEcho(item.localId);
+                                    }
+                                }
+                                if (inFlightMessage.deliveredText) {
+                                    session.client.discardPendingHubPromptEchoText(inFlightMessage.deliveredText);
+                                }
+                                inFlightMessage = null;
+                            } else if (pending) {
+                                for (const item of pending.items) {
+                                    if (item.localId) {
+                                        session.client.discardPendingHubPromptEcho(item.localId);
+                                    }
+                                }
+                                pending = null;
+                            } else if (session.queue.size() > 0) {
+                                const dropped = await session.queue.waitForMessagesAndGetAsString(controller.signal);
+                                for (const item of dropped?.items ?? []) {
+                                    if (item.localId) {
+                                        session.client.discardPendingHubPromptEcho(item.localId);
+                                    }
                                 }
                             }
-                            if (inFlightMessage?.deliveredText) {
-                                session.client.discardPendingHubPromptEchoText(inFlightMessage.deliveredText)
-                            }
-                            inFlightMessage = null;
                             session.client.sendSessionEvent({
                                 type: 'message',
                                 message: `Process exited unexpectedly ${MAX_IMMEDIATE_RESPAWN_FAILURES} times in a row: ${detail}. Dropping the queued message; resolve the issue and resend it.`
@@ -978,6 +995,17 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     modeHash = null;
                     mode = null;
                 }
+            }
+            if (pending) {
+                const { items, mode, isolate } = pending;
+                for (const item of [...items].reverse()) {
+                    if (isolate) {
+                        session.queue.unshiftIsolated(item.message, mode, item.localId);
+                    } else {
+                        session.queue.unshift(item.message, mode, item.localId);
+                    }
+                }
+                pending = null;
             }
         } finally {
             if (this.permissionHandler) {

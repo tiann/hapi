@@ -238,4 +238,49 @@ describe('Claude rewind hub integration', () => {
             engine.stop()
         }
     })
+
+    it('scrubs an uncommitted rewind intent when the CLI rejects the rewind after a slow metadata write landed', async () => {
+        const { store, engine } = createEngine()
+        try {
+            const session = engine.getOrCreateSession('claude-rewind-rejected-flush', {
+                path: '/tmp/project', host: 'localhost', flavor: 'claude',
+                capabilities: { conversationHistory: { forkCurrent: true, rewindToMessage: true } },
+                claudeSessionId: 'native-session-1',
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: session.id, time: Date.now(), mode: 'remote' })
+            seedTwoTurns(store, session)
+
+            ;(engine as any).rpcGateway.rewindConversation = async () => {
+                const stored = store.sessions.getSession(session.id) as { metadataVersion?: number; metadata?: Record<string, unknown> }
+                store.sessions.updateSessionMetadata(session.id, {
+                    ...(stored?.metadata ?? {}),
+                    claudeRewind: {
+                        targetLocalId: 'local-t2',
+                        truncateFromLocalId: 'local-t2',
+                        keepBoundary: 'native-boundary-uuid',
+                        droppedPrompts: ['native-prompt-uuid'],
+                    },
+                }, (stored?.metadataVersion ?? 1) as number, 'default')
+                ;(engine as any).sessionCache.refreshSession(session.id)
+                return {
+                    success: false,
+                    outcome: 'rejected',
+                    error: 'Rewind intent could not be persisted'
+                }
+            }
+
+            await expect(engine.rewindConversation(session.id, 'default', 'local-t2')).resolves.toEqual({
+                type: 'error',
+                message: 'Rewind intent could not be persisted'
+            })
+
+            const kept = store.messages.getAllMessages(session.id).map((m) => m.localId)
+            expect(kept).toContain('local-t1')
+            expect(kept).toContain('local-t2')
+            expect((engine.getSession(session.id)?.metadata as Record<string, unknown> | null)?.claudeRewind).toBeUndefined()
+            expect((store.sessions.getSession(session.id)?.metadata as Record<string, unknown> | null)?.claudeRewind).toBeUndefined()
+        } finally {
+            engine.stop()
+        }
+    })
 })

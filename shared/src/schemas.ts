@@ -194,10 +194,9 @@ export const MetadataSchema = z.object({
     conversationHistoryEntryIds: z.record(z.string(), z.string().min(1)).optional(),
     // Durable re-arm record for Claude's native rewind (--resume-session-at,
     // v2.1.223+). Presence means the native branch is still pending: the hub
-    // already truncated at rewind-RPC success, and the CLI re-arms the
-    // boundary flags on every start until the dropped turns leave the native
-    // active chain. History RPCs (fork/rewind/preview) must refuse while this
-    // is set.
+    // already truncated at rewind-RPC success, and the CLI derives the
+    // boundary flag on every spawn until the dropped turns leave the native
+    // active chain. History RPCs (fork/rewind) must refuse while this is set.
     claudeRewind: z.object({
         targetLocalId: z.string().min(1),
         truncateFromLocalId: z.string().min(1),

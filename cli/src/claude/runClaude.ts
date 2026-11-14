@@ -333,12 +333,13 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             ?? sessionInfo.metadata?.claudeSessionId
             ?? null
         if (!intent || !nativeSessionId) return
-        const plan = planPendingRewindRestart(intent, readNativeTurns(workingDirectory, nativeSessionId))
-        if (plan.action === 'rearm') {
+        const turns = readNativeTurns(workingDirectory, nativeSessionId)
+        const plan = planPendingRewindRestart(intent, turns)
+        if (plan.action === 'rearm' && turns.length > 0) {
             // Durable re-arm: the hub truncated at rewind-RPC success, but the
-            // native branch never applied. The boundary flags are armed on the
-            // claude session at onSessionReady (this launch) and the intent
-            // stays until the dropped turns leave the native chain.
+            // native branch never applied. The boundary is derived from the
+            // durable intent at spawn time and stays until the dropped turns
+            // leave the native chain.
             logger.debug(`[claude] rewind ${intent.truncateFromLocalId}: native branch pending; re-arming boundary ${intent.keepBoundary} on launch`)
             rearmPendingIntent = intent;
         } else {

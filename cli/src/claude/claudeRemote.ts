@@ -154,12 +154,9 @@ export async function claudeRemote(opts: {
     }
     const forkedFrom = forkSession ? startFrom : null;
 
-    // One-shot rewind/fork-at-message boundary (set by the runner's history
-    // RPCs) passes through claudeArgs; filterCatalogAffectingClaudeArgs strips
-    // it from additionalArgs, so it is parsed here into the first-class SDK
-    // option. --resume-session-at alone truncates unconditionally; claude's
-    // --resume-drops-turn guard is not used (single-uuid option, refuses
-    // multi-turn ranges).
+    // Spawn-derived rewind/fork-at-message boundary passes through claudeArgs;
+    // filterCatalogAffectingClaudeArgs strips it from additionalArgs, so it is
+    // parsed here into the first-class SDK option.
     let resumeSessionAt: string | undefined;
     if (opts.claudeArgs) {
         for (let i = 0; i < opts.claudeArgs.length; i++) {
@@ -789,6 +786,14 @@ export async function claudeRemote(opts: {
                     opts.onPermissionModeRejected?.('default', `Claude could not start in ${requested} mode, so it is running in default mode`);
                 }
 
+                // Fallback unlock when no SessionStart hook ran: only accept
+                // the first prompt once the native branch exists (init). No
+                // flag consumption happens here at all - the boundary is
+                // re-derived at every spawn from the durable state.
+                if (!(await unlockInitialDelivery())) {
+                    return;
+                }
+
                 // Session id is still in memory, wait until session file is written to disk
                 // Start a watcher for to detect the session id
                 if (systemInit.session_id) {
@@ -801,14 +806,6 @@ export async function claudeRemote(opts: {
                         ? { forkedFrom }
                         : undefined;
                     opts.onSessionFound(systemInit.session_id, extras);
-                }
-
-                // Fallback unlock when no SessionStart hook ran: only accept
-                // the first prompt once the native branch exists (init). No
-                // flag consumption happens here at all - the boundary is
-                // re-derived at every spawn from the durable state.
-                if (!(await unlockInitialDelivery())) {
-                    return;
                 }
             }
 

@@ -57,7 +57,8 @@ const harness = vi.hoisted(() => {
         hookHandlers: null as any,
         flushResult: null as boolean | null,
         flushTimeouts: [] as number[],
-        metadataMutators: [] as Array<(metadata: any) => any>
+        metadataMutators: [] as Array<(metadata: any) => any>,
+        nativeTurns: null as Array<{ promptUuid: string; endUuid: string }> | null
     }
 })
 
@@ -102,7 +103,7 @@ vi.mock('./conversationHistory', async (importOriginal) => {
         nativeRewindApplied: () => true,
         claudeConversationHistoryCapabilities: () => ({ forkCurrent: true, forkAtMessage: true, rewindToMessage: true }),
         resolveRewindPlan: () => ({ resumeSessionAt: 'keep-boundary-uuid' }),
-        readNativeTurns: () => [
+        readNativeTurns: () => harness.nativeTurns ?? [
             { promptUuid: 'uuid-1', endUuid: 'as-1' },
             { promptUuid: 'uuid-2', endUuid: 'as-2' }
         ]
@@ -214,6 +215,7 @@ describe('runClaude rewind proof lifetime', () => {
         harness.state.agentState = {}
         harness.metadataMutators = []
         harness.flushTimeouts = []
+        harness.nativeTurns = null
     })
 
     // Each test starts its own runClaude() while the previous instance is
@@ -843,5 +845,30 @@ describe('runClaude rewind proof lifetime', () => {
         } finally {
             sessionInstance.stopKeepAlive()
         }
+    })
+
+    it('clears a stale rewind intent on startup when the native transcript is missing or empty', { timeout: 20_000 }, async () => {
+        harness.nativeTurns = []
+        harness.sessionStub.updateMetadata((metadata: any) => ({
+            ...metadata,
+            claudeSessionId: 'missing-native-session',
+            claudeRewind: {
+                targetLocalId: 'local-1',
+                truncateFromLocalId: 'local-1',
+                keepBoundary: 'keep-boundary-uuid',
+                droppedPrompts: ['uuid-1']
+            }
+        }))
+        const prev = snapshotRunner()
+        const runPromise = runClaude({
+            workingDirectory: '/tmp/hapi-rewind-test',
+            startedBy: 'runner',
+            startingMode: 'remote'
+        })
+        runPromise.catch((error) => { harness.runError = error })
+
+        await waitForFreshRunner(prev)
+
+        expect(harness.state.metadata.claudeRewind).toBeUndefined()
     })
 })

@@ -308,9 +308,11 @@ describe('deriveSpawnArgs', () => {
                 workingDirectory: CWD
             }
             // Two spawns of the same unproven intent (initial respawn, then a
-            // post-init retry or crash relaunch) each truncate again.
-            expect(deriveSpawnArgs(options)).toEqual({ args: ['--resume', 'sess-1', '--resume-session-at', 'as1'], boundary: 'as1' })
-            expect(deriveSpawnArgs(options)).toEqual({ args: ['--resume', 'sess-1', '--resume-session-at', 'as1'], boundary: 'as1' })
+            // post-init retry or crash relaunch) each truncate again; once
+            // sess-1 is materialized on disk, one-shot --resume flags on
+            // claudeArgs are stripped so startFrom owns the resume target.
+            expect(deriveSpawnArgs(options)).toEqual({ args: ['--resume-session-at', 'as1'], boundary: 'as1' })
+            expect(deriveSpawnArgs(options)).toEqual({ args: ['--resume-session-at', 'as1'], boundary: 'as1' })
         })
     })
 
@@ -320,7 +322,7 @@ describe('deriveSpawnArgs', () => {
             // The intent may still sit in metadata inside the proof's
             // async-flush window; the fresh transcript evaluation wins.
             expect(deriveSpawnArgs({ claudeArgs: ['--resume', 'sess-1'], sessionId: 'sess-1', intent, workingDirectory: CWD }))
-                .toEqual({ args: ['--resume', 'sess-1'], boundary: null })
+                .toEqual({ args: undefined, boundary: null })
         })
     })
 
@@ -347,15 +349,25 @@ describe('deriveSpawnArgs', () => {
             .toEqual({ args, boundary: 'fork-boundary' })
     })
 
-    it('S6: drops the fork boundary and the fork flag once the child transcript materialized', () => {
+    it('S6: drops the fork boundary, fork flag, and source --resume once the child transcript materialized', () => {
         const root = unprovenRoot()
         withConfigDir(root, () => {
-            const args = ['--resume', 'sess-1', '--fork-session', '--resume-session-at', 'fork-boundary']
+            const args = ['--resume', 'source-id', '--fork-session', '--resume-session-at', 'fork-boundary']
             // The sessionId proves the child .jsonl exists and already carries
             // the truncation - even if a crash skipped consumeOneTimeFlags, a
-            // later respawn must not re-truncate or re-fork.
+            // later respawn must not re-truncate, re-fork, or pass the stale
+            // --resume source-id to claudeLocal.
             expect(deriveSpawnArgs({ claudeArgs: args, sessionId: 'sess-1', intent: undefined, workingDirectory: CWD }))
-                .toEqual({ args: ['--resume', 'sess-1'], boundary: null })
+                .toEqual({ args: undefined, boundary: null })
+        })
+    })
+
+    it('keeps unrelated flags when stripping the materialized fork anchors', () => {
+        const root = unprovenRoot()
+        withConfigDir(root, () => {
+            const args = ['--permission-mode', 'plan', '--resume', 'source-id', '--model', 'opus', '--fork-session', '--resume-session-at', 'fork-boundary']
+            expect(deriveSpawnArgs({ claudeArgs: args, sessionId: 'sess-1', intent: undefined, workingDirectory: CWD }))
+                .toEqual({ args: ['--permission-mode', 'plan', '--model', 'opus'], boundary: null })
         })
     })
 

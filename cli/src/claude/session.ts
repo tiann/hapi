@@ -35,8 +35,8 @@ export class Session extends AgentSessionBase<EnhancedMode> {
      * hands a queued batch to the SDK (rewind branch proof). */
     onNativeInputSubmitted: ((nativePromptUuid: string) => void) | null = null;
     /** Set by the runner: called after a /clear-style reset discarded the
-     * conversation (the one-shot flags are consumed first), so a pending
-     * rewind intent pointing into it can be cancelled. */
+     * conversation, so a pending rewind intent pointing into it can be
+     * cancelled. */
     onConversationReset: (() => void) | null = null;
     /** Epoch ms of the latest local UserPromptSubmit hook; older interrupt markers are stale. */
     localTurnStartedAt = 0;
