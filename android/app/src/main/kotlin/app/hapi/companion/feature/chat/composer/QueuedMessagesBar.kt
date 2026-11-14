@@ -9,6 +9,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -37,12 +38,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.disabled
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
@@ -125,18 +129,41 @@ private fun QueuedRow(
     var menuOpen by remember { mutableStateOf(false) }
     val editLabel = stringResource(R.string.chat_queued_edit)
     val secondary = MaterialTheme.hapi.textSecondary
+    val rowInteraction = if (row.canEdit) {
+        Modifier.combinedClickable(
+            enabled = row.canAct,
+            onClickLabel = editLabel,
+            onClick = { onEdit(row.id) },
+            onLongClick = { menuOpen = true },
+        )
+    } else {
+        Modifier.pointerInput(row.canAct) {
+            detectTapGestures(
+                onLongPress = {
+                    if (row.canAct) menuOpen = true
+                },
+            )
+        }
+    }
     Box {
         Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = 48.dp)
-                .combinedClickable(
-                    enabled = row.canAct,
-                    onClickLabel = editLabel,
-                    onClick = { onEdit(row.id) },
-                    onLongClick = { menuOpen = true },
-                )
+                .then(rowInteraction)
+                .testTag("chat-queued-row-${row.id}")
+                .semantics(mergeDescendants = true) {
+                    if (!row.canEdit) {
+                        if (!row.canAct) disabled()
+                        if (row.canAct) {
+                            onLongClick {
+                                menuOpen = true
+                                true
+                            }
+                        }
+                    }
+                }
                 .padding(start = 14.dp, end = 2.dp),
         ) {
             Icon(
@@ -204,7 +231,7 @@ private fun QueuedRow(
             }
             DropdownMenuItem(
                 text = { Text(editLabel) },
-                enabled = row.canAct,
+                enabled = row.canEdit,
                 onClick = { menuOpen = false; onEdit(row.id) },
             )
             DropdownMenuItem(

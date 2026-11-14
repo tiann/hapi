@@ -10,7 +10,8 @@ import SwiftUI
 /// unknown outcome, Cancel); tapping the row edits it (cancel +
 /// prefill composer) and the context menu carries everything. Rows without
 /// a server echo yet (`id == localId`) keep their actions disabled until the
-/// SSE echo lands.
+/// SSE echo lands. Scheduled rows with attachments keep edit disabled because
+/// native edit cannot restore the attachment.
 struct QueuedMessagesBarView: View {
     let interactor: ChatInteractor
     /// Measured height of the rows; nil until the first layout pass (one
@@ -77,12 +78,12 @@ struct QueuedRowView: View {
         .frame(minHeight: 44)
         .contentShape(Rectangle())
         .onTapGesture {
-            if row.canAct { interactor.editQueuedMessage(row.id) }
+            if row.canEdit { interactor.editQueuedMessage(row.id) }
         }
         .contextMenu { menuActions }
         .accessibilityElement(children: .contain)
         .accessibilityAction(named: Text("Edit")) {
-            if row.canAct { interactor.editQueuedMessage(row.id) }
+            if row.canEdit { interactor.editQueuedMessage(row.id) }
         }
     }
 
@@ -163,7 +164,7 @@ struct QueuedRowView: View {
         Button("Edit", systemImage: "pencil") {
             interactor.editQueuedMessage(row.id)
         }
-        .disabled(!row.canAct)
+        .disabled(!row.canEdit)
         Button("Cancel", systemImage: "xmark", role: .destructive) {
             interactor.cancelQueuedMessage(row.id)
         }
