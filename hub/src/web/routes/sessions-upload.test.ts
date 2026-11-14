@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'bun:test'
+import { readFile } from 'node:fs/promises'
 import { Hono } from 'hono'
 import { UPLOAD_CHUNK_MAX_BYTES } from '@hapi/protocol'
 import { RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol/rpcMethods'
@@ -45,6 +46,8 @@ type EngineOverrides = Partial<{
     uploadFileChunk: SyncEngine['uploadFileChunk']
     finalizeChunkedUpload: SyncEngine['finalizeChunkedUpload']
     abortChunkedUpload: SyncEngine['abortChunkedUpload']
+    createAttachmentFromFile: SyncEngine['createAttachmentFromFile']
+    deleteUploadFile: SyncEngine['deleteUploadFile']
     sessionAccess: 'ok' | 'not-found' | 'wrong-namespace'
 }>
 
@@ -66,6 +69,13 @@ function createApp(session: Session, overrides: EngineOverrides = {}) {
         finalizeChunkedUpload: overrides.finalizeChunkedUpload
             ?? (async () => ({ success: true, path: '/tmp/uploads/file.bin' })),
         abortChunkedUpload: overrides.abortChunkedUpload
+            ?? (async () => ({ success: true })),
+        createAttachmentFromFile: overrides.createAttachmentFromFile
+            ?? (async (_sessionId, _namespace, filename, path, mimeType) => {
+                const content = await readFile(path)
+                return { success: true, attachmentId: 'attachment-1', filename, mimeType, size: content.length }
+            }),
+        deleteUploadFile: overrides.deleteUploadFile
             ?? (async () => ({ success: true }))
     } as unknown as SyncEngine
 
@@ -120,7 +130,69 @@ describe('sessions chunked upload routes', () => {
             method: 'POST'
         })
         expect(finalRes.status).toBe(200)
-        expect(await finalRes.json()).toEqual({ success: true, path: '/tmp/uploads/file.bin' })
+        expect(await finalRes.json()).toEqual({ success: true, attachmentId: 'attachment-1', filename: 'clip.mp4', mimeType: 'video/mp4', size: 5 })
+    })
+
+    it('stages a multi-chunk upload in Hub storage before returning the durable attachment', async () => {
+        const fourMiB = 4 * 1024 * 1024
+        const totalBytes = 8 * 1024 * 1024 + 1
+        let durableBytes: Buffer | null = null
+        const uploadFileChunk = vi.fn(async (_sessionId, _uploadId, _index, content: string) => ({
+            success: true,
+            receivedBytes: Buffer.from(content, 'base64').length
+        }))
+        const finalizeChunkedUpload = vi.fn(async () => ({ success: true, path: '/tmp/cli-upload.bin' }))
+        const createAttachmentFromFile = vi.fn(async (_sessionId, _namespace, filename, path, mimeType) => {
+            durableBytes = await readFile(path)
+            return { success: true, attachmentId: 'durable-large', filename, mimeType, size: durableBytes.length }
+        })
+        const deleteUploadFile = vi.fn(async () => ({ success: true }))
+        const app = createApp(createSession(), {
+            uploadFileChunk,
+            finalizeChunkedUpload,
+            createAttachmentFromFile,
+            deleteUploadFile
+        })
+
+        const initRes = await app.request('/sessions/session-1/uploads', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ filename: 'large.bin', size: totalBytes, mimeType: 'application/octet-stream' })
+        })
+        expect(initRes.status).toBe(200)
+
+        const first = new Uint8Array(fourMiB).fill(7)
+        const second = new Uint8Array(totalBytes - fourMiB).fill(11)
+        for (const [index, bytes] of [first, second].entries()) {
+            const res = await app.request(`/sessions/session-1/uploads/upload-1/chunk?index=${index}`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/octet-stream' },
+                body: bytes
+            })
+            expect(res.status).toBe(200)
+        }
+
+        const finalRes = await app.request('/sessions/session-1/uploads/upload-1/finalize', {
+            method: 'POST'
+        })
+        expect(finalRes.status).toBe(200)
+        expect(await finalRes.json()).toEqual({
+            success: true,
+            attachmentId: 'durable-large',
+            filename: 'large.bin',
+            mimeType: 'application/octet-stream',
+            size: totalBytes
+        })
+        expect(uploadFileChunk).toHaveBeenCalledTimes(2)
+        expect(createAttachmentFromFile).toHaveBeenCalledWith(
+            'session-1', 'default', 'large.bin', expect.any(String), 'application/octet-stream'
+        )
+        const storedBytes = durableBytes as Buffer | null
+        expect(storedBytes).not.toBeNull()
+        expect(storedBytes).toHaveLength(totalBytes)
+        expect(storedBytes!.subarray(0, 16)).toEqual(Buffer.alloc(16, 7))
+        expect(storedBytes!.subarray(-16)).toEqual(Buffer.alloc(16, 11))
+        expect(deleteUploadFile).toHaveBeenCalledWith('session-1', '/tmp/cli-upload.bin')
     })
 
     it('rejects oversized uploads with 413 without calling initChunkedUpload and honors HAPI_MAX_UPLOAD_BYTES', async () => {

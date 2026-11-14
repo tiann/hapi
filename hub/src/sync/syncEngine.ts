@@ -13,6 +13,7 @@ import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
 } from '@hapi/protocol/runnerCapabilities'
+import { resolveMaxUploadBytes } from '@hapi/protocol/apiTypes'
 import type { AbortChunkedUploadResponse, CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, InitChunkedUploadRequest, InitChunkedUploadResponse, MessageContextResponse, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse, UploadChunkResponse, UploadFileResponse } from '@hapi/protocol/apiTypes'
 import type { UsageQueryAgent, UsageQueryAgentSettings, UsageQueryResult, UsageQuerySettingsResponse, UsageQueryTemplate } from '@hapi/protocol/usageQuery'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
@@ -6514,6 +6515,38 @@ export class SyncEngine {
             filename,
             mimeType,
             original
+        })
+        if (!this.store.sessions.getSessionByNamespace(access.sessionId, namespace)) {
+            await this.store.attachments.deleteById(stored.id, namespace)
+            throw new Error('Session was deleted while uploading')
+        }
+        return {
+            success: true,
+            attachmentId: stored.id,
+            filename: stored.filename,
+            mimeType: stored.mimeType,
+            size: stored.size
+        }
+    }
+
+    async createAttachmentFromFile(
+        sessionId: string,
+        namespace: string,
+        filename: string,
+        path: string,
+        mimeType: string
+    ): Promise<UploadFileResponse> {
+        const access = this.resolveSessionAccess(sessionId, namespace)
+        if (!access.ok) {
+            throw new Error(access.reason === 'access-denied' ? 'Session access denied' : 'Session not found')
+        }
+        const stored = await this.store.attachments.createFromFile({
+            namespace,
+            sessionId: access.sessionId,
+            filename,
+            mimeType,
+            sourcePath: path,
+            maxBytes: resolveMaxUploadBytes(process.env.HAPI_MAX_UPLOAD_BYTES)
         })
         if (!this.store.sessions.getSessionByNamespace(access.sessionId, namespace)) {
             await this.store.attachments.deleteById(stored.id, namespace)

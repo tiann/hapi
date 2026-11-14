@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { createReadStream } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import type { Database } from 'bun:sqlite'
@@ -40,6 +41,11 @@ export type CreateAttachmentInput = {
     filename: string
     mimeType: string
     original: Buffer
+}
+
+export type CreateAttachmentFileInput = Omit<CreateAttachmentInput, 'original'> & {
+    sourcePath: string
+    maxBytes: number
 }
 
 type AttachmentRow = {
@@ -162,6 +168,103 @@ export class AttachmentStore {
             filename,
             mimeType: input.mimeType,
             size: input.original.length,
+            sha256,
+            originalPath,
+            createdAt
+        }
+    }
+
+    async createFromFile(input: CreateAttachmentFileInput): Promise<StoredAttachment> {
+        const maxBytes = Math.max(0, Math.floor(input.maxBytes))
+        const source = await stat(input.sourcePath)
+        if (!source.isFile() || source.size === 0 || source.size > maxBytes) {
+            throw new Error('Attachment exceeds the maximum allowed size')
+        }
+
+        const id = randomUUID()
+        const createdAt = Date.now()
+        const filename = sanitizeFilename(input.filename)
+        const originalPath = join(this.root, `${id}.original`)
+        const tempPath = join(this.root, `.${id}.original.${randomUUID()}.tmp`)
+        this.db.prepare(`
+            INSERT INTO attachment_creations (
+                id, namespace, session_id, original_path, temp_path, state, created_at
+            ) VALUES (?, ?, ?, ?, ?, 'pending', ?)
+        `).run(id, input.namespace, input.sessionId, originalPath, tempPath, createdAt)
+
+        await mkdir(this.root, { recursive: true, mode: 0o700 })
+        try {
+            await chmod(this.root, 0o700)
+        } catch {
+        }
+
+        let sha256 = ''
+        let size = 0
+        try {
+            const hash = createHash('sha256')
+            const target = await open(tempPath, 'wx', 0o600)
+            try {
+                for await (const chunk of createReadStream(input.sourcePath)) {
+                    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+                    size += bytes.length
+                    if (size > maxBytes) throw new Error('Attachment exceeds the maximum allowed size')
+                    hash.update(bytes)
+                    let written = 0
+                    while (written < bytes.length) {
+                        const result = await target.write(bytes, written, bytes.length - written, size - bytes.length + written)
+                        if (result.bytesWritten <= 0) throw new Error('Failed to write attachment')
+                        written += result.bytesWritten
+                    }
+                }
+                const written = await target.stat()
+                if (!written.isFile() || written.size !== source.size || size !== source.size) {
+                    throw new Error('Attachment size changed while copying')
+                }
+            } finally {
+                await target.close()
+            }
+            sha256 = hash.digest('hex')
+            await rename(tempPath, originalPath)
+            this.db.transaction(() => {
+                this.db.prepare(`
+                    INSERT INTO attachments (
+                        id, namespace, session_id, filename, mime_type, size,
+                        sha256, original_path, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                `).run(
+                    id,
+                    input.namespace,
+                    input.sessionId,
+                    filename,
+                    input.mimeType,
+                    size,
+                    sha256,
+                    originalPath,
+                    createdAt
+                )
+                this.markCreationState(id, 'committed')
+            })()
+        } catch (error) {
+            const removed = await Promise.all([
+                this.removeCreationFile(originalPath),
+                this.removeCreationFile(tempPath)
+            ])
+            if (removed.every(Boolean)) {
+                try {
+                    this.markCreationState(id, 'reconciled')
+                } catch {
+                }
+            }
+            throw error
+        }
+
+        return {
+            id,
+            namespace: input.namespace,
+            sessionId: input.sessionId,
+            filename,
+            mimeType: input.mimeType,
+            size,
             sha256,
             originalPath,
             createdAt

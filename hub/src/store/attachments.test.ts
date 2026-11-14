@@ -58,6 +58,30 @@ describe('AttachmentStore', () => {
         store.close()
     })
 
+    it('streams a staged file into durable storage and preserves its digest', async () => {
+        const dir = mkdtempSync(join(tmpdir(), 'hapi-attachments-'))
+        tempDirs.push(dir)
+        const store = new Store(':memory:', { attachmentsRoot: join(dir, 'attachments') })
+        const sourcePath = join(dir, 'large.bin')
+        const original = Buffer.alloc(9 * 1024 * 1024, 17)
+        writeFileSync(sourcePath, original)
+
+        const created = await store.attachments.createFromFile({
+            namespace: 'default',
+            sessionId: 'session-large',
+            filename: 'large.bin',
+            mimeType: 'application/octet-stream',
+            sourcePath,
+            maxBytes: 16 * 1024 * 1024
+        })
+
+        expect(created.size).toBe(original.length)
+        expect(created.sha256).toBe(createHash('sha256').update(original).digest('hex'))
+        expect(readFileSync(created.originalPath)).toEqual(original)
+        expect(existsSync(sourcePath)).toBe(true)
+        store.close()
+    })
+
     it('reconciles a pending creation journal after a write-before-row crash', async () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-attachments-'))
         tempDirs.push(dir)

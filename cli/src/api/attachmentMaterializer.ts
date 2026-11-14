@@ -3,11 +3,10 @@ import { mkdir, mkdtemp, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { extname, join, resolve } from 'node:path'
 import axios from 'axios'
 import type { AttachmentMetadata } from '@hapi/protocol'
+import { resolveMaxUploadBytes } from '@hapi/protocol/apiTypes'
 import { configuration } from '@/configuration'
 import { getHapiBlobsDir } from '@/constants/uploadPaths'
 import { buildHubRequestHeaders } from './hubExtraHeaders'
-
-const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
 
 export type MaterializedAttachmentIdentity = { dev: number; ino: number }
 
@@ -45,6 +44,7 @@ export class AttachmentMaterializer {
 
         const directory = await this.getDirectory()
         this.throwIfClosed()
+        const maxAttachmentBytes = resolveMaxUploadBytes(process.env.HAPI_MAX_UPLOAD_BYTES)
         const response = await axios.get(
             `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(this.sessionId)}/attachments/${encodeURIComponent(attachment.attachmentId)}/original`,
             {
@@ -54,13 +54,13 @@ export class AttachmentMaterializer {
                 }),
                 responseType: 'arraybuffer',
                 timeout: 30_000,
-                maxContentLength: MAX_ATTACHMENT_BYTES,
-                maxBodyLength: MAX_ATTACHMENT_BYTES
+                maxContentLength: maxAttachmentBytes,
+                maxBodyLength: maxAttachmentBytes
             }
         )
         this.throwIfClosed()
         const data = Buffer.from(response.data)
-        if (data.length === 0 || data.length > MAX_ATTACHMENT_BYTES) {
+        if (data.length === 0 || data.length > maxAttachmentBytes) {
             throw new Error('Hub attachment has an invalid size')
         }
 

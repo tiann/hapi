@@ -53,6 +53,7 @@ import {
 } from '../../store/messageContentSearch'
 import { ArchiveCleanupError } from '../../sync/archiveCleanupError'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
+import { ChunkedUploadStaging, ChunkedUploadStagingError } from '../chunkedUploadStaging'
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 const UPLOAD_ID_RE = /^[A-Za-z0-9_-]{1,128}$/
@@ -195,6 +196,7 @@ function estimateBase64Bytes(base64: string): number {
 
 export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
+    const chunkedUploadStaging = new ChunkedUploadStaging()
 
     app.get('/sessions', (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
@@ -670,6 +672,22 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             if (!result.success) {
                 return c.json(result, uploadErrorStatus(result.code))
             }
+            if (!result.uploadId) {
+                return c.json({ success: false, error: 'Upload did not return an id' }, 500)
+            }
+            try {
+                await chunkedUploadStaging.begin({
+                    namespace: c.get('namespace'),
+                    sessionId: sessionResult.sessionId,
+                    uploadId: result.uploadId,
+                    filename: parsed.data.filename,
+                    mimeType: parsed.data.mimeType,
+                    size: parsed.data.size
+                })
+            } catch (error) {
+                await engine.abortChunkedUpload(sessionResult.sessionId, result.uploadId).catch(() => {})
+                throw error
+            }
             return c.json(result)
         } catch (error) {
             if (error instanceof RpcTargetMissingError) {
@@ -678,6 +696,9 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                     error: error.message,
                     code: RPC_TARGET_MISSING_ERROR_CODE
                 }, 503)
+            }
+            if (error instanceof ChunkedUploadStagingError) {
+                return c.json({ success: false, error: error.message, code: error.code }, uploadErrorStatus(error.code))
             }
             return c.json({
                 success: false,
@@ -727,6 +748,18 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             if (!result.success) {
                 return c.json(result, uploadErrorStatus(result.code))
             }
+            try {
+                await chunkedUploadStaging.append(
+                    c.get('namespace'),
+                    sessionResult.sessionId,
+                    uploadId,
+                    Number(indexRaw),
+                    chunkRead.bytes
+                )
+            } catch (error) {
+                await engine.abortChunkedUpload(sessionResult.sessionId, uploadId).catch(() => {})
+                throw error
+            }
             return c.json(result)
         } catch (error) {
             if (error instanceof RpcTargetMissingError) {
@@ -735,6 +768,9 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                     error: error.message,
                     code: RPC_TARGET_MISSING_ERROR_CODE
                 }, 503)
+            }
+            if (error instanceof ChunkedUploadStagingError) {
+                return c.json({ success: false, error: error.message, code: error.code }, uploadErrorStatus(error.code))
             }
             return c.json({
                 success: false,
@@ -759,12 +795,31 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ success: false, error: 'Invalid uploadId', code: 'upload_invalid_chunk' }, 400)
         }
 
+        let finalized: Awaited<ReturnType<ChunkedUploadStaging['finalize']>> | null = null
         try {
-            const result = await engine.finalizeChunkedUpload(sessionResult.sessionId, uploadId)
-            if (!result.success) {
-                return c.json(result, uploadErrorStatus(result.code))
+            const cliResult = await engine.finalizeChunkedUpload(sessionResult.sessionId, uploadId)
+            if (!cliResult.success) {
+                return c.json(cliResult, uploadErrorStatus(cliResult.code))
             }
-            return c.json(result)
+            finalized = await chunkedUploadStaging.finalize(
+                c.get('namespace'),
+                sessionResult.sessionId,
+                uploadId
+            )
+            const durable = await engine.createAttachmentFromFile(
+                sessionResult.sessionId,
+                c.get('namespace'),
+                finalized.filename,
+                finalized.path,
+                finalized.mimeType
+            )
+            if (!durable.success) {
+                return c.json(durable, uploadErrorStatus(durable.code))
+            }
+            if (cliResult.path) {
+                void engine.deleteUploadFile(sessionResult.sessionId, cliResult.path).catch(() => {})
+            }
+            return c.json(durable)
         } catch (error) {
             if (error instanceof RpcTargetMissingError) {
                 return c.json({
@@ -773,10 +828,15 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
                     code: RPC_TARGET_MISSING_ERROR_CODE
                 }, 503)
             }
+            if (error instanceof ChunkedUploadStagingError) {
+                return c.json({ success: false, error: error.message, code: error.code }, uploadErrorStatus(error.code))
+            }
             return c.json({
                 success: false,
                 error: error instanceof Error ? error.message : 'Failed to finalize upload'
             }, 500)
+        } finally {
+            if (finalized) await chunkedUploadStaging.discard(finalized)
         }
     })
 
@@ -798,6 +858,7 @@ export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Ho
 
         try {
             const result = await engine.abortChunkedUpload(sessionResult.sessionId, uploadId)
+            await chunkedUploadStaging.abort(c.get('namespace'), sessionResult.sessionId, uploadId)
             if (!result.success) {
                 return c.json(result, uploadErrorStatus(result.code))
             }
