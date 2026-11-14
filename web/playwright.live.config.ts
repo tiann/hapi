@@ -13,6 +13,7 @@ export default defineConfig({
         'codex-archived-fork.spec.ts',
         'codex-session-list-fork.spec.ts',
         'late-codex-command-session.spec.ts',
+        'fork-title-session.spec.ts',
         'image-preview-back-session.spec.ts',
     ],
     timeout: 120_000,

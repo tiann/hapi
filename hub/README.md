@@ -47,10 +47,17 @@ turn when the session has no manual name or existing summary. Automatic
 failures are silent and never block the agent conversation. The manual
 **Generate** action remains available.
 
+For forked sessions, the child immediately shows `Fork: <source title>` and
+the Hub uses the same provider on the completed fork snapshot without waiting
+for another turn. Missing configuration or provider failure keeps the initial
+title. An explicit rename, title edit, or title lock made during generation wins
+over the pending result. Inherited Codex title-tool history does not rename a
+fork; new live rename calls still work.
+
 Configure `HAPI_TITLE_PROVIDER_BASE_URL`, `HAPI_TITLE_PROVIDER_API_KEY`, and
-`HAPI_TITLE_PROVIDER_MODEL` on the Hub. The attempt is persisted across restarts;
-manual or Agent titles arriving during generation are preserved. No automatic
-request is made without a configured provider.
+`HAPI_TITLE_PROVIDER_MODEL` on the Hub. The automatic first-turn attempt and the
+fork attempt are persisted across restarts. No automatic request is made
+without a configured provider.
 
 ### Optional
 

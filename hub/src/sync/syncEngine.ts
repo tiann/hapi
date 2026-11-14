@@ -235,6 +235,7 @@ export class SyncEngine {
     private readonly titleTurnCompletedIds = new Set<string>()
     private readonly rpcGateway: RpcGateway
     private inactivityTimer: NodeJS.Timeout | null = null
+    private stopped = false
     /** Sessions that emitted `session-ready` (Cursor ACP or validated Pi get_state). */
     private readonly sessionReadyIds = new Set<string>()
     /** Same-ID PTY rows with a resume currently in flight. */
@@ -373,6 +374,7 @@ export class SyncEngine {
     }
 
     stop(): void {
+        this.stopped = true
         this.automaticTitleSuggestionService.stop()
         this.titleTurnCompletedIds.clear()
         if (this.inactivityTimer) {
@@ -857,6 +859,9 @@ export class SyncEngine {
 
     handleSessionReady(payload: { sid: string; time: number }): void {
         const session = this.sessionCache.getSession(payload.sid)
+        if (session?.metadata?.forkedFrom && session.metadata.capabilities?.concurrentClients) {
+            void this.generateForkTitle(payload.sid)
+        }
         if (session?.metadata?.flavor === 'opencode' && session.metadata.opencodeForkPending) {
             if (session.metadata.conversationHistoryDiverged
                 || session.metadata.opencodeHistoryCheckpoint?.sessionId !== session.metadata.opencodeSessionId
@@ -2430,6 +2435,7 @@ export class SyncEngine {
                 this.setArchivedForkAttempt(source.id, namespace, attempt)
             }
             const childId = attempt.childSessionId
+            const forkSummary = buildForkSessionSummary(metadata)
             let child = this.sessionCache.refreshSession(childId)
             if (child?.active) {
                 if (!attempt.nativeSessionId || child.metadata?.codexSessionId !== attempt.nativeSessionId
@@ -2443,7 +2449,8 @@ export class SyncEngine {
                 child = this.sessionCache.getOrCreateSession(`archived-fork:${attempt.operationId}`, {
                     path: metadata.path, host: metadata.host, machineId: metadata.machineId, flavor: 'codex',
                     forkedFrom: source.id, startedBy: 'runner',
-                    summary: buildForkSessionSummary(metadata)
+                    capabilities: { concurrentClients: true },
+                    ...(forkSummary ? { summary: forkSummary, forkTitleSeed: forkSummary } : {}),
                 }, null, namespace, source.model ?? undefined, source.effort ?? undefined, source.modelReasoningEffort ?? undefined, childId)
             } else if (child.namespace !== namespace || child.metadata?.forkedFrom !== source.id) throw new Error('Invalid archived fork reservation')
             if (attempt.spawnAttempted) {
@@ -2599,7 +2606,10 @@ export class SyncEngine {
         if (rpcResult.sessionId) {
             const child = await this.validateSharedChild(source, rpcResult.sessionId, rpcResult.nativeSessionId)
             if (!child || child.metadata?.forkedFrom !== sessionId) return { type: 'error', message: 'Invalid shared-runtime fork binding' }
-            this.restoreForkSummaryMetadata(child.id, namespace, buildForkSessionSummary(source.metadata))
+            const currentSource = this.sessionCache.refreshSession(sessionId)
+            const forkSummary = buildForkSessionSummary(currentSource?.metadata ?? source.metadata)
+            await this.sessionCache.seedForkTitle(child.id, forkSummary)
+            void this.generateForkTitle(child.id)
             return { type: 'success', sessionId: child.id }
         }
 
@@ -2634,7 +2644,7 @@ export class SyncEngine {
             host: source.metadata?.host ?? 'unknown',
             machineId,
             flavor,
-            ...(forkSummary ? { summary: forkSummary } : {}),
+            ...(forkSummary ? { summary: forkSummary, forkTitleSeed: forkSummary } : {}),
             forkedFrom: sessionId,
             startedBy: 'runner',
             capabilities: source.metadata?.capabilities,
@@ -2777,7 +2787,7 @@ export class SyncEngine {
                 }
                 this.completeOpencodeForkValidation(childId, namespace)
             }
-
+            void this.generateForkTitle(childId)
             return { type: 'success', sessionId: childId }
         } catch (error) {
             if (childCreated) {
@@ -2789,6 +2799,50 @@ export class SyncEngine {
                 }
             }
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
+        }
+    }
+
+    /** Generate from the completed fork snapshot without delaying fork. */
+    private async generateForkTitle(sessionId: string): Promise<void> {
+        let metadata = this.sessionCache.getSession(sessionId)?.metadata
+        if (!metadata || metadata.name?.trim() || metadata.titleLocked === true) return
+        // A shared CLI can hold a source title from before a Hub rename.
+        // Reconcile the owned provisional seed before claiming generation.
+        if (metadata.forkTitleSeed && metadata.forkedFrom) {
+            const source = this.sessionCache.refreshSession(metadata.forkedFrom)
+            if (source && source.namespace === this.sessionCache.getSession(sessionId)?.namespace) {
+                await this.sessionCache.seedForkTitle(sessionId, buildForkSessionSummary(source.metadata))
+                metadata = this.sessionCache.getSession(sessionId)?.metadata
+                if (!metadata) return
+            }
+        }
+        // A pre-bound shared child can become ready before the fork RPC returns.
+        // If its source already had a title, wait for seedForkTitle instead of
+        // consuming the one-shot generation claim with an undefined baseline.
+        if (!metadata.forkTitleSeed && metadata.forkedFrom) {
+            const childNamespace = this.sessionCache.getSession(sessionId)?.namespace
+            const sourceMetadata = childNamespace
+                ? this.sessionCache.getSessionByNamespace(metadata.forkedFrom, childNamespace)?.metadata
+                : undefined
+            const forkSummary = buildForkSessionSummary(sourceMetadata)
+            if (forkSummary) {
+                // Native terminal readiness can arrive before a REST fork creates the
+                // owned seed. Bootstrap it here so that one-shot readiness can claim
+                // generation instead of waiting for a later event that never arrives.
+                await this.sessionCache.seedForkTitle(sessionId, forkSummary)
+                metadata = this.sessionCache.getSession(sessionId)?.metadata
+                if (!metadata) return
+            }
+        }
+        const expected = metadata.summary
+        if (expected && (expected.text !== metadata.forkTitleSeed?.text
+            || expected.updatedAt !== metadata.forkTitleSeed?.updatedAt)) return
+        if (!this.sessionCache.claimForkTitleGeneration(sessionId, expected)) return
+        try {
+            const title = await this.titleSuggestionService.suggestTitle(sessionId)
+            if (!this.stopped) await this.sessionCache.updateForkTitle(sessionId, title, expected)
+        } catch {
+            // Keep the seed on failure; manual Generate remains available.
         }
     }
 
