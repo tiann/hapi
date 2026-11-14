@@ -119,6 +119,10 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 - `POST /api/sessions/:id/reopen` - Reopen a session; follow the returned session ID.
 - `POST /api/sessions/:id/clear` - Start a fresh conversation when supported.
 - `POST /api/sessions/:id/upload` - Upload file (base64, max 50MB).
+- `POST /api/sessions/:id/uploads` - Initialize chunked streaming upload (configurable max via `HAPI_MAX_UPLOAD_BYTES`, default 512 MiB, clamped to 10 GiB).
+- `POST /api/sessions/:id/uploads/:uploadId/chunk?index=<n>` - Stream binary chunk (`application/octet-stream`, 1 B – 8 MB).
+- `POST /api/sessions/:id/uploads/:uploadId/finalize` - Finalize chunked upload and authorize file identity.
+- `POST /api/sessions/:id/uploads/:uploadId/abort` - Abort chunked upload and delete partial file.
 - `POST /api/sessions/:id/upload/delete` - Delete uploaded file.
 - `POST /api/sessions/:id/archive` - Archive active session.
   Runner-owned sessions wait for verified cleanup, including retries after an
