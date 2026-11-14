@@ -119,7 +119,7 @@ for (const isMobile of [true, false]) {
             await page.goto('/e2e-fixtures/session-list-scrollbar-fixture.html?two-projects')
             const viewport = page.locator('.session-list-scrollbar-left')
             await expect(viewport).toBeVisible()
-            await expect(viewport.locator('.collapsible-panel[data-open]')).toHaveCount(2)
+            await expect(viewport.locator('[aria-expanded="true"]')).toHaveCount(2)
 
             const samples = await viewport.evaluate(async (element) => {
                 const root = document.documentElement
