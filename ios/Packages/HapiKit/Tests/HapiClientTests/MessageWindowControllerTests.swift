@@ -181,6 +181,27 @@ struct MessageWindowControllerTests {
         await cachedSync.value
     }
 
+    @Test func cancellationReconcilesBothServerAndLocalOptimisticRows() async {
+        let provider = GatedMessagesProvider()
+        var initial = MessageWindowState(sessionId: "cancel")
+        initial.messages = [buildOptimisticMessage(
+            localId: "local-1",
+            text: "retry me",
+            createdAt: 1000,
+            status: .failed
+        )]
+        let controller = MessageWindowController(sessionId: "cancel", provider: provider, initialState: initial)
+
+        await controller.onMessageEvent(.messageCancelled(
+            namespace: nil,
+            sessionId: "cancel",
+            messageId: "server-1",
+            localId: "local-1"
+        ))
+
+        #expect((await controller.state).messages.isEmpty)
+    }
+
     @Test func cancellingHistoryDoesNotPublishAnOfflineWarning() async {
         let provider = GatedMessagesProvider()
         var initial = MessageWindowState(sessionId: "history")

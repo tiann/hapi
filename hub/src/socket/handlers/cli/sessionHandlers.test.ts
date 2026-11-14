@@ -49,6 +49,60 @@ it('does not rebroadcast stored messages and retains repeated consumption acknow
     store.close()
 })
 
+it('restores a late-consumed abandoned row without relying on the suppressed CLI echo', () => {
+    const originalDateNow = Date.now
+    let now = 2_000
+    Date.now = () => now
+    const store = new Store(':memory:')
+    try {
+        const session = store.sessions.getOrCreateSession('late-abandoned-consumption', {}, null, 'default')
+        const row = store.messages.addMessage(
+            session.id,
+            { role: 'user', content: { type: 'text', text: 'late native proof' } },
+            'late-abandoned'
+        )
+        store.messages.setMessagesDeliveryState(session.id, ['late-abandoned'], 'indeterminate')
+        expect(store.messages.abandonIndeterminateMessage(session.id, row.id)).toBe(true)
+
+        const socket = new FakeSocket()
+        const events: SyncEvent[] = []
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: session }),
+            emitAccessError() {},
+            onWebappEvent: (event) => events.push(event)
+        })
+
+        socket.trigger('messages-consumed', { sid: session.id, localIds: ['late-abandoned'] })
+        // Production emits this echo after the consumption ACK, but the retained
+        // row makes the generic message handler suppress it as a replay.
+        socket.trigger('message', {
+            sid: session.id,
+            localId: 'late-abandoned',
+            message: { role: 'user', content: { type: 'text', text: 'late native proof' } }
+        })
+
+        const received = events.filter((event) => event.type === 'message-received')
+        expect(received).toHaveLength(1)
+        expect(received[0]).toMatchObject({
+            type: 'message-received',
+            sessionId: session.id,
+            message: {
+                id: row.id,
+                localId: 'late-abandoned',
+                invokedAt: now,
+                content: { role: 'user', content: { type: 'text', text: 'late native proof' } }
+            }
+        })
+        expect(events.filter((event) => event.type === 'messages-consumed')).toHaveLength(1)
+        expect(store.messages.getLocalMessageStates(session.id, ['late-abandoned']))
+            .toEqual([{ localId: 'late-abandoned', invokedAt: now }])
+    } finally {
+        Date.now = originalDateNow
+        store.close()
+    }
+})
+
 function redundantGoalStatusContent(message: string): unknown {
     return {
         role: 'agent',

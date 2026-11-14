@@ -78,6 +78,7 @@ import type {
 import { fetchThroughAuthProxy } from '@/api/authProxy'
 import { FOLLOW_SESSION_REDIRECTS_HEADER } from '@hapi/protocol'
 import type { SessionReadState, SessionReadStateRequest, AgentFlavor, MessageDeliveryMode } from '@hapi/protocol'
+import type { AbandonMessageResponse } from '@hapi/protocol/apiTypes'
 import type { CancelMessageResponse, SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { TranscriptionMode, TranscriptionProvider, TranscriptionProviderInfo } from '@hapi/protocol/voice'
 
@@ -778,6 +779,12 @@ export class ApiClient {
                 body: JSON.stringify({ localIds })
             }
         )
+    }
+
+    async abandonIndeterminateMessage(sessionId: string, messageId: string): Promise<AbandonMessageResponse> {
+        return this.request(`/api/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}/abandon`, {
+            method: 'POST', body: JSON.stringify({ confirm: true })
+        })
     }
 
     async cancelMessage(sessionId: string, messageId: string): Promise<CancelMessageResponse> {

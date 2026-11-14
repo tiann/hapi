@@ -1908,6 +1908,27 @@ describe('IncomingMessageFilter (HAPI Bot R3 finding #1)', () => {
     })
 })
 
+
+describe('abandon confirmation transport', () => {
+    it('dispatches only to the explicit abandonment callback and acknowledges durable abandonment', async () => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession())
+        const cancel = vi.fn(() => true); const abandon = vi.fn(async () => 'abandoned' as const); const ack = vi.fn()
+        client.onCancelQueuedMessage(cancel); client.onAbandonQueuedMessage(abandon)
+        socketHarness.sockets[0]!.trigger('update', { body: { t: 'cancel-queued-message', sid: client.sessionId, messageId: 'm', localId: 'l', abandon: true } }, ack)
+        await vi.waitFor(() => expect(ack).toHaveBeenCalledWith(expect.objectContaining({ removed: false, abandoned: true })))
+        expect(abandon).toHaveBeenCalledWith('l'); expect(cancel).not.toHaveBeenCalled(); client.close()
+    })
+    it('never falls back to ordinary cancellation on an unsupported agent', async () => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession())
+        const cancel = vi.fn(() => true); const ack = vi.fn(); client.onCancelQueuedMessage(cancel)
+        socketHarness.sockets[0]!.trigger('update', { body: { t: 'cancel-queued-message', sid: client.sessionId, messageId: 'm', localId: 'l', abandon: true } }, ack)
+        await vi.waitFor(() => expect(ack).toHaveBeenCalledWith(expect.objectContaining({ removed: false })))
+        expect(cancel).not.toHaveBeenCalled(); client.close()
+    })
+})
+
 describe('strict OpenCode rewind metadata and socket entry', () => {
     type StrictReader = { readRewindMetadata(): Promise<{ metadata: NonNullable<Session['metadata']>; version: number } | null> };
     it('returns the parsed equal-version REST snapshot itself without rewriting the equal-version cache', async () => {
@@ -1985,6 +2006,7 @@ describe('strict OpenCode rewind metadata and socket entry', () => {
         }
     });
 });
+
 
 describe('explicit title action metadata refresh', () => {
     it('observes user lock changes without rolling back a newer socket metadata version', async () => {

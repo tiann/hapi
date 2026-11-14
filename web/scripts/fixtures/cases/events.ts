@@ -6,6 +6,20 @@ import { T0, wireMessage } from './support'
  */
 export const eventCases: FixtureCase[] = [
     {
+        name: 'event-abandoned-delivery-dedupe',
+        description: 'Distinct abandonment resolutions survive identical text; a repeated copy of one resolution and ordinary duplicate message events still deduplicate.',
+        messages: ['original-a', 'original-b', 'original-b', null, null].map((localId, index) => wireMessage({
+            id: `abandonment-note-${index}`,
+            seq: index + 1,
+            createdAt: T0 + index,
+            content: {
+                role: 'agent',
+                content: { type: 'event', data: { type: 'message', message: 'Delivery confirmation abandoned.\n\ncontinue after restart' } },
+                ...(localId ? { meta: { abandonedDelivery: { localId } } } : {}),
+            },
+        })),
+    },
+    {
         name: 'event-ready',
         description: 'Event family: a ready event sets top-level hasReadyEvent and is consumed — it must NOT surface as a chat block.',
         messages: [
