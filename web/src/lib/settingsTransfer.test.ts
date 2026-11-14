@@ -6,7 +6,7 @@ import { exportSettings, importSettings, SETTINGS_STORAGE_KEYS } from './setting
 /**
  * `hapi*` literals in storage code that are NOT settings: data, drafts, history,
  * per-session/per-path UI state, last-used values, dismissals, device-bound
- * state, credentials, trust grants, legacy migration keys, and event names.
+ * state, credentials, trust grants, and event names.
  */
 const NOT_SETTINGS_KEYS = new Set([
     // Credentials, hub, device-bound state
@@ -39,8 +39,6 @@ const NOT_SETTINGS_KEYS = new Set([
     'hapi-file-candidate',
     'hapi-files-tab',
     'hapi-mention-inactive-collapsed',
-    'hapi-session-list-status',
-    'hapi-session-list-unread-only',
     'hapi-session-list-machine-filter',
     'hapi.scratchlist-collapsed.v1.',
     // Onboarding and dismissals
@@ -49,11 +47,6 @@ const NOT_SETTINGS_KEYS = new Set([
     'hapi-voice-context-notice',
     'hapi.scratchlist.v2.banner-dismissed.',
     'hapi.scratchlist.v2.migrated.',
-    // Legacy keys read only for migration
-    'hapi-show-active-sessions-only',
-    'hapi-tool-grouping-mode',
-    'hapi-terminal-tool-display-mode',
-    'hapi-voice-id',
     // Not storage keys: event names and the export file format tag
     'hapi-web-settings',
     'hapi-color-theme-change',
@@ -105,6 +98,7 @@ describe('settings export/import', () => {
 
         localStorage.clear()
         localStorage.setItem('hapi-font-scale', '1.2')
+        localStorage.setItem('hapi-tool-grouping-mode', 'classified') // legacy fallback must not survive import
         expect(importSettings(JSON.stringify({
             ...file,
             settings: { ...file.settings, 'hapi_hub_url': 'https://evil', 'hapi-lang': 42 },
@@ -112,6 +106,7 @@ describe('settings export/import', () => {
         expect(localStorage.getItem('hapi-appearance')).toBe('dark')
         expect(localStorage.getItem('hapi-machine-labels')).toBe('{"m1":"Laptop"}')
         expect(localStorage.getItem('hapi-font-scale')).toBeNull()
+        expect(localStorage.getItem('hapi-tool-grouping-mode')).toBeNull()
         expect(localStorage.getItem('hapi_hub_url')).toBeNull()
         expect(localStorage.getItem('hapi-lang')).toBeNull()
     })
@@ -119,6 +114,8 @@ describe('settings export/import', () => {
     it('rejects files that are not settings exports without touching storage', () => {
         localStorage.setItem('hapi-appearance', 'dark')
         expect(() => importSettings('{"settings":{}}')).toThrow()
+        expect(() => importSettings('{"format":"hapi-web-settings","version":1,"settings":[]}')).toThrow()
+        expect(() => importSettings('{"format":"hapi-web-settings","version":2,"settings":{}}')).toThrow()
         expect(() => importSettings('not json')).toThrow()
         expect(localStorage.getItem('hapi-appearance')).toBe('dark')
     })

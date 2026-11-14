@@ -1,10 +1,11 @@
 import { VOICE_PERSONALITY_STORAGE_KEY } from '@hapi/protocol/voice-personality'
-import { VOICE_BACKEND_PREFERENCE_STORAGE_KEY, VOICE_PICKER_STORAGE_KEYS } from '@hapi/protocol/voicePickerCatalog'
+import { LEGACY_ELEVENLABS_VOICE_STORAGE_KEY, VOICE_BACKEND_PREFERENCE_STORAGE_KEY, VOICE_PICKER_STORAGE_KEYS } from '@hapi/protocol/voicePickerCatalog'
 
 /**
  * localStorage keys that hold user settings, i.e. values the user chose to
- * configure the app that make sense on another browser on the same hub.
- * Only these keys are exported or imported.
+ * configure the app that make sense on another browser on the same hub,
+ * plus legacy keys a setting still falls back to. Only these keys are
+ * exported or imported.
  *
  * Adding a `hapi*` storage key? Put it here if it is a setting, otherwise in
  * NOT_SETTINGS_KEYS in settingsTransfer.test.ts. That test fails on unclassified keys.
@@ -19,6 +20,8 @@ export const SETTINGS_STORAGE_KEYS: readonly string[] = [
     'hapi-lang',
     'hapi-code-wrap',
     'hapi-tool-card-display-mode',
+    'hapi-tool-grouping-mode', // legacy fallbacks, still read when the key above is unset
+    'hapi-terminal-tool-display-mode',
     'hapi-tool-group-bg',
     'hapi-user-message-bg',
     'hapi-concise-chat-mode',
@@ -38,8 +41,11 @@ export const SETTINGS_STORAGE_KEYS: readonly string[] = [
     'hapi-keep-unread-sessions-visible',
     'hapi-pin-in-progress-sessions',
     'hapi-session-list-status-mode',
+    'hapi-session-list-status',
     'hapi-session-list-sort',
     'hapi-session-list-active-first',
+    'hapi-session-list-unread-only',
+    'hapi-show-active-sessions-only', // legacy fallback for hapi-session-list-status
     'hapi-session-preview-limit',
     'hapi-machine-labels',
     'hapi-directory-sort',
@@ -52,6 +58,7 @@ export const SETTINGS_STORAGE_KEYS: readonly string[] = [
     'hapi-transcription-mode',
     VOICE_BACKEND_PREFERENCE_STORAGE_KEY,
     ...Object.values(VOICE_PICKER_STORAGE_KEYS),
+    LEGACY_ELEVENLABS_VOICE_STORAGE_KEY,
     VOICE_PERSONALITY_STORAGE_KEY,
 ]
 
@@ -80,14 +87,15 @@ export function exportSettings(storage: Storage = localStorage): SettingsFile {
  */
 export function importSettings(text: string, storage: Storage = localStorage): number {
     const parsed: unknown = JSON.parse(text)
+    const file = parsed as Partial<SettingsFile> | null
     if (
-        typeof parsed !== 'object' || parsed === null
-        || (parsed as SettingsFile).format !== FORMAT
-        || typeof (parsed as SettingsFile).settings !== 'object' || (parsed as SettingsFile).settings === null
+        typeof file !== 'object' || file === null
+        || file.format !== FORMAT || file.version !== 1
+        || typeof file.settings !== 'object' || file.settings === null || Array.isArray(file.settings)
     ) {
         throw new Error('Not a HAPI settings file')
     }
-    const settings = (parsed as SettingsFile).settings
+    const settings = file.settings
     let applied = 0
     for (const key of SETTINGS_STORAGE_KEYS) {
         const value = Object.hasOwn(settings, key) ? settings[key] : undefined
