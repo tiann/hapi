@@ -51,7 +51,7 @@ object NewSessionLogic {
      * (`web/src/lib/codexFamilyPermissionAgents.ts`). Gemini is listed for
      * completeness though it is not creatable.
      */
-    val CODEX_FAMILY_PERMISSION_AGENTS = setOf("codex", "gemini", "kimi", "copilot", "opencode")
+    val CODEX_FAMILY_PERMISSION_AGENTS = setOf("codex", "gemini", "hermes", "kimi", "copilot", "opencode")
 
     fun usesCodexFamilyPermissionModes(flavor: String?): Boolean =
         flavor in CODEX_FAMILY_PERMISSION_AGENTS

@@ -98,13 +98,13 @@ import { HermesRemoteLauncher } from './hermesRemoteLauncher'
 
 function createSessionWithBatches(
     batches: Array<[string, HermesMode]>,
-    opts: { sessionId?: string | null; permissionMode?: 'default' | 'read-only' | 'safe-yolo' | 'yolo' } = {}
+    opts: { sessionId?: string | null; permissionMode?: 'default' | 'read-only' | 'safe-yolo' | 'yolo'; keepQueueOpen?: boolean } = {}
 ) {
     const queue = new MessageQueue2<HermesMode>((m) => JSON.stringify(m))
     for (const [message, mode] of batches) {
         queue.push(message, mode)
     }
-    queue.close()
+    if (!opts.keepQueueOpen) queue.close()
 
     const handlers = new Map<string, (params?: unknown) => Promise<unknown>>()
     let currentSessionId = opts.sessionId ?? null
@@ -247,6 +247,30 @@ describe('HermesRemoteLauncher', () => {
         await launchPromise
 
         expect(backend.cancelPrompt).toHaveBeenCalledWith('hermes-session-1')
+    })
+
+    it('keeps an idle session connected after abort and accepts the next prompt', async () => {
+        const { session, handlers } = createSessionWithBatches([], { keepQueueOpen: true })
+        const wait = vi.spyOn(session.queue, 'waitForMessagesAndGetAsString')
+        const launcher = new HermesRemoteLauncher(session as never)
+        const launchPromise = launcher.launch()
+
+        try {
+            await vi.waitFor(() => expect(wait).toHaveBeenCalledTimes(1))
+            const backend = harness.backend!
+            await handlers.get('abort')!()
+            await vi.waitFor(() => expect(wait).toHaveBeenCalledTimes(2))
+            expect(backend.disconnect).not.toHaveBeenCalled()
+            expect(harness.happyServerStopped).toBe(false)
+
+            session.queue.push('after abort', { permissionMode: 'default' })
+            await vi.waitFor(() => expect(harness.prompts).toEqual([
+                [{ type: 'text', text: 'after abort' }]
+            ]))
+        } finally {
+            session.queue.close()
+            await launchPromise
+        }
     })
 
     it('falls back to newSession when loadSession fails on resume', async () => {

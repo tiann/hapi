@@ -195,9 +195,10 @@ export class HermesRemoteLauncher extends RemoteLauncherBase {
         })
 
         while (!this.shouldExit) {
-            const batch = await this.session.queue.waitForMessagesAndGetAsString(this.abortController.signal)
+            const signal = this.abortController.signal
+            const batch = await this.session.queue.waitForMessagesAndGetAsString(signal)
             if (!batch) {
-                if (this.abortController.signal.aborted && !this.shouldExit) continue
+                if (signal.aborted && !this.shouldExit) continue
                 break
             }
 

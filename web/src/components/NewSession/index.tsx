@@ -313,6 +313,9 @@ export function NewSession(props: {
         setDshSelectedModel(
             draft.agent === 'dsh' && draft.model !== 'auto' ? draft.model : null
         )
+        setHermesSelectedModel(
+            draft.agent === 'hermes' && draft.model !== 'auto' ? draft.model : null
+        )
         setServiceTier(draft.serviceTier)
         setCollaborationMode(draft.collaborationMode)
         setCopilotAgentMode(draft.copilotAgentMode)
@@ -392,6 +395,8 @@ export function NewSession(props: {
                 setAgySelectedModel(hubModelForTarget)
             } else if (targetAgent === 'dsh') {
                 setDshSelectedModel(hubModelForTarget)
+            } else if (targetAgent === 'hermes') {
+                setHermesSelectedModel(hubModelForTarget)
             } else {
                 setModel(hubModelForTarget)
                 if (targetAgent === 'cursor') {
@@ -1194,6 +1199,9 @@ export function NewSession(props: {
         // Validate restored DSH models against the selected machine's catalog.
         setDshSelectedModel(
             agent === 'dsh' && nextModel !== 'auto' ? nextModel : null
+        )
+        setHermesSelectedModel(
+            agent === 'hermes' && nextModel !== 'auto' ? nextModel : null
         )
     }, [agent, legacyYoloBridge, machineId, usesSharedPermissionMode])
 

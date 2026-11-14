@@ -19,13 +19,14 @@ const mocks = vi.hoisted(() => ({
     notification: vi.fn(),
     checkPathsExists: vi.fn(),
     availableAgents: [
-        'agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'grok', 'kimi', 'opencode', 'pi'
+        'agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'grok', 'hermes', 'kimi', 'opencode', 'pi'
     ].map((agent) => ({ agent, available: true })) as AgentAvailabilityEntry[],
     codexModelsLoading: false,
     agyModelsLoading: false,
     agyModels: [{ modelId: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' }],
     dshModels: [] as Array<{ modelId: string; name?: string }>,
     dshModelsLoading: false,
+    hermesModels: [] as Array<{ modelId: string; name?: string }>,
     directoryExists: undefined as boolean | undefined,
     copilotModels: [] as Array<{ modelId: string; name?: string }>,
     copilotModelsLoading: false,
@@ -147,13 +148,13 @@ vi.mock('@/hooks/queries/useDshModels', () => ({
 }))
 vi.mock('@/hooks/queries/useHermesModels', () => ({
     useHermesModelsForMachine: () => ({
-        availableModels: [],
+        availableModels: mocks.hermesModels,
         currentModelId: null,
         isLoading: false,
         error: null
     }),
     useHermesModelsForSession: () => ({
-        availableModels: [],
+        availableModels: mocks.hermesModels,
         currentModelId: null,
         isLoading: false,
         error: null
@@ -393,12 +394,13 @@ describe('NewSession launch preferences', () => {
         mocks.availableAgents.splice(
             0,
             mocks.availableAgents.length,
-            ...['agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'grok', 'kimi', 'opencode', 'pi']
+            ...['agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'grok', 'hermes', 'kimi', 'opencode', 'pi']
                 .map((agent) => ({ agent, available: true })) as AgentAvailabilityEntry[]
         )
         mocks.codexModelsLoading = false
         mocks.agyModelsLoading = false
         mocks.agyModels = [{ modelId: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' }]
+        mocks.hermesModels = []
         mocks.directoryExists = true
         mocks.copilotModels = []
         mocks.copilotModelsLoading = false
@@ -1148,6 +1150,34 @@ describe('NewSession launch preferences', () => {
         renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
 
         await waitFor(() => expect(screen.getByTestId('model')).toHaveTextContent('auto'))
+    })
+
+    it.each(['saved', 'draft', 'removed'] as const)('restores the Hermes model from %s settings', async (source) => {
+        savePreferredAgent('hermes')
+        const model = 'custom:hermes-model'
+        mocks.hermesModels = [{ modelId: model, name: 'Hermes model' }]
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'hermes-session' })
+        savePreferredLaunchSettings('machine-1', 'hermes', {
+            model: source === 'removed' ? 'removed-model' : source === 'draft' ? 'auto' : model,
+            cursorSelectedBase: 'auto', effort: 'auto', modelReasoningEffort: 'default'
+        })
+        if (source === 'draft') {
+            saveNewSessionFormDraft({
+                agent: 'hermes', model, cursorSelectedBase: 'auto', machineId: 'machine-1',
+                effort: 'auto', modelReasoningEffort: 'default', serviceTier: 'standard', collaborationMode: 'default',
+                copilotAgentMode: 'interactive', yoloMode: false, nativePermissionMode: 'default',
+                grokPermissionMode: 'default', sessionType: 'simple', worktreeName: ''
+            })
+        }
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        const expected = source === 'removed' ? undefined : model
+        await waitFor(() => expect(screen.getByTestId('model')).toHaveTextContent(expected ?? 'auto'))
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('hermes-session'))
+        expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
+            agent: 'hermes', model: expected
+        }))
     })
 
     it('lets Claude create with a chosen permission mode instead of the global YOLO toggle', async () => {
@@ -2161,16 +2191,22 @@ describe('NewSession launch preferences', () => {
         expect(screen.getByDisplayValue('codex')).toBeChecked()
     })
 
-    it.each(['untouched', 'default', 'concrete'] as const)(
-        'seeds delayed DSH model defaults while preserving an %s selection',
-        async (selection) => {
-            savePreferredAgent('dsh')
+    it.each(
+        (['dsh', 'hermes'] as const).flatMap((agent) =>
+            (['untouched', 'default', 'concrete'] as const).map((selection) => ({ agent, selection }))
+        )
+    )(
+        'seeds delayed $agent model defaults while preserving an $selection selection',
+        async ({ agent, selection }) => {
+            savePreferredAgent(agent)
             const hubModel = '["deepseek-official","deepseek-flash"]'
             const pickedModel = '["deepseek-official","deepseek-v4-pro"]'
-            mocks.dshModels = [
+            const models = [
                 { modelId: hubModel, name: 'DeepSeek-V41-Flash' },
                 { modelId: pickedModel, name: 'DeepSeek-V4-Pro' }
             ]
+            if (agent === 'dsh') mocks.dshModels = models
+            else mocks.hermesModels = models
             mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'dsh-session' })
             let resolveSettings!: (value: unknown) => void
             const deferred = new Promise((resolve) => {
@@ -2193,7 +2229,7 @@ describe('NewSession launch preferences', () => {
                 </QueryClientProvider>
             )
 
-            expect(screen.getByDisplayValue('dsh')).toBeChecked()
+            expect(screen.getByDisplayValue(agent)).toBeChecked()
             expect(screen.getByTestId('model')).toHaveTextContent('auto')
             if (selection !== 'untouched') {
                 mocks.nextModelValue = selection === 'default' ? 'auto' : pickedModel
@@ -2208,7 +2244,7 @@ describe('NewSession launch preferences', () => {
                     peerSpawnDefaults: {
                         agent: 'claude',
                         permissionMode: 'default',
-                        models: { dsh: hubModel }
+                        models: { [agent]: hubModel }
                     }
                 })
                 await deferred
@@ -2218,14 +2254,14 @@ describe('NewSession launch preferences', () => {
                 ? hubModel
                 : selection === 'concrete' ? pickedModel : undefined
             await waitFor(() => {
-                expect(screen.getByDisplayValue('dsh')).toBeChecked()
+                expect(screen.getByDisplayValue(agent)).toBeChecked()
                 expect(screen.getByTestId('model')).toHaveTextContent(expectedModel ?? 'auto')
             })
             await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
             fireEvent.click(screen.getByTestId('create'))
             await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('dsh-session'))
             expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({
-                agent: 'dsh',
+                agent,
                 model: expectedModel
             }))
         }

@@ -18,6 +18,7 @@ sealed interface AgentFlavor {
     data object Cursor : AgentFlavor { override val id = "cursor" }
     data object Gemini : AgentFlavor { override val id = "gemini" }
     data object Grok : AgentFlavor { override val id = "grok" }
+    data object Hermes : AgentFlavor { override val id = "hermes" }
     data object Kimi : AgentFlavor { override val id = "kimi" }
     data object Opencode : AgentFlavor { override val id = "opencode" }
     data object Pi : AgentFlavor { override val id = "pi" }
@@ -30,7 +31,7 @@ sealed interface AgentFlavor {
     companion object {
         /** `AGENT_FLAVORS` — declaration order preserved. */
         val KNOWN: List<AgentFlavor> = listOf(
-            Agy, Claude, Codex, Dsh, Copilot, Cursor, Gemini, Grok, Kimi, Opencode, Pi,
+            Agy, Claude, Codex, Dsh, Copilot, Cursor, Gemini, Grok, Hermes, Kimi, Opencode, Pi,
         )
 
         /**
@@ -64,6 +65,7 @@ object Flavors {
         "agy" to setOf(FlavorCapability.ModelChange),
         "claude" to setOf(FlavorCapability.ModelChange, FlavorCapability.Effort),
         "gemini" to setOf(FlavorCapability.ModelChange),
+        "hermes" to setOf(FlavorCapability.ModelChange),
         "kimi" to setOf(FlavorCapability.ModelChange),
         "copilot" to setOf(FlavorCapability.ModelChange),
         "grok" to setOf(FlavorCapability.ModelChange, FlavorCapability.Effort),
@@ -78,6 +80,7 @@ object Flavors {
         "agy" to "Antigravity",
         "claude" to "Claude",
         "gemini" to "Gemini",
+        "hermes" to "Hermes",
         "kimi" to "Kimi",
         "copilot" to "Copilot",
         "grok" to "Grok Build",
@@ -103,5 +106,5 @@ object Flavors {
     /** `isCodexFamilyFlavor`: flavors sharing the codex-style generic envelope UX. */
     fun isCodexFamily(flavor: String?): Boolean =
         flavor == "codex" || flavor == "gemini" || flavor == "grok"
-            || flavor == "kimi" || flavor == "copilot" || flavor == "opencode"
+            || flavor == "hermes" || flavor == "kimi" || flavor == "copilot" || flavor == "opencode"
 }
