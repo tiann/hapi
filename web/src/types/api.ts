@@ -33,6 +33,8 @@ export type {
     DirectoryEntry,
     DshModelsResponse,
     DshModelSummary,
+    HermesModelsResponse,
+    HermesModelSummary,
     FileReadResponse,
     GitCommandResponse,
     GrokModelsResponse,

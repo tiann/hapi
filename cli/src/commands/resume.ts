@@ -9,6 +9,7 @@ import type {
     CodexPermissionMode,
     CursorPermissionMode,
     GrokPermissionMode,
+    HermesPermissionMode,
     KimiPermissionMode,
     CopilotPermissionMode,
     OpencodePermissionMode
@@ -162,6 +163,20 @@ async function dispatchLocalResume(target: LocalResumeTarget): Promise<void> {
             startingMode: 'local',
             model: target.model ?? undefined,
             effort: target.effort ?? undefined
+        })
+        return
+    }
+
+    if (target.flavor === 'hermes') {
+        const { runHermes } = await import('@/hermes/runHermes')
+        await runHermes({
+            existingSessionId: base.existingSessionId,
+            workingDirectory: base.workingDirectory,
+            resumeSessionId: base.resumeSessionId,
+            startedBy: base.startedBy,
+            permissionMode: base.permissionMode as HermesPermissionMode | undefined,
+            startingMode: 'remote',
+            model: target.model ?? undefined
         })
         return
     }

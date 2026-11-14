@@ -59,6 +59,10 @@ import {
     type ListDshModelsForMachineResponse
 } from '../modules/common/dshModels'
 import {
+    listHermesModelsForMachine,
+    type ListHermesModelsForMachineResponse
+} from '../modules/common/hermesModels'
+import {
     listCopilotModelsForCwd,
     type ListCopilotModelsForCwdRequest,
     type ListCopilotModelsForCwdResponse
@@ -418,6 +422,13 @@ export class ApiMachineClient {
             RPC_METHODS.ListDshModelsForMachine,
             async () => {
                 return await listDshModelsForMachine()
+            }
+        )
+
+        this.rpcHandlerManager.registerHandler<undefined, ListHermesModelsForMachineResponse>(
+            RPC_METHODS.ListHermesModelsForMachine,
+            async () => {
+                return await listHermesModelsForMachine()
             }
         )
 

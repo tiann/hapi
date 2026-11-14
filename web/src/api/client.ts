@@ -50,6 +50,7 @@ import type {
     CursorModelsResponse,
     DeleteUploadResponse,
     DshModelsResponse,
+    HermesModelsResponse,
     FileReadResponse,
     GitCommandResponse,
     GrokModelsResponse,
@@ -1214,6 +1215,12 @@ export class ApiClient {
         )
     }
 
+    async getMachineHermesModels(machineId: string): Promise<HermesModelsResponse> {
+        return await this.request<HermesModelsResponse>(
+            `/api/machines/${encodeURIComponent(machineId)}/hermes-models`
+        )
+    }
+
     async getMachinePiModels(machineId: string): Promise<PiModelsResponse> {
         return await this.request<PiModelsResponse>(
             `/api/machines/${encodeURIComponent(machineId)}/pi-models`
@@ -1303,6 +1310,12 @@ export class ApiClient {
     async getSessionDshModels(sessionId: string): Promise<DshModelsResponse> {
         return await this.request<DshModelsResponse>(
             `/api/sessions/${encodeURIComponent(sessionId)}/dsh-models`
+        )
+    }
+
+    async getSessionHermesModels(sessionId: string): Promise<HermesModelsResponse> {
+        return await this.request<HermesModelsResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/hermes-models`
         )
     }
 

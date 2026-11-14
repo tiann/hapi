@@ -2242,6 +2242,8 @@ export function buildCliArgs(
             ? 'opencode'
             : agent === 'dsh'
               ? 'dsh'
+              : agent === 'hermes'
+                ? 'hermes'
               : agent === 'pi'
                 ? 'pi'
                 : agent === 'agy'

@@ -1158,6 +1158,21 @@ export type DshModelsResponse = {
 }
 export type ListDshModelsResponse = DshModelsResponse
 
+export type HermesModelSummary = {
+    modelId: string
+    name?: string
+    description?: string
+}
+
+export type HermesModelsResponse = {
+    success: boolean
+    availableModels?: HermesModelSummary[]
+    currentModelId?: string | null
+    error?: string
+}
+export type ListHermesModelsResponse = HermesModelsResponse
+export type ListHermesModelsForMachineResponse = HermesModelsResponse
+
 export type GrokReasoningEffortOption = {
     value: string
     name?: string

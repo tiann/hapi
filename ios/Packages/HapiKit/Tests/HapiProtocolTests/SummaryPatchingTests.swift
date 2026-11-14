@@ -195,6 +195,14 @@ struct SummaryPatchingTests {
         )
         #expect(dsh?.agentSessionId == "dsh-1")
 
+        let hermes = SummaryPatching.toSessionSummaryMetadata(
+            SessionMetadata(
+                path: "/p", host: "h", flavor: "hermes",
+                codexSessionId: "stale", hermesSessionId: "  hermes-1  "
+            )
+        )
+        #expect(hermes?.agentSessionId == "hermes-1")
+
         // Unknown flavor: legacy fallback chain, codex first, untrimmed.
         let unknown = SummaryPatching.toSessionSummaryMetadata(
             SessionMetadata(

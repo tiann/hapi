@@ -63,7 +63,7 @@ object PermissionModes {
         PermissionMode.AutoReview, PermissionMode.Yolo,
     )
 
-    /** `GEMINI_PERMISSION_MODES` (kimi/copilot share the same list). */
+    /** `GEMINI_PERMISSION_MODES` (hermes/kimi/copilot share the same list). */
     val GEMINI = listOf(
         PermissionMode.Default, PermissionMode.ReadOnly,
         PermissionMode.SafeYolo, PermissionMode.Yolo,
@@ -92,6 +92,7 @@ object PermissionModes {
     fun forFlavor(flavor: String?): List<PermissionMode> = when (flavor) {
         "codex" -> CODEX
         "gemini" -> GEMINI
+        "hermes" -> GEMINI
         "kimi" -> GEMINI
         "copilot" -> GEMINI
         "grok" -> GROK

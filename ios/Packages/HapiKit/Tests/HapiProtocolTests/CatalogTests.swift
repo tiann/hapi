@@ -80,6 +80,7 @@ struct CatalogTests {
         let expected: [PermissionMode] = [.default, .readOnly, .safeYolo, .yolo]
         #expect(permissionModes(forFlavor: "codex") == [.default, .readOnly, .autoReview, .yolo])
         #expect(permissionModes(forFlavor: "gemini") == expected)
+        #expect(permissionModes(forFlavor: "hermes") == expected)
         #expect(permissionModes(forFlavor: "kimi") == expected)
         #expect(permissionModes(forFlavor: "copilot") == expected)
     }
@@ -155,12 +156,12 @@ struct CatalogTests {
     @Test func knownFlavorsMatchAgentFlavorsOrder() {
         #expect(AgentFlavor.knownFlavors.map(\.rawValue) == [
             "agy", "claude", "codex", "dsh", "copilot", "cursor",
-            "gemini", "grok", "kimi", "opencode", "pi",
+            "gemini", "grok", "hermes", "kimi", "opencode", "pi",
         ])
     }
 
     @Test func creatableFlavorsExcludeOnlyGemini() {
-        #expect(AgentFlavor.creatableFlavors.count == 10)
+        #expect(AgentFlavor.creatableFlavors.count == 11)
         #expect(!AgentFlavor.creatableFlavors.contains(.gemini))
         #expect(AgentFlavor.creatableFlavors.contains(.claude))
     }
@@ -180,6 +181,7 @@ struct CatalogTests {
         #expect(AgentFlavor.agy.displayLabel == "Antigravity")
         #expect(AgentFlavor.grok.displayLabel == "Grok Build")
         #expect(AgentFlavor.opencode.displayLabel == "OpenCode")
+        #expect(AgentFlavor.hermes.displayLabel == "Hermes")
         #expect(AgentFlavor.dsh.displayLabel == "DeepSeek Harness")
         #expect(AgentFlavor.other("x").displayLabel == "Unknown")
         #expect(flavorLabel(forFlavor: "pi") == "Pi")
@@ -210,6 +212,7 @@ struct CatalogTests {
         #expect(isCodexFamilyFlavor("codex"))
         #expect(isCodexFamilyFlavor("gemini"))
         #expect(isCodexFamilyFlavor("grok"))
+        #expect(isCodexFamilyFlavor("hermes"))
         #expect(isCodexFamilyFlavor("kimi"))
         #expect(isCodexFamilyFlavor("copilot"))
         #expect(isCodexFamilyFlavor("opencode"))

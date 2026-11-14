@@ -27,6 +27,7 @@ const commandMap = new Map<string, () => Promise<CommandDefinition>>([
     ['gemini', async () => removedGeminiCommand],
     ['grok', async () => (await import('./grok')).grokCommand],
     ['kimi', async () => (await import('./kimi')).kimiCommand],
+    ['hermes', async () => (await import('./hermes')).hermesCommand],
     ['copilot', async () => (await import('./copilot')).copilotCommand],
     ['opencode', async () => (await import('./opencode')).opencodeCommand],
     ['pi', async () => (await import('./pi')).piCommand],
