@@ -1,4 +1,4 @@
-import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import * as Popover from '@radix-ui/react-popover'
 import { SessionListScrollAnchor } from './SessionListScrollAnchor'
 import type { SessionContentSearchResponse, SessionSummary } from '@/types/api'
@@ -1273,9 +1273,9 @@ const SessionItem = memo(function SessionItem(props: {
     // The row can lose its pinned flags before the unpin request settles;
     // keep the spinner until it does.
     const showQuickUnpin = isPinned || quickUnpinPending
-    const handleQuickUnpin = async () => {
+    const handleQuickUnpin = async (event: MouseEvent<HTMLButtonElement>) => {
         const hadFocus = rowRef.current?.contains(document.activeElement) ?? false
-        if (hadFocus && quickUnpinFocusRef) {
+        if (event.detail === 0 && hadFocus && quickUnpinFocusRef) {
             quickUnpinFocusRef.current = { sessionId: s.id, pending: true }
             // Keep focus on the row button before disabling or removing the
             // unpin button drops focus to document.body.
@@ -1310,14 +1310,6 @@ const SessionItem = memo(function SessionItem(props: {
         }
         if (activeEl !== rowButtonRef.current) {
             rowButtonRef.current?.focus({ preventScroll: true })
-        }
-    }, [s.id, isPinned, quickUnpinPending, quickUnpinFocusRef])
-
-    useEffect(() => {
-        const target = quickUnpinFocusRef?.current
-        if (!target || target.sessionId !== s.id || target.pending) return
-        if (!isPinned && !quickUnpinPending) {
-            quickUnpinFocusRef.current = null
         }
     }, [s.id, isPinned, quickUnpinPending, quickUnpinFocusRef])
 
@@ -1469,7 +1461,7 @@ const SessionItem = memo(function SessionItem(props: {
                                 aria-label={t('session.action.unpin')}
                                 title={t('session.action.unpin')}
                                 disabled={quickUnpinPending}
-                                onClick={() => void handleQuickUnpin()}
+                                onClick={(event) => void handleQuickUnpin(event)}
                             >
                                 {quickUnpinPending
                                     ? <LoaderIcon className="h-4 w-4 animate-spin" />
@@ -2460,23 +2452,18 @@ export function SessionList(props: {
         }
 
         if (globalPinnedSessions.some((session) => session.id === target.sessionId)) {
-            if (pinnedSectionCollapsed && !isFiltering) {
-                setPinnedSectionCollapsed(false)
-            }
+            if (!target.pending) quickUnpinFocusRef.current = null
             return
         }
 
-        const runningSession = runningSessions.jobs.find((session) => session.id === target.sessionId)
-            ?? runningSessions.working.find((session) => session.id === target.sessionId)
-            ?? runningSessions.pending.find((session) => session.id === target.sessionId)
-        if (runningSession) {
+        const inRunning = [...runningSessions.jobs, ...runningSessions.working, ...runningSessions.pending]
+            .some((session) => session.id === target.sessionId)
+        if (inRunning) {
             if (runningSectionCollapsed && !isFiltering) {
                 setRunningSectionCollapsed(false)
                 return
             }
-            if (!target.pending && !runningSession.pinned && !runningSession.globalPinned) {
-                quickUnpinFocusRef.current = null
-            }
+            if (!target.pending) quickUnpinFocusRef.current = null
             return
         }
 
@@ -2492,77 +2479,47 @@ export function SessionList(props: {
             if (collapsed && !peekingUnread) {
                 expanding = true
                 const setOverrides = isFiltering ? setFilterCollapseOverrides : setCollapseOverrides
-                setOverrides((prev) => {
-                    if (prev.get(targetGroup.key) === false) return prev
-                    const next = new Map(prev)
-                    next.set(targetGroup.key, false)
-                    return next
-                })
+                setOverrides((prev) => expandSelectedSessionCollapseOverrides(prev, targetGroup))
             }
 
-            const visibleGroupSessions = getVisibleGroupSessions(targetGroup)
-            if (!visibleGroupSessions.some((session) => session.id === target.sessionId)) {
+            const targetIndex = targetGroup.sessions.findIndex((session) => session.id === target.sessionId)
+            if (targetIndex >= 0 && !getVisibleGroupSessions(targetGroup).some((session) => session.id === target.sessionId)) {
                 expanding = true
-                setSessionVisibleCounts((prev) => {
-                    const currentLimit = Math.min(
-                        prev.get(targetGroup.key) ?? sessionPreviewLimit,
-                        targetGroup.sessions.length
-                    )
-                    let nextLimit = currentLimit
-                    while (nextLimit < targetGroup.sessions.length) {
-                        const candidate = getNextSessionVisibleCount(
-                            nextLimit,
-                            sessionPreviewLimit,
-                            targetGroup.sessions.length
-                        )
-                        if (candidate <= nextLimit) break
-                        nextLimit = candidate
-                        const preview = getVisibleSessionPreview(targetGroup.sessions, {
-                            selectedSessionId,
-                            limit: nextLimit,
-                            isUnread: previewIsUnread,
-                        })
-                        if (preview.some((session) => session.id === target.sessionId)) {
-                            break
-                        }
+                let neededLimit = targetIndex + 1
+                for (let i = targetIndex + 1; i < targetGroup.sessions.length; i += 1) {
+                    const s = targetGroup.sessions[i]!
+                    if (s.id === selectedSessionId || (s.active && s.pendingRequestsCount > 0) || previewIsUnread?.(s)) {
+                        neededLimit += 1
                     }
-                    if (nextLimit <= currentLimit) return prev
+                }
+                setSessionVisibleCounts((prev) => {
+                    if (neededLimit <= (prev.get(targetGroup.key) ?? sessionPreviewLimit)) return prev
                     const next = new Map(prev)
-                    next.set(targetGroup.key, nextLimit)
+                    next.set(targetGroup.key, Math.min(neededLimit, targetGroup.sessions.length))
                     return next
                 })
             }
             if (!expanding && !target.pending) {
-                const session = targetGroup.sessions.find((item) => item.id === target.sessionId)
-                if (!session || (!session.pinned && !session.globalPinned)) {
-                    quickUnpinFocusRef.current = null
-                }
+                quickUnpinFocusRef.current = null
             }
             return
         }
 
         if (!activeEl || activeEl === document.body) {
             const container = scrollContainerRef.current
-            const fallback = container?.querySelector<HTMLElement>('button[data-session-scroll-anchor]')
-                ?? container?.querySelector<HTMLElement>('[role="button"], button')
+            const findVisible = (selector: string) =>
+                Array.from(container?.querySelectorAll<HTMLElement>(selector) ?? [])
+                    .find((el) => !el.closest('.collapsible-panel:not([data-open])'))
+            const fallback = findVisible('button[data-session-scroll-anchor]')
+                ?? findVisible('[role="button"], button')
             fallback?.focus({ preventScroll: true })
         }
         quickUnpinFocusRef.current = null
     }, [
-        globalPinnedSessions,
-        runningSessions,
-        groups,
-        pinnedSectionCollapsed,
-        runningSectionCollapsed,
-        collapseOverrides,
-        filterCollapseOverrides,
-        sessionVisibleCounts,
-        isFiltering,
-        selectedSessionId,
-        keepUnreadSessionsVisible,
-        isSessionUnread,
-        sessionPreviewLimit,
-        previewIsUnread,
+        globalPinnedSessions, runningSessions, groups, runningSectionCollapsed,
+        collapseOverrides, filterCollapseOverrides, sessionVisibleCounts,
+        isFiltering, selectedSessionId, keepUnreadSessionsVisible,
+        isSessionUnread, sessionPreviewLimit, previewIsUnread,
     ])
 
     // Clean up stale collapse overrides
