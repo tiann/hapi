@@ -128,6 +128,18 @@ describe('deduplicateSessionsByAgentId', () => {
         expect(result[0].id).toBe('b') // more recent wins
     })
 
+    it('keeps machine-local agent ids recorded on different machines apart', () => {
+        for (const flavor of ['codex', 'claude', 'pi', 'opencode']) {
+            const sessions = [
+                makeSession({ id: `${flavor}-a`, metadata: { path: '/p', agentSessionId: 'native-1', flavor, machineId: 'machine-a' }, updatedAt: 100 }),
+                makeSession({ id: `${flavor}-b`, metadata: { path: '/p', agentSessionId: 'native-1', flavor, machineId: 'machine-b' }, updatedAt: 200 }),
+                makeSession({ id: `${flavor}-b2`, metadata: { path: '/p', agentSessionId: 'native-1', flavor, machineId: 'machine-b' }, updatedAt: 300 })
+            ]
+            expect(deduplicateSessionsByAgentId(sessions).map((session) => session.id).sort())
+                .toEqual([`${flavor}-a`, `${flavor}-b2`])
+        }
+    })
+
     it('keeps active session over inactive duplicate', () => {
         const sessions = [
             makeSession({ id: 'a', active: true, metadata: { path: '/p', agentSessionId: 'thread-1' }, updatedAt: 100 }),
