@@ -29,6 +29,8 @@ const harness = vi.hoisted(() => ({
     // When set, newSession() rejects with this — lets tests kill the backend
     // inside every recovery/reconnect window.
     newSessionError: null as Error | null,
+    // One-shot newSession errors, consumed before the sticky newSessionError.
+    newSessionErrorQueue: [] as Array<Error | null>,
     // When set, resumeSession() parks on this promise — lets tests abort
     // inside the post-abort restart window.
     resumeBlocker: null as null | Promise<void>,
@@ -85,6 +87,8 @@ vi.mock('./utils/dshBackend', () => ({
                 if (harness.newSessionBlocker) {
                     await harness.newSessionBlocker
                 }
+                const queuedError = harness.newSessionErrorQueue.shift()
+                if (queuedError) throw queuedError
                 if (harness.newSessionError) throw harness.newSessionError
                 return `dsh-session-${harness.newSessionCalls.length}`
             }),
@@ -402,7 +406,12 @@ describe('DshRemoteLauncher', () => {
             expect(harness.prompts).toHaveLength(0)
             const abort = session.client.rpcHandlerManager.registerHandler.mock.calls.find(c => c[0] === RPC_METHODS.Abort)![1] as () => Promise<unknown>
             aborted = abort()
-            await vi.waitFor(() => expect(harness.cancelAll).toHaveBeenCalledWith('User aborted'))
+            // The failed mid-prompt respawn nulled the permission handler, so
+            // the Stop's observable tail is the 'Session aborted' event (the
+            // generation bump + controller swap happened synchronously before
+            // it).
+            await vi.waitFor(() => expect(session.sendSessionEvent).toHaveBeenCalledWith(
+                { type: 'message', message: 'Session aborted' }))
             // The batch was already dequeued (and hub-ACKed via the queue's
             // consumed wiring); a plain Stop preserves it.
             releaseContent()
@@ -941,6 +950,69 @@ describe('DshRemoteLauncher', () => {
         // ever reached prompt, and no retry of it ran either.
         expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }]])
         expect(session.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' })
+    })
+
+    it('requeues the dequeued batch when a plain Stop lands during a failed reconnect', async () => {
+        // The mid-prompt respawn fails, so 'second' enters the top-of-loop
+        // reconnect. A plain Stop landing inside a FAILED reconnect must put
+        // the already-dequeued batch back (un-ACKed) for the post-stop drain
+        // instead of silently dropping it with the !reconnected continue.
+        harness.promptErrorQueue = [deadTransportError()]
+        harness.initializeErrorQueue = [null, new Error('Failed to spawn dsh: not found')]
+        const queue = createQueue()
+        const consumed = vi.fn()
+        queue.onBatchConsumed = consumed
+        queue.push('first', {})
+        const session = createSession(queue)
+        const launcher = new DshRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        let aborted: Promise<unknown> | undefined
+        try {
+            // Initial establishment + the failed mid-prompt respawn.
+            await vi.waitFor(() => expect(harness.backends).toHaveLength(2))
+
+            // Park the reconnect's session/new; a plain Stop lands inside it.
+            let releaseNewSession!: () => void
+            harness.newSessionBlocker = new Promise((resolve) => { releaseNewSession = resolve })
+            queue.push('second', {})
+            await vi.waitFor(() => expect(harness.newSessionCalls).toHaveLength(2))
+
+            const abort = session.client.rpcHandlerManager.registerHandler.mock.calls
+                .find(c => c[0] === RPC_METHODS.Abort)![1] as () => Promise<unknown>
+            aborted = abort()
+            // The failed mid-prompt respawn nulled the permission handler, so
+            // the Stop's observable tail is the 'Session aborted' event (the
+            // generation bump + controller swap happened synchronously before
+            // it).
+            await vi.waitFor(() => expect(session.sendSessionEvent).toHaveBeenCalledWith(
+                { type: 'message', message: 'Session aborted' }))
+
+            // One-shot failure for THIS newSession call only, so the next
+            // attempt succeeds without a test-side race.
+            harness.newSessionErrorQueue = [deadTransportError('session/new failed: ACP process exited (code=1)')]
+            releaseNewSession()
+
+            await vi.waitFor(() => expect(session.sendSessionEvent).toHaveBeenCalledWith(
+                { type: 'message', message: expect.stringContaining('DSH reconnect failed') }))
+            // The dequeued batch must survive un-ACKed — not dropped, not
+            // stamped `invoked` at the hub while it waits for the post-stop
+            // drain (the requeued row is instantly re-dequeued for the fresh
+            // respawn attempt, so the observable proof is the deferred ACK).
+            expect(consumed).not.toHaveBeenCalled()
+
+            // The loop stays alive: the requeued message re-dispatches on the
+            // fresh backend.
+            await vi.waitFor(() => expect(harness.prompts).toEqual([
+                [{ type: 'text', text: 'first' }],
+                [{ type: 'text', text: 'second' }]
+            ]))
+            queue.close()
+            await done
+        } finally {
+            session.queue.close()
+            await Promise.allSettled([done, aborted])
+        }
     })
 
     it('keeps the loop alive when the backend dies during closed-session recovery', async () => {

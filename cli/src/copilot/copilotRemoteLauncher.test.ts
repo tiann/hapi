@@ -445,18 +445,18 @@ describe('CopilotRemoteLauncher Abort queue preservation', () => {
             releaseModel?.();
             await new Promise<void>(resolve => setImmediate(resolve));
             await new Promise<void>(resolve => setImmediate(resolve));
-            // The batch was dequeued and hub-ACKed; the Stop must preserve it
-            // behind the in-flight teardown instead of dispatching a cancelled
-            // turn.
+            // The batch was dequeued un-ACKed (the ACK is deferred to the
+            // dispatch commit point); the Stop must preserve it behind the
+            // in-flight teardown instead of dispatching a cancelled turn.
             expect(abortHarness.prompts).toHaveLength(0);
             releaseTeardown?.();
             await stop;
             await vi.waitFor(() => expect(abortHarness.prompts).toHaveLength(1));
             expect(abortHarness.prompts[0][0].text).toBe('A');
-            // The dequeue ACK fired once, and the re-collected batch ACKs
-            // again — replayed consumed ACKs are idempotent at the hub (same
-            // contract as the compact path's repeated ACK).
-            expect(consumed).toHaveBeenCalledTimes(2);
+            // The hub ACK fires exactly once, at the dispatch commit point —
+            // the preserved batch was never stamped `invoked` while it sat
+            // behind the Stop teardown.
+            expect(consumed).toHaveBeenCalledTimes(1);
             abortHarness.settleActivePrompt();
             queue.close();
             expect(await launched).toBe('exit');
@@ -496,6 +496,72 @@ describe('CopilotRemoteLauncher Abort queue preservation', () => {
             releaseModel?.();
             queue.close();
             abortHarness.settleActivePrompt();
+            await launched;
+        }
+    });
+
+    it('an idle switch teardown does not consume a newly arrived row', async () => {
+        const queue = new MessageQueue2<CopilotTestMode>((mode) => mode.permissionMode);
+        const consumed = vi.fn();
+        queue.onBatchConsumed = consumed;
+        const { session, rpcHandlers } = createAbortSession(queue);
+        const launcher = new CopilotRemoteLauncher(session as never, {});
+        const launched = launcher.launch().catch((error: unknown) => error);
+        let releaseTeardown: (() => void) | undefined;
+        try {
+            // Wait until the loop is parked: the Switch handler is registered
+            // immediately before the drain loop starts.
+            await vi.waitFor(() => expect(rpcHandlers.has(RPC_METHODS.Switch)).toBe(true));
+            // Park the terminal teardown's cancelAll; a row arrives while the
+            // dequeue signal is still live (pre-fix) and gets consumed+ACKed.
+            abortHarness.setCancelAllHook(async () => {
+                await new Promise<void>(resolve => { releaseTeardown = resolve; });
+            });
+            const switchPromise = rpcHandlers.get(RPC_METHODS.Switch)!();
+            await vi.waitFor(() => expect(releaseTeardown).toBeTypeOf('function'));
+            queue.push('late', { permissionMode: 'default' } as CopilotTestMode, 'late');
+            await new Promise<void>(resolve => setImmediate(resolve));
+            await new Promise<void>(resolve => setImmediate(resolve));
+            // The row must not be dequeued+ACKed during the teardown: it is
+            // dropped by the terminal reset either way, but never 'invoked'.
+            expect(consumed).not.toHaveBeenCalled();
+            expect(abortHarness.prompts).toHaveLength(0);
+            releaseTeardown?.();
+            await switchPromise;
+            expect(queue.pendingLocalIds()).toEqual([]);
+            queue.close();
+            expect(await launched).toBe('switch');
+        } finally {
+            releaseTeardown?.();
+            abortHarness.setCancelAllHook(null);
+            queue.close();
+            abortHarness.settleActivePrompt();
+            await launched;
+        }
+    });
+
+    it('a switch whose cancelAll rejects still resets the queue and wakes the loop', async () => {
+        let releasePrompt: (() => void) | undefined;
+        abortHarness.setCancelPromptSettles(true);
+        const queue = new MessageQueue2<CopilotTestMode>((mode) => mode.permissionMode);
+        queue.push('in flight', { permissionMode: 'default' } as CopilotTestMode, 'turn');
+        queue.push('pending', { permissionMode: 'default' } as CopilotTestMode, 'pending');
+        const { session, rpcHandlers } = createAbortSession(queue);
+        const launcher = new CopilotRemoteLauncher(session as never, {});
+        const launched = launcher.launch().catch((error: unknown) => error);
+        try {
+            await vi.waitFor(() => expect(abortHarness.prompts).toHaveLength(1));
+            abortHarness.setCancelAllRejects(true);
+            await expect(rpcHandlers.get(RPC_METHODS.Switch)!()).rejects.toThrow();
+            // The rejected terminal teardown still owes the queue reset and
+            // the dequeue-signal abort: the loop must exit, not park.
+            expect(queue.pendingLocalIds()).toEqual([]);
+            expect(await launched).toBe('switch');
+        } finally {
+            abortHarness.setCancelAllRejects(false);
+            releasePrompt?.();
+            abortHarness.settleActivePrompt();
+            queue.close();
             await launched;
         }
     });

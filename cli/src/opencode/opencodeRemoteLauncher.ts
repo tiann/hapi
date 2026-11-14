@@ -1354,7 +1354,6 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     }
                 }
 
-                this.applyDisplayMode(batch.mode.permissionMode);
                 if (isCompactBatch) {
                     // Compact exits at its own continue points below, before
                     // the dispatch echo; print it here. Regular batches echo
@@ -1465,6 +1464,12 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     }
                     continue;
                 }
+
+                // Display-only mode state lands at the dispatch commit point
+                // too: a batch canceled from the queue while parked behind a
+                // Stop must not stamp `[MODE:...]` into the log buffer for a
+                // prompt that never ran (on retry the dedup keeps it single).
+                this.applyDisplayMode(batch.mode.permissionMode);
 
                 this.stallErrorReportedForPrompt = false;
                 const roundSummaryAbortController = new AbortController();

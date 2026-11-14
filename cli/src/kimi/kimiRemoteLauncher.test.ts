@@ -161,6 +161,66 @@ describe('kimiRemoteLauncher skill lookup instruction', () => {
         }
     })
 
+    it('an idle switch teardown does not consume a newly arrived row', async () => {
+        const queue = new MessageQueue2<KimiMode>((mode) => JSON.stringify(mode))
+        const consumed = vi.fn()
+        queue.onBatchConsumed = consumed
+        const session = {
+            path: '/tmp/kimi-test',
+            logPath: '/tmp/kimi-test/test.log',
+            client: {
+                rpcHandlerManager: { registerHandler: vi.fn() },
+                sendAgentMessage: vi.fn(),
+                getMetadata: vi.fn(() => null),
+                updateMetadata: vi.fn(),
+                sendSessionEvent: vi.fn()
+            },
+            queue,
+            sessionId: null as string | null,
+            getPermissionMode: () => 'default' as const,
+            onSessionFound(id: string) { session.sessionId = id },
+            onThinkingChange: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            sendSessionEvent: vi.fn(),
+            setEffort: vi.fn(),
+            pushKeepAlive: vi.fn()
+        }
+        const launchPromise = kimiRemoteLauncher(session as never, { model: 'kimi-k2' })
+        let releaseCancel: (() => void) | undefined
+        try {
+            // Wait until the loop is parked: the Switch handler is registered
+            // immediately before the drain loop starts.
+            await vi.waitFor(() => {
+                expect((session.client.rpcHandlerManager.registerHandler as ReturnType<typeof vi.fn>)
+                    .mock.calls.some((call: unknown[]) => call[0] === RPC_METHODS.Switch)).toBe(true)
+            })
+            const switchHandler = (session.client.rpcHandlerManager.registerHandler as ReturnType<typeof vi.fn>)
+                .mock.calls.find((call: unknown[]) => call[0] === RPC_METHODS.Switch)![1] as () => Promise<unknown>
+            const backend = harness.backends.at(-1)!
+            backend.cancelPrompt.mockImplementationOnce(() => new Promise<void>(resolve => { releaseCancel = resolve }))
+            const switchPromise = switchHandler()
+            await vi.waitFor(() => expect(releaseCancel).toBeTypeOf('function'))
+            queue.push('late', { permissionMode: 'default', model: 'kimi-k3' }, 'late')
+            await new Promise<void>(resolve => setImmediate(resolve))
+            await new Promise<void>(resolve => setImmediate(resolve))
+            // Pre-fix the dequeue signal stayed live during the teardown: the
+            // row was dequeued+ACKed and its model applied on the closing
+            // backend. The teardown must abort the signal at entry instead.
+            expect(consumed).not.toHaveBeenCalled()
+            expect((backend.setModel as ReturnType<typeof vi.fn>).mock.calls
+                .some((call: unknown[]) => call[1] === 'kimi-k3')).toBe(false)
+            releaseCancel?.()
+            await switchPromise
+            expect(queue.pendingLocalIds()).toEqual([])
+            queue.close()
+            await launchPromise
+        } finally {
+            releaseCancel?.()
+            queue.close()
+            await launchPromise.catch(() => {})
+        }
+    })
+
     it('does not prepend skill_lookup instructions onto user turns', async () => {
         await kimiRemoteLauncher(createSession() as never, { model: 'kimi-k2' })
 

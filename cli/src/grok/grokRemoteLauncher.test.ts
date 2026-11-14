@@ -292,6 +292,67 @@ describe('grokRemoteLauncher runtime config', () => {
         }
     })
 
+    it('an idle switch teardown does not consume a newly arrived row', async () => {
+        const queue = new MessageQueue2<GrokMode>((mode) => JSON.stringify(mode))
+        const consumed = vi.fn()
+        queue.onBatchConsumed = consumed
+        const rpcHandlers = new Map<string, () => unknown>()
+        const session = {
+            path: '/tmp/grok-test',
+            logPath: '/tmp/grok-test/test.log',
+            client: {
+                rpcHandlerManager: {
+                    registerHandler(method: string, handler: () => unknown) { rpcHandlers.set(method, handler) }
+                },
+                updateMetadata: vi.fn(),
+                getMetadata: vi.fn(() => null),
+                sendAgentMessage: vi.fn(),
+                sendSessionEvent: vi.fn(),
+                sendClaudeSessionMessage: vi.fn()
+            },
+            queue,
+            sessionId: null as string | null,
+            thinking: false,
+            getPermissionMode: () => 'default' as const,
+            registerExistingNativeSession(id: string) { session.sessionId = id },
+            setModel: vi.fn(),
+            setEffort: vi.fn(),
+            setPermissionMode: vi.fn(),
+            onThinkingChange(thinking: boolean) { session.thinking = thinking },
+            sendAgentMessage: vi.fn(),
+            sendSessionEvent: vi.fn()
+        }
+        const launcher = new GrokRemoteLauncher(session as never, { model: 'grok-a', effort: 'low' })
+        const launchPromise = launcher.launch().catch((error: unknown) => error)
+        let releaseCancel: (() => void) | undefined
+        try {
+            // Wait until the loop is parked: the Switch handler is registered
+            // immediately before the drain loop starts.
+            await vi.waitFor(() => expect(rpcHandlers.has(RPC_METHODS.Switch)).toBe(true))
+            const backend = harness.backends.at(-1)!
+            backend.cancelPrompt.mockImplementationOnce(() => new Promise<void>(resolve => { releaseCancel = resolve }))
+            const switchPromise = rpcHandlers.get(RPC_METHODS.Switch)!() as Promise<unknown>
+            await vi.waitFor(() => expect(releaseCancel).toBeTypeOf('function'))
+            queue.push('late', { permissionMode: 'default', model: 'grok-b', effort: 'low' }, 'late')
+            await new Promise<void>(resolve => setImmediate(resolve))
+            await new Promise<void>(resolve => setImmediate(resolve))
+            // Pre-fix the dequeue signal stayed live during the teardown: the
+            // row was dequeued+ACKed and its model applied on the closing
+            // backend. The teardown must abort the signal at entry instead.
+            expect(consumed).not.toHaveBeenCalled()
+            expect(harness.setModels.some(entry => entry.modelId === 'grok-b')).toBe(false)
+            releaseCancel?.()
+            await switchPromise
+            expect(queue.pendingLocalIds()).toEqual([])
+            queue.close()
+            expect(await launchPromise).toBe('switch')
+        } finally {
+            releaseCancel?.()
+            queue.close()
+            await launchPromise.catch(() => {})
+        }
+    })
+
     it('forwards ACP native titles while retaining the prompt fallback', async () => {
         harness.nativeTitle = 'Native Grok title'
         const { session } = createSession()

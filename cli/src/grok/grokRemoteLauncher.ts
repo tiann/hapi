@@ -238,19 +238,33 @@ export class GrokRemoteLauncher extends RemoteLauncherBase {
 
         while (!this.shouldExit) {
             await this.waitForAbortBarrier();
-            if (this.shouldExit) break;
+            if (this.shouldExit) break
             const waitSignal = this.abortController.signal
-            const batch = await session.queue.waitForMessagesAndGetAsString(waitSignal)
+            // Defer hub ack until the dispatch commit point below: a batch
+            // dropped by a concurrent teardown must not be stamped `invoked`.
+            const acknowledgeBatch = session.queue.onBatchConsumed
+            session.queue.onBatchConsumed = null
+            let batch: Awaited<ReturnType<typeof session.queue.waitForMessagesAndGetAsString>>
+            try {
+                batch = await session.queue.waitForMessagesAndGetAsString(waitSignal)
+            } finally {
+                session.queue.onBatchConsumed = acknowledgeBatch
+            }
             if (!batch) {
                 if (waitSignal.aborted && !this.shouldExit) continue
                 break
             }
+            if (this.shouldExit) {
+                // Terminal teardown reset the queue while this batch sat in
+                // the wait: drop it un-ACKed and end.
+                break
+            }
 
-            // collectBatch already emitted messages-consumed; hub idle checks
-            // see an empty queue. Hold the history busy flag across the whole
-            // turn setup (model/permission sync, rewind-points, prompt).
+            // Hold the history busy flag across the whole turn setup
+            // (model/permission sync, rewind-points, prompt). thinking waits
+            // for the dispatch commit point so an aborted setup never
+            // flickers the hub UI.
             this.conversationHistory.setBusy(true)
-            session.onThinkingChange(true)
             try {
             const requestedModel = batch.mode.model === null
                 ? this.defaultBackendModel
@@ -267,6 +281,13 @@ export class GrokRemoteLauncher extends RemoteLauncherBase {
                         type: 'message',
                         message: `Failed to switch Grok model to ${requestedModel}.`
                     })
+                }
+                if (this.shouldExit) {
+                    break
+                }
+                if (waitSignal.aborted) {
+                    if (!session.queue.isClosed()) session.queue.unshiftBatch(batch)
+                    continue
                 }
             }
 
@@ -286,6 +307,13 @@ export class GrokRemoteLauncher extends RemoteLauncherBase {
                         message: `Failed to switch Grok effort to ${requestedEffort}.`
                     })
                 }
+                if (this.shouldExit) {
+                    break
+                }
+                if (waitSignal.aborted) {
+                    if (!session.queue.isClosed()) session.queue.unshiftBatch(batch)
+                    continue
+                }
             }
 
             const requestedPermissionMode = batch.mode.permissionMode
@@ -302,18 +330,25 @@ export class GrokRemoteLauncher extends RemoteLauncherBase {
                         : `Failed to switch Grok permission mode to ${requestedPermissionMode}.`
                 })
             }
-
-            this.applyDisplayMode(batch.mode.permissionMode)
             if (this.shouldExit) {
-                // Terminal teardown reset the queue: drop the already-ACKed
-                // batch and end.
                 break
             }
             if (waitSignal.aborted) {
-                // A plain Stop preserves the queue, but this batch was already
-                // dequeued and hub-ACKed: put it back so it drains once the
-                // Stop settles instead of dispatching a cancelled turn.
-                session.queue.unshiftBatch(batch)
+                if (!session.queue.isClosed()) session.queue.unshiftBatch(batch)
+                continue
+            }
+
+            this.applyDisplayMode(batch.mode.permissionMode)
+            if (this.shouldExit) {
+                // Terminal teardown reset the queue: drop the un-ACKed batch
+                // and end.
+                break
+            }
+            if (waitSignal.aborted) {
+                // A plain Stop preserves the queue, and this batch was never
+                // hub-ACKed: put it back so it drains once the Stop settles
+                // instead of dispatching a cancelled turn.
+                if (!session.queue.isClosed()) session.queue.unshiftBatch(batch)
                 continue
             }
             const isSlashCommand = batch.message.trimStart().startsWith('/')
@@ -351,9 +386,21 @@ export class GrokRemoteLauncher extends RemoteLauncherBase {
             if (waitSignal.aborted) {
                 // Same plain-Stop preservation as above; the echo below has
                 // not run yet, so the re-dispatch echoes exactly once.
-                session.queue.unshiftBatch(batch)
+                if (!session.queue.isClosed()) session.queue.unshiftBatch(batch)
                 continue
             }
+            session.onThinkingChange(true)
+
+            // Dispatch commit point: every pre-dispatch bail-out above
+            // requeued the never-ACKed batch, so the hub ack only fires once
+            // the turn is really going out.
+            const consumedLocalIds = batch.items
+                ?.map((item) => item.localId)
+                .filter((id): id is string => typeof id === 'string') ?? []
+            if (consumedLocalIds.length > 0) {
+                acknowledgeBatch?.(consumedLocalIds)
+            }
+
             this.messageBuffer.addMessage(batch.message, 'user')
             if (!this.instructionsSent && !isSlashCommand) {
                 // Consumed only at the dispatch commit point: a pre-dispatch
@@ -530,6 +577,15 @@ export class GrokRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleAbort(leavingRemote = false): Promise<void> {
+        if (leavingRemote) {
+            // Terminal switch/exit must unpark a waiting loop iteration
+            // before the teardown's awaits: a batch arriving meanwhile would
+            // otherwise be dequeued and hub-ACKed against the still-live
+            // signal and dropped after the teardown resets the queue
+            // (mirrors dsh's entry abort-and-replace).
+            this.abortController.abort()
+            this.abortController = new AbortController()
+        }
         if (this.backend && this.session.sessionId) {
             await this.backend.cancelPrompt(this.session.sessionId)
         }

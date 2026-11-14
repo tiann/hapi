@@ -15,6 +15,7 @@ import {
 import { isSessionSummaryContractEnabled } from '@/modules/common/sessionSummaryInstruction';
 import { OpencodeDisplay } from '@/ui/ink/OpencodeDisplay';
 import type { CursorSession } from './session';
+import type { CollectedQueueItem } from '@/utils/MessageQueue2';
 import type { EnhancedMode, PermissionMode } from './loop';
 import {
     createCursorAcpBackend,
@@ -634,6 +635,18 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             return false;
                         }
                     }
+                    if (this.shouldExit) {
+                        // Terminal switch/exit landed while the 'queued'
+                        // persist was in flight: the terminal reset already
+                        // ran, so restoring the reservation would push the
+                        // steer back into the queue and bounce the terminal
+                        // straight back into remote mode. 'queued' persisted
+                        // cleanly above, so release the held reservation the
+                        // same way the shouldExit path above does.
+                        session.queue.markReservationIndeterminate(taken);
+                        session.queue.cancelByLocalId(localId);
+                        return false;
+                    }
                     if (taken.state !== 'dispatching' || !session.queue.restoreReservation(taken)) {
                         session.client.emitSteerIndeterminate([localId]);
                         return false;
@@ -645,6 +658,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     return { steered: false, error: 'Steer cancelled' };
                 }
                 if (!this.promptInFlight
+                    || this.shouldExit
                     || this.backend !== backend
                     || this.acpSessionId !== acpSessionId
                     || backend.getPromptGeneration() !== targetPromptGeneration) {
@@ -824,19 +838,10 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     this.pendingBridgeEventId = null;
                     this.pendingBridgeSource = null;
                 }
-            } else if (
-                this.lastRecordedModelError
-                && !this.lastRecordedModelError.supersededByUserTurn
-                // Only a user-authored item supersedes. HAPI-enqueued control
-                // commands (e.g. the `/auto-review` toggle slash) carry queue-owned
-                // `internal` provenance and are not a newer task instruction —
-                // treating them as one durably kills Bridge & retry for an error
-                // the operator never replaced. Mirrors hasPendingNonBridgeTurn().
-                && batch.items.some((item) => item.internal === undefined)
-            ) {
-                // A newer normal turn owns the conversation — stale Bridge must not replay the failed prompt.
-                this.markModelErrorSupersededByUserTurn();
             }
+            // (A normal user batch's durable Bridge supersede is deferred to
+            // the dispatch commit point below: bailing before dispatch must
+            // not kill Bridge recovery for an error no user turn replaced.)
 
             const requestedModel = batch.mode.model === null
                 ? this.defaultBackendModel
@@ -863,15 +868,19 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 // dispatch point below) — drop it and end.
                 break;
             }
-            if (waitSignal.aborted) {
-                // A plain Stop preserves the queue: this batch was dequeued
-                // but never hub-ACKed — put it back so it drains once the
-                // Stop settles.
-                if (!session.queue.isClosed()) session.queue.unshiftBatch(batch);
+            if (waitSignal.aborted || this.userAbortRequested) {
+                // A plain Stop preserves the queue and a permission-card
+                // abort never touched it: requeue the batch's user content
+                // so it drains once the Stop settles. A Stop-canceled
+                // Bridge item is dropped, not resurrected (handleAbort
+                // already canceled it via cancelPendingBridge).
+                this.bridgingForEventId = null;
+                this.bridgingSource = null;
+                if (!this.shouldExit) {
+                    this.requeueAbortedBatch(batch);
+                }
                 continue;
             }
-
-            this.lastUserMessage = batch.message;
 
             // Re-read after model apply / concurrent relaunch - do not prompt on a
             // backend captured before an in-place Auto respawn (#1908 bot Majors).
@@ -905,15 +914,16 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 continue;
             }
 
-            // Mode/model RPCs can finish after Abort. A plain Stop preserves
-            // the never-ACKed batch for the post-Stop drain; terminal cleanup
-            // resets the queue. Either way no half-armed bridge state may
-            // ride a dispatch that bailed.
-            if (waitSignal.aborted || this.shouldExit) {
+            // Mode/model RPCs can finish after Abort — and a permission-card
+            // abort sets userAbortRequested without touching the signal. A
+            // plain Stop preserves the never-ACKed batch for the post-Stop
+            // drain; terminal cleanup resets the queue. Either way no
+            // half-armed bridge state may ride a dispatch that bailed.
+            if (waitSignal.aborted || this.userAbortRequested || this.shouldExit) {
                 this.bridgingForEventId = null;
                 this.bridgingSource = null;
-                if (waitSignal.aborted && !this.shouldExit) {
-                    if (!session.queue.isClosed()) session.queue.unshiftBatch(batch);
+                if (!this.shouldExit) {
+                    this.requeueAbortedBatch(batch);
                 }
                 continue;
             }
@@ -928,23 +938,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 continue;
             }
 
-            // Consume the Bridge replay gate durably BEFORE session/prompt.
-            // SIGTERM / runnerLifecycle archive skips handleAbort, so an
-            // in-memory-only gate would reopen still-bridgeable after tools ran.
-            if (this.bridgingForEventId !== null) {
-                const consumed = await this.persistBridgeReplayGateBeforeDispatch(
-                    this.bridgingForEventId
-                );
-                if (!consumed) {
-                    this.bridgingForEventId = null;
-                    this.bridgingSource = null;
-                    continue;
-                }
-            }
-
-            // Hold promptInFlight before mode apply so a concurrent Auto relaunch
-            // cannot disconnect this backend mid-dispatch.
-            session.onThinkingChange(true);
             // #2267: discard suppressed harness-resume buffers while the gate
             // still applies. Keep the gate closed through applyCursorAcpMode and
             // prompt()'s pre-swap drain; reopen only after the handler swap
@@ -955,6 +948,22 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             ) {
                 await liveBackend.discardPendingMessageBuffers();
             }
+            // The Bridge replay-gate persist and this turn's durable supersede
+            // are deferred to the dispatch commit point inside the try below —
+            // no durable Bridge mutation may happen before every pre-dispatch
+            // bail-out (Stop/switch/permission abort) has passed.
+            if (waitSignal.aborted || this.userAbortRequested || this.shouldExit) {
+                this.bridgingForEventId = null;
+                this.bridgingSource = null;
+                if (!this.shouldExit) {
+                    this.requeueAbortedBatch(batch);
+                }
+                continue;
+            }
+
+            // Hold promptInFlight before mode apply so a concurrent Auto relaunch
+            // cannot disconnect this backend mid-dispatch.
+            session.onThinkingChange(true);
             this.turnHasModelError = false;
             this.lastAssistantText = null;
             this.pendingTextFailure = null;
@@ -962,7 +971,6 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             this.promptInFlight = true;
             session.client.updateAgentState?.((state) => ({ ...state, steeringActive: true }));
             this.activePromptModeHash = batch.hash;
-            this.userAbortRequested = false;
 
             let requeueBatch = false;
             try {
@@ -990,138 +998,193 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     }
                     if (waitSignal.aborted) {
                         // A plain Stop preserves the queue: the batch was
-                        // dequeued but never hub-ACKed — put it back so it
-                        // drains once the Stop settles.
-                        if (!session.queue.isClosed()) session.queue.unshiftBatch(batch);
+                        // dequeued but never hub-ACKed — put its user content
+                        // back so it drains once the Stop settles (a
+                        // Stop-canceled Bridge item is dropped, not
+                        // resurrected).
+                        this.requeueAbortedBatch(batch);
+                        continue;
+                    }
+                    if (this.userAbortRequested) {
+                        // A permission-card abort landed while mode-apply
+                        // awaited (it never aborts the dequeue signal): bail
+                        // before the hub ACK or any durable Bridge mutation.
+                        this.bridgingForEventId = null;
+                        this.bridgingSource = null;
+                        this.requeueAbortedBatch(batch);
                         continue;
                     }
 
-                    // Hub ack lands at the dispatch commit point: every
-                    // pre-dispatch bail-out above requeues the never-ACKed
-                    // batch instead of losing it.
+                    // Dispatch commit point — reached only after every
+                    // pre-dispatch bail-out has passed. The hub ack, the
+                    // durable Bridge-gate mutations and the user-turn echo all
+                    // land here, so an aborted batch is never stamped
+                    // `invoked` nor re-dispatched after its operator canceled.
+
+                    if (this.bridgingForEventId !== null) {
+                        // Consume the Bridge replay gate durably BEFORE
+                        // session/prompt. SIGTERM / runnerLifecycle archive
+                        // skips handleAbort, so an in-memory-only gate would
+                        // reopen still-bridgeable after tools ran.
+                        const gateConsumed = await this.persistBridgeReplayGateBeforeDispatch(
+                            this.bridgingForEventId
+                        );
+                        if (!gateConsumed) {
+                            this.bridgingForEventId = null;
+                            this.bridgingSource = null;
+                            continue;
+                        }
+                        if (this.shouldExit) {
+                            // Terminal teardown ran while the gate flush
+                            // awaited: the queue was reset and the batch was
+                            // never hub-ACKed — drop it and end.
+                            break;
+                        }
+                        if (waitSignal.aborted || this.userAbortRequested) {
+                            // Stop/permission abort landed inside the gate
+                            // flush: the gate is persisted, but the canceled
+                            // Bridge must not dispatch and its item must not
+                            // ride the post-persist window.
+                            this.bridgingForEventId = null;
+                            this.bridgingSource = null;
+                            if (!this.shouldExit) {
+                                this.requeueAbortedBatch(batch);
+                            }
+                            continue;
+                        }
+                    } else if (
+                        this.lastRecordedModelError
+                        && !this.lastRecordedModelError.supersededByUserTurn
+                        // Only a user-authored item supersedes. HAPI-enqueued control
+                        // commands (e.g. the `/auto-review` toggle slash) carry queue-owned
+                        // `internal` provenance and are not a newer task instruction —
+                        // treating them as one durably kills Bridge & retry for an error
+                        // the operator never replaced. Mirrors hasPendingNonBridgeTurn().
+                        && batch.items.some((item) => item.internal === undefined)
+                    ) {
+                        // A newer normal turn owns the conversation — stale
+                        // Bridge must not replay the failed prompt. Deferred
+                        // from the dequeue path so an aborted batch never
+                        // durably revokes Bridge recovery.
+                        this.markModelErrorSupersededByUserTurn();
+                    }
+
+                    // Hub ack: every pre-dispatch bail-out above requeued the
+                    // never-ACKed batch instead of losing it.
                     const consumedLocalIds = batch.items
                         .map((item) => item.localId)
                         .filter((id): id is string => typeof id === 'string');
                     if (consumedLocalIds.length > 0) {
                         acknowledgeBatch?.(consumedLocalIds);
                     }
+                    this.lastUserMessage = batch.message;
 
-                    // Mode RPCs can finish after Abort (cold-review Major
-                    // 2026-09-12): userAbortRequested is reset before setup
-                    // above, so re-check it here. Without this, an Abort that
-                    // lands while applyCursorAcpMode is in flight is erased and
-                    // the canceled batch — a queued Bridge included — dispatches.
-                    if (waitSignal.aborted || this.userAbortRequested || this.shouldExit) {
-                        this.bridgingForEventId = null;
-                        this.bridgingSource = null;
-                    } else {
-                        const specialCommand = parseCursorSpecialCommand(batch.message);
-                        if (specialCommand.type === 'pass-through') {
-                            messageBuffer.addMessage(cursorPassThroughStatusMessage(specialCommand.command), 'status');
-                        }
-                        messageBuffer.addMessage(batch.message, 'user');
+                    const specialCommand = parseCursorSpecialCommand(batch.message);
+                    if (specialCommand.type === 'pass-through') {
+                        messageBuffer.addMessage(cursorPassThroughStatusMessage(specialCommand.command), 'status');
+                    }
+                    messageBuffer.addMessage(batch.message, 'user');
 
-                        // skill_lookup discovery lives on the MCP tool description — do not
-                        // prepend instructions onto user turns (prompt-injection false positive).
-                        const promptContent: PromptContent[] = [{
-                            type: 'text',
-                            text: batch.message
-                        }];
+                    // skill_lookup discovery lives on the MCP tool description — do not
+                    // prepend instructions onto user turns (prompt-injection false positive).
+                    const promptContent: PromptContent[] = [{
+                        type: 'text',
+                        text: batch.message
+                    }];
 
-                        for (let retryAttempt = 0; retryAttempt <= CURSOR_AUTO_RETRY_LIMIT; retryAttempt += 1) {
-                            this.pendingRetryableError = null;
-                            this.pendingRetryableFromStderr = false;
-                            this.pendingInlineRetryableError = false;
-                            this.attemptProducedToolActivity = false;
-                            // Deferred stream failures are per-attempt. A prior try's
-                            // strong stderr must not poison a later successful retry
-                            // (record modelError / suppress ready / auto-Bridge).
-                            this.pendingStderrFailure = null;
-                            this.pendingTextFailure = null;
-                            let turnCompleted = false;
-                            try {
-                                // Capture before prompt(): pre-swap drain still uses this
-                                // generation; after handler swap generation bumps and we
-                                // reopen speech once. Do not clear again on later harness
-                                // resumes that reuse this onUpdate (#2267 bot Minor).
-                                const generationAtPromptStart = liveBackend.getPromptGeneration();
-                                // Lets handleAgentMessage tell this turn's output
-                                // apart from the previous handler's drain, which
-                                // runs against the same shared failure state.
-                                this.activePromptGenerationAtStart = generationAtPromptStart;
-                                let reopenedSpeechForThisPrompt = false;
-                                const sent = await liveBackend.prompt(liveSessionId, promptContent, (message) => {
-                                    if (
-                                        !reopenedSpeechForThisPrompt
-                                        && liveBackend.getPromptGeneration() !== generationAtPromptStart
-                                    ) {
-                                        clearPostCloseGateForNewUserPrompt(this.postCloseHarnessGate);
-                                        reopenedSpeechForThisPrompt = true;
-                                    }
-                                    if (message.type === 'turn_complete') turnCompleted = true;
-                                    this.handleAgentMessage(message);
-                                }, {
-                                    shouldSend: () => !this.userAbortRequested
-                                        && !this.shouldExit
-                                        && !(this.bridgingForEventId !== null
-                                            && this.session.queue.hasPendingNonBridgeTurn())
-                                });
-                                if (sent === false) {
-                                    this.bridgingForEventId = null;
-                                    this.bridgingSource = null;
-                                    this.markModelErrorSupersededByUserTurn();
-                                    break;
+                    for (let retryAttempt = 0; retryAttempt <= CURSOR_AUTO_RETRY_LIMIT; retryAttempt += 1) {
+                        this.pendingRetryableError = null;
+                        this.pendingRetryableFromStderr = false;
+                        this.pendingInlineRetryableError = false;
+                        this.attemptProducedToolActivity = false;
+                        // Deferred stream failures are per-attempt. A prior try's
+                        // strong stderr must not poison a later successful retry
+                        // (record modelError / suppress ready / auto-Bridge).
+                        this.pendingStderrFailure = null;
+                        this.pendingTextFailure = null;
+                        let turnCompleted = false;
+                        try {
+                            // Capture before prompt(): pre-swap drain still uses this
+                            // generation; after handler swap generation bumps and we
+                            // reopen speech once. Do not clear again on later harness
+                            // resumes that reuse this onUpdate (#2267 bot Minor).
+                            const generationAtPromptStart = liveBackend.getPromptGeneration();
+                            // Lets handleAgentMessage tell this turn's output
+                            // apart from the previous handler's drain, which
+                            // runs against the same shared failure state.
+                            this.activePromptGenerationAtStart = generationAtPromptStart;
+                            let reopenedSpeechForThisPrompt = false;
+                            const sent = await liveBackend.prompt(liveSessionId, promptContent, (message) => {
+                                if (
+                                    !reopenedSpeechForThisPrompt
+                                    && liveBackend.getPromptGeneration() !== generationAtPromptStart
+                                ) {
+                                    clearPostCloseGateForNewUserPrompt(this.postCloseHarnessGate);
+                                    reopenedSpeechForThisPrompt = true;
                                 }
-                                if (this.userAbortRequested) break;
-                                if (turnCompleted && this.pendingRetryableFromStderr && !this.pendingInlineRetryableError) {
-                                    this.pendingRetryableError = null;
-                                }
-                                if (!this.pendingRetryableError) {
-                                    const settled = this.pendingStderrFailure ?? this.pendingTextFailure;
-                                    if (settled && !this.turnHasModelError) {
-                                        this.recordModelError(settled);
-                                    }
-                                    this.pendingStderrFailure = null;
-                                    this.pendingTextFailure = null;
-                                    void liveBackend.refreshSessionInfo(liveSessionId, session.path);
-                                    break;
-                                }
-                            } catch (error) {
-                                logger.warn('[cursor-acp] prompt failed', error);
-                                if (this.userAbortRequested) break;
-                                if (!isRetryableCursorError(error)) {
-                                    this.surfacePromptFailure(error instanceof Error ? error.message : String(error));
-                                    const failure = settleFailure(error);
-                                    this.pendingStderrFailure = null;
-                                    this.pendingTextFailure = null;
-                                    if (failure) this.recordModelError(failure);
-                                    break;
-                                }
-                                this.pendingRetryableError = error instanceof Error ? error.message : String(error);
+                                if (message.type === 'turn_complete') turnCompleted = true;
+                                this.handleAgentMessage(message);
+                            }, {
+                                shouldSend: () => !this.userAbortRequested
+                                    && !this.shouldExit
+                                    && !(this.bridgingForEventId !== null
+                                        && this.session.queue.hasPendingNonBridgeTurn())
+                            });
+                            if (sent === false) {
+                                this.bridgingForEventId = null;
+                                this.bridgingSource = null;
+                                this.markModelErrorSupersededByUserTurn();
+                                break;
                             }
-
-                            if (this.attemptProducedToolActivity) {
-                                this.surfacePromptFailure('Cursor connection interrupted after tool activity; the prompt was not retried.');
-                                const failure = settleFailure(
-                                    this.pendingRetryableError ?? 'Cursor connection interrupted after tool activity'
-                                );
+                            if (this.userAbortRequested) break;
+                            if (turnCompleted && this.pendingRetryableFromStderr && !this.pendingInlineRetryableError) {
+                                this.pendingRetryableError = null;
+                            }
+                            if (!this.pendingRetryableError) {
+                                const settled = this.pendingStderrFailure ?? this.pendingTextFailure;
+                                if (settled && !this.turnHasModelError) {
+                                    this.recordModelError(settled);
+                                }
+                                this.pendingStderrFailure = null;
+                                this.pendingTextFailure = null;
+                                void liveBackend.refreshSessionInfo(liveSessionId, session.path);
+                                break;
+                            }
+                        } catch (error) {
+                            logger.warn('[cursor-acp] prompt failed', error);
+                            if (this.userAbortRequested) break;
+                            if (!isRetryableCursorError(error)) {
+                                this.surfacePromptFailure(error instanceof Error ? error.message : String(error));
+                                const failure = settleFailure(error);
                                 this.pendingStderrFailure = null;
                                 this.pendingTextFailure = null;
                                 if (failure) this.recordModelError(failure);
                                 break;
                             }
-                            if (retryAttempt < CURSOR_AUTO_RETRY_LIMIT) {
-                                this.surfaceRetry(retryAttempt + 1);
-                                continue;
-                            }
-                            this.surfacePromptFailure(`Cursor Agent failed after ${CURSOR_AUTO_RETRY_LIMIT} retries.`);
-                            const exhaustedFailure = settleFailure(
-                                this.pendingRetryableError ?? 'Cursor Agent failed after retries'
+                            this.pendingRetryableError = error instanceof Error ? error.message : String(error);
+                        }
+
+                        if (this.attemptProducedToolActivity) {
+                            this.surfacePromptFailure('Cursor connection interrupted after tool activity; the prompt was not retried.');
+                            const failure = settleFailure(
+                                this.pendingRetryableError ?? 'Cursor connection interrupted after tool activity'
                             );
                             this.pendingStderrFailure = null;
                             this.pendingTextFailure = null;
-                            if (exhaustedFailure) this.recordModelError(exhaustedFailure);
+                            if (failure) this.recordModelError(failure);
+                            break;
                         }
+                        if (retryAttempt < CURSOR_AUTO_RETRY_LIMIT) {
+                            this.surfaceRetry(retryAttempt + 1);
+                            continue;
+                        }
+                        this.surfacePromptFailure(`Cursor Agent failed after ${CURSOR_AUTO_RETRY_LIMIT} retries.`);
+                        const exhaustedFailure = settleFailure(
+                            this.pendingRetryableError ?? 'Cursor Agent failed after retries'
+                        );
+                        this.pendingStderrFailure = null;
+                        this.pendingTextFailure = null;
+                        if (exhaustedFailure) this.recordModelError(exhaustedFailure);
                     }
                 }
             } finally {
@@ -1215,8 +1278,14 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             if (requeueBatch) {
                 // Never hub-ACKed — put the turn back for resume/recovery. On
                 // switch/exit the terminal reset already cleared the queue.
+                // A Stop-canceled Bridge must not ride along: handleAbort
+                // already dropped it, so requeue only the user content.
                 if (!this.shouldExit) {
-                    if (!session.queue.isClosed()) session.queue.unshiftBatch(batch);
+                    if (waitSignal.aborted || this.userAbortRequested) {
+                        this.requeueAbortedBatch(batch);
+                    } else if (!session.queue.isClosed()) {
+                        session.queue.unshiftBatch(batch);
+                    }
                 }
                 continue;
             }
@@ -2397,6 +2466,31 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         this.messageBuffer.addMessage(`Cursor worktree: ${worktreePath}`, 'status');
     }
 
+    /**
+     * Requeue a dequeued-but-never-dispatched batch after an Abort/plain
+     * Stop. A Stop intentionally cancels any pending Bridge (handleAbort →
+     * cancelPendingBridge), so `model-error-bridge` items are dropped rather
+     * than resurrected; only the batch's user content goes back.
+     */
+    private requeueAbortedBatch(batch: {
+        mode: EnhancedMode;
+        isolate: boolean;
+        items: CollectedQueueItem[];
+    }): void {
+        if (this.session.queue.isClosed()) return;
+        for (let i = batch.items.length - 1; i >= 0; i -= 1) {
+            const item = batch.items[i]!;
+            if (item.internal?.kind === 'model-error-bridge') continue;
+            if (batch.isolate) {
+                this.session.queue.unshiftIsolated(item.message, batch.mode, item.localId, {
+                    internal: item.internal
+                });
+            } else {
+                this.session.queue.unshift(item.message, batch.mode, item.localId);
+            }
+        }
+    }
+
     private async handleAbort(leavingRemote = false): Promise<void> {
         // Mark + clear bridge gates BEFORE any await. Otherwise a settling
         // bridge prompt can race markModelErrorBridgeSucceeded and falsely
@@ -2408,6 +2502,15 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         this.cancelPendingBridge();
         this.bridgingForEventId = null;
         this.bridgingSource = null;
+        if (leavingRemote) {
+            // Terminal switch/exit must unpark a waiting loop iteration
+            // before the teardown's awaits: a batch arriving meanwhile would
+            // otherwise be dequeued against the still-live signal and dropped
+            // after the teardown resets the queue (mirrors dsh's entry
+            // abort-and-replace).
+            this.abortController.abort();
+            this.abortController = new AbortController();
+        }
         const backend = this.backend;
         const sessionId = this.acpSessionId ?? this.session.sessionId;
         if (backend && sessionId) {

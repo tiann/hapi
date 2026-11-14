@@ -177,38 +177,83 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
             await this.waitForAbortBarrier();
             if (this.shouldExit) break;
             const waitSignal = this.abortController.signal;
-            const batch = await session.queue.waitForMessagesAndGetAsString(waitSignal);
+            // Defer hub ack until the dispatch commit point below: a batch
+            // dropped by a concurrent teardown must not be stamped `invoked`.
+            const acknowledgeBatch = session.queue.onBatchConsumed;
+            session.queue.onBatchConsumed = null;
+            let batch: Awaited<ReturnType<typeof session.queue.waitForMessagesAndGetAsString>>;
+            try {
+                batch = await session.queue.waitForMessagesAndGetAsString(waitSignal);
+            } finally {
+                session.queue.onBatchConsumed = acknowledgeBatch;
+            }
             if (!batch) {
                 if (waitSignal.aborted && !this.shouldExit) {
                     continue;
                 }
                 break;
             }
+            if (this.shouldExit) {
+                // Terminal teardown reset the queue while this batch sat in
+                // the wait: drop it un-ACKed and end.
+                break;
+            }
 
             const modelBeforeBatch = this.currentBackendModel;
             if (batch.mode.model && batch.mode.model !== this.currentBackendModel) {
                 batch.mode.model = await this.applyQueuedModel(batch.mode.model) ?? undefined;
+                if (this.shouldExit) {
+                    break;
+                }
+                if (waitSignal.aborted) {
+                    if (!session.queue.isClosed()) session.queue.unshiftBatch(batch);
+                    continue;
+                }
             }
             if (this.currentBackendModel !== modelBeforeBatch) {
                 this.captureEffortBaseline(acpSessionId);
             }
             await this.applyQueuedEffort(acpSessionId, batch.mode);
+            if (this.shouldExit) {
+                break;
+            }
+            if (waitSignal.aborted) {
+                if (!session.queue.isClosed()) session.queue.unshiftBatch(batch);
+                continue;
+            }
 
             const desiredAgentMode = batch.mode.agentMode ?? session.getAgentMode();
             if (desiredAgentMode !== this.currentAgentMode) {
                 await this.applyAgentMode(desiredAgentMode);
+                if (this.shouldExit) {
+                    break;
+                }
+                if (waitSignal.aborted) {
+                    if (!session.queue.isClosed()) session.queue.unshiftBatch(batch);
+                    continue;
+                }
             }
             if (this.shouldExit) {
-                // Terminal teardown reset the queue: drop the already-ACKed
-                // batch and end.
+                // Terminal teardown reset the queue: drop the un-ACKed batch
+                // and end.
                 break;
             }
             if (waitSignal.aborted) {
-                // A plain Stop preserves the queue, but this batch was already
-                // dequeued and hub-ACKed: put it back so it drains once the
-                // Stop settles instead of dispatching a cancelled turn.
-                session.queue.unshiftBatch(batch);
+                // A plain Stop preserves the queue, and this batch was never
+                // hub-ACKed: put it back so it drains once the Stop settles
+                // instead of dispatching a cancelled turn.
+                if (!session.queue.isClosed()) session.queue.unshiftBatch(batch);
                 continue;
+            }
+
+            // Dispatch commit point: every pre-dispatch bail-out above
+            // requeued the never-ACKed batch, so the hub ack only fires once
+            // the turn is really going out.
+            const consumedLocalIds = batch.items
+                .map((item) => item.localId)
+                .filter((id): id is string => typeof id === 'string');
+            if (consumedLocalIds.length > 0) {
+                acknowledgeBatch?.(consumedLocalIds);
             }
 
             this.applyDisplayMode(batch.mode.permissionMode, batch.mode.model);
@@ -527,6 +572,15 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleAbort(leavingRemote = false): Promise<void> {
+        if (leavingRemote) {
+            // Terminal switch/exit must unpark a waiting loop iteration
+            // before the teardown's awaits: a batch arriving meanwhile would
+            // otherwise be dequeued and hub-ACKed against the still-live
+            // signal and dropped after the teardown resets the queue
+            // (mirrors dsh's entry abort-and-replace).
+            this.abortController.abort();
+            this.abortController = new AbortController();
+        }
         const backend = this.backend;
         if (backend && this.session.sessionId) {
             await backend.cancelPrompt(this.session.sessionId);
