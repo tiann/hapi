@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, spyOn } from 'bun:test'
 import { Database } from 'bun:sqlite'
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import * as fsPromises from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -58,12 +58,12 @@ describe('AttachmentStore', () => {
         store.close()
     })
 
-    it('streams a staged file into durable storage and preserves its digest', async () => {
+    it('streams and clones a staged file above the legacy 50 MiB limit', async () => {
         const dir = mkdtempSync(join(tmpdir(), 'hapi-attachments-'))
         tempDirs.push(dir)
         const store = new Store(':memory:', { attachmentsRoot: join(dir, 'attachments') })
         const sourcePath = join(dir, 'large.bin')
-        const original = Buffer.alloc(9 * 1024 * 1024, 17)
+        const original = Buffer.alloc(51 * 1024 * 1024, 17)
         writeFileSync(sourcePath, original)
 
         const created = await store.attachments.createFromFile({
@@ -72,12 +72,17 @@ describe('AttachmentStore', () => {
             filename: 'large.bin',
             mimeType: 'application/octet-stream',
             sourcePath,
-            maxBytes: 16 * 1024 * 1024
+            maxBytes: 64 * 1024 * 1024
         })
+        const cloned = await store.attachments.cloneForSession(
+            created.id, 'default', 'session-large', 'session-cloned'
+        )
 
         expect(created.size).toBe(original.length)
-        expect(created.sha256).toBe(createHash('sha256').update(original).digest('hex'))
-        expect(readFileSync(created.originalPath)).toEqual(original)
+        expect(cloned.size).toBe(original.length)
+        expect(cloned.sha256).toBe(createHash('sha256').update(original).digest('hex'))
+        expect(statSync(created.originalPath).size).toBe(original.length)
+        expect(statSync(cloned.originalPath).size).toBe(original.length)
         expect(existsSync(sourcePath)).toBe(true)
         store.close()
     })

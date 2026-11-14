@@ -197,6 +197,7 @@ function estimateBase64Bytes(base64: string): number {
 export function createSessionsRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
     const chunkedUploadStaging = new ChunkedUploadStaging()
+    void chunkedUploadStaging.initialize().catch(() => {})
 
     app.get('/sessions', (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)

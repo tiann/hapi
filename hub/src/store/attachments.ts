@@ -4,6 +4,7 @@ import { createReadStream } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import type { Database } from 'bun:sqlite'
+import { resolveMaxUploadBytes } from '@hapi/protocol/apiTypes'
 
 export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024
 
@@ -437,15 +438,16 @@ export class AttachmentStore {
         sourceSessionId: string,
         targetSessionId: string
     ): Promise<StoredAttachment> {
-        const original = await this.readForSessionAsync(id, namespace, sourceSessionId)
+        const original = this.getForSession(id, namespace, sourceSessionId)
         if (!original) throw new Error(`Attachment ${id} is unavailable`)
 
-        return this.create({
+        return this.createFromFile({
             namespace,
             sessionId: targetSessionId,
-            filename: original.attachment.filename,
-            mimeType: original.attachment.mimeType,
-            original: original.data
+            filename: original.filename,
+            mimeType: original.mimeType,
+            sourcePath: original.originalPath,
+            maxBytes: resolveMaxUploadBytes(process.env.HAPI_MAX_UPLOAD_BYTES)
         })
     }
 
