@@ -179,6 +179,7 @@ export type PendingSessionSnapshot = {
 }
 
 export type ApiSessionClientOptions = {
+    onClose?: () => void
     materialize?: (snapshot: PendingSessionSnapshot, signal: AbortSignal) => Promise<Session>
     onMaterialized?: (session: Session, snapshot: PendingSessionSnapshot) => void
 }
@@ -291,6 +292,7 @@ export class ApiSessionClient extends EventEmitter {
     private agentStateLock = new AsyncLock()
     private metadataLock = new AsyncLock()
     private state: ApiSessionClientState
+    private readonly onClose?: () => void
     private readonly materializer?: ApiSessionClientOptions['materialize']
     private readonly onMaterialized?: ApiSessionClientOptions['onMaterialized']
     private materializationTask: Promise<boolean> | null = null
@@ -312,6 +314,7 @@ export class ApiSessionClient extends EventEmitter {
         this.metadataVersion = session.metadataVersion
         this.agentState = session.agentState
         this.agentStateVersion = session.agentStateVersion
+        this.onClose = options.onClose
         this.materializer = options.materialize
         this.onMaterialized = options.onMaterialized
         this.state = this.materializer ? 'pending' : 'active'
@@ -1747,14 +1750,18 @@ export class ApiSessionClient extends EventEmitter {
             return
         }
         this.state = 'closed'
-        this.materializationAbortController?.abort()
-        this.materializationAbortController = null
-        this.materializationRetryAbortController?.abort()
-        this.materializationRetryAbortController = null
-        this.awaitingMaterializedConnection = false
-        this.pendingOutboundEvents.length = 0
-        this.rpcHandlerManager.onSocketDisconnect()
-        this.terminalManager.closeAll()
-        this.socket.disconnect()
+        try {
+            this.materializationAbortController?.abort()
+            this.materializationAbortController = null
+            this.materializationRetryAbortController?.abort()
+            this.materializationRetryAbortController = null
+            this.awaitingMaterializedConnection = false
+            this.pendingOutboundEvents.length = 0
+            this.rpcHandlerManager.onSocketDisconnect()
+            this.terminalManager.closeAll()
+            this.socket.disconnect()
+        } finally {
+            this.onClose?.()
+        }
     }
 }
