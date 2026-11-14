@@ -2661,6 +2661,23 @@ export class SyncEngine {
         try {
             rpcResult = await this.rpcGateway.rewindConversation(sessionId, { messageLocalId })
         } catch (error) {
+            // Crash window: the runner persists the durable rewind intent
+            // BEFORE it starts the restart teardown, and the native branch
+            // re-arms from that intent on the next start. If the intent for
+            // exactly this rewind is already visible here, the rewind is
+            // committed - truncate now (idempotent with the success path)
+            // instead of leaving the hub transcript diverged from the native
+            // side that will inevitably cut the same turns.
+            this.sessionCache.refreshSession(sessionId)
+            const intent = this.getSession(sessionId)?.metadata?.claudeRewind as { truncateFromLocalId?: string } | undefined
+            if (intent?.truncateFromLocalId === messageLocalId) {
+                try {
+                    this.truncateHubTranscriptFrom(sessionId, namespace, messageLocalId)
+                    return { type: 'success' }
+                } catch {
+                    // Fall through: the diverged marker below is the honest state.
+                }
+            }
             if (!(error instanceof RpcTargetMissingError)) {
                 this.markConversationHistoryDiverged(sessionId, namespace)
                 return {

@@ -170,4 +170,72 @@ describe('Claude rewind hub integration', () => {
             engine.stop()
         }
     })
+
+    it('truncates the hub when the rewind RPC is lost but the committed intent is visible', async () => {
+        const { store, engine } = createEngine()
+        try {
+            const session = engine.getOrCreateSession('claude-rewind-crash', {
+                path: '/tmp/project', host: 'localhost', flavor: 'claude',
+                capabilities: { conversationHistory: { rewindToMessage: true } },
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: session.id, time: Date.now(), mode: 'remote' })
+            seedTwoTurns(store, session)
+
+            ;(engine as any).rpcGateway.rewindConversation = async () => {
+                // The runner persists the durable intent BEFORE it starts the
+                // restart teardown; a crash in that window leaves the intent
+                // visible hub-side while the RPC response is lost. Model the
+                // flush landing mid-RPC.
+                const stored = store.sessions.getSession(session.id) as { metadataVersion?: number; metadata?: Record<string, unknown> }
+                store.sessions.updateSessionMetadata(session.id, {
+                    ...(stored?.metadata ?? {}),
+                    claudeRewind: {
+                        targetLocalId: 'local-t2',
+                        truncateFromLocalId: 'local-t2',
+                        keepBoundary: 'native-boundary-uuid',
+                        droppedPrompts: ['native-prompt-uuid'],
+                    },
+                }, (stored?.metadataVersion ?? 1) as number, 'default')
+                ;(engine as any).sessionCache.refreshSession(session.id)
+                throw new Error('rpc gateway timeout')
+            }
+
+            // The rewind is committed: the native branch re-arms from the
+            // intent on the next start, so the hub must truncate now instead
+            // of marking the transcript diverged.
+            await expect(engine.rewindConversation(session.id, 'default', 'local-t2')).resolves.toEqual({ type: 'success' })
+
+            const kept = store.messages.getAllMessages(session.id).map((m) => m.localId)
+            expect(kept).toContain('local-t1')
+            expect(kept).not.toContain('local-t2')
+            expect(((engine.getSession(session.id)?.metadata ?? {}) as Record<string, unknown>).conversationHistoryDiverged).not.toBe(true)
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('still marks history diverged when the RPC fails without a committed intent', async () => {
+        const { store, engine } = createEngine()
+        try {
+            const session = engine.getOrCreateSession('claude-rewind-nocrash', {
+                path: '/tmp/project', host: 'localhost', flavor: 'claude',
+                capabilities: { conversationHistory: { rewindToMessage: true } },
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: session.id, time: Date.now(), mode: 'remote' })
+            seedTwoTurns(store, session)
+
+            ;(engine as any).rpcGateway.rewindConversation = async () => {
+                throw new Error('rpc gateway timeout')
+            }
+
+            await expect(engine.rewindConversation(session.id, 'default', 'local-t2')).resolves.toMatchObject({
+                type: 'error',
+                hydrateFailed: true,
+                message: 'Rewind outcome is unknown; session history requires reconciliation'
+            })
+            expect(((engine.getSession(session.id)?.metadata ?? {}) as Record<string, unknown>).conversationHistoryDiverged).toBe(true)
+        } finally {
+            engine.stop()
+        }
+    })
 })
