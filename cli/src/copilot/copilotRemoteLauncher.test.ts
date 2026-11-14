@@ -1,7 +1,91 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CopilotSession } from './session';
 import { CopilotRemoteLauncher } from './copilotRemoteLauncher';
 import type { AgentMessage } from '@/agent/types';
+import { MessageQueue2 } from '@/utils/MessageQueue2';
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import type { RemoteLauncherTerminalHandlers } from '@/modules/common/remote/RemoteLauncherBase';
+
+const abortHarness = vi.hoisted(() => {
+    let resolveActivePrompt: (() => void) | null = null;
+    let releaseCancelAll: (() => void) | null = null;
+    let resolveCancelAllEntered: (() => void) | null = null;
+    let cancelAllGated = false;
+    let cancelAllRejects = false;
+    let cancelAllHook: (() => Promise<void>) | null = null;
+    let cancelPromptSettles = true;
+    const cancelAllEntered = new Promise<void>((resolve) => { resolveCancelAllEntered = resolve; });
+    return {
+        prompts: [] as Array<Array<{ type: string; text: string }>>,
+        backends: [] as Array<Record<string, ReturnType<typeof vi.fn>>>,
+        cancelAllEntered,
+        setCancelAllGated: (gated: boolean) => { cancelAllGated = gated; },
+        isCancelAllGated: () => cancelAllGated,
+        setCancelAllRejects: (rejects: boolean) => { cancelAllRejects = rejects; },
+        isCancelAllRejects: () => cancelAllRejects,
+        setCancelAllHook: (hook: (() => Promise<void>) | null) => { cancelAllHook = hook; },
+        runCancelAllHook: () => cancelAllHook?.(),
+        setCancelPromptSettles: (settles: boolean) => { cancelPromptSettles = settles; },
+        cancelPromptSettles: () => cancelPromptSettles,
+        settleActivePrompt: () => { resolveActivePrompt?.(); resolveActivePrompt = null; },
+        waitActivePrompt: () => new Promise<void>((resolve) => { resolveActivePrompt = resolve; }),
+        gateCancelAll: () => new Promise<void>((resolve) => { releaseCancelAll = resolve; }),
+        releaseCancelAll: () => { releaseCancelAll?.(); },
+        signalCancelAllEntered: () => { resolveCancelAllEntered?.(); },
+    };
+});
+
+vi.mock('./utils/copilotBackend', () => ({
+    createCopilotBackend: vi.fn(() => {
+        const backend = {
+            initialize: vi.fn(async () => {}),
+            newSession: vi.fn(async () => 'copilot-session'),
+            loadSession: vi.fn(async () => 'copilot-session'),
+            setMode: vi.fn(async () => {}),
+            setModel: vi.fn(async () => {}),
+            getThoughtLevelConfigOption: vi.fn(() => undefined),
+            getConfigOptionByCategory: vi.fn(),
+            getSessionModelsMetadata: vi.fn(),
+            prompt: vi.fn(async (_id: string, content: Array<{ type: string; text: string }>) => {
+                abortHarness.prompts.push(content);
+                await abortHarness.waitActivePrompt();
+            }),
+            cancelPrompt: vi.fn(async () => {
+                if (abortHarness.cancelPromptSettles()) abortHarness.settleActivePrompt();
+            }),
+            onStderrError: vi.fn(),
+            setSessionInfoUpdateListener: vi.fn(),
+            refreshSessionInfo: vi.fn(async () => {}),
+            disconnect: vi.fn(async () => {}),
+        };
+        abortHarness.backends.push(backend);
+        return backend;
+    })
+}));
+
+vi.mock('./utils/permissionHandler', () => ({
+    CopilotPermissionHandler: class {
+        async cancelAll(reason: string): Promise<void> {
+            if (reason === 'User aborted') {
+                const pending = abortHarness.runCancelAllHook();
+                if (pending) { await pending; return; }
+            }
+            if (reason === 'User aborted' && abortHarness.isCancelAllRejects()) {
+                throw new Error('cancelAll boom');
+            }
+            if (reason === 'User aborted' && abortHarness.isCancelAllGated()) {
+                abortHarness.signalCancelAllEntered();
+                await abortHarness.gateCancelAll();
+            }
+        }
+    }
+}));
+
+vi.mock('@/ui/ink/CopilotDisplay', () => ({ CopilotDisplay: () => null }));
+vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({
+    buildHapiMcpBridge: async () => ({ server: { stop: () => {} }, mcpServers: {} })
+}));
+vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
 
 type LauncherInternals = {
     backend: {
@@ -173,6 +257,583 @@ describe('CopilotRemoteLauncher.applyAgentMode', () => {
 
         expect(setConfigOption).toHaveBeenCalledWith('copilot-session', 'model', 'gpt-5.6');
         expect(internals.currentBackendModel).toBe('gpt-5.6');
+    });
+});
+
+type CopilotTestMode = { permissionMode: string; model?: string };
+
+function createAbortSession(queue: MessageQueue2<CopilotTestMode>) {
+    const rpcHandlers = new Map<string, () => Promise<void>>();
+    const session = {
+        path: '/tmp/copilot-abort-test',
+        logPath: '/tmp/copilot-abort-test/test.log',
+        client: {
+            rpcHandlerManager: {
+                registerHandler: (method: string, handler: () => Promise<void>) => {
+                    rpcHandlers.set(method, handler);
+                }
+            },
+            sendSessionEvent: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            getMetadata: () => ({}),
+            updateMetadata: vi.fn(),
+            emitMessagesConsumed: vi.fn(),
+        },
+        queue,
+        sessionId: null as string | null,
+        model: null,
+        getAgentMode: () => 'interactive',
+        getPermissionMode: () => 'default' as const,
+        onSessionFound(id: string) { session.sessionId = id; },
+        setRemoteAgentModeApplier: vi.fn(),
+        onThinkingChange: vi.fn(),
+        sendSessionEvent: vi.fn(),
+        sendAgentMessage: vi.fn(),
+    };
+    return { session, rpcHandlers };
+}
+
+beforeEach(() => {
+    process.stdin.isTTY = false;
+    process.stdout.isTTY = false;
+    abortHarness.setCancelAllGated(false);
+    abortHarness.setCancelAllRejects(false);
+    abortHarness.setCancelAllHook(null);
+    abortHarness.setCancelPromptSettles(true);
+    abortHarness.prompts.length = 0;
+});
+
+describe('CopilotRemoteLauncher Abort queue preservation', () => {
+    it.each(
+        (['switch', 'exit'] as const).flatMap(reason =>
+            [false, true].flatMap(active =>
+                [false, true].flatMap(repeated =>
+                    [false, true].map(failing => ({ reason, active, repeated, failing })))))
+    )('settles $reason during delayed Stop teardown (active: $active, repeated: $repeated, failing: $failing)', async ({ reason, active, repeated, failing }) => {
+        const gates = [0, 1].map(() => {
+            let enter!: () => void;
+            let release!: () => void;
+            const entered = new Promise<void>(resolve => { enter = resolve; });
+            const pending = new Promise<void>(resolve => { release = resolve; });
+            return { enter, release, entered, pending };
+        });
+        let cancels = 0;
+        abortHarness.setCancelAllHook(async () => {
+            const call = ++cancels;
+            // Call 2 is terminal cleanup, which overtakes the serialized Stops.
+            if (call === 2) return;
+            const gate = gates[call === 1 ? 0 : 1];
+            gate.enter();
+            await gate.pending;
+            if (failing && call === (repeated ? 3 : 1)) throw new Error('cancelAll boom');
+        });
+        const queue = new MessageQueue2<CopilotTestMode>((mode) => mode.permissionMode);
+        const wait = vi.spyOn(queue, 'waitForMessagesAndGetAsString');
+        const consumed = vi.fn();
+        queue.onBatchConsumed = consumed;
+        if (active) queue.push('active', { permissionMode: 'default' }, 'active-id');
+        const { session, rpcHandlers } = createAbortSession(queue);
+        let terminal!: RemoteLauncherTerminalHandlers;
+        class TestLauncher extends CopilotRemoteLauncher {
+            protected override setupTerminal(handlers: RemoteLauncherTerminalHandlers): void { terminal = handlers; }
+        }
+        const launcher = new TestLauncher(session as never, {});
+        const barrier = vi.spyOn(launcher as unknown as { waitForAbortBarrier(): Promise<void> }, 'waitForAbortBarrier');
+        const launched = launcher.launch().catch((error: unknown) => error);
+        const stops: Array<Promise<unknown>> = [];
+        try {
+            await vi.waitFor(() => expect(wait).toHaveBeenCalledTimes(1));
+            if (active) await vi.waitFor(() => expect(abortHarness.prompts).toHaveLength(1));
+            const stop = () => rpcHandlers.get(RPC_METHODS.Abort)!().catch((error: unknown) => error);
+            stops.push(stop());
+            await gates[0].entered;
+            await vi.waitFor(() => expect(barrier).toHaveBeenCalledTimes(2));
+            if (repeated) stops.push(stop());
+            consumed.mockClear();
+            queue.push('A', { permissionMode: 'default' }, 'pending-a');
+            queue.push('B', { permissionMode: 'default' }, 'pending-b');
+            expect(queue.pendingLocalIds()).toEqual(['pending-a', 'pending-b']);
+            if (reason === 'switch') await rpcHandlers.get(RPC_METHODS.Switch)!();
+            else await terminal.onExit();
+            gates[0].release();
+            if (repeated) {
+                await gates[1].entered;
+                expect(wait).toHaveBeenCalledTimes(1);
+                expect(consumed).not.toHaveBeenCalled();
+                gates[1].release();
+            }
+            const results = await Promise.all(stops);
+            if (failing) expect(results.at(-1)).toEqual(new Error('cancelAll boom'));
+            else expect(results.every(result => result === undefined)).toBe(true);
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(wait).toHaveBeenCalledTimes(1);
+            expect(consumed).not.toHaveBeenCalled();
+            expect(abortHarness.prompts).toHaveLength(active ? 1 : 0);
+            expect(queue.pendingLocalIds()).toEqual([]);
+            // A rejected Stop reaches only its RPC caller (checked above); the
+            // terminal request still ends the launcher with its own reason.
+            expect(await launched).toEqual(reason);
+        } finally {
+            gates.forEach(gate => gate.release());
+            abortHarness.setCancelAllHook(null);
+            queue.close();
+            await Promise.all(stops);
+            abortHarness.settleActivePrompt();
+            await launched;
+        }
+    });
+
+    it('does not ACK newly arriving input while an idle Stop is awaiting teardown', async () => {
+        let entered!: () => void;
+        let release!: () => void;
+        const enteredPromise = new Promise<void>(resolve => { entered = resolve; });
+        const teardown = new Promise<void>(resolve => { release = resolve; });
+        abortHarness.setCancelAllHook(async () => { entered(); await teardown; });
+        const queue = new MessageQueue2<CopilotTestMode>((mode) => mode.permissionMode);
+        const consumed = vi.fn();
+        queue.onBatchConsumed = consumed;
+        const { session, rpcHandlers } = createAbortSession(queue);
+        const launcherPromise = new CopilotRemoteLauncher(session as never, {}).launch();
+        let stop: Promise<unknown> | undefined;
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.has(RPC_METHODS.Abort)).toBe(true));
+            await new Promise<void>(resolve => setImmediate(resolve));
+            stop = rpcHandlers.get(RPC_METHODS.Abort)!();
+            await enteredPromise;
+            queue.push('A', { permissionMode: 'default' }, 'id-a');
+            queue.push('B', { permissionMode: 'default' }, 'id-b');
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(queue.pendingLocalIds()).toEqual(['id-a', 'id-b']);
+            expect(consumed).not.toHaveBeenCalled();
+            expect(abortHarness.prompts).toHaveLength(0);
+            release();
+            await stop;
+            await vi.waitFor(() => expect(abortHarness.prompts).toHaveLength(1));
+            expect(abortHarness.prompts[0][0].text).toBe('A\nB');
+            expect(consumed).toHaveBeenCalledExactlyOnceWith(['id-a', 'id-b']);
+        } finally {
+            release();
+            abortHarness.setCancelAllHook(null);
+            queue.close();
+            await stop?.catch(() => {});
+            await new Promise<void>(resolve => setImmediate(resolve));
+            abortHarness.settleActivePrompt();
+            await launcherPromise;
+        }
+    });
+
+    it('requeues the hub-ACKed batch when a plain Stop lands during the queued model apply', async () => {
+        let releaseModel: (() => void) | undefined;
+        let releaseTeardown: (() => void) | undefined;
+        abortHarness.setCancelAllHook(async () => { await new Promise<void>(resolve => { releaseTeardown = resolve; }); });
+        const queue = new MessageQueue2<CopilotTestMode>((mode) => mode.permissionMode);
+        const consumed = vi.fn();
+        queue.onBatchConsumed = consumed;
+        const { session, rpcHandlers } = createAbortSession(queue);
+        const launcher = new CopilotRemoteLauncher(session as never, {});
+        const launched = launcher.launch().catch((error: unknown) => error);
+        let stop: Promise<unknown> | undefined;
+        try {
+            await vi.waitFor(() => expect(abortHarness.backends.length).toBeGreaterThan(0));
+            const backend = abortHarness.backends.at(-1)!;
+            backend.setModel.mockImplementationOnce(() => new Promise<void>(resolve => { releaseModel = resolve; }));
+            queue.push('A', { permissionMode: 'default', model: 'gpt-5.7' } as CopilotTestMode, 'pending-a');
+            await vi.waitFor(() => expect(backend.setModel).toHaveBeenCalled());
+            expect(backend.setModel.mock.calls[0]?.[1]).toBe('gpt-5.7');
+            stop = rpcHandlers.get(RPC_METHODS.Abort)!().catch((error: unknown) => error);
+            await vi.waitFor(() => expect(releaseTeardown).toBeTypeOf('function'));
+            releaseModel?.();
+            await new Promise<void>(resolve => setImmediate(resolve));
+            await new Promise<void>(resolve => setImmediate(resolve));
+            // The batch was dequeued un-ACKed (the ACK is deferred to the
+            // dispatch commit point); the Stop must preserve it behind the
+            // in-flight teardown instead of dispatching a cancelled turn.
+            expect(abortHarness.prompts).toHaveLength(0);
+            releaseTeardown?.();
+            await stop;
+            await vi.waitFor(() => expect(abortHarness.prompts).toHaveLength(1));
+            expect(abortHarness.prompts[0][0].text).toBe('A');
+            // The hub ACK fires exactly once, at the dispatch commit point —
+            // the preserved batch was never stamped `invoked` while it sat
+            // behind the Stop teardown.
+            expect(consumed).toHaveBeenCalledTimes(1);
+            abortHarness.settleActivePrompt();
+            queue.close();
+            expect(await launched).toBe('exit');
+        } finally {
+            releaseModel?.();
+            releaseTeardown?.();
+            abortHarness.setCancelAllHook(null);
+            queue.close();
+            abortHarness.settleActivePrompt();
+            await launched;
+        }
+    });
+
+    it('ends without dispatching when switch lands during the queued model apply', async () => {
+        let releaseModel: (() => void) | undefined;
+        const queue = new MessageQueue2<CopilotTestMode>((mode) => mode.permissionMode);
+        const { session, rpcHandlers } = createAbortSession(queue);
+        const launcher = new CopilotRemoteLauncher(session as never, {});
+        const launched = launcher.launch().catch((error: unknown) => error);
+        try {
+            await vi.waitFor(() => expect(abortHarness.backends.length).toBeGreaterThan(0));
+            const backend = abortHarness.backends.at(-1)!;
+            backend.setModel.mockImplementationOnce(() => new Promise<void>(resolve => { releaseModel = resolve; }));
+            queue.push('A', { permissionMode: 'default', model: 'gpt-5.7' } as CopilotTestMode, 'pending-a');
+            await vi.waitFor(() => expect(backend.setModel).toHaveBeenCalled());
+            expect(backend.setModel.mock.calls[0]?.[1]).toBe('gpt-5.7');
+            await rpcHandlers.get(RPC_METHODS.Switch)!();
+            releaseModel?.();
+            await new Promise<void>(resolve => setImmediate(resolve));
+            await new Promise<void>(resolve => setImmediate(resolve));
+            // The terminal teardown reset the queue: no dispatch, no bounce.
+            expect(abortHarness.prompts).toHaveLength(0);
+            expect(queue.pendingLocalIds()).toEqual([]);
+            queue.close();
+            expect(await launched).toBe('switch');
+        } finally {
+            releaseModel?.();
+            queue.close();
+            abortHarness.settleActivePrompt();
+            await launched;
+        }
+    });
+
+    it('an idle switch teardown does not consume a newly arrived row', async () => {
+        const queue = new MessageQueue2<CopilotTestMode>((mode) => mode.permissionMode);
+        const consumed = vi.fn();
+        queue.onBatchConsumed = consumed;
+        const { session, rpcHandlers } = createAbortSession(queue);
+        const launcher = new CopilotRemoteLauncher(session as never, {});
+        const launched = launcher.launch().catch((error: unknown) => error);
+        let releaseTeardown: (() => void) | undefined;
+        try {
+            // Wait until the loop is parked: the Switch handler is registered
+            // immediately before the drain loop starts.
+            await vi.waitFor(() => expect(rpcHandlers.has(RPC_METHODS.Switch)).toBe(true));
+            // Park the terminal teardown's cancelAll; a row arrives while the
+            // dequeue signal is still live (pre-fix) and gets consumed+ACKed.
+            abortHarness.setCancelAllHook(async () => {
+                await new Promise<void>(resolve => { releaseTeardown = resolve; });
+            });
+            const switchPromise = rpcHandlers.get(RPC_METHODS.Switch)!();
+            await vi.waitFor(() => expect(releaseTeardown).toBeTypeOf('function'));
+            queue.push('late', { permissionMode: 'default' } as CopilotTestMode, 'late');
+            await new Promise<void>(resolve => setImmediate(resolve));
+            await new Promise<void>(resolve => setImmediate(resolve));
+            // The row must not be dequeued+ACKed during the teardown: it is
+            // dropped by the terminal reset either way, but never 'invoked'.
+            expect(consumed).not.toHaveBeenCalled();
+            expect(abortHarness.prompts).toHaveLength(0);
+            releaseTeardown?.();
+            await switchPromise;
+            expect(queue.pendingLocalIds()).toEqual([]);
+            queue.close();
+            expect(await launched).toBe('switch');
+        } finally {
+            releaseTeardown?.();
+            abortHarness.setCancelAllHook(null);
+            queue.close();
+            abortHarness.settleActivePrompt();
+            await launched;
+        }
+    });
+
+    it('a switch whose cancelAll rejects still resets the queue and wakes the loop', async () => {
+        let releasePrompt: (() => void) | undefined;
+        abortHarness.setCancelPromptSettles(true);
+        const queue = new MessageQueue2<CopilotTestMode>((mode) => mode.permissionMode);
+        queue.push('in flight', { permissionMode: 'default' } as CopilotTestMode, 'turn');
+        queue.push('pending', { permissionMode: 'default' } as CopilotTestMode, 'pending');
+        const { session, rpcHandlers } = createAbortSession(queue);
+        const launcher = new CopilotRemoteLauncher(session as never, {});
+        const launched = launcher.launch().catch((error: unknown) => error);
+        try {
+            await vi.waitFor(() => expect(abortHarness.prompts).toHaveLength(1));
+            abortHarness.setCancelAllRejects(true);
+            await expect(rpcHandlers.get(RPC_METHODS.Switch)!()).rejects.toThrow();
+            // The rejected terminal teardown still owes the queue reset and
+            // the dequeue-signal abort: the loop must exit, not park.
+            expect(queue.pendingLocalIds()).toEqual([]);
+            expect(await launched).toBe('switch');
+        } finally {
+            abortHarness.setCancelAllRejects(false);
+            releasePrompt?.();
+            abortHarness.settleActivePrompt();
+            queue.close();
+            await launched;
+        }
+    });
+
+    it('captures the effort baseline when a plain Stop bails right after the model switch', async () => {
+        // Round-7 Minor 4: the abort bail-out used to precede the baseline
+        // capture, so the requeued batch never took the NEW model's baseline.
+        const queue = new MessageQueue2<CopilotTestMode>((mode) => mode.permissionMode);
+        const { session, rpcHandlers } = createAbortSession(queue);
+        const launcher = new CopilotRemoteLauncher(session as never, {});
+        const launched = launcher.launch().catch((error: unknown) => error);
+        let releaseTeardown: (() => void) | undefined;
+        let releaseModel: (() => void) | undefined;
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.has(RPC_METHODS.Abort)).toBe(true));
+            const backend = abortHarness.backends.at(-1)!;
+            const tlc = backend.getThoughtLevelConfigOption as ReturnType<typeof vi.fn>;
+            const baselineCalls = tlc.mock.calls.length;
+            // Park the queued model apply; a plain Stop lands inside it.
+            abortHarness.setCancelAllHook(async () => { await new Promise<void>(resolve => { releaseTeardown = resolve; }); });
+            backend.setModel.mockImplementationOnce(() => new Promise<void>(resolve => { releaseModel = resolve; }));
+            queue.push('A', { permissionMode: 'default', model: 'gpt-5.7' } as CopilotTestMode, 'a');
+            await vi.waitFor(() => expect(backend.setModel).toHaveBeenCalled());
+            const stop = rpcHandlers.get(RPC_METHODS.Abort)!().catch((error: unknown) => error);
+            await vi.waitFor(() => expect(releaseTeardown).toBeTypeOf('function'));
+            releaseModel?.();
+            // The bail-out requeues the batch, but the switched model's effort
+            // baseline must be taken before the bail (pre-fix it never ran:
+            // the retry sees the model as already applied).
+            for (let i = 0; i < 20 && tlc.mock.calls.length === baselineCalls; i += 1) {
+                await new Promise<void>(resolve => setTimeout(resolve, 50));
+            }
+            expect(tlc.mock.calls.length).toBe(baselineCalls + 1);
+            releaseTeardown?.();
+            await stop;
+            // The requeued batch re-dispatches on the fresh signal and
+            // completes; settle the parked prompt so the launcher drains.
+            await vi.waitFor(() => expect(abortHarness.prompts).toHaveLength(1));
+            abortHarness.settleActivePrompt();
+            queue.close();
+            expect(await launched).toBe('exit');
+        } finally {
+            releaseModel?.();
+            releaseTeardown?.();
+            abortHarness.setCancelAllHook(null);
+            // Drop any requeued batch so teardown never re-dispatches into the
+            // parked prompt mock, then let the launcher drain and exit.
+            queue.reset();
+            queue.close();
+            abortHarness.settleActivePrompt();
+            await Promise.race([launched, new Promise<void>(resolve => setTimeout(resolve, 2000))]);
+        }
+    });
+
+    it('keeps pending input behind the second Stop after the first teardown completes', async () => {
+        // A cancellation ACK can precede the active prompt's final completion.
+        abortHarness.setCancelPromptSettles(false);
+        const gates = [0, 1].map(() => {
+            let enter!: () => void;
+            let release!: () => void;
+            const entered = new Promise<void>(resolve => { enter = resolve; });
+            const pending = new Promise<void>(resolve => { release = resolve; });
+            return { enter, release, entered, pending };
+        });
+        let call = 0;
+        abortHarness.setCancelAllHook(async () => {
+            const gate = gates[call++];
+            gate.enter();
+            await gate.pending;
+        });
+        const queue = new MessageQueue2<CopilotTestMode>((mode) => mode.permissionMode);
+        const consumed = vi.fn();
+        queue.onBatchConsumed = consumed;
+        queue.push('active', { permissionMode: 'default' }, 'id-active');
+        const { session, rpcHandlers } = createAbortSession(queue);
+        const launcherPromise = new CopilotRemoteLauncher(session as never, {}).launch();
+        let first: Promise<unknown> | undefined;
+        let second: Promise<unknown> | undefined;
+        try {
+            await vi.waitFor(() => expect(abortHarness.prompts).toHaveLength(1));
+            consumed.mockClear();
+            const abort = rpcHandlers.get(RPC_METHODS.Abort)!;
+            first = abort();
+            await gates[0].entered;
+            second = abort();
+            queue.push('A', { permissionMode: 'default' }, 'id-a');
+            queue.push('B', { permissionMode: 'default' }, 'id-b');
+            gates[0].release();
+            await first;
+            await gates[1].entered;
+            abortHarness.settleActivePrompt();
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(queue.pendingLocalIds()).toEqual(['id-a', 'id-b']);
+            expect(consumed).not.toHaveBeenCalled();
+            expect(abortHarness.prompts).toHaveLength(1);
+            gates[1].release();
+            await second;
+            await vi.waitFor(() => expect(abortHarness.prompts).toHaveLength(2));
+            expect(abortHarness.prompts[1][0].text).toBe('A\nB');
+            expect(consumed).toHaveBeenCalledExactlyOnceWith(['id-a', 'id-b']);
+        } finally {
+            gates[0].release();
+            gates[1].release();
+            abortHarness.setCancelAllHook(null);
+            queue.close();
+            await Promise.allSettled([first, second]);
+            await new Promise<void>(resolve => setImmediate(resolve));
+            abortHarness.settleActivePrompt();
+            await launcherPromise;
+        }
+    });
+
+    it('keeps pending A/B queued and dispatches them exactly once in order after a plain Stop', async () => {
+        const queue = new MessageQueue2<CopilotTestMode>((mode) => mode.permissionMode);
+        queue.push('active', { permissionMode: 'default' }, 'id-active');
+        const { session, rpcHandlers } = createAbortSession(queue);
+        const launcher = new CopilotRemoteLauncher(session as never, {});
+        const launcherPromise = launcher.launch();
+
+        await vi.waitFor(() => expect(abortHarness.prompts).toHaveLength(1));
+
+        queue.push('A', { permissionMode: 'default' }, 'id-a');
+        queue.push('B', { permissionMode: 'default' }, 'id-b');
+
+        const abort = rpcHandlers.get(RPC_METHODS.Abort)!;
+        await abort();
+
+        await vi.waitFor(() => expect(abortHarness.prompts).toHaveLength(2));
+        expect(abortHarness.prompts[1][0].text).toBe('A\nB');
+
+        abortHarness.settleActivePrompt();
+        abortHarness.setCancelAllGated(false);
+        queue.close();
+        await rpcHandlers.get(RPC_METHODS.Abort)!();
+        await launcherPromise;
+    });
+
+    it('does not dequeue/ACK/send pending A/B while abort teardown is still awaiting permission cancelAll', async () => {
+        abortHarness.setCancelAllGated(true);
+        const queue = new MessageQueue2<CopilotTestMode>((mode) => mode.permissionMode);
+        const consumedIds: string[][] = [];
+        queue.onBatchConsumed = (ids) => { consumedIds.push([...ids]); };
+        queue.push('active', { permissionMode: 'default' }, 'id-active');
+        const { session, rpcHandlers } = createAbortSession(queue);
+        const launcher = new CopilotRemoteLauncher(session as never, {});
+        const launcherPromise = launcher.launch();
+
+        await vi.waitFor(() => expect(abortHarness.prompts).toHaveLength(1));
+        consumedIds.length = 0;
+
+        queue.push('A', { permissionMode: 'default' }, 'id-a');
+        queue.push('B', { permissionMode: 'default' }, 'id-b');
+
+        const abort = rpcHandlers.get(RPC_METHODS.Abort)!;
+        const abortPromise = abort();
+
+        await abortHarness.cancelAllEntered;
+
+        queue.push('C', { permissionMode: 'default' }, 'id-c');
+
+        expect(abortHarness.prompts).toHaveLength(1);
+        expect(queue.pendingLocalIds()).toEqual(['id-a', 'id-b', 'id-c']);
+        expect(consumedIds).toEqual([]);
+
+        abortHarness.releaseCancelAll();
+        await abortPromise;
+
+        await vi.waitFor(() => expect(abortHarness.prompts).toHaveLength(2));
+        expect(abortHarness.prompts[1][0].text).toBe('A\nB\nC');
+        expect(consumedIds).toEqual([['id-a', 'id-b', 'id-c']]);
+
+        abortHarness.settleActivePrompt();
+        abortHarness.setCancelAllGated(false);
+        queue.close();
+        await rpcHandlers.get(RPC_METHODS.Abort)!();
+        await launcherPromise;
+    });
+
+    it('keeps the loop alive across an idle plain Stop and still drains the queue afterwards', async () => {
+        const queue = new MessageQueue2<CopilotTestMode>((mode) => mode.permissionMode);
+        const { session, rpcHandlers } = createAbortSession(queue);
+        const launcher = new CopilotRemoteLauncher(session as never, {});
+        const launcherPromise = launcher.launch();
+
+        await vi.waitFor(() => expect(rpcHandlers.has(RPC_METHODS.Abort)).toBe(true));
+
+        const abort = rpcHandlers.get(RPC_METHODS.Abort)!;
+        await abort();
+
+        let settled = false;
+        void launcherPromise.then(() => { settled = true; });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(settled).toBe(false);
+
+        queue.push('A', { permissionMode: 'default' }, 'id-a');
+        queue.push('B', { permissionMode: 'default' }, 'id-b');
+
+        await vi.waitFor(() => expect(abortHarness.prompts).toHaveLength(1));
+        expect(abortHarness.prompts[0][0].text).toBe('A\nB');
+
+        abortHarness.settleActivePrompt();
+        abortHarness.setCancelAllGated(false);
+        queue.close();
+        await rpcHandlers.get(RPC_METHODS.Abort)!();
+        await launcherPromise;
+    });
+
+    it('serializes concurrent Stop requests and dispatches the pending batch exactly once', async () => {
+        const queue = new MessageQueue2<CopilotTestMode>((mode) => mode.permissionMode);
+        const consumedIds: string[][] = [];
+        queue.onBatchConsumed = (ids) => { consumedIds.push([...ids]); };
+        queue.push('active', { permissionMode: 'default' }, 'id-active');
+        const { session, rpcHandlers } = createAbortSession(queue);
+        const launcher = new CopilotRemoteLauncher(session as never, {});
+        const launcherPromise = launcher.launch();
+
+        await vi.waitFor(() => expect(abortHarness.prompts).toHaveLength(1));
+        consumedIds.length = 0;
+
+        queue.push('A', { permissionMode: 'default' }, 'id-a');
+        queue.push('B', { permissionMode: 'default' }, 'id-b');
+
+        const abort = rpcHandlers.get(RPC_METHODS.Abort)!;
+        const first = abort();
+        const second = abort();
+        await Promise.all([first, second]);
+
+        await vi.waitFor(() => expect(abortHarness.prompts).toHaveLength(2));
+        expect(abortHarness.prompts[1][0].text).toBe('A\nB');
+        // Exactly one batch consumed, with both localIds in FIFO order.
+        expect(consumedIds).toEqual([['id-a', 'id-b']]);
+
+        abortHarness.settleActivePrompt();
+        abortHarness.setCancelAllGated(false);
+        queue.close();
+        await rpcHandlers.get(RPC_METHODS.Abort)!();
+        await launcherPromise;
+    });
+
+    it('keeps the loop running and surfaces the error to the Abort caller when cancelAll rejects during teardown', async () => {
+        abortHarness.setCancelAllRejects(true);
+        const queue = new MessageQueue2<CopilotTestMode>((mode) => mode.permissionMode);
+        queue.push('active', { permissionMode: 'default' }, 'id-active');
+        // A loop left on the aborted dequeue signal never yields; trip the spin
+        // instead of hanging the test.
+        const realWait = queue.waitForMessagesAndGetAsString.bind(queue);
+        let abortedWaits = 0;
+        vi.spyOn(queue, 'waitForMessagesAndGetAsString').mockImplementation(async (signal?: AbortSignal) => {
+            if (signal?.aborted && ++abortedWaits > 200) throw new Error('dequeue loop is spinning on an aborted signal');
+            return realWait(signal);
+        });
+        const { session, rpcHandlers } = createAbortSession(queue);
+        const launcher = new CopilotRemoteLauncher(session as never, {});
+        const launcherPromise = launcher.launch();
+
+        await vi.waitFor(() => expect(abortHarness.prompts).toHaveLength(1));
+        queue.push('A', { permissionMode: 'default' }, 'id-a');
+        queue.push('B', { permissionMode: 'default' }, 'id-b');
+
+        const abort = rpcHandlers.get(RPC_METHODS.Abort)!;
+        await expect(abort()).rejects.toThrow('cancelAll boom');
+        abortHarness.setCancelAllRejects(false);
+
+        // A rejected cancel behaves as it does without the Abort barrier: the loop
+        // survives, the queued input is preserved and delivered as one batch.
+        await vi.waitFor(() => expect(abortHarness.prompts).toHaveLength(2));
+        expect(abortHarness.prompts[1][0].text).toBe('A\nB');
+        expect(abortedWaits).toBeLessThan(5);
+
+        abortHarness.settleActivePrompt();
+        queue.close();
+        await expect(launcherPromise).resolves.toBe('exit');
     });
 });
 

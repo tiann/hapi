@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MessageQueue2 } from '@/utils/MessageQueue2'
 import type { DshMode } from './types'
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 
 const FLASH = '["deepseek-official","deepseek-flash"]'
 const PRO = '["deepseek-official","deepseek-v4-pro"]'
@@ -28,6 +29,8 @@ const harness = vi.hoisted(() => ({
     // When set, newSession() rejects with this — lets tests kill the backend
     // inside every recovery/reconnect window.
     newSessionError: null as Error | null,
+    // One-shot newSession errors, consumed before the sticky newSessionError.
+    newSessionErrorQueue: [] as Array<Error | null>,
     // When set, resumeSession() parks on this promise — lets tests abort
     // inside the post-abort restart window.
     resumeBlocker: null as null | Promise<void>,
@@ -40,6 +43,9 @@ const harness = vi.hoisted(() => ({
     permissionCancelIssued: null as (() => void) | null,
     // When set, prompt() parks on this promise — lets tests abort mid-turn.
     promptBlocker: null as null | Promise<void>,
+    // When set, buildDshPromptContent parks on this promise — lets tests abort
+    // inside the pre-prompt preparation window (image reads await).
+    promptContentBlocker: null as null | Promise<void>,
     // When set, newSession() parks on this promise — lets tests abort inside
     // the respawn window, or query the catalog RPC while session/new is still
     // pending.
@@ -55,6 +61,7 @@ const harness = vi.hoisted(() => ({
     } | null,
     setConfigOptionCalls: [] as Array<{ sessionId: string; configId: string; value: string }>,
     configOptionError: null as Error | null,
+    cancelAll: vi.fn(async (_reason?: string) => {}),
     // Per-call set_config_option failures (shifted off the front); a null
     // slot succeeds — lets tests stage apply-then-fail sequences.
     setConfigOptionErrorQueue: [] as Array<Error | null>,
@@ -80,6 +87,8 @@ vi.mock('./utils/dshBackend', () => ({
                 if (harness.newSessionBlocker) {
                     await harness.newSessionBlocker
                 }
+                const queuedError = harness.newSessionErrorQueue.shift()
+                if (queuedError) throw queuedError
                 if (harness.newSessionError) throw harness.newSessionError
                 return `dsh-session-${harness.newSessionCalls.length}`
             }),
@@ -146,6 +155,9 @@ vi.mock('./utils/dshPromptContent', async (importOriginal) => {
             _opts: unknown
         ) => {
             harness.promptContentInputs.push({ text, images })
+            if (harness.promptContentBlocker) {
+                await harness.promptContentBlocker
+            }
             const prompt: Array<Record<string, unknown>> = [{ type: 'text', text }]
             if (images && images.length > 0 && harness.supportsImages) {
                 for (const image of images) {
@@ -176,7 +188,7 @@ vi.mock('@/modules/common/permission/AcpPermissionHandler', () => ({
             harness.permissionGetMode = getPermissionMode
             harness.permissionCancelIssued = options?.onCancelIssued ?? null
         }
-        async cancelAll(): Promise<void> {}
+        async cancelAll(reason?: string): Promise<void> { await harness.cancelAll(reason) }
     }
 }))
 
@@ -237,12 +249,12 @@ function createSession(queue = createQueue(), sessionId: string | null = null) {
     return session
 }
 
-function createSessionWithBatches(batches: Array<[string, DshMode]>, sessionId: string | null = null) {
+function createSessionWithBatches(batches: Array<[string, DshMode]>, sessionId: string | null = null, close = true) {
     const queue = createQueue()
     for (const [message, mode] of batches) {
         queue.push(message, mode)
     }
-    queue.close()
+    if (close) queue.close()
     return createSession(queue, sessionId)
 }
 
@@ -270,6 +282,7 @@ describe('DshRemoteLauncher', () => {
         harness.permissionGetMode = null
         harness.permissionCancelIssued = null
         harness.promptBlocker = null
+        harness.promptContentBlocker = null
         harness.newSessionBlocker = null
         harness.disconnectBlocker = null
         harness.modelOption = null
@@ -277,9 +290,228 @@ describe('DshRemoteLauncher', () => {
         harness.thoughtLevelOption = null
         harness.setConfigOptionCalls = []
         harness.configOptionError = null
+        harness.newSessionBlocker = null
+        harness.cancelAll.mockReset().mockResolvedValue(undefined)
         harness.setConfigOptionErrorQueue = []
         harness.supportsImages = false
         harness.promptContentInputs = []
+    })
+
+    it.each(['continue', 'exit'] as const)('keeps queued model selection across Stop teardown before %s', async action => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        const session = createSessionWithBatches([['first', {}]], null, false)
+        const launcher = new DshRemoteLauncher(session as never)
+        let finishPrompt!: () => void
+        let releaseTeardown!: () => void
+        const promptGate = new Promise<void>(resolve => { finishPrompt = resolve })
+        const teardownGate = new Promise<void>(resolve => { releaseTeardown = resolve })
+        const done = launcher.launch()
+        let aborted: Promise<unknown> | undefined
+        let exited: Promise<unknown> | undefined
+        try {
+            await vi.waitFor(() => expect(harness.backend).not.toBeNull())
+            harness.backend!.prompt.mockImplementationOnce(async (_id, content) => {
+                harness.prompts.push(content)
+                await promptGate
+            })
+            await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+            session.queue.push('after-stop', { model: PRO }, 'pending-original')
+            session.queue.close()
+            harness.backend!.cancelPrompt.mockImplementation(async () => { finishPrompt() })
+            harness.cancelAll.mockImplementation(async reason => {
+                if (reason === 'User aborted') await teardownGate
+            })
+            const handler = (method: string) => {
+                const call = session.client.rpcHandlerManager.registerHandler.mock.calls.find(c => c[0] === method)
+                expect(call).toBeTruthy()
+                return call![1] as () => Promise<unknown>
+            }
+            aborted = handler(RPC_METHODS.Abort)()
+            await vi.waitFor(() => expect(harness.cancelAll).toHaveBeenCalledWith('User aborted'))
+            expect(session.queue.pendingLocalIds()).toEqual(['pending-original'])
+            expect(harness.prompts).toHaveLength(1)
+            expect(harness.setConfigOptionCalls).toEqual([])
+            if (action === 'exit') exited = handler(RPC_METHODS.Switch)()
+            releaseTeardown()
+            await aborted
+            if (exited) await exited
+            await done
+            expect(session.queue.size()).toBe(0)
+            if (action === 'continue') {
+                expect(harness.prompts).toEqual([[{ type: 'text', text: 'first' }], [{ type: 'text', text: 'after-stop' }]])
+                expect(harness.setConfigOptionCalls.map(c => c.value)).toEqual([PRO])
+            } else {
+                expect(harness.prompts).toHaveLength(1)
+            expect(harness.setConfigOptionCalls).toEqual([])
+            }
+        } finally {
+            session.queue.close()
+            finishPrompt?.()
+            releaseTeardown?.()
+            await Promise.allSettled([done, aborted, exited])
+        }
+    })
+
+    it('keeps the loop running with its queued input when the native Stop teardown is rejected', async () => {
+        const session = createSessionWithBatches([['first', {}]], null, false)
+        const launcher = new DshRemoteLauncher(session as never)
+        // A loop left on the aborted dequeue signal never yields; trip the spin.
+        const realWait = session.queue.waitForMessagesAndGetAsString.bind(session.queue)
+        let abortedWaits = 0
+        vi.spyOn(session.queue, 'waitForMessagesAndGetAsString').mockImplementation(async (signal?: AbortSignal) => {
+            if (signal?.aborted && ++abortedWaits > 200) throw new Error('dequeue loop is spinning on an aborted signal')
+            return realWait(signal)
+        })
+        let finishPrompt!: () => void
+        const promptGate = new Promise<void>(resolve => { finishPrompt = resolve })
+        const done = launcher.launch()
+        let aborted: Promise<unknown> | undefined
+        try {
+            await vi.waitFor(() => expect(harness.backend).not.toBeNull())
+            harness.backend!.prompt.mockImplementationOnce(async (_id, content) => {
+                harness.prompts.push(content)
+                await promptGate
+            })
+            await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+            session.queue.push('after-stop', {}, 'pending-original')
+            harness.backend!.cancelPrompt.mockImplementation(async () => { finishPrompt() })
+            harness.cancelAll.mockImplementation(async reason => {
+                if (reason === 'User aborted') throw new Error('cancelAll boom')
+            })
+            const abort = session.client.rpcHandlerManager.registerHandler.mock.calls.find(c => c[0] === RPC_METHODS.Abort)![1] as () => Promise<unknown>
+            aborted = abort()
+            await expect(aborted).rejects.toThrow('cancelAll boom')
+            await vi.waitFor(() => expect(harness.prompts).toHaveLength(2))
+            expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'after-stop' }])
+            expect(abortedWaits).toBeLessThan(5)
+        } finally {
+            session.queue.close()
+            finishPrompt?.()
+            await Promise.allSettled([done, aborted])
+        }
+    })
+
+    it('requeues the hub-ACKed batch when a plain Stop lands while the prompt content is prepared', async () => {
+        const session = createSessionWithBatches([['first', {}]], null, false)
+        const launcher = new DshRemoteLauncher(session as never)
+        // Park the batch inside the pre-prompt preparation (image reads await
+        // here in production) before the loop can reach it.
+        let releaseContent!: () => void
+        harness.promptContentBlocker = new Promise<void>(resolve => { releaseContent = resolve })
+        const done = launcher.launch()
+        let aborted: Promise<unknown> | undefined
+        try {
+            await vi.waitFor(() => expect(harness.backend).not.toBeNull())
+            await vi.waitFor(() => expect(harness.promptContentInputs).toHaveLength(1))
+            expect(harness.prompts).toHaveLength(0)
+            const abort = session.client.rpcHandlerManager.registerHandler.mock.calls.find(c => c[0] === RPC_METHODS.Abort)![1] as () => Promise<unknown>
+            aborted = abort()
+            // The failed mid-prompt respawn nulled the permission handler, so
+            // the Stop's observable tail is the 'Session aborted' event (the
+            // generation bump + controller swap happened synchronously before
+            // it).
+            await vi.waitFor(() => expect(session.sendSessionEvent).toHaveBeenCalledWith(
+                { type: 'message', message: 'Session aborted' }))
+            // The batch was already dequeued (and hub-ACKed via the queue's
+            // consumed wiring); a plain Stop preserves it.
+            releaseContent()
+            // RED would leave prompts empty: the batch was dropped.
+            await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+            expect(harness.prompts[0]).toEqual([{ type: 'text', text: 'first' }])
+            session.queue.close()
+            await done
+        } finally {
+            session.queue.close()
+            releaseContent?.()
+            await Promise.allSettled([done, aborted])
+        }
+    })
+
+    it('still tears the pending queue down when the kill cancel rejects', async () => {
+        const session = createSessionWithBatches([['first', {}]], null, false)
+        const launcher = new DshRemoteLauncher(session as never)
+        let release!: () => void
+        const gate = new Promise<void>(resolve => { release = resolve })
+        const done = launcher.launch()
+        try {
+            await vi.waitFor(() => expect(harness.backend).not.toBeNull())
+            harness.backend!.prompt.mockImplementationOnce(async (_id, content) => {
+                harness.prompts.push(content)
+                await gate
+            })
+            await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+            session.queue.push('must-not-run', {}, 'terminal-pending')
+            harness.backend!.cancelPrompt.mockImplementationOnce(async () => { throw new Error('cancel boom') })
+            await expect(launcher.kill()).rejects.toThrow('cancel boom')
+            // A rejected cancel must not skip the kill teardown's queue reset.
+            expect(session.queue.pendingLocalIds()).toEqual([])
+            session.queue.close()
+            await done
+        } finally {
+            session.queue.close()
+            release()
+            await done
+        }
+    })
+
+    it('does not dispatch queued input when process cleanup kills the launcher', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        const session = createSessionWithBatches([['first', {}]], null, false)
+        const launcher = new DshRemoteLauncher(session as never)
+        let release!: () => void
+        const gate = new Promise<void>(resolve => { release = resolve })
+        const done = launcher.launch()
+        try {
+            await vi.waitFor(() => expect(harness.backend).not.toBeNull())
+            harness.backend!.prompt.mockImplementationOnce(async (_id, content) => {
+                harness.prompts.push(content)
+                await gate
+            })
+            await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+            session.queue.push('must-not-run', { model: PRO }, 'terminal-pending')
+            session.queue.close()
+            harness.backend!.cancelPrompt.mockImplementation(async () => { release() })
+            await launcher.kill()
+            await new Promise<void>(resolve => { setImmediate(resolve) })
+            expect(harness.prompts).toHaveLength(1)
+            expect(harness.setConfigOptionCalls).toEqual([])
+            expect(session.queue.pendingLocalIds()).toEqual([])
+            session.queue.close()
+            await done
+        } finally {
+            session.queue.close()
+            release()
+            await done
+        }
+    })
+
+    it('does not consume input arriving while idle process cleanup is pending', async () => {
+        harness.modelOption = { id: 'model', category: 'model', currentValue: FLASH }
+        const session = createSessionWithBatches([], null, false)
+        const waitForBatch = vi.spyOn(session.queue, 'waitForMessagesAndGetAsString')
+        const launcher = new DshRemoteLauncher(session as never)
+        let release!: () => void
+        const gate = new Promise<void>(resolve => { release = resolve })
+        const done = launcher.launch()
+        let killed: Promise<void> | undefined
+        try {
+            await vi.waitFor(() => expect(waitForBatch).toHaveBeenCalledTimes(1))
+            harness.backend!.cancelPrompt.mockImplementation(async () => { await gate })
+            killed = launcher.kill()
+            await vi.waitFor(() => expect(harness.backend!.cancelPrompt).toHaveBeenCalledTimes(1))
+            session.queue.push('must-not-run', { model: PRO }, 'arrived-during-exit')
+            await new Promise<void>(resolve => { setImmediate(resolve) })
+            expect(harness.prompts).toEqual([])
+            expect(harness.setConfigOptionCalls).toEqual([])
+            expect(session.queue.pendingLocalIds()).toEqual(['arrived-during-exit'])
+            release()
+            await killed
+            expect(session.queue.pendingLocalIds()).toEqual([])
+        } finally {
+            release()
+            session.queue.close()
+            await Promise.allSettled([done, killed])
+        }
     })
 
     it('creates a fresh ACP session and forwards text prompts', async () => {
@@ -720,6 +952,168 @@ describe('DshRemoteLauncher', () => {
         expect(session.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' })
     })
 
+    it('requeues the dequeued batch when a plain Stop lands during a failed reconnect', async () => {
+        // The mid-prompt respawn fails, so 'second' enters the top-of-loop
+        // reconnect. A plain Stop landing inside a FAILED reconnect must put
+        // the already-dequeued batch back (un-ACKed) for the post-stop drain
+        // instead of silently dropping it with the !reconnected continue.
+        harness.promptErrorQueue = [deadTransportError()]
+        harness.initializeErrorQueue = [null, new Error('Failed to spawn dsh: not found')]
+        const queue = createQueue()
+        const consumed = vi.fn()
+        queue.onBatchConsumed = consumed
+        queue.push('first', {})
+        const session = createSession(queue)
+        const launcher = new DshRemoteLauncher(session as never)
+
+        const done = launcher.launch()
+        let aborted: Promise<unknown> | undefined
+        try {
+            // Initial establishment + the failed mid-prompt respawn.
+            await vi.waitFor(() => expect(harness.backends).toHaveLength(2))
+
+            // Park the reconnect's session/new; a plain Stop lands inside it.
+            let releaseNewSession!: () => void
+            harness.newSessionBlocker = new Promise((resolve) => { releaseNewSession = resolve })
+            queue.push('second', {})
+            await vi.waitFor(() => expect(harness.newSessionCalls).toHaveLength(2))
+
+            const abort = session.client.rpcHandlerManager.registerHandler.mock.calls
+                .find(c => c[0] === RPC_METHODS.Abort)![1] as () => Promise<unknown>
+            aborted = abort()
+            // The failed mid-prompt respawn nulled the permission handler, so
+            // the Stop's observable tail is the 'Session aborted' event (the
+            // generation bump + controller swap happened synchronously before
+            // it).
+            await vi.waitFor(() => expect(session.sendSessionEvent).toHaveBeenCalledWith(
+                { type: 'message', message: 'Session aborted' }))
+
+            // One-shot failure for THIS newSession call only, so the next
+            // attempt succeeds without a test-side race.
+            harness.newSessionErrorQueue = [deadTransportError('session/new failed: ACP process exited (code=1)')]
+            releaseNewSession()
+
+            await vi.waitFor(() => expect(session.sendSessionEvent).toHaveBeenCalledWith(
+                { type: 'message', message: expect.stringContaining('DSH reconnect failed') }))
+            // The dequeued batch must survive un-ACKed — not dropped, not
+            // stamped `invoked` at the hub while it waits for the post-stop
+            // drain (the requeued row is instantly re-dequeued for the fresh
+            // respawn attempt, so the observable proof is the deferred ACK).
+            expect(consumed).not.toHaveBeenCalled()
+
+            // The loop stays alive: the requeued message re-dispatches on the
+            // fresh backend.
+            await vi.waitFor(() => expect(harness.prompts).toEqual([
+                [{ type: 'text', text: 'first' }],
+                [{ type: 'text', text: 'second' }]
+            ]))
+            queue.close()
+            await done
+        } finally {
+            session.queue.close()
+            await Promise.allSettled([done, aborted])
+        }
+    })
+
+    it('a batch resolved while shouldExit flips breaks before reconnect or setup', async () => {
+        // Round-7 Minor 2: the dequeue can resolve a real batch right as the
+        // terminal teardown flips shouldExit; the loop must break before the
+        // model switch instead of mutating ACP state on a closing backend.
+        harness.modelOption = { id: 'model', category: 'model', currentValue: 'flash' }
+        const queue = createQueue()
+        const session = createSession(queue)
+        const launcher = new DshRemoteLauncher(session as never)
+        const done = launcher.launch()
+        try {
+            // The override is installed before launch so the loop's very first
+            // wait resolves the synthetic batch; the switch fires lazily once
+            // the teardown RPC is wireable.
+            let switchFired = false
+            session.queue.waitForMessagesAndGetAsString = async () => {
+                if (!switchFired) {
+                    switchFired = true
+                    await vi.waitFor(() => expect(
+                        session.client.rpcHandlerManager.registerHandler.mock.calls.some((c: unknown[]) => c[0] === RPC_METHODS.Switch)
+                    ).toBe(true))
+                    const switchHandler = session.client.rpcHandlerManager.registerHandler.mock.calls
+                        .find((c: unknown[]) => c[0] === RPC_METHODS.Switch)![1] as () => Promise<unknown>
+                    // requestExit flips shouldExit synchronously before the
+                    // teardown's first await.
+                    void switchHandler()
+                }
+                return { message: 'late', mode: { model: 'flash-x' } as DshMode, isolate: false, hash: 'synthetic', items: [{ message: 'late', localId: 'late' }] }
+            }
+            queue.close()
+            await done
+            // The closing launcher must not run the batch's model switch or
+            // prompt.
+            expect(harness.setConfigOptionCalls).toEqual([])
+            expect(harness.prompts).toEqual([])
+        } finally {
+            queue.close()
+            await Promise.allSettled([done])
+        }
+    })
+
+    it('requeues the batch when a plain Stop lands during a failed acpSessionEnded restart', async () => {
+        // Round-7 Minor 3: the acpSessionEnded recovery's catch dropped the
+        // dequeued batch even when the failure was raced by a plain Stop.
+        harness.supportsResume = true
+        let releaseFirstPrompt!: () => void
+        harness.promptBlocker = new Promise((resolve) => { releaseFirstPrompt = resolve })
+        const queue = createQueue()
+        queue.push('first', {})
+        const session = createSession(queue)
+        const launcher = new DshRemoteLauncher(session as never)
+        const done = launcher.launch()
+        let aborted: Promise<unknown> | undefined
+        try {
+            await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+            // Kill arms the implicit-end detector; 'second' then hits the
+            // closed session and sets the acpSessionEnded marker.
+            const killPromise = launcher.kill()
+            releaseFirstPrompt()
+            await killPromise
+            harness.promptErrorQueue = [new Error('Session not found: dsh-session-1')]
+            queue.push('second', {})
+            await vi.waitFor(() => expect(harness.prompts).toHaveLength(2))
+            // 'third' enters the acpSessionEnded recovery; park its resume and
+            // land a plain Stop inside it.
+            let releaseResume!: () => void
+            harness.resumeBlocker = new Promise((resolve) => { releaseResume = resolve })
+            queue.push('third', {})
+            await vi.waitFor(() => expect(harness.resumeCalls).toHaveLength(1))
+            const abort = session.client.rpcHandlerManager.registerHandler.mock.calls
+                .find((c: unknown[]) => c[0] === RPC_METHODS.Abort)![1] as () => Promise<unknown>
+            aborted = abort()
+            await vi.waitFor(() => expect(session.sendSessionEvent).toHaveBeenCalledWith(
+                { type: 'message', message: 'Session aborted' }))
+            // The restart fails (the backend died inside the recovery window):
+            // the resume failure is absorbed into a fresh-session attempt, so
+            // the one-shot newSession error is what reaches the recovery
+            // catch — and it must be one-shot so the post-Stop respawn for the
+            // requeued batch succeeds.
+            harness.resumeError = deadTransportError('session/resume failed: ACP process exited (code=1)')
+            harness.newSessionErrorQueue = [deadTransportError('session/new failed: ACP process exited (code=1)')]
+            releaseResume()
+            await vi.waitFor(() => expect(session.sendSessionEvent).toHaveBeenCalledWith(
+                { type: 'message', message: expect.stringContaining('DSH session restart failed') }))
+            // The loop stays alive: the requeued message re-dispatches on the
+            // rebuilt backend instead of vanishing with the catch's continue.
+            await vi.waitFor(() => expect(harness.prompts).toEqual([
+                [{ type: 'text', text: 'first' }],
+                [{ type: 'text', text: 'second' }],
+                [{ type: 'text', text: 'third' }]
+            ]))
+            queue.close()
+            await done
+        } finally {
+            releaseFirstPrompt?.()
+            queue.close()
+            await Promise.allSettled([done, aborted])
+        }
+    })
+
     it('keeps the loop alive when the backend dies during closed-session recovery', async () => {
         // A child exit inside the post-abort recovery window rejects every
         // RPC on the dead backend; the failure must surface as one error and
@@ -747,7 +1141,14 @@ describe('DshRemoteLauncher', () => {
         // the fresh session/new both reject).
         harness.resumeError = deadTransportError('session/resume failed: ACP process exited (code=1)')
         harness.newSessionError = deadTransportError('session/new failed: ACP process exited (code=1)')
-        queue.push('third', {})
+        queue.push('third', {}, 'third-id')
+        await vi.waitFor(() => expect(session.sendSessionEvent).toHaveBeenCalledWith(
+            { type: 'message', message: expect.stringContaining('DSH session restart failed') }))
+        // Dropped batch must clear its in-flight mark while the queue is idle,
+        // and a later cancel of the same localId must succeed.
+        expect(queue.cancelByLocalId('third-id')).toBe(false)
+        queue.push('third-retry', {}, 'third-id')
+        expect(queue.cancelByLocalId('third-id')).toBe(true)
         queue.close()
         await done
 

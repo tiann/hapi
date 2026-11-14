@@ -51,8 +51,8 @@ export class SharedCodexProjection {
     private readonly compactionSummaries: CodexCompactionSummaryLookup;
     private summaryThread: unknown;
     constructor(private readonly session: ApiSessionClient, readonly threadId: string,
-        private readonly committed: (id: string) => Promise<void>, private readonly parentThreadId?: string,
-        private readonly readSummaryThread?: () => Promise<unknown>,
+        private readonly committed: (id: string, content?: unknown) => Promise<void | Array<{ id: string; input: unknown }>>,
+        private readonly parentThreadId?: string, private readonly readSummaryThread?: () => Promise<unknown>,
         private readonly observeItem?: (threadId: string, item: unknown) => void) {
         this.compactionSummaries = new CodexCompactionSummaryLookup(threadId);
         if (!parentThreadId) for (const [id, turn] of Object.entries(session.getMetadata()?.conversationHistoryTurns ?? {})) this.turns.set(id, turn);
@@ -155,16 +155,20 @@ export class SharedCodexProjection {
         if (!this.parentThreadId && (method === 'item/started' || method === 'item/completed') && item.type === 'userMessage') {
             const id = string(item.clientId ?? item.clientUserMessageId) ?? (itemId ? `codex:${this.threadId}:user:${itemId}` : undefined);
             if (id) {
-                const firstInTurn = turnId ? [...this.turns].find(([, value]) => value === turnId)?.[0] : undefined;
-                if (turnId) this.turns.set(id, turnId);
-                await this.committed(id);
-                const text = inputText(item.content);
-                const replies = asyncQuestionReplies(text);
-                const displayText = replies.length ? replies.map(reply => [reply.question, reply.answer].filter(Boolean).join('\n')).join('\n\n') : text;
-                if (displayText) this.session.sendUserMessage(displayText, undefined, id);
-                this.session.updateMetadata(metadata => ({ ...metadata, conversationHistoryTurns: Object.fromEntries(this.turns),
-                    ...(turnId && (!firstInTurn || firstInTurn === id) ? { conversationHistoryPoints: { ...metadata.conversationHistoryPoints, [id]: true } } : {})
-                }));
+                const aliases = await this.committed(id, item.content);
+                for (const member of aliases ?? [{ id, input: item.content }]) {
+                    const firstInTurn = turnId ? [...this.turns].find(([, value]) => value === turnId)?.[0] : undefined;
+                    if (turnId) this.turns.set(member.id, turnId);
+                    const text = inputText(member.input);
+                    const replies = asyncQuestionReplies(text);
+                    const displayText = replies.length ? replies.map(reply => [reply.question, reply.answer].filter(Boolean).join('\n')).join('\n\n') : text;
+                    if (displayText) this.session.sendUserMessage(displayText, undefined, member.id);
+                    this.session.updateMetadata(metadata => ({ ...metadata, conversationHistoryTurns: Object.fromEntries(this.turns),
+                        ...(turnId && (!firstInTurn || firstInTurn === member.id) ? {
+                            conversationHistoryPoints: { ...metadata.conversationHistoryPoints, [member.id]: true }
+                        } : {})
+                    }));
+                }
             }
         }
         if (this.parentThreadId && (method === 'turn/started' || method === 'turn/completed')) {
