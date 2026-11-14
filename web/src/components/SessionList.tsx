@@ -123,6 +123,8 @@ import type { Machine } from '@/types/api'
 import { getMachinePlatform, presentMachineHealth } from '@/lib/machineHealth'
 import { MachineFilterBar, MachineFilterMenu, MachineSummaryRow } from '@/components/MachineFilterBar'
 import { useSessionListMachineFilter } from '@/hooks/useSessionListMachineFilter'
+import { useForkFlow } from '@/hooks/useForkFlow'
+import { ForkPreviewDialog } from '@/components/AssistantChat/ForkPreviewDialog'
 import { useTransientScrollbar } from '@/hooks/useTransientScrollbar'
 import { useCursorChatStoreStatus } from '@/hooks/queries/useCursorChatStoreStatus'
 import { SessionRowSummary } from '@/components/SessionRowSummary'
@@ -1183,8 +1185,12 @@ const SessionItem = memo(function SessionItem(props: {
     const [exportOpen, setExportOpen] = useState(false)
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
-    const [forkOpen, setForkOpen] = useState(false)
-    const [forkPending, setForkPending] = useState(false)
+    const forkFlow = useForkFlow({
+        session: s,
+        api: api!,
+        onForked: (childSessionId) => onSelect(childSessionId)
+    })
+    const forkFlowOpen = forkFlow.flowOpen
     const pendingRequestPressedRef = useRef(false)
     const {
         status: cursorChatStoreStatus,
@@ -1218,7 +1224,7 @@ const SessionItem = memo(function SessionItem(props: {
     )
     const [reopenError, setReopenError] = useState<string | null>(null)
     const holdPanel = useContext(CollapsiblePanelHoldContext)
-    const overlayOpen = menuOpen || renameOpen || exportOpen || archiveOpen || deleteOpen || forkOpen || reopenError !== null
+    const overlayOpen = menuOpen || renameOpen || exportOpen || archiveOpen || deleteOpen || forkFlowOpen || reopenError !== null
     useEffect(() => {
         if (!overlayOpen || !holdPanel) return
         holdPanel(true)
@@ -1419,7 +1425,7 @@ const SessionItem = memo(function SessionItem(props: {
                 onExport={() => setExportOpen(true)}
                 onMarkUnread={() => markSessionUnread(s.id, s.readState)}
                 onForkSession={api && ((supportsCurrentFork && (!s.thinking || supportsCompletedFork)) || supportsArchivedFork)
-                    ? () => setForkOpen(true)
+                    ? () => forkFlow.openFork()
                     : undefined}
                 forkDisabledReason={forkDisabledReason}
                 onArchive={() => setArchiveOpen(true)}
@@ -1430,28 +1436,48 @@ const SessionItem = memo(function SessionItem(props: {
                 anchorPoint={menuAnchorPoint}
             />
 
-            {forkOpen ? (
+            {forkFlow.preview ? (
+                <ForkPreviewDialog
+                    isOpen
+                    view={forkFlow.preview.view}
+                    prefixMayHaveMore={forkFlow.preview.view.prefixTruncated}
+                    stale={forkFlow.stale}
+                    loading={forkFlow.loading}
+                    onCancel={forkFlow.closePreview}
+                    onConfirm={forkFlow.confirmPreview}
+                />
+            ) : null}
+
+            {forkFlow.legacyFallback ? (
                 <ConfirmDialog
                     isOpen={true}
-                    onClose={() => { if (!forkPending) setForkOpen(false) }}
+                    onClose={() => { if (!forkFlow.confirming) forkFlow.closePreview() }}
                     title={t('dialog.sessionFork.title')}
                     description={t(s.thinking && supportsCompletedFork ? 'dialog.sessionFork.completedDescription' : 'dialog.sessionFork.description')}
                     confirmLabel={t('dialog.sessionFork.confirm')}
                     confirmingLabel={t('dialog.sessionFork.confirming')}
-                    isPending={forkPending}
+                    isPending={forkFlow.confirming}
                     destructive
                     centerTitle
+                    onConfirm={forkFlow.confirmLegacy}
+                />
+            ) : null}
+
+            {forkFlow.errorMessage && !forkFlow.preview ? (
+                <ConfirmDialog
+                    isOpen={true}
+                    onClose={forkFlow.closePreview}
+                    title={t('dialog.sessionFork.title')}
+                    description={forkFlow.errorMessage}
+                    confirmLabel={forkFlow.errorWasConnectFailure ? t('button.retry') : t('dialog.reopen.dismiss')}
+                    confirmingLabel={forkFlow.errorWasConnectFailure ? t('button.retry') : t('dialog.reopen.dismiss')}
+                    isPending={forkFlow.loading}
+                    hideCancel
+                    keepOpenAfterConfirm={forkFlow.errorWasConnectFailure}
+                    centerTitle
                     onConfirm={async () => {
-                        if (!api) return
-                        setForkPending(true)
-                        try {
-                            const result = s.thinking && supportsCompletedFork
-                                ? await api.forkConversation(s.id, undefined, true)
-                                : await api.forkConversation(s.id)
-                            onSelect(result.sessionId)
-                        } finally {
-                            setForkPending(false)
-                        }
+                        if (forkFlow.errorWasConnectFailure) forkFlow.retryPreview()
+                        else forkFlow.closePreview()
                     }}
                 />
             ) : null}

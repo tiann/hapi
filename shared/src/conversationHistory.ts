@@ -11,6 +11,7 @@ export type ConversationHistoryCapabilities = {
     forkLatestCompleted?: boolean
     forkAtMessage?: boolean
     rewindToMessage?: boolean
+    forkPreview?: boolean
 }
 
 /** Only `supported` becomes true in session metadata; never optimistic. */

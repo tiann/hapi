@@ -71,6 +71,7 @@ function createApp(session: Session, opts?: {
     listDshModelsForSession?: SyncEngine['listDshModelsForSession']
     listPiModelsForSession?: SyncEngine['listPiModelsForSession']
     forkConversation?: SyncEngine['forkConversation']
+    forkPreview?: SyncEngine['forkPreview']
     clearConversation?: SyncEngine['clearConversation']
     implementCodexPlan?: SyncEngine['implementCodexPlan']
     rewindConversation?: SyncEngine['rewindConversation']
@@ -196,6 +197,16 @@ function createApp(session: Session, opts?: {
             commands: []
         })),
         forkConversation: opts?.forkConversation ?? (async () => ({ type: 'success', sessionId: 'child-1' })),
+        forkPreview: opts?.forkPreview ?? (async () => ({
+            type: 'success' as const,
+            preview: {
+                mode: 'current' as const,
+                boundary: { v: 1 as const, mode: 'current' as const, epoch: 3, tailSeq: 7 },
+                keptTail: [],
+                excluded: [],
+                counts: { kept: 0, excluded: 0 }
+            }
+        })),
         clearConversation: opts?.clearConversation,
         implementCodexPlan: opts?.implementCodexPlan,
         rewindConversation: opts?.rewindConversation ?? (async () => ({ type: 'success' })),
@@ -1905,6 +1916,165 @@ describe('sessions routes', () => {
         expect(response.status).toBe(200)
         expect(await response.json()).toEqual({ sessionId: 'forked-child' })
         expect(calls).toEqual([{ sessionId: 'session-1', namespace: 'default', messageLocalId: undefined }])
+    })
+
+    it('answers fork previews via POST /sessions/:id/fork-preview', async () => {
+        const calls: Array<{ sessionId: string; namespace: string; intent: string; messageLocalId?: string }> = []
+        const session = createSession({
+            metadata: {
+                path: '/tmp/project', host: 'localhost', flavor: 'codex',
+                capabilities: { conversationHistory: { forkCurrent: true } }
+            }
+        })
+        const preview = {
+            mode: 'current' as const,
+            boundary: { v: 1 as const, mode: 'current' as const, epoch: 3, tailSeq: 7 },
+            keptTail: [{ id: 'm1', seq: 7, localId: 'u2', content: {}, createdAt: 1, invokedAt: 1 }],
+            excluded: [],
+            counts: { kept: 1, excluded: 0 }
+        }
+        const { app } = createApp(session, {
+            forkPreview: async (sessionId, namespace, intent, messageLocalId) => {
+                calls.push({ sessionId, namespace, intent, messageLocalId })
+                return { type: 'success', preview }
+            }
+        })
+
+        const response = await app.request('/api/sessions/session-1/fork-preview', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ intent: 'current' })
+        })
+
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual(preview)
+        expect(calls).toEqual([{ sessionId: 'session-1', namespace: 'default', intent: 'current', messageLocalId: undefined }])
+    })
+
+    it('returns 409 with the guard message when the preview is refused', async () => {
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex', capabilities: {} }
+        })
+        const { app } = createApp(session, {
+            forkPreview: async () => ({ type: 'error', message: 'Session is busy' })
+        })
+        const response = await app.request('/api/sessions/session-1/fork-preview', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ intent: 'current' })
+        })
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({ error: 'Session is busy' })
+    })
+
+    it('rejects fork previews with an invalid body', async () => {
+        const { app } = createApp(createSession())
+        const response = await app.request('/api/sessions/session-1/fork-preview', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ intent: 'message' })
+        })
+        expect(response.status).toBe(400)
+    })
+
+    it('passes the confirm boundary to the engine and returns boundary_moved as a coded 409', async () => {
+        const calls: unknown[][] = []
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex', capabilities: { conversationHistory: { forkCurrent: true } } }
+        })
+        const boundary = { v: 1, mode: 'current', epoch: 3, tailSeq: 7 }
+        const { app } = createApp(session, {
+            forkConversation: async (...args) => {
+                calls.push(args)
+                return { type: 'error', message: 'New conversation rows appeared since the preview', code: 'boundary_moved' }
+            }
+        })
+        const response = await app.request('/api/sessions/session-1/fork', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ boundary })
+        })
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'New conversation rows appeared since the preview',
+            code: 'boundary_moved'
+        })
+        expect(calls[0]?.[4]).toEqual(boundary)
+    })
+
+    it('passes the rewind boundary to the engine and returns boundary_moved as a coded 409', async () => {
+        const calls: unknown[][] = []
+        const session = createSession({
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex', capabilities: { conversationHistory: { rewindToMessage: true } } }
+        })
+        const boundary = { v: 1, mode: 'rewind', messageLocalId: 'u2', epoch: 3, tailSeq: 7, sourceActive: true }
+        const { app } = createApp(session, {
+            rewindConversation: async (...args) => {
+                calls.push(args)
+                return { type: 'error', message: 'New conversation rows appeared since the preview', code: 'boundary_moved' }
+            }
+        })
+        const response = await app.request('/api/sessions/session-1/rewind', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messageLocalId: 'u2', boundary })
+        })
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'New conversation rows appeared since the preview',
+            code: 'boundary_moved',
+            hydrateFailed: false
+        })
+        expect(calls[0]?.[3]).toEqual(boundary)
+    })
+
+    it('lets a rewind confirm with a boundary token reach the engine on an inactive source', async () => {
+        const calls: unknown[][] = []
+        const session = createSession({
+            active: false,
+            metadata: { path: '/tmp/project', host: 'localhost', flavor: 'codex', capabilities: { conversationHistory: { rewindToMessage: true } } }
+        })
+        const boundary = { v: 1, mode: 'rewind', messageLocalId: 'u2', epoch: 3, tailSeq: 7, sourceActive: true }
+        const { app } = createApp(session, {
+            rewindConversation: async (...args) => {
+                calls.push(args)
+                return { type: 'error', message: 'The source session stopped running since the preview', code: 'boundary_moved' }
+            }
+        })
+        const response = await app.request('/api/sessions/session-1/rewind', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messageLocalId: 'u2', boundary })
+        })
+        // Every rewind token is minted on an active source, so an inactive
+        // confirm is a moved boundary: the engine must re-check it instead of
+        // the route short-circuiting with session_inactive.
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({
+            error: 'The source session stopped running since the preview',
+            code: 'boundary_moved',
+            hydrateFailed: false
+        })
+        expect(calls[0]?.[3]).toEqual(boundary)
+    })
+
+    it('keeps the session_inactive 409 for a legacy rewind without a boundary token', async () => {
+        const calls: unknown[][] = []
+        const session = createSession({ active: false })
+        const { app } = createApp(session, {
+            rewindConversation: async (...args) => {
+                calls.push(args)
+                return { type: 'success' }
+            }
+        })
+        const response = await app.request('/api/sessions/session-1/rewind', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messageLocalId: 'u2' })
+        })
+        expect(response.status).toBe(409)
+        expect(await response.json()).toEqual({ error: 'Session is inactive', code: 'session_inactive' })
+        expect(calls).toEqual([])
     })
 
     it('rewinds via POST /sessions/:id/rewind', async () => {

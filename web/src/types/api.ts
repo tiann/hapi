@@ -109,6 +109,8 @@ export type {
     HapiSessionExportWarning
 } from '@hapi/protocol/sessionExport'
 
+export type { ForkBoundary, ForkPreviewResponse } from '@hapi/protocol/forkBoundary'
+
 export type SessionMetadataSummary = {
     path: string
     host: string

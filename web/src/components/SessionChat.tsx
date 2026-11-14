@@ -139,6 +139,8 @@ import { queryKeys } from '@/lib/query-keys'
 import { useVoiceOptional } from '@/lib/voice-context'
 import { AgentTerminalView } from '@/components/AgentTerminal/AgentTerminalView'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import { ForkPreviewDialog } from '@/components/AssistantChat/ForkPreviewDialog'
+import { useForkFlow } from '@/hooks/useForkFlow'
 import { VoiceBackendSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
 import { isRemoteTerminalSupported } from '@/utils/terminalSupport'
 
@@ -757,27 +759,18 @@ function SessionChatInner(props: SessionChatProps) {
     const { toolCardDisplayMode } = useToolCardDisplayMode()
     const { conciseChatMode, setConciseChatMode } = useConciseChatMode()
     const { groupingMode: toolGroupingMode } = getToolCardDisplayPresentation(toolCardDisplayMode)
-    const [historyActionPending, setHistoryActionPending] = useState(false)
     const [rewindForkFallback, setRewindForkFallback] = useState<string | null>(null)
-
-    const onForkConversation = useCallback(async (messageLocalId?: string) => {
-        setHistoryActionPending(true)
-        try {
-            const result = await props.api.forkConversation(props.session.id, messageLocalId)
-            await navigate({
+    const forkFlow = useForkFlow({
+        session: props.session,
+        api: props.api,
+        onForked: (childSessionId) => {
+            void navigate({
                 to: '/sessions/$sessionId',
-                params: { sessionId: result.sessionId },
+                params: { sessionId: childSessionId },
                 ...PRESERVE_SESSION_SIDEBAR_SCROLL,
             })
-        } finally {
-            setHistoryActionPending(false)
-        }
-    }, [navigate, props.api, props.session.id])
-
-    const onRewindConversation = useCallback(async (messageLocalId: string) => {
-        setHistoryActionPending(true)
-        try {
-            await props.api.rewindConversation(props.session.id, messageLocalId)
+        },
+        onRewound: async (messageLocalId) => {
             // Apply the deterministic local part immediately so the removed
             // suffix cannot flash back while the authoritative refresh runs.
             rewindMessageWindow(props.session.id, messageLocalId)
@@ -785,22 +778,26 @@ function SessionChatInner(props: SessionChatProps) {
             // Force the same tail behavior as a successful send after the
             // refreshed message window has been committed.
             setForceScrollToken((token) => token + 1)
-        } catch (error) {
-            if (isRewindForkFallbackError(error)) {
-                setRewindForkFallback(messageLocalId)
-                return
-            }
-            throw error
-        } finally {
-            setHistoryActionPending(false)
+        },
+        onRewindForkSafeFallback: (messageLocalId) => {
+            setRewindForkFallback(messageLocalId)
         }
-    }, [props.api, props.onRefresh, props.session.id])
+    })
 
-    const onRewindForkFallback = useCallback(async () => {
+    const onForkConversation = useCallback(async (messageLocalId?: string) => {
+        forkFlow.openFork(messageLocalId)
+    }, [forkFlow])
+
+    const onRewindConversation = useCallback(async (messageLocalId: string) => {
+        forkFlow.openRewind(messageLocalId)
+    }, [forkFlow])
+
+    const onRewindForkFallback = useCallback(() => {
         if (!rewindForkFallback) return
-        await onForkConversation(rewindForkFallback)
+        const localId = rewindForkFallback
         setRewindForkFallback(null)
-    }, [onForkConversation, rewindForkFallback])
+        forkFlow.openFork(localId)
+    }, [forkFlow, rewindForkFallback])
     const sessionInactive = !props.session.active
     const inactiveCanResume = inactiveSessionCanResume(
         props.session,
@@ -2357,6 +2354,62 @@ function SessionChatInner(props: SessionChatProps) {
 
             <AssistantRuntimeProvider runtime={runtime}>
                 <ShareSeedConsumer sessionId={props.session.id} sessionActive={props.session.active} />
+                {forkFlow.preview ? (
+                    <ForkPreviewDialog
+                        isOpen
+                        view={forkFlow.preview.view}
+                        prefixMayHaveMore={props.hasMoreMessages || forkFlow.preview.view.prefixTruncated}
+                        stale={forkFlow.stale}
+                        loading={forkFlow.loading}
+                        onCancel={forkFlow.closePreview}
+                        onConfirm={forkFlow.confirmPreview}
+                    />
+                ) : null}
+                {forkFlow.legacyFallback && forkFlow.legacyRequest?.intent !== 'rewind' ? (
+                    <ConfirmDialog
+                        isOpen
+                        onClose={() => { if (!forkFlow.confirming) forkFlow.closePreview() }}
+                        title={t('message.fork.confirmTitle')}
+                        description={t('message.fork.confirmDescription')}
+                        confirmLabel={t('message.fork')}
+                        confirmingLabel={t('message.fork.confirming')}
+                        isPending={forkFlow.confirming}
+                        centerTitle
+                        onConfirm={forkFlow.confirmLegacy}
+                    />
+                ) : null}
+                {forkFlow.legacyFallback && forkFlow.legacyRequest?.intent === 'rewind' ? (
+                    <ConfirmDialog
+                        isOpen
+                        onClose={() => { if (!forkFlow.confirming) forkFlow.closePreview() }}
+                        title={t('message.rewind.confirmTitle')}
+                        description={t('message.rewind.confirmDescription')}
+                        confirmLabel={t('message.rewind')}
+                        confirmingLabel={t('message.rewind.confirming')}
+                        isPending={forkFlow.confirming}
+                        destructive
+                        centerTitle
+                        onConfirm={forkFlow.confirmLegacy}
+                    />
+                ) : null}
+                {forkFlow.errorMessage && !forkFlow.preview ? (
+                    <ConfirmDialog
+                        isOpen
+                        onClose={forkFlow.closePreview}
+                        title={forkFlow.errorIntent === 'rewind' ? t('message.rewind.confirmTitle') : t('message.fork.confirmTitle')}
+                        description={forkFlow.errorMessage}
+                        confirmLabel={forkFlow.errorWasConnectFailure ? t('button.retry') : t('dialog.reopen.dismiss')}
+                        confirmingLabel={forkFlow.errorWasConnectFailure ? t('button.retry') : t('dialog.reopen.dismiss')}
+                        isPending={forkFlow.loading}
+                        hideCancel
+                        keepOpenAfterConfirm={forkFlow.errorWasConnectFailure}
+                        centerTitle
+                        onConfirm={async () => {
+                            if (forkFlow.errorWasConnectFailure) forkFlow.retryPreview()
+                            else forkFlow.closePreview()
+                        }}
+                    />
+                ) : null}
                 <AbortRestoreConsumer messages={normalizedMessages} onAbortRestore={props.onAbortRestore ?? (() => {})} />
                 <DragDropZone disabled={(!props.session.active && !inactiveCanResume) || props.isSending || pendingSchedule != null || isScratchlistParking}>
                     <div className="relative flex min-h-0 flex-1 flex-col">
@@ -2387,7 +2440,7 @@ function SessionChatInner(props: SessionChatProps) {
                         onRefresh={props.onRefresh}
                         onRetryMessage={props.onRetryMessage}
                         onContinuePlan={() => focusComposerRef.current?.()}
-                        historyActionPending={historyActionPending}
+                        historyActionPending={forkFlow.loading}
                         onForkConversation={controlledByUser && !sessionInactive ? undefined : onForkConversation}
                         onRewindConversation={controlledByUser ? undefined : onRewindConversation}
                         isLatestCompletedBoundary={isLatestCompletedBoundary}
@@ -2733,15 +2786,13 @@ function SessionChatInner(props: SessionChatProps) {
 
             <ConfirmDialog
                 isOpen={rewindForkFallback !== null}
-                onClose={() => {
-                    if (!historyActionPending) setRewindForkFallback(null)
-                }}
+                onClose={() => setRewindForkFallback(null)}
                 title={t('message.rewind.fallbackTitle')}
                 description={t('message.rewind.fallbackDescription')}
                 confirmLabel={t('message.rewind.fallbackFork')}
                 confirmingLabel={t('message.rewind.fallbackForking')}
-                isPending={historyActionPending}
-                onConfirm={onRewindForkFallback}
+                isPending={false}
+                onConfirm={async () => onRewindForkFallback()}
             />
         </div>
     )

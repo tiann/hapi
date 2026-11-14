@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { ForkBoundarySchema } from './forkBoundary'
 import {
     AttachmentMetadataSchema,
     CodexCollaborationModeSchema,
@@ -720,7 +721,9 @@ export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>
 
 export const ForkConversationRequestSchema = z.object({
     messageLocalId: z.string().min(1).optional(),
-    latestCompleted: z.boolean().optional()
+    latestCompleted: z.boolean().optional(),
+    /** Echo of the fork-preview boundary; absent keeps the legacy behavior. */
+    boundary: ForkBoundarySchema.optional()
 }).refine(value => !(value.messageLocalId && value.latestCompleted), { message: 'Choose one fork boundary mode' })
 
 export type ForkConversationRequest = z.infer<typeof ForkConversationRequestSchema>
@@ -742,7 +745,9 @@ export type ImplementCodexPlanResult = { ok: true } | {
 }
 
 export const RewindConversationRequestSchema = z.object({
-    messageLocalId: z.string().min(1)
+    messageLocalId: z.string().min(1),
+    /** Echo of the fork-preview boundary; absent keeps the legacy behavior. */
+    boundary: ForkBoundarySchema.optional()
 })
 
 export type RewindConversationRequest = z.infer<typeof RewindConversationRequestSchema>
@@ -768,6 +773,21 @@ export type ForkConversationRpcResponse = ForkConversationRpcResult | {
     error: string
 }
 
+/** hub → CLI ask: where would this fork cut the native history right now? */
+export type PreviewForkBoundaryRequest = {
+    mode: 'current' | 'message' | 'latestCompleted'
+    messageLocalId?: string
+}
+
+/** CLI answer for a shared-runtime fork preview; the hub cuts its kept tail
+ *  at `cutBeforeLocalId` and confirm pins `nativeTurnId` as lastTurnId. */
+export type PreviewForkBoundaryResult = {
+    /** Inclusive native cutoff turn the fork would use. */
+    nativeTurnId?: string
+    /** First hub localId on the excluded side of the cut, when any. */
+    cutBeforeLocalId?: string
+}
+
 /** Machine-scoped native history operation; never sends a source prompt. */
 export const ForkArchivedCodexRequestSchema = z.object({
     operationId: z.string().uuid(),
@@ -782,6 +802,7 @@ export type ForkArchivedCodexResponse = { nativeSessionId: string } | { error: s
 export type RewindConversationErrorCode =
     | 'ambiguous_native_boundary'
     | 'ambiguous_native_boundary_fork_safe'
+    | 'boundary_moved'
 
 export const OpenCodeRewindReportSchema = z.object({
     operation: OpenCodeRewindSchema,

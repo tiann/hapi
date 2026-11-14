@@ -13,6 +13,7 @@ import {
     isMachineCapabilitySkewed,
 } from '@hapi/protocol/runnerCapabilities'
 import type { AbortChunkedUploadResponse, CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, InitChunkedUploadRequest, InitChunkedUploadResponse, MessageContextResponse, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse, UploadChunkResponse } from '@hapi/protocol/apiTypes'
+import { FORK_PREVIEW_TAIL_ROWS, type ForkBoundary, type ForkBoundaryErrorCode, type ForkPreviewRequest, type ForkPreviewResponse, type ForkPreviewRow } from '@hapi/protocol/forkBoundary'
 import type { UsageQueryAgent, UsageQueryAgentSettings, UsageQueryResult, UsageQuerySettingsResponse, UsageQueryTemplate } from '@hapi/protocol/usageQuery'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
@@ -22,6 +23,7 @@ import { hasConversationMessageContent, unwrapRoleWrappedRecordEnvelope } from '
 import type { Server } from 'socket.io'
 import { randomUUID, createHash } from 'node:crypto'
 import type { Store, CancelQueuedMessageResult } from '../store'
+import type { StoredMessage } from '../store/types'
 import type {
     MessageContentSearchMatch,
     SessionMessageContentSearchResult
@@ -45,7 +47,7 @@ import { MachineCache, type Machine } from './machineCache'
 import { MessageService, type RetryIndeterminateMessageResult } from './messageService'
 import { createTitleSuggestionService, type TitleSuggestionService } from './titleSuggestion'
 import { createPromptTitle } from './promptTitle'
-import { selectForkTranscriptPrefix } from './forkTranscript'
+import { resolveForkBoundary, resolveRewindBoundary, invokedTailSeq, type ResolvedBoundary } from './forkBoundary'
 import { buildForkSessionSummary } from './forkSessionSummary'
 import { isMachineSpawnPreallocatedStub } from '../store/sessions'
 import {
@@ -2406,17 +2408,8 @@ export class SyncEngine {
         { type: 'success'; sessionId: string } | { type: 'error'; message: string }
     > {
         try {
-            const metadata = source.metadata
-            if (metadata?.flavor !== 'codex' || !metadata.codexSessionId || !metadata.machineId || !metadata.path) {
-                throw new Error('Inactive fork requires a Codex session with native history and a machine binding')
-            }
-            if (metadata.conversationHistoryDiverged) throw new Error('Conversation history is diverged; refuse further fork/rewind')
-            if (this.store.messages.getUninvokedLocalMessages(source.id).length) throw new Error('Session has queued messages')
-            const machine = this.getMachine(metadata.machineId)
-            if (!machine?.active || machine.namespace !== namespace) throw new Error('Source machine is offline')
-            if (!machine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.ForkArchivedCodex)) {
-                throw new Error('Upgrade the source Runner to fork archived Codex sessions')
-            }
+            const { machineId, codexSessionId, path } = this.assertArchivedForkEligible(source, namespace, messageLocalId)
+            const metadata = source.metadata!
             let attempt = metadata.codexArchivedFork
             if (attempt && attempt.boundaryLocalId !== messageLocalId) throw new Error('A previous archived fork is pending at another boundary; retry that fork first')
             const turnId = attempt ? attempt.boundaryTurnId : messageLocalId ? metadata.conversationHistoryTurns?.[messageLocalId] : undefined
@@ -2441,19 +2434,19 @@ export class SyncEngine {
             }
             if (!child) {
                 child = this.sessionCache.getOrCreateSession(`archived-fork:${attempt.operationId}`, {
-                    path: metadata.path, host: metadata.host, machineId: metadata.machineId, flavor: 'codex',
+                    path: path, host: metadata.host, machineId: machineId, flavor: 'codex',
                     forkedFrom: source.id, startedBy: 'runner',
                     summary: buildForkSessionSummary(metadata)
                 }, null, namespace, source.model ?? undefined, source.effort ?? undefined, source.modelReasoningEffort ?? undefined, childId)
             } else if (child.namespace !== namespace || child.metadata?.forkedFrom !== source.id) throw new Error('Invalid archived fork reservation')
             if (attempt.spawnAttempted) {
-                const stopped = await this.rpcGateway.stopRunnerSession(metadata.machineId, childId)
+                const stopped = await this.rpcGateway.stopRunnerSession(machineId, childId)
                 if (stopped !== 'stopped' && stopped !== 'already_gone') throw new Error('Previous fork launcher outcome is unconfirmed; retry after cleanup')
             }
             if (!attempt.nativeSessionId) {
-                const result = await this.rpcGateway.forkArchivedCodex(metadata.machineId, {
+                const result = await this.rpcGateway.forkArchivedCodex(machineId, {
                     operationId: attempt.operationId, sourceSessionId: source.id,
-                    sourceThreadId: metadata.codexSessionId, directory: metadata.path,
+                    sourceThreadId: codexSessionId, directory: path,
                     ...(messageLocalId ? { boundary: { localId: messageLocalId, turnId: turnId! } } : {})
                 })
                 if ('error' in result) {
@@ -2463,7 +2456,7 @@ export class SyncEngine {
                     }
                     throw new Error(result.error)
                 }
-                if (result.nativeSessionId === metadata.codexSessionId) throw new Error('Native fork reused the source identity')
+                if (result.nativeSessionId === codexSessionId) throw new Error('Native fork reused the source identity')
                 attempt = { ...attempt, nativeSessionId: result.nativeSessionId }
                 this.setArchivedForkAttempt(source.id, namespace, attempt)
             }
@@ -2474,7 +2467,7 @@ export class SyncEngine {
             this.sessionCache.refreshSession(childId)
             attempt = { ...attempt, spawnAttempted: true }
             this.setArchivedForkAttempt(source.id, namespace, attempt)
-            const spawn = await this.rpcGateway.spawnSession(metadata.machineId, metadata.path, 'codex',
+            const spawn = await this.rpcGateway.spawnSession(machineId, path, 'codex',
                 source.model ?? undefined, source.modelReasoningEffort ?? undefined, undefined, 'simple', undefined,
                 attempt.nativeSessionId, source.effort ?? undefined, source.permissionMode, source.serviceTier ?? undefined,
                 childId, source.collaborationMode)
@@ -2503,8 +2496,9 @@ export class SyncEngine {
         sessionId: string,
         namespace: string,
         messageLocalId?: string,
-        latestCompleted = false
-    ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
+        latestCompleted = false,
+        boundary?: ForkBoundary
+    ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string; code?: ForkBoundaryErrorCode }> {
         const candidate = this.sessionCache.getSessionByNamespace(sessionId, namespace)
         if (candidate?.metadata?.codexResumePending) {
             return { type: 'error', message: 'Codex resume startup is unconfirmed; retry resume or archive to confirm its process stopped before forking' }
@@ -2517,23 +2511,314 @@ export class SyncEngine {
         }
         this.historyActionsInFlight.add(sessionId)
         try {
-            return await this.forkConversationUnlocked(sessionId, namespace, messageLocalId, latestCompleted)
+            return await this.forkConversationUnlocked(sessionId, namespace, messageLocalId, latestCompleted, boundary)
         } finally {
             this.historyActionsInFlight.delete(sessionId)
         }
+    }
+
+    /**
+     * Re-check a fork-preview boundary against the live transcript, right
+     * after the confirm lock is taken and before any flavor dispatch. Returns
+     * a human-readable reason when the source moved since the preview.
+     */
+    /** Admission guards shared by the archived-fork confirm and its preview:
+     *  a preview must never answer a boundary the confirm would refuse.
+     *  Returns the machine binding the guards verified. */
+    private assertArchivedForkEligible(source: Session, namespace: string, messageLocalId?: string): {
+        machineId: string
+        codexSessionId: string
+        path: string
+    } {
+        const metadata = source.metadata
+        if (metadata?.flavor !== 'codex' || !metadata.codexSessionId || !metadata.machineId || !metadata.path) {
+            throw new Error('Inactive fork requires a Codex session with native history and a machine binding')
+        }
+        if (metadata.conversationHistoryDiverged) throw new Error('Conversation history is diverged; refuse further fork/rewind')
+        if (this.store.messages.getUninvokedLocalMessages(source.id).length) throw new Error('Session has queued messages')
+        const machine = this.getMachine(metadata.machineId)
+        if (!machine?.active || machine.namespace !== namespace) throw new Error('Source machine is offline')
+        if (!machine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.ForkArchivedCodex)) {
+            throw new Error('Upgrade the source Runner to fork archived Codex sessions')
+        }
+        const attempt = metadata.codexArchivedFork
+        if (attempt && attempt.boundaryLocalId !== messageLocalId) throw new Error('A previous archived fork is pending at another boundary; retry that fork first')
+        return { machineId: metadata.machineId, codexSessionId: metadata.codexSessionId, path: metadata.path }
+    }
+
+    private boundaryMovedReason(
+        sessionId: string,
+        source: Session,
+        boundary: ForkBoundary,
+        expectedMode: ForkBoundary['mode'],
+        messageLocalId?: string
+    ): string | null {
+        if (boundary.mode !== expectedMode) {
+            return `Boundary token describes a ${boundary.mode} boundary, not ${expectedMode}`
+        }
+        if ((expectedMode === 'message' || expectedMode === 'rewind') && boundary.messageLocalId !== messageLocalId) {
+            return 'Boundary token does not match the requested message'
+        }
+        // The preview chose its admission path (live guards vs archived-fork
+        // rules) from the source's active state; a transition between preview
+        // and confirm routes the confirm onto a path the token was not minted
+        // for: an inactive source fails the archived-fork admission (or forks
+        // archived state that ignores a live cut), a reopened one runs the
+        // live path with an archived cut.
+        if (boundary.sourceActive !== undefined && boundary.sourceActive !== source.active) {
+            return boundary.sourceActive
+                ? 'The source session stopped running since the preview'
+                : 'The source session was reopened since the preview'
+        }
+        if (boundary.epoch !== this.store.messages.getMessageEpoch(sessionId)) {
+            return 'Conversation history changed since the preview'
+        }
+        const rows = this.store.messages.getAllMessages(sessionId)
+        switch (boundary.mode) {
+            case 'current':
+                if (invokedTailSeq(rows) > boundary.tailSeq) {
+                    return 'New conversation rows appeared since the preview'
+                }
+                if (source.thinking) {
+                    return 'The source session started running since the preview'
+                }
+                break
+            case 'message': {
+                const boundaryRow = rows.find((row) => row.localId === boundary.messageLocalId)
+                if (!boundaryRow || boundaryRow.invokedAt == null) {
+                    return 'The boundary message is no longer part of the invoked history'
+                }
+                // A live non-Codex message fork must still be idle at confirm
+                // (Codex message forks legitimately run); without this the
+                // busy rejection surfaces as an uncoded dead end.
+                if (source.thinking && this.resolveFlavor(source) !== 'codex') {
+                    return 'The source session started running since the preview'
+                }
+                break
+            }
+            case 'latestCompleted':
+                // The pinned native turn is re-verified by the runner against
+                // native history; epoch covers hub-side truncation.
+                // A latestCompleted token is only minted for a running source,
+                // so an inactive source at confirm means the runner exited:
+                // refresh instead of confirming into the archived path, which
+                // ignores the pin.
+                if (!source.active) {
+                    return 'The source session stopped running since the preview'
+                }
+                break
+            case 'rewind':
+                if (invokedTailSeq(rows) > boundary.tailSeq) {
+                    return 'New conversation rows appeared since the preview'
+                }
+                // The rewind confirm demands an idle source; a thinking edge
+                // would otherwise fail as an uncoded 'Session is busy'.
+                if (source.thinking) {
+                    return 'The source session started running since the preview'
+                }
+                break
+        }
+        return null
+    }
+
+    /**
+     * Read-only fork/rewind preview answered by the boundary owner. Runs the
+     * same admission guards as confirm, without taking the history-action
+     * lock, so previewing never blocks or races a concurrent confirm.
+     */
+    async forkPreview(
+        sessionId: string,
+        namespace: string,
+        intent: ForkPreviewRequest['intent'],
+        messageLocalId?: string
+    ): Promise<{ type: 'success'; preview: ForkPreviewResponse } | { type: 'error'; message: string }> {
+        const access = this.resolveSessionAccess(sessionId, namespace)
+        if (!access.ok) {
+            return { type: 'error', message: access.reason === 'not-found' ? 'Session not found' : 'Access denied' }
+        }
+        const source = access.session
+        const flavor = this.resolveFlavor(source)
+        const history = source.metadata?.capabilities?.conversationHistory
+        const guardError = (error: unknown) =>
+            ({ type: 'error' as const, message: error instanceof Error ? error.message : String(error) })
+
+        if (intent === 'rewind') {
+            if (!source.active) {
+                return { type: 'error', message: 'Rewind is not supported for this session' }
+            }
+            try {
+                this.assertConversationHistoryIdle(source)
+            } catch (error) {
+                return guardError(error)
+            }
+            if (history?.rewindToMessage !== true) {
+                return { type: 'error', message: 'Rewind is not supported for this session' }
+            }
+            try {
+                this.assertInvokedHistoryBoundary(sessionId, messageLocalId!)
+            } catch (error) {
+                return guardError(error)
+            }
+            return this.buildForkPreviewResponse(sessionId, source, flavor, 'rewind', messageLocalId)
+        }
+
+        // Mirror forkConversation's admission guards on the fork intents: the
+        // preview must never open a dialog whose confirm the engine refuses
+        // outright. (The rewind confirm runs its own guards, so rewind
+        // previews keep theirs.)
+        if (source.metadata?.codexResumePending) {
+            return { type: 'error', message: 'Codex resume startup is unconfirmed; retry resume or archive to confirm its process stopped before forking' }
+        }
+        if (this.archivedForkPending(sessionId, namespace) && (!source.metadata?.codexArchivedFork || source.active)) {
+            return { type: 'error', message: 'Archived fork is pending; wait for its child binding before creating another branch' }
+        }
+
+        if (!source.active) {
+            // Archived fork is hub-decided and the transcript is static; run
+            // the same admission guards as the confirm so the preview cannot
+            // answer a boundary the confirm would refuse.
+            try {
+                this.assertArchivedForkEligible(source, namespace, intent === 'message' ? messageLocalId : undefined)
+            } catch (error) {
+                return guardError(error)
+            }
+            if (intent === 'message') {
+                try {
+                    this.assertInvokedHistoryBoundary(sessionId, messageLocalId!)
+                } catch (error) {
+                    return guardError(error)
+                }
+                // forkArchivedCodexSession resolves the native turn from a
+                // pending attempt or the conversationHistoryTurns map and
+                // throws 'No native history point' without either; refuse the
+                // same message up front.
+                if (!source.metadata?.codexArchivedFork
+                    && !source.metadata?.conversationHistoryTurns?.[messageLocalId!]) {
+                    return { type: 'error', message: 'No native history point for this message' }
+                }
+            }
+            return this.buildForkPreviewResponse(sessionId, source, flavor, intent === 'message' ? 'message' : 'current', messageLocalId)
+        }
+
+        // The hub resolves the mode from the live session; a running Codex
+        // with a verified completed turn previews through that turn.
+        let mode: 'current' | 'message' | 'latestCompleted' = intent === 'message' ? 'message' : 'current'
+        if (intent === 'current' && flavor === 'codex' && source.thinking
+            && history?.forkLatestCompleted === true) {
+            mode = 'latestCompleted'
+        }
+
+        try {
+            this.assertConversationHistoryIdle(source,
+                (Boolean(messageLocalId) || mode === 'latestCompleted') && flavor === 'codex')
+        } catch (error) {
+            return guardError(error)
+        }
+
+        if (mode === 'message') {
+            if (history?.forkAtMessage !== true) {
+                return { type: 'error', message: 'Historical fork is not supported for this session' }
+            }
+            try {
+                this.assertInvokedHistoryBoundary(sessionId, messageLocalId!)
+            } catch (error) {
+                return guardError(error)
+            }
+        } else if (mode === 'latestCompleted') {
+            // latestCompleted is CLI-decided: an old runner cannot answer it
+            // without re-introducing the drift the preview exists to prevent.
+            if (history?.forkPreview !== true) {
+                return { type: 'error', message: 'Update the runner to preview this fork' }
+            }
+        } else if (history?.forkCurrent !== true) {
+            return { type: 'error', message: 'Fork current is not supported for this session' }
+        }
+
+        return this.buildForkPreviewResponse(sessionId, source, flavor, mode, messageLocalId)
+    }
+
+    private async buildForkPreviewResponse(
+        sessionId: string,
+        source: Session,
+        flavor: AgentFlavor,
+        mode: ForkBoundary['mode'],
+        messageLocalId?: string
+    ): Promise<{ type: 'success'; preview: ForkPreviewResponse } | { type: 'error'; message: string }> {
+        // A preview-capable shared runtime decides its own boundary: ask it
+        // where the native history cut sits instead of mirroring it from hub
+        // rows. Every other flavor is hub-decided and answered from rows.
+        let nativeCut: { nativeTurnId?: string; cutBeforeLocalId?: string } = {}
+        let rows = this.store.messages.getAllMessages(sessionId)
+        if (mode !== 'rewind' && source.active && flavor === 'codex'
+            && source.metadata?.capabilities?.conversationHistory?.forkPreview === true) {
+            // The native cut and the hub transcript must describe the same
+            // history: fingerprint the transcript before the boundary RPC and
+            // reject when a turn completes in between, so the token never pins
+            // a tail the sampled cut does not cover (same guard as the
+            // OpenCode rewind reservation).
+            const fingerprintBefore = createHash('sha256').update(JSON.stringify(rows)).digest('hex')
+            try {
+                nativeCut = await this.rpcGateway.previewForkBoundary(sessionId,
+                    mode === 'message' ? { mode, messageLocalId } : { mode })
+            } catch (error) {
+                return { type: 'error', message: error instanceof Error ? error.message : String(error) }
+            }
+            rows = this.store.messages.getAllMessages(sessionId)
+            if (createHash('sha256').update(JSON.stringify(rows)).digest('hex') !== fingerprintBefore) {
+                return { type: 'error', message: 'The source conversation changed while the preview was prepared; try again' }
+            }
+        }
+        let resolved: ResolvedBoundary<StoredMessage>
+        try {
+            resolved = mode === 'rewind'
+                ? resolveRewindBoundary(rows, messageLocalId!)
+                : resolveForkBoundary(rows, { mode, messageLocalId, cutBeforeLocalId: nativeCut.cutBeforeLocalId })
+        } catch (error) {
+            return { type: 'error', message: error instanceof Error ? error.message : String(error) }
+        }
+        const toRow = (message: StoredMessage): ForkPreviewRow =>
+            ({ id: message.id, seq: message.seq, localId: message.localId, content: message.content, createdAt: message.createdAt, invokedAt: message.invokedAt })
+        const keptTail = resolved.prefix.slice(-FORK_PREVIEW_TAIL_ROWS).map(toRow)
+        const excluded = mode === 'rewind'
+            ? resolved.excluded.slice(0, FORK_PREVIEW_TAIL_ROWS).map(toRow)
+            : resolved.excluded.slice(0, 1).map(toRow)
+        const preview: ForkPreviewResponse = {
+            mode,
+            boundary: {
+                v: 1,
+                mode,
+                ...(messageLocalId && (mode === 'message' || mode === 'rewind') ? { messageLocalId } : {}),
+                ...(nativeCut.nativeTurnId ? { nativeTurnId: nativeCut.nativeTurnId } : {}),
+                sourceActive: source.active,
+                epoch: this.store.messages.getMessageEpoch(sessionId),
+                tailSeq: resolved.tailSeq
+            },
+            keptTail,
+            excluded,
+            counts: { kept: resolved.prefix.length, excluded: resolved.excluded.length }
+        }
+        return { type: 'success', preview }
     }
 
     private async forkConversationUnlocked(
         sessionId: string,
         namespace: string,
         messageLocalId?: string,
-        latestCompleted = false
-    ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }> {
+        latestCompleted = false,
+        boundary?: ForkBoundary
+    ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string; code?: ForkBoundaryErrorCode }> {
         const access = this.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return { type: 'error', message: access.reason === 'not-found' ? 'Session not found' : 'Access denied' }
         }
         let source = access.session
+        if (boundary) {
+            const expectedMode: ForkBoundary['mode'] = messageLocalId ? 'message' : latestCompleted ? 'latestCompleted' : 'current'
+            const moved = this.boundaryMovedReason(sessionId, source, boundary, expectedMode, messageLocalId)
+            if (moved) {
+                return { type: 'error', message: moved, code: 'boundary_moved' }
+            }
+        }
         if (latestCompleted && (messageLocalId || !source.active || this.resolveFlavor(source) !== 'codex'
             || source.metadata?.capabilities?.conversationHistory?.forkLatestCompleted !== true)) {
             return { type: 'error', message: 'No verified completed turn is available for this session' }
@@ -2569,7 +2854,11 @@ export class SyncEngine {
         try {
             rpcResult = await this.rpcGateway.forkConversation(
                 sessionId,
-                latestCompleted ? { latestCompleted: true } : messageLocalId ? { messageLocalId } : {}
+                latestCompleted
+                    ? { latestCompleted: true, ...(boundary?.nativeTurnId ? { lastTurnId: boundary.nativeTurnId } : {}) }
+                    : messageLocalId
+                        ? { messageLocalId }
+                        : boundary?.nativeTurnId ? { lastTurnId: boundary.nativeTurnId } : {}
             )
         } catch (error) {
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
@@ -2621,7 +2910,10 @@ export class SyncEngine {
         const childId = randomUUID()
         let prefix
         try {
-            prefix = selectForkTranscriptPrefix(this.store.messages.getAllMessages(sessionId), messageLocalId)
+            prefix = resolveForkBoundary(this.store.messages.getAllMessages(sessionId), {
+                mode: messageLocalId ? 'message' : 'current',
+                messageLocalId
+            }).prefix
         } catch (error) {
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }
         }
@@ -2814,14 +3106,15 @@ export class SyncEngine {
     async rewindConversation(
         sessionId: string,
         namespace: string,
-        messageLocalId: string
+        messageLocalId: string,
+        boundary?: ForkBoundary
     ): Promise<{ type: 'success' } | { type: 'error'; message: string; code?: RewindConversationErrorCode; hydrateFailed?: boolean }> {
         if (this.historyActionsInFlight.has(sessionId)) {
             return { type: 'error', message: 'Conversation history action already in progress' }
         }
         this.historyActionsInFlight.add(sessionId)
         try {
-            return await this.rewindConversationUnlocked(sessionId, namespace, messageLocalId)
+            return await this.rewindConversationUnlocked(sessionId, namespace, messageLocalId, boundary)
         } finally {
             this.historyActionsInFlight.delete(sessionId)
         }
@@ -2830,13 +3123,20 @@ export class SyncEngine {
     private async rewindConversationUnlocked(
         sessionId: string,
         namespace: string,
-        messageLocalId: string
+        messageLocalId: string,
+        boundary?: ForkBoundary
     ): Promise<{ type: 'success' } | { type: 'error'; message: string; code?: RewindConversationErrorCode; hydrateFailed?: boolean }> {
         const access = this.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return { type: 'error', message: access.reason === 'not-found' ? 'Session not found' : 'Access denied' }
         }
         const session = access.session
+        if (boundary) {
+            const moved = this.boundaryMovedReason(sessionId, session, boundary, 'rewind', messageLocalId)
+            if (moved) {
+                return { type: 'error', message: moved, code: 'boundary_moved' }
+            }
+        }
         try {
             this.assertConversationHistoryIdle(session)
         } catch (error) {

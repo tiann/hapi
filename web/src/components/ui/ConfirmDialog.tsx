@@ -20,6 +20,11 @@ type ConfirmDialogProps = {
     isPending: boolean
     isConfirmDisabled?: boolean
     allowDismissWhilePending?: boolean
+    /** Error-dialog mode: a single Retry action, dismissed via Esc/backdrop/X. */
+    hideCancel?: boolean
+    /** Stay open after a successful confirm (the caller unmounts or swaps the
+     * dialog when the follow-up work completes). */
+    keepOpenAfterConfirm?: boolean
     onBackgroundError?: (message: string) => void
     destructive?: boolean
     centerTitle?: boolean
@@ -38,6 +43,8 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
         isPending,
         isConfirmDisabled = false,
         allowDismissWhilePending = false,
+        hideCancel = false,
+        keepOpenAfterConfirm = false,
         onBackgroundError,
         destructive = false,
         centerTitle = false
@@ -62,7 +69,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
         setError(null)
         try {
             await onConfirm()
-            onClose()
+            if (!keepOpenAfterConfirm) onClose()
         } catch (err) {
             const message =
                 err instanceof Error && err.message
@@ -99,14 +106,16 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
                 ) : null}
 
                 <div className="mt-4 flex gap-2 justify-end">
-                    <Button
-                        type="button"
-                        variant="secondary"
-                        onClick={onClose}
-                        disabled={isPending && !allowDismissWhilePending}
-                    >
-                        {t(isPending && allowDismissWhilePending ? 'button.close' : 'button.cancel')}
-                    </Button>
+                    {hideCancel ? null : (
+                        <Button
+                            type="button"
+                            variant="secondary"
+                            onClick={onClose}
+                            disabled={isPending && !allowDismissWhilePending}
+                        >
+                            {t(isPending && allowDismissWhilePending ? 'button.close' : 'button.cancel')}
+                        </Button>
+                    )}
                     <Button
                         type="button"
                         variant={destructive ? 'destructive' : 'secondary'}
