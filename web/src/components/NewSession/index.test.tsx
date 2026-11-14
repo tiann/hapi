@@ -145,6 +145,20 @@ vi.mock('@/hooks/queries/useDshModels', () => ({
         error: null
     })
 }))
+vi.mock('@/hooks/queries/useHermesModels', () => ({
+    useHermesModelsForMachine: () => ({
+        availableModels: [],
+        currentModelId: null,
+        isLoading: false,
+        error: null
+    }),
+    useHermesModelsForSession: () => ({
+        availableModels: [],
+        currentModelId: null,
+        isLoading: false,
+        error: null
+    })
+}))
 vi.mock('@/hooks/queries/useCursorModelsForMachine', () => ({
     useCursorModelsForMachine: () => ({
         availableModels: [],

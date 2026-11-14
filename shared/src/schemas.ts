@@ -116,6 +116,7 @@ export const MetadataSchema = z.object({
     // tiann/hapi#873.
     cursorMigrationState: z.enum(['in_progress', 'ambiguous']).optional(),
     kimiSessionId: z.string().optional(),
+    hermesSessionId: z.string().optional(),
     copilotSessionId: z.string().optional(),
     piSessionId: z.string().optional(),
     // Native DeepSeek Harness ACP session id. Current DSH ACP profiles

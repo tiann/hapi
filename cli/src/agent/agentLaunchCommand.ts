@@ -14,6 +14,7 @@ const DEFAULT_COMMANDS: Record<AgentFlavor, string> = {
     dsh: 'dsh',
     gemini: 'gemini',
     grok: 'grok',
+    hermes: 'hermes',
     kimi: 'kimi',
     opencode: 'opencode',
     pi: 'pi',

@@ -33,6 +33,7 @@ import type {
     DeleteUploadResponse,
     DirectoryEntry,
     DshModelsResponse,
+    HermesModelsResponse,
     FileReadResponse,
     GeneratedImageResponse,
     ImplementCodexPlanResult,
@@ -157,6 +158,7 @@ export type RpcListGrokReasoningEffortOptionsResponse = GrokReasoningEffortRespo
 export type RpcListOpencodeReasoningEffortOptionsResponse = OpencodeReasoningEffortResponse
 export type RpcListAgyModelsResponse = AgyModelsResponse
 export type RpcListDshModelsResponse = DshModelsResponse
+export type RpcListHermesModelsResponse = HermesModelsResponse
 export type RpcListPiModelsResponse = PiModelsResponse
 export type RpcListClaudeModelsResponse = ClaudeModelsResponse
 export type RpcUsageQuerySettingsResponse = UsageQuerySettingsResponse
@@ -692,6 +694,14 @@ export class RpcGateway {
 
     async listDshModelsForSession(sessionId: string): Promise<RpcListDshModelsResponse> {
         return await this.sessionRpc(sessionId, RPC_METHODS.ListDshModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListDshModelsResponse
+    }
+
+    async listHermesModelsForMachine(machineId: string): Promise<RpcListHermesModelsResponse> {
+        return await this.machineRpc(machineId, RPC_METHODS.ListHermesModelsForMachine, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListHermesModelsResponse
+    }
+
+    async listHermesModelsForSession(sessionId: string): Promise<RpcListHermesModelsResponse> {
+        return await this.sessionRpc(sessionId, RPC_METHODS.ListHermesModels, {}, MODEL_LIST_RPC_TIMEOUT_MS) as RpcListHermesModelsResponse
     }
 
     async listGrokReasoningEffortOptionsForSession(sessionId: string): Promise<RpcListGrokReasoningEffortOptionsResponse> {

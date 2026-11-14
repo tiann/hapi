@@ -20,6 +20,7 @@ export function resolveAgentSessionIdFromMetadata(
         case 'grok': return metadata.grokSessionId ?? undefined
         case 'cursor': return metadata.cursorSessionId ?? undefined
         case 'kimi': return metadata.kimiSessionId ?? undefined
+        case 'hermes': return metadata.hermesSessionId ?? undefined
         case 'copilot': return metadata.copilotSessionId ?? undefined
         case 'pi': return metadata.piSessionId ?? undefined
         case 'dsh': return metadata.dshSessionId ?? undefined

@@ -44,6 +44,7 @@ export type {
     CursorPermissionMode,
     GeminiPermissionMode,
     GrokPermissionMode,
+    HermesPermissionMode,
     KimiPermissionMode,
     CopilotPermissionMode,
     OpencodePermissionMode,
