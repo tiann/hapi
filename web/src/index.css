@@ -475,9 +475,9 @@ html:has(.chat-scroll-y) #root {
     }
 }
 
-/* Row quick action (archive): replaces the time/progress cluster on hover,
-   and on keyboard focus (not a click or tap) so it stays reachable without a
-   mouse. Touch devices keep the long-press menu instead. */
+/* Row quick actions (unpin, archive): replace the time/progress cluster on
+   hover, and on keyboard focus (not a click or tap) so they stay reachable
+   without a mouse. Touch devices keep the long-press menu instead. */
 .session-row-quick-action {
     display: none;
 }

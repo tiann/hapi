@@ -12,7 +12,7 @@ import {
 } from '@/lib/sessionListSearch'
 import { useLongPress } from '@/hooks/useLongPress'
 import { usePlatform } from '@/hooks/usePlatform'
-import { sessionArchiveMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
+import { sessionArchiveMutationKey, sessionPinMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useIsMutating } from '@tanstack/react-query'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
@@ -21,7 +21,7 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { ArchiveSessionDialog } from '@/components/ArchiveSessionDialog'
 import { DeleteSessionDialog } from '@/components/DeleteSessionDialog'
 import { ProjectGroupRow } from '@/components/ProjectGroupRow'
-import { ArchiveIcon, CheckIcon, CopyIcon, InfoIcon, LoaderIcon, MarkAllReadIcon } from '@/components/icons'
+import { ArchiveIcon, CheckIcon, CopyIcon, InfoIcon, LoaderIcon, MarkAllReadIcon, PinOffIcon } from '@/components/icons'
 import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
 
@@ -1112,6 +1112,10 @@ export function SessionListSearch(props: {
 // A row with an open menu or dialog holds its collapsed panel mounted.
 const CollapsiblePanelHoldContext = createContext<((held: boolean) => void) | null>(null)
 
+type QuickUnpinFocusTarget = { sessionId: string; pending: boolean }
+const QuickUnpinFocusContext = createContext<{ current: QuickUnpinFocusTarget | null } | null>(null)
+const QUICK_ACTION_BUTTON_CLASS_NAME = 'flex h-7 w-7 items-center justify-center rounded-md text-[var(--app-hint)] transition-colors hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] disabled:cursor-wait'
+
 // Collapsed rows unmount after the close transition; mounted-but-hidden rows
 // would otherwise re-render on every session or machine update.
 function CollapsiblePanel(props: { open: boolean; children: ReactNode }) {
@@ -1186,6 +1190,9 @@ const SessionItem = memo(function SessionItem(props: {
     const [forkOpen, setForkOpen] = useState(false)
     const [forkPending, setForkPending] = useState(false)
     const pendingRequestPressedRef = useRef(false)
+    const rowRef = useRef<HTMLDivElement>(null)
+    const rowButtonRef = useRef<HTMLButtonElement>(null)
+    const quickUnpinFocusRef = useContext(QuickUnpinFocusContext)
     const {
         status: cursorChatStoreStatus,
         isApplicable: cursorChatStoreApplicable,
@@ -1257,6 +1264,58 @@ const SessionItem = memo(function SessionItem(props: {
         }
     }
 
+    const quickUnpinPending = useIsMutating({
+        mutationKey: sessionPinMutationKey(s.id),
+        exact: true,
+        predicate: (mutation) => mutation.state.variables === 'none',
+    }) > 0
+    const isPinned = Boolean(s.pinned || s.globalPinned)
+    // The row can lose its pinned flags before the unpin request settles;
+    // keep the spinner until it does.
+    const showQuickUnpin = isPinned || quickUnpinPending
+    const handleQuickUnpin = async () => {
+        const hadFocus = rowRef.current?.contains(document.activeElement) ?? false
+        if (hadFocus && quickUnpinFocusRef) {
+            quickUnpinFocusRef.current = { sessionId: s.id, pending: true }
+            // Keep focus on the row button before disabling or removing the
+            // unpin button drops focus to document.body.
+            rowButtonRef.current?.focus({ preventScroll: true })
+        }
+        try {
+            await setPinMode('none')
+        } catch (error) {
+            if (quickUnpinFocusRef?.current?.sessionId === s.id) {
+                quickUnpinFocusRef.current = null
+            }
+            addToast({
+                title: t('session.action.pinFailed'),
+                body: error instanceof Error ? error.message : t('dialog.error.default'),
+                sessionId: s.id,
+                url: `/sessions/${s.id}`
+            })
+        } finally {
+            if (quickUnpinFocusRef?.current?.sessionId === s.id) {
+                quickUnpinFocusRef.current.pending = false
+            }
+        }
+    }
+
+    useLayoutEffect(() => {
+        const target = quickUnpinFocusRef?.current
+        if (!target || target.sessionId !== s.id) return
+        const activeEl = document.activeElement
+        if (activeEl && activeEl !== document.body && !rowRef.current?.contains(activeEl)) {
+            quickUnpinFocusRef.current = null
+            return
+        }
+        if (activeEl !== rowButtonRef.current) {
+            rowButtonRef.current?.focus({ preventScroll: true })
+        }
+        if (!isPinned && !quickUnpinPending) {
+            quickUnpinFocusRef.current = null
+        }
+    }, [s.id, isPinned, quickUnpinPending, quickUnpinFocusRef])
+
     // Hover archive: an idle session archives in one click with a Reopen toast;
     // one that is replying, waiting on approval or running background work
     // still goes through the confirmation, since archiving stops its agent.
@@ -1268,6 +1327,7 @@ const SessionItem = memo(function SessionItem(props: {
     // The row can turn inactive before the archive request settles (the hub
     // still confirms cleanup); keep the spinner until it does.
     const showQuickArchive = s.active || quickArchivePending
+    const hasQuickAction = showQuickUnpin || showQuickArchive
     const handleQuickArchive = async () => {
         if (archiveNeedsConfirmation) {
             setArchiveOpen(true)
@@ -1356,10 +1416,12 @@ const SessionItem = memo(function SessionItem(props: {
     return (
         <>
             <div
+                ref={rowRef}
                 className="session-list-row relative"
-                data-quick-action-pending={quickArchivePending ? '' : undefined}
+                data-quick-action-pending={quickArchivePending || quickUnpinPending ? '' : undefined}
             >
                 <button
+                    ref={rowButtonRef}
                     type="button"
                     {...longPressHandlers}
                     onKeyDown={handleRowKeyDown}
@@ -1387,22 +1449,40 @@ const SessionItem = memo(function SessionItem(props: {
                         machineLabel={machineLabel}
                         contentSnippet={contentSnippet}
                         contentSearchTruncated={contentSearchTruncated}
-                        trailingClassName={showQuickArchive ? 'session-row-trailing' : undefined}
+                        trailingClassName={hasQuickAction ? 'session-row-trailing' : undefined}
                     />
                 </button>
-                {showQuickArchive ? (
-                    <button
-                        type="button"
-                        className="session-row-quick-action absolute right-1 top-1.5 h-7 w-7 items-center justify-center rounded-md text-[var(--app-hint)] transition-colors hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] disabled:cursor-wait"
-                        aria-label={t('session.action.archive')}
-                        title={t('session.action.archive')}
-                        disabled={quickArchivePending}
-                        onClick={() => void handleQuickArchive()}
-                    >
-                        {quickArchivePending
-                            ? <LoaderIcon className="h-4 w-4 animate-spin" />
-                            : <ArchiveIcon className="h-4 w-4" />}
-                    </button>
+                {hasQuickAction ? (
+                    <div className="session-row-quick-action absolute right-1 top-1.5 items-center gap-0.5">
+                        {showQuickUnpin ? (
+                            <button
+                                type="button"
+                                className={QUICK_ACTION_BUTTON_CLASS_NAME}
+                                aria-label={t('session.action.unpin')}
+                                title={t('session.action.unpin')}
+                                disabled={quickUnpinPending}
+                                onClick={() => void handleQuickUnpin()}
+                            >
+                                {quickUnpinPending
+                                    ? <LoaderIcon className="h-4 w-4 animate-spin" />
+                                    : <PinOffIcon className="h-4 w-4" />}
+                            </button>
+                        ) : null}
+                        {showQuickArchive ? (
+                            <button
+                                type="button"
+                                className={QUICK_ACTION_BUTTON_CLASS_NAME}
+                                aria-label={t('session.action.archive')}
+                                title={t('session.action.archive')}
+                                disabled={quickArchivePending}
+                                onClick={() => void handleQuickArchive()}
+                            >
+                                {quickArchivePending
+                                    ? <LoaderIcon className="h-4 w-4 animate-spin" />
+                                    : <ArchiveIcon className="h-4 w-4" />}
+                            </button>
+                        ) : null}
+                    </div>
                 ) : null}
             </div>
 
@@ -1611,6 +1691,15 @@ export function SessionList(props: {
     const [contentSearchError, setContentSearchError] = useState(false)
     const [searchExpanded, setSearchExpanded] = useState(false)
     const [markAllReadOpen, setMarkAllReadOpen] = useState(false)
+    const quickUnpinFocusRef = useRef<QuickUnpinFocusTarget | null>(null)
+    useEffect(() => {
+        const target = quickUnpinFocusRef.current
+        if (!target || target.pending) return
+        const session = props.sessions.find((item) => item.id === target.sessionId)
+        if (!session || (!session.pinned && !session.globalPinned)) {
+            quickUnpinFocusRef.current = null
+        }
+    }, [props.sessions])
     // Actions-box width is the real icon budget (#2039). Measuring the full
     // row and subtracting a guessed search reserve left empty space after More.
     const headerRowRef = useRef<HTMLDivElement>(null)
@@ -2761,6 +2850,7 @@ export function SessionList(props: {
                 </div>
             ) : null}
             <div ref={scrollContainerRef} className="app-scroll-y session-list-scrollbar-left scrollbar-auto-hide min-h-0 flex-1">
+            <QuickUnpinFocusContext.Provider value={quickUnpinFocusRef}>
             <SessionListScrollAnchor sessions={props.sessions} className="mx-auto flex w-full max-w-content flex-col gap-1 pl-1.5 pr-2 pb-2">
                 {props.sessions.length === 0 && !props.isLoading ? (
                     <SessionsEmptyState
@@ -2877,6 +2967,7 @@ export function SessionList(props: {
                 {groups.map(renderDirectoryGroup)}
                 {actionOnlyGroups.map(renderActionOnlyGroupHeader)}
             </SessionListScrollAnchor>
+            </QuickUnpinFocusContext.Provider>
             </div>
             </div>
             <ConfirmDialog
