@@ -1007,6 +1007,9 @@ function buildImportedSessionMetadata(
         codexSourceSessionId: typeof existingMetadata?.codexSourceSessionId === 'string'
             ? existingMetadata.codexSourceSessionId
             : data.id,
+        codexImportedAt: typeof existingMetadata?.codexImportedAt === 'number'
+            ? existingMetadata.codexImportedAt
+            : now,
         ...(permissionMode ? { preferredPermissionMode: permissionMode } : {}),
         ...(machineId ? { machineId } : {}),
         lifecycleState: typeof existingMetadata?.lifecycleState === 'string'

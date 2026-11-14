@@ -366,6 +366,13 @@ describe('summary derivation helpers', () => {
         expect(toSessionSummary(makeSession()).attachedJobUpdatedAt).toBe(0)
     })
 
+    it('preserves server-owned Codex import state, including explicit clearing', () => {
+        for (const codexImportedAt of [123, null, undefined]) {
+            expect(toSessionSummaryMetadata({ path: '/work', host: 'test', codexImportedAt })?.codexImportedAt)
+                .toBe(codexImportedAt)
+        }
+    })
+
     it('toSessionSummaryMetadata returns null for null metadata', () => {
         expect(toSessionSummaryMetadata(null)).toBeNull()
         expect(toSessionSummaryMetadata(undefined)).toBeNull()
