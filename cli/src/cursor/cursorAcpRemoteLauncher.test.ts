@@ -6283,6 +6283,45 @@ describe('cursorAcpRemoteLauncher', () => {
         }
     });
 
+    it('tracks in-flight during deferred setup and clears it on commit so later idle cancels return false and retries can cancel', async () => {
+        const session = makeSession('acp-session', { keepQueueOpen: true });
+        const client = session.client as unknown as {
+            emitMessagesConsumed: ReturnType<typeof vi.fn>;
+        };
+        harness.deferSetConfigOption = new Promise<void>((resolve) => { harness.releaseSetConfigOption = resolve; });
+        const launchPromise = cursorAcpRemoteLauncher(session);
+        try {
+            session.queue.push('work', {
+                permissionMode: 'default',
+                model: 'gpt-5.3-codex[reasoning=medium,fast=false]'
+            } as EnhancedMode, 'in-window');
+            await vi.waitFor(() => expect(harness.setConfigOptionWaiting).toBe(1));
+
+            // Inside the dequeue→commit window: cancel answers 'in-flight'.
+            expect(session.queue.cancelByLocalId('in-window')).toBe('in-flight');
+            expect(client.emitMessagesConsumed).not.toHaveBeenCalled();
+
+            harness.releaseSetConfigOption?.();
+            harness.deferSetConfigOption = null;
+            harness.releaseSetConfigOption = null;
+
+            await vi.waitFor(() => expect(client.emitMessagesConsumed).toHaveBeenCalledWith(['in-window']));
+            // Committed on an idle queue: entry is cleared, and a later cancel succeeds.
+            expect(session.queue.cancelByLocalId('in-window')).toBe(false);
+            session.queue.push('retry', { permissionMode: 'default' } as EnhancedMode, 'in-window');
+            expect(session.queue.takeByLocalId('in-window')).not.toBeNull();
+            expect(session.queue.cancelByLocalId('in-window')).toBe(true);
+
+            session.queue.close();
+            await launchPromise;
+        } finally {
+            harness.releaseSetConfigOption?.();
+            harness.deferSetConfigOption = null;
+            session.queue.close();
+            await launchPromise.catch(() => {});
+        }
+    });
+
     it('a batch resolved while shouldExit flips breaks before any setup', async () => {
         // Round-7 Minor 2: the dequeue can resolve a real batch right as the
         // terminal teardown flips shouldExit (collectBatch wins the race

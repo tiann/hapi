@@ -242,164 +242,161 @@ export class GrokRemoteLauncher extends RemoteLauncherBase {
             const waitSignal = this.abortController.signal
             // Defer hub ack until the dispatch commit point below: a batch
             // dropped by a concurrent teardown must not be stamped `invoked`.
-            const acknowledgeBatch = session.queue.onBatchConsumed
-            session.queue.onBatchConsumed = null
-            let batch: Awaited<ReturnType<typeof session.queue.waitForMessagesAndGetAsString>>
-            try {
-                batch = await session.queue.waitForMessagesAndGetAsString(waitSignal)
-            } finally {
-                session.queue.onBatchConsumed = acknowledgeBatch
-            }
+            const batch = await session.queue.waitForDeferredBatch(waitSignal)
             if (!batch) {
                 if (waitSignal.aborted && !this.shouldExit) continue
                 break
             }
-            if (this.shouldExit) {
-                // Terminal teardown reset the queue while this batch sat in
-                // the wait: drop it un-ACKed and end.
-                break
+            let batchSettled = false
+            const requeue = () => {
+                if (!session.queue.isClosed()) {
+                    session.queue.unshiftBatch(batch)
+                    batchSettled = true
+                }
             }
-
-            // Hold the history busy flag across the whole turn setup
-            // (model/permission sync, rewind-points, prompt). thinking waits
-            // for the dispatch commit point so an aborted setup never
-            // flickers the hub UI.
-            this.conversationHistory.setBusy(true)
             try {
-            const requestedModel = batch.mode.model === null
-                ? this.defaultBackendModel
-                : batch.mode.model
-            if (requestedModel && requestedModel !== this.currentBackendModel) {
+                if (this.shouldExit) {
+                    // Terminal teardown reset the queue while this batch sat in
+                    // the wait: drop it un-ACKed and end.
+                    break
+                }
+
+                // Hold the history busy flag across the whole turn setup
+                // (model/permission sync, rewind-points, prompt). thinking waits
+                // for the dispatch commit point so an aborted setup never
+                // flickers the hub UI.
+                this.conversationHistory.setBusy(true)
                 try {
-                    await backend.setModel(acpSessionId, requestedModel, { flavor: 'grok' })
-                    this.currentBackendModel = requestedModel
-                    batch.mode.model = requestedModel
+                const requestedModel = batch.mode.model === null
+                    ? this.defaultBackendModel
+                    : batch.mode.model
+                if (requestedModel && requestedModel !== this.currentBackendModel) {
+                    try {
+                        await backend.setModel(acpSessionId, requestedModel, { flavor: 'grok' })
+                        this.currentBackendModel = requestedModel
+                        batch.mode.model = requestedModel
+                    } catch (error) {
+                        logger.warn('[grok-remote] Inline model switch failed', error)
+                        this.rollbackModel(batch, this.currentBackendModel)
+                        session.sendSessionEvent({
+                            type: 'message',
+                            message: `Failed to switch Grok model to ${requestedModel}.`
+                        })
+                    }
+                    if (this.shouldExit) {
+                        break
+                    }
+                    if (waitSignal.aborted) {
+                        requeue()
+                        continue
+                    }
+                }
+
+                const requestedEffort = batch.mode.effort === null
+                    ? this.defaultBackendEffort
+                    : batch.mode.effort
+                if (requestedEffort && requestedEffort !== this.currentBackendEffort) {
+                    try {
+                        await backend.setMode(acpSessionId, requestedEffort)
+                        this.currentBackendEffort = requestedEffort
+                        batch.mode.effort = requestedEffort
+                    } catch (error) {
+                        logger.warn('[grok-remote] Inline effort switch failed', error)
+                        this.rollbackEffort(batch, this.currentBackendEffort)
+                        session.sendSessionEvent({
+                            type: 'message',
+                            message: `Failed to switch Grok effort to ${requestedEffort}.`
+                        })
+                    }
+                    if (this.shouldExit) {
+                        break
+                    }
+                    if (waitSignal.aborted) {
+                        requeue()
+                        continue
+                    }
+                }
+
+                const requestedPermissionMode = batch.mode.permissionMode
+                try {
+                    await this.syncBackendPermissionMode(acpSessionId, requestedPermissionMode)
                 } catch (error) {
-                    logger.warn('[grok-remote] Inline model switch failed', error)
-                    this.rollbackModel(batch, this.currentBackendModel)
+                    logger.warn('[grok-remote] Inline permission mode switch failed', error)
+                    const fallbackMode: PermissionMode = this.currentBackendPermissionMode ?? 'default'
+                    this.rollbackPermissionMode(batch, fallbackMode)
                     session.sendSessionEvent({
                         type: 'message',
-                        message: `Failed to switch Grok model to ${requestedModel}.`
+                        message: requestedPermissionMode === 'auto'
+                            ? 'Grok Auto permission mode is not enabled for this account or CLI build; using Default.'
+                            : `Failed to switch Grok permission mode to ${requestedPermissionMode}.`
                     })
                 }
                 if (this.shouldExit) {
                     break
                 }
                 if (waitSignal.aborted) {
-                    if (!session.queue.isClosed()) session.queue.unshiftBatch(batch)
+                    requeue()
                     continue
                 }
-            }
 
-            const requestedEffort = batch.mode.effort === null
-                ? this.defaultBackendEffort
-                : batch.mode.effort
-            if (requestedEffort && requestedEffort !== this.currentBackendEffort) {
-                try {
-                    await backend.setMode(acpSessionId, requestedEffort)
-                    this.currentBackendEffort = requestedEffort
-                    batch.mode.effort = requestedEffort
-                } catch (error) {
-                    logger.warn('[grok-remote] Inline effort switch failed', error)
-                    this.rollbackEffort(batch, this.currentBackendEffort)
-                    session.sendSessionEvent({
-                        type: 'message',
-                        message: `Failed to switch Grok effort to ${requestedEffort}.`
-                    })
-                }
+                this.applyDisplayMode(batch.mode.permissionMode)
                 if (this.shouldExit) {
+                    // Terminal teardown reset the queue: drop the un-ACKed batch
+                    // and end.
                     break
                 }
                 if (waitSignal.aborted) {
-                    if (!session.queue.isClosed()) session.queue.unshiftBatch(batch)
+                    // A plain Stop preserves the queue, and this batch was never
+                    // hub-ACKed: put it back so it drains once the Stop settles
+                    // instead of dispatching a cancelled turn.
+                    requeue()
                     continue
                 }
-            }
+                const isSlashCommand = batch.message.trimStart().startsWith('/')
+                let text = batch.mode.permissionMode === 'plan' && !isSlashCommand
+                    ? `${PLAN_MODE_INSTRUCTION}\n\n${batch.message}`
+                    : batch.message
+                if (!this.instructionsSent && !isSlashCommand) {
+                    text = `${getGrokTitleInstruction()}\n\n${text}`
+                }
+                const promptContent: PromptContent[] = [{ type: 'text', text }]
+                const localId = batch.items
+                    ?.map((item) => item.localId)
+                    .find((id): id is string => typeof id === 'string' && id.length > 0)
 
-            const requestedPermissionMode = batch.mode.permissionMode
-            try {
-                await this.syncBackendPermissionMode(acpSessionId, requestedPermissionMode)
-            } catch (error) {
-                logger.warn('[grok-remote] Inline permission mode switch failed', error)
-                const fallbackMode: PermissionMode = this.currentBackendPermissionMode ?? 'default'
-                this.rollbackPermissionMode(batch, fallbackMode)
-                session.sendSessionEvent({
-                    type: 'message',
-                    message: requestedPermissionMode === 'auto'
-                        ? 'Grok Auto permission mode is not enabled for this account or CLI build; using Default.'
-                        : `Failed to switch Grok permission mode to ${requestedPermissionMode}.`
-                })
-            }
-            if (this.shouldExit) {
-                break
-            }
-            if (waitSignal.aborted) {
-                if (!session.queue.isClosed()) session.queue.unshiftBatch(batch)
-                continue
-            }
+                // Official prompt index: count rewind points before the prompt; the new
+                // point lands at that index after a successful turn.
+                let nextPromptIndex: number | null = null
+                try {
+                    const points = await backend.sendExtensionRequest<{ points?: unknown[] } | unknown[]>(
+                        '_x.ai/rewind/points',
+                        { sessionId: acpSessionId }
+                    )
+                    const list = Array.isArray(points)
+                        ? points
+                        : (isObject(points) && Array.isArray(points.points) ? points.points : null)
+                    if (list) nextPromptIndex = list.length
+                } catch {
+                    nextPromptIndex = null
+                }
+                if (this.shouldExit) {
+                    // Terminal teardown reset the queue while the rewind-points
+                    // read awaited: drop the un-ACKed batch and end.
+                    break
+                }
+                if (waitSignal.aborted) {
+                    // Same plain-Stop preservation as above; the echo below has
+                    // not run yet, so the re-dispatch echoes exactly once.
+                    requeue()
+                    continue
+                }
+                session.onThinkingChange(true)
 
-            this.applyDisplayMode(batch.mode.permissionMode)
-            if (this.shouldExit) {
-                // Terminal teardown reset the queue: drop the un-ACKed batch
-                // and end.
-                break
-            }
-            if (waitSignal.aborted) {
-                // A plain Stop preserves the queue, and this batch was never
-                // hub-ACKed: put it back so it drains once the Stop settles
-                // instead of dispatching a cancelled turn.
-                if (!session.queue.isClosed()) session.queue.unshiftBatch(batch)
-                continue
-            }
-            const isSlashCommand = batch.message.trimStart().startsWith('/')
-            let text = batch.mode.permissionMode === 'plan' && !isSlashCommand
-                ? `${PLAN_MODE_INSTRUCTION}\n\n${batch.message}`
-                : batch.message
-            if (!this.instructionsSent && !isSlashCommand) {
-                text = `${getGrokTitleInstruction()}\n\n${text}`
-            }
-            const promptContent: PromptContent[] = [{ type: 'text', text }]
-            const localId = batch.items
-                ?.map((item) => item.localId)
-                .find((id): id is string => typeof id === 'string' && id.length > 0)
-
-            // Official prompt index: count rewind points before the prompt; the new
-            // point lands at that index after a successful turn.
-            let nextPromptIndex: number | null = null
-            try {
-                const points = await backend.sendExtensionRequest<{ points?: unknown[] } | unknown[]>(
-                    '_x.ai/rewind/points',
-                    { sessionId: acpSessionId }
-                )
-                const list = Array.isArray(points)
-                    ? points
-                    : (isObject(points) && Array.isArray(points.points) ? points.points : null)
-                if (list) nextPromptIndex = list.length
-            } catch {
-                nextPromptIndex = null
-            }
-            if (this.shouldExit) {
-                // Terminal teardown reset the queue while the rewind-points
-                // read awaited: drop the already-ACKed batch and end.
-                break
-            }
-            if (waitSignal.aborted) {
-                // Same plain-Stop preservation as above; the echo below has
-                // not run yet, so the re-dispatch echoes exactly once.
-                if (!session.queue.isClosed()) session.queue.unshiftBatch(batch)
-                continue
-            }
-            session.onThinkingChange(true)
-
-            // Dispatch commit point: every pre-dispatch bail-out above
-            // requeued the never-ACKed batch, so the hub ack only fires once
-            // the turn is really going out.
-            const consumedLocalIds = batch.items
-                ?.map((item) => item.localId)
-                .filter((id): id is string => typeof id === 'string') ?? []
-            if (consumedLocalIds.length > 0) {
-                acknowledgeBatch?.(consumedLocalIds)
-            }
+                // Dispatch commit point: every pre-dispatch bail-out above
+                // requeued the never-ACKed batch, so the hub ack only fires once
+                // the turn is really going out.
+                batchSettled = true
+                session.queue.commitBatch(batch)
 
             this.messageBuffer.addMessage(batch.message, 'user')
             if (!this.instructionsSent && !isSlashCommand) {
@@ -440,6 +437,11 @@ export class GrokRemoteLauncher extends RemoteLauncherBase {
                 await this.permissionHandler?.cancelAll('Prompt finished')
                 if (session.queue.size() === 0 && !this.shouldExit) {
                     session.sendSessionEvent({ type: 'ready' })
+                }
+            }
+            } finally {
+                if (!batchSettled) {
+                    session.queue.releaseBatch(batch)
                 }
             }
         }

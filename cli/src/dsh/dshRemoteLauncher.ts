@@ -192,18 +192,19 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             const signal = this.abortController.signal
             // Defer hub ack until the dispatch commit point below: a batch
             // dropped by a concurrent teardown must not be stamped `invoked`.
-            const acknowledgeBatch = this.session.queue.onBatchConsumed
-            this.session.queue.onBatchConsumed = null
-            let batch: Awaited<ReturnType<typeof this.session.queue.waitForMessagesAndGetAsString>>
-            try {
-                batch = await this.session.queue.waitForMessagesAndGetAsString(signal)
-            } finally {
-                this.session.queue.onBatchConsumed = acknowledgeBatch
-            }
+            const batch = await this.session.queue.waitForDeferredBatch(signal)
             if (!batch) {
                 if (signal.aborted && !this.shouldExit) continue
                 break
             }
+            let batchSettled = false
+            const requeue = () => {
+                if (!this.session.queue.isClosed()) {
+                    this.session.queue.unshiftBatch(batch)
+                    batchSettled = true
+                }
+            }
+            try {
             if (this.shouldExit) {
                 // Terminal teardown flipped while this batch sat in the wait:
                 // the queue was already reset and the batch was never
@@ -244,7 +245,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                     if (generationAtDequeue !== this.abortGeneration
                         && !this.shouldExit
                         && terminalAbortsAtDequeue === this.terminalAbortCount) {
-                        if (!this.session.queue.isClosed()) this.session.queue.unshiftBatch(batch)
+                        requeue()
                         this.messageBuffer.addMessage('Aborted while reconnecting the DSH session; the queued message will run after the stop settles', 'status')
                     }
                     if (this.session.queue.size() === 0 && !this.shouldExit) {
@@ -261,7 +262,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                     // was dequeued but never hub-ACKed, so it goes back for
                     // the post-stop drain instead of vanishing.
                     if (!this.shouldExit && terminalAbortsAtDequeue === this.terminalAbortCount) {
-                        if (!this.session.queue.isClosed()) this.session.queue.unshiftBatch(batch)
+                        requeue()
                         this.messageBuffer.addMessage('Aborted while reconnecting the DSH session; the queued message will run after the stop settles', 'status')
                     } else {
                         this.messageBuffer.addMessage('Aborted while reconnecting the DSH session; dropping the queued message', 'status')
@@ -346,7 +347,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                     if (generationBeforeRespawn !== this.abortGeneration
                         && !this.shouldExit
                         && terminalAbortsBeforeRespawn === this.terminalAbortCount) {
-                        if (!this.session.queue.isClosed()) this.session.queue.unshiftBatch(batch)
+                        requeue()
                         this.messageBuffer.addMessage('Aborted while restarting the DSH session; the queued message will run after the stop settles', 'status')
                     }
                     if (this.session.queue.size() === 0 && !this.shouldExit) {
@@ -397,7 +398,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                     // go back for the post-stop drain.
                     this.acpSessionEnded = true
                     if (!this.shouldExit && terminalAbortsBeforeRespawn === this.terminalAbortCount) {
-                        if (!this.session.queue.isClosed()) this.session.queue.unshiftBatch(batch)
+                        requeue()
                         this.messageBuffer.addMessage('Aborted while restarting the DSH session; the queued message will run after the stop settles', 'status')
                     } else {
                         this.messageBuffer.addMessage('Aborted while restarting the DSH session; dropping the queued message', 'status')
@@ -431,7 +432,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                     }
                     if (generationAtDequeue !== this.abortGeneration) {
                         if (!this.shouldExit && terminalAbortsAtDequeue === this.terminalAbortCount) {
-                            if (!this.session.queue.isClosed()) this.session.queue.unshiftBatch(batch)
+                            requeue()
                             this.messageBuffer.addMessage('Aborted while switching the DSH model; the queued message will run after the stop settles', 'status')
                         } else {
                             this.messageBuffer.addMessage('Aborted while switching the DSH model; dropping the queued message', 'status')
@@ -464,7 +465,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 }
                 if (generationAtDequeue !== this.abortGeneration) {
                     if (!this.shouldExit && terminalAbortsAtDequeue === this.terminalAbortCount) {
-                        if (!this.session.queue.isClosed()) this.session.queue.unshiftBatch(batch)
+                        requeue()
                         this.messageBuffer.addMessage('Aborted while switching the DSH model; the queued message will run after the stop settles', 'status')
                     } else {
                         this.messageBuffer.addMessage('Aborted while switching the DSH model; dropping the queued message', 'status')
@@ -492,7 +493,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 }
                 if (generationAtDequeue !== this.abortGeneration) {
                     if (!this.shouldExit && terminalAbortsAtDequeue === this.terminalAbortCount) {
-                        if (!this.session.queue.isClosed()) this.session.queue.unshiftBatch(batch)
+                        requeue()
                         this.messageBuffer.addMessage('Aborted while switching the DSH reasoning effort; the queued message will run after the stop settles', 'status')
                     } else {
                         this.messageBuffer.addMessage('Aborted while switching the DSH reasoning effort; dropping the queued message', 'status')
@@ -533,7 +534,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 // dequeued but never hub-ACKed rows go back for the post-stop
                 // drain (same contract as the reconnect windows).
                 if (!this.shouldExit && terminalAbortsAtDequeue === this.terminalAbortCount) {
-                    if (!this.session.queue.isClosed()) this.session.queue.unshiftBatch(batch)
+                    requeue()
                     this.messageBuffer.addMessage('Aborted while preparing the DSH prompt; the queued message will run after the stop settles', 'status')
                 } else {
                     this.messageBuffer.addMessage('Aborted while preparing the DSH prompt; dropping the queued message', 'status')
@@ -550,12 +551,8 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             // Dispatch commit point: every pre-dispatch bail-out above
             // requeued the never-ACKed batch, so the hub ack only fires once
             // the turn is really going out.
-            const consumedLocalIds = batch.items
-                .map((item) => item.localId)
-                .filter((id): id is string => typeof id === 'string');
-            if (consumedLocalIds.length > 0) {
-                acknowledgeBatch?.(consumedLocalIds)
-            }
+            batchSettled = true
+            this.session.queue.commitBatch(batch)
 
             this.messageBuffer.addMessage(batch.message, 'user')
             let failureMessage: string | null = null
@@ -631,6 +628,11 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             await this.permissionHandler?.cancelAll('Prompt finished')
             if (this.session.queue.size() === 0 && !this.shouldExit) {
                 this.session.sendSessionEvent({ type: 'ready' })
+            }
+            } finally {
+                if (!batchSettled) {
+                    this.session.queue.releaseBatch(batch)
+                }
             }
         }
     }

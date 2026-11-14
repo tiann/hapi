@@ -792,14 +792,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             }
 
             // Defer hub ack until we confirm a live backend can take the turn.
-            const acknowledgeBatch = this.session.queue.onBatchConsumed;
-            this.session.queue.onBatchConsumed = null;
-            let batch: Awaited<ReturnType<typeof session.queue.waitForMessagesAndGetAsString>>;
-            try {
-                batch = await session.queue.waitForMessagesAndGetAsString(waitSignal);
-            } finally {
-                this.session.queue.onBatchConsumed = acknowledgeBatch;
-            }
+            const batch = await session.queue.waitForDeferredBatch(waitSignal);
 
             if (!batch) {
                 if (waitSignal.aborted && !this.shouldExit) {
@@ -808,6 +801,12 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 break;
             }
 
+            let batchSettled = false;
+            const requeueAborted = () => {
+                this.requeueAbortedBatch(batch);
+                batchSettled = true;
+            };
+            try {
             if (this.shouldExit) {
                 // Terminal teardown flipped while this batch sat in the wait:
                 // the queue was already reset and the batch was never
@@ -885,7 +884,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 this.bridgingForEventId = null;
                 this.bridgingSource = null;
                 if (!this.shouldExit) {
-                    this.requeueAbortedBatch(batch);
+                    requeueAborted();
                 }
                 continue;
             }
@@ -899,7 +898,10 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 // switch/exit the terminal reset already cleared the queue;
                 // leave it cleared.
                 if (!this.shouldExit) {
-                    if (!session.queue.isClosed()) session.queue.unshiftBatch(batch);
+                    if (!session.queue.isClosed()) {
+                        session.queue.unshiftBatch(batch);
+                        batchSettled = true;
+                    }
                 }
                 if (!this.shouldExit) {
                     this.surfacePromptFailure(
@@ -931,7 +933,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 this.bridgingForEventId = null;
                 this.bridgingSource = null;
                 if (!this.shouldExit) {
-                    this.requeueAbortedBatch(batch);
+                    requeueAborted();
                 }
                 continue;
             }
@@ -964,7 +966,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 this.bridgingForEventId = null;
                 this.bridgingSource = null;
                 if (!this.shouldExit) {
-                    this.requeueAbortedBatch(batch);
+                    requeueAborted();
                 }
                 continue;
             }
@@ -1010,7 +1012,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         // back so it drains once the Stop settles (a
                         // Stop-canceled Bridge item is dropped, not
                         // resurrected).
-                        this.requeueAbortedBatch(batch);
+                        requeueAborted();
                         continue;
                     }
                     if (this.userAbortRequested) {
@@ -1019,7 +1021,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                         // before the hub ACK or any durable Bridge mutation.
                         this.bridgingForEventId = null;
                         this.bridgingSource = null;
-                        this.requeueAbortedBatch(batch);
+                        requeueAborted();
                         continue;
                     }
 
@@ -1056,7 +1058,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             this.bridgingForEventId = null;
                             this.bridgingSource = null;
                             if (!this.shouldExit) {
-                                this.requeueAbortedBatch(batch);
+                                requeueAborted();
                             }
                             continue;
                         }
@@ -1079,12 +1081,8 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
 
                     // Hub ack: every pre-dispatch bail-out above requeued the
                     // never-ACKed batch instead of losing it.
-                    const consumedLocalIds = batch.items
-                        .map((item) => item.localId)
-                        .filter((id): id is string => typeof id === 'string');
-                    if (consumedLocalIds.length > 0) {
-                        acknowledgeBatch?.(consumedLocalIds);
-                    }
+                    batchSettled = true;
+                    this.session.queue.commitBatch(batch);
                     this.lastUserMessage = batch.message;
 
                     const specialCommand = parseCursorSpecialCommand(batch.message);
@@ -1290,12 +1288,18 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 // already dropped it, so requeue only the user content.
                 if (!this.shouldExit) {
                     if (waitSignal.aborted || this.userAbortRequested) {
-                        this.requeueAbortedBatch(batch);
+                        requeueAborted();
                     } else if (!session.queue.isClosed()) {
                         session.queue.unshiftBatch(batch);
+                        batchSettled = true;
                     }
                 }
                 continue;
+            }
+            } finally {
+                if (!batchSettled) {
+                    session.queue.releaseBatch(batch);
+                }
             }
         }
         } finally {
@@ -2494,10 +2498,18 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         isolate: boolean;
         items: CollectedQueueItem[];
     }): void {
-        if (this.session.queue.isClosed()) return;
+        if (this.session.queue.isClosed()) {
+            this.session.queue.releaseBatch(batch);
+            return;
+        }
         for (let i = batch.items.length - 1; i >= 0; i -= 1) {
             const item = batch.items[i]!;
-            if (item.internal?.kind === 'model-error-bridge') continue;
+            if (item.internal?.kind === 'model-error-bridge') {
+                if (item.localId) {
+                    this.session.queue.releaseBatch({ items: [item] });
+                }
+                continue;
+            }
             if (batch.isolate) {
                 this.session.queue.unshiftIsolated(item.message, batch.mode, item.localId, {
                     internal: item.internal

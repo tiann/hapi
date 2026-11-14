@@ -725,6 +725,23 @@ describe('runOpencode set-session-config handler', () => {
         expect(cancel('missing')).toBe(false);
     });
 
+    it('never answers in-flight after non-deferred dequeue so /compact ack-race cancellation still records localId', async () => {
+        await runOpencode({ startedBy: 'runner' });
+        const { messageQueue, isLocalIdCancelled } = harness.opencodeLoopArgs[0] as {
+            messageQueue: MessageQueue2<unknown>;
+            isLocalIdCancelled: (localId: string) => boolean;
+        };
+        const cancelHandler = harness.session.onCancelQueuedMessage.mock.calls[0]?.[0] as
+            ((localId: string) => boolean | string);
+
+        messageQueue.push('/compact', {}, 'local-compact');
+        const batch = await messageQueue.waitForMessagesAndGetAsString();
+        expect(batch?.items.map((item) => item.localId)).toEqual(['local-compact']);
+
+        expect(cancelHandler('local-compact')).toBe(false);
+        expect(isLocalIdCancelled('local-compact')).toBe(true);
+    });
+
     it('releases the clear transition latch when the queued /clear is cancelled', async () => {
         await runOpencode({ startedBy: 'runner' });
 

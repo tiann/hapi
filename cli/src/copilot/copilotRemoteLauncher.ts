@@ -179,85 +179,87 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
             const waitSignal = this.abortController.signal;
             // Defer hub ack until the dispatch commit point below: a batch
             // dropped by a concurrent teardown must not be stamped `invoked`.
-            const acknowledgeBatch = session.queue.onBatchConsumed;
-            session.queue.onBatchConsumed = null;
-            let batch: Awaited<ReturnType<typeof session.queue.waitForMessagesAndGetAsString>>;
-            try {
-                batch = await session.queue.waitForMessagesAndGetAsString(waitSignal);
-            } finally {
-                session.queue.onBatchConsumed = acknowledgeBatch;
-            }
+            const batch = await session.queue.waitForDeferredBatch(waitSignal);
             if (!batch) {
                 if (waitSignal.aborted && !this.shouldExit) {
                     continue;
                 }
                 break;
             }
-            if (this.shouldExit) {
-                // Terminal teardown reset the queue while this batch sat in
-                // the wait: drop it un-ACKed and end.
-                break;
-            }
-
-            const modelBeforeBatch = this.currentBackendModel;
-            if (batch.mode.model && batch.mode.model !== this.currentBackendModel) {
-                batch.mode.model = await this.applyQueuedModel(batch.mode.model) ?? undefined;
-                if (this.currentBackendModel !== modelBeforeBatch) {
-                    // Take the NEW model's effort baseline before any
-                    // bail-out: the requeued batch re-enters with the model
-                    // already applied and would otherwise keep the previous
-                    // model's baseline.
-                    this.captureEffortBaseline(acpSessionId);
+            let batchSettled = false;
+            const requeue = () => {
+                if (!session.queue.isClosed()) {
+                    session.queue.unshiftBatch(batch);
+                    batchSettled = true;
                 }
+            };
+            try {
+                if (this.shouldExit) {
+                    // Terminal teardown reset the queue while this batch sat in
+                    // the wait: drop it un-ACKed and end.
+                    break;
+                }
+
+                const modelBeforeBatch = this.currentBackendModel;
+                if (batch.mode.model && batch.mode.model !== this.currentBackendModel) {
+                    batch.mode.model = await this.applyQueuedModel(batch.mode.model) ?? undefined;
+                    if (this.currentBackendModel !== modelBeforeBatch) {
+                        // Take the NEW model's effort baseline before any
+                        // bail-out: the requeued batch re-enters with the model
+                        // already applied and would otherwise keep the previous
+                        // model's baseline.
+                        this.captureEffortBaseline(acpSessionId);
+                    }
+                    if (this.shouldExit) {
+                        break;
+                    }
+                    if (waitSignal.aborted) {
+                        requeue();
+                        continue;
+                    }
+                }
+                await this.applyQueuedEffort(acpSessionId, batch.mode);
                 if (this.shouldExit) {
                     break;
                 }
                 if (waitSignal.aborted) {
-                    if (!session.queue.isClosed()) session.queue.unshiftBatch(batch);
+                    requeue();
                     continue;
                 }
-            }
-            await this.applyQueuedEffort(acpSessionId, batch.mode);
-            if (this.shouldExit) {
-                break;
-            }
-            if (waitSignal.aborted) {
-                if (!session.queue.isClosed()) session.queue.unshiftBatch(batch);
-                continue;
-            }
 
-            const desiredAgentMode = batch.mode.agentMode ?? session.getAgentMode();
-            if (desiredAgentMode !== this.currentAgentMode) {
-                await this.applyAgentMode(desiredAgentMode);
+                const desiredAgentMode = batch.mode.agentMode ?? session.getAgentMode();
+                if (desiredAgentMode !== this.currentAgentMode) {
+                    await this.applyAgentMode(desiredAgentMode);
+                    if (this.shouldExit) {
+                        break;
+                    }
+                    if (waitSignal.aborted) {
+                        requeue();
+                        continue;
+                    }
+                }
                 if (this.shouldExit) {
+                    // Terminal teardown reset the queue: drop the un-ACKed batch
+                    // and end.
                     break;
                 }
                 if (waitSignal.aborted) {
-                    if (!session.queue.isClosed()) session.queue.unshiftBatch(batch);
+                    // A plain Stop preserves the queue, and this batch was never
+                    // hub-ACKed: put it back so it drains once the Stop settles
+                    // instead of dispatching a cancelled turn.
+                    requeue();
                     continue;
                 }
-            }
-            if (this.shouldExit) {
-                // Terminal teardown reset the queue: drop the un-ACKed batch
-                // and end.
-                break;
-            }
-            if (waitSignal.aborted) {
-                // A plain Stop preserves the queue, and this batch was never
-                // hub-ACKed: put it back so it drains once the Stop settles
-                // instead of dispatching a cancelled turn.
-                if (!session.queue.isClosed()) session.queue.unshiftBatch(batch);
-                continue;
-            }
 
-            // Dispatch commit point: every pre-dispatch bail-out above
-            // requeued the never-ACKed batch, so the hub ack only fires once
-            // the turn is really going out.
-            const consumedLocalIds = batch.items
-                .map((item) => item.localId)
-                .filter((id): id is string => typeof id === 'string');
-            if (consumedLocalIds.length > 0) {
-                acknowledgeBatch?.(consumedLocalIds);
+                // Dispatch commit point: every pre-dispatch bail-out above
+                // requeued the never-ACKed batch, so the hub ack only fires once
+                // the turn is really going out.
+                batchSettled = true;
+                session.queue.commitBatch(batch);
+            } finally {
+                if (!batchSettled) {
+                    session.queue.releaseBatch(batch);
+                }
             }
 
             this.applyDisplayMode(batch.mode.permissionMode, batch.mode.model);

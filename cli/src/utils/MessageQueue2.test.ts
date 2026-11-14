@@ -15,22 +15,27 @@ describe('MessageQueue2', () => {
         // used to answer false ('not-found'), which pushed the hub row to
         // indeterminate and let a Retry re-emit the message → delivered twice.
         const queue = new MessageQueue2<string>(mode => mode);
+        const consumed: string[][] = [];
+        queue.onBatchConsumed = (ids) => { consumed.push([...ids]); };
         queue.push('M', 'local', 'L');
-        // Simulate the launcher's deferred-ACK pattern: suppress the
-        // collect-time ACK, collect, then commit later.
-        const stashed = queue.onBatchConsumed;
-        queue.onBatchConsumed = null;
-        const batch = await queue.waitForMessagesAndGetAsString();
+        const batch = await queue.waitForDeferredBatch();
         expect(batch?.items.map(item => item.localId)).toEqual(['L']);
+        expect(consumed).toEqual([]);
         // Cancel inside the window: the row is neither queued nor reserved.
         expect(queue.cancelByLocalId('L')).toBe('in-flight');
         // The commit lands after the cancel attempt: the message is delivered
-        // exactly once and the hub row goes invoked (never indeterminate).
-        queue.onBatchConsumed = stashed;
-        stashed?.(batch!.items.map(item => item.localId!));
+        // exactly once, the hub row goes invoked, and the in-flight mark is
+        // cleared immediately even while the queue stays idle.
+        queue.commitBatch(batch!);
+        expect(consumed).toEqual([['L']]);
+        expect(queue.cancelByLocalId('L')).toBe(false);
         // A retry re-emit with the same localId must still be cancellable —
-        // the stale in-flight mark must not shadow the queued row.
+        // both while queued and when reserved via takeByLocalId.
         queue.push('M again', 'local', 'L');
+        expect(queue.cancelByLocalId('L')).toBe(true);
+        expect(queue.size()).toBe(0);
+        queue.push('M reserved', 'local', 'L');
+        expect(queue.takeByLocalId('L')).not.toBeNull();
         expect(queue.cancelByLocalId('L')).toBe(true);
         expect(queue.size()).toBe(0);
     });
@@ -43,14 +48,44 @@ describe('MessageQueue2', () => {
         // 'in-flight'.
         const queue = new MessageQueue2<string>(mode => mode);
         queue.push('M', 'local', 'L');
-        const stashed = queue.onBatchConsumed;
-        queue.onBatchConsumed = null;
-        await queue.waitForMessagesAndGetAsString();
+        await queue.waitForDeferredBatch();
         expect(queue.cancelByLocalId('L')).toBe('in-flight');
         expect(queue.cancelByLocalId('L')).toBe('in-flight');
         // Terminal hygiene: resetting the queue clears the in-flight marks.
         queue.reset();
         expect(queue.cancelByLocalId('L')).toBe(false);
+    });
+
+    it('clears in-flight tracking when a deferred batch is dropped via releaseBatch', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        const consumed: string[][] = [];
+        queue.onBatchConsumed = (ids) => { consumed.push([...ids]); };
+        queue.push('M', 'local', 'L');
+        const batch = await queue.waitForDeferredBatch();
+        expect(queue.cancelByLocalId('L')).toBe('in-flight');
+
+        queue.releaseBatch(batch!);
+        expect(consumed).toEqual([]);
+        expect(queue.cancelByLocalId('L')).toBe(false);
+
+        queue.push('M retry', 'local', 'L');
+        expect(queue.takeByLocalId('L')).not.toBeNull();
+        expect(queue.cancelByLocalId('L')).toBe(true);
+    });
+
+    it('never marks non-deferred waitForMessagesAndGetAsString batches as in-flight (opencode, claude, agy)', async () => {
+        const queueWithAck = new MessageQueue2<string>(mode => mode);
+        const consumed: string[][] = [];
+        queueWithAck.onBatchConsumed = (ids) => { consumed.push([...ids]); };
+        queueWithAck.push('M1', 'local', 'L1');
+        await queueWithAck.waitForMessagesAndGetAsString();
+        expect(consumed).toEqual([['L1']]);
+        expect(queueWithAck.cancelByLocalId('L1')).toBe(false);
+
+        const queueWithoutAck = new MessageQueue2<string>(mode => mode);
+        queueWithoutAck.push('M2', 'local', 'L2');
+        await queueWithoutAck.waitForMessagesAndGetAsString();
+        expect(queueWithoutAck.cancelByLocalId('L2')).toBe(false);
     });
 
     it('unshiftBatch restores a dequeued batch in original order with localIds intact and no extra ACK', async () => {

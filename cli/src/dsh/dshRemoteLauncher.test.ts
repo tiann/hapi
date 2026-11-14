@@ -1141,7 +1141,14 @@ describe('DshRemoteLauncher', () => {
         // the fresh session/new both reject).
         harness.resumeError = deadTransportError('session/resume failed: ACP process exited (code=1)')
         harness.newSessionError = deadTransportError('session/new failed: ACP process exited (code=1)')
-        queue.push('third', {})
+        queue.push('third', {}, 'third-id')
+        await vi.waitFor(() => expect(session.sendSessionEvent).toHaveBeenCalledWith(
+            { type: 'message', message: expect.stringContaining('DSH session restart failed') }))
+        // Dropped batch must clear its in-flight mark while the queue is idle,
+        // and a later cancel of the same localId must succeed.
+        expect(queue.cancelByLocalId('third-id')).toBe(false)
+        queue.push('third-retry', {}, 'third-id')
+        expect(queue.cancelByLocalId('third-id')).toBe(true)
         queue.close()
         await done
 

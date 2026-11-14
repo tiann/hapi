@@ -46,6 +46,14 @@ export type CollectedQueueItem = {
     internal?: QueueItemInternal
 };
 
+export type CollectedQueueBatch<T> = {
+    message: string;
+    mode: T;
+    isolate: boolean;
+    hash: string;
+    items: CollectedQueueItem[];
+};
+
 /**
  * A mode-aware message queue that stores messages with their modes.
  * Returns consistent batches of messages with the same mode.
@@ -61,8 +69,9 @@ export class MessageQueue2<T> {
     modeHasher: (mode: T) => string;
     private readonly reservations = new Map<string, QueueReservation<T>>();
     private readonly consumedReservations = new Set<string>();
-    /** localIds dequeued but not yet committed (deferred hub-ACK window). */
+    /** localIds dequeued in a deferred-ACK window and not yet settled. */
     private readonly inFlightLocalIds = new Set<string>();
+    private deferredAckDepth = 0;
     private nextEnqueueOrder = 0;
     private previousEnqueueOrder = -1;
 
@@ -682,10 +691,62 @@ export class MessageQueue2<T> {
     }
 
     /**
+     * Wait for and collect a batch without invoking {@link onBatchConsumed}
+     * immediately. Collected localIds stay marked in-flight until settled via
+     * {@link commitBatch}, {@link releaseBatch}, {@link unshiftBatch},
+     * {@link reset}, or {@link close}.
+     */
+    async waitForDeferredBatch(abortSignal?: AbortSignal): Promise<CollectedQueueBatch<T> | null> {
+        this.deferredAckDepth += 1;
+        try {
+            const batch = await this.waitForMessagesAndGetAsString(abortSignal);
+            if (batch) {
+                this.beginBatch(batch);
+            }
+            return batch;
+        } finally {
+            this.deferredAckDepth -= 1;
+        }
+    }
+
+    /** Mark a dequeued batch's localIds as in-flight for cancel tracking. */
+    beginBatch(batch: Pick<CollectedQueueBatch<T>, 'items'>): void {
+        for (const item of batch.items) {
+            if (item.localId) {
+                this.inFlightLocalIds.add(item.localId);
+            }
+        }
+    }
+
+    /** Clear in-flight marks for a deferred batch and emit its hub ACK. */
+    commitBatch(batch: Pick<CollectedQueueBatch<T>, 'items'>): void {
+        const consumedLocalIds = this.clearInFlightBatch(batch);
+        if (consumedLocalIds.length > 0) {
+            this.onBatchConsumed?.(consumedLocalIds);
+        }
+    }
+
+    /** Clear in-flight marks for a deferred batch that is dropped without ACK. */
+    releaseBatch(batch: Pick<CollectedQueueBatch<T>, 'items'>): void {
+        this.clearInFlightBatch(batch);
+    }
+
+    private clearInFlightBatch(batch: Pick<CollectedQueueBatch<T>, 'items'>): string[] {
+        const localIds: string[] = [];
+        for (const item of batch.items) {
+            if (item.localId) {
+                this.inFlightLocalIds.delete(item.localId);
+                localIds.push(item.localId);
+            }
+        }
+        return localIds;
+    }
+
+    /**
      * Wait for messages and return all messages with the same mode as a single string
      * Returns { message: string, mode: T } or null if aborted/closed
      */
-    async waitForMessagesAndGetAsString(abortSignal?: AbortSignal): Promise<{ message: string, mode: T, isolate: boolean, hash: string, items: CollectedQueueItem[] } | null> {
+    async waitForMessagesAndGetAsString(abortSignal?: AbortSignal): Promise<CollectedQueueBatch<T> | null> {
         // If we have messages, return them immediately — but never collect for
         // an aborted signal: collectBatch fires onBatchConsumed, so an aborted
         // caller must neither ACK nor replay a pending batch.
@@ -721,15 +782,10 @@ export class MessageQueue2<T> {
     /**
      * Collect a batch of messages with the same mode, respecting isolation requirements
      */
-    private collectBatch(): { message: string, mode: T, hash: string, isolate: boolean, items: CollectedQueueItem[] } | null {
+    private collectBatch(): CollectedQueueBatch<T> | null {
         if (this.queue.length === 0) {
             return null;
         }
-
-        // A fresh dequeue implies the previous in-flight batch resolved
-        // (committed, requeued, or reset): its stale marks must not shadow
-        // the new window.
-        this.inFlightLocalIds.clear();
 
         this.beforeDequeue?.();
 
@@ -768,13 +824,13 @@ export class MessageQueue2<T> {
         // Join all messages with newlines
         const combinedMessage = sameModeMessages.join('\n');
 
-        // Dequeued-but-uncommitted: cancelByLocalId answers 'in-flight' for
-        // these until the commit (or a requeue/reset/close) resolves them.
-        for (const id of consumedLocalIds) {
-            this.inFlightLocalIds.add(id);
-        }
-
-        if (consumedLocalIds.length > 0) {
+        if (this.deferredAckDepth > 0) {
+            // Dequeued inside a deferred-ACK window: cancelByLocalId answers
+            // 'in-flight' until commitBatch/releaseBatch/unshiftBatch/reset/close.
+            for (const id of consumedLocalIds) {
+                this.inFlightLocalIds.add(id);
+            }
+        } else if (consumedLocalIds.length > 0) {
             this.onBatchConsumed?.(consumedLocalIds);
         }
 
