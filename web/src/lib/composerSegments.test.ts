@@ -145,6 +145,15 @@ describe('insertSessionMentionInComposerSegments', () => {
 })
 
 describe('insertPlainTextInComposerSegments', () => {
+    it('replaces a full-width yen skill query with canonical dollar syntax', () => {
+        const result = insertPlainTextInComposerSegments(
+            [{ type: 'text', text: '￥b' }],
+            { start: 2, end: 2 },
+            '$browser'
+        )
+        expect(serializeComposerSegments(result.segments)).toBe('$browser ')
+    })
+
     it('keeps existing session atoms when inserting a slash command', () => {
         const segments = parseComposerSegments('ref [Peer A](/sessions/aaa) /hel')
         const caret = mirrorComposerSegments(segments).length
