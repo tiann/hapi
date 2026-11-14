@@ -1525,6 +1525,49 @@ describe('ApiSessionClient incoming user messages', () => {
         }
     )
 
+    it('discards a previous backfill page position when a new rewind epoch starts', async () => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockReset()
+        const metadata = { path: '/tmp', host: 'test', flavor: 'opencode' as const }
+        const committed = { ...metadata, opencodeRewind: {
+            operationId: 'rewind-new-epoch', nativeSessionId: 'native', workerId: 'worker',
+            requestedLocalId: 'removed-turn', nativeMessageId: 'native-removed',
+            cutoffSeq: 3, sourceEpoch: 0, sourceMaxSeq: 9, reservationVersion: 2,
+            sourceTranscriptHash: 'a'.repeat(64), phase: 'committed' as const
+        } }
+        const prompt = { id: 'post-rewind-old-position', seq: 3, createdAt: 3, localId: 'new-prompt',
+            content: { role: 'user', content: { type: 'text', text: 'reused lower sequence' },
+                meta: { sentFrom: 'webapp' } } }
+        axiosHarness.get.mockImplementation(async (url: string, config: { params?: { afterSeq: number } }) => {
+            if (url.endsWith('/messages')) {
+                return { data: { messages: config.params!.afterSeq < prompt.seq ? [prompt] : [] } }
+            }
+            return { data: { session: { metadataVersion: 2, metadata: committed } } }
+        })
+        const client = new ApiSessionClient('token', createSession({ metadata, metadataVersion: 1 }))
+        const socket = socketHarness.sockets[0]
+        if (!socket) throw new Error('expected socket')
+        triggerIncomingUserMessage(socket, { id: 'old-tail', seq: 9, text: 'old tail', sentFrom: 'cli' })
+        const internals = client as unknown as {
+            backfillResume: { epoch: number; seq: number } | null
+            rewindBackfillScheduled: boolean
+            reconcileCommittedRewindCursor(metadata: unknown): void
+            backfillMessages(): Promise<void>
+        }
+        internals.backfillResume = { epoch: 0, seq: 201 }
+        internals.rewindBackfillScheduled = true
+        internals.reconcileCommittedRewindCursor(committed)
+        internals.rewindBackfillScheduled = false
+
+        await internals.backfillMessages()
+
+        expect(axiosHarness.get).toHaveBeenCalledWith(expect.stringContaining('/messages'),
+            expect.objectContaining({ params: { afterSeq: 0, limit: 200 } }))
+        expect(axiosHarness.get).not.toHaveBeenCalledWith(expect.stringContaining('/messages'),
+            expect.objectContaining({ params: { afterSeq: 201, limit: 200 } }))
+        client.close()
+    })
+
     it.each(['reserved', 'prepared', 'unknown', 'rejected'] as const)(
         'does not rewind the delivery cursor for a noncommitted operation (%s)', async phase => {
             socketHarness.sockets.length = 0

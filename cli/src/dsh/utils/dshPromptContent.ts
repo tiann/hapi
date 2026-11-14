@@ -79,6 +79,8 @@ export async function buildDshPromptContent(
     opts: {
         sessionId: string | undefined
         onNotice: (message: string) => void
+        authorizeImagePath?: (path: string) => boolean
+        authorizeOpenedImage?: (path: string, identity: UploadFileIdentity) => boolean
     }
 ): Promise<PromptContent[]> {
     const images = imageAttachments ?? []
@@ -94,14 +96,16 @@ export async function buildDshPromptContent(
     let totalImageBytes = 0
     for (const image of images) {
         try {
-            if (!isPathWithinUploadDir(image.path, opts.sessionId)) {
+            if (!opts.authorizeImagePath?.(image.path)
+                && !isPathWithinUploadDir(image.path, opts.sessionId)) {
                 throw new Error('invalid upload path')
             }
             const data = await readBoundedAttachmentFile(
                 image.path,
                 MAX_UPLOAD_BYTES - totalImageBytes,
                 (identity: UploadFileIdentity) =>
-                    isAuthorizedUploadFile(image.path, opts.sessionId, identity)
+                    opts.authorizeOpenedImage?.(image.path, identity) === true
+                    || isAuthorizedUploadFile(image.path, opts.sessionId, identity)
             )
             totalImageBytes += data.length
             prompt.push({

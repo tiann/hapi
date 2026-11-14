@@ -604,6 +604,36 @@ export type CursorMigrateRefusalReason =
     | 'size_mismatch'
     | 'internal_error'
 
+export const LEGACY_SINGLE_UPLOAD_MAX_BYTES = 50 * 1024 * 1024
+export const DEFAULT_MAX_UPLOAD_BYTES = 512 * 1024 * 1024
+export const MAX_CONFIGURABLE_UPLOAD_BYTES = 10 * 1024 * 1024 * 1024
+export const UPLOAD_CHUNK_MAX_BYTES = 8 * 1024 * 1024
+export const DEFAULT_UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024
+
+export function resolveMaxUploadBytes(raw?: string | undefined): number {
+    const trimmed = raw?.trim()
+    if (!trimmed || !/^\d+$/.test(trimmed)) {
+        return DEFAULT_MAX_UPLOAD_BYTES
+    }
+    const parsed = Number(trimmed)
+    if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+        return DEFAULT_MAX_UPLOAD_BYTES
+    }
+    return Math.min(parsed, MAX_CONFIGURABLE_UPLOAD_BYTES)
+}
+
+export const UploadErrorCodeSchema = z.enum([
+    'upload_too_large',
+    'upload_chunk_too_large',
+    'upload_not_found',
+    'upload_conflict',
+    'upload_invalid_chunk',
+    'upload_size_mismatch',
+    'upload_incomplete'
+])
+
+export type UploadErrorCode = z.infer<typeof UploadErrorCodeSchema>
+
 export const UploadFileRequestSchema = z.object({
     filename: z.string().min(1).max(255),
     content: z.string().min(1),
@@ -615,6 +645,14 @@ export const UploadFileRequestSchema = z.object({
 })
 
 export type UploadFileRequest = z.infer<typeof UploadFileRequestSchema>
+
+export const InitChunkedUploadRequestSchema = z.object({
+    filename: z.string().min(1).max(255),
+    size: z.number().int().min(0),
+    mimeType: z.string().min(1).max(255)
+})
+
+export type InitChunkedUploadRequest = z.infer<typeof InitChunkedUploadRequestSchema>
 
 export const DeleteUploadRequestSchema = z.object({
     path: z.string().min(1).optional(),
@@ -945,6 +983,29 @@ export type UploadFileResponse = {
     mimeType?: string
     size?: number
     error?: string
+    code?: string
+}
+
+export type InitChunkedUploadResponse = {
+    success: boolean
+    uploadId?: string
+    chunkSize?: number
+    maxUploadBytes?: number
+    error?: string
+    code?: string
+}
+
+export type UploadChunkResponse = {
+    success: boolean
+    receivedBytes?: number
+    error?: string
+    code?: string
+}
+
+export type AbortChunkedUploadResponse = {
+    success: boolean
+    error?: string
+    code?: string
 }
 
 export type DeleteUploadResponse = {

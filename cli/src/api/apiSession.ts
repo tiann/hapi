@@ -284,7 +284,7 @@ export class ApiSessionClient extends EventEmitter {
     private rewindBackfillScheduled = false
     private backfillInFlight: Promise<void> | null = null
     private backfillPageLoaded = false
-    private backfillResumeSeq: number | null = null
+    private backfillResume: { epoch: number; seq: number } | null = null
     private backfillRetryTimer: ReturnType<typeof setTimeout> | null = null
     private needsBackfill = false
     private hasConnectedOnce = false
@@ -1262,7 +1262,9 @@ export class ApiSessionClient extends EventEmitter {
             return
         }
 
-        const startSeq = this.backfillResumeSeq ?? this.pendingRewindBackfill?.afterSeq ?? this.incomingFilter.cursorSeq()
+        const startSeq = this.backfillResume?.epoch === this.incomingCursorEpoch
+            ? this.backfillResume.seq
+            : this.pendingRewindBackfill?.afterSeq ?? this.incomingFilter.cursorSeq()
         if (startSeq === null) {
             logger.debug('[API] Skipping backfill because no last-seen message sequence is available')
             await this.drainDeferredLiveMessages()
@@ -1348,7 +1350,7 @@ export class ApiSessionClient extends EventEmitter {
                     break
                 }
 
-                this.backfillResumeSeq = nextCursor
+                this.backfillResume = { epoch: cursorEpoch, seq: nextCursor }
                 cursor = nextCursor
                 if (messages.length < limit) break
             }
@@ -1369,7 +1371,7 @@ export class ApiSessionClient extends EventEmitter {
         if (backfillSucceeded || this.rewindBackfillPaused()) {
             await this.drainDeferredLiveMessages()
             this.backfillPageLoaded = false
-            this.backfillResumeSeq = null
+            this.backfillResume = null
         }
     }
 

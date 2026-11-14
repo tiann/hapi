@@ -234,15 +234,19 @@ The image id is an immutable content fingerprint, so it doubles as the ETag: sen
 
 ### Uploads (message attachments)
 
-Source: `hub/src/web/routes/sessions.ts` (`UploadFileRequestSchema`).
+Source: `hub/src/web/routes/sessions.ts` (`UploadFileRequestSchema`, `InitChunkedUploadRequestSchema`).
 
 | Method & path | Request | Response |
 |---|---|---|
 | `POST /api/sessions/:id/upload` | JSON `{filename, content, mimeType}` — `content` is **base64**; decoded size limit 50 MB → `413` | `{success, attachmentId?, filename?, mimeType?, size?, path?, error?}` — new hubs return an opaque `attachmentId`; legacy hubs may return `path` |
+| `POST /api/sessions/:id/uploads` | JSON `{filename, size, mimeType}` (`size ≥ 0`) — starts a chunked upload session; oversized `size` → `413` (`upload_too_large`), older CLI runner → `503` (`rpc_target_missing`) | `{success, uploadId?, chunkSize?, maxUploadBytes?, error?, code?}` |
+| `POST /api/sessions/:id/uploads/:uploadId/chunk?index=<n>` | Raw binary body (`Content-Type: application/octet-stream`, `1 B – 8 MB`) for zero-based sequential chunk index `n` | `{success, receivedBytes?, error?, code?}` (`413` `upload_chunk_too_large`, `400` `upload_invalid_chunk`, `409` `upload_size_mismatch`/`upload_conflict`, `404` `upload_not_found`) |
+| `POST /api/sessions/:id/uploads/:uploadId/finalize` | — | `{success, attachmentId?, filename?, mimeType?, size?, path?, error?, code?}`; new hubs return an opaque durable `attachmentId` (`409` `upload_incomplete`) |
+| `POST /api/sessions/:id/uploads/:uploadId/abort` | — | `{success, error?, code?}` (idempotent when already aborted/missing) |
 | `POST /api/sessions/:id/upload/delete` | `{path?}` or `{attachmentId?}` (at least one) | `{success, error?}` |
 | `GET /api/sessions/:id/attachments/:attachmentId/original` | — | **Raw original bytes** with authenticated ownership checks and integrity headers |
 
-Uploads are JSON+base64, **not** multipart. Uploads require an active session; original reads and durable deletion may also target inactive sessions. New durable messages do not embed image Data URLs, and this contract intentionally has no thumbnail variant.
+Uploads are JSON+base64 or sequential binary chunks, **not** multipart. Upload endpoints require an active session; original reads and durable deletion may also target inactive sessions. Small files (`≤ 8 MB` in the web client) use single-request `POST /api/sessions/:id/upload`, while larger files stream through `/uploads` to avoid whole-file base64 memory amplification and Socket.IO's 48 MB RPC frame limit. Set `HAPI_MAX_UPLOAD_BYTES` on both Hub and CLI runner to configure the chunked upload ceiling (default `536870912` = 512 MiB, clamped to 10 GiB). New durable messages reference `attachmentId`, do not embed image Data URLs, and this contract intentionally has no thumbnail variant.
 
 ### Scratchlist
 

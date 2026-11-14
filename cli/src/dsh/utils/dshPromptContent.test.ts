@@ -139,6 +139,33 @@ describe('buildDshPromptContent', () => {
         ])
     })
 
+    it('accepts a materialized image through the session authorization callbacks', async () => {
+        authState.withinUploadDir = false
+        authState.authorized = false
+        const imagePath = join(uploadDir, 'materialized.png')
+        await writeFile(imagePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+        const checkedIdentities: Array<{ dev: number; ino: number }> = []
+
+        const prompt = await buildDshPromptContent(fakeBackend(true), 'look', [
+            { path: imagePath, mimeType: 'image/png', filename: 'materialized.png' }
+        ], {
+            sessionId: 'session-1',
+            onNotice: () => {},
+            authorizeImagePath: (path) => path === imagePath,
+            authorizeOpenedImage: (path, identity) => {
+                checkedIdentities.push(identity)
+                return path === imagePath
+            }
+        })
+
+        expect(prompt[1]).toEqual({
+            type: 'image',
+            data: Buffer.from([0x89, 0x50, 0x4e, 0x47]).toString('base64'),
+            mimeType: 'image/png'
+        })
+        expect(checkedIdentities).toHaveLength(1)
+    })
+
     it('normalizes image/jpg to the canonical image/jpeg mimeType', async () => {
         const imagePath = join(uploadDir, 'photo.jpg')
         await writeFile(imagePath, Buffer.from('jpg'))
