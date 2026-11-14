@@ -6,51 +6,13 @@ afterEach(() => {
     cleanup()
 })
 
-function installMemoryLocalStorage(): void {
-    const store = new Map<string, string>()
-    const memoryLocalStorage: Storage = {
-        get length() {
-            return store.size
-        },
-        clear() {
-            store.clear()
-        },
-        getItem(key: string) {
-            return store.get(key) ?? null
-        },
-        key(index: number) {
-            return Array.from(store.keys())[index] ?? null
-        },
-        removeItem(key: string) {
-            store.delete(key)
-        },
-        setItem(key: string, value: string) {
-            store.set(key, String(value))
-        }
-    }
-
-    Object.defineProperty(globalThis, 'localStorage', {
-        value: memoryLocalStorage,
-        configurable: true
-    })
-    Object.defineProperty(window, 'localStorage', {
-        value: memoryLocalStorage,
-        configurable: true
-    })
-}
-
-try {
-    const storage = globalThis.localStorage
-    if (
-        typeof storage?.getItem !== 'function'
-        || typeof storage.setItem !== 'function'
-        || typeof storage.removeItem !== 'function'
-        || typeof storage.clear !== 'function'
-    ) {
-        installMemoryLocalStorage()
-    }
-} catch {
-    installMemoryLocalStorage()
+// Node 25+ exposes its own Web Storage globals, which shadow jsdom's. Tests spy on
+// Storage.prototype and pass localStorage to StorageEvent, so both must be jsdom's.
+const jsdomWindow = (globalThis as typeof globalThis & { jsdom: { window: Window } }).jsdom.window
+for (const name of ['localStorage', 'sessionStorage'] as const) {
+    const storage = jsdomWindow[name]
+    Object.defineProperty(globalThis, name, { value: storage, configurable: true })
+    Object.defineProperty(window, name, { value: storage, configurable: true })
 }
 
 if (!('IntersectionObserver' in globalThis)) {
