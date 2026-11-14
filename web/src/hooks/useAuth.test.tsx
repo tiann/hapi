@@ -215,3 +215,161 @@ describe('useAuth — api identity stability across token refresh (issue #927)',
         }
     })
 })
+
+describe('useAuth — Cloudflare revocation, transient errors, and retry', () => {
+    it('clears token and sets error immediately on mid-session 401 before expMs', async () => {
+        const { MockApiClient: MockClient, MockApiError: MockError } = h
+        const exp = Math.floor(Date.now() / 1000) + 3600
+        const jwt = fakeJwt({ uid: 1, ns: 'default', authMethod: 'cloudflareAccess', cfAccessSub: 'sub-1', cfAccessEmail: 'alice@example.com', exp })
+        const spy = vi.spyOn(MockClient.prototype, 'authenticateWithCloudflare')
+            .mockResolvedValueOnce({ token: jwt, user: { id: 'u1' } })
+            .mockRejectedValueOnce(new MockError('Auth failed: HTTP 401', 401))
+
+        try {
+            const authSource = { type: 'cloudflareAccess' as const }
+            const { result } = renderHook(() => useAuth(authSource, 'http://hub.test'))
+
+            await waitFor(() => expect(result.current.token).toBe(jwt))
+            const api1 = result.current.api as unknown as ApiWithOptions
+
+            await act(async () => {
+                await api1.options?.onUnauthorized?.()
+            })
+
+            expect(result.current.token).toBeNull()
+            expect(result.current.user).toBeNull()
+            expect(result.current.api).toBeNull()
+            expect(result.current.error).toBe('Auth failed: HTTP 401')
+        } finally {
+            spy.mockRestore()
+        }
+    })
+
+    it('clears token and sets error immediately on mid-session 403 before expMs', async () => {
+        const { MockApiClient: MockClient, MockApiError: MockError } = h
+        const exp = Math.floor(Date.now() / 1000) + 3600
+        const jwt = fakeJwt({ uid: 1, ns: 'default', authMethod: 'cloudflareAccess', cfAccessSub: 'sub-1', cfAccessEmail: 'alice@example.com', exp })
+        const spy = vi.spyOn(MockClient.prototype, 'authenticateWithCloudflare')
+            .mockResolvedValueOnce({ token: jwt, user: { id: 'u1' } })
+            .mockRejectedValueOnce(new MockError('Auth failed: HTTP 403', 403))
+
+        try {
+            const authSource = { type: 'cloudflareAccess' as const }
+            const { result } = renderHook(() => useAuth(authSource, 'http://hub.test'))
+
+            await waitFor(() => expect(result.current.token).toBe(jwt))
+            const api1 = result.current.api as unknown as ApiWithOptions
+
+            await act(async () => {
+                await api1.options?.onUnauthorized?.()
+            })
+
+            expect(result.current.token).toBeNull()
+            expect(result.current.user).toBeNull()
+            expect(result.current.api).toBeNull()
+            expect(result.current.error).toBe('Auth failed: HTTP 403')
+        } finally {
+            spy.mockRestore()
+        }
+    })
+
+    it('keeps valid token on transient 503 during refresh before expMs', async () => {
+        const { MockApiClient: MockClient, MockApiError: MockError } = h
+        const exp = Math.floor(Date.now() / 1000) + 3600
+        const jwt = fakeJwt({ uid: 1, ns: 'default', authMethod: 'cloudflareAccess', cfAccessSub: 'sub-1', cfAccessEmail: 'alice@example.com', exp })
+        const spy = vi.spyOn(MockClient.prototype, 'authenticateWithCloudflare')
+            .mockResolvedValueOnce({ token: jwt, user: { id: 'u1' } })
+            .mockRejectedValueOnce(new MockError('Auth failed: HTTP 503', 503))
+
+        try {
+            const authSource = { type: 'cloudflareAccess' as const }
+            const { result } = renderHook(() => useAuth(authSource, 'http://hub.test'))
+
+            await waitFor(() => expect(result.current.token).toBe(jwt))
+            const api1 = result.current.api as unknown as ApiWithOptions
+
+            await act(async () => {
+                await api1.options?.onUnauthorized?.()
+            })
+
+            expect(result.current.token).toBe(jwt)
+            expect(result.current.error).toBeNull()
+        } finally {
+            spy.mockRestore()
+        }
+    })
+
+    it('clears expired token if final scheduled refresh fails transiently after expMs', async () => {
+        vi.useFakeTimers()
+        try {
+            const { MockApiClient: MockClient, MockApiError: MockError } = h
+            const nowSec = Math.floor(Date.now() / 1000)
+            const jwt = fakeJwt({
+                uid: 1,
+                ns: 'default',
+                authMethod: 'cloudflareAccess',
+                cfAccessSub: 'sub-1',
+                cfAccessEmail: 'alice@example.com',
+                exp: nowSec + 10
+            })
+            const spy = vi.spyOn(MockClient.prototype, 'authenticateWithCloudflare')
+                .mockResolvedValueOnce({ token: jwt, user: { id: 'u1' } })
+                .mockImplementationOnce(() => new Promise((_resolve, reject) => {
+                    setTimeout(() => reject(new MockError('Auth failed: HTTP 503', 503)), 20_000)
+                }))
+
+            const authSource = { type: 'cloudflareAccess' as const }
+            const { result } = renderHook(() => useAuth(authSource, 'http://hub.test'))
+
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(0)
+            })
+            expect(result.current.token).toBe(jwt)
+
+            // Scheduled CF floor is 15s; rejection arrives at 35s (well past exp = +10s).
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(36_000)
+            })
+
+            expect(result.current.token).toBeNull()
+            expect(result.current.error).toBe('Session expired. Please login again.')
+            spy.mockRestore()
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it('supports retry() after an initial Cloudflare failure and recovers when exchange succeeds', async () => {
+        const { MockApiClient: MockClient, MockApiError: MockError } = h
+        const exp = Math.floor(Date.now() / 1000) + 3600
+        const jwt = fakeJwt({ uid: 1, ns: 'default', authMethod: 'cloudflareAccess', cfAccessSub: 'sub-1', cfAccessEmail: 'alice@example.com', exp })
+        const spy = vi.spyOn(MockClient.prototype, 'authenticateWithCloudflare')
+            .mockRejectedValueOnce(new MockError('Auth failed: HTTP 503', 503))
+            .mockRejectedValueOnce(new MockError('Auth failed: HTTP 503', 503))
+            .mockResolvedValueOnce({ token: jwt, user: { id: 'u1' } })
+
+        try {
+            const authSource = { type: 'cloudflareAccess' as const }
+            const { result } = renderHook(() => useAuth(authSource, 'http://hub.test'))
+
+            await waitFor(() => expect(result.current.error).toBe('Auth failed: HTTP 503'))
+            expect(result.current.token).toBeNull()
+
+            // Retry fails transiently with 503: must keep an error so UI does not spin forever.
+            await act(async () => {
+                await result.current.retry()
+            })
+            expect(result.current.token).toBeNull()
+            expect(result.current.error).toBe('Auth failed: HTTP 503')
+
+            // Second retry succeeds.
+            await act(async () => {
+                await result.current.retry()
+            })
+            expect(result.current.token).toBe(jwt)
+            expect(result.current.error).toBeNull()
+        } finally {
+            spy.mockRestore()
+        }
+    })
+})

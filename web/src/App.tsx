@@ -73,13 +73,19 @@ function AppInner() {
     const { t } = useTranslation()
     const { serverUrl, baseUrl, setServerUrl, clearServerUrl } = useServerUrl()
     const { authSource, isLoading: isAuthSourceLoading, setAccessToken } = useAuthSource(baseUrl)
-    const { token, api, isLoading: isAuthLoading, error: authError, needsBinding, bind } = useAuth(authSource, baseUrl)
+    const { token, api, isLoading: isAuthLoading, error: authError, needsBinding, bind, retry: retryAuth } = useAuth(authSource, baseUrl)
     const [titleSuggestionAvailable, setTitleSuggestionAvailable] = useState(false)
     const goBack = useAppGoBack()
     const pathname = useLocation({ select: (location) => location.pathname })
     const matchRoute = useMatchRoute()
     const router = useRouter()
     const { addToast } = useToast()
+
+    const handleCloudflareReauth = useCallback(() => {
+        const nextUrl = new URL(window.location.href)
+        nextUrl.searchParams.set('cf_reauth', String(Date.now()))
+        window.location.assign(nextUrl.toString())
+    }, [])
 
     useEffect(() => {
         let cancelled = false
@@ -228,17 +234,18 @@ function AppInner() {
         queryClient.clear()
     }, [baseUrl, queryClient])
 
-    // Clean up URL params after successful auth (for direct access links)
+    // Clean up URL params after successful auth (for direct access links and Cloudflare re-auth)
     useEffect(() => {
         if (!token || !api) return
         const { pathname, search, hash, state } = router.history.location
         const searchParams = new URLSearchParams(search)
-        if (!searchParams.has('server') && !searchParams.has('hub') && !searchParams.has('token')) {
+        if (!searchParams.has('server') && !searchParams.has('hub') && !searchParams.has('token') && !searchParams.has('cf_reauth')) {
             return
         }
         searchParams.delete('server')
         searchParams.delete('hub')
         searchParams.delete('token')
+        searchParams.delete('cf_reauth')
         const nextSearch = searchParams.toString()
         const nextHref = `${pathname}${nextSearch ? `?${nextSearch}` : ''}${hash}`
         router.history.replace(nextHref, state)
@@ -510,8 +517,25 @@ function AppInner() {
 
     // Auth error
     if (authError || !token || !api) {
-        // If using access token or Cloudflare Access and auth failed, show login again
-        if (authSource.type !== 'telegram') {
+        if (authSource.type === 'cloudflareAccess') {
+            return withPwaBanner(
+                <LoginPrompt
+                    mode="cloudflare"
+                    onLogin={setAccessToken}
+                    onRetryCloudflare={retryAuth}
+                    onReauthenticateCloudflare={handleCloudflareReauth}
+                    baseUrl={baseUrl}
+                    serverUrl={serverUrl}
+                    setServerUrl={setServerUrl}
+                    clearServerUrl={clearServerUrl}
+                    requireServerUrl={REQUIRE_SERVER_URL}
+                    error={authError ?? t('login.error.authFailed')}
+                />,
+            )
+        }
+
+        // If using access token and auth failed, show login again
+        if (authSource.type === 'accessToken') {
             return withPwaBanner(
                 <LoginPrompt
                     onLogin={setAccessToken}

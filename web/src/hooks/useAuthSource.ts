@@ -78,8 +78,10 @@ async function discoverCloudflareAccess(baseUrl: string, timeoutMs: number): Pro
     try {
         const response = await fetch(`${baseUrl}/api/auth/methods`, {
             signal: controller.signal,
+            redirect: 'manual',
             headers: { 'cache-control': 'no-store' }
         })
+        if (response.type === 'opaqueredirect') return true
         if (!response.ok) return false
         const data = await response.json() as { cloudflareAccess?: unknown }
         return data.cloudflareAccess === true

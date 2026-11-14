@@ -85,4 +85,54 @@ describe('ApiClient — Cloudflare Access auth', () => {
         await client.authenticateWithCloudflare()
         expect(fetchMock).toHaveBeenCalledTimes(1)
     })
+
+    it('authenticateWithCloudflare throws 401 ApiError on opaqueredirect', async () => {
+        mockFetch(async (_url, init) => {
+            expect(init?.redirect).toBe('manual')
+            return { type: 'opaqueredirect', status: 0, ok: false } as unknown as Response
+        })
+
+        const client = new ApiClient('', { baseUrl: 'http://hub.test' })
+        await expect(client.authenticateWithCloudflare()).rejects.toMatchObject({
+            status: 401,
+            code: 'cloudflare_login_required'
+        })
+    })
+
+    it('request invokes onUnauthorized on 403 Access denied and retries once on success', async () => {
+        let calls = 0
+        mockFetch(async (_url, init) => {
+            calls += 1
+            const auth = new Headers(init?.headers).get('authorization')
+            if (calls === 1) {
+                expect(auth).toBe('Bearer stale-jwt')
+                return jsonResponse({ error: 'Access denied' }, 403)
+            }
+            expect(auth).toBe('Bearer fresh-jwt')
+            return jsonResponse({ ok: true })
+        })
+
+        const onUnauthorized = vi.fn(async () => 'fresh-jwt')
+        const client = new ApiClient('stale-jwt', {
+            baseUrl: 'http://hub.test',
+            onUnauthorized
+        })
+
+        await expect(client.getHubSettings()).resolves.toEqual({ ok: true })
+        expect(onUnauthorized).toHaveBeenCalledTimes(1)
+        expect(calls).toBe(2)
+    })
+
+    it('request does not invoke onUnauthorized on non-auth 403 responses', async () => {
+        mockFetch(async () => jsonResponse({ error: 'Usage summary is only available to the hub owner' }, 403))
+
+        const onUnauthorized = vi.fn(async () => 'fresh-jwt')
+        const client = new ApiClient('valid-jwt', {
+            baseUrl: 'http://hub.test',
+            onUnauthorized
+        })
+
+        await expect(client.getUsageSummary()).rejects.toMatchObject({ status: 403 })
+        expect(onUnauthorized).not.toHaveBeenCalled()
+    })
 })

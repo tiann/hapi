@@ -50,6 +50,16 @@ function isNotBoundError(error: unknown): boolean {
     return error instanceof ApiError && error.status === 401 && error.code === 'not_bound'
 }
 
+function isTerminalAuthRejection(error: unknown, sourceType: AuthSource['type']): boolean {
+    if (!(error instanceof ApiError)) {
+        return false
+    }
+    if (error.status === 401 || error.status === 403) {
+        return true
+    }
+    return sourceType === 'cloudflareAccess' && error.status === 404
+}
+
 const ACCESS_TOKEN_PREFIX = 'hapi_access_token::'
 
 function rememberAccessToken(baseUrl: string, accessToken: string): void {
@@ -68,6 +78,7 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
     error: string | null
     needsBinding: boolean
     bind: (accessToken: string) => Promise<void>
+    retry: () => Promise<string | null>
 } {
     const [token, setToken] = useState<string | null>(null)
     const [user, setUser] = useState<AuthResponse['user'] | null>(null)
@@ -131,13 +142,16 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
                     return null
                 }
                 const isExpired = expMs ? Date.now() >= expMs : false
-                if (options?.hardFail || isExpired) {
+                const isTerminal = isTerminalAuthRejection(error, currentSource.type)
+                if (options?.hardFail || isExpired || isTerminal || currentToken === null) {
                     tokenRef.current = null
                     setToken(null)
                     setUser(null)
-                    const msg = currentSource.type === 'telegram'
+                    const msg = currentSource.type === 'telegram' && !isTerminal
                         ? 'Session expired. Reopen the Mini App from Telegram.'
-                        : 'Session expired. Please login again.'
+                        : error instanceof Error && (isTerminal || currentToken === null)
+                            ? error.message
+                            : 'Session expired. Please login again.'
                     setError(msg)
                 }
                 return null
@@ -183,6 +197,20 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
             setIsLoading(false)
         }
     }, [baseUrl])
+
+    const retry = useCallback(async (): Promise<string | null> => {
+        if (!authSourceRef.current) {
+            return null
+        }
+        setIsLoading(true)
+        setError(null)
+        setNeedsBinding(false)
+        try {
+            return await refreshAuth({ force: true })
+        } finally {
+            setIsLoading(false)
+        }
+    }, [refreshAuth])
 
     // Keep the ApiClient referentially stable across token *refreshes*: the client always reads
     // the live token via getToken (tokenRef), so it never needs rebuilding when the token value
@@ -284,8 +312,19 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
             if (isCancelled) return
             const refreshed = await refreshAuth({ force: true })
             if (isCancelled) return
-            if (!refreshed && Date.now() < expMs) {
-                schedule(15_000)
+            if (!refreshed) {
+                if (Date.now() < expMs) {
+                    schedule(15_000)
+                } else if (tokenRef.current === token) {
+                    tokenRef.current = null
+                    setToken(null)
+                    setUser(null)
+                    setError(
+                        authSource.type === 'telegram'
+                            ? 'Session expired. Reopen the Mini App from Telegram.'
+                            : 'Session expired. Please login again.'
+                    )
+                }
             }
         }
 
@@ -323,5 +362,5 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
         }
     }, [authSource, refreshAuth])
 
-    return { token, user, api, isLoading, error, needsBinding, bind }
+    return { token, user, api, isLoading, error, needsBinding, bind, retry }
 }

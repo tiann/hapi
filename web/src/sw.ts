@@ -31,6 +31,16 @@ type PushPayload = {
     }
 }
 
+// Bypass Workbox precache when explicitly re-authenticating through Cloudflare Access
+// so the top-level navigation hits the Access edge instead of a cached shell.
+self.addEventListener('fetch', (event) => {
+    const request = event.request
+    if (request.mode !== 'navigate') return
+    const url = new URL(request.url)
+    if (!url.searchParams.has('cf_reauth')) return
+    event.respondWith(fetch(request))
+})
+
 precacheAndRoute(self.__WB_MANIFEST)
 
 registerRoute(

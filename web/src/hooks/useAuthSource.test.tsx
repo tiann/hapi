@@ -87,6 +87,18 @@ describe('useAuthSource — Cloudflare Access discovery', () => {
         expect(result.current.authSource).toBeNull()
     })
 
+    it('treats an opaqueredirect on /api/auth/methods as Cloudflare Access active', async () => {
+        mockFetch(async (_url, init) => {
+            expect(init?.redirect).toBe('manual')
+            return { type: 'opaqueredirect', status: 0, ok: false } as unknown as Response
+        })
+
+        const { result } = renderHook(() => useAuthSource('http://hub.test'))
+
+        await waitFor(() => expect(result.current.authSource).toEqual({ type: 'cloudflareAccess' }))
+        expect(result.current.isLoading).toBe(false)
+    })
+
     it('never discovers Cloudflare for a cross-origin hub', async () => {
         const fetchMock = mockFetch(async () => jsonResponse({ cloudflareAccess: true }))
 

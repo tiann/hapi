@@ -9,9 +9,11 @@ import { useTranslation } from '@/lib/use-translation'
 import type { ServerUrlResult } from '@/hooks/useServerUrl'
 
 type LoginPromptProps = {
-    mode?: 'login' | 'bind'
+    mode?: 'login' | 'bind' | 'cloudflare'
     onLogin?: (token: string) => void
     onBind?: (token: string) => Promise<void>
+    onRetryCloudflare?: () => Promise<unknown> | void
+    onReauthenticateCloudflare?: () => void
     baseUrl: string
     serverUrl: string | null
     setServerUrl: (input: string) => ServerUrlResult
@@ -23,6 +25,9 @@ type LoginPromptProps = {
 export function LoginPrompt(props: LoginPromptProps) {
     const { t } = useTranslation()
     const isBindMode = props.mode === 'bind'
+    const isCloudflareMode = props.mode === 'cloudflare'
+    const [showTokenFallback, setShowTokenFallback] = useState(false)
+    const [isRetryingCloudflare, setIsRetryingCloudflare] = useState(false)
     const [accessToken, setAccessToken] = useState('')
     const [isLoading, setIsLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
@@ -107,6 +112,18 @@ export function LoginPrompt(props: LoginPromptProps) {
         }
     }, [])
 
+    const handleRetryCloudflare = useCallback(async () => {
+        if (!props.onRetryCloudflare || isRetryingCloudflare) {
+            return
+        }
+        setIsRetryingCloudflare(true)
+        try {
+            await props.onRetryCloudflare()
+        } finally {
+            setIsRetryingCloudflare(false)
+        }
+    }, [isRetryingCloudflare, props])
+
     const displayError = error || props.error
     // Opening the hub lets the browser follow the redirect that the cached app shell hides.
     const redirected = displayError === AUTH_PROXY_REDIRECT_MESSAGE
@@ -115,6 +132,7 @@ export function LoginPrompt(props: LoginPromptProps) {
     const title = isBindMode ? t('login.bind.title') : t('login.title')
     const subtitle = t('login.subtitle')
     const submitLabel = isBindMode ? t('login.bind.submit') : t('login.submit')
+    const showCloudflareActions = isCloudflareMode && !showTokenFallback
 
     return (
         <div className="relative h-full flex items-center justify-center p-4">
@@ -132,53 +150,113 @@ export function LoginPrompt(props: LoginPromptProps) {
                     </div>
                 </div>
 
-                {/* Form */}
-                <form onSubmit={handleSubmit} className="space-y-4">
-                    <div>
-                        <input
-                            type="password"
-                            value={accessToken}
-                            onChange={(e) => setAccessToken(e.target.value)}
-                            placeholder={t('login.placeholder')}
-                            autoComplete="current-password"
-                            disabled={isLoading}
-                            className="w-full px-3 py-2.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:outline-none focus:ring-2 focus:ring-[var(--app-button)] focus:border-transparent disabled:opacity-50"
-                        />
-                    </div>
-
-                    {displayError && (
-                        <div className="text-sm text-red-500 text-center">
-                            {redirected ? t('login.error.redirected') : displayError}
-                        </div>
-                    )}
-
-                    {!isBindMode && redirected && (
-                        <Button
-                            type="button"
-                            variant="secondary"
-                            className="w-full"
-                            onClick={() => openAuthProxySignIn(hubOrigin)}
-                        >
-                            {t('login.redirect.open', { host: new URL(hubOrigin).host })}
-                        </Button>
-                    )}
-
-                    <button
-                        type="submit"
-                        disabled={isLoading || !accessToken.trim()}
-                        aria-busy={isLoading}
-                        className="w-full py-2.5 rounded-lg bg-[var(--app-button)] text-[var(--app-button-text)] font-medium disabled:opacity-50 hover:opacity-90 transition-opacity inline-flex items-center justify-center gap-2"
-                    >
-                        {isLoading ? (
-                            <>
-                                <Spinner size="sm" label={null} className="text-[var(--app-button-text)]" />
-                                {isBindMode ? t('login.bind.submitting') : t('login.submitting')}
-                            </>
-                        ) : (
-                            submitLabel
+{/* Form or Cloudflare Access actions */}
+                {showCloudflareActions ? (
+                    <div className="space-y-3">
+                        {displayError && (
+                            <div className="text-sm text-red-500 text-center">
+                                {displayError}
+                            </div>
                         )}
-                    </button>
-                </form>
+
+                        <button
+                            type="button"
+                            onClick={props.onReauthenticateCloudflare}
+                            disabled={!props.onReauthenticateCloudflare || isRetryingCloudflare}
+                            className="w-full py-2.5 rounded-lg bg-[var(--app-button)] text-[var(--app-button-text)] font-medium disabled:opacity-50 hover:opacity-90 transition-opacity inline-flex items-center justify-center gap-2"
+                        >
+                            {t('login.cloudflare.signIn')}
+                        </button>
+
+                        <button
+                            type="button"
+                            onClick={() => void handleRetryCloudflare()}
+                            disabled={!props.onRetryCloudflare || isRetryingCloudflare}
+                            aria-busy={isRetryingCloudflare}
+                            className="w-full py-2.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-fg)] font-medium disabled:opacity-50 hover:opacity-90 transition-opacity inline-flex items-center justify-center gap-2"
+                        >
+                            {isRetryingCloudflare ? (
+                                <>
+                                    <Spinner size="sm" label={null} />
+                                    {t('login.cloudflare.retrying')}
+                                </>
+                            ) : (
+                                t('login.cloudflare.retry')
+                            )}
+                        </button>
+
+                        {props.onLogin && (
+                            <div className="text-center">
+                                <button
+                                    type="button"
+                                    onClick={() => setShowTokenFallback(true)}
+                                    className="text-xs text-[var(--app-hint)] underline hover:text-[var(--app-fg)]"
+                                >
+                                    {t('login.cloudflare.useToken')}
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                ) : (
+                    <form onSubmit={handleSubmit} className="space-y-4">
+                        <div>
+                            <input
+                                type="password"
+                                value={accessToken}
+                                onChange={(e) => setAccessToken(e.target.value)}
+                                placeholder={t('login.placeholder')}
+                                autoComplete="current-password"
+                                disabled={isLoading}
+                                className="w-full px-3 py-2.5 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:outline-none focus:ring-2 focus:ring-[var(--app-button)] focus:border-transparent disabled:opacity-50"
+                            />
+                        </div>
+
+                        {displayError && (
+                            <div className="text-sm text-red-500 text-center">
+                                {redirected ? t('login.error.redirected') : displayError}
+                            </div>
+                        )}
+
+                        {!isBindMode && redirected && (
+                            <Button
+                                type="button"
+                                variant="secondary"
+                                className="w-full"
+                                onClick={() => openAuthProxySignIn(hubOrigin)}
+                            >
+                                {t('login.redirect.open', { host: new URL(hubOrigin).host })}
+                            </Button>
+                        )}
+
+                        <button
+                            type="submit"
+                            disabled={isLoading || !accessToken.trim()}
+                            aria-busy={isLoading}
+                            className="w-full py-2.5 rounded-lg bg-[var(--app-button)] text-[var(--app-button-text)] font-medium disabled:opacity-50 hover:opacity-90 transition-opacity inline-flex items-center justify-center gap-2"
+                        >
+                            {isLoading ? (
+                                <>
+                                    <Spinner size="sm" label={null} className="text-[var(--app-button-text)]" />
+                                    {isBindMode ? t('login.bind.submitting') : t('login.submitting')}
+                                </>
+                            ) : (
+                                submitLabel
+                            )}
+                        </button>
+
+                        {isCloudflareMode && (
+                            <div className="text-center">
+                                <button
+                                    type="button"
+                                    onClick={() => setShowTokenFallback(false)}
+                                    className="text-xs text-[var(--app-hint)] underline hover:text-[var(--app-fg)]"
+                                >
+                                    {t('login.cloudflare.backToSso')}
+                                </button>
+                            </div>
+                        )}
+                    </form>
+                )}
 
                 {/* Help links */}
                 {!isBindMode && (
