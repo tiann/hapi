@@ -289,9 +289,11 @@ describe('App — Cloudflare Access authentication & revocation flows', () => {
         expect(queryClient.getQueryData(['storage'])).toBeUndefined()
         expect(getMessageWindowState('alice-session').messages).toEqual([])
         expect(sessionStorage.getItem('hapi:message-window:v2:alice-persisted')).toBeNull()
-        expect(deleteCache).toHaveBeenCalledWith('api-sessions')
-        expect(deleteCache).toHaveBeenCalledWith('api-session-detail')
-        expect(deleteCache).toHaveBeenCalledWith('api-machines')
-        expect(swPostMessage).toHaveBeenCalledWith({ type: 'CLEAR_API_CACHES' })
+        expect(deleteCache).not.toHaveBeenCalled()
+        expect(swPostMessage).toHaveBeenCalledTimes(1)
+        expect(swPostMessage).toHaveBeenCalledWith({
+            type: 'CLEAR_API_CACHES',
+            preserveIdentity: JSON.stringify(['cloudflareAccess', 'work', 'bob-sub', 'bob@example.com', '1']),
+        })
     })
 })

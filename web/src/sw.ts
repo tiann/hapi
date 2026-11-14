@@ -10,10 +10,12 @@ import {
 } from './lib/shareTransfer'
 import { shareTargetPathname } from './lib/sharePath'
 import {
+    API_CACHE_SCOPE_PARAM,
     AUTHENTICATED_API_CACHE_NAMES,
     CLEAR_API_CACHES_MESSAGE_TYPE,
     authenticatedApiCachePolicy,
     cacheJavaScriptOnly,
+    hashApiCacheScope,
 } from './lib/swCachePolicy'
 import { focusOrOpenNotificationClient, resolveNotificationTarget } from './lib/notificationClick'
 
@@ -74,17 +76,55 @@ const machinesExpirationPlugin = new ExpirationPlugin({
     maxAgeSeconds: 60 * 10
 })
 
-const apiExpirationPlugins = [
-    sessionsExpirationPlugin,
-    sessionDetailExpirationPlugin,
-    machinesExpirationPlugin,
+const authenticatedApiCaches = [
+    { name: 'api-sessions', plugin: sessionsExpirationPlugin },
+    { name: 'api-session-detail', plugin: sessionDetailExpirationPlugin },
+    { name: 'api-machines', plugin: machinesExpirationPlugin },
 ] as const
 
-async function clearApiCachesFromServiceWorker(): Promise<void> {
-    await Promise.all(apiExpirationPlugins.map((plugin) => plugin.deleteCacheAndMetadata().catch(() => {})))
-    if (typeof self.caches !== 'undefined') {
-        await Promise.all(AUTHENTICATED_API_CACHE_NAMES.map((cacheName) => self.caches.delete(cacheName).catch(() => false)))
+async function clearApiCachesFromServiceWorker(preserveIdentity?: string | null): Promise<void> {
+    if (!preserveIdentity || typeof self.caches === 'undefined') {
+        await Promise.all(authenticatedApiCaches.map(({ plugin }) => plugin.deleteCacheAndMetadata().catch(() => {})))
+        if (typeof self.caches !== 'undefined') {
+            await Promise.all(AUTHENTICATED_API_CACHE_NAMES.map((cacheName) => self.caches.delete(cacheName).catch(() => false)))
+        }
+        return
     }
+
+    const scopeByOrigin = new Map<string, string | null>()
+    await Promise.all(authenticatedApiCaches.map(async ({ name, plugin }) => {
+        if (!(await self.caches.has(name).catch(() => false))) {
+            await plugin.deleteCacheAndMetadata().catch(() => {})
+            return
+        }
+        const cache = await self.caches.open(name)
+        const keys = await cache.keys()
+        let kept = 0
+        const toDelete: Request[] = []
+        for (const request of keys) {
+            try {
+                const url = new URL(request.url)
+                let preserveScope = scopeByOrigin.get(url.origin)
+                if (preserveScope === undefined) {
+                    preserveScope = await hashApiCacheScope(url.origin, preserveIdentity)
+                    scopeByOrigin.set(url.origin, preserveScope)
+                }
+                if (preserveScope && url.searchParams.get(API_CACHE_SCOPE_PARAM) === preserveScope) {
+                    kept += 1
+                    continue
+                }
+            } catch {
+                // Delete malformed cache entries.
+            }
+            toDelete.push(request)
+        }
+        if (kept === 0) {
+            await plugin.deleteCacheAndMetadata().catch(() => {})
+            await self.caches.delete(name).catch(() => false)
+        } else if (toDelete.length > 0) {
+            await Promise.all(toDelete.map((request) => cache.delete(request).catch(() => false)))
+        }
+    }))
 }
 
 registerRoute(
@@ -153,7 +193,10 @@ self.addEventListener('message', (event) => {
     if (event.data?.type === 'SKIP_WAITING') {
         self.skipWaiting()
     } else if (event.data?.type === CLEAR_API_CACHES_MESSAGE_TYPE) {
-        event.waitUntil?.(clearApiCachesFromServiceWorker())
+        const preserveIdentity = typeof event.data.preserveIdentity === 'string'
+            ? event.data.preserveIdentity
+            : null
+        event.waitUntil?.(clearApiCachesFromServiceWorker(preserveIdentity))
     }
 })
 

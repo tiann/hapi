@@ -79,16 +79,16 @@ function AppInner() {
     const pushPromptedRef = useRef(false)
     const hadTokenRef = useRef(false)
     const [identityEpoch, setIdentityEpoch] = useState(0)
-    const clearUserCaches = useCallback(() => {
+    const clearUserCaches = useCallback((preserveIdentity?: string | null) => {
         isFirstConnectRef.current = true
         syncTokenRef.current = 0
         queryClient.clear()
         clearAllMessageWindows()
-        void clearAuthenticatedApiCaches()
+        void clearAuthenticatedApiCaches(preserveIdentity)
     }, [queryClient])
-    const handleIdentityChange = useCallback(() => {
+    const handleIdentityChange = useCallback((nextIdentity?: string | null) => {
         pushPromptedRef.current = false
-        clearUserCaches()
+        clearUserCaches(nextIdentity)
         setIdentityEpoch((epoch) => epoch + 1)
     }, [clearUserCaches])
     const { authSource, isLoading: isAuthSourceLoading, setAccessToken } = useAuthSource(baseUrl)

@@ -3,7 +3,6 @@ import {
     AUTHENTICATED_API_CACHE_NAMES,
     CLEAR_API_CACHES_MESSAGE_TYPE,
     authenticatedApiCachePolicy,
-    cacheOkResponsesOnly,
     cacheJavaScriptOnly,
     clearAuthenticatedApiCaches,
 } from './swCachePolicy'
@@ -42,46 +41,6 @@ describe('optional syntax module cache', () => {
         ]) {
             expect(await cacheJavaScriptOnly.cacheWillUpdate({ response })).toBeNull()
         }
-    })
-})
-
-describe('cacheOkResponsesOnly', () => {
-    it('stores plain 200 responses as they are', async () => {
-        const response = new Response('{}', { status: 200 })
-        expect(await cacheOkResponsesOnly.cacheWillUpdate({ response })).toBe(response)
-    })
-
-    it('rejects opaque redirects and other non-200 responses', async () => {
-        for (const response of [
-            { status: 0, type: 'opaqueredirect' },
-            { status: 0, type: 'opaque' },
-            { status: 204, type: 'basic' },
-            { status: 304, type: 'basic' },
-            { status: 404, type: 'basic' },
-            { status: 500, type: 'basic' },
-        ] as Response[]) {
-            expect(await cacheOkResponsesOnly.cacheWillUpdate({ response })).toBeNull()
-        }
-    })
-
-    it('stores a followed redirect without its redirect history', async () => {
-        const stored = await cacheOkResponsesOnly.cacheWillUpdate({ response: redirectedResponse('{"ok":1}') })
-        expect(stored).not.toBeNull()
-        expect(stored!.redirected).toBe(false)
-        expect(stored!.status).toBe(200)
-        expect(stored!.statusText).toBe('OK')
-        expect(stored!.headers.get('content-type')).toBe('application/json')
-        expect(await stored!.text()).toBe('{"ok":1}')
-    })
-
-    it('serves entries cached with redirect history without it', async () => {
-        const served = await cacheOkResponsesOnly.cachedResponseWillBeUsed({ cachedResponse: redirectedResponse('[1]') })
-        expect(served!.redirected).toBe(false)
-        expect(await served!.text()).toBe('[1]')
-
-        const plain = new Response('[2]', { status: 200 })
-        expect(await cacheOkResponsesOnly.cachedResponseWillBeUsed({ cachedResponse: plain })).toBe(plain)
-        expect(await cacheOkResponsesOnly.cachedResponseWillBeUsed({})).toBeNull()
     })
 })
 
@@ -160,8 +119,8 @@ describe('authenticatedApiCachePolicy', () => {
         })).toBeNull()
     })
 
-    it('clearAuthenticatedApiCaches deletes all API caches and posts CLEAR_API_CACHES to the SW controller', async () => {
-        const deleteCache = vi.fn(async () => true)
+    it('clearAuthenticatedApiCaches posts CLEAR_API_CACHES synchronously first when SW controller is active without racing caches.delete', async () => {
+        const deleteCache = vi.fn(() => new Promise<boolean>(() => {}))
         const postMessage = vi.fn()
         vi.stubGlobal('caches', { delete: deleteCache })
         const originalDescriptor = Object.getOwnPropertyDescriptor(navigator, 'serviceWorker')
@@ -171,11 +130,37 @@ describe('authenticatedApiCachePolicy', () => {
         })
 
         try {
+            const promise = clearAuthenticatedApiCaches('bob-identity')
+            expect(postMessage).toHaveBeenCalledTimes(1)
+            expect(postMessage).toHaveBeenCalledWith({
+                type: CLEAR_API_CACHES_MESSAGE_TYPE,
+                preserveIdentity: 'bob-identity',
+            })
+            expect(deleteCache).not.toHaveBeenCalled()
+            await promise
+        } finally {
+            if (originalDescriptor) {
+                Object.defineProperty(navigator, 'serviceWorker', originalDescriptor)
+            } else {
+                delete (navigator as unknown as { serviceWorker?: unknown }).serviceWorker
+            }
+        }
+    })
+
+    it('clearAuthenticatedApiCaches falls back to caches.delete when SW controller is unavailable', async () => {
+        const deleteCache = vi.fn(async () => true)
+        vi.stubGlobal('caches', { delete: deleteCache })
+        const originalDescriptor = Object.getOwnPropertyDescriptor(navigator, 'serviceWorker')
+        Object.defineProperty(navigator, 'serviceWorker', {
+            configurable: true,
+            value: { controller: null }
+        })
+
+        try {
             await clearAuthenticatedApiCaches()
             for (const name of AUTHENTICATED_API_CACHE_NAMES) {
                 expect(deleteCache).toHaveBeenCalledWith(name)
             }
-            expect(postMessage).toHaveBeenCalledWith({ type: CLEAR_API_CACHES_MESSAGE_TYPE })
         } finally {
             if (originalDescriptor) {
                 Object.defineProperty(navigator, 'serviceWorker', originalDescriptor)

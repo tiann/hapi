@@ -413,4 +413,51 @@ describe('Service Worker API cache isolation across Access identity switches', (
         expect(await sw.caches.has('api-session-detail')).toBe(false)
         expect(await sw.caches.has('api-machines')).toBe(false)
     })
+
+    it('preserves the new identity newly cached /api/sessions response when CLEAR_API_CACHES runs with preserveIdentity after switch', async () => {
+        const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+            const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
+            if (url.endsWith('/api/sessions')) {
+                return jsonResponse({ sessions: [{ id: 'from-initial-alice' }] })
+            }
+            return jsonResponse({ ok: true })
+        })
+        vi.stubGlobal('fetch', fetchMock)
+        const sw = await createSwHarness()
+
+        for (const path of ['/api/sessions', '/api/sessions/s-1', '/api/machines']) {
+            await sw.dispatchFetch(new Request(`http://hub.test${path}`, {
+                headers: { authorization: `Bearer ${aliceJwt1}` }
+            }))
+        }
+
+        // Bob caches his first /api/sessions response before the SW processes CLEAR_API_CACHES.
+        fetchMock.mockResolvedValueOnce(jsonResponse({ sessions: [{ id: 'bob-work' }] }))
+        const bobInitial = await sw.dispatchFetch(new Request('http://hub.test/api/sessions', {
+            headers: { authorization: `Bearer ${bobJwt}` }
+        }))
+        expect(await bobInitial.json()).toEqual({ sessions: [{ id: 'bob-work' }] })
+
+        const { decodeJwtIdentityKey } = await import('./lib/authIdentity')
+        const bobIdentity = decodeJwtIdentityKey(bobJwt)
+        expect(bobIdentity).not.toBeNull()
+
+        await sw.dispatchMessage({ type: 'CLEAR_API_CACHES', preserveIdentity: bobIdentity })
+
+        fetchMock.mockRejectedValue(new TypeError('offline'))
+        await expect(sw.dispatchFetch(new Request('http://hub.test/api/sessions', {
+            headers: { authorization: `Bearer ${aliceJwt1}` }
+        }))).rejects.toThrow()
+        await expect(sw.dispatchFetch(new Request('http://hub.test/api/sessions/s-1', {
+            headers: { authorization: `Bearer ${aliceJwt1}` }
+        }))).rejects.toThrow()
+        await expect(sw.dispatchFetch(new Request('http://hub.test/api/machines', {
+            headers: { authorization: `Bearer ${aliceJwt1}` }
+        }))).rejects.toThrow()
+
+        const bobOffline = await sw.dispatchFetch(new Request('http://hub.test/api/sessions', {
+            headers: { authorization: `Bearer ${bobJwt}` }
+        }))
+        expect(await bobOffline.json()).toEqual({ sessions: [{ id: 'bob-work' }] })
+    })
 })

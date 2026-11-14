@@ -45,7 +45,7 @@ function rememberAccessToken(baseUrl: string, accessToken: string): void {
 export function useAuth(
     authSource: AuthSource | null,
     baseUrl: string,
-    options?: { onIdentityChange?: () => void }
+    options?: { onIdentityChange?: (nextIdentity: string | null) => void }
 ): {
     token: string | null
     user: AuthResponse['user'] | null
@@ -76,7 +76,7 @@ export function useAuth(
     const applyAuthenticatedSession = useCallback((auth: AuthResponse) => {
         const nextIdentity = decodeJwtIdentityKey(auth.token)
         if (activeIdentityRef.current !== null && nextIdentity !== activeIdentityRef.current) {
-            onIdentityChangeRef.current?.()
+            onIdentityChangeRef.current?.(nextIdentity)
         }
         activeIdentityRef.current = nextIdentity
         tokenRef.current = auth.token
