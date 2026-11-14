@@ -151,7 +151,7 @@ private fun QueuedRow(
                 .testTag("chat-queued-row-${row.id}")
                 .focusable(enabled = row.canAct)
                 .onKeyEvent { event ->
-                    if (event.type == KeyEventType.KeyUp
+                    if (event.type == KeyEventType.KeyDown
                         && row.canEdit
                         && (event.key == Key.Enter || event.key == Key.Spacebar)
                     ) {
