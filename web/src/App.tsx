@@ -19,7 +19,7 @@ import { useVisibilityReporter } from '@/hooks/useVisibilityReporter'
 import { queryKeys } from '@/lib/query-keys'
 import { refreshAllAgyCatalogs } from '@/lib/agyCatalogAnnouncement'
 import { AppContextProvider } from '@/lib/app-context'
-import { clearMessageWindow, recoverWindowAfterGapResume, rewindMessageWindow, syncTailMessages } from '@/lib/message-window-store'
+import { clearAllMessageWindows, clearMessageWindow, recoverWindowAfterGapResume, rewindMessageWindow, syncTailMessages } from '@/lib/message-window-store'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useTranslation } from '@/lib/use-translation'
 import { translateInputRequestTitle } from '@/lib/input-request-toast'
@@ -72,8 +72,23 @@ export function App() {
 function AppInner() {
     const { t } = useTranslation()
     const { serverUrl, baseUrl, setServerUrl, clearServerUrl } = useServerUrl()
+    const queryClient = useQueryClient()
+    const syncTokenRef = useRef(0)
+    const isFirstConnectRef = useRef(true)
+    const pushPromptedRef = useRef(false)
+    const [identityEpoch, setIdentityEpoch] = useState(0)
+    const handleIdentityChange = useCallback(() => {
+        isFirstConnectRef.current = true
+        syncTokenRef.current = 0
+        pushPromptedRef.current = false
+        queryClient.clear()
+        clearAllMessageWindows()
+        setIdentityEpoch((epoch) => epoch + 1)
+    }, [queryClient])
     const { authSource, isLoading: isAuthSourceLoading, setAccessToken } = useAuthSource(baseUrl)
-    const { token, api, isLoading: isAuthLoading, error: authError, needsBinding, bind, retry: retryAuth } = useAuth(authSource, baseUrl)
+    const { token, api, isLoading: isAuthLoading, error: authError, needsBinding, bind, retry: retryAuth } = useAuth(authSource, baseUrl, {
+        onIdentityChange: handleIdentityChange
+    })
     const [titleSuggestionAvailable, setTitleSuggestionAvailable] = useState(false)
     const goBack = useAppGoBack()
     const pathname = useLocation({ select: (location) => location.pathname })
@@ -194,7 +209,6 @@ function AppInner() {
             backButton.hide()
         }
     }, [goBack, pathname])
-    const queryClient = useQueryClient()
     const sessionMatch = matchRoute({ to: '/sessions/$sessionId' })
     const selectedSessionId = sessionMatch && sessionMatch.sessionId !== 'new' ? sessionMatch.sessionId : null
     const { isSyncing, startSync, endSync } = useSyncingState()
@@ -204,10 +218,7 @@ function AppInner() {
         reportConnect: reportSseConnect,
         reportDisconnect: reportSseDisconnect
     } = useReconnectingState()
-    const syncTokenRef = useRef(0)
-    const isFirstConnectRef = useRef(true)
     const baseUrlRef = useRef(baseUrl)
-    const pushPromptedRef = useRef(false)
     const { appBadgeEnabled: appBadgePreferenceEnabled } = useAppBadgePreference()
     const appBadgeEnabled = Boolean(api && token && appBadgePreferenceEnabled && canUseAppBadging())
     const {
@@ -232,6 +243,7 @@ function AppInner() {
         isFirstConnectRef.current = true
         syncTokenRef.current = 0
         queryClient.clear()
+        clearAllMessageWindows()
     }, [baseUrl, queryClient])
 
     // Clean up URL params after successful auth (for direct access links and Cloudflare re-auth)
@@ -438,6 +450,7 @@ function AppInner() {
         enabled: sseEnabled,
         token: token ?? '',
         baseUrl,
+        sessionEpoch: identityEpoch,
         subscription: globalEventSubscription,
         scope: 'global',
         onConnect: handleSseConnect,
@@ -450,6 +463,7 @@ function AppInner() {
         enabled: sseEnabled && Boolean(sessionEventSubscription),
         token: token ?? '',
         baseUrl,
+        sessionEpoch: identityEpoch,
         subscription: sessionEventSubscription ?? undefined,
         scope: 'full',
         onConnect: handleSessionSseConnect,
@@ -564,7 +578,7 @@ function AppInner() {
     }
 
     return (
-        <AppContextProvider value={{ api, token, baseUrl, titleSuggestionAvailable }}>
+        <AppContextProvider key={identityEpoch} value={{ api, token, baseUrl, titleSuggestionAvailable }}>
             <VoiceProvider>
                 <PwaUpdateBannerWithStatusOffset
                     isSyncing={revealSyncing}

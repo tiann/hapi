@@ -4,6 +4,7 @@ import { act, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/lib/i18n-context'
 import { useAppContext } from '@/lib/app-context'
+import { getMessageWindowState, ingestIncomingMessages } from '@/lib/message-window-store'
 
 const routerMocks = vi.hoisted(() => ({
     replace: vi.fn(),
@@ -161,5 +162,100 @@ describe('App — Cloudflare Access authentication & revocation flows', () => {
             expect(screen.getByRole('button', { name: 'Retry' })).toBeInTheDocument()
         })
         expect(screen.queryByPlaceholderText('Access token')).not.toBeInTheDocument()
+    })
+
+    it('clears React Query and message-window caches on silent Cloudflare Access identity switch, but keeps them on same-identity refresh', async () => {
+        const exp = Math.floor(Date.now() / 1000) + 3600
+        const aliceJwt1 = fakeJwt({
+            uid: 1,
+            ns: 'default',
+            authMethod: 'cloudflareAccess',
+            cfAccessSub: 'alice-sub',
+            cfAccessEmail: 'alice@example.com',
+            exp
+        })
+        const aliceJwt2 = fakeJwt({
+            uid: 1,
+            ns: 'default',
+            authMethod: 'cloudflareAccess',
+            cfAccessSub: 'alice-sub',
+            cfAccessEmail: 'alice@example.com',
+            exp: exp + 600
+        })
+        const bobJwt = fakeJwt({
+            uid: 1,
+            ns: 'work',
+            authMethod: 'cloudflareAccess',
+            cfAccessSub: 'bob-sub',
+            cfAccessEmail: 'bob@example.com',
+            exp: exp + 1200
+        })
+
+        let activeJwt = aliceJwt1
+        let rejectNextSessions = false
+        vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+            const url = String(input)
+            if (url.endsWith('/api/auth/methods')) {
+                return jsonResponse({ cloudflareAccess: true })
+            }
+            if (url.endsWith('/api/auth/cloudflare')) {
+                return jsonResponse({ token: activeJwt, user: { id: 1, firstName: 'Web User' } })
+            }
+            if (url.endsWith('/api/health')) {
+                return jsonResponse({ status: 'ok', protocolVersion: 1, capabilities: {} })
+            }
+            if (url.endsWith('/api/sessions')) {
+                if (rejectNextSessions) {
+                    rejectNextSessions = false
+                    return jsonResponse({ error: 'Invalid token' }, 401)
+                }
+                return jsonResponse({ sessions: [] })
+            }
+            return jsonResponse({ error: 'Not Found' }, 404)
+        }))
+
+        const queryClient = new QueryClient({
+            defaultOptions: { queries: { retry: false } }
+        })
+        renderApp(queryClient)
+
+        await waitFor(() => expect(screen.getByTestId('authenticated-shell')).toHaveAttribute('data-token', aliceJwt1))
+
+        // Populate React Query caches and message-window cache for Alice.
+        queryClient.setQueryData(['machines'], [{ id: 'alice-machine' }])
+        queryClient.setQueryData(['usage', 'summary'], { totalTokens: 1234 })
+        queryClient.setQueryData(['storage'], { bytes: 999 })
+        ingestIncomingMessages('alice-session', [{
+            id: 'msg-1',
+            seq: 1,
+            localId: null,
+            createdAt: 1_000,
+            content: { role: 'user', content: { type: 'text', text: 'secret prompt' } }
+        } as never])
+        sessionStorage.setItem('hapi:message-window:v2:alice-persisted', JSON.stringify({ messages: [{ id: 'p1' }] }))
+
+        // Same-identity refresh (Alice -> Alice): caches must remain intact.
+        activeJwt = aliceJwt2
+        rejectNextSessions = true
+        await act(async () => {
+            screen.getByRole('button', { name: 'Fetch Sessions' }).click()
+        })
+        await waitFor(() => expect(screen.getByTestId('authenticated-shell')).toHaveAttribute('data-token', aliceJwt2))
+        expect(queryClient.getQueryData(['machines'])).toEqual([{ id: 'alice-machine' }])
+        expect(queryClient.getQueryData(['usage', 'summary'])).toEqual({ totalTokens: 1234 })
+        expect(getMessageWindowState('alice-session').messages).toHaveLength(1)
+
+        // Silent identity switch (Alice -> Bob): all caches must be cleared.
+        activeJwt = bobJwt
+        rejectNextSessions = true
+        await act(async () => {
+            screen.getByRole('button', { name: 'Fetch Sessions' }).click()
+        })
+        await waitFor(() => expect(screen.getByTestId('authenticated-shell')).toHaveAttribute('data-token', bobJwt))
+        expect(queryClient.getQueryData(['machines'])).toBeUndefined()
+        expect(queryClient.getQueryData(['usage', 'summary'])).toBeUndefined()
+        expect(queryClient.getQueryData(['storage'])).toBeUndefined()
+        expect(getMessageWindowState('alice-session').messages).toEqual([])
+        expect(sessionStorage.getItem('hapi:message-window:v2:alice-persisted')).toBeNull()
     })
 })

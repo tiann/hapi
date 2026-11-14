@@ -36,6 +36,17 @@ function isCloudflareToken(token: string): boolean {
     return decodeJwtPayload(token)?.authMethod === 'cloudflareAccess'
 }
 
+function decodeJwtIdentityKey(token: string): string | null {
+    const payload = decodeJwtPayload(token)
+    if (!payload) return null
+    const authMethod = typeof payload.authMethod === 'string' ? payload.authMethod : ''
+    const ns = typeof payload.ns === 'string' ? payload.ns : ''
+    const sub = typeof payload.cfAccessSub === 'string' ? payload.cfAccessSub : ''
+    const email = typeof payload.cfAccessEmail === 'string' ? payload.cfAccessEmail.trim().toLowerCase() : ''
+    const uid = typeof payload.uid === 'number' || typeof payload.uid === 'string' ? String(payload.uid) : ''
+    return JSON.stringify([authMethod, ns, sub, email, uid])
+}
+
 async function authenticateWith(client: ApiClient, source: AuthSource): Promise<AuthResponse> {
     if (source.type === 'cloudflareAccess') {
         return await client.authenticateWithCloudflare()
@@ -70,7 +81,11 @@ function rememberAccessToken(baseUrl: string, accessToken: string): void {
     }
 }
 
-export function useAuth(authSource: AuthSource | null, baseUrl: string): {
+export function useAuth(
+    authSource: AuthSource | null,
+    baseUrl: string,
+    options?: { onIdentityChange?: () => void }
+): {
     token: string | null
     user: AuthResponse['user'] | null
     api: ApiClient | null
@@ -88,11 +103,27 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
     const refreshPromiseRef = useRef<Promise<string | null> | null>(null)
     const tokenRef = useRef<string | null>(null)
     const lastRefreshAttemptRef = useRef<number>(0)
+    const activeIdentityRef = useRef<string | null>(null)
+    const onIdentityChangeRef = useRef(options?.onIdentityChange)
+    onIdentityChangeRef.current = options?.onIdentityChange
 
     // Stable reference for auth source to use in effects
     const authSourceRef = useRef(authSource)
     authSourceRef.current = authSource
     tokenRef.current = token
+
+    const applyAuthenticatedSession = useCallback((auth: AuthResponse) => {
+        const nextIdentity = decodeJwtIdentityKey(auth.token)
+        if (activeIdentityRef.current !== null && nextIdentity !== activeIdentityRef.current) {
+            onIdentityChangeRef.current?.()
+        }
+        activeIdentityRef.current = nextIdentity
+        tokenRef.current = auth.token
+        setToken(auth.token)
+        setUser(auth.user)
+        setError(null)
+        setNeedsBinding(false)
+    }, [])
 
     const refreshAuth = useCallback(async (options?: {
         minTtlMs?: number
@@ -126,11 +157,7 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
             try {
                 const client = new ApiClient('', { baseUrl })
                 const auth = await authenticateWith(client, currentSource)
-                tokenRef.current = auth.token
-                setToken(auth.token)
-                setUser(auth.user)
-                setError(null)
-                setNeedsBinding(false)
+                applyAuthenticatedSession(auth)
                 return auth.token
             } catch (error) {
                 if (currentSource.type === 'telegram' && isNotBoundError(error)) {
@@ -182,10 +209,7 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
         try {
             const client = new ApiClient('', { baseUrl })
             const auth = await client.bind({ initData: currentSource.initData, accessToken })
-            tokenRef.current = auth.token
-            setToken(auth.token)
-            setUser(auth.user)
-            setNeedsBinding(false)
+            applyAuthenticatedSession(auth)
             // Persist the CLI access token so Settings → Companion pairing QR
             // can encode the same long-lived token in the deeplink. The PWA
             // already does this for browser/CLI logins via useAuthSource.
@@ -245,9 +269,7 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
                 const client = new ApiClient('', { baseUrl }) // temporary for auth call
                 const auth = await authenticateWith(client, authSource)
                 if (isCancelled) return
-                setToken(auth.token)
-                setUser(auth.user)
-                setNeedsBinding(false)
+                applyAuthenticatedSession(auth)
             } catch (e) {
                 if (isCancelled) return
                 if (authSource.type === 'telegram' && isNotBoundError(e)) {
@@ -277,6 +299,7 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
         tokenRef.current = null
         refreshPromiseRef.current = null
         lastRefreshAttemptRef.current = 0
+        activeIdentityRef.current = null
         setToken(null)
         setUser(null)
         setError(null)

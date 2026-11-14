@@ -373,3 +373,82 @@ describe('useAuth — Cloudflare revocation, transient errors, and retry', () =>
         }
     })
 })
+
+describe('useAuth — authenticated identity change detection', () => {
+    it('invokes onIdentityChange on subject or namespace switch, not on same-identity refresh', async () => {
+        const { MockApiClient: MockClient } = h
+        const nowSec = Math.floor(Date.now() / 1000)
+        const aliceJwt1 = fakeJwt({
+            uid: 1,
+            ns: 'default',
+            authMethod: 'cloudflareAccess',
+            cfAccessSub: 'alice-sub',
+            cfAccessEmail: 'alice@example.com',
+            exp: nowSec + 3600
+        })
+        const aliceJwt2 = fakeJwt({
+            uid: 1,
+            ns: 'default',
+            authMethod: 'cloudflareAccess',
+            cfAccessSub: 'alice-sub',
+            cfAccessEmail: 'alice@example.com',
+            exp: nowSec + 7200
+        })
+        const bobJwt = fakeJwt({
+            uid: 1,
+            ns: 'work',
+            authMethod: 'cloudflareAccess',
+            cfAccessSub: 'bob-sub',
+            cfAccessEmail: 'bob@example.com',
+            exp: nowSec + 3600
+        })
+        const carolJwt = fakeJwt({
+            uid: 1,
+            ns: 'work',
+            authMethod: 'cloudflareAccess',
+            cfAccessSub: 'carol-sub',
+            cfAccessEmail: 'carol@example.com',
+            exp: nowSec + 3600
+        })
+
+        const spy = vi.spyOn(MockClient.prototype, 'authenticateWithCloudflare')
+            .mockResolvedValueOnce({ token: aliceJwt1, user: { id: 'u1' } })
+            .mockResolvedValueOnce({ token: aliceJwt2, user: { id: 'u1' } })
+            .mockResolvedValueOnce({ token: bobJwt, user: { id: 'u1' } })
+            .mockResolvedValueOnce({ token: carolJwt, user: { id: 'u1' } })
+
+        const onIdentityChange = vi.fn()
+        try {
+            const authSource = { type: 'cloudflareAccess' as const }
+            const { result } = renderHook(() => useAuth(authSource, 'http://hub.test', { onIdentityChange }))
+
+            await waitFor(() => expect(result.current.token).toBe(aliceJwt1))
+            expect(onIdentityChange).not.toHaveBeenCalled()
+
+            const api1 = result.current.api as unknown as ApiWithOptions
+
+            // Same identity refresh (only exp changed): must NOT trigger identity change.
+            await act(async () => {
+                await api1.options?.onUnauthorized?.()
+            })
+            expect(result.current.token).toBe(aliceJwt2)
+            expect(onIdentityChange).not.toHaveBeenCalled()
+
+            // Silent switch to Bob (different subject + namespace): triggers once.
+            await act(async () => {
+                await api1.options?.onUnauthorized?.()
+            })
+            expect(result.current.token).toBe(bobJwt)
+            expect(onIdentityChange).toHaveBeenCalledTimes(1)
+
+            // Silent switch to Carol (same 'work' namespace, different subject): triggers again.
+            await act(async () => {
+                await api1.options?.onUnauthorized?.()
+            })
+            expect(result.current.token).toBe(carolJwt)
+            expect(onIdentityChange).toHaveBeenCalledTimes(2)
+        } finally {
+            spy.mockRestore()
+        }
+    })
+})
