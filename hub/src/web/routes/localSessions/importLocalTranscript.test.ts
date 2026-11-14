@@ -210,6 +210,32 @@ describe('generic local import', () => {
         expect(codexSessions[0]!.tag).toBeTruthy()
     })
 
+    it('appends after a shorter duplicate run without reusing a stored Codex row id', async () => {
+        const { store, engine } = harness()
+        stores.push(store)
+        const duplicate = agentContent('a-1', 'same reply')
+        // A runner that keeps same-source duplicates stores [A, B, B, C]
+        // under ids 0..3; a runner that collapses them later converts the
+        // grown thread to [A, B, C, D], where D's position is 3 again.
+        const first = await importLocalTranscript({
+            store, engine, namespace: 'default', source: CODEX_LOCAL_SESSION_SOURCE,
+            transcript: codexTranscript('thread-shrink', [userContent('A'), duplicate, duplicate, userContent('C')]),
+            machine: machine()
+        })
+        expect(first).toMatchObject({ action: 'created', appended: 4 })
+
+        const outcome = await importLocalTranscript({
+            store, engine, namespace: 'default', source: CODEX_LOCAL_SESSION_SOURCE,
+            transcript: codexTranscript('thread-shrink', [userContent('A'), duplicate, userContent('C'), userContent('D')]),
+            machine: machine()
+        })
+        expect(outcome).toMatchObject({ hapiSessionId: first.hapiSessionId, action: 'updated', appended: 1 })
+        const rows = store.messages.getAllMessages(first.hapiSessionId!)
+        expect(rows).toHaveLength(5)
+        expect(rows.at(-1)!.content).toMatchObject({ role: 'user', content: { text: 'D' } })
+        expect(new Set(rows.map((row) => row.localId)).size).toBe(5)
+    })
+
     it('stamps the codex lifecycle as imported and writes both id keys', async () => {
         const { store, engine } = harness()
         stores.push(store)

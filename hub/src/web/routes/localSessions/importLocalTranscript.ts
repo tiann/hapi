@@ -179,6 +179,38 @@ function buildImportState(source: HubLocalSessionSource, transcript: LocalTransc
     }
 }
 
+const POSITIONAL_ID = /^(.*:)(\d+)$/
+
+/**
+ * Content-prefix row ids end in the transcript position (`<stem>:<index>`).
+ * The matcher tolerates duplicate runs of a different length, so after a
+ * run shrinks the first new message can land on a position the stored
+ * session already used. Alignment positions and stored ids are separate
+ * things: a delta id at or below the highest stored index of its stem moves
+ * past it. Ordinary growth keeps its ids unchanged.
+ */
+function withFreshPositionalIds(
+    delta: LocalTranscript['messages'],
+    storedMessages: StoredMessage[]
+): LocalTranscript['messages'] {
+    const highestByStem = new Map<string, number>()
+    for (const message of storedMessages) {
+        const match = message.localId ? POSITIONAL_ID.exec(message.localId) : null
+        if (!match) continue
+        highestByStem.set(match[1]!, Math.max(highestByStem.get(match[1]!) ?? -1, Number(match[2])))
+    }
+    return delta.map((message) => {
+        const match = POSITIONAL_ID.exec(message.id)
+        if (!match) return message
+        const stem = match[1]!
+        const index = Number(match[2])
+        const highest = highestByStem.get(stem) ?? -1
+        const next = index > highest ? index : highest + 1
+        highestByStem.set(stem, next)
+        return next === index ? message : { ...message, id: `${stem}${next}` }
+    })
+}
+
 /** History locators for fork/rewind: persisted user messages with a native anchor. */
 function buildHistoryLocators(transcript: LocalTranscript, persistedLocalIds: Set<string>): {
     entryIds: Record<string, string>
@@ -289,7 +321,10 @@ export function runLocalImportSync(options: {
                 } else {
                     target = null
                 }
-                delta = transcript.messages.slice(result.deltaStartIndex)
+                delta = withFreshPositionalIds(
+                    transcript.messages.slice(result.deltaStartIndex),
+                    target ? store.messages.getAllMessages(target.id) : []
+                )
             } else {
                 const match = matchAnchored({
                     storedMessages: target ? store.messages.getAllMessages(target.id) : [],
