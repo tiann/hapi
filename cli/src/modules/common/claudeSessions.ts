@@ -17,6 +17,8 @@ import type { ClaudeLocalSessionSummary, ClaudeLocalSessionWithMessages } from '
  * per-session subagent transcripts in <session>/subagents/agent-*.jsonl.
  */
 
+const DEFAULT_CLAUDE_SESSION_SCAN_LIMIT = 200
+
 type ClaudeSessionFile = {
     sessionId: string
     filePath: string
@@ -245,8 +247,13 @@ function toSummary(
     }
 }
 
-/** Summaries of the most recent local Claude conversations. */
-export async function listLocalClaudeSessionSummaries(): Promise<ClaudeLocalSessionSummary[]> {
+/**
+ * Summaries of the most recent local Claude conversations, newest first.
+ * Bounded like the Pi, OpenCode and Codex lists: a "Select all" over the
+ * list must stay within the hub's per-request import limit (200).
+ */
+export async function listLocalClaudeSessionSummaries(limit = DEFAULT_CLAUDE_SESSION_SCAN_LIMIT): Promise<ClaudeLocalSessionSummary[]> {
+    if (limit <= 0) return []
     const files = await listSessionFiles()
     const summaries: ClaudeLocalSessionSummary[] = []
     for (const sessionFile of files) {
@@ -254,6 +261,7 @@ export async function listLocalClaudeSessionSummaries(): Promise<ClaudeLocalSess
         const messages = toImportedMessages(rawEntries)
         if (messages.length === 0) continue
         summaries.push(toSummary(sessionFile, rawEntries, messages))
+        if (summaries.length >= limit) break
     }
     return summaries
 }

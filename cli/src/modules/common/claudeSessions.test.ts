@@ -218,6 +218,22 @@ describe('local Claude session reader', () => {
         expect(summaries[0]!.messageCount).toBe(2)
     })
 
+    it('lists at most the 200 newest sessions, like the other local sources', async () => {
+        const projectDir = makeProject()
+        // One more session than an import request may carry.
+        for (let index = 0; index < 201; index += 1) {
+            const sessionId = `${String(index).padStart(8, '0')}-1234-5678-9abc-def012345678`
+            writeMainTranscript(projectDir, sessionId, [userEntry(`u-${index}`, `session ${index}`)])
+            utimesSync(join(projectDir, `${sessionId}.jsonl`), 1_000 + index, 1_000 + index)
+        }
+
+        const summaries = await listLocalClaudeSessionSummaries()
+        expect(summaries).toHaveLength(200)
+        // Newest first; the oldest session is the one left out.
+        expect(summaries[0]!.lastUserMessage).toBe('session 200')
+        expect(summaries.map((summary) => summary.lastUserMessage)).not.toContain('session 0')
+    })
+
     it('picks the same copy of a duplicated session id on every scan when mtimes tie', async () => {
         makeProject()
         const firstDir = join(root, 'projects', '-tmp-a')
