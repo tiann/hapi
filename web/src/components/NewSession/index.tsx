@@ -1,6 +1,7 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
+import { apiErrorMessage } from '@/api/client'
 import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine, OpencodeLocalSessionSummary, PiLocalSessionSummary } from '@/types/api'
 import { CREATABLE_AGENT_FLAVORS, resolveHapiYoloPermissionMode, getAgyModelChoices, splitAgyModelSelection, getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
 import type { AgentAvailabilityEntry, CodexCollaborationMode, GrokPermissionMode, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
@@ -1336,7 +1337,7 @@ export function NewSession(props: {
             setCodexImportSessions([])
             setCodexImportMachineId(null)
             setSelectedCodexImportSessionId(null)
-            setCodexImportError(e instanceof Error ? e.message : t('codexSync.failed.body'))
+            setCodexImportError(apiErrorMessage(e, t('codexSync.failed.body')))
         } finally {
             setIsLoadingCodexImportSessions(false)
         }
@@ -1601,7 +1602,7 @@ export function NewSession(props: {
         } catch (importError) {
             addToast({
                 title: t('piImport.failed.title'),
-                body: importError instanceof Error ? importError.message : t('piImport.failed.body'),
+                body: apiErrorMessage(importError, t('piImport.failed.body')),
                 sessionId: '',
                 url: ''
             })
@@ -1661,7 +1662,7 @@ export function NewSession(props: {
         } catch (importError) {
             addToast({
                 title: t('opencodeSync.failed.title'),
-                body: importError instanceof Error ? importError.message : t('opencodeSync.failed.body'),
+                body: apiErrorMessage(importError, t('opencodeSync.failed.body')),
                 sessionId: '',
                 url: ''
             })

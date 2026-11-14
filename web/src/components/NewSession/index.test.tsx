@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactElement } from 'react'
-import type { ApiClient } from '@/api/client'
+import { ApiError, type ApiClient } from '@/api/client'
 import type { AgentAvailabilityEntry, ClaudeModelSummary, Machine, PiModelSummary } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
 import { saveNewSessionFormDraft } from './newSessionFormDraft'
@@ -1523,6 +1523,51 @@ describe('NewSession launch preferences', () => {
             body: 'piImport.success.body'
         }))
         expect(mocks.addToast).toHaveBeenCalledWith(expect.objectContaining({ title: 'piImport.failed.title' }))
+    })
+
+    it('shows the hub error text, not the raw HTTP envelope, when a Pi bulk import fails', async () => {
+        savePreferredAgent('pi')
+        mocks.piDialogSelection = ['pi-native-1', 'pi-native-2']
+        const piApi = {
+            getPiSessions: vi.fn().mockResolvedValue({
+                success: true,
+                machineId: 'machine-1',
+                sessions: [1, 2].map((index) => ({
+                    id: `pi-native-${index}`,
+                    title: `Pi ${index}`,
+                    cwd: 'C:\\repo',
+                    file: `C:\\pi-${index}.jsonl`,
+                    modifiedAt: index,
+                    messageCount: 1
+                }))
+            }),
+            importPiSessions: vi.fn().mockRejectedValue(new ApiError(
+                'HTTP 503 Service Unavailable: {"success":false,"error":"Runner is offline"}',
+                503,
+                undefined,
+                '{"success":false,"error":"Runner is offline"}'
+            ))
+        } as unknown as ApiClient
+
+        renderWithQuery(
+            <NewSession
+                api={piApi}
+                machines={[machine]}
+                initialMachineId="machine-1"
+                initialDirectory="C:\\repo"
+                onSuccess={mocks.onSuccess}
+                onCancel={() => {}}
+            />
+        )
+
+        fireEvent.click(screen.getByRole('button', { name: 'piImport.inline.choose' }))
+        await waitFor(() => expect(screen.getByTestId('select-pi-history')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('select-pi-history'))
+
+        await waitFor(() => expect(mocks.addToast).toHaveBeenCalledWith(expect.objectContaining({
+            title: 'piImport.failed.title',
+            body: 'Runner is offline'
+        })))
     })
 
     it('does not save changed launch settings when creation fails', async () => {
