@@ -525,6 +525,7 @@ describe('cli session handlers', () => {
     })
 
 it.each([
+        ['codexImportedAt', 1234],
         ['supersededBySessionId', 'foreign-session'],
         ['opencodeClearOperation', { replacementSessionId: 'foreign-session', state: 'reserved', updatedAt: Date.now() }],
         ['opencodeForkPending', true],
@@ -556,6 +557,30 @@ it.each([
             expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).not.toHaveProperty(field)
         }
     )
+
+    it.each([1234, null])('preserves Codex import state %s across CLI bootstrap replacements', (codexImportedAt) => {
+        const store = new Store(':memory:')
+        try {
+            const session = store.sessions.getOrCreateSession('preserve-import-state', {
+                path: '/tmp/project', codexImportedAt
+            }, null, 'default')
+            const socket = new FakeSocket()
+            registerSessionHandlers(socket as unknown as CliSocketWithData, {
+                store,
+                resolveSessionAccess: () => ({ ok: true, value: session as StoredSession }),
+                emitAccessError: () => { throw new Error('unexpected access error') }
+            })
+            socket.trigger('update-metadata', {
+                sid: session.id,
+                expectedVersion: session.metadataVersion,
+                metadata: { path: '/tmp/project' }
+            }, () => {})
+            expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata)
+                .toHaveProperty('codexImportedAt', codexImportedAt)
+        } finally {
+            store.close()
+        }
+    })
 
     it('preserves existing hub-owned clear and job-redirect metadata across CLI metadata updates', () => {
         const store = new Store(':memory:')
