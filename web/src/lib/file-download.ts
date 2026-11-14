@@ -5,7 +5,11 @@ export function downloadBase64File(fileName: string, base64Content: string, mime
         bytes[index] = byteChars.charCodeAt(index)
     }
 
-    const url = URL.createObjectURL(new Blob([bytes], { type: mimeType ?? 'application/octet-stream' }))
+    downloadBlob(fileName, new Blob([bytes], { type: mimeType ?? 'application/octet-stream' }))
+}
+
+export function downloadBlob(fileName: string, blob: Blob): void {
+    const url = URL.createObjectURL(blob)
     const anchor = document.createElement('a')
     anchor.href = url
     anchor.download = fileName

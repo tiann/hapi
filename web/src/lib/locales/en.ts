@@ -1278,6 +1278,11 @@ export default {
   'settings.about.website': 'Website',
   'settings.about.appVersion': 'App Version',
   'settings.about.protocolVersion': 'Protocol Version',
+  'settings.about.backup.title': 'Settings',
+  'settings.about.backup.description': 'Stored in this browser only.',
+  'settings.about.backup.exportButton': 'Export',
+  'settings.about.backup.importButton': 'Import',
+  'settings.about.backup.importError': 'This file is not a HAPI settings export.',
 
   // Browse / Workspace
   'browse.title': 'Browse',
