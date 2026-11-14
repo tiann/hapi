@@ -808,6 +808,14 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 break;
             }
 
+            if (this.shouldExit) {
+                // Terminal teardown flipped while this batch sat in the wait:
+                // the queue was already reset and the batch was never
+                // hub-ACKed — drop it un-ACKed and end instead of running its
+                // mode/model setup against a closing backend.
+                break;
+            }
+
             // Start this turn's abort window before any await. A later reset
             // after applyLiveModel / applyCursorAcpMode would erase Abort that
             // landed during mode/model setup and still dispatch a Bridge.
@@ -1921,6 +1929,11 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         if (!err || err.eventId !== eventId) {
             return false;
         }
+        if (err.supersededByUserTurn) {
+            // A newer user turn owns the conversation: the Bridge must not
+            // dispatch (fail closed; caller drops the dequeued bridge batch).
+            return false;
+        }
         if (err.bridgeable !== false) {
             this.lastRecordedModelError = { ...err, bridgeable: false };
             this.session.client.updateMetadata((metadata) => {
@@ -2009,6 +2022,10 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             ...current,
             supersededByUserTurn: true
         };
+        // The supersede defers to the dispatch commit, so a Bridge enqueued
+        // mid-setup would otherwise sit queued and replay AFTER the user turn
+        // that just superseded it: drop the not-yet-started row now.
+        this.cancelPendingBridge();
         this.session.client.updateMetadata((metadata) => {
             const err = metadata.lastModelError;
             if (!err || err.eventId !== current.eventId) {
@@ -2486,7 +2503,9 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                     internal: item.internal
                 });
             } else {
-                this.session.queue.unshift(item.message, batch.mode, item.localId);
+                this.session.queue.unshift(item.message, batch.mode, item.localId, {
+                    internal: item.internal
+                });
             }
         }
     }

@@ -9,6 +9,50 @@ describe('MessageQueue2', () => {
         expect(queue.isClosed()).toBe(false);
     });
 
+    it('answers in-flight for a dequeued-but-uncommitted localId so a Cancel holds the row busy instead of double-delivering', async () => {
+        // Round-7 cross-review §3.1 sequence A: with the ACK deferred to the
+        // dispatch commit, a Cancel landing inside the dequeue→commit window
+        // used to answer false ('not-found'), which pushed the hub row to
+        // indeterminate and let a Retry re-emit the message → delivered twice.
+        const queue = new MessageQueue2<string>(mode => mode);
+        queue.push('M', 'local', 'L');
+        // Simulate the launcher's deferred-ACK pattern: suppress the
+        // collect-time ACK, collect, then commit later.
+        const stashed = queue.onBatchConsumed;
+        queue.onBatchConsumed = null;
+        const batch = await queue.waitForMessagesAndGetAsString();
+        expect(batch?.items.map(item => item.localId)).toEqual(['L']);
+        // Cancel inside the window: the row is neither queued nor reserved.
+        expect(queue.cancelByLocalId('L')).toBe('in-flight');
+        // The commit lands after the cancel attempt: the message is delivered
+        // exactly once and the hub row goes invoked (never indeterminate).
+        queue.onBatchConsumed = stashed;
+        stashed?.(batch!.items.map(item => item.localId!));
+        // A retry re-emit with the same localId must still be cancellable —
+        // the stale in-flight mark must not shadow the queued row.
+        queue.push('M again', 'local', 'L');
+        expect(queue.cancelByLocalId('L')).toBe(true);
+        expect(queue.size()).toBe(0);
+    });
+
+    it('keeps answering in-flight for repeated cancels while the batch is still uncommitted', async () => {
+        // Round-7 cross-review §3.1 sequence B: a second Cancel on the
+        // indeterminate row must not read 'not-found' (the hub would delete
+        // the row while the CLI still dispatches it — delivered after an
+        // explicit cancel). Until the commit settles, the answer stays
+        // 'in-flight'.
+        const queue = new MessageQueue2<string>(mode => mode);
+        queue.push('M', 'local', 'L');
+        const stashed = queue.onBatchConsumed;
+        queue.onBatchConsumed = null;
+        await queue.waitForMessagesAndGetAsString();
+        expect(queue.cancelByLocalId('L')).toBe('in-flight');
+        expect(queue.cancelByLocalId('L')).toBe('in-flight');
+        // Terminal hygiene: resetting the queue clears the in-flight marks.
+        queue.reset();
+        expect(queue.cancelByLocalId('L')).toBe(false);
+    });
+
     it('unshiftBatch restores a dequeued batch in original order with localIds intact and no extra ACK', async () => {
         const queue = new MessageQueue2<string>(mode => mode);
         const consumed: string[][] = [];
@@ -25,6 +69,21 @@ describe('MessageQueue2', () => {
         expect(again?.items.map(item => item.localId)).toEqual(['id-a', 'id-b']);
         // One ACK per collection: the unshift itself fired none.
         expect(consumed).toEqual([['id-a', 'id-b'], ['id-a', 'id-b']]);
+    });
+
+    it('unshiftBatch preserves internal provenance for non-isolated batches', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        const internal = { kind: 'control' } as const;
+        // A non-isolated batch that carries an internal item (the shape the
+        // launchers' requeue helpers hand back): the unshift branch must keep
+        // the provenance or hasPendingNonBridgeTurn miscounts the row.
+        queue.unshiftBatch({
+            mode: 'local',
+            isolate: false,
+            items: [{ message: 'ctrl', localId: 'id-c', internal }]
+        });
+        const again = await queue.waitForMessagesAndGetAsString();
+        expect(again?.items[0]?.internal).toEqual(internal);
     });
 
     it('should push and retrieve messages with same mode', async () => {

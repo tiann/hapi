@@ -342,7 +342,7 @@ describe('DshRemoteLauncher', () => {
                 expect(harness.setConfigOptionCalls.map(c => c.value)).toEqual([PRO])
             } else {
                 expect(harness.prompts).toHaveLength(1)
-                expect(harness.setConfigOptionCalls).toEqual([])
+            expect(harness.setConfigOptionCalls).toEqual([])
             }
         } finally {
             session.queue.close()
@@ -1011,6 +1011,105 @@ describe('DshRemoteLauncher', () => {
             await done
         } finally {
             session.queue.close()
+            await Promise.allSettled([done, aborted])
+        }
+    })
+
+    it('a batch resolved while shouldExit flips breaks before reconnect or setup', async () => {
+        // Round-7 Minor 2: the dequeue can resolve a real batch right as the
+        // terminal teardown flips shouldExit; the loop must break before the
+        // model switch instead of mutating ACP state on a closing backend.
+        harness.modelOption = { id: 'model', category: 'model', currentValue: 'flash' }
+        const queue = createQueue()
+        const session = createSession(queue)
+        const launcher = new DshRemoteLauncher(session as never)
+        const done = launcher.launch()
+        try {
+            // The override is installed before launch so the loop's very first
+            // wait resolves the synthetic batch; the switch fires lazily once
+            // the teardown RPC is wireable.
+            let switchFired = false
+            session.queue.waitForMessagesAndGetAsString = async () => {
+                if (!switchFired) {
+                    switchFired = true
+                    await vi.waitFor(() => expect(
+                        session.client.rpcHandlerManager.registerHandler.mock.calls.some((c: unknown[]) => c[0] === RPC_METHODS.Switch)
+                    ).toBe(true))
+                    const switchHandler = session.client.rpcHandlerManager.registerHandler.mock.calls
+                        .find((c: unknown[]) => c[0] === RPC_METHODS.Switch)![1] as () => Promise<unknown>
+                    // requestExit flips shouldExit synchronously before the
+                    // teardown's first await.
+                    void switchHandler()
+                }
+                return { message: 'late', mode: { model: 'flash-x' } as DshMode, isolate: false, hash: 'synthetic', items: [{ message: 'late', localId: 'late' }] }
+            }
+            queue.close()
+            await done
+            // The closing launcher must not run the batch's model switch or
+            // prompt.
+            expect(harness.setConfigOptionCalls).toEqual([])
+            expect(harness.prompts).toEqual([])
+        } finally {
+            queue.close()
+            await Promise.allSettled([done])
+        }
+    })
+
+    it('requeues the batch when a plain Stop lands during a failed acpSessionEnded restart', async () => {
+        // Round-7 Minor 3: the acpSessionEnded recovery's catch dropped the
+        // dequeued batch even when the failure was raced by a plain Stop.
+        harness.supportsResume = true
+        let releaseFirstPrompt!: () => void
+        harness.promptBlocker = new Promise((resolve) => { releaseFirstPrompt = resolve })
+        const queue = createQueue()
+        queue.push('first', {})
+        const session = createSession(queue)
+        const launcher = new DshRemoteLauncher(session as never)
+        const done = launcher.launch()
+        let aborted: Promise<unknown> | undefined
+        try {
+            await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+            // Kill arms the implicit-end detector; 'second' then hits the
+            // closed session and sets the acpSessionEnded marker.
+            const killPromise = launcher.kill()
+            releaseFirstPrompt()
+            await killPromise
+            harness.promptErrorQueue = [new Error('Session not found: dsh-session-1')]
+            queue.push('second', {})
+            await vi.waitFor(() => expect(harness.prompts).toHaveLength(2))
+            // 'third' enters the acpSessionEnded recovery; park its resume and
+            // land a plain Stop inside it.
+            let releaseResume!: () => void
+            harness.resumeBlocker = new Promise((resolve) => { releaseResume = resolve })
+            queue.push('third', {})
+            await vi.waitFor(() => expect(harness.resumeCalls).toHaveLength(1))
+            const abort = session.client.rpcHandlerManager.registerHandler.mock.calls
+                .find((c: unknown[]) => c[0] === RPC_METHODS.Abort)![1] as () => Promise<unknown>
+            aborted = abort()
+            await vi.waitFor(() => expect(session.sendSessionEvent).toHaveBeenCalledWith(
+                { type: 'message', message: 'Session aborted' }))
+            // The restart fails (the backend died inside the recovery window):
+            // the resume failure is absorbed into a fresh-session attempt, so
+            // the one-shot newSession error is what reaches the recovery
+            // catch — and it must be one-shot so the post-Stop respawn for the
+            // requeued batch succeeds.
+            harness.resumeError = deadTransportError('session/resume failed: ACP process exited (code=1)')
+            harness.newSessionErrorQueue = [deadTransportError('session/new failed: ACP process exited (code=1)')]
+            releaseResume()
+            await vi.waitFor(() => expect(session.sendSessionEvent).toHaveBeenCalledWith(
+                { type: 'message', message: expect.stringContaining('DSH session restart failed') }))
+            // The loop stays alive: the requeued message re-dispatches on the
+            // rebuilt backend instead of vanishing with the catch's continue.
+            await vi.waitFor(() => expect(harness.prompts).toEqual([
+                [{ type: 'text', text: 'first' }],
+                [{ type: 'text', text: 'second' }],
+                [{ type: 'text', text: 'third' }]
+            ]))
+            queue.close()
+            await done
+        } finally {
+            releaseFirstPrompt?.()
+            queue.close()
             await Promise.allSettled([done, aborted])
         }
     })

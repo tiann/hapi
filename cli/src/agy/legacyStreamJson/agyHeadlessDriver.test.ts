@@ -1171,9 +1171,11 @@ describe('AgyHeadlessDriver', () => {
         session.stopKeepAlive();
         await launchPromise;
 
-        // No retry spawn after the cancel; queue-level cancel found nothing
-        // (batch was outside the queue), the retry-state cancel removed it.
-        expect(removed).toBe(false);
+        // No retry spawn after the cancel. The queue-level cancel answers
+        // 'in-flight' — the batch was dequeued into the deferred-ACK window,
+        // so it is neither queued (removable) nor consumed — and the
+        // driver-owned retry-state cancel is what actually removes it.
+        expect(removed).toBe('in-flight');
         expect(retryRemoved).toBe(true);
         expect(spawnCount).toBe(1);
     }, 15000);

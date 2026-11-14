@@ -61,6 +61,8 @@ export class MessageQueue2<T> {
     modeHasher: (mode: T) => string;
     private readonly reservations = new Map<string, QueueReservation<T>>();
     private readonly consumedReservations = new Set<string>();
+    /** localIds dequeued but not yet committed (deferred hub-ACK window). */
+    private readonly inFlightLocalIds = new Set<string>();
     private nextEnqueueOrder = 0;
     private previousEnqueueOrder = -1;
 
@@ -247,7 +249,7 @@ export class MessageQueue2<T> {
     /**
      * Push a message to the beginning of the queue with a mode.
      */
-    unshift(message: string, mode: T, localId?: string): void {
+    unshift(message: string, mode: T, localId?: string, options?: QueueItemOptions): void {
         if (this.closed) {
             throw new Error('Cannot unshift to closed queue');
         }
@@ -261,10 +263,14 @@ export class MessageQueue2<T> {
             modeHash,
             localId,
             isolate: false,
+            internal: options?.internal,
             enqueueOrder: this.previousEnqueueOrder--
         };
         Object.defineProperty(item, 'enqueueOrder', { value: item.enqueueOrder, enumerable: false, writable: true });
         this.queue.unshift(item);
+        if (localId) {
+            this.inFlightLocalIds.delete(localId);
+        }
 
         // Trigger message handler if set
         if (this.onMessageHandler) {
@@ -308,6 +314,9 @@ export class MessageQueue2<T> {
         };
         Object.defineProperty(item, 'enqueueOrder', { value: item.enqueueOrder, enumerable: false, writable: true });
         this.queue.unshift(item);
+        if (localId) {
+            this.inFlightLocalIds.delete(localId);
+        }
 
         if (this.onMessageHandler) {
             this.onMessageHandler(message, mode);
@@ -336,7 +345,7 @@ export class MessageQueue2<T> {
             if (batch.isolate) {
                 this.unshiftIsolated(item.message, batch.mode, item.localId, { internal: item.internal });
             } else {
-                this.unshift(item.message, batch.mode, item.localId);
+                this.unshift(item.message, batch.mode, item.localId, { internal: item.internal });
             }
         }
     }
@@ -386,6 +395,14 @@ export class MessageQueue2<T> {
         if (idx !== -1) {
             this.queue.splice(idx, 1);
             return true;
+        }
+        if (this.inFlightLocalIds.has(localId)) {
+            // Dequeued but not yet committed: the launcher owns the row inside
+            // the deferred-ACK window and may still commit it. A cancel can
+            // neither un-send it nor stamp it consumed — the hub keeps the row
+            // in-flight instead of deleting it (which would let a retry
+            // re-emit a message that is about to be delivered anyway).
+            return 'in-flight';
         }
         const reservation = this.reservations.get(localId);
         if (!reservation) {
@@ -583,6 +600,7 @@ export class MessageQueue2<T> {
     reset(options?: { preserveDispatchingReservations?: boolean }): void {
         logger.debug(`[MessageQueue2] reset() called. Clearing ${this.queue.length} messages`);
         this.queue = [];
+        this.inFlightLocalIds.clear();
         this.cancelReservations(options?.preserveDispatchingReservations === true);
         this.closed = false;
 
@@ -638,6 +656,7 @@ export class MessageQueue2<T> {
     close(): void {
         logger.debug(`[MessageQueue2] close() called`);
         this.closed = true;
+        this.inFlightLocalIds.clear();
         this.cancelReservations();
 
         // Notify any waiting caller
@@ -707,6 +726,11 @@ export class MessageQueue2<T> {
             return null;
         }
 
+        // A fresh dequeue implies the previous in-flight batch resolved
+        // (committed, requeued, or reset): its stale marks must not shadow
+        // the new window.
+        this.inFlightLocalIds.clear();
+
         this.beforeDequeue?.();
 
         const firstItem = this.queue[0];
@@ -743,6 +767,12 @@ export class MessageQueue2<T> {
 
         // Join all messages with newlines
         const combinedMessage = sameModeMessages.join('\n');
+
+        // Dequeued-but-uncommitted: cancelByLocalId answers 'in-flight' for
+        // these until the commit (or a requeue/reset/close) resolves them.
+        for (const id of consumedLocalIds) {
+            this.inFlightLocalIds.add(id);
+        }
 
         if (consumedLocalIds.length > 0) {
             this.onBatchConsumed?.(consumedLocalIds);

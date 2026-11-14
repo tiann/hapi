@@ -204,6 +204,13 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 if (signal.aborted && !this.shouldExit) continue
                 break
             }
+            if (this.shouldExit) {
+                // Terminal teardown flipped while this batch sat in the wait:
+                // the queue was already reset and the batch was never
+                // hub-ACKed — drop it un-ACKed and end instead of
+                // reconnecting or applying its model on a closing backend.
+                break
+            }
 
             // Snapshot before any await in this iteration: a user stop that
             // lands while the dequeued batch waits for the respawn resets
@@ -330,6 +337,18 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                     this.backend = null
                     this.acpSessionId = null
                     this.session.onThinkingChange(false)
+                    // A plain Stop that raced the failed restart still owns
+                    // this dequeued, un-ACKed batch: requeue it for the
+                    // post-stop drain instead of dropping it (mirrors the
+                    // respawn drop branches). Without a racing abort the
+                    // contract stands: drop, keep the ended marker, and let
+                    // the next message retry recovery on the rebuilt backend.
+                    if (generationBeforeRespawn !== this.abortGeneration
+                        && !this.shouldExit
+                        && terminalAbortsBeforeRespawn === this.terminalAbortCount) {
+                        if (!this.session.queue.isClosed()) this.session.queue.unshiftBatch(batch)
+                        this.messageBuffer.addMessage('Aborted while restarting the DSH session; the queued message will run after the stop settles', 'status')
+                    }
                     if (this.session.queue.size() === 0 && !this.shouldExit) {
                         this.session.sendSessionEvent({ type: 'ready' })
                     }
@@ -409,6 +428,18 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                     } else {
                         batch.mode.model = this.currentBackendModel ?? undefined
                         this.opts.onModelRollback?.(this.currentBackendModel)
+                    }
+                    if (generationAtDequeue !== this.abortGeneration) {
+                        if (!this.shouldExit && terminalAbortsAtDequeue === this.terminalAbortCount) {
+                            if (!this.session.queue.isClosed()) this.session.queue.unshiftBatch(batch)
+                            this.messageBuffer.addMessage('Aborted while switching the DSH model; the queued message will run after the stop settles', 'status')
+                        } else {
+                            this.messageBuffer.addMessage('Aborted while switching the DSH model; dropping the queued message', 'status')
+                        }
+                        if (this.session.queue.size() === 0 && !this.shouldExit) {
+                            this.session.sendSessionEvent({ type: 'ready' })
+                        }
+                        continue
                     }
                 } else if (!this.initialBackendModel) {
                     // Nothing captured to go back to — keep the running model and

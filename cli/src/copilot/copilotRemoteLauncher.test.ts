@@ -566,6 +566,56 @@ describe('CopilotRemoteLauncher Abort queue preservation', () => {
         }
     });
 
+    it('captures the effort baseline when a plain Stop bails right after the model switch', async () => {
+        // Round-7 Minor 4: the abort bail-out used to precede the baseline
+        // capture, so the requeued batch never took the NEW model's baseline.
+        const queue = new MessageQueue2<CopilotTestMode>((mode) => mode.permissionMode);
+        const { session, rpcHandlers } = createAbortSession(queue);
+        const launcher = new CopilotRemoteLauncher(session as never, {});
+        const launched = launcher.launch().catch((error: unknown) => error);
+        let releaseTeardown: (() => void) | undefined;
+        let releaseModel: (() => void) | undefined;
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.has(RPC_METHODS.Abort)).toBe(true));
+            const backend = abortHarness.backends.at(-1)!;
+            const tlc = backend.getThoughtLevelConfigOption as ReturnType<typeof vi.fn>;
+            const baselineCalls = tlc.mock.calls.length;
+            // Park the queued model apply; a plain Stop lands inside it.
+            abortHarness.setCancelAllHook(async () => { await new Promise<void>(resolve => { releaseTeardown = resolve; }); });
+            backend.setModel.mockImplementationOnce(() => new Promise<void>(resolve => { releaseModel = resolve; }));
+            queue.push('A', { permissionMode: 'default', model: 'gpt-5.7' } as CopilotTestMode, 'a');
+            await vi.waitFor(() => expect(backend.setModel).toHaveBeenCalled());
+            const stop = rpcHandlers.get(RPC_METHODS.Abort)!().catch((error: unknown) => error);
+            await vi.waitFor(() => expect(releaseTeardown).toBeTypeOf('function'));
+            releaseModel?.();
+            // The bail-out requeues the batch, but the switched model's effort
+            // baseline must be taken before the bail (pre-fix it never ran:
+            // the retry sees the model as already applied).
+            for (let i = 0; i < 20 && tlc.mock.calls.length === baselineCalls; i += 1) {
+                await new Promise<void>(resolve => setTimeout(resolve, 50));
+            }
+            expect(tlc.mock.calls.length).toBe(baselineCalls + 1);
+            releaseTeardown?.();
+            await stop;
+            // The requeued batch re-dispatches on the fresh signal and
+            // completes; settle the parked prompt so the launcher drains.
+            await vi.waitFor(() => expect(abortHarness.prompts).toHaveLength(1));
+            abortHarness.settleActivePrompt();
+            queue.close();
+            expect(await launched).toBe('exit');
+        } finally {
+            releaseModel?.();
+            releaseTeardown?.();
+            abortHarness.setCancelAllHook(null);
+            // Drop any requeued batch so teardown never re-dispatches into the
+            // parked prompt mock, then let the launcher drain and exit.
+            queue.reset();
+            queue.close();
+            abortHarness.settleActivePrompt();
+            await Promise.race([launched, new Promise<void>(resolve => setTimeout(resolve, 2000))]);
+        }
+    });
+
     it('keeps pending input behind the second Stop after the first teardown completes', async () => {
         // A cancellation ACK can precede the active prompt's final completion.
         abortHarness.setCancelPromptSettles(false);

@@ -202,6 +202,13 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
             const modelBeforeBatch = this.currentBackendModel;
             if (batch.mode.model && batch.mode.model !== this.currentBackendModel) {
                 batch.mode.model = await this.applyQueuedModel(batch.mode.model) ?? undefined;
+                if (this.currentBackendModel !== modelBeforeBatch) {
+                    // Take the NEW model's effort baseline before any
+                    // bail-out: the requeued batch re-enters with the model
+                    // already applied and would otherwise keep the previous
+                    // model's baseline.
+                    this.captureEffortBaseline(acpSessionId);
+                }
                 if (this.shouldExit) {
                     break;
                 }
@@ -209,9 +216,6 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
                     if (!session.queue.isClosed()) session.queue.unshiftBatch(batch);
                     continue;
                 }
-            }
-            if (this.currentBackendModel !== modelBeforeBatch) {
-                this.captureEffortBaseline(acpSessionId);
             }
             await this.applyQueuedEffort(acpSessionId, batch.mode);
             if (this.shouldExit) {

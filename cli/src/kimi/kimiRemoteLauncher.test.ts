@@ -144,10 +144,79 @@ describe('kimiRemoteLauncher skill lookup instruction', () => {
             releaseModel()
             await new Promise<void>(resolve => setImmediate(resolve))
             await new Promise<void>(resolve => setImmediate(resolve))
-            // The batch was dequeued and hub-ACKed; the Stop must preserve it
-            // behind the in-flight teardown instead of dispatching a cancelled
-            // turn.
+            // The batch was dequeued but never hub-ACKed (the ACK is
+            // deferred to the dispatch commit); the Stop must preserve it
+            // behind the in-flight teardown instead of dispatching a
+            // cancelled turn.
             expect(harness.prompts).toHaveLength(0)
+            releaseCancel?.()
+            await stop
+            await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+            queue.close()
+            await launchPromise
+        } finally {
+            releaseModel?.()
+            releaseCancel?.()
+            queue.close()
+            await launchPromise.catch(() => {})
+        }
+    })
+
+    it('captures the switched model effort baseline when a plain Stop bails during the queued model apply', async () => {
+        // Round-7 Minor 4: the abort bail-out used to precede the baseline
+        // capture, so the requeued batch never took the NEW model's baseline.
+        const queue = new MessageQueue2<KimiMode>((mode) => JSON.stringify(mode))
+        queue.push('first', { permissionMode: 'default', model: 'kimi-k3' })
+        const session = {
+            path: '/tmp/kimi-test',
+            logPath: '/tmp/kimi-test/test.log',
+            client: {
+                rpcHandlerManager: { registerHandler: vi.fn() },
+                sendAgentMessage: vi.fn(),
+                getMetadata: vi.fn(() => null),
+                updateMetadata: vi.fn(),
+                sendSessionEvent: vi.fn()
+            },
+            queue,
+            sessionId: null as string | null,
+            getPermissionMode: () => 'default' as const,
+            onSessionFound(id: string) { session.sessionId = id },
+            onThinkingChange: vi.fn(),
+            sendAgentMessage: vi.fn(),
+            sendSessionEvent: vi.fn(),
+            setEffort: vi.fn(),
+            pushKeepAlive: vi.fn()
+        }
+        let releaseModel!: () => void
+        harness.deferSetModel = new Promise<void>(resolve => { releaseModel = resolve })
+        // Pin THIS launcher's backend by index: earlier tests leave backends
+        // (with kimi-k3 setModel calls) in the shared harness, which would
+        // satisfy the waitFor before this launcher registers its handlers.
+        const backendsBefore = harness.backends.length
+        const launchPromise = kimiRemoteLauncher(session as never, { model: 'kimi-k2' })
+        let releaseCancel: (() => void) | undefined
+        try {
+            await vi.waitFor(() => {
+                const backend = harness.backends.at(backendsBefore)!;
+                expect((backend.setModel as ReturnType<typeof vi.fn>).mock.calls
+                    .some((call: unknown[]) => call[1] === 'kimi-k3')).toBe(true);
+            })
+            const backend = harness.backends.at(backendsBefore)!
+            const tlc = backend.getThoughtLevelConfigOption as ReturnType<typeof vi.fn>
+            const baselineCalls = tlc.mock.calls.length
+            backend.cancelPrompt.mockImplementationOnce(() => new Promise<void>(resolve => { releaseCancel = resolve }))
+            const abort = (session.client.rpcHandlerManager.registerHandler as ReturnType<typeof vi.fn>)
+                .mock.calls.find((call: unknown[]) => call[0] === RPC_METHODS.Abort)![1] as () => Promise<unknown>
+            const stop = abort()
+            await vi.waitFor(() => expect(releaseCancel).toBeTypeOf('function'))
+            releaseModel()
+            // The bail requeues the batch, but the switched model's baseline
+            // must be captured before the bail (pre-fix the retry sees the
+            // model as already applied and never re-reads the level).
+            for (let i = 0; i < 20 && tlc.mock.calls.length === baselineCalls; i += 1) {
+                await new Promise<void>(resolve => setTimeout(resolve, 50))
+            }
+            expect(tlc.mock.calls.length).toBe(baselineCalls + 1)
             releaseCancel?.()
             await stop
             await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))

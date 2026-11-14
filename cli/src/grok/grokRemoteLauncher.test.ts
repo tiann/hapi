@@ -222,7 +222,7 @@ describe('grokRemoteLauncher runtime config', () => {
 
     it('requeues the hub-ACKed batch when a plain Stop lands during the queued model apply', async () => {
         const queue = new MessageQueue2<GrokMode>((mode) => JSON.stringify(mode))
-        queue.push('first', { permissionMode: 'default', model: 'grok-b', effort: 'low' })
+        queue.push('first', { permissionMode: 'default', model: 'grok-b', effort: 'low' }, 'id-first')
         const rpcHandlers = new Map<string, () => unknown>()
         const session = {
             path: '/tmp/grok-test',
@@ -251,15 +251,9 @@ describe('grokRemoteLauncher runtime config', () => {
         }
         let releaseModel!: () => void
         harness.deferSetModel = new Promise<void>(resolve => { releaseModel = resolve })
-        const waitCalls: Array<{ aborted: boolean }> = []
-        const waitSpy = vi.spyOn(session.queue, 'waitForMessagesAndGetAsString')
-            .mockImplementation(async (signal?: AbortSignal) => {
-                waitCalls.push({ aborted: Boolean(signal?.aborted) })
-                return MessageQueue2.prototype.waitForMessagesAndGetAsString.call(session.queue, signal)
-            })
-        const unshiftSpy = vi.spyOn(session.queue, 'unshiftBatch')
+        const consumed = vi.fn()
+        queue.onBatchConsumed = consumed
         const launcher = new GrokRemoteLauncher(session as never, { model: 'grok-a', effort: 'low' })
-        const barrierSpy = vi.spyOn(launcher as unknown as { waitForAbortBarrier(): Promise<void> }, 'waitForAbortBarrier')
         const launchPromise = launcher.launch()
         let releaseCancel: (() => void) | undefined
         try {
@@ -275,13 +269,15 @@ describe('grokRemoteLauncher runtime config', () => {
             // the queued user turn counts here (the title instruction prefix
             // is prepended at dispatch).
             const userPrompts = harness.prompts.filter(prompt => (prompt[0] as { text?: string })?.text?.endsWith('first'))
-            // The batch was dequeued and hub-ACKed; the Stop must preserve it
-            // behind the in-flight teardown instead of dispatching a cancelled
-            // turn.
+            // The batch was dequeued but never hub-ACKed (the ACK is deferred
+            // to the dispatch commit); the Stop must preserve it behind the
+            // in-flight teardown instead of dispatching a cancelled turn.
             expect(userPrompts).toHaveLength(0)
+            expect(consumed).not.toHaveBeenCalled()
             releaseCancel?.()
             await stop
             await vi.waitFor(() => expect(harness.prompts.filter(prompt => (prompt[0] as { text?: string })?.text?.endsWith('first'))).toHaveLength(1))
+            expect(consumed).toHaveBeenCalledExactlyOnceWith(['id-first'])
             queue.close()
             await launchPromise
         } finally {

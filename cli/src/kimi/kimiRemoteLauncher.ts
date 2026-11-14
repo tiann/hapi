@@ -208,6 +208,13 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
                         }
                         batch.mode.model = this.currentBackendModel ?? undefined;
                     }
+                    if (this.currentBackendModel !== modelBeforeBatch) {
+                        // Take the NEW model's effort baseline before any
+                        // bail-out: the requeued batch re-enters with the
+                        // model already applied and would otherwise keep the
+                        // previous model's baseline.
+                        this.captureEffortBaseline(acpSessionId);
+                    }
                     if (this.shouldExit) {
                         break;
                     }
@@ -218,9 +225,6 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
                 }
             }
 
-            if (this.currentBackendModel !== modelBeforeBatch) {
-                this.captureEffortBaseline(acpSessionId);
-            }
             await this.applyQueuedEffort(acpSessionId, batch.mode);
             if (this.shouldExit) {
                 // Terminal teardown reset the queue: drop the un-ACKed batch
