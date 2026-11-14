@@ -1311,6 +1311,11 @@ const SessionItem = memo(function SessionItem(props: {
         if (activeEl !== rowButtonRef.current) {
             rowButtonRef.current?.focus({ preventScroll: true })
         }
+    }, [s.id, isPinned, quickUnpinPending, quickUnpinFocusRef])
+
+    useEffect(() => {
+        const target = quickUnpinFocusRef?.current
+        if (!target || target.sessionId !== s.id || target.pending) return
         if (!isPinned && !quickUnpinPending) {
             quickUnpinFocusRef.current = null
         }
@@ -1418,6 +1423,7 @@ const SessionItem = memo(function SessionItem(props: {
             <div
                 ref={rowRef}
                 className="session-list-row relative"
+                data-session-row-id={s.id}
                 data-quick-action-pending={quickArchivePending || quickUnpinPending ? '' : undefined}
             >
                 <button
@@ -1692,14 +1698,6 @@ export function SessionList(props: {
     const [searchExpanded, setSearchExpanded] = useState(false)
     const [markAllReadOpen, setMarkAllReadOpen] = useState(false)
     const quickUnpinFocusRef = useRef<QuickUnpinFocusTarget | null>(null)
-    useEffect(() => {
-        const target = quickUnpinFocusRef.current
-        if (!target || target.pending) return
-        const session = props.sessions.find((item) => item.id === target.sessionId)
-        if (!session || (!session.pinned && !session.globalPinned)) {
-            quickUnpinFocusRef.current = null
-        }
-    }, [props.sessions])
     // Actions-box width is the real icon budget (#2039). Measuring the full
     // row and subtracting a guessed search reserve left empty space after More.
     const headerRowRef = useRef<HTMLDivElement>(null)
@@ -2443,6 +2441,127 @@ export function SessionList(props: {
         const setOverrides = isFiltering ? setFilterCollapseOverrides : setCollapseOverrides
         setOverrides(prev => expandSelectedSessionCollapseOverrides(prev, group))
     }, [selectedSessionId, groups, isFiltering])
+
+    // Keep a keyboard-unpinned row reachable when it moves into a collapsed or
+    // truncated destination section, or fall back to a visible row if removed.
+    useLayoutEffect(() => {
+        const target = quickUnpinFocusRef.current
+        if (!target) return
+
+        const activeEl = document.activeElement
+        const activeRowId = activeEl instanceof Element
+            ? activeEl.closest('[data-session-row-id]')?.getAttribute('data-session-row-id')
+            : null
+        if (activeEl && activeEl !== document.body && activeRowId !== target.sessionId) {
+            quickUnpinFocusRef.current = null
+            return
+        }
+
+        if (globalPinnedSessions.some((session) => session.id === target.sessionId)) {
+            if (pinnedSectionCollapsed && !isFiltering) {
+                setPinnedSectionCollapsed(false)
+            }
+            return
+        }
+
+        const runningSession = runningSessions.jobs.find((session) => session.id === target.sessionId)
+            ?? runningSessions.working.find((session) => session.id === target.sessionId)
+            ?? runningSessions.pending.find((session) => session.id === target.sessionId)
+        if (runningSession) {
+            if (runningSectionCollapsed && !isFiltering) {
+                setRunningSectionCollapsed(false)
+                return
+            }
+            if (!target.pending && !runningSession.pinned && !runningSession.globalPinned) {
+                quickUnpinFocusRef.current = null
+            }
+            return
+        }
+
+        const targetGroup = groups.find((group) =>
+            group.sessions.some((session) => session.id === target.sessionId)
+        )
+        if (targetGroup) {
+            const collapsed = isGroupCollapsed(targetGroup)
+            const peekingUnread = collapsed
+                && keepUnreadSessionsVisible
+                && targetGroup.sessions.some((session) => session.id === target.sessionId && isSessionUnread(session))
+            let expanding = false
+            if (collapsed && !peekingUnread) {
+                expanding = true
+                const setOverrides = isFiltering ? setFilterCollapseOverrides : setCollapseOverrides
+                setOverrides((prev) => {
+                    if (prev.get(targetGroup.key) === false) return prev
+                    const next = new Map(prev)
+                    next.set(targetGroup.key, false)
+                    return next
+                })
+            }
+
+            const visibleGroupSessions = getVisibleGroupSessions(targetGroup)
+            if (!visibleGroupSessions.some((session) => session.id === target.sessionId)) {
+                expanding = true
+                setSessionVisibleCounts((prev) => {
+                    const currentLimit = Math.min(
+                        prev.get(targetGroup.key) ?? sessionPreviewLimit,
+                        targetGroup.sessions.length
+                    )
+                    let nextLimit = currentLimit
+                    while (nextLimit < targetGroup.sessions.length) {
+                        const candidate = getNextSessionVisibleCount(
+                            nextLimit,
+                            sessionPreviewLimit,
+                            targetGroup.sessions.length
+                        )
+                        if (candidate <= nextLimit) break
+                        nextLimit = candidate
+                        const preview = getVisibleSessionPreview(targetGroup.sessions, {
+                            selectedSessionId,
+                            limit: nextLimit,
+                            isUnread: previewIsUnread,
+                        })
+                        if (preview.some((session) => session.id === target.sessionId)) {
+                            break
+                        }
+                    }
+                    if (nextLimit <= currentLimit) return prev
+                    const next = new Map(prev)
+                    next.set(targetGroup.key, nextLimit)
+                    return next
+                })
+            }
+            if (!expanding && !target.pending) {
+                const session = targetGroup.sessions.find((item) => item.id === target.sessionId)
+                if (!session || (!session.pinned && !session.globalPinned)) {
+                    quickUnpinFocusRef.current = null
+                }
+            }
+            return
+        }
+
+        if (!activeEl || activeEl === document.body) {
+            const container = scrollContainerRef.current
+            const fallback = container?.querySelector<HTMLElement>('button[data-session-scroll-anchor]')
+                ?? container?.querySelector<HTMLElement>('[role="button"], button')
+            fallback?.focus({ preventScroll: true })
+        }
+        quickUnpinFocusRef.current = null
+    }, [
+        globalPinnedSessions,
+        runningSessions,
+        groups,
+        pinnedSectionCollapsed,
+        runningSectionCollapsed,
+        collapseOverrides,
+        filterCollapseOverrides,
+        sessionVisibleCounts,
+        isFiltering,
+        selectedSessionId,
+        keepUnreadSessionsVisible,
+        isSessionUnread,
+        sessionPreviewLimit,
+        previewIsUnread,
+    ])
 
     // Clean up stale collapse overrides
     useEffect(() => {

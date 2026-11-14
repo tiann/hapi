@@ -1,12 +1,18 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '@/api/client'
 import type { SessionSummary } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
 import { en, ru, zhCN } from '@/lib/locales'
+import { markSessionSeen } from '@/lib/sessionLastSeen'
 import { ToastProvider, useToast, type Toast } from '@/lib/toast-context'
+import { DEFAULT_SESSION_PREVIEW_LIMIT } from '@/hooks/useSessionPreviewLimit'
 import { SessionList } from './SessionList'
+
+beforeEach(() => {
+    localStorage.clear()
+})
 
 afterEach(cleanup)
 
@@ -31,6 +37,7 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string }): Sessi
         effort: null,
         attachedJob: null,
         attachedJobUpdatedAt: 0,
+        contentRevision: overrides.updatedAt ?? 0,
         ...overrides,
     }
 }
@@ -207,6 +214,210 @@ describe('session row hover unpin', () => {
         await act(async () => finishUnpin())
         await waitFor(() => expect(screen.queryByRole('button', { name: 'Unpin' })).toBeNull())
         expect(document.activeElement).toBe(screen.getByRole('button', { name: /Title global-pin/ }))
+    })
+
+    it('expands a collapsed destination project and preserves focus when keyboard-unpinning an unselected read inactive global pin', async () => {
+        let finishUnpin: () => void = () => {}
+        const setSessionPinMode = vi.fn(() => new Promise<void>((resolve) => {
+            finishUnpin = resolve
+        }))
+        markSessionSeen('global-pin', 1000)
+        markSessionSeen('quiet-old', 900)
+        const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+        const { rerenderSessions } = renderList(
+            [
+                makeSession({
+                    id: 'global-pin',
+                    active: false,
+                    globalPinned: true,
+                    updatedAt: 1000,
+                    metadata: { path: '/work/quiet', name: 'Title global-pin' },
+                }),
+                makeSession({
+                    id: 'quiet-old',
+                    active: false,
+                    updatedAt: 900,
+                    metadata: { path: '/work/quiet', name: 'Quiet old' },
+                }),
+            ],
+            { setSessionPinMode },
+            { client }
+        )
+
+        expect(screen.queryByRole('button', { name: /Quiet old/ })).toBeNull()
+
+        const unpinButton = screen.getByRole('button', { name: 'Unpin' })
+        unpinButton.focus()
+        fireEvent.click(unpinButton)
+        await waitFor(() => expect(setSessionPinMode).toHaveBeenCalledWith('global-pin', 'none'))
+
+        await act(async () => finishUnpin())
+        rerenderSessions([
+            makeSession({
+                id: 'global-pin',
+                active: false,
+                globalPinned: false,
+                updatedAt: 1000,
+                metadata: { path: '/work/quiet', name: 'Title global-pin' },
+            }),
+            makeSession({
+                id: 'quiet-old',
+                active: false,
+                updatedAt: 900,
+                metadata: { path: '/work/quiet', name: 'Quiet old' },
+            }),
+        ])
+
+        await waitFor(() => expect(screen.queryByRole('button', { name: 'Unpin' })).toBeNull())
+        const movedRowButton = screen.getByRole('button', { name: /Title global-pin/ })
+        expect(document.activeElement).toBe(movedRowButton)
+    })
+
+    it('reveals a destination row past the preview limit and preserves focus on keyboard unpin', async () => {
+        let finishUnpin: () => void = () => {}
+        const setSessionPinMode = vi.fn(() => new Promise<void>((resolve) => {
+            finishUnpin = resolve
+        }))
+        const newerSessions = Array.from({ length: DEFAULT_SESSION_PREVIEW_LIMIT + 1 }, (_, i) => {
+            const updatedAt = 2000 + i
+            markSessionSeen(`busy-${i}`, updatedAt)
+            return makeSession({
+                id: `busy-${i}`,
+                active: i === 0,
+                updatedAt,
+                metadata: { path: '/work/quiet', name: `Busy ${i}` },
+            })
+        })
+        markSessionSeen('global-pin', 1000)
+        const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+        const { rerenderSessions } = renderList(
+            [
+                makeSession({
+                    id: 'global-pin',
+                    active: false,
+                    globalPinned: true,
+                    updatedAt: 1000,
+                    metadata: { path: '/work/quiet', name: 'Title global-pin' },
+                }),
+                ...newerSessions,
+            ],
+            { setSessionPinMode },
+            { client }
+        )
+
+        const unpinButton = screen.getByRole('button', { name: 'Unpin' })
+        unpinButton.focus()
+        fireEvent.click(unpinButton)
+        await waitFor(() => expect(setSessionPinMode).toHaveBeenCalledWith('global-pin', 'none'))
+
+        await act(async () => finishUnpin())
+        rerenderSessions([
+            makeSession({
+                id: 'global-pin',
+                active: false,
+                globalPinned: false,
+                updatedAt: 1000,
+                metadata: { path: '/work/quiet', name: 'Title global-pin' },
+            }),
+            ...newerSessions,
+        ])
+
+        await waitFor(() => expect(screen.queryByRole('button', { name: 'Unpin' })).toBeNull())
+        const movedRowButton = screen.getByRole('button', { name: /Title global-pin/ })
+        expect(document.activeElement).toBe(movedRowButton)
+    })
+
+    it('keeps a project group open when keyboard-unpinning its sole unselected read inactive project pin', async () => {
+        let finishUnpin: () => void = () => {}
+        const setSessionPinMode = vi.fn(() => new Promise<void>((resolve) => {
+            finishUnpin = resolve
+        }))
+        markSessionSeen('project-pin', 1000)
+        const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+        const { rerenderSessions } = renderList(
+            [
+                makeSession({
+                    id: 'project-pin',
+                    active: false,
+                    pinned: true,
+                    updatedAt: 1000,
+                    metadata: { path: '/work/quiet', name: 'Title project-pin' },
+                }),
+            ],
+            { setSessionPinMode },
+            { client }
+        )
+
+        const unpinButton = screen.getByRole('button', { name: 'Unpin' })
+        unpinButton.focus()
+        fireEvent.click(unpinButton)
+        await waitFor(() => expect(setSessionPinMode).toHaveBeenCalledWith('project-pin', 'none'))
+
+        await act(async () => finishUnpin())
+        rerenderSessions([
+            makeSession({
+                id: 'project-pin',
+                active: false,
+                pinned: false,
+                updatedAt: 1000,
+                metadata: { path: '/work/quiet', name: 'Title project-pin' },
+            }),
+        ])
+
+        await waitFor(() => expect(screen.queryByRole('button', { name: 'Unpin' })).toBeNull())
+        expect(screen.getByTitle('/work/quiet')).toHaveAttribute('aria-expanded', 'true')
+        expect(document.activeElement).toBe(screen.getByRole('button', { name: /Title project-pin/ }))
+    })
+
+    it('moves focus to a visible fallback instead of document.body if the unpinned row disappears from the list', async () => {
+        let finishUnpin: () => void = () => {}
+        const setSessionPinMode = vi.fn(() => new Promise<void>((resolve) => {
+            finishUnpin = resolve
+        }))
+        const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+        const { rerenderSessions } = renderList(
+            [
+                makeSession({
+                    id: 'stub-pin',
+                    active: false,
+                    globalPinned: true,
+                    hasConversationContent: false,
+                    metadata: { path: '/work/quiet' },
+                }),
+                makeSession({
+                    id: 'other',
+                    active: true,
+                    metadata: { path: '/work/other', name: 'Other session' },
+                }),
+            ],
+            { setSessionPinMode },
+            { client }
+        )
+
+        const unpinButton = screen.getByRole('button', { name: 'Unpin' })
+        unpinButton.focus()
+        fireEvent.click(unpinButton)
+        await waitFor(() => expect(setSessionPinMode).toHaveBeenCalledWith('stub-pin', 'none'))
+
+        await act(async () => finishUnpin())
+        rerenderSessions([
+            makeSession({
+                id: 'stub-pin',
+                active: false,
+                globalPinned: false,
+                hasConversationContent: false,
+                metadata: { path: '/work/quiet' },
+            }),
+            makeSession({
+                id: 'other',
+                active: true,
+                metadata: { path: '/work/other', name: 'Other session' },
+            }),
+        ])
+
+        await waitFor(() => expect(screen.queryByRole('button', { name: 'Unpin' })).toBeNull())
+        expect(document.activeElement).not.toBe(document.body)
+        expect(document.activeElement).toBe(screen.getByRole('button', { name: /Other session/ }))
     })
 
     it('reports a failed unpin in a toast', async () => {
