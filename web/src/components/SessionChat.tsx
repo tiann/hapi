@@ -2330,30 +2330,35 @@ function SessionChatInner(props: SessionChatProps) {
 
             <CursorMigrationBanner metadata={props.session.metadata} />
 
-            {sessionStatus ? <SessionStatusPanel data={sessionStatus} /> : null}
+            <div className="relative flex min-h-0 flex-1 flex-col">
+                {sessionInactive ? (
+                    <div className="mx-auto w-full max-w-content bg-[var(--app-subtle-bg)] p-3 text-center text-sm text-[var(--app-hint)]">
+                        {inactiveCanResume
+                            ? t('session.inactive.autoResume')
+                            : t('session.inactive.cannotResume')}
+                    </div>
+                ) : null}
 
-            <ModelErrorBanner
-                metadata={props.session.metadata}
-                onDismiss={handleAcknowledgeModelError}
-                onBridge={agentFlavor === 'cursor' && props.session.active
-                    ? handleBridgeModelError
-                    : undefined}
-                isBridging={isBridgingModelError || bridgePending}
-                bridgeErrorReason={visibleBridgeFailureReason(bridgeFailure, currentModelError?.eventId)}
-            />
+                {sessionStatus ? (
+                    <div className="relative h-9 shrink-0">
+                        <SessionStatusPanel data={sessionStatus} />
+                    </div>
+                ) : null}
 
-            <div className="flex flex-col min-h-0 flex-1">
+                <ModelErrorBanner
+                    metadata={props.session.metadata}
+                    onDismiss={handleAcknowledgeModelError}
+                    onBridge={agentFlavor === 'cursor' && props.session.active
+                        ? handleBridgeModelError
+                        : undefined}
+                    isBridging={isBridgingModelError || bridgePending}
+                    bridgeErrorReason={visibleBridgeFailureReason(bridgeFailure, currentModelError?.eventId)}
+                />
+
+                <div className="flex flex-col min-h-0 flex-1">
             {props.session.teamState && (
                 <TeamPanel teamState={props.session.teamState} />
             )}
-
-            {sessionInactive ? (
-                <div className="mx-auto w-full max-w-content bg-[var(--app-subtle-bg)] p-3 text-center text-sm text-[var(--app-hint)]">
-                    {inactiveCanResume
-                        ? t('session.inactive.autoResume')
-                        : t('session.inactive.cannotResume')}
-                </div>
-            ) : null}
 
             <AssistantRuntimeProvider runtime={runtime}>
                 <ShareSeedConsumer sessionId={props.session.id} sessionActive={props.session.active} />
@@ -2719,9 +2724,10 @@ function SessionChatInner(props: SessionChatProps) {
                     </div>
                 </DragDropZone>
             </AssistantRuntimeProvider>
-            </div>
+                </div>
+                </div>
 
-            {/* Voice session component - renders nothing but initializes voice backend */}
+                {/* Voice session component - renders nothing but initializes voice backend */}
             {voice && (
                 <VoiceBackendSession
                     api={props.api}
