@@ -143,6 +143,12 @@ Optional, not a requirement for every feature or a reason to expand a bug fix.
 - Opt in per feature; skip the wrapper if an upstream component already supplies onboarding.
 - Working example: `ScratchlistToggleButton` in `src/components/AssistantChat/ComposerButtons.tsx`. Use the source rather than maintaining a copied example here.
 
+### Browser settings export/import
+
+Settings → About exports and imports browser-local settings as JSON. Only keys in `SETTINGS_STORAGE_KEYS` (`src/lib/settingsTransfer.ts`) move; import replaces them and reloads.
+
+A new `hapi*` localStorage key must be classified: in `SETTINGS_STORAGE_KEYS` if the user chose it to configure the app and it makes sense in another browser on the same hub, otherwise in `NOT_SETTINGS_KEYS` (`src/lib/settingsTransfer.test.ts`). Data, drafts, last-used values, per-session or per-path UI state, dismissals, device-bound state, credentials, and trust grants are not settings. The test fails on unclassified keys.
+
 ## Authentication
 
 See `src/hooks/useAuth.ts` and `src/hooks/useAuthSource.ts`.

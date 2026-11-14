@@ -1183,6 +1183,11 @@ export default {
   'settings.about.website': 'Сайт',
   'settings.about.appVersion': 'Версия приложения',
   'settings.about.protocolVersion': 'Версия протокола',
+  'settings.about.backup.title': 'Настройки',
+  'settings.about.backup.description': 'Хранятся только в этом браузере.',
+  'settings.about.backup.exportButton': 'Экспорт',
+  'settings.about.backup.importButton': 'Импорт',
+  'settings.about.backup.importError': 'Этот файл не является экспортом настроек HAPI.',
 
   // Обзор / Рабочее пространство
   'browse.title': 'Обзор',

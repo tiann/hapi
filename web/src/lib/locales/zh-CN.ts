@@ -1276,6 +1276,11 @@ export default {
   'settings.about.website': '官方网站',
   'settings.about.appVersion': '应用版本',
   'settings.about.protocolVersion': '协议版本',
+  'settings.about.backup.title': '设置',
+  'settings.about.backup.description': '仅保存在当前浏览器。',
+  'settings.about.backup.exportButton': '导出',
+  'settings.about.backup.importButton': '导入',
+  'settings.about.backup.importError': '此文件不是 HAPI 设置导出文件。',
 
   // Browse / Workspace
   'browse.title': '浏览',
