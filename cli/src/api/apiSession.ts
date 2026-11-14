@@ -10,6 +10,7 @@ import { apiValidationError } from '@/utils/errorUtils'
 import { AsyncLock } from '@/utils/lock'
 import type { RawJSONLines } from '@/claude/types'
 import { configuration } from '@/configuration'
+import { extractUserRequest } from '@/agy/legacyStreamJson/agyMessageText'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from "@hapi/protocol"
 import type { SessionEndReason } from '@hapi/protocol'
 import type { ClientToServerEvents, ServerToClientEvents, TerminalOutputPayload, Update } from '@hapi/protocol'
@@ -1187,7 +1188,79 @@ export class ApiSessionClient extends EventEmitter {
         }
     }
 
-    sendUserMessage(text: string, meta?: MessageMeta, localId?: string): void {
+    sendAgySessionMessage(
+        entry: { type: string; content?: string; tool_calls?: { name: string; args: Record<string, unknown> }[]; step_index?: number; model?: string },
+        conversationId?: string,
+        // The tool CALL (name + args) that produced this action entry, paired by
+        // the launcher from the preceding PLANNER_RESPONSE. agy splits the
+        // invocation (name/args live on the planner step) from its result (the
+        // action entry's `content`), so without this the tool card has no input
+        // to show — just the raw result. Carrying it here lets the web render a
+        // command/path/args like the other flavors.
+        toolCall?: { name: string; args: Record<string, unknown> }
+    ): void {
+        const isUser = entry.type === 'USER_INPUT'
+        // agy appends its own sections (<ADDITIONAL_METADATA>, <USER_SETTINGS_CHANGE>)
+        // after the request block, so only the extracted request may be rendered.
+        const text = isUser ? (extractUserRequest(entry.content ?? '') ?? entry.content ?? '').trim() : undefined
+
+        if (isUser && text) {
+            this.socket.emit('message', {
+                sid: this.sessionId,
+                message: {
+                    role: 'user',
+                    content: { type: 'text', text },
+                    meta: { sentFrom: 'cli' }
+                }
+            })
+            return
+        }
+
+        // agy's structured entry types map to distinct chat renderings:
+        //  - PLANNER_RESPONSE → the agent's prose (agy_message). Its `tool_calls`
+        //    are only the model's INTENT and are immediately followed by the real
+        //    action entry below, so we intentionally don't render them separately
+        //    (that produced a duplicate "view_file" + "View file" card).
+        //  - every other type (VIEW_FILE, RUN_COMMAND, LIST_DIRECTORY, CODE_ACTION,
+        //    …) is a tool ACTION whose `content` is its result. Render it as a
+        //    collapsible tool card (agy_tool_action) instead of dumping the raw
+        //    (often huge) result text as a chat bubble.
+        let data: Record<string, unknown>
+        if (entry.type !== 'PLANNER_RESPONSE') {
+            // Key the tool card by conversationId:stepIdx — the SAME id the
+            // PreToolUse permission request uses — so a gated tool's approval card
+            // and its result merge into one card (no stuck "running" duplicate)
+            // while still showing the pending approval in real time.
+            const toolUseId = conversationId != null && entry.step_index != null
+                ? `${conversationId}:${entry.step_index}`
+                : undefined
+            data = {
+                type: 'agy_tool_action',
+                name: entry.type,
+                content: entry.content ?? '',
+                toolUseId,
+                // The invocation the web renders as the tool INPUT. `toolName` is
+                // agy's own tool id (run_command, view_file, …) which the web maps
+                // to a canonical presentation; `input` is the raw args.
+                toolName: toolCall?.name,
+                input: toolCall?.args
+            }
+        } else {
+            // Tag the agent response with the model that produced it (per-turn),
+            // enriched by the scanner from the conversation DB.
+            data = { type: 'agy_message', content: entry.content ?? '', model: entry.model }
+        }
+        this.socket.emit('message', {
+            sid: this.sessionId,
+            message: {
+                role: 'agent',
+                content: { type: 'output', data },
+                meta: { sentFrom: 'cli' }
+            }
+        })
+    }
+
+    sendUserMessage(text: string, meta?: MessageMeta, localId?: string, options?: { acknowledgeConsumption?: boolean }): void {
         if (!text) {
             return
         }
@@ -1210,7 +1283,7 @@ export class ApiSessionClient extends EventEmitter {
                 message: content,
                 localId
             })
-            if (localId) this.socket.emit('messages-consumed', { sid: this.sessionId, localIds: [localId] })
+            if (localId && options?.acknowledgeConsumption !== false) this.socket.emit('messages-consumed', { sid: this.sessionId, localIds: [localId] })
         })
         this.notifyUserActivity()
     }
@@ -1223,7 +1296,7 @@ export class ApiSessionClient extends EventEmitter {
         void this.materialize()
     }
 
-    sendAgentMessage(body: unknown, localId?: string): void {
+    sendAgentMessage(body: unknown, localId?: string, options?: { acknowledgeConsumption?: boolean }): void {
         const content = {
             role: 'agent',
             content: {
@@ -1240,7 +1313,7 @@ export class ApiSessionClient extends EventEmitter {
                 message: content,
                 localId
             })
-            if (localId) this.socket.emit('messages-consumed', { sid: this.sessionId, localIds: [localId] })
+            if (localId && options?.acknowledgeConsumption !== false) this.socket.emit('messages-consumed', { sid: this.sessionId, localIds: [localId] })
         })
     }
 
@@ -1430,7 +1503,12 @@ export class ApiSessionClient extends EventEmitter {
         if (options?.steered) {
             payload.steered = true
         }
-        this.emitOrQueue(() => this.socket.emit('messages-consumed', payload))
+        // Bound both socket packets and the Hub's SQLite bind parameters. Keep
+        // input order: each chunk receives a server invocation timestamp.
+        for (let offset = 0; offset < localIds.length; offset += 500) {
+            const batch = { ...payload, localIds: localIds.slice(offset, offset + 500) }
+            this.emitOrQueue(() => this.socket.emit('messages-consumed', batch))
+        }
     }
 
     /** Persist the durable pre-dispatch/restore state with a hub ACK. */

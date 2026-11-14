@@ -62,12 +62,36 @@ export class SharedCodexQueue {
             } catch (error) { this.uncertain([id]); throw error; }
         });
     }
-    async committed(id: string): Promise<void> {
+    async committed(id: string, acknowledge = true): Promise<void> {
+        if (this.entries[id]?.state === 'consumed') {
+            // A replay may be repairing a lost Hub ACK, but the durable ledger
+            // already proves consumption and needs no repeated rewrite.
+            await this.writes;
+            if (acknowledge) this.consumed([id]);
+            return;
+        }
         // History may prove acceptance after execution replacement, before hub
         // redelivery. Remember it even when this generation did not enqueue it.
         const entry = this.entries[id] ??= { state: 'consumed', input: [] };
         entry.state = 'consumed';
-        await this.save(); this.consumed([id]);
+        await this.save(); if (acknowledge) this.consumed([id]);
+    }
+
+    async committedHistory(ids: string[], acknowledge = true): Promise<void> {
+        const unique = [...new Set(ids)];
+        if (!unique.length) return;
+        let changed = false;
+        for (const id of unique) {
+            if (this.entries[id]?.state === 'consumed') continue;
+            const entry = this.entries[id] ??= { state: 'consumed', input: [] };
+            entry.state = 'consumed';
+            changed = true;
+        }
+        // A history snapshot is one proof of consumption: persist it once,
+        // before any of its user items can be acknowledged or redelivered.
+        if (changed) await this.save();
+        else await this.writes;
+        if (acknowledge) this.consumed(unique);
     }
 
     async list(): Promise<Array<z.infer<typeof SubmissionSchema>>> {

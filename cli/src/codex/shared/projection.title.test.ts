@@ -14,7 +14,7 @@ function fixture(parentThreadId?: string, deferWrites = false) {
     const committed = vi.fn(async (_id: string) => {});
     const session = {
         getMetadata: () => metadata, updateMetadata: update, sendAgentMessage: send,
-        sendUserMessage() {}
+        sendUserMessage() {}, emitMessagesConsumed() {}
     } as unknown as ApiSessionClient;
     return {
         projection: new SharedCodexProjection(session, 'thread', committed, parentThreadId),
