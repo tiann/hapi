@@ -213,6 +213,44 @@ describe('ApiClient error mapping', () => {
         expect(fetchMock.mock.calls[1][0]).toContain('/api/machines/machine-1/agy-models?refresh=true')
     })
 
+    it('sends chunked upload init, raw binary chunk, finalize, and abort requests', async () => {
+        fetchMock
+            .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, uploadId: 'u-1', chunkSize: 4 }), { status: 200 }))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, receivedBytes: 4 }), { status: 200 }))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, path: '/tmp/clip.mp4' }), { status: 200 }))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ success: true }), { status: 200 }))
+
+        const api = new ApiClient('test-token')
+        await expect(api.initChunkedUpload('session /?#', {
+            filename: 'clip.mp4',
+            size: 4,
+            mimeType: 'video/mp4'
+        })).resolves.toMatchObject({ success: true, uploadId: 'u-1' })
+
+        const blob = new Blob([new Uint8Array([1, 2, 3, 4])])
+        await expect(api.uploadFileChunk('session /?#', 'u / 1', 0, blob)).resolves.toEqual({
+            success: true,
+            receivedBytes: 4
+        })
+        await expect(api.finalizeChunkedUpload('session /?#', 'u / 1')).resolves.toEqual({
+            success: true,
+            path: '/tmp/clip.mp4'
+        })
+        await expect(api.abortChunkedUpload('session /?#', 'u / 1')).resolves.toEqual({ success: true })
+
+        expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/sessions/session%20%2F%3F%23/uploads')
+        expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: 'POST' })
+
+        expect(fetchMock.mock.calls[1]?.[0]).toBe('/api/sessions/session%20%2F%3F%23/uploads/u%20%2F%201/chunk?index=0')
+        const chunkInit = fetchMock.mock.calls[1]?.[1]
+        expect(chunkInit?.method).toBe('POST')
+        expect(chunkInit?.body).toBe(blob)
+        expect((chunkInit?.headers as Headers).get('content-type')).toBe('application/octet-stream')
+
+        expect(fetchMock.mock.calls[2]?.[0]).toBe('/api/sessions/session%20%2F%3F%23/uploads/u%20%2F%201/finalize')
+        expect(fetchMock.mock.calls[3]?.[0]).toBe('/api/sessions/session%20%2F%3F%23/uploads/u%20%2F%201/abort')
+    })
+
     it('lists and imports Pi sessions through the selected machine', async () => {
         fetchMock
             .mockResolvedValueOnce(new Response(JSON.stringify({ success: true, sessions: [], machineId: 'machine-1' }), { status: 200 }))
