@@ -15,6 +15,8 @@ function makeSession(overrides: Partial<Session> = {}): Session {
     return {
         id: 'session-1',
         namespace: 'default',
+        seq: 1,
+        createdAt: 500,
         active: true,
         activeAt: 1000,
         updatedAt: 2000,
@@ -211,6 +213,25 @@ describe('toSessionSummary', () => {
         }))
 
         expect(summary.metadata?.hapiMcpUrl).toBe('http://127.0.0.1:42133/')
+    })
+
+    it('includes externalRefs in summary metadata', () => {
+        const externalRefs = [{
+            kind: 'github_pr' as const,
+            repo: 'tiann/hapi',
+            number: 1160,
+            url: 'https://github.com/tiann/hapi/pull/1160',
+            role: 'primary' as const
+        }]
+        const summary = toSessionSummary(makeSession({
+            metadata: {
+                path: '/proj',
+                host: 'local',
+                externalRefs
+            }
+        }))
+
+        expect(summary.metadata?.externalRefs).toEqual(externalRefs)
     })
 
     it('includes structured pendingRequests for hover-tooltip copy', () => {

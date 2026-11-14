@@ -2,6 +2,8 @@ import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffec
 import * as Popover from '@radix-ui/react-popover'
 import { SessionListScrollAnchor } from './SessionListScrollAnchor'
 import type { SessionContentSearchResponse, SessionSummary } from '@/types/api'
+import type { ExternalRef } from '@hapi/protocol/types'
+import { SESSION_LIFECYCLE_IDLE } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
 import {
     buildSessionSearchScoreIndex,
@@ -17,6 +19,7 @@ import { useIsMutating } from '@tanstack/react-query'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
 import { RenameSessionDialog } from '@/components/RenameSessionDialog'
+import { LinkPrDialog } from '@/components/LinkPrDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { ArchiveSessionDialog } from '@/components/ArchiveSessionDialog'
 import { DeleteSessionDialog } from '@/components/DeleteSessionDialog'
@@ -125,7 +128,17 @@ import { MachineFilterBar, MachineFilterMenu, MachineSummaryRow } from '@/compon
 import { useSessionListMachineFilter } from '@/hooks/useSessionListMachineFilter'
 import { useTransientScrollbar } from '@/hooks/useTransientScrollbar'
 import { useCursorChatStoreStatus } from '@/hooks/queries/useCursorChatStoreStatus'
+import { useFeatures, type FeaturesResponse } from '@/hooks/queries/useFeatures'
+import { useMinuteTick } from '@/hooks/useMinuteTick'
 import { SessionRowSummary } from '@/components/SessionRowSummary'
+import {
+    DEFAULT_PR_CHIP_DISPLAY,
+    getPrimaryGithubPrRef,
+    resolveGithubPrChipDisplay
+} from '@hapi/protocol'
+import { formatGithubPrChipDetailParts, SessionPrChip } from '@/components/SessionPrChip'
+import { IssueRefChip } from '@/components/IssueRefChip'
+import { getLinkedGithubIssue, type BoardItemMatch } from '@/lib/externalRefs'
 import { Spinner } from '@/components/Spinner'
 import { transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
 import { useToast } from '@/lib/toast-context'
@@ -161,7 +174,7 @@ export type SessionToolbarExtra = {
 
 export { getWorktreeSessionLabel } from '@/lib/sessionWorktreeLabel'
 
-type SessionGroup = {
+export type SessionGroup = {
     key: string
     directory: string
     displayName: string
@@ -1145,6 +1158,8 @@ const SessionItem = memo(function SessionItem(props: {
     onSelect: (sessionId: string, targetMessageId?: string, targetMessageQuery?: string, pendingRequestId?: string) => void
     showPath?: boolean
     api: ApiClient | null
+    features: FeaturesResponse | null
+    prNowMs: number
     titleSuggestionAvailable?: boolean
     selected?: boolean
     showDetailedStatus?: boolean
@@ -1156,6 +1171,8 @@ const SessionItem = memo(function SessionItem(props: {
     targetMessageId?: string
     targetMessageQuery?: string
     lastSeenVersion: number
+    getBoardMatchForIssue?: (ref: ExternalRef) => BoardItemMatch | null
+    onOpenBoardItem?: (match: BoardItemMatch) => void
 }) {
     const { t } = useTranslation()
     const { addToast } = useToast()
@@ -1164,6 +1181,8 @@ const SessionItem = memo(function SessionItem(props: {
         onSelect,
         showPath = true,
         api,
+        features,
+        prNowMs,
         titleSuggestionAvailable = false,
         selected = false,
         showDetailedStatus = false,
@@ -1174,15 +1193,20 @@ const SessionItem = memo(function SessionItem(props: {
         contentSearchTruncated,
         targetMessageId,
         targetMessageQuery,
-        lastSeenVersion
+        lastSeenVersion,
+        getBoardMatchForIssue,
+        onOpenBoardItem
     } = props
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
     const [menuAnchorPoint, setMenuAnchorPoint] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
     const [renameOpen, setRenameOpen] = useState(false)
+    const [linkPrOpen, setLinkPrOpen] = useState(false)
     const [exportOpen, setExportOpen] = useState(false)
     const [archiveOpen, setArchiveOpen] = useState(false)
     const [deleteOpen, setDeleteOpen] = useState(false)
+    const githubPrAwarenessEnabled = Boolean(features?.githubPrAwareness.enabled)
+    const prChipDisplay = features?.prChipDisplay
     const [forkOpen, setForkOpen] = useState(false)
     const [forkPending, setForkPending] = useState(false)
     const pendingRequestPressedRef = useRef(false)
@@ -1211,14 +1235,14 @@ const SessionItem = memo(function SessionItem(props: {
         ? t('session.action.reopenCursorUnverified')
         : undefined
 
-    const { archiveSession, reopenSession, renameSession, suggestSessionTitle, updateSessionSummary, deleteSession, setPinMode, isPending } = useSessionActions(
+    const { archiveSession, reopenSession, renameSession, upsertExternalRef, removePrimaryExternalRef, suggestSessionTitle, updateSessionSummary, deleteSession, setPinMode, isPending } = useSessionActions(
         api,
         s.id,
         s.metadata?.flavor ?? null
     )
     const [reopenError, setReopenError] = useState<string | null>(null)
     const holdPanel = useContext(CollapsiblePanelHoldContext)
-    const overlayOpen = menuOpen || renameOpen || exportOpen || archiveOpen || deleteOpen || forkOpen || reopenError !== null
+    const overlayOpen = menuOpen || renameOpen || linkPrOpen || exportOpen || archiveOpen || deleteOpen || forkOpen || reopenError !== null
     useEffect(() => {
         if (!overlayOpen || !holdPanel) return
         holdPanel(true)
@@ -1330,7 +1354,7 @@ const SessionItem = memo(function SessionItem(props: {
         threshold: 500
     })
 
-    const handleRowKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
+    const handleRowKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
         if (event.target !== event.currentTarget || !selected) return
         const pendingRequestId = s.pendingRequests?.[0]?.id
         if (!pendingRequestId || (event.key !== 'Enter' && event.key !== ' ')) return
@@ -1338,6 +1362,18 @@ const SessionItem = memo(function SessionItem(props: {
         onSelect(s.id, undefined, undefined, pendingRequestId)
     }
     const sessionName = getSessionTitle(s)
+    const primaryPrRef = getPrimaryGithubPrRef(s.metadata?.externalRefs)
+    const linkedPr = useMemo(() => {
+        if (!githubPrAwarenessEnabled || !primaryPrRef) return null
+        const profile = prChipDisplay ?? DEFAULT_PR_CHIP_DISPLAY
+        const display = resolveGithubPrChipDisplay(primaryPrRef, profile, prNowMs)
+        const parts = formatGithubPrChipDetailParts(primaryPrRef, display, t)
+        return {
+            glyph: parts.glyph,
+            detail: parts.detail,
+            href: primaryPrRef.url
+        }
+    }, [githubPrAwarenessEnabled, primaryPrRef, prChipDisplay, prNowMs, t])
     const attention = useMemo(
         () => showDetailedStatus
             ? classifySessionAttention(s, {
@@ -1353,22 +1389,76 @@ const SessionItem = memo(function SessionItem(props: {
         Boolean(attention),
         hasScheduleTooltip
     )
+    const linkedIssue = getLinkedGithubIssue(s.metadata)
+    const linkedIssueBoardMatch = linkedIssue ? getBoardMatchForIssue?.(linkedIssue) ?? null : null
     return (
         <>
+            {/* The issue chip renders as a sibling of the role="button" div,
+                not a descendant — WAI-ARIA disallows a focusable descendant
+                of a button role (hiding-semantics guidance), which a merely
+                non-native `<button>` tag doesn't exempt. Two prior fixes here
+                addressed the *native*-button keyboard-trap case (switching
+                `<button>` to `<div role="button">`) but left this ARIA
+                validity gap open (hapi#238 Codex review, third pass). The
+                chip no longer needs its own stopPropagation handlers now
+                that it's outside the row's long-press-bound element.
+                Visible side effect, not just internal restructuring: the
+                chip moves from inline-beside-the-title (inside
+                SessionRowSummary's own layout) to the row's trailing edge,
+                top-aligned — true DOM sibling-hood and "still sitting
+                exactly where it used to, mid-title-row" aren't both
+                achievable without SessionRowSummary exposing its title row
+                as a separate slot, which is more surface area than this fix
+                warrants. The quick-archive button (upstream) is a sibling
+                here too, for the same reason. */}
+            {/* `session-list-item` and `data-session-scroll-anchor` must stay
+                on this same outer element — SessionListScrollAnchor queries
+                by the attribute, then checks the class on that SAME element
+                to decide a row (vs. a group header) tolerates being
+                partially scrolled off the viewport top and still anchoring.
+                Splitting them across the outer/inner divs silently broke
+                that distinction for every session row. `session-list-row`
+                (upstream, quick-archive hover/focus CSS) lives on the same
+                element too, not a separate wrapper — its own `:hover >
+                .session-list-item` rule becomes a no-op here, but the plain
+                `.session-list-item:hover` rule already covers it since the
+                quick-archive button is a descendant of this element.
+                Right padding grows to reserve the archive button's own
+                footprint (not the `session-row-trailing`/visibility:hidden
+                trick SessionRowSummary's own non-interactive trailing
+                cluster uses) whenever a quick-archive button can appear —
+                the issue/PR chips are real links, and hiding them on
+                hover/focus to avoid the overlap made them unreachable
+                exactly when a pointer or keyboard user was approaching the
+                row to use them (bot review, hapi#2147, second pass). */}
             <div
-                className="session-list-row relative"
+                data-session-scroll-anchor
+                className={`session-list-item session-list-row relative flex w-full items-start gap-1 rounded-lg py-2 pl-2.5 transition-colors ${showQuickArchive ? 'pr-10' : 'pr-2'} ${selected ? 'bg-[var(--app-secondary-bg)]' : ''}`}
                 data-quick-action-pending={quickArchivePending ? '' : undefined}
             >
-                <button
-                    type="button"
+                <div
+                    role="button"
+                    tabIndex={0}
                     {...longPressHandlers}
-                    onKeyDown={handleRowKeyDown}
+                    onKeyDown={(event) => {
+                        // handleRowKeyDown only preventDefaults in its own
+                        // narrow case (selected row, pending request, Enter/
+                        // Space) — otherwise it's a no-op, so falling through
+                        // to longPressHandlers.onKeyDown is safe and keeps
+                        // this a real <div role="button">'s only path to
+                        // keyboard activation (unlike a native <button>,
+                        // this div gets no browser-synthesized click on
+                        // Enter/Space, so overriding rather than composing
+                        // the hook's own onKeyDown would silently break
+                        // keyboard selection for every ordinary row).
+                        handleRowKeyDown(event)
+                        if (!event.defaultPrevented) longPressHandlers.onKeyDown(event)
+                    }}
                     onPointerDownCapture={(event) => {
                         pendingRequestPressedRef.current = event.target instanceof Element
                             && event.target.closest('[data-session-pending-request-id]') !== null
                     }}
-                    data-session-scroll-anchor
-                    className={`session-list-item group/session-row flex w-full flex-col gap-1 py-2 pl-2.5 pr-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none rounded-lg ${selected ? 'bg-[var(--app-secondary-bg)]' : ''}`}
+                    className="group/session-row flex min-w-0 flex-1 flex-col gap-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none rounded-lg cursor-pointer"
                     style={{ WebkitTouchCallout: 'none' }}
                     aria-current={selected ? 'page' : undefined}
                     aria-describedby={describedBy}
@@ -1382,14 +1472,37 @@ const SessionItem = memo(function SessionItem(props: {
                         attentionTooltipId={attentionId}
                         lastSeenVersion={lastSeenVersion}
                         scheduleTooltipId={scheduleId}
+                        githubPrAwarenessEnabled={githubPrAwarenessEnabled}
+                        showPrChip={!(githubPrAwarenessEnabled && primaryPrRef)}
+                        prChipDisplay={prChipDisplay}
+                        prNowMs={prNowMs}
                         inRunningSection={inRunningSection}
                         projectLabel={projectLabel}
                         machineLabel={machineLabel}
+                        showIssueChip={false}
                         contentSnippet={contentSnippet}
                         contentSearchTruncated={contentSearchTruncated}
                         trailingClassName={showQuickArchive ? 'session-row-trailing' : undefined}
                     />
-                </button>
+                </div>
+                {linkedIssue ? (
+                    <IssueRefChip
+                        ref={linkedIssue}
+                        className="mt-0.5 shrink-0"
+                        boardMatch={linkedIssueBoardMatch}
+                        onOpenBoardItem={onOpenBoardItem}
+                    />
+                ) : null}
+                {githubPrAwarenessEnabled && primaryPrRef ? (
+                    <div className="flex shrink-0 items-center self-start py-2 pr-2">
+                        <SessionPrChip
+                            refs={s.metadata?.externalRefs}
+                            displayProfile={prChipDisplay}
+                            nowMs={prNowMs}
+                            interactive
+                        />
+                    </div>
+                ) : null}
                 {showQuickArchive ? (
                     <button
                         type="button"
@@ -1416,6 +1529,8 @@ const SessionItem = memo(function SessionItem(props: {
                 sessionGlobalPinned={Boolean(s.globalPinned)}
                 onSetPinMode={(mode) => void handleSetPinMode(mode)}
                 onRename={() => setRenameOpen(true)}
+                onLinkPr={githubPrAwarenessEnabled ? () => setLinkPrOpen(true) : undefined}
+                linkedPr={linkedPr}
                 onExport={() => setExportOpen(true)}
                 onMarkUnread={() => markSessionUnread(s.id, s.readState)}
                 onForkSession={api && ((supportsCurrentFork && (!s.thinking || supportsCompletedFork)) || supportsArchivedFork)
@@ -1483,6 +1598,15 @@ const SessionItem = memo(function SessionItem(props: {
                     isPending={isPending}
                 />
             ) : null}
+
+            <LinkPrDialog
+                isOpen={linkPrOpen}
+                onClose={() => setLinkPrOpen(false)}
+                currentPrimaryLabel={primaryPrRef ? `${primaryPrRef.repo}#${primaryPrRef.number}` : null}
+                onUpsert={upsertExternalRef}
+                onRemovePrimary={primaryPrRef ? removePrimaryExternalRef : undefined}
+                isPending={isPending}
+            />
 
             {exportOpen ? (
                 <SessionExportDialog
@@ -1569,6 +1693,9 @@ export function SessionList(props: {
     machineLabelsById?: Record<string, string>
     machinesById?: Record<string, Machine>
     selectedSessionId?: string | null
+    /** The board item (if any) a session's linked GitHub issue is tracked on — null/absent when Boards isn't configured or the issue isn't on any board. */
+    getBoardMatchForIssue?: (ref: ExternalRef) => BoardItemMatch | null
+    onOpenBoardItem?: (match: BoardItemMatch) => void
 }) {
     const { t } = useTranslation()
     const {
@@ -1580,6 +1707,13 @@ export function SessionList(props: {
         machinesById = {},
         onNewSessionInDirectory
     } = props
+    const { features } = useFeatures(api)
+    const githubPrAwarenessEnabled = Boolean(features?.githubPrAwareness.enabled)
+    const prClockTick = useMinuteTick(githubPrAwarenessEnabled)
+    // Pinned to the minute tick (and re-stamped when awareness toggles on) so
+    // this doesn't change — and force every memoized row to re-render — on
+    // every unrelated render, e.g. an SSE update to one other session.
+    const prNowMs = useMemo(() => Date.now(), [prClockTick, githubPrAwarenessEnabled])
     const { sessionPreviewLimit } = useSessionPreviewLimit()
     const { sessionListStatusMode } = useSessionListStatusMode()
     const { view: listView, setView: setListView } = useSessionListView()
@@ -2125,6 +2259,8 @@ export function SessionList(props: {
                                             onSelect={props.onSelect}
                                             showPath={false}
                                             api={api}
+                                            features={features}
+                                            prNowMs={prNowMs}
                                             titleSuggestionAvailable={titleSuggestionAvailable}
                                             selected={s.id === selectedSessionId}
                                             showDetailedStatus={showDetailedStatus}
@@ -2138,6 +2274,8 @@ export function SessionList(props: {
                                             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
                                             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
                                             lastSeenVersion={lastSeenVersion}
+                                            getBoardMatchForIssue={props.getBoardMatchForIssue}
+                                            onOpenBoardItem={props.onOpenBoardItem}
                                         />
                                     ))}
                                 </div>
@@ -2205,6 +2343,8 @@ export function SessionList(props: {
             onSelect={props.onSelect}
             showPath={false}
             api={api}
+            features={features}
+            prNowMs={prNowMs}
             titleSuggestionAvailable={titleSuggestionAvailable}
             selected={s.id === selectedSessionId}
             showDetailedStatus={showDetailedStatus}
@@ -2213,6 +2353,8 @@ export function SessionList(props: {
             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
             lastSeenVersion={lastSeenVersion}
+            getBoardMatchForIssue={props.getBoardMatchForIssue}
+            onOpenBoardItem={props.onOpenBoardItem}
         />
     )
 
@@ -2286,7 +2428,24 @@ export function SessionList(props: {
                                         aria-hidden="true"
                                     />
                                 ) : null}
-                                {renderGroupSessionItem(s)}
+                                <SessionItem
+                                    session={s}
+                                    onSelect={props.onSelect}
+                                    showPath={false}
+                                    api={api}
+                                    features={features}
+                                    prNowMs={prNowMs}
+                                    titleSuggestionAvailable={titleSuggestionAvailable}
+                                    selected={s.id === selectedSessionId}
+                                    showDetailedStatus={showDetailedStatus}
+                                    contentSnippet={contentSnippetBySessionId.get(s.id)}
+                                    contentSearchTruncated={contentSearchTruncatedBySessionId.has(s.id)}
+                                    targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
+                                    targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
+                                    lastSeenVersion={lastSeenVersion}
+                                    getBoardMatchForIssue={props.getBoardMatchForIssue}
+                                    onOpenBoardItem={props.onOpenBoardItem}
+                                />
                             </div>
                         ))}
                         {group.sessions.length > sessionPreviewLimit && (hiddenSessionCount > 0 || canShowFewerSessions) ? (
@@ -2845,6 +3004,8 @@ export function SessionList(props: {
                                             onSelect={props.onSelect}
                                             showPath={false}
                                             api={api}
+                                            features={features}
+                                            prNowMs={prNowMs}
                                             titleSuggestionAvailable={titleSuggestionAvailable}
                                             selected={s.id === selectedSessionId}
                                             showDetailedStatus={showDetailedStatus}
@@ -2858,6 +3019,8 @@ export function SessionList(props: {
                                             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
                                             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
                                             lastSeenVersion={lastSeenVersion}
+                                            getBoardMatchForIssue={props.getBoardMatchForIssue}
+                                            onOpenBoardItem={props.onOpenBoardItem}
                                         />
                                     ))}
                                 </div>

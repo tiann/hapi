@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { applyColorTheme, getColorThemePickerValue, getColorThemeStorageKey, getStoredColorTheme, type ColorScheme } from './useColorTheme'
+import { applyColorTheme, getColorThemePickerValue, getColorThemeStorageKey, getStoredColorTheme, MUTED_ACCENT_ALPHA, withAlpha, type ColorScheme } from './useColorTheme'
 
 /**
  * Per-appearance "key color" customization.
@@ -72,6 +72,17 @@ export const THEME_COLOR_KEYS: readonly ThemeColorKey[] = [
         id: 'accent',
         labelKey: 'settings.display.themeColors.key.accent',
         targets: ['--app-link', '--app-chat-user-chip-fg'],
+        // `--app-link-muted` is a static per-scheme CSS default today (not
+        // derived from `--app-link` at all) — it only numerically matches the
+        // default accent in light/dark because both those defaults happen to
+        // be neutral. Deriving it here makes the name finally true: a custom
+        // accent now actually tints its own "muted" wash (markdown link
+        // underlines, the StatusBar progress track, and the board card
+        // background wash all read this token).
+        derivedTargets: ['--app-link-muted'],
+        derive: (hex, scheme) => ({
+            '--app-link-muted': withAlpha(hex, MUTED_ACCENT_ALPHA[scheme]),
+        }),
     },
     {
         id: 'border',

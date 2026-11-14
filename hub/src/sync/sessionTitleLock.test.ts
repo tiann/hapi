@@ -165,7 +165,7 @@ it('does not move history when title transfer fails', async () => {
         store.messages.addMessage(source.id, { text: 'Keep history' })
         const update = store.sessions.updateSessionMetadata.bind(store.sessions)
         store.sessions.updateSessionMetadata = (...args) => args[4]?.inheritTitleLockFrom ? { result: 'error' } : update(...args)
-        await expect(cache.mergeSessions(source.id, destination.id, 'default')).rejects.toThrow('preserve session metadata')
+        await expect(cache.mergeSessions(source.id, destination.id, 'default')).rejects.toThrow('Failed to merge session metadata')
         expect(store.messages.getAllMessages(source.id)).toHaveLength(1)
         expect(store.messages.getAllMessages(destination.id)).toHaveLength(0)
         expect(store.sessions.getSession(source.id)?.metadata).toMatchObject({ titleLocked: true })

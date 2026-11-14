@@ -111,6 +111,7 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
             expect(result.status).toBe('rejected')
             if (result.status === 'rejected') {
                 expect(result.reason).toBeInstanceOf(ArchiveCleanupError)
+                // tiann/hapi#2423: not 504 — Cloudflare Tunnel replaces 502/504 bodies.
                 expect(result.reason.status).toBe(503)
             }
         }

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiSessionClient } from '@/api/apiSession'
 import { HAPI_SESSION_ID_ENV } from '@/agent/hapiSessionEnv'
+import { resolveToolAutoApprovalDecision } from '@/modules/common/permission/BasePermissionHandler'
 
 const harness = vi.hoisted(() => ({
     startOptions: null as unknown,
@@ -14,8 +15,8 @@ vi.mock('@/claude/utils/startHappyServer', () => ({
         return {
             url: 'http://127.0.0.1:43006/',
             toolNames: options.skillLookup
-                ? ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer', 'session_job', 'skill_lookup']
-                : ['change_title', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer', 'session_job'],
+                ? ['change_title', 'link_pr', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer', 'session_job', 'skill_lookup']
+                : ['change_title', 'link_pr', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer', 'session_job'],
             stop: vi.fn()
         }
     })
@@ -65,6 +66,7 @@ describe('buildHapiMcpBridge skill lookup config', () => {
         expect(harness.startOptions).toEqual({
             emitTitleSummary: undefined,
             enableChangeTitle: undefined,
+            enableLinkPr: undefined,
             workingDirectory: '/repo',
             skillLookup
         })
@@ -73,15 +75,16 @@ describe('buildHapiMcpBridge skill lookup config', () => {
             '--url',
             'http://127.0.0.1:43006/',
             '--tools',
-            'change_title,display_image,display_video,display_media,list_peers,ping_peer,inspect_peer,spawn_peer,session_job,skill_lookup',
+            'change_title,link_pr,display_image,display_video,display_media,list_peers,ping_peer,inspect_peer,spawn_peer,session_job,skill_lookup',
             '--hapi-session-id',
             'hub-session-1',
         ])
         expect(bridge.mcpServers.hapi.tools).toEqual({
+            change_title: { approval_mode: 'approve' },
+            link_pr: { approval_mode: 'prompt' },
             display_image: { approval_mode: 'prompt' },
             display_video: { approval_mode: 'prompt' },
             display_media: { approval_mode: 'prompt' },
-            change_title: { approval_mode: 'approve' },
             list_peers: { approval_mode: 'approve' },
             session_job: { approval_mode: 'approve' },
             skill_lookup: { approval_mode: 'approve' }
@@ -96,18 +99,37 @@ describe('buildHapiMcpBridge skill lookup config', () => {
             '--url',
             'http://127.0.0.1:43006/',
             '--tools',
-            'change_title,display_image,display_video,display_media,list_peers,ping_peer,inspect_peer,spawn_peer,session_job',
+            'change_title,link_pr,display_image,display_video,display_media,list_peers,ping_peer,inspect_peer,spawn_peer,session_job',
             '--hapi-session-id',
             'hub-session-1',
         ])
         expect(bridge.mcpServers.hapi.tools).toEqual({
+            change_title: { approval_mode: 'approve' },
+            link_pr: { approval_mode: 'prompt' },
             display_image: { approval_mode: 'prompt' },
             display_video: { approval_mode: 'prompt' },
             display_media: { approval_mode: 'prompt' },
-            change_title: { approval_mode: 'approve' },
             list_peers: { approval_mode: 'approve' },
             session_job: { approval_mode: 'approve' }
         })
+    })
+
+    // Regression (bot review, hapi#2147): `approve` here would let Codex
+    // itself pre-approve every link_pr call before it ever reaches HAPI's
+    // permission handler, silently bypassing resolveToolAutoApprovalDecision's
+    // dedicated read-only guard below — `prompt` is what actually routes the
+    // call through to that handler, which then auto-approves it in every
+    // mode except read-only.
+    it('configures link_pr for prompt (not approve) so HAPI\'s read-only guard is reachable', async () => {
+        const bridge = await buildHapiMcpBridge(createClient())
+
+        expect(bridge.mcpServers.hapi.tools?.link_pr).toEqual({ approval_mode: 'prompt' })
+        // `trustedHapiMcp: true` simulates the context this prompt actually
+        // arrives with (a real HAPI MCP transport, same as Codex's bridge) —
+        // the guard must still refuse it in read-only even then.
+        const trustedContext = { trustedHapiMcp: true }
+        expect(resolveToolAutoApprovalDecision('read-only', 'link_pr', 'call-1', undefined, trustedContext)).toBeNull()
+        expect(resolveToolAutoApprovalDecision('default', 'link_pr', 'call-1', undefined, trustedContext)).not.toBeNull()
     })
 
     it('materializes pending lazy sessions before starting the MCP server', async () => {

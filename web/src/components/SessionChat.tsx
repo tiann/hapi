@@ -20,6 +20,7 @@ import type {
     SlashCommand
 } from '@/types/api'
 import type { ChatBlock, NormalizedMessage } from '@/chat/types'
+import type { BoardItemMatch } from '@/lib/externalRefs'
 import type { SuggestionHandler, Suggestion } from '@/hooks/useActiveSuggestions'
 import { normalizeDecryptedMessage } from '@/chat/normalize'
 import { reduceChatBlocks } from '@/chat/reducer'
@@ -727,6 +728,9 @@ type SessionChatProps = {
     // Called when an `abort-restore` event arrives and the composer is not empty,
     // so the caller can surface the aborted text via the existing sendError path.
     onAbortRestore?: (text: string) => void
+    /** The board item (if any) this session's linked GitHub issue is tracked on — passed through to SessionHeader's issue chip. */
+    linkedIssueBoardMatch?: BoardItemMatch | null
+    onOpenBoardItem?: (match: BoardItemMatch) => void
 }
 
 /**
@@ -2313,6 +2317,8 @@ function SessionChatInner(props: SessionChatProps) {
                 canReopen={inactiveCanResume}
                 reopenDisabledReason={props.reopenDisabledReason}
                 reopenHint={props.reopenHint}
+                linkedIssueBoardMatch={props.linkedIssueBoardMatch}
+                onOpenBoardItem={props.onOpenBoardItem}
                 onSessionDeleted={props.onBack}
                 onSessionReopened={async (newSessionId) => {
                     await transferComposerDraftThenNavigate(
