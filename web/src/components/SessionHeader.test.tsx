@@ -95,6 +95,33 @@ describe('resolveSessionHeaderMachineLabel', () => {
 })
 
 describe('SessionHeader', () => {
+    it('keeps title generation discoverable when the Hub does not advertise the capability', () => {
+        const api = {
+            getMachines: vi.fn().mockResolvedValue({ machines: [] }),
+            getScratchlist: vi.fn().mockResolvedValue({ entries: [] })
+        } as unknown as ApiClient
+
+        render(
+            <QueryClientProvider client={new QueryClient()}>
+                <ToastProvider>
+                    <I18nProvider>
+                        <SessionHeader
+                            session={baseSession()}
+                            onBack={vi.fn()}
+                            api={api}
+                            titleSuggestionAvailable={false}
+                        />
+                    </I18nProvider>
+                </ToastProvider>
+            </QueryClientProvider>
+        )
+
+        fireEvent.click(screen.getByTitle('More actions'))
+        fireEvent.click(screen.getByRole('menuitem', { name: /Rename/ }))
+
+        expect(screen.getByRole('button', { name: 'Generate' })).toBeInTheDocument()
+    })
+
     it('does not offer manual Codex sync while the HAPI session is active', () => {
         const api = {
             getMachines: vi.fn().mockResolvedValue({ machines: [] }),
@@ -125,33 +152,6 @@ describe('SessionHeader', () => {
 
         fireEvent.click(screen.getByRole('button', { name: /More/ }))
         expect(screen.getByRole('menuitem', { name: /Sync Codex/ })).toBeInTheDocument()
-    })
-
-    it('hides title generation when the Hub does not advertise the capability', () => {
-        const api = {
-            getMachines: vi.fn().mockResolvedValue({ machines: [] }),
-            getScratchlist: vi.fn().mockResolvedValue({ entries: [] })
-        } as unknown as ApiClient
-
-        render(
-            <QueryClientProvider client={new QueryClient()}>
-                <ToastProvider>
-                    <I18nProvider>
-                        <SessionHeader
-                            session={baseSession()}
-                            onBack={vi.fn()}
-                            api={api}
-                            titleSuggestionAvailable={false}
-                        />
-                    </I18nProvider>
-                </ToastProvider>
-            </QueryClientProvider>
-        )
-
-        fireEvent.click(screen.getByTitle('More actions'))
-        fireEvent.click(screen.getByRole('menuitem', { name: /Rename/ }))
-
-        expect(screen.queryByRole('button', { name: 'Generate' })).not.toBeInTheDocument()
     })
 
     it('manually syncs an inactive Pi session through its owning machine', async () => {

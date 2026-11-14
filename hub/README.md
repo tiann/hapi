@@ -39,18 +39,27 @@ Dictation and voice-assistant provider keys can also be added from **Settings â†
 - `TRANSCRIPTION_BASE_URL` and `TRANSCRIPTION_MODEL` - OpenAI-compatible/local transcription endpoint and model.
 - `TRANSCRIPTION_API_KEY` - Optional bearer token for the OpenAI-compatible endpoint.
 
-### Optional (automatic session titles)
+### Optional (session title generation)
 
-When the configured OpenAI-compatible title provider is available, the Hub
+Session title generation uses an OpenAI-compatible Chat Completions provider
+for both on-demand requests and automatic titles. When configured, the Hub also
 performs one best-effort automatic title suggestion after the first completed
 turn when the session has no manual name or existing summary. Automatic
 failures are silent and never block the agent conversation. The manual
-**Generate** action remains available.
+**Generate** action remains available for retrying or on-demand generation.
 
-Configure `HAPI_TITLE_PROVIDER_BASE_URL`, `HAPI_TITLE_PROVIDER_API_KEY`, and
-`HAPI_TITLE_PROVIDER_MODEL` on the Hub. The attempt is persisted across restarts;
-manual or Agent titles arriving during generation are preserved. No automatic
-request is made without a configured provider.
+Configure `titleProvider.baseUrl`, `titleProvider.apiKey`, and
+`titleProvider.model`, and optionally `titleProvider.timeoutMs` in
+`$HAPI_HOME/settings.json` (default `~/.hapi/settings.json`),
+or set the corresponding `HAPI_TITLE_PROVIDER_BASE_URL`,
+`HAPI_TITLE_PROVIDER_API_KEY`, `HAPI_TITLE_PROVIDER_MODEL`, and optionally
+`HAPI_TITLE_PROVIDER_TIMEOUT_MS` environment variables. For providers that use
+reasoning tokens, `HAPI_TITLE_PROVIDER_MAX_TOKENS` can raise or lower the
+completion-token budget (default: 256). The timeout defaults to 10 seconds and
+environment values override settings-file values per field. API keys remain
+Hub-side and are never sent to the browser. The automatic attempt is persisted
+across restarts; manual or Agent titles arriving during generation are preserved.
+No automatic request is made without a configured provider.
 
 ### Optional
 
