@@ -1078,10 +1078,12 @@ export default {
   'settings.chat.toolCardDisplay.preview.detailed': '各工具调用分开显示，终端卡片同时显示输出预览',
   'settings.chat.codexExplorationCollapsed': '收起已探索工具组',
   'settings.chat.codexExplorationCollapsed.desc': '收起Codex的读取和搜索活动，点击后查看详情。',
+
   'settings.chat.reasoningCollapsed': '思考默认折叠',
   'settings.chat.reasoningCollapsed.desc': 'AI 思考内容默认保持折叠，流式输出期间也不会自动展开。',
   'settings.chat.conciseView': '简约模式',
   'settings.chat.conciseView.desc': '只显示你发出的消息和 AI 的最终回复，隐藏工具调用、思考和过程说明；权限请求、提问、计划和错误仍会显示。',
+
   'settings.chat.groupedToolBackground': '合并 Tool Use 背景',
   'settings.chat.userMessageBackground': '用户消息背景',
   'settings.chat.surfaceColor.default': '默认颜色',

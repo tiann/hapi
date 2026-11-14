@@ -1080,10 +1080,12 @@ export default {
   'settings.chat.toolCardDisplay.preview.detailed': 'Show each tool separately; terminal cards include an output preview',
   'settings.chat.codexExplorationCollapsed': 'Collapse explored tool groups',
   'settings.chat.codexExplorationCollapsed.desc': 'Collapse Codex read and search activity; click to view details.',
+
   'settings.chat.reasoningCollapsed': 'Collapse reasoning by default',
   'settings.chat.reasoningCollapsed.desc': 'Keep AI reasoning messages collapsed, including while streaming.',
   'settings.chat.conciseView': 'Concise view',
   'settings.chat.conciseView.desc': 'Show only your messages and the final replies from the agent. Tool calls, reasoning, and progress updates are hidden; permission requests, questions, plans, and errors stay visible.',
+
   'settings.chat.groupedToolBackground': 'Combined Tool Use Background',
   'settings.chat.userMessageBackground': 'User Message Background',
   'settings.chat.surfaceColor.default': 'Default color',
