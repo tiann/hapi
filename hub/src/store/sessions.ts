@@ -534,7 +534,15 @@ export function updateSessionMetadata(
     metadata: unknown,
     expectedVersion: number,
     namespace: string,
-    options?: { touchUpdatedAt?: boolean; allowUnarchive?: boolean; allowTitleUpdate?: boolean; titleLocked?: boolean; inheritTitleLockFrom?: string }
+    options?: {
+        touchUpdatedAt?: boolean
+        allowUnarchive?: boolean
+        allowTitleUpdate?: boolean
+        /** Keep machine-spawn stub tag so adoptPreallocatedSession can still bind. */
+        preservePreallocation?: boolean
+        titleLocked?: boolean
+        inheritTitleLockFrom?: string
+    }
 ): VersionedUpdateResult<unknown | null> {
     const now = Date.now()
     const touchUpdatedAt = options?.touchUpdatedAt !== false
@@ -600,6 +608,7 @@ export function updateSessionMetadata(
             if (
                 result.result === 'success'
                 && !options?.allowTitleUpdate
+                && !options?.preservePreallocation
                 && isMachineSpawnPreallocatedStub(existing)
                 && !isHubArchivedSessionMetadata(merged)
             ) {

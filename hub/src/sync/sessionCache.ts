@@ -1388,7 +1388,9 @@ export class SessionCache {
                 newMetadata,
                 stored.metadataVersion,
                 session.namespace,
-                { touchUpdatedAt: false }
+                // Hub-authored PR attach must not release the machine-spawn stub
+                // tag; adoptPreallocatedSession still needs it after the write.
+                { touchUpdatedAt: false, preservePreallocation: true }
             )
 
             if (result.result === 'error') {

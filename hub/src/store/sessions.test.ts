@@ -296,6 +296,70 @@ describe('getOrCreateSession: requested identity', () => {
         store.close()
     })
 
+    it('preserves machine-spawn stub tag when preservePreallocation is set', () => {
+        const store = makeStore()
+        const allocatedId = randomUUID()
+        const created = store.sessions.getOrCreateSession(
+            `machine-spawn:${allocatedId}`,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                machineId: 'm1',
+                startedBy: 'runner',
+                startedFromRunner: true,
+            },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            allocatedId
+        )
+        expect(created.tag).toBe(`machine-spawn:${allocatedId}`)
+
+        const updated = store.sessions.updateSessionMetadata(
+            allocatedId,
+            {
+                ...(created.metadata as object),
+                externalRefs: [{
+                    kind: 'github_pr',
+                    repo: 'tiann/hapi',
+                    number: 1163,
+                    url: 'https://github.com/tiann/hapi/pull/1163',
+                    role: 'primary',
+                    source: 'user',
+                    linkedAt: 1,
+                }],
+            },
+            created.metadataVersion,
+            'default',
+            { touchUpdatedAt: false, preservePreallocation: true }
+        )
+        expect(updated.result).toBe('success')
+        const row = store.sessions.getSession(allocatedId)
+        expect(row?.tag).toBe(`machine-spawn:${allocatedId}`)
+
+        const cliTag = randomUUID()
+        const adopted = store.sessions.adoptPreallocatedSession(
+            allocatedId,
+            cliTag,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                machineId: 'm1',
+                startedBy: 'runner',
+                startedFromRunner: true,
+                hostPid: 4242,
+            },
+            { controlledByUser: false },
+            'default'
+        )
+        expect(adopted.tag).toBe(cliTag)
+        store.close()
+    })
+
     it('rejects adopt of an archived preallocated stub', () => {
         const store = makeStore()
         const allocatedId = randomUUID()
