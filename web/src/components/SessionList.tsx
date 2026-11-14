@@ -1332,7 +1332,8 @@ const SessionItem = memo(function SessionItem(props: {
     // The row can turn inactive before the archive request settles (the hub
     // still confirms cleanup); keep the spinner until it does.
     const showQuickArchive = s.active || quickArchivePending
-    const hasQuickAction = showQuickUnpin || showQuickArchive
+    const quickActionCount = (showQuickUnpin ? 1 : 0) + (showQuickArchive ? 1 : 0)
+    const hasQuickAction = quickActionCount > 0
     const handleQuickArchive = async () => {
         if (archiveNeedsConfirmation) {
             setArchiveOpen(true)
@@ -1424,6 +1425,7 @@ const SessionItem = memo(function SessionItem(props: {
                 ref={rowRef}
                 className="session-list-row relative"
                 data-session-row-id={s.id}
+                data-quick-action-count={quickActionCount > 0 ? quickActionCount : undefined}
                 data-quick-action-pending={quickArchivePending || quickUnpinPending ? '' : undefined}
             >
                 <button

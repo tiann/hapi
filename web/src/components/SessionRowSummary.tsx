@@ -241,7 +241,7 @@ export function SessionRowSummary(props: {
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                 {/* Fade the disconnected title, keeping activity/unread indicators
                     and outliving job progress at full contrast. */}
-                <div className="grid grid-cols-[minmax(9rem,1fr)_minmax(0,max-content)] items-center gap-2">
+                <div className="session-row-header grid grid-cols-[minmax(9rem,1fr)_minmax(0,max-content)] items-center gap-2">
                     <div className="flex min-w-0 items-center gap-2">
                         <div
                             className={`min-w-0 flex-1 truncate text-sm text-[var(--app-fg)] ${emphasizeUnread ? 'font-semibold' : 'font-normal'} ${!s.active ? 'opacity-50' : ''}`}

@@ -439,4 +439,25 @@ describe('session row hover unpin', () => {
             expect(dict['session.action.unpin'], `${locale} should not ship the English copy`).not.toBe(en['session.action.unpin'])
         }
     })
+
+    it('marks each row with its visible quick-action count and summary header/trailing hooks', () => {
+        renderList(
+            [
+                makeSession({ id: 'active-pinned', active: true, pinned: true }),
+                makeSession({ id: 'inactive-pinned', active: false, pinned: true }),
+                makeSession({ id: 'active-unpinned', active: true, pinned: false }),
+                makeSession({ id: 'inactive-unpinned', active: false, pinned: false }),
+            ],
+            {}
+        )
+
+        const rowFor = (id: string) => document.querySelector(`[data-session-row-id="${id}"]`)
+        expect(rowFor('active-pinned')).toHaveAttribute('data-quick-action-count', '2')
+        expect(rowFor('inactive-pinned')).toHaveAttribute('data-quick-action-count', '1')
+        expect(rowFor('active-unpinned')).toHaveAttribute('data-quick-action-count', '1')
+        expect(rowFor('inactive-unpinned')).not.toHaveAttribute('data-quick-action-count')
+
+        expect(rowFor('active-pinned')?.querySelector('.session-row-header')).not.toBeNull()
+        expect(rowFor('active-pinned')?.querySelector('.session-row-trailing')).not.toBeNull()
+    })
 })
