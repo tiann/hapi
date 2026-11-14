@@ -289,6 +289,13 @@ export class ApiClient {
         if (!res.ok) {
             const body = await res.text().catch(() => '')
             const code = parseErrorCode(body)
+            if (res.status === 403 && code === 'Access denied' && attempt === 0 && this.onUnauthorized) {
+                const refreshed = await this.onUnauthorized()
+                if (refreshed) {
+                    this.token = refreshed
+                    return await this.request<T>(path, init, attempt + 1, refreshed)
+                }
+            }
             throw new ApiError(
                 `HTTP ${res.status} ${res.statusText}: ${body}`,
                 res.status,
@@ -306,6 +313,49 @@ export class ApiClient {
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify(auth)
         })
+
+        if (!res.ok) {
+            const body = await res.text().catch(() => '')
+            const code = parseErrorCode(body)
+            const detail = body ? `: ${body}` : ''
+            throw new ApiError(`Auth failed: HTTP ${res.status} ${res.statusText}${detail}`, res.status, code, body || undefined)
+        }
+
+        return await res.json() as AuthResponse
+    }
+
+    async getAuthMethods(): Promise<{ cloudflareAccess: boolean }> {
+        const res = await fetch(this.buildUrl('/api/auth/methods'), {
+            headers: { 'cache-control': 'no-store' }
+        })
+
+        if (!res.ok) {
+            const body = await res.text().catch(() => '')
+            const code = parseErrorCode(body)
+            throw new ApiError(`Auth methods failed: HTTP ${res.status} ${res.statusText}`, res.status, code, body || undefined)
+        }
+
+        return await res.json() as { cloudflareAccess: boolean }
+    }
+
+    /**
+     * Sign in through Cloudflare Access. The Cf-Access-Jwt-Assertion header is
+     * injected by the Cloudflare edge on same-origin requests; the browser
+     * never sees or stores it.
+     */
+    async authenticateWithCloudflare(): Promise<AuthResponse> {
+        const res = await fetch(this.buildUrl('/api/auth/cloudflare'), {
+            redirect: 'manual',
+            headers: { 'cache-control': 'no-store' }
+        })
+
+        if (res.type === 'opaqueredirect') {
+            throw new ApiError(
+                'Cloudflare Access session expired. Please sign in again.',
+                401,
+                'cloudflare_login_required'
+            )
+        }
 
         if (!res.ok) {
             const body = await res.text().catch(() => '')

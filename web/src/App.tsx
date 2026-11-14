@@ -19,7 +19,8 @@ import { useVisibilityReporter } from '@/hooks/useVisibilityReporter'
 import { queryKeys } from '@/lib/query-keys'
 import { refreshAllAgyCatalogs } from '@/lib/agyCatalogAnnouncement'
 import { AppContextProvider } from '@/lib/app-context'
-import { clearMessageWindow, recoverWindowAfterGapResume, rewindMessageWindow, syncTailMessages } from '@/lib/message-window-store'
+import { clearAllMessageWindows, clearMessageWindow, recoverWindowAfterGapResume, rewindMessageWindow, syncTailMessages } from '@/lib/message-window-store'
+import { clearAuthenticatedApiCaches } from '@/lib/swCachePolicy'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
 import { useTranslation } from '@/lib/use-translation'
 import { translateInputRequestTitle } from '@/lib/input-request-toast'
@@ -72,14 +73,50 @@ export function App() {
 function AppInner() {
     const { t } = useTranslation()
     const { serverUrl, baseUrl, setServerUrl, clearServerUrl } = useServerUrl()
+    const queryClient = useQueryClient()
+    const syncTokenRef = useRef(0)
+    const isFirstConnectRef = useRef(true)
+    const pushPromptedRef = useRef(false)
+    const hadTokenRef = useRef(false)
+    const [identityEpoch, setIdentityEpoch] = useState(0)
+    const clearUserCaches = useCallback((preserveIdentity?: string | null) => {
+        isFirstConnectRef.current = true
+        syncTokenRef.current = 0
+        queryClient.clear()
+        clearAllMessageWindows()
+        void clearAuthenticatedApiCaches(preserveIdentity)
+    }, [queryClient])
+    const handleIdentityChange = useCallback((nextIdentity?: string | null) => {
+        pushPromptedRef.current = false
+        clearUserCaches(nextIdentity)
+        setIdentityEpoch((epoch) => epoch + 1)
+    }, [clearUserCaches])
     const { authSource, isLoading: isAuthSourceLoading, setAccessToken } = useAuthSource(baseUrl)
-    const { token, api, isLoading: isAuthLoading, error: authError, needsBinding, bind } = useAuth(authSource, baseUrl)
+    const { token, api, isLoading: isAuthLoading, error: authError, needsBinding, bind, retry: retryAuth } = useAuth(authSource, baseUrl, {
+        onIdentityChange: handleIdentityChange
+    })
+    useEffect(() => {
+        if (token) {
+            hadTokenRef.current = true
+            return
+        }
+        if (hadTokenRef.current) {
+            hadTokenRef.current = false
+            void clearAuthenticatedApiCaches()
+        }
+    }, [token])
     const [titleSuggestionAvailable, setTitleSuggestionAvailable] = useState(false)
     const goBack = useAppGoBack()
     const pathname = useLocation({ select: (location) => location.pathname })
     const matchRoute = useMatchRoute()
     const router = useRouter()
     const { addToast } = useToast()
+
+    const handleCloudflareReauth = useCallback(() => {
+        const nextUrl = new URL(window.location.href)
+        nextUrl.searchParams.set('cf_reauth', String(Date.now()))
+        window.location.assign(nextUrl.toString())
+    }, [])
 
     useEffect(() => {
         let cancelled = false
@@ -188,7 +225,6 @@ function AppInner() {
             backButton.hide()
         }
     }, [goBack, pathname])
-    const queryClient = useQueryClient()
     const sessionMatch = matchRoute({ to: '/sessions/$sessionId' })
     const selectedSessionId = sessionMatch && sessionMatch.sessionId !== 'new' ? sessionMatch.sessionId : null
     const { isSyncing, startSync, endSync } = useSyncingState()
@@ -198,10 +234,7 @@ function AppInner() {
         reportConnect: reportSseConnect,
         reportDisconnect: reportSseDisconnect
     } = useReconnectingState()
-    const syncTokenRef = useRef(0)
-    const isFirstConnectRef = useRef(true)
     const baseUrlRef = useRef(baseUrl)
-    const pushPromptedRef = useRef(false)
     const { appBadgeEnabled: appBadgePreferenceEnabled } = useAppBadgePreference()
     const appBadgeEnabled = Boolean(api && token && appBadgePreferenceEnabled && canUseAppBadging())
     const {
@@ -223,22 +256,21 @@ function AppInner() {
             return
         }
         baseUrlRef.current = baseUrl
-        isFirstConnectRef.current = true
-        syncTokenRef.current = 0
-        queryClient.clear()
-    }, [baseUrl, queryClient])
+        clearUserCaches()
+    }, [baseUrl, clearUserCaches])
 
-    // Clean up URL params after successful auth (for direct access links)
+    // Clean up URL params after successful auth (for direct access links and Cloudflare re-auth)
     useEffect(() => {
         if (!token || !api) return
         const { pathname, search, hash, state } = router.history.location
         const searchParams = new URLSearchParams(search)
-        if (!searchParams.has('server') && !searchParams.has('hub') && !searchParams.has('token')) {
+        if (!searchParams.has('server') && !searchParams.has('hub') && !searchParams.has('token') && !searchParams.has('cf_reauth')) {
             return
         }
         searchParams.delete('server')
         searchParams.delete('hub')
         searchParams.delete('token')
+        searchParams.delete('cf_reauth')
         const nextSearch = searchParams.toString()
         const nextHref = `${pathname}${nextSearch ? `?${nextSearch}` : ''}${hash}`
         router.history.replace(nextHref, state)
@@ -431,6 +463,7 @@ function AppInner() {
         enabled: sseEnabled,
         token: token ?? '',
         baseUrl,
+        sessionEpoch: identityEpoch,
         subscription: globalEventSubscription,
         scope: 'global',
         onConnect: handleSseConnect,
@@ -443,6 +476,7 @@ function AppInner() {
         enabled: sseEnabled && Boolean(sessionEventSubscription),
         token: token ?? '',
         baseUrl,
+        sessionEpoch: identityEpoch,
         subscription: sessionEventSubscription ?? undefined,
         scope: 'full',
         onConnect: handleSessionSseConnect,
@@ -510,6 +544,23 @@ function AppInner() {
 
     // Auth error
     if (authError || !token || !api) {
+        if (authSource.type === 'cloudflareAccess') {
+            return withPwaBanner(
+                <LoginPrompt
+                    mode="cloudflare"
+                    onLogin={setAccessToken}
+                    onRetryCloudflare={retryAuth}
+                    onReauthenticateCloudflare={handleCloudflareReauth}
+                    baseUrl={baseUrl}
+                    serverUrl={serverUrl}
+                    setServerUrl={setServerUrl}
+                    clearServerUrl={clearServerUrl}
+                    requireServerUrl={REQUIRE_SERVER_URL}
+                    error={authError ?? t('login.error.authFailed')}
+                />,
+            )
+        }
+
         // If using access token and auth failed, show login again
         if (authSource.type === 'accessToken') {
             return withPwaBanner(
@@ -540,7 +591,7 @@ function AppInner() {
     }
 
     return (
-        <AppContextProvider value={{ api, token, baseUrl, titleSuggestionAvailable }}>
+        <AppContextProvider key={identityEpoch} value={{ api, token, baseUrl, titleSuggestionAvailable }}>
             <VoiceProvider>
                 <PwaUpdateBannerWithStatusOffset
                     isSyncing={revealSyncing}

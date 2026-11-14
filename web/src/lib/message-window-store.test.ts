@@ -12,6 +12,7 @@ import {
     VISIBLE_WINDOW_SIZE,
     activateMessageWindow,
     appendOptimisticMessage,
+    clearAllMessageWindows,
     clearMessageWindow,
     fetchOlderMessages,
     OLDER_LOAD_WINDOW_SIZE,
@@ -2820,6 +2821,23 @@ describe('reasoning snapshot compaction', () => {
         const state = getMessageWindowState(id)
         expect(state.oldestSeq).toBe(2)
         expect(state.newestSeq).toBe(3)
+    })
+
+    it('clearAllMessageWindows resets all in-memory and sessionStorage windows', () => {
+        const idA = sessionId('clear-all-a')
+        const idB = sessionId('clear-all-b')
+        ingestIncomingMessages(idA, [makeUserMessage({ id: 'u1', seq: 1, invokedAt: 1, createdAt: 1 })])
+        ingestIncomingMessages(idB, [makeUserMessage({ id: 'u2', seq: 1, invokedAt: 1, createdAt: 1 })])
+        sessionStorage.setItem('hapi:message-window:v2:persisted-only', JSON.stringify({ messages: [{ id: 'p' }] }))
+        sessionStorage.setItem('unrelated-key', 'keep-me')
+
+        clearAllMessageWindows()
+
+        expect(getMessageWindowState(idA).messages).toEqual([])
+        expect(getMessageWindowState(idB).messages).toEqual([])
+        expect(sessionStorage.getItem('hapi:message-window:v2:persisted-only')).toBeNull()
+        expect(sessionStorage.getItem('unrelated-key')).toBe('keep-me')
+        sessionStorage.removeItem('unrelated-key')
     })
 })
 

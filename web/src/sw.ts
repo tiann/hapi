@@ -9,7 +9,14 @@ import {
     putShareTransfer,
 } from './lib/shareTransfer'
 import { shareTargetPathname } from './lib/sharePath'
-import { cacheOkResponsesOnly, cacheJavaScriptOnly } from './lib/swCachePolicy'
+import {
+    API_CACHE_SCOPE_PARAM,
+    AUTHENTICATED_API_CACHE_NAMES,
+    CLEAR_API_CACHES_MESSAGE_TYPE,
+    authenticatedApiCachePolicy,
+    cacheJavaScriptOnly,
+    hashApiCacheScope,
+} from './lib/swCachePolicy'
 import { focusOrOpenNotificationClient, resolveNotificationTarget } from './lib/notificationClick'
 
 const sharePath = shareTargetPathname()
@@ -31,6 +38,16 @@ type PushPayload = {
     }
 }
 
+// Bypass Workbox precache when explicitly re-authenticating through Cloudflare Access
+// so the top-level navigation hits the Access edge instead of a cached shell.
+self.addEventListener('fetch', (event) => {
+    const request = event.request
+    if (request.mode !== 'navigate') return
+    const url = new URL(request.url)
+    if (!url.searchParams.has('cf_reauth')) return
+    event.respondWith(fetch(request))
+})
+
 precacheAndRoute(self.__WB_MANIFEST)
 
 registerRoute(
@@ -44,17 +61,80 @@ registerRoute(
     }),
 )
 
+const sessionsExpirationPlugin = new ExpirationPlugin({
+    maxEntries: 10,
+    maxAgeSeconds: 60 * 5
+})
+
+const sessionDetailExpirationPlugin = new ExpirationPlugin({
+    maxEntries: 20,
+    maxAgeSeconds: 60 * 5
+})
+
+const machinesExpirationPlugin = new ExpirationPlugin({
+    maxEntries: 5,
+    maxAgeSeconds: 60 * 10
+})
+
+const authenticatedApiCaches = [
+    { name: 'api-sessions', plugin: sessionsExpirationPlugin },
+    { name: 'api-session-detail', plugin: sessionDetailExpirationPlugin },
+    { name: 'api-machines', plugin: machinesExpirationPlugin },
+] as const
+
+async function clearApiCachesFromServiceWorker(preserveIdentity?: string | null): Promise<void> {
+    if (!preserveIdentity || typeof self.caches === 'undefined') {
+        await Promise.all(authenticatedApiCaches.map(({ plugin }) => plugin.deleteCacheAndMetadata().catch(() => {})))
+        if (typeof self.caches !== 'undefined') {
+            await Promise.all(AUTHENTICATED_API_CACHE_NAMES.map((cacheName) => self.caches.delete(cacheName).catch(() => false)))
+        }
+        return
+    }
+
+    const scopeByOrigin = new Map<string, string | null>()
+    await Promise.all(authenticatedApiCaches.map(async ({ name, plugin }) => {
+        if (!(await self.caches.has(name).catch(() => false))) {
+            await plugin.deleteCacheAndMetadata().catch(() => {})
+            return
+        }
+        const cache = await self.caches.open(name)
+        const keys = await cache.keys()
+        let kept = 0
+        const toDelete: Request[] = []
+        for (const request of keys) {
+            try {
+                const url = new URL(request.url)
+                let preserveScope = scopeByOrigin.get(url.origin)
+                if (preserveScope === undefined) {
+                    preserveScope = await hashApiCacheScope(url.origin, preserveIdentity)
+                    scopeByOrigin.set(url.origin, preserveScope)
+                }
+                if (preserveScope && url.searchParams.get(API_CACHE_SCOPE_PARAM) === preserveScope) {
+                    kept += 1
+                    continue
+                }
+            } catch {
+                // Delete malformed cache entries.
+            }
+            toDelete.push(request)
+        }
+        if (kept === 0) {
+            await plugin.deleteCacheAndMetadata().catch(() => {})
+            await self.caches.delete(name).catch(() => false)
+        } else if (toDelete.length > 0) {
+            await Promise.all(toDelete.map((request) => cache.delete(request).catch(() => false)))
+        }
+    }))
+}
+
 registerRoute(
     ({ url }) => url.pathname === '/api/sessions',
     new NetworkFirst({
         cacheName: 'api-sessions',
         networkTimeoutSeconds: 10,
         plugins: [
-            cacheOkResponsesOnly,
-            new ExpirationPlugin({
-                maxEntries: 10,
-                maxAgeSeconds: 60 * 5
-            })
+            authenticatedApiCachePolicy,
+            sessionsExpirationPlugin,
         ]
     })
 )
@@ -65,11 +145,8 @@ registerRoute(
         cacheName: 'api-session-detail',
         networkTimeoutSeconds: 10,
         plugins: [
-            cacheOkResponsesOnly,
-            new ExpirationPlugin({
-                maxEntries: 20,
-                maxAgeSeconds: 60 * 5
-            })
+            authenticatedApiCachePolicy,
+            sessionDetailExpirationPlugin,
         ]
     })
 )
@@ -80,11 +157,8 @@ registerRoute(
         cacheName: 'api-machines',
         networkTimeoutSeconds: 10,
         plugins: [
-            cacheOkResponsesOnly,
-            new ExpirationPlugin({
-                maxEntries: 5,
-                maxAgeSeconds: 60 * 10
-            })
+            authenticatedApiCachePolicy,
+            machinesExpirationPlugin,
         ]
     })
 )
@@ -118,6 +192,11 @@ registerRoute(
 self.addEventListener('message', (event) => {
     if (event.data?.type === 'SKIP_WAITING') {
         self.skipWaiting()
+    } else if (event.data?.type === CLEAR_API_CACHES_MESSAGE_TYPE) {
+        const preserveIdentity = typeof event.data.preserveIdentity === 'string'
+            ? event.data.preserveIdentity
+            : null
+        event.waitUntil?.(clearApiCachesFromServiceWorker(preserveIdentity))
     }
 })
 

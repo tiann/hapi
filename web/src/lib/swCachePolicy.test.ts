@@ -1,5 +1,19 @@
-import { describe, expect, it } from 'vitest'
-import { cacheOkResponsesOnly, cacheJavaScriptOnly } from './swCachePolicy'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import {
+    AUTHENTICATED_API_CACHE_NAMES,
+    CLEAR_API_CACHES_MESSAGE_TYPE,
+    authenticatedApiCachePolicy,
+    cacheJavaScriptOnly,
+    clearAuthenticatedApiCaches,
+} from './swCachePolicy'
+
+function fakeJwt(payload: Record<string, unknown>): string {
+    const encode = (value: unknown) => btoa(JSON.stringify(value))
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/, '')
+    return `${encode({ alg: 'HS256', typ: 'JWT' })}.${encode(payload)}.signature`
+}
 
 function redirectedResponse(body: string): Response {
     // Response objects built in tests cannot set `redirected`; model one that came through a redirect.
@@ -30,42 +44,129 @@ describe('optional syntax module cache', () => {
     })
 })
 
-describe('cacheOkResponsesOnly', () => {
-    it('stores plain 200 responses as they are', async () => {
-        const response = new Response('{}', { status: 200 })
-        expect(await cacheOkResponsesOnly.cacheWillUpdate({ response })).toBe(response)
+describe('authenticatedApiCachePolicy', () => {
+    afterEach(() => {
+        vi.unstubAllGlobals()
     })
 
-    it('rejects opaque redirects and other non-200 responses', async () => {
-        for (const response of [
-            { status: 0, type: 'opaqueredirect' },
-            { status: 0, type: 'opaque' },
-            { status: 204, type: 'basic' },
-            { status: 304, type: 'basic' },
-            { status: 404, type: 'basic' },
-            { status: 500, type: 'basic' },
-        ] as Response[]) {
-            expect(await cacheOkResponsesOnly.cacheWillUpdate({ response })).toBeNull()
+    it('derives distinct cache keys per hub origin and identity while stripping fragments and caller scope overrides', async () => {
+        const aliceDefault = fakeJwt({ uid: 1, ns: 'default', authMethod: 'cloudflareAccess', cfAccessSub: 'alice', cfAccessEmail: 'Alice@Example.com' })
+        const aliceDefaultNormalized = fakeJwt({ uid: 1, ns: 'default', authMethod: 'cloudflareAccess', cfAccessSub: 'alice', cfAccessEmail: 'alice@example.com' })
+        const bobWork = fakeJwt({ uid: 1, ns: 'work', authMethod: 'cloudflareAccess', cfAccessSub: 'bob', cfAccessEmail: 'bob@example.com' })
+
+        const aliceKey1 = await authenticatedApiCachePolicy.cacheKeyWillBeUsed({
+            request: new Request('https://hub-a.test/api/sessions?__hapi_sw_scope=spoofed#frag', {
+                headers: { authorization: `Bearer ${aliceDefault}` }
+            })
+        })
+        const aliceKey2 = await authenticatedApiCachePolicy.cacheKeyWillBeUsed({
+            request: new Request('https://hub-a.test/api/sessions', {
+                headers: { authorization: `Bearer ${aliceDefaultNormalized}` }
+            })
+        })
+        const bobKey = await authenticatedApiCachePolicy.cacheKeyWillBeUsed({
+            request: new Request('https://hub-a.test/api/sessions', {
+                headers: { authorization: `Bearer ${bobWork}` }
+            })
+        })
+        const otherHubKey = await authenticatedApiCachePolicy.cacheKeyWillBeUsed({
+            request: new Request('https://hub-b.test/api/sessions', {
+                headers: { authorization: `Bearer ${aliceDefault}` }
+            })
+        })
+
+        expect(aliceKey1).toBe(aliceKey2)
+        expect(aliceKey1).not.toContain('spoofed')
+        expect(aliceKey1).not.toContain('#frag')
+        expect(aliceKey1).not.toBe(bobKey)
+        expect(aliceKey1).not.toBe(otherHubKey)
+    })
+
+    it('fails closed on unauthenticated, empty-claim, or non-200 responses', async () => {
+        const validJwt = fakeJwt({ uid: 1, ns: 'default' })
+        const emptyClaimsJwt = fakeJwt({})
+
+        expect(await authenticatedApiCachePolicy.cacheWillUpdate({
+            request: new Request('https://hub-a.test/api/sessions'),
+            response: new Response('{}', { status: 200 })
+        })).toBeNull()
+
+        expect(await authenticatedApiCachePolicy.cacheWillUpdate({
+            request: new Request('https://hub-a.test/api/sessions', {
+                headers: { authorization: `Bearer ${emptyClaimsJwt}` }
+            }),
+            response: new Response('{}', { status: 200 })
+        })).toBeNull()
+
+        expect(await authenticatedApiCachePolicy.cacheWillUpdate({
+            request: new Request('https://hub-a.test/api/sessions', {
+                headers: { authorization: `Bearer ${validJwt}` }
+            }),
+            response: new Response('{}', { status: 500 })
+        })).toBeNull()
+
+        const unauthKey = await authenticatedApiCachePolicy.cacheKeyWillBeUsed({
+            request: new Request('https://hub-a.test/api/sessions')
+        })
+        expect(await authenticatedApiCachePolicy.cachedResponseWillBeUsed({
+            request: new Request(unauthKey),
+            cachedResponse: new Response('{}', { status: 200 })
+        })).toBeNull()
+
+        expect(await authenticatedApiCachePolicy.cachedResponseWillBeUsed({
+            request: new Request('https://hub-a.test/api/sessions'),
+            cachedResponse: new Response('{}', { status: 200 })
+        })).toBeNull()
+    })
+
+    it('clearAuthenticatedApiCaches posts CLEAR_API_CACHES synchronously first when SW controller is active without racing caches.delete', async () => {
+        const deleteCache = vi.fn(() => new Promise<boolean>(() => {}))
+        const postMessage = vi.fn()
+        vi.stubGlobal('caches', { delete: deleteCache })
+        const originalDescriptor = Object.getOwnPropertyDescriptor(navigator, 'serviceWorker')
+        Object.defineProperty(navigator, 'serviceWorker', {
+            configurable: true,
+            value: { controller: { postMessage } }
+        })
+
+        try {
+            const promise = clearAuthenticatedApiCaches('bob-identity')
+            expect(postMessage).toHaveBeenCalledTimes(1)
+            expect(postMessage).toHaveBeenCalledWith({
+                type: CLEAR_API_CACHES_MESSAGE_TYPE,
+                preserveIdentity: 'bob-identity',
+            })
+            expect(deleteCache).not.toHaveBeenCalled()
+            await promise
+        } finally {
+            if (originalDescriptor) {
+                Object.defineProperty(navigator, 'serviceWorker', originalDescriptor)
+            } else {
+                delete (navigator as unknown as { serviceWorker?: unknown }).serviceWorker
+            }
         }
     })
 
-    it('stores a followed redirect without its redirect history', async () => {
-        const stored = await cacheOkResponsesOnly.cacheWillUpdate({ response: redirectedResponse('{"ok":1}') })
-        expect(stored).not.toBeNull()
-        expect(stored!.redirected).toBe(false)
-        expect(stored!.status).toBe(200)
-        expect(stored!.statusText).toBe('OK')
-        expect(stored!.headers.get('content-type')).toBe('application/json')
-        expect(await stored!.text()).toBe('{"ok":1}')
-    })
+    it('clearAuthenticatedApiCaches falls back to caches.delete when SW controller is unavailable', async () => {
+        const deleteCache = vi.fn(async () => true)
+        vi.stubGlobal('caches', { delete: deleteCache })
+        const originalDescriptor = Object.getOwnPropertyDescriptor(navigator, 'serviceWorker')
+        Object.defineProperty(navigator, 'serviceWorker', {
+            configurable: true,
+            value: { controller: null }
+        })
 
-    it('serves entries cached with redirect history without it', async () => {
-        const served = await cacheOkResponsesOnly.cachedResponseWillBeUsed({ cachedResponse: redirectedResponse('[1]') })
-        expect(served!.redirected).toBe(false)
-        expect(await served!.text()).toBe('[1]')
-
-        const plain = new Response('[2]', { status: 200 })
-        expect(await cacheOkResponsesOnly.cachedResponseWillBeUsed({ cachedResponse: plain })).toBe(plain)
-        expect(await cacheOkResponsesOnly.cachedResponseWillBeUsed({})).toBeNull()
+        try {
+            await clearAuthenticatedApiCaches()
+            for (const name of AUTHENTICATED_API_CACHE_NAMES) {
+                expect(deleteCache).toHaveBeenCalledWith(name)
+            }
+        } finally {
+            if (originalDescriptor) {
+                Object.defineProperty(navigator, 'serviceWorker', originalDescriptor)
+            } else {
+                delete (navigator as unknown as { serviceWorker?: unknown }).serviceWorker
+            }
+        }
     })
 })

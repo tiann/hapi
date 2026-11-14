@@ -1,40 +1,35 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiClient, ApiError } from '@/api/client'
+import { decodeJwtExpMs, decodeJwtIdentityKey, isCloudflareToken } from '@/lib/authIdentity'
 import type { AuthResponse } from '@/types/api'
 
 export type AuthSource =
     | { type: 'telegram'; initData: string }
     | { type: 'accessToken'; token: string }
+    | { type: 'cloudflareAccess' }
 
-function decodeJwtExpMs(token: string): number | null {
-    const parts = token.split('.')
-    if (parts.length < 2) return null
-
-    const payloadBase64Url = parts[1] ?? ''
-    const payloadBase64 = payloadBase64Url
-        .replace(/-/g, '+')
-        .replace(/_/g, '/')
-        .padEnd(Math.ceil(payloadBase64Url.length / 4) * 4, '=')
-
-    try {
-        const decoded = globalThis.atob(payloadBase64)
-        const payload = JSON.parse(decoded) as { exp?: unknown }
-        if (typeof payload.exp !== 'number') return null
-        return payload.exp * 1000
-    } catch {
-        return null
+async function authenticateWith(client: ApiClient, source: AuthSource): Promise<AuthResponse> {
+    if (source.type === 'cloudflareAccess') {
+        return await client.authenticateWithCloudflare()
     }
-}
-
-function getAuthPayload(source: AuthSource): { initData: string } | { accessToken: string } {
     if (source.type === 'telegram') {
-        return { initData: source.initData }
+        return await client.authenticate({ initData: source.initData })
     }
-    return { accessToken: source.token }
+    return await client.authenticate({ accessToken: source.token })
 }
 
 function isNotBoundError(error: unknown): boolean {
     return error instanceof ApiError && error.status === 401 && error.code === 'not_bound'
+}
+
+function isTerminalAuthRejection(error: unknown, sourceType: AuthSource['type']): boolean {
+    if (!(error instanceof ApiError)) {
+        return false
+    }
+    if (error.status === 401 || error.status === 403) {
+        return true
+    }
+    return sourceType === 'cloudflareAccess' && error.status === 404
 }
 
 const ACCESS_TOKEN_PREFIX = 'hapi_access_token::'
@@ -47,7 +42,11 @@ function rememberAccessToken(baseUrl: string, accessToken: string): void {
     }
 }
 
-export function useAuth(authSource: AuthSource | null, baseUrl: string): {
+export function useAuth(
+    authSource: AuthSource | null,
+    baseUrl: string,
+    options?: { onIdentityChange?: (nextIdentity: string | null) => void }
+): {
     token: string | null
     user: AuthResponse['user'] | null
     api: ApiClient | null
@@ -55,6 +54,7 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
     error: string | null
     needsBinding: boolean
     bind: (accessToken: string) => Promise<void>
+    retry: () => Promise<string | null>
 } {
     const [token, setToken] = useState<string | null>(null)
     const [user, setUser] = useState<AuthResponse['user'] | null>(null)
@@ -64,11 +64,27 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
     const refreshPromiseRef = useRef<Promise<string | null> | null>(null)
     const tokenRef = useRef<string | null>(null)
     const lastRefreshAttemptRef = useRef<number>(0)
+    const activeIdentityRef = useRef<string | null>(null)
+    const onIdentityChangeRef = useRef(options?.onIdentityChange)
+    onIdentityChangeRef.current = options?.onIdentityChange
 
     // Stable reference for auth source to use in effects
     const authSourceRef = useRef(authSource)
     authSourceRef.current = authSource
     tokenRef.current = token
+
+    const applyAuthenticatedSession = useCallback((auth: AuthResponse) => {
+        const nextIdentity = decodeJwtIdentityKey(auth.token)
+        if (activeIdentityRef.current !== null && nextIdentity !== activeIdentityRef.current) {
+            onIdentityChangeRef.current?.(nextIdentity)
+        }
+        activeIdentityRef.current = nextIdentity
+        tokenRef.current = auth.token
+        setToken(auth.token)
+        setUser(auth.user)
+        setError(null)
+        setNeedsBinding(false)
+    }, [])
 
     const refreshAuth = useCallback(async (options?: {
         minTtlMs?: number
@@ -101,12 +117,8 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
 
             try {
                 const client = new ApiClient('', { baseUrl })
-                const auth = await client.authenticate(getAuthPayload(currentSource))
-                tokenRef.current = auth.token
-                setToken(auth.token)
-                setUser(auth.user)
-                setError(null)
-                setNeedsBinding(false)
+                const auth = await authenticateWith(client, currentSource)
+                applyAuthenticatedSession(auth)
                 return auth.token
             } catch (error) {
                 if (currentSource.type === 'telegram' && isNotBoundError(error)) {
@@ -118,13 +130,16 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
                     return null
                 }
                 const isExpired = expMs ? Date.now() >= expMs : false
-                if (options?.hardFail || isExpired) {
+                const isTerminal = isTerminalAuthRejection(error, currentSource.type)
+                if (options?.hardFail || isExpired || isTerminal || currentToken === null) {
                     tokenRef.current = null
                     setToken(null)
                     setUser(null)
-                    const msg = currentSource.type === 'telegram'
+                    const msg = currentSource.type === 'telegram' && !isTerminal
                         ? 'Session expired. Reopen the Mini App from Telegram.'
-                        : 'Session expired. Please login again.'
+                        : error instanceof Error && (isTerminal || currentToken === null)
+                            ? error.message
+                            : 'Session expired. Please login again.'
                     setError(msg)
                 }
                 return null
@@ -155,10 +170,7 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
         try {
             const client = new ApiClient('', { baseUrl })
             const auth = await client.bind({ initData: currentSource.initData, accessToken })
-            tokenRef.current = auth.token
-            setToken(auth.token)
-            setUser(auth.user)
-            setNeedsBinding(false)
+            applyAuthenticatedSession(auth)
             // Persist the CLI access token so Settings → Companion pairing QR
             // can encode the same long-lived token in the deeplink. The PWA
             // already does this for browser/CLI logins via useAuthSource.
@@ -170,6 +182,20 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
             setIsLoading(false)
         }
     }, [baseUrl])
+
+    const retry = useCallback(async (): Promise<string | null> => {
+        if (!authSourceRef.current) {
+            return null
+        }
+        setIsLoading(true)
+        setError(null)
+        setNeedsBinding(false)
+        try {
+            return await refreshAuth({ force: true })
+        } finally {
+            setIsLoading(false)
+        }
+    }, [refreshAuth])
 
     // Keep the ApiClient referentially stable across token *refreshes*: the client always reads
     // the live token via getToken (tokenRef), so it never needs rebuilding when the token value
@@ -202,11 +228,9 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
             setNeedsBinding(false)
             try {
                 const client = new ApiClient('', { baseUrl }) // temporary for auth call
-                const auth = await client.authenticate(getAuthPayload(authSource))
+                const auth = await authenticateWith(client, authSource)
                 if (isCancelled) return
-                setToken(auth.token)
-                setUser(auth.user)
-                setNeedsBinding(false)
+                applyAuthenticatedSession(auth)
             } catch (e) {
                 if (isCancelled) return
                 if (authSource.type === 'telegram' && isNotBoundError(e)) {
@@ -236,6 +260,7 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
         tokenRef.current = null
         refreshPromiseRef.current = null
         lastRefreshAttemptRef.current = 0
+        activeIdentityRef.current = null
         setToken(null)
         setUser(null)
         setError(null)
@@ -259,15 +284,31 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
             if (timeout) {
                 clearTimeout(timeout)
             }
-            timeout = setTimeout(() => void refresh(), Math.max(0, delayMs))
+            // Cloudflare-derived JWTs expire with the Access assertion, so the
+            // final-60s window can schedule 0 on every changed token and loop
+            // the login endpoint. Bound CF scheduled refreshes to one per 15s;
+            // force/onUnauthorized refreshes stay immediate.
+            const minDelayMs = isCloudflareToken(token) ? 15_000 : 0
+            timeout = setTimeout(() => void refresh(), Math.max(minDelayMs, delayMs))
         }
 
         const refresh = async () => {
             if (isCancelled) return
             const refreshed = await refreshAuth({ force: true })
             if (isCancelled) return
-            if (!refreshed && Date.now() < expMs) {
-                schedule(15_000)
+            if (!refreshed) {
+                if (Date.now() < expMs) {
+                    schedule(15_000)
+                } else if (tokenRef.current === token) {
+                    tokenRef.current = null
+                    setToken(null)
+                    setUser(null)
+                    setError(
+                        authSource.type === 'telegram'
+                            ? 'Session expired. Reopen the Mini App from Telegram.'
+                            : 'Session expired. Please login again.'
+                    )
+                }
             }
         }
 
@@ -305,5 +346,5 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
         }
     }, [authSource, refreshAuth])
 
-    return { token, user, api, isLoading, error, needsBinding, bind }
+    return { token, user, api, isLoading, error, needsBinding, bind, retry }
 }
