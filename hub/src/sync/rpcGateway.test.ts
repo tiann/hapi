@@ -261,6 +261,89 @@ describe('RpcGateway no-target diagnostics (tiann/hapi#916)', () => {
     })
 })
 
+describe('RpcGateway cancellation', () => {
+    function createCancellableGateway() {
+        const emitted: Array<{ event: string; data: unknown }> = []
+        let resolveAck!: (value: string) => void
+        const socket = {
+            emit(event: string, data: unknown) {
+                emitted.push({ event, data })
+            },
+            timeout() {
+                return {
+                    emitWithAck: () => new Promise<string>((resolve) => {
+                        resolveAck = resolve
+                    })
+                }
+            }
+        }
+        const io = {
+            of() {
+                return { sockets: { get: () => socket } }
+            }
+        } as unknown as Server
+        const rpcRegistry = {
+            getSocketIdForMethod() { return 'socket-1' }
+        } as unknown as RpcRegistry
+        return {
+            gateway: new RpcGateway(io, rpcRegistry),
+            emitted,
+            resolveAck: (value: string) => resolveAck(value)
+        }
+    }
+
+    it('sends a cancel event and rejects the aborted session RPC', async () => {
+        const { gateway, emitted, resolveAck } = createCancellableGateway()
+        const controller = new AbortController()
+
+        const pending = gateway.runRipgrep(
+            'session-1',
+            ['--files'],
+            '/workspace',
+            { query: 'src', limit: 200 },
+            controller.signal,
+        )
+        controller.abort()
+
+        await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+        expect(emitted).toHaveLength(1)
+        expect(emitted[0]).toMatchObject({
+            event: 'rpc-cancel',
+            data: { requestId: expect.any(String) },
+        })
+
+        // Let the underlying ack promise settle too; the caller has already
+        // observed the abort, but the socket operation remains in flight until
+        // the CLI finishes handling the cancellation.
+        resolveAck(JSON.stringify({ success: true }))
+    })
+
+    it('cancels an aborted workspace RPC used by inactive-session fallback', async () => {
+        const { gateway, emitted, resolveAck } = createCancellableGateway()
+        const controller = new AbortController()
+
+        const pending = gateway.runWorkspaceRipgrep(
+            'machine-1',
+            {
+                args: ['--files'],
+                cwd: '/workspace',
+                fileSearch: { query: 'src', limit: 200 }
+            },
+            controller.signal,
+        )
+        controller.abort()
+
+        await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+        expect(emitted).toHaveLength(1)
+        expect(emitted[0]).toMatchObject({
+            event: 'rpc-cancel',
+            data: { requestId: expect.any(String) },
+        })
+
+        resolveAck(JSON.stringify({ success: true }))
+    })
+})
+
 // tiann/hapi#1735: a stale/canceled permission request answer must surface as
 // a real error, not resolve as if it had been accepted.
 describe('RpcGateway permission RPC error surfacing (tiann/hapi#1735)', () => {

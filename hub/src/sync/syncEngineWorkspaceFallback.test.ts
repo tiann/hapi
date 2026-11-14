@@ -92,19 +92,20 @@ describe('SyncEngine archived workspace fallback', () => {
         await engine.listDirectory(sessionId, 'src')
         expect(listDirectory).toHaveBeenCalledWith('machine-1', { cwd: '/workspace/project', path: 'src' })
 
+        const signal = new AbortController().signal
         spyOn(gateway, 'statFiles').mockRejectedValue(missingTarget('session-1:statFiles'))
         const statFiles = spyOn(gateway, 'statWorkspaceFiles').mockResolvedValue({ success: true, entries: [] })
-        await engine.statFiles(sessionId, ['src/index.ts'])
-        expect(statFiles).toHaveBeenCalledWith('machine-1', { cwd: '/workspace/project', paths: ['src/index.ts'] })
+        await engine.statFiles(sessionId, ['src/index.ts'], signal)
+        expect(statFiles).toHaveBeenCalledWith('machine-1', { cwd: '/workspace/project', paths: ['src/index.ts'] }, signal)
 
         spyOn(gateway, 'runRipgrep').mockRejectedValue(missingTarget('session-1:ripgrep'))
         const ripgrep = spyOn(gateway, 'runWorkspaceRipgrep').mockResolvedValue({ success: true, stdout: 'src/index.ts\n' })
-        await engine.runRipgrep(sessionId, ['--files'], '/ignored/caller/path', { query: '*.ts', limit: 20 })
+        await engine.runRipgrep(sessionId, ['--files'], '/ignored/caller/path', { query: '*.ts', limit: 20 }, signal)
         expect(ripgrep).toHaveBeenCalledWith('machine-1', {
             args: ['--files'],
             cwd: '/workspace/project',
             fileSearch: { query: '*.ts', limit: 20 }
-        })
+        }, signal)
 
         engine.stop()
     })
