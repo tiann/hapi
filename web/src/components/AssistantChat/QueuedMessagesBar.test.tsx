@@ -47,6 +47,17 @@ vi.mock('@/lib/message-window-store', () => ({
     getMessageWindowState: () => mocks.messageWindowState,
     subscribeMessageWindow: () => () => {},
     markMessagesConsumed: mocks.markMessagesConsumed,
+    markMessagesDispatching: (_sessionId: string, ids: string[]) => {
+        mocks.messageWindowState = { messages: mocks.messageWindowState.messages.map(item => {
+            const message = item as DecryptedMessage
+            return message.localId && ids.includes(message.localId)
+                ? { ...message, deliveryState: 'indeterminate', deliveryPending: true }
+                : message
+        }) }
+    },
+    markMessagesIndeterminate: vi.fn(),
+    markMessagesRequeued: vi.fn(),
+    reconcileQueuedLocalIds: vi.fn(),
 }))
 
 vi.mock('@/hooks/mutations/useCancelQueuedMessage', () => ({
@@ -96,10 +107,12 @@ function renderQueuedMessage(
     pendingScheduleRevision = 0,
     canSteer = false,
     api: ApiClient | null = null,
+    delivery: Partial<DecryptedMessage> = {},
+    deliveryActive = canSteer,
 ) {
     const onEdit = vi.fn()
     let currentPendingScheduleRevision = pendingScheduleRevision
-    mocks.messageWindowState = { messages: [makeQueuedMessage(scheduledAt)] }
+    mocks.messageWindowState = { messages: [makeQueuedMessage(scheduledAt, 'server-message-id', delivery)] }
     // The real useSteerQueuedMessage hook runs inside the bar, so every render
     // needs a QueryClient (its mutations use the tanstack defaults).
     const queryClient = new QueryClient({
@@ -114,6 +127,7 @@ function renderQueuedMessage(
                 pendingScheduleRevision={currentPendingScheduleRevision}
                 onEdit={onEdit}
                 canSteer={canSteer}
+                deliveryActive={deliveryActive}
             />
         </QueryClientProvider>
     )
@@ -131,6 +145,7 @@ function renderQueuedMessage(
                         pendingScheduleRevision={currentPendingScheduleRevision}
                         onEdit={onEdit}
                         canSteer={canSteer}
+                        deliveryActive={deliveryActive}
                     />
                 </QueryClientProvider>
             )
@@ -196,6 +211,41 @@ function installManualAnimationFrames() {
 
 afterEach(() => {
     vi.unstubAllGlobals()
+})
+
+describe('QueuedMessagesBar compaction confirmation', () => {
+    it('shows waiting only for the observed message, then restores recovery controls when compaction ends', () => {
+        mocks.messageWindowState = { messages: [
+            makeQueuedMessage(null, 'compacting', { deliveryState: 'indeterminate' }),
+            makeQueuedMessage(null, 'older', { deliveryState: 'indeterminate' }),
+        ] }
+        const client = new QueryClient()
+        const bar = (ids?: string[]) => (
+            <QueryClientProvider client={client}>
+                <QueuedMessagesBar sessionId="session-1" api={null} pendingSchedule={null}
+                    pendingScheduleRevision={0} compactionPendingMessageIds={ids} />
+            </QueryClientProvider>
+        )
+        const view = render(bar(['local-compacting']))
+        expect(screen.getAllByText('queuedMessages.compactionPending')).toHaveLength(1)
+        expect(screen.getAllByText('queuedMessages.steerOutcomeUnknown')).toHaveLength(1)
+        expect(screen.getAllByRole('button', { name: 'queuedMessages.retryOutcome' })).toHaveLength(1)
+        view.rerender(bar())
+        expect(screen.queryByText('queuedMessages.compactionPending')).toBeNull()
+        expect(screen.getAllByText('queuedMessages.steerOutcomeUnknown')).toHaveLength(2)
+        expect(screen.getAllByRole('button', { name: 'queuedMessages.retryOutcome' })).toHaveLength(2)
+    })
+
+    it('does not change a queued message into an uncertain or consumed message', () => {
+        mocks.messageWindowState = { messages: [makeQueuedMessage(null, 'queued')] }
+        render(<QueryClientProvider client={new QueryClient()}>
+            <QueuedMessagesBar sessionId="session-1" api={null} pendingSchedule={null}
+                pendingScheduleRevision={0} compactionPendingMessageIds={['local-queued']} />
+        </QueryClientProvider>)
+        expect(screen.queryByText('queuedMessages.compactionPending')).toBeNull()
+        expect(screen.queryByText('queuedMessages.steerOutcomeUnknown')).toBeNull()
+        expect(mocks.markMessagesConsumed).not.toHaveBeenCalled()
+    })
 })
 
 describe('QueuedMessagesBar layout', () => {
@@ -868,4 +918,46 @@ describe('QueuedMessagesBar steer action', () => {
         )
         expect(mocks.addToast).not.toHaveBeenCalled()
     })
+})
+
+
+describe('unconfirmed delivery actions', () => {
+    it('shows confirmation pending without Steer or Retry while the turn owns the delivery', () => {
+        renderQueuedMessage(null, null, 0, true, null, { deliveryState: 'indeterminate', deliveryPending: true })
+        expect(screen.getByText('queuedMessages.deliveryPending')).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'Steer queued message' })).toBeNull()
+        expect(screen.queryByRole('button', { name: 'queuedMessages.retryOutcome' })).toBeNull()
+        expect(screen.getByRole('button', { name: 'Cancel queued message' })).toBeDisabled()
+    })
+
+    it.each([false, true])('keeps explicit resolution for real uncertainty when steer capability is %s', (canSteer) => {
+        renderQueuedMessage(null, null, 0, canSteer, null, { deliveryState: 'indeterminate' })
+        expect(screen.getByText('queuedMessages.steerOutcomeUnknown')).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'queuedMessages.retryOutcome' })).toBeEnabled()
+        expect(screen.getByRole('button', { name: 'Cancel queued message' })).toBeEnabled()
+    })
+
+    it('offers explicit resolution when the pending owner is no longer steerable', () => {
+        renderQueuedMessage(null, null, 0, false, null, { deliveryState: 'indeterminate', deliveryPending: true })
+        expect(screen.getByText('queuedMessages.steerOutcomeUnknown')).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'queuedMessages.retryOutcome' })).toBeEnabled()
+        expect(screen.queryByText('queuedMessages.deliveryPending')).toBeNull()
+    })
+})
+
+
+it('keeps a live confirmation pending during normal drain after new Steer admission closes', () => {
+    renderQueuedMessage(null, null, 0, false, null, { deliveryState: 'indeterminate', deliveryPending: true }, true)
+    expect(screen.getByText('queuedMessages.deliveryPending')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'queuedMessages.retryOutcome' })).toBeNull()
+})
+
+
+it('does not expose a second Steer when REST success beats the pending SSE', async () => {
+    const api = { steerMessage: vi.fn().mockResolvedValue({ status: 'steered', localId: 'local-server-message-id' }), getQueuedState: vi.fn().mockResolvedValue({ queuedLocalIds: [], indeterminateLocalIds: ['local-server-message-id'], dispatchingLocalIds: ['local-server-message-id'], invokedLocalMessages: [] }) } as unknown as ApiClient
+    renderQueuedMessage(null, null, 0, true, api)
+    fireEvent.click(screen.getByRole('button', { name: 'Steer queued message' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Steer queued message' })).toBeNull())
+    expect(screen.getByText('queuedMessages.deliveryPending')).toBeInTheDocument()
+    expect(mocks.addToast).not.toHaveBeenCalled()
 })

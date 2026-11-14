@@ -9,7 +9,12 @@ import app.hapi.companion.feature.pairing.PairingClient
 import app.hapi.companion.feature.pairing.PairingClientFactory
 import app.hapi.companion.feature.settings.AppLanguage
 import app.hapi.companion.feature.settings.LanguagePrefs
+import app.hapi.companion.feature.sessions.SessionListOrderPrefs
 import app.hapi.companion.feature.settings.ThemePrefs
+import app.hapi.companion.feature.share.ContentResolverShareReader
+import app.hapi.companion.feature.share.ShareInbox
+import app.hapi.companion.feature.share.SharedInput
+import java.io.File
 import app.hapi.data.push.EncryptedPrefsPushIdentityStore
 import app.hapi.data.push.PushIdentityManager
 import app.hapi.data.push.PushMessageDecoder
@@ -79,6 +84,27 @@ class AppGraph(context: Context) {
     /** The protocol-configured Json (lenient, ignores unknown keys). */
     val json: Json = HapiJson
 
+    val shareIntakeFailed = MutableStateFlow(false)
+    val shareInbox = ShareInbox(File(appContext.noBackupFilesDir, "share-inbox"),
+        ContentResolverShareReader(appContext.contentResolver), scope,
+        onFailure = { shareIntakeFailed.value = true })
+
+    fun receiveShare(input: SharedInput) {
+        if (input.isEmpty) {
+            shareIntakeFailed.value = true
+            return
+        }
+        scope.launch {
+            try {
+                shareInbox.receive(input)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                shareIntakeFailed.value = true
+            }
+        }
+    }
+
     val hubRegistryStorage: HubRegistryStorage =
         DataStoreHubRegistryStorage(appContext.hapiDataStore)
 
@@ -95,6 +121,9 @@ class AppGraph(context: Context) {
 
     /** Appearance choice (B-M4e); MainActivity reads it at setContent. */
     val themePrefs: ThemePrefs = ThemePrefs(appContext.hapiDataStore)
+
+    /** Session-list sort + Active first, app-wide like web's localStorage view keys. */
+    val sessionListOrderPrefs: SessionListOrderPrefs = SessionListOrderPrefs(appContext.hapiDataStore)
 
     /** Language choice (B-M5a: applied via per-app locales; Settings writes it). */
     val languagePrefs: LanguagePrefs = LanguagePrefs(appContext.hapiDataStore)
@@ -222,6 +251,11 @@ class AppGraph(context: Context) {
     /** Idempotent-enough for the single Application.onCreate call site. */
     fun start() {
         scope.launch {
+            try {
+                shareInbox.load()
+            } catch (_: Exception) {
+                shareIntakeFailed.value = true
+            }
             hubRegistry.load()
             mutableReady.value = true
             // Roster is loaded: the registrar's first emission re-registers
@@ -248,8 +282,10 @@ class AppGraph(context: Context) {
     }
 
     /** Sequential by construction: only the [start] collector calls this. */
-    private fun swapActiveHub(activeHubUrl: String?) {
-        mutableActiveHubGraph.value?.close()
+    private suspend fun swapActiveHub(activeHubUrl: String?) {
+        val previous = mutableActiveHubGraph.value
+        previous?.close()
+        previous?.lastSeenStore?.flushPersistence()
         mutableActiveHubGraph.value = activeHubUrl?.let { hubUrl ->
             HubGraph(
                 hubUrl = hubUrl,

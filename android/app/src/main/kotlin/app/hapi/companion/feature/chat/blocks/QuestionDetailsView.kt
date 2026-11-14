@@ -101,6 +101,6 @@ private fun QuestionAnswerCard(
 }
 
 @Composable
-private fun QuestionMarkdown(text: String) {
+internal fun QuestionMarkdown(text: String) {
     if (text.length > TOOL_TEXT_PAGE_SIZE) ToolTextContent(code = text, language = "markdown") else Markdown(text)
 }

@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { existsSync } from 'node:fs'
 import { serveStatic } from 'hono/bun'
 import { getConfiguration } from '../configuration'
-import { PROTOCOL_VERSION } from '@hapi/protocol'
+import { FOLLOW_SESSION_REDIRECTS_HEADER, PROTOCOL_VERSION } from '@hapi/protocol'
 import { buildGeminiLiveSetupMessage, QWEN_REALTIME_MODEL } from '@hapi/protocol/voice'
 import { getProviderEnvironment } from '../config/providerCredentials'
 import { readTitleProviderConfig } from '../sync/titleSuggestion'
@@ -23,10 +23,12 @@ import { createPermissionsRoutes } from './routes/permissions'
 import { createMachinesRoutes } from './routes/machines'
 import { createStorageRoutes } from './routes/storage'
 import { createUsageRoutes } from './routes/usage'
+import { createActivityRoutes } from './routes/activity'
 import { createGitRoutes } from './routes/git'
 import { createCliRoutes } from './routes/cli'
 import { createCodexDesktopRoutes } from './routes/codexDesktop'
 import { createPiSessionRoutes } from './routes/piSessions'
+import { createOpencodeSessionRoutes } from './routes/opencodeSessions'
 import { createPushRoutes } from './routes/push'
 import { createDevicesRoutes } from './routes/devices'
 import { createVoiceRoutes } from './routes/voice'
@@ -276,7 +278,7 @@ function createWebApp(options: {
         allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
         // last-event-id: browsers attach it to EventSource reconnects for
         // SSE replay; allow it in case a browser preflights the request.
-        allowHeaders: ['authorization', 'content-type', 'last-event-id']
+        allowHeaders: ['authorization', 'content-type', 'last-event-id', FOLLOW_SESSION_REDIRECTS_HEADER]
     })
     app.use('/health', corsMiddleware)
     app.use('/api/*', corsMiddleware)
@@ -324,10 +326,11 @@ function createWebApp(options: {
     app.route('/api', createSessionsRoutes(options.getSyncEngine))
     app.route('/api', createMessagesRoutes(options.getSyncEngine))
     app.route('/api', createPermissionsRoutes(options.getSyncEngine))
-    app.route('/api', createMachinesRoutes(options.getSyncEngine))
+    app.route('/api', createMachinesRoutes(options.getSyncEngine, { dataDir: configuration.dataDir }))
     app.route('/api', createStorageRoutes(configuration.dbPath))
-    app.route('/api', createHubSettingsRoutes(configuration.dataDir))
-    app.route('/api', createUsageRoutes(options.store))
+    app.route('/api', createHubSettingsRoutes(configuration.dataDir, options.getSyncEngine))
+    app.route('/api', createUsageRoutes(options.store, options.getSyncEngine))
+    app.route('/api', createActivityRoutes(options.store))
     app.route('/api', createGitRoutes(options.getSyncEngine))
     // 中文注释：这里提供两类 Codex 辅助能力：扫描本地 transcript 以导入到 Hapi，以及按需重启 Codex Desktop 客户端。
     app.route('/api', createCodexDesktopRoutes({
@@ -335,6 +338,10 @@ function createWebApp(options: {
         getSyncEngine: options.getSyncEngine
     }))
     app.route('/api', createPiSessionRoutes({
+        store: options.store,
+        getSyncEngine: options.getSyncEngine
+    }))
+    app.route('/api', createOpencodeSessionRoutes({
         store: options.store,
         getSyncEngine: options.getSyncEngine
     }))

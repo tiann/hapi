@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { parseMessageAsEvent } from './reducerEvents'
-import type { NormalizedMessage } from './types'
+import { parseMessageAsEvent, dedupeAgentEvents } from './reducerEvents'
+import type { NormalizedMessage, ChatBlock } from './types'
 
 function makeAgentTextMessage(text: string): NormalizedMessage {
     return {
@@ -72,4 +72,32 @@ describe('parseMessageAsEvent — usage limit formats', () => {
         msg.isSidechain = true
         expect(parseMessageAsEvent(msg)).toBeNull()
     })
+})
+
+describe('exact compaction enrichment', () => {
+    it.each([false, true])('keeps one rich card in the original position and preserves surrounding output (%s)', summaryFirst => {
+        const boundary: ChatBlock = { kind: 'agent-event', id: 'boundary', createdAt: 1, event: { type: 'compact-summary', summary: '', compactionId: 'thread:turn:item' } }
+        const summary: ChatBlock = { kind: 'agent-event', id: 'summary', createdAt: 3, event: { type: 'compact-summary', summary: 'Native body', compactionId: 'thread:turn:item' } }
+        const output: ChatBlock = { kind: 'agent-event', id: 'output', createdAt: 2, event: { type: 'message', message: 'Visible output' } }
+        const other: ChatBlock = { ...boundary, id: 'other', event: { type: 'compact-summary', summary: '', compactionId: 'other:turn:item' } }
+        const result = dedupeAgentEvents([summaryFirst ? summary : boundary, output, summaryFirst ? boundary : summary, other])
+        expect(result).toHaveLength(3)
+        expect(result[0]).toMatchObject({ id: summaryFirst ? 'summary' : 'boundary', createdAt: summaryFirst ? 3 : 1, event: { summary: 'Native body' } })
+        expect(result[1]).toEqual(output)
+        expect(result[2]).toEqual(other)
+    })
+    it.each([false, true])('merges metric-only enrichment in either order, including zero, without losing a summary (%s)', metricsFirst => {
+        const body: ChatBlock = { kind: 'agent-event', id: 'body', createdAt: 1, event: { type: 'compact-summary', summary: 'Native body', compactionId: 'exact', tokensBefore: 100 } }
+        const metric: ChatBlock = { kind: 'agent-event', id: 'metric', createdAt: 3, event: { type: 'compact-summary', summary: '', compactionId: 'exact', estimatedTokensAfter: 0 } }
+        const output: ChatBlock = { kind: 'agent-event', id: 'output', createdAt: 2, event: { type: 'message', message: 'Visible final' } }
+        const empty: ChatBlock = { kind: 'agent-event', id: 'empty', createdAt: 4, event: { type: 'compact-summary', summary: '', compactionId: 'exact' } }
+        const result = dedupeAgentEvents([metricsFirst ? metric : body, output, metricsFirst ? body : metric, empty])
+        expect(result).toEqual([{ ...(metricsFirst ? metric : body), event: { type: 'compact-summary', summary: 'Native body', compactionId: 'exact', tokensBefore: 100, estimatedTokensAfter: 0 } }, output])
+    })
+    it.each(['tokensBefore', 'tokensAfter', 'estimatedTokensAfter'] as const)('preserves valid %s when an invalid late value arrives', field => {
+        const boundary: ChatBlock = { kind: 'agent-event', id: 'boundary', createdAt: 1, event: { type: 'compact-summary', summary: '', compactionId: 'exact', [field]: 0 } }
+        const invalid: ChatBlock = { ...boundary, id: 'invalid', event: { type: 'compact-summary', summary: '', compactionId: 'exact', [field]: -1 } }
+        expect(dedupeAgentEvents([boundary, invalid])).toEqual([boundary])
+    })
+
 })

@@ -220,7 +220,14 @@ export function updateMachineRunnerState(
     expectedVersion: number,
     namespace: string
 ): VersionedUpdateResult<unknown | null> {
-    const now = Date.now()
+    // MachineCache.refreshMachine only adopts store activity when
+    // storedActiveAt > cached activeAt (strict). Same-millisecond writes after
+    // create (active_at NULL → coalesce to createdAt) leave the cache stuck on
+    // active=false and skip #1489 wake requeue on machine-updated. Bump past the
+    // activity floor so reconnect always wins the merge.
+    const existing = getMachine(db, id)
+    const activityFloor = existing ? (existing.activeAt ?? existing.createdAt) : 0
+    const now = Math.max(Date.now(), activityFloor + 1)
     const normalized = runnerState ?? null
 
     return updateVersionedField({

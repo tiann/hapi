@@ -25,14 +25,111 @@
  * the appropriate command and arguments.
  */
 
-import { spawn, SpawnOptions, type ChildProcess } from 'child_process';
+import { spawn, spawnSync, SpawnOptions, type ChildProcess } from 'child_process';
 import { join, isAbsolute, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isBunCompiled, projectPath } from '@/projectPath';
 import { logger } from '@/ui/logger';
 import { existsSync } from 'node:fs';
+import { DISCLAIM_RESPONSIBILITY_ENV, shouldDisclaimResponsibility } from '@/runtime/disclaimExec';
+import { canDisclaimForChildren } from '@/runtime/responsibility';
 
 const HAPI_CLI_EXECUTABLE_ENV = 'HAPI_CLI_EXECUTABLE';
+
+// Bun-compiled HAPI binaries die during runtime init (before any JS runs) when
+// the inherited RLIMIT_NOFILE soft limit is low. Launch Services (launchd)
+// defaults the soft limit to 2560/10240, so every child spawned from a
+// runner that launchd (or a launchd-spawned guard) started crashes at startup
+// with "error: An unknown error occurred (Unexpected)" and never writes a log.
+// Bun has no process.setrlimit and the child dies pre-JS, so the only fix is
+// raising the limit in the parent before exec: wrap the spawn in a tiny
+// /bin/sh that bumps the soft limit, then execs the real command (exec keeps
+// signals/stdio/pid semantics identical).
+export const NOFILE_BUMP_THRESHOLD = 65536;
+const NOFILE_BUMP_TARGET = 1048576;
+
+let cachedNofileSoft: number | undefined;
+let cachedNofileHard: number | undefined;
+
+function probeUlimitLimit(flag: '-Sn' | '-Hn'): number {
+  try {
+    const result = spawnSync('/bin/sh', ['-c', `ulimit ${flag}`], {
+      encoding: 'utf8',
+      timeout: 5000
+    });
+    if (result.status === 0) {
+      const parsed = Number.parseInt(result.stdout.trim(), 10);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+  } catch {
+    // Fall through — NaN is treated as "unknown".
+  }
+  return Number.NaN;
+}
+
+export function getNofileSoftLimit(): number {
+  if (cachedNofileSoft === undefined) {
+    cachedNofileSoft = probeUlimitLimit('-Sn');
+  }
+  return cachedNofileSoft;
+}
+
+function getNofileHardLimit(): number {
+  if (cachedNofileHard === undefined) {
+    // "unlimited" (and any non-numeric output) parses to NaN — "unknown".
+    cachedNofileHard = probeUlimitLimit('-Hn');
+  }
+  return cachedNofileHard;
+}
+
+/**
+ * Wrap a spawn command in `/bin/sh -c 'ulimit -n <target>; exec "$@"'` when the
+ * inherited RLIMIT_NOFILE soft limit is low enough to crash Bun-compiled
+ * binaries. Returns the command unchanged on Windows, when the soft limit is
+ * already comfortable (or unknown), or when it cannot be raised.
+ *
+ * The raise target is clamped to the inherited hard limit: as a non-root
+ * process `ulimit -n` cannot exceed the hard cap ("Operation not permitted"),
+ * which would silently no-op the mitigation. When the hard limit cannot be
+ * probed, the fixed target is used and the shell failure is swallowed so the
+ * child still launches.
+ *
+ * `platform`, `softLimit`, and `hardLimit` are injectable for tests.
+ */
+export function applyNofileBump(
+  command: string,
+  args: string[],
+  opts: { platform?: NodeJS.Platform; softLimit?: number; hardLimit?: number } = {}
+): HappyCliCommand {
+  const platform = opts.platform ?? process.platform;
+  if (platform === 'win32') {
+    return { command, args };
+  }
+  const softLimit = opts.softLimit ?? getNofileSoftLimit();
+  if (!Number.isFinite(softLimit) || softLimit >= NOFILE_BUMP_THRESHOLD) {
+    return { command, args };
+  }
+  let target = NOFILE_BUMP_TARGET;
+  const hardLimit = opts.hardLimit ?? getNofileHardLimit();
+  if (Number.isFinite(hardLimit)) {
+    if (hardLimit <= softLimit) {
+      // The soft limit cannot be raised at all — wrapping would only add a
+      // shell hop without changing the outcome.
+      return { command, args };
+    }
+    target = Math.min(target, hardLimit);
+  }
+  // `sh -c <script> <argv0> <cmd> <args...>`: the first arg after the script
+  // string becomes $0, so `"$@"` starts at the real command. Without `-c` sh
+  // would treat the script string as a file name and fail with exit 127;
+  // without the $0 placeholder `exec "$@"` would drop the real command.
+  return {
+    command: '/bin/sh',
+    args: ['-c', `ulimit -n ${target} 2>/dev/null; exec "$@"`, 'sh', command, ...args]
+  };
+}
 
 /**
  * Resolve the TypeScript entrypoint for development mode.
@@ -147,8 +244,12 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
   // for when "hapi" was started and don't care about the underlying node process
   // details and flags we use to achieve the same result.
   const fullCommand = `hapi ${args.join(' ')}`;
-  logger.debug(`[SPAWN HAPI CLI] Spawning: ${fullCommand} in ${directory}`);
-  
+  // A detached process outlives its spawner. On macOS, when the spawner's
+  // responsible process goes away with it (launchd-managed runner, or its npm
+  // launcher), the child must not keep it (see runtime/disclaimExec.ts).
+  const disclaimResponsibility = shouldDisclaimResponsibility(process.platform, options.detached, canDisclaimForChildren);
+  logger.debug(`[SPAWN HAPI CLI] Spawning: ${fullCommand} in ${directory}${disclaimResponsibility ? ' (macOS responsibility disclaim requested)' : ''}`);
+
   const compiledMode = isBunCompiled();
   const { command: spawnCommand, args: spawnArgs } = getHappyCliCommand(args);
 
@@ -180,11 +281,22 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
         : resolveInvokedCwd(options.cwd);
     shouldSetEnv = true;
   }
+  // Set or cleared explicitly so an inherited request never leaks to a child.
+  if (disclaimResponsibility) {
+    finalEnv[DISCLAIM_RESPONSIBILITY_ENV] = String(process.pid);
+  } else {
+    delete finalEnv[DISCLAIM_RESPONSIBILITY_ENV];
+  }
   if (shouldSetEnv) {
     finalOptions.env = finalEnv;
   }
   if (process.platform === 'win32' && options.detached) {
     finalOptions.windowsHide = true;
   }
-  return spawn(spawnCommand, spawnArgs, finalOptions);
+  // Only Bun-compiled binaries crash at low RLIMIT_NOFILE (plain `bun` runs
+  // fine) — dev-mode spawns keep their direct command line.
+  // Applied after the env assembly above so HAPI_CLI_EXECUTABLE keeps pointing
+  // at the real hapi binary even when the exec line is wrapped.
+  const bumped = compiledMode ? applyNofileBump(spawnCommand, spawnArgs) : { command: spawnCommand, args: spawnArgs };
+  return spawn(bumped.command, bumped.args, finalOptions);
 }

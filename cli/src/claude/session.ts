@@ -3,6 +3,7 @@ import { ApiClient, ApiSessionClient } from '@/lib';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { logger } from '@/ui/logger';
 import { AgentSessionBase } from '@/agent/sessionBase';
+import { appendClaudeSessionIdHistory } from '@hapi/protocol';
 import type { SessionEffort, SessionModel } from '@/api/types';
 import type { EnhancedMode } from './loop';
 import type { PermissionMode } from './loop';
@@ -25,7 +26,12 @@ export class Session extends AgentSessionBase<EnhancedMode> {
     readonly startedBy: 'runner' | 'terminal';
     readonly startingMode: 'local' | 'remote';
     localLaunchFailure: LocalLaunchFailure | null = null;
+    /** Model the local TUI runs, "[1m]" suffix intact: launch seed, then PostModelSwitch. */
+    localContextModel: string | null = null;
+    /** Epoch ms of the latest local UserPromptSubmit hook; older interrupt markers are stale. */
+    localTurnStartedAt = 0;
     private nativeSkillNames = new Set<string>();
+    private permissionModeListener: ((mode: PermissionMode) => void) | null = null;
 
     constructor(opts: {
         api: ApiClient;
@@ -59,10 +65,20 @@ export class Session extends AgentSessionBase<EnhancedMode> {
             mode: opts.mode,
             sessionLabel: 'Session',
             sessionIdLabel: 'Claude Code',
-            applySessionIdToMetadata: (metadata, sessionId) => ({
-                ...metadata,
-                claudeSessionId: sessionId
-            }),
+            applySessionIdToMetadata: (metadata, sessionId) => {
+                // Keep rotated-away ids so a later resume by an older Claude id
+                // still finds this HAPI session (hub resume-target-by-agent).
+                const history = appendClaudeSessionIdHistory(
+                    metadata.claudeSessionIdHistory,
+                    metadata.claudeSessionId,
+                    sessionId
+                );
+                return {
+                    ...metadata,
+                    claudeSessionId: sessionId,
+                    ...(history.length > 0 ? { claudeSessionIdHistory: history } : {})
+                };
+            },
             permissionMode: opts.permissionMode,
             model: opts.model,
             effort: opts.effort
@@ -84,6 +100,11 @@ export class Session extends AgentSessionBase<EnhancedMode> {
 
     setPermissionMode = (mode: PermissionMode): void => {
         this.permissionMode = mode;
+        this.permissionModeListener?.(mode);
+    };
+
+    setPermissionModeListener = (listener: ((mode: PermissionMode) => void) | null): void => {
+        this.permissionModeListener = listener;
     };
 
     // Override base getPermissionMode to return the Claude-narrow type. Safe

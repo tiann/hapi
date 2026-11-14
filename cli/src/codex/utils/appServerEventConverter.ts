@@ -1,4 +1,6 @@
 import { INCLUSIVE_INPUT_TOKEN_USAGE_MARKER } from '@hapi/protocol/usage';
+import { fileURLToPath } from 'node:url';
+import { recordCodexRateLimitsUpdate } from '@/agent/agentQuotas';
 import { logger } from '@/ui/logger';
 import { codexAssistantText } from './assistantText';
 
@@ -78,6 +80,17 @@ function extractGeneratedImageFileName(item: Record<string, unknown>, savedPath:
     const direct = asString(item.fileName ?? item.file_name ?? item.filename ?? item.name);
     if (direct) return direct;
     return savedPath.split(/[\\/]/).filter(Boolean).pop() ?? 'generated-image.png';
+}
+
+// imageView paths are a LegacyAppPathString: a plain path or a file:// URL.
+function extractViewedImagePath(value: unknown): string | null {
+    const raw = asString(value);
+    if (!raw?.startsWith('file://')) return raw;
+    try {
+        return fileURLToPath(raw);
+    } catch {
+        return null;
+    }
 }
 
 function extractChanges(value: unknown): Record<string, unknown> | null {
@@ -667,6 +680,7 @@ export class AppServerEventConverter {
         }
 
         if (method === 'account/rateLimits/updated') {
+            recordCodexRateLimitsUpdate(paramsRecord);
             return events;
         }
 
@@ -1040,6 +1054,8 @@ export class AppServerEventConverter {
             }
 
             if (itemType === 'commandexecution') {
+                const startedAtMs = asNumber(item.startedAtMs ?? item.started_at_ms);
+                const completedAtMs = asNumber(item.completedAtMs ?? item.completed_at_ms);
                 if (method === 'item/started') {
                     const command = extractCommand(item.command ?? item.cmd ?? item.args);
                     const cwd = asString(item.cwd ?? item.workingDirectory ?? item.working_directory);
@@ -1056,6 +1072,7 @@ export class AppServerEventConverter {
                     if (autoApproved !== null) meta.auto_approved = autoApproved;
                     if (commandActions) meta.command_actions = commandActions;
                     if (source) meta.command_source = source;
+                    if (startedAtMs !== null) meta.started_at_ms = startedAtMs;
                     this.commandMeta.set(itemId, meta);
 
                     events.push(scoped({
@@ -1067,6 +1084,9 @@ export class AppServerEventConverter {
 
                 if (method === 'item/completed') {
                     const meta = this.commandMeta.get(itemId) ?? {};
+                    // Completion snapshots can arrive without a start (reconnect or late shutdown).
+                    const command = extractCommand(item.command ?? item.cmd ?? item.args);
+                    const cwd = asString(item.cwd ?? item.workingDirectory ?? item.working_directory);
                     const output = asString(item.aggregatedOutput ?? item.aggregated_output ?? item.output ?? item.result ?? item.stdout)
                         ?? this.commandOutputBuffers.get(itemId);
                     const stderr = asString(item.stderr);
@@ -1079,11 +1099,14 @@ export class AppServerEventConverter {
                         type: 'exec_command_end',
                         call_id: itemId,
                         ...meta,
+                        ...(command ? { command } : {}),
+                        ...(cwd ? { cwd } : {}),
                         ...(output ? { output } : {}),
                         ...(stderr ? { stderr } : {}),
                         ...(error ? { error } : {}),
                         ...(exitCode !== null ? { exit_code: exitCode } : {}),
                         ...(durationMs !== null ? { duration_ms: durationMs } : {}),
+                        ...(completedAtMs !== null ? { completed_at_ms: completedAtMs } : {}),
                         ...(status ? { status } : {})
                     }));
 
@@ -1096,6 +1119,9 @@ export class AppServerEventConverter {
             }
 
             if (itemType === 'mcptoolcall') {
+                const startedAtMs = asNumber(item.startedAtMs ?? item.started_at_ms);
+                const completedAtMs = asNumber(item.completedAtMs ?? item.completed_at_ms);
+                const durationMs = asNumber(item.durationMs ?? item.duration_ms);
                 const server = asString(item.server ?? item.serverName ?? item.server_name);
                 const tool = asString(item.tool ?? item.toolName ?? item.tool_name ?? item.name);
                 const input = item.arguments ?? item.input ?? {};
@@ -1106,6 +1132,7 @@ export class AppServerEventConverter {
                         call_id: itemId,
                         server,
                         tool,
+                        ...(startedAtMs !== null ? { started_at_ms: startedAtMs } : {}),
                         invocation: {
                             server,
                             tool,
@@ -1121,7 +1148,9 @@ export class AppServerEventConverter {
                         call_id: itemId,
                         server,
                         tool,
-                        result: error ? { Err: error } : item.result
+                        result: error ? { Err: error } : item.result,
+                        ...(durationMs !== null ? { duration_ms: durationMs } : {}),
+                        ...(completedAtMs !== null ? { completed_at_ms: completedAtMs } : {})
                     }));
                 }
 
@@ -1146,7 +1175,19 @@ export class AppServerEventConverter {
                 return events;
             }
 
+            if (itemType === 'imageview') {
+                // The item id is the view_image tool call id (exec-* inside code mode),
+                // so clients can tie the shown image to that tool card.
+                const path = extractViewedImagePath(item.path);
+                if (method === 'item/completed' && path) {
+                    events.push(scoped({ type: 'viewed_image', call_id: itemId, path }));
+                }
+                return events;
+            }
+
             if (itemType === 'collabagenttoolcall') {
+                const startedAtMs = asNumber(item.startedAtMs ?? item.started_at_ms);
+                const completedAtMs = asNumber(item.completedAtMs ?? item.completed_at_ms);
                 if (this.rawAgentToolCallIds.has(itemId)) return events;
                 const toolName = normalizeCollabAgentToolName(item.tool ?? item.name);
                 if (!toolName) return events;
@@ -1156,6 +1197,7 @@ export class AppServerEventConverter {
                         type: 'codex_tool_call_begin',
                         call_id: itemId,
                         name: toolName,
+                        ...(startedAtMs !== null ? { started_at_ms: startedAtMs } : {}),
                         input: buildCollabAgentInput(item, toolName)
                     }));
                 }
@@ -1166,6 +1208,7 @@ export class AppServerEventConverter {
                         type: 'codex_tool_call_end',
                         call_id: itemId,
                         name: toolName,
+                        ...(completedAtMs !== null ? { completed_at_ms: completedAtMs } : {}),
                         output: buildCollabAgentOutput(item, toolName),
                         is_error: status === 'failed' || status === 'error'
                     }));
@@ -1175,12 +1218,15 @@ export class AppServerEventConverter {
             }
 
             if (itemType === 'filechange') {
+                const startedAtMs = asNumber(item.startedAtMs ?? item.started_at_ms);
+                const completedAtMs = asNumber(item.completedAtMs ?? item.completed_at_ms);
                 if (method === 'item/started') {
                     const changes = extractChanges(item.changes ?? item.change ?? item.diff);
                     const autoApproved = asBoolean(item.autoApproved ?? item.auto_approved);
                     const meta: Record<string, unknown> = {};
                     if (changes) meta.changes = changes;
                     if (autoApproved !== null) meta.auto_approved = autoApproved;
+                    if (startedAtMs !== null) meta.started_at_ms = startedAtMs;
                     this.fileChangeMeta.set(itemId, meta);
 
                     events.push(scoped({
@@ -1202,6 +1248,7 @@ export class AppServerEventConverter {
                         ...meta,
                         ...(stdout ? { stdout } : {}),
                         ...(stderr ? { stderr } : {}),
+                        ...(completedAtMs !== null ? { completed_at_ms: completedAtMs } : {}),
                         success: success ?? false
                     }));
 

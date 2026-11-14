@@ -552,44 +552,114 @@ describe('FcmNotificationChannel', () => {
         expect(sent[0].data.severity).toBe('warning')
     })
 
-    it('sets severity=success on completed task notifications', async () => {
-        const sent: FcmSendPayload[] = []
-        const channel = new FcmNotificationChannel(
-            { sendToNamespace: async (_n: string, p: FcmSendPayload) => { sent.push(p) } } as never,
-            { sendToast: async () => 0 } as never,
-            { hasVisibleConnection: () => false } as never
-        )
-        await channel.sendTaskNotification(createSession(), { status: 'completed', summary: 'Tests passed' })
-        expect(sent[0].data.severity).toBe('success')
-    })
 
-    it('sets severity=error on failed task notifications', async () => {
-        const sent: FcmSendPayload[] = []
-        const channel = new FcmNotificationChannel(
-            { sendToNamespace: async (_n: string, p: FcmSendPayload) => { sent.push(p) } } as never,
-            { sendToast: async () => 0 } as never,
-            { hasVisibleConnection: () => false } as never
-        )
-        // The hub's failure detection catches 'failed' / 'error' / 'killed' / 'aborted'.
-        for (const status of ['failed', 'error', 'killed', 'aborted']) {
-            sent.length = 0
-            await channel.sendTaskNotification(createSession(), { status, summary: 'oh no' })
-            expect(sent[0].data.severity).toBe('error')
-        }
-    })
 
-    it('sendTaskNotification caps long task summaries for FCM data limits', async () => {
+
+    it('sendModelError fires FCM with severity=error even when PWA is foreground', async () => {
         const sent: FcmSendPayload[] = []
+        const toasts: unknown[] = []
         const channel = new FcmNotificationChannel(
-            { sendToNamespace: async (_n: string, p: FcmSendPayload) => { sent.push(p) } } as never,
-            { sendToast: async () => 0 } as never,
-            { hasVisibleConnection: () => false } as never
+            {
+                sendToNamespace: async (_namespace: string, payload: FcmSendPayload) => {
+                    sent.push(payload)
+                }
+            } as never,
+            {
+                sendToast: async (_namespace: string, event: unknown) => {
+                    toasts.push(event)
+                    return 1
+                }
+            } as never,
+            {
+                hasVisibleConnection: () => true
+            } as never
         )
-        await channel.sendTaskNotification(createSession(), {
-            status: 'completed',
-            summary: 'T'.repeat(500)
+
+        await channel.sendModelError(createSession(), {
+            eventId: 'evt-1710000000000',
+            kind: 'quota_exhausted',
+            transient: false,
+            rawSnippet: 'You have hit your usage limit',
+            priorAssistantClaimsDone: true,
+            atTs: 1710000000000
         })
-        expect(sent[0].body).toContain('...')
-        expect(sent[0].body.length).toBeLessThan(350)
+
+        expect(sent).toHaveLength(1)
+        expect(toasts).toHaveLength(0)
+        expect(sent[0].data.type).toBe('model-error')
+        expect(sent[0].data.severity).toBe('error')
+        expect(sent[0].tag).toBe('model-error-session-ready-evt-1710000000000')
+        expect(sent[0].data.tag).toBe('model-error-session-ready-evt-1710000000000')
+        expect(sent[0].title).toBe('Quota exhausted')
+        expect(sent[0].body).toContain('Codex')
+        expect(sent[0].body).toContain('Demo')
+    })
+
+    it('sendModelError uses distinct tags per eventId so errors do not collapse', async () => {
+        const sent: FcmSendPayload[] = []
+        const channel = new FcmNotificationChannel(
+            { sendToNamespace: async (_n: string, p: FcmSendPayload) => { sent.push(p) } } as never,
+            { sendToast: async () => 0 } as never,
+            { hasVisibleConnection: () => false } as never
+        )
+
+        const base = {
+            kind: 'rate_limited',
+            transient: true,
+            rawSnippet: 'slow down',
+            priorAssistantClaimsDone: false
+        }
+
+        await channel.sendModelError(createSession(), { ...base, eventId: 'evt-1', atTs: 1 })
+        await channel.sendModelError(createSession(), { ...base, eventId: 'evt-2', atTs: 2 })
+
+        expect(sent[0].tag).toBe('model-error-session-ready-evt-1')
+        expect(sent[1].tag).toBe('model-error-session-ready-evt-2')
+        expect(sent[0].data.type).toBe('model-error')
+        expect(sent[1].data.severity).toBe('error')
+    })
+
+    it('sendModelError sets nativeGate.sent when FCM delivers', async () => {
+        const gate = { sent: false }
+        const channel = new FcmNotificationChannel(
+            {
+                sendToNamespace: async () => ({ sent: 1, failed: 0, invalidTokens: [] })
+            } as never,
+            { sendToast: async () => 0 } as never,
+            { hasVisibleConnection: () => false } as never
+        )
+
+        await channel.sendModelError(createSession(), {
+            eventId: 'evt-9',
+            kind: 'quota_exhausted',
+            transient: false,
+            rawSnippet: 'limit',
+            priorAssistantClaimsDone: false,
+            atTs: 9
+        }, { nativeGate: gate })
+
+        expect(gate.sent).toBe(true)
+    })
+
+    it('sendModelError leaves nativeGate.sent false when FCM sends zero', async () => {
+        const gate = { sent: false }
+        const channel = new FcmNotificationChannel(
+            {
+                sendToNamespace: async () => ({ sent: 0, failed: 1, invalidTokens: [] })
+            } as never,
+            { sendToast: async () => 0 } as never,
+            { hasVisibleConnection: () => false } as never
+        )
+
+        await channel.sendModelError(createSession(), {
+            eventId: 'evt-9',
+            kind: 'quota_exhausted',
+            transient: false,
+            rawSnippet: 'limit',
+            priorAssistantClaimsDone: false,
+            atTs: 9
+        }, { nativeGate: gate })
+
+        expect(gate.sent).toBe(false)
     })
 })

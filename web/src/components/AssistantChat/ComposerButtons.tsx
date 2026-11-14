@@ -1,12 +1,13 @@
-import { ComposerPrimitive } from '@assistant-ui/react'
+import { ComposerPrimitive, useAui } from '@assistant-ui/react'
 import type { ConversationStatus } from '@/realtime/types'
 import { useTranslation } from '@/lib/use-translation'
 import { ScheduleIcon } from '@/components/icons'
+import { AttachmentPicker } from './AttachmentPicker'
 import { ScheduleTimePicker } from './ScheduleTimePicker'
 import type { PendingSchedule } from './ScheduleTimePicker'
 import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
-import { Children, isValidElement, useRef, useState, type ReactElement, type ReactNode, type Ref } from 'react'
+import { Children, isValidElement, useCallback, useRef, useState, type ReactElement, type ReactNode, type Ref } from 'react'
 import { useComposerToolbarLayout, type ComposerToolbarItemId, type ComposerToolbarLayout } from '@/hooks/useComposerToolbarLayout'
 import { useNarrowViewport } from '@/hooks/useNarrowViewport'
 import type { ComposerSendIntent } from '@/lib/messageDelivery'
@@ -408,12 +409,13 @@ export function ComposerToolbarItemPreview(props: { item: ComposerToolbarItemId;
             case 'voiceMic': return <SpeakerIcon />
             case 'scratchlist': return <ScratchlistToggleIcon />
             case 'schedule': return <ScheduleIcon className="h-[18px] w-[18px]" />
+            case 'fast': return <span className="text-xs font-medium">{props.label}</span>
             case 'model':
             case 'effort':
                 return <><span className="max-w-24 truncate text-xs font-medium">{props.label}</span><ChevronIcon /></>
         }
     })()
-    const isTextControl = props.item === 'model' || props.item === 'effort'
+    const isTextControl = props.item === 'model' || props.item === 'effort' || props.item === 'fast'
     return (
         <span
             className={`flex h-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 ${isTextControl ? 'gap-1 px-3' : 'w-8'}`}
@@ -504,6 +506,66 @@ function ScratchlistToggleButton(props: {
     )
 }
 
+/**
+ * TerminalButton — just-in-time FUE for terminal → agent (#2011).
+ *
+ * The terminal icon is the only composer entry into the session PTY, so it
+ * carries the discovery tip for To agent / Selection to agent. First click
+ * shows the explainer only: navigating away would unmount this button (and
+ * the callout) before the operator could read it. Got it acknowledges and
+ * then performs the navigation they originally wanted.
+ */
+function TerminalButton(props: {
+    label: string
+    onTerminal: () => void
+    disabled: boolean
+}) {
+    const { t } = useTranslation()
+    const fue = useFue('composer-terminal-to-agent')
+    const buttonRef = useRef<HTMLButtonElement>(null)
+
+    return (
+        <>
+            <button
+                ref={buttonRef}
+                type="button"
+                aria-label={props.label}
+                title={props.label}
+                className="relative flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={() => {
+                    if (fue.status !== 'acknowledged') {
+                        fue.engage()
+                        return
+                    }
+                    props.onTerminal()
+                }}
+                disabled={props.disabled}
+            >
+                <TerminalIcon />
+                {fue.status !== 'acknowledged' ? (
+                    <FueDot
+                        pulsing={fue.status === 'unseen'}
+                        ariaLabel={t('fue.newFeatureDot')}
+                    />
+                ) : null}
+            </button>
+            {fue.status === 'engaging' ? (
+                <FueCallout
+                    title={t('terminal.toAgent.fueTitle')}
+                    body={t('terminal.toAgent.fueBody')}
+                    onDismiss={() => {
+                        fue.dismiss()
+                        props.onTerminal()
+                    }}
+                    dismissLabel={t('fue.gotIt')}
+                    closeAriaLabel={t('fue.closeAriaLabel')}
+                    anchorRef={buttonRef}
+                />
+            ) : null}
+        </>
+    )
+}
+
 function StopIcon() {
     return (
         <svg
@@ -540,6 +602,9 @@ export function UnifiedButton(props: {
     canSend: boolean
     voiceStatus: ConversationStatus
     voiceEnabled: boolean
+    dictationEnabled?: boolean
+    /** When false, the dictation Send button is hidden (direct send not eligible). */
+    dictationCanDirectSend?: boolean
     controlsDisabled: boolean
     onSend: (intent?: ComposerSendIntent) => void
     onVoiceToggle: () => void
@@ -567,6 +632,7 @@ export function UnifiedButton(props: {
     const isConnecting = props.voiceStatus === 'connecting'
     const isConnected = props.voiceStatus === 'connected'
     const isVoiceActive = isConnecting || isConnected
+    const isDictation = props.dictationEnabled ?? false
     const hasText = props.canSend
     const routesToScratchlist = props.routesToScratchlist ?? false
     const fillHeight = props.fillHeight ?? true
@@ -627,18 +693,36 @@ export function UnifiedButton(props: {
     )
 
     return (
-        <button
-            type="button"
-            onClick={handleClick}
-            disabled={isDisabled}
-            aria-label={ariaLabel}
-            title={ariaLabel}
-            data-testid="composer-unified-button"
-            data-size={fillHeight ? 'fill' : 'compact'}
-            className={`flex ${unifiedButtonSizeClass(fillHeight)} items-center justify-center transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
-        >
-            {icon}
-        </button>
+        <>
+            <button
+                type="button"
+                onClick={handleClick}
+                disabled={isDisabled}
+                aria-label={ariaLabel}
+                title={ariaLabel}
+                data-testid="composer-unified-button"
+                data-size={fillHeight ? 'fill' : 'compact'}
+                className={`flex ${unifiedButtonSizeClass(fillHeight)} items-center justify-center transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${className}`}
+            >
+                {icon}
+            </button>
+            {isDictation && isConnected && props.dictationCanDirectSend ? (
+                // Explicit send action while dictation is connected: mouse/touch
+                // users must be able to reach the session-bound stopAndSend path
+                // (handleSend's dictation branch) without first stopping the
+                // recording, or the transcript is only sendable via keyboard.
+                <button
+                    type="button"
+                    onClick={() => props.onSend('default')}
+                    disabled={props.controlsDisabled}
+                    aria-label={t('composer.send')}
+                    title={t('composer.send')}
+                    className="ml-1 flex self-center h-8 w-8 items-center justify-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 bg-black text-white"
+                >
+                    <SendIcon />
+                </button>
+            ) : null}
+        </>
     )
 }
 
@@ -692,6 +776,23 @@ export function DictationButton(props: {
     )
 }
 
+/**
+ * Start every selected file immediately so inactive-session attachment handoff
+ * can coalesce one multi-file selection into a single transfer.
+ */
+export async function addSelectedAttachments(
+    addAttachment: (file: File) => Promise<void>,
+    files: readonly File[],
+): Promise<void> {
+    await Promise.all(files.map(async (file) => {
+        try {
+            await addAttachment(file)
+        } catch (error) {
+            console.error('Error adding selected attachment:', error)
+        }
+    }))
+}
+
 export function ComposerButtons(props: {
     canSend: boolean
     controlsDisabled: boolean
@@ -715,6 +816,8 @@ export function ComposerButtons(props: {
     onSwitch: () => void
     voiceEnabled: boolean
     dictationEnabled?: boolean
+    /** When false, the dictation Send button is hidden (direct send not eligible). */
+    dictationCanDirectSend?: boolean
     voiceStatus: ConversationStatus
     voiceMicMuted?: boolean
     onVoiceToggle: () => void
@@ -728,12 +831,18 @@ export function ComposerButtons(props: {
     // The composer must surface that constraint at UI time so the user never
     // builds a submission the hub will reject — see hub/web/routes/messages.ts.
     hasAttachments?: boolean
+    // SessionChat omits the attachment adapter when an inactive session cannot
+    // resume. Keep the custom mobile picker disabled in that state instead of
+    // accepting a file that assistant-ui cannot attach.
+    attachmentsEnabled?: boolean
     // Generic model/effort value buttons
     modelValueLabel?: string
     modelValueButtonRef?: Ref<HTMLButtonElement>
     modelValueDisabled?: boolean
     modelValueOpen?: boolean
     onModelValueToggle?: () => void
+    fastModeEnabled?: boolean
+    onFastModeToggle?: () => void
     effortValueLabel?: string
     effortValueButtonRef?: Ref<HTMLButtonElement>
     effortValueDisabled?: boolean
@@ -772,7 +881,13 @@ export function ComposerButtons(props: {
 
     const hasSchedule = props.pendingSchedule != null
     const hasAttachments = props.hasAttachments ?? false
+    const attachmentsEnabled = props.attachmentsEnabled ?? true
     const toolbarJustifyContent = getComposerToolbarJustifyContent(layout.mode)
+    const api = useAui()
+    const handleAttachmentFiles = useCallback(async (files: readonly File[]) => {
+        const composer = api.composer()
+        await addSelectedAttachments((file) => composer.addAttachment(file), files)
+    }, [api])
 
     return (
         <div className="flex shrink-0 items-center gap-1 px-2 pb-2">
@@ -783,14 +898,21 @@ export function ComposerButtons(props: {
             >
                 <OrderedToolbarItems layout={effectiveLayout}>
                 <ToolbarItemSlot item="attachment">
-                <ComposerPrimitive.AddAttachment
-                    aria-label={t('composer.attach')}
-                    title={t('composer.attach')}
-                    disabled={props.controlsDisabled || hasSchedule}
-                    className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                    <AttachmentIcon />
-                </ComposerPrimitive.AddAttachment>
+                {isNarrowViewport ? (
+                    <AttachmentPicker
+                        disabled={props.controlsDisabled || hasSchedule || !attachmentsEnabled}
+                        onFilesSelected={handleAttachmentFiles}
+                    />
+                ) : (
+                    <ComposerPrimitive.AddAttachment
+                        aria-label={t('composer.attach')}
+                        title={t('composer.attach')}
+                        disabled={props.controlsDisabled || hasSchedule}
+                        className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                        <AttachmentIcon />
+                    </ComposerPrimitive.AddAttachment>
+                )}
                 </ToolbarItemSlot>
 
                 <ToolbarItemSlot item="settings">
@@ -814,6 +936,26 @@ export function ComposerButtons(props: {
                     expanded={props.expanded}
                     onToggle={props.onExpandedToggle}
                 />
+                </ToolbarItemSlot>
+
+                <ToolbarItemSlot item="fast">
+                {props.onFastModeToggle ? (
+                    <button
+                        type="button"
+                        aria-label={t('misc.fastMode')}
+                        aria-pressed={props.fastModeEnabled}
+                        title={t('misc.fastMode')}
+                        disabled={props.controlsDisabled}
+                        onClick={props.onFastModeToggle}
+                        className={`flex h-8 items-center rounded-full px-3 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                            props.fastModeEnabled
+                                ? 'bg-[var(--app-button)] text-[var(--app-button-text)]'
+                                : 'text-[var(--app-fg)]/60 hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)]'
+                        }`}
+                    >
+                        {t('misc.fastModeFast')}
+                    </button>
+                ) : null}
                 </ToolbarItemSlot>
 
                 <ToolbarItemSlot item="model">
@@ -860,16 +1002,11 @@ export function ComposerButtons(props: {
 
                 <ToolbarItemSlot item="terminal">
                 {props.showTerminalButton ? (
-                    <button
-                        type="button"
-                        aria-label={props.terminalLabel}
-                        title={props.terminalLabel}
-                        className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--app-fg)]/60 transition-colors hover:bg-[var(--app-bg)] hover:text-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
-                        onClick={props.onTerminal}
+                    <TerminalButton
+                        label={props.terminalLabel}
+                        onTerminal={props.onTerminal}
                         disabled={props.terminalDisabled}
-                    >
-                        <TerminalIcon />
-                    </button>
+                    />
                 ) : null}
                 </ToolbarItemSlot>
 
@@ -1011,6 +1148,8 @@ export function ComposerButtons(props: {
                     canSend={props.canSend}
                     voiceStatus={props.voiceStatus}
                     voiceEnabled={props.voiceEnabled}
+                    dictationEnabled={props.dictationEnabled}
+                    dictationCanDirectSend={props.dictationCanDirectSend}
                     controlsDisabled={props.controlsDisabled}
                     onSend={props.onSend}
                     onVoiceToggle={props.onVoiceToggle}

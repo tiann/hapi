@@ -5,6 +5,9 @@ independent from the web app; shares the
 [client contract](../docs/api/client-contract/index.md) and the web-generated
 golden fixtures (`shared/fixtures/`).
 
+End users: install HAPI from [Google Play](https://play.google.com/store/apps/details?id=run.hapi.companion).
+This README covers development builds.
+
 - **applicationId**: `run.hapi.companion` · **minSdk** 26 · **target/compileSdk** 36
 - **Toolchain**: Gradle 8.14.2 (wrapper) · AGP 8.11.1 · Kotlin 2.1.21 · Compose BOM 2025.05.00 · JDK 17+ (CI uses 21)
 
@@ -24,6 +27,13 @@ differences, pairing and features currently available through the web.
 - **Composer:** optimistic send, queue/steer where supported, drafts and
   attachments uploaded on selection. Slash suggestions combine session
   metadata and the slash-command RPC; the skills `$` picker has no UI.
+- **Incoming shares:** Android Share → HAPI accepts single/multiple files,
+  captions, text and links. Choose a session on the current or another paired
+  hub; stopped sessions require explicit restore before upload. Content is
+  added to the existing composer for manual sending. Private, no-backup
+  staging survives pairing and process recreation until handoff, with a
+  24-hour pending-content lifetime. Once imported, attachments follow the
+  ordinary composer lifecycle (they are not persisted as attachment drafts).
 - **Dictation:** provider discovery on chat entry picks the first
   `standard`-capable provider. The microphone stays hidden until one is
   available. First use requests `RECORD_AUDIO`; `MediaRecorder` records
@@ -175,8 +185,10 @@ for wire details and [relay deployment](../relay/README.md) for maintainer setup
 
 The [Android Official Build workflow](../.github/workflows/android-release.yml)
 is manually dispatched on `main`.
-It tests and uploads signed APK/AAB artifacts; it does not publish to Play.
-Provide a new positive `version_code` and the desired `version_name`.
+It tests and uploads signed APK/AAB workflow artifacts. It does not publish to
+Google Play itself; the maintainer uploads the AAB to the Play Console.
+Provide the desired `version_name`; `versionCode` is the git commit count of the
+dispatched commit (artifact `hapi-android-<versionCode>`).
 
 Repository configuration, set once by the maintainer:
 
@@ -192,8 +204,11 @@ Repository configuration, set once by the maintainer:
 `-PhapiOfficialBuild=true -PhapiFirebaseProjectId=<project>` requires a
 matching Firebase project/package and release signing configuration.
 Missing or mismatched settings fail the build instead of shipping a package
-without working push. `hapiVersionCode` and `hapiVersionName` override the
-normal version defaults. The Firebase service-account private key belongs
+without working push. `versionCode` is derived automatically from the git
+commit count (`git rev-list --count HEAD`), so official builds need full
+history (the workflow checks out with `fetch-depth: 0`; shallow clones are
+rejected) and must come from `main`. Builds without git fall back to `1`.
+`hapiVersionName` overrides the default `versionName`. The Firebase service-account private key belongs
 only on the relay and must never enter Android build artifacts.
 
 Roll out relay support/credentials first, then the hub, then the app. Verify
@@ -358,10 +373,41 @@ content, or a failed clipboard operation, offers UTF-8 file export through
 FileProvider and Android's sharesheet; Binder receives a URI, not the text.
 Exports older than 24 hours are cleaned on the next export.
 
-Body/composer/user text uses 16sp/24sp, code/diff/terminal 14sp/20sp, captions
-12sp/16sp. Content and composer share a centered 720dp reading column with
-16dp minimum side margins. Bubble widths use actual container constraints,
+Reading metrics match iOS `HapiTypography` (`ui/theme/HapiTypography.kt`):
+body/composer/user text 16sp/24sp with zero tracking, strict CJK line breaking
+and leading trimmed above the first and below the last line; code/diff/terminal
+14sp/20sp in bundled JetBrains Mono NL (SIL OFL, no ligatures); inline code 14sp
+on a glyph-hugging chip; captions 12sp/16sp; headings 24/20/18/17sp semibold.
+Markdown blocks are 12dp apart, 24dp before a heading and 8dp after one; list
+items 8dp. Transcript rows use iOS `TranscriptRowRole` gaps (8dp between tools
+or between user prompts, 24dp before and 16dp after a user turn, otherwise
+12dp). Content and composer share a centered 720dp reading column with 16dp
+minimum side margins. Bubble widths use actual container constraints,
 including split-screen; Android font scaling remains enabled.
+
+Chat surfaces stay neutral gray: the static schemes carry hue-free surface
+ladders, and `NeutralChatSurfaces` reapplies them over Material You so the
+wallpaper only tints accents inside a conversation (presets and OLED pass
+through). Transcript icons are Material Symbols Rounded vector drawables
+(`res/drawable/ic_sym_*`, Apache-2.0), never emoji or text glyphs. Inline
+actions (approvals, plan actions) share `ChatActionButton`: 48dp minimum,
+10dp corners, one filled primary per row.
+
+### Visual specimens
+
+`app/src/test/.../specimens/` renders deterministic, non-networked specimens
+(Markdown, reasoning, tool cards, approvals, composer states) under Robolectric
+native graphics in light/dark/OLED. Ordinary unit-test runs only compose them;
+capture images with:
+
+```sh
+./gradlew :app:recordRoborazziDebug --tests 'app.hapi.companion.specimens.*'
+# → app/build/outputs/roborazzi/specimens/*.png
+```
+
+They are review aids for visual changes, not committed goldens or store
+screenshots. Roborazzi is pinned to 1.60.0: later releases ship Kotlin 2.3
+metadata this Kotlin 2.1 build cannot read.
 
 ## Connection status and home filters
 
@@ -373,13 +419,33 @@ preserving replay cursors; background retries defer until foreground. A local
 hub route does not need Android's internet-validation capability.
 
 Home centers the Sessions title between a **Hubs and settings** icon and a
-**Filters** icon, keeping the new-session FAB. The hub menu is the only entry
+**Sort & filter** icon, keeping the new-session FAB. The hub menu is the only entry
 for switching/adding hubs, app settings and sign-out; the active hub is checked.
-The filter icon marks an applied filter and opens a Material 3 single-selection
-sheet. Choices come from all sessions, including historical
+The icon carries a dot for any applied filter or a non-default order and opens
+one compact Material 3 sheet that mirrors the web sort and filter menu without
+scrolling: under **Filter**, single "label · value" rows for **Machines** (two or
+more machines; a menu with per-machine session counts), **Activity dates**
+(opens the range picker) and **Show** all / active only / archived only, plus an
+**Unread only** switch; under **Sort**, **Sort by** last message (default) or
+date created and an **Active first** switch (on by default: connected sessions
+lead the pinned and recent sections, below manual pins), both persisted
+app-wide in `hapi_prefs`. **Reset** and **Done** sit in the sheet header. Status and unread
+filters keep the open session listed; search ranks by relevance with the base
+order as tie-break, as on web. Machine choices come from all sessions, including historical
 machines; names/IDs determine ordering, never counts. Duplicate names include
-IDs; unnamed and unknown machines are labeled. The applied filter has a Clear
-action, is transient per home/hub, and is cleared when no longer valid.
+IDs; unnamed and unknown machines are labeled. **Reset** clears the filters (not
+the order); filters are transient per home/hub and cleared when no longer valid.
+The share picker reuses the list model with the base order.
+
+Each row's agent icon carries the web presence badge (one mark per state):
+solid green pulsing while working, solid blue pulsing when only background
+tasks run, a green ring when connected and waiting, and a power mark when
+stopped or archived. A running [attached job](../docs/guide/session-jobs.md)
+counts as working even when the agent is idle or disconnected, keeps the session
+under **Active only**, and adds a line under the meta line:
+`label · remaining or percent · elapsed` with a thin bar (determinate only for
+an honest fraction), amber with `no heartbeat` after 15 minutes. Job patches are
+versioned like web's: a lagged heartbeat cannot resurrect a cleared job.
 The home holder follows the active connection instance, releasing the previous
 store and filter even when switching back to a previously used hub URL.
 
@@ -405,3 +471,7 @@ dependency calling the removed `InputManager.getInstance()` method.
 
 Earlier API 29 checks passed 19 chat/reader regressions. No 60/120 Hz device
 frame-time, memory, or predictive-back measurements are claimed by these checks.
+
+Unread state uses the hub’s [revision read-state contract](../docs/api/client-contract/read-state.md).
+List selection and metadata updates never acknowledge reading. The resumed chat
+acknowledges only its rendered tail, with a durable outbox scoped by hub and namespace.

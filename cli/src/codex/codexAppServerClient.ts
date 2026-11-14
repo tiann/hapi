@@ -4,7 +4,12 @@ import WebSocket from 'ws';
 import { logger } from '@/ui/logger';
 import { JsonLineParser } from '@/utils/jsonLineParser';
 import { killProcessByChildProcess } from '@/utils/process';
+import { CODEX_WEBSOCKET_MAX_PAYLOAD } from './websocketLimits';
+import { resolveModelCatalogArgs } from './utils/modelCatalog';
+import { resolveSelectedCodexCommand } from './utils/codexExecutable';
 import type {
+    AccountRateLimitsReadResponse,
+    AccountReadResponse,
     CollaborationModeListResponse,
     InitializeParams,
     InitializeResponse,
@@ -229,7 +234,7 @@ export class CodexAppServerClient extends JsonLineParser {
             const url = endpoint.startsWith('unix://') ? `ws+unix://${endpoint.slice(7)}:/` : endpoint;
             const socket = new WebSocket(url, {
                 headers: { Host: 'localhost', ...(this.options.token ? { Authorization: `Bearer ${this.options.token}` } : {}) },
-                maxPayload: 64 * 1024 * 1024,
+                maxPayload: CODEX_WEBSOCKET_MAX_PAYLOAD,
                 perMessageDeflate: false,
                 handshakeTimeout: 10_000
             });
@@ -254,9 +259,10 @@ export class CodexAppServerClient extends JsonLineParser {
             return;
         }
 
-        const codexCommand = resolveCodexAppServerCommand();
-        logger.debug(`[CodexAppServer] Starting ${codexCommand} app-server`);
-        const child = spawn(codexCommand, ['app-server'], {
+        const codexCommand = resolveSelectedCodexCommand(resolveCodexAppServerCommand());
+        logger.debug(`[CodexAppServer] Starting ${codexCommand.command} app-server`);
+        const catalogArgs = resolveModelCatalogArgs();
+        const child = spawn(codexCommand.command, [...codexCommand.args, 'app-server', ...catalogArgs], {
             cwd: this.options.cwd,
             env: Object.keys(process.env).reduce((acc, key) => {
                 const value = process.env[key];
@@ -264,7 +270,7 @@ export class CodexAppServerClient extends JsonLineParser {
                 return acc;
             }, {} as Record<string, string>),
             stdio: ['pipe', 'pipe', 'pipe'],
-            shell: process.platform === 'win32',
+            shell: false,
             windowsHide: process.platform === 'win32'
         });
         this.process = child;
@@ -360,6 +366,20 @@ export class CodexAppServerClient extends JsonLineParser {
             timeoutMs: 30_000
         });
         return response as ModelListResponse;
+    }
+
+    async readAccount(): Promise<AccountReadResponse> {
+        const response = await this.sendRequest('account/read', {}, {
+            timeoutMs: 15_000
+        });
+        return response as AccountReadResponse;
+    }
+
+    async readRateLimits(): Promise<AccountRateLimitsReadResponse> {
+        const response = await this.sendRequest('account/rateLimits/read', {}, {
+            timeoutMs: 15_000
+        });
+        return response as AccountRateLimitsReadResponse;
     }
 
     async listSkills(params: SkillsListParams): Promise<SkillsListResponse> {
@@ -518,7 +538,7 @@ export class CodexAppServerClient extends JsonLineParser {
         return response as ThreadGoalClearResponse;
     }
 
-    async disconnect(): Promise<void> {
+    async disconnect(options?: { gracefulTimeoutMs?: number }): Promise<void> {
         if (this.socket) {
             const socket = this.socket;
             this.socket = null;
@@ -537,7 +557,18 @@ export class CodexAppServerClient extends JsonLineParser {
 
         try {
             child?.stdin.end();
-            if (child) {
+            if (child && options?.gracefulTimeoutMs && child.exitCode === null && child.signalCode === null) {
+                // Read/fork helpers have no active turns after archiving their
+                // temporary child. EOF normally exits the native server; avoid
+                // an expensive Windows process-tree probe in the Runner loop.
+                await new Promise<void>(resolve => {
+                    const finish = () => { clearTimeout(timer); child.off('exit', finish); child.off('error', finish); resolve(); };
+                    const timer = setTimeout(finish, options.gracefulTimeoutMs);
+                    child.once('exit', finish); child.once('error', finish);
+                    if (child.exitCode !== null || child.signalCode !== null) finish();
+                });
+            }
+            if (child && child.exitCode === null && child.signalCode === null) {
                 await killProcessByChildProcess(child);
             }
         } catch (error) {

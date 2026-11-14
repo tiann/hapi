@@ -72,6 +72,25 @@ function ProgrammaticEditHarness() {
     )
 }
 
+function MentionHarness() {
+    const [value, setValue] = useState('')
+    const ref = useRef<RichComposerInputHandle>(null)
+
+    return (
+        <>
+            <button
+                type="button"
+                onClick={() =>
+                    ref.current?.insertSessionMention({ id: 'sid-1', title: '아주 긴 데모 세션 이름 예시 말줄임표 필요' })
+                }
+            >
+                Insert mention
+            </button>
+            <RichComposerInput ref={ref} value={value} onValueChange={setValue} onMirrorChange={() => {}} />
+        </>
+    )
+}
+
 function LineBreakDeletionHarness() {
     const [value, setValue] = useState('hello')
 
@@ -88,6 +107,22 @@ function LineBreakDeletionHarness() {
         </>
     )
 }
+
+describe('RichComposerInput session mention pill', () => {
+    it('renders the mention pill with working text ellipsis clipping', () => {
+        render(<MentionHarness />)
+
+        fireEvent.click(screen.getByRole('button', { name: 'Insert mention' }))
+
+        const pill = screen.getByText('@아주 긴 데모 세션 이름 예시 말줄임표 필요')
+        // Ellipsis lives on the inner label; the pill itself centers it vertically.
+        expect(pill.className).toContain('truncate')
+        expect(pill.parentElement?.dataset.composerMention).toBe('session')
+        expect(pill.parentElement?.className).toContain('inline-flex')
+        expect(pill.parentElement?.className).toContain('align-baseline')
+        expect(pill.parentElement?.className).not.toContain('overflow-hidden')
+    })
+})
 
 describe('RichComposerInput responsive placeholder', () => {
     it('calculates a smaller font that fits overflowing text', () => {
@@ -348,5 +383,133 @@ describe('RichComposerInput paste', () => {
 
         expect(onPaste).not.toHaveBeenCalled()
         expect(onValueChange).toHaveBeenLastCalledWith('pasted text')
+    })
+})
+
+function UndoHarness({ initial }: { initial: string }) {
+    const [value, setValue] = useState(initial)
+
+    return (
+        <>
+            <output data-testid="controlled-value">{value}</output>
+            <RichComposerInput
+                value={value}
+                onValueChange={(next) => {
+                    flushSync(() => setValue(next))
+                }}
+                onMirrorChange={() => {}}
+            />
+        </>
+    )
+}
+
+describe('RichComposerInput undo history', () => {
+    afterEach(() => {
+        window.getSelection()?.removeAllRanges()
+    })
+
+    function currentSelection(root: HTMLElement): { start: number; end: number } {
+        const range = window.getSelection()!.getRangeAt(0)
+        return {
+            start: mirrorOffsetFromPoint(root, range.startContainer, range.startOffset),
+            end: mirrorOffsetFromPoint(root, range.endContainer, range.endOffset),
+        }
+    }
+
+    it('undoes and redoes a plain-text paste', () => {
+        render(<UndoHarness initial="original draft" />)
+        const editor = screen.getByTestId('rich-composer-input')
+        const value = screen.getByTestId('controlled-value')
+        editor.focus()
+        placeCaret(editor.firstChild as Text, 'original draft'.length)
+
+        fireEvent.paste(editor, {
+            clipboardData: { files: [], getData: () => ' pasted text' },
+        })
+        expect(value.textContent).toBe('original draft pasted text')
+
+        fireEvent.keyDown(editor, { key: 'z', ctrlKey: true })
+        expect(value.textContent).toBe('original draft')
+        expect(currentSelection(editor)).toEqual({ start: 14, end: 14 })
+
+        fireEvent.keyDown(editor, { key: 'Z', ctrlKey: true, shiftKey: true })
+        expect(value.textContent).toBe('original draft pasted text')
+        expect(currentSelection(editor)).toEqual({ start: 26, end: 26 })
+    })
+
+    it('restores text and selection deleted with Backspace', () => {
+        render(<UndoHarness initial="original draft" />)
+        const editor = screen.getByTestId('rich-composer-input')
+        const value = screen.getByTestId('controlled-value')
+        editor.focus()
+        const range = document.createRange()
+        range.selectNodeContents(editor)
+        window.getSelection()?.removeAllRanges()
+        window.getSelection()?.addRange(range)
+
+        fireEvent.keyDown(editor, { key: 'Backspace' })
+        expect(value.textContent).toBe('')
+
+        fireEvent.keyDown(editor, { key: 'z', metaKey: true })
+        expect(value.textContent).toBe('original draft')
+        expect(currentSelection(editor)).toEqual({ start: 0, end: 14 })
+
+        fireEvent.keyDown(editor, { key: 'y', ctrlKey: true })
+        expect(value.textContent).toBe('')
+    })
+
+    it('restores literal session-link text without turning it into a mention', () => {
+        const literal = '[two  spaces](/sessions/abc)'
+        render(<UndoHarness initial="" />)
+        const editor = screen.getByTestId('rich-composer-input')
+        const value = screen.getByTestId('controlled-value')
+        editor.focus()
+        const text = editor.firstChild as Text
+        text.textContent = literal
+        placeCaret(text, literal.length)
+        fireEvent.input(editor)
+        expect(value.textContent).toBe(literal)
+
+        const range = document.createRange()
+        range.selectNodeContents(editor)
+        window.getSelection()?.removeAllRanges()
+        window.getSelection()?.addRange(range)
+        fireEvent.keyDown(editor, { key: 'Backspace' })
+        expect(value.textContent).toBe('')
+
+        fireEvent.keyDown(editor, { key: 'z', ctrlKey: true })
+        expect(value.textContent).toBe(literal)
+        expect(editor.querySelector('[data-composer-mention]')).toBeNull()
+        expect(currentSelection(editor)).toEqual({ start: 0, end: literal.length })
+    })
+
+    it('undoes a native typing run as one step and handles beforeinput historyUndo', () => {
+        render(<UndoHarness initial="ab" />)
+        const editor = screen.getByTestId('rich-composer-input')
+        const value = screen.getByTestId('controlled-value')
+        editor.focus()
+        const text = editor.firstChild as Text
+
+        for (const char of 'cd') {
+            placeCaret(text, text.length)
+            editor.dispatchEvent(new InputEvent('beforeinput', {
+                bubbles: true,
+                cancelable: true,
+                inputType: 'insertText',
+                data: char,
+            }))
+            text.appendData(char)
+            placeCaret(text, text.length)
+            fireEvent.input(editor)
+        }
+        expect(value.textContent).toBe('abcd')
+
+        const undo = new InputEvent('beforeinput', {
+            bubbles: true,
+            cancelable: true,
+            inputType: 'historyUndo',
+        })
+        expect(editor.dispatchEvent(undo)).toBe(false)
+        expect(value.textContent).toBe('ab')
     })
 })

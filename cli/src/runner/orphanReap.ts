@@ -16,6 +16,7 @@
 
 import spawn from 'cross-spawn'
 import { getProcessStartMarker, isProcessAlive, windowsProcessListCimCommand } from '@/utils/process'
+import { readWindowsProcessTable } from '@/utils/windowsProcessStop'
 
 export type ProcessSnapshot = {
     pid: number
@@ -33,6 +34,8 @@ export type OrphanTarget = {
     pid: number
     /** Marker captured in the argv-match snapshot (not a later probe). */
     startMarker: string | null
+    /** MCP bridge helpers have no local transcript publisher to prepare. */
+    needsPublicationDrain?: false
 }
 
 /** True when cmd looks like a HAPI driver CLI (binary or bun/node src/index.ts). */
@@ -107,6 +110,8 @@ export function selectOrphanTargetsForSession(
         targets.push({
             pid,
             startMarker: proc.startMarker === undefined ? null : proc.startMarker,
+            ...(!commandMatchesRunnerSpawnedSession(cmd, sessionId) && commandMatchesHapiMcpBridgeForSession(cmd, sessionId)
+                ? { needsPublicationDrain: false as const } : {}),
         })
     }
     return targets
@@ -191,7 +196,12 @@ export function listWindowsProcessesWithCommandLine(): ProcessSnapshot[] {
     if (result.error || result.status !== 0) {
         throw result.error ?? new Error(`powershell Win32_Process exit ${result.status}`)
     }
-    const raw = (result.stdout ?? '').trim()
+    return parseWindowsProcessSnapshot((result.stdout ?? '').toString())
+}
+
+/** Reject incomplete/invalid listings before absence can prove a PID exited. */
+export function parseWindowsProcessSnapshot(stdout: string): ProcessSnapshot[] {
+    const raw = stdout.trim()
     // Empty stdout is a failed scan, not "no processes" — a live Windows host
     // always has System/Idle. Match process.ts collectWindowsProcessTree
     // fail-closed semantics so orphan reap does not claim archive-ok (#1911).
@@ -202,7 +212,11 @@ export function listWindowsProcessesWithCommandLine(): ProcessSnapshot[] {
         | Array<{ ProcessId?: number; Name?: string; CommandLine?: string; CreationDate?: string }>
         | { ProcessId?: number; Name?: string; CommandLine?: string; CreationDate?: string }
     const rows = Array.isArray(parsed) ? parsed : [parsed]
-    return rows
+    if (!rows.length || rows.some(row => !row || typeof row.ProcessId !== 'number'
+        || !Number.isInteger(row.ProcessId) || row.ProcessId < 0)) {
+        throw new Error('powershell Win32_Process returned an invalid process snapshot')
+    }
+    const processes = rows
         .map((row) => ({
             pid: Number(row.ProcessId),
             name: row.Name ?? '',
@@ -212,11 +226,17 @@ export function listWindowsProcessesWithCommandLine(): ProcessSnapshot[] {
                 : null,
         }))
         .filter((proc) => Number.isFinite(proc.pid) && proc.pid > 0)
+    if (!processes.length) throw new Error('powershell Win32_Process returned no verifiable processes')
+    return processes
 }
 
 export async function listProcessesForOrphanScan(): Promise<ProcessSnapshot[]> {
     if (process.platform === 'win32') {
-        return listWindowsProcessesWithCommandLine()
+        const table = await readWindowsProcessTable(15_000, undefined, true)
+        if (!table) throw new Error('Cannot verify Windows orphan process snapshot')
+        return [...table].map(([pid, entry]) => ({
+            pid, name: entry.name, cmd: entry.commandLine, startMarker: entry.marker,
+        }))
     }
     return listPosixProcessesWithStartMarker()
 }
@@ -277,16 +297,21 @@ export async function reapRunnerSpawnedOrphans(
         /** @deprecated Prefer findTargets (includes same-snapshot markers). */
         findOrphans?: (sessionId: string) => Promise<number[] | 'scan_failed'>
         killTree?: (pid: number) => Promise<boolean>
-        getStartMarker?: (pid: number) => string | null
-        isAlive?: (pid: number) => boolean
+        prepare?: (target: OrphanTarget) => Promise<boolean>
+        getStartMarker?: (pid: number) => string | null | Promise<string | null>
+        isAlive?: (pid: number) => boolean | Promise<boolean>
     } = {}
 ): Promise<'stopped' | 'still_alive' | null> {
     const killTree = deps.killTree ?? (async (pid: number) => {
         const { killProcessTreeByPid } = await import('@/utils/process')
         return killProcessTreeByPid(pid)
     })
-    const getStartMarker = deps.getStartMarker ?? getProcessStartMarker
-    const isAlive = deps.isAlive ?? isProcessAlive
+    const getStartMarker = deps.getStartMarker ?? (process.platform === 'win32'
+        ? async (pid: number) => (await readWindowsProcessTable(10_000, [pid]))?.get(pid)?.marker ?? null
+        : getProcessStartMarker)
+    const isAlive = deps.isAlive ?? (process.platform === 'win32'
+        ? async (pid: number) => { const table = await readWindowsProcessTable(10_000, [pid]); return table === null || table.has(pid) }
+        : isProcessAlive)
 
     let targets: OrphanTarget[]
     if (deps.findTargets) {
@@ -297,10 +322,10 @@ export async function reapRunnerSpawnedOrphans(
         // Legacy: pids only — capture markers in a separate probe (tests / older callers).
         const orphanPids = await deps.findOrphans(sessionId)
         if (orphanPids === 'scan_failed') return 'still_alive'
-        targets = orphanPids.map((pid) => ({
+        targets = await Promise.all(orphanPids.map(async (pid) => ({
             pid,
-            startMarker: getStartMarker(pid),
-        }))
+            startMarker: await getStartMarker(pid),
+        })))
     } else {
         const found = await findRunnerSpawnedOrphanTargets(sessionId)
         if (found === 'scan_failed') return 'still_alive'
@@ -314,12 +339,13 @@ export async function reapRunnerSpawnedOrphans(
     // do not downgrade to stopped based on root liveness alone (#1910 / #1911 B2).
     let anyUnconfirmed = false
     let resolved = 0
-    for (const { pid: orphanPid, startMarker: expectedMarker } of targets) {
+    for (const target of targets) {
+        const { pid: orphanPid, startMarker: expectedMarker } = target
         if (expectedMarker === null) {
             // No generation identity from the match snapshot. If the PID is
             // already dead the orphan is gone; if still alive, skip kill and
             // continue other targets (do not abort the whole sweep).
-            if (!isAlive(orphanPid)) {
+            if (!await isAlive(orphanPid)) {
                 resolved++
                 continue
             }
@@ -327,12 +353,12 @@ export async function reapRunnerSpawnedOrphans(
             continue
         }
 
-        const currentMarker = getStartMarker(orphanPid)
+        const currentMarker = await getStartMarker(orphanPid)
         if (currentMarker === null) {
             // Probe failed mid-flight. Null is not proof of PID reuse (psutil
             // lesson: unknown create_time ≠ recycled). Skip kill; if still
             // alive, mark unconfirmed and continue.
-            if (!isAlive(orphanPid)) {
+            if (!await isAlive(orphanPid)) {
                 resolved++
                 continue
             }
@@ -346,6 +372,11 @@ export async function reapRunnerSpawnedOrphans(
             continue
         }
 
+        if (deps.prepare) {
+            if (!await deps.prepare(target)) { anyUnconfirmed = true; continue }
+            if (!await isAlive(orphanPid)) { resolved++; continue }
+            if (await getStartMarker(orphanPid) !== expectedMarker) { anyUnconfirmed = true; continue }
+        }
         if (!(await killTree(orphanPid))) {
             anyUnconfirmed = true
             continue

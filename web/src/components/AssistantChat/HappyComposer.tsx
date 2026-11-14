@@ -13,6 +13,7 @@ import {
     type KeyboardEvent as ReactKeyboardEvent,
     type MutableRefObject,
     type SyntheticEvent as ReactSyntheticEvent,
+    Fragment,
     useCallback,
     useEffect,
     useImperativeHandle,
@@ -23,6 +24,7 @@ import {
 import { useNarrowViewport } from '@/hooks/useNarrowViewport'
 import { shouldInvokeComposerDictateShortcut } from '@/lib/composerDictateShortcut'
 import { isRichComposerMentionsEnabled, resolveComposerPlaceholderKey } from '@/lib/composerSegments'
+import { dictationDirectSendEligible, sendVoiceMessage } from '@/lib/dictationSend'
 import type { SessionMentionResolveResult } from '@/components/AssistantChat/RichComposerInput'
 import {
     RichComposerInput,
@@ -31,7 +33,7 @@ import {
 import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
 import type { AgentState, CodexCollaborationMode, PermissionMode, PiModelSummary } from '@/types/api'
-import type { Suggestion } from '@/hooks/useActiveSuggestions'
+import type { SuggestionHandler, Suggestion } from '@/hooks/useActiveSuggestions'
 import type { ConversationStatus } from '@/realtime/types'
 import { useActiveWord } from '@/hooks/useActiveWord'
 import { useActiveSuggestions } from '@/hooks/useActiveSuggestions'
@@ -67,9 +69,10 @@ import { groupModelsByProvider } from './piModelGroups'
 import type { ApiClient } from '@/api/client'
 import { useVoiceInputPreferences } from '@/hooks/useVoiceInputPreferences'
 import { useDictation } from '@/hooks/useDictation'
-import type { ComposerSendIntent } from '@/lib/messageDelivery'
+import { resolveMessageDeliveryMode, type ComposerSendIntent } from '@/lib/messageDelivery'
 import type { MessageDeliveryMode } from '@hapi/protocol'
-import { moveAttachmentId, orderItemsById, reconcileAttachmentOrder, type AttachmentDropPosition } from '@/lib/attachmentOrder'
+import { moveAttachmentId, orderItemsById, reconcileAttachmentOrder, replaceAttachmentId, type AttachmentDropPosition } from '@/lib/attachmentOrder'
+import type { AttachmentRetryHandler } from './AttachmentItem'
 
 export interface TextInputState {
     text: string
@@ -78,9 +81,11 @@ export interface TextInputState {
 
 export function getComposerEscapeAction(input: {
     hasSuggestions: boolean
+    showSettings?: boolean
     threadIsRunning: boolean
     isExpanded: boolean
-}): 'clearSuggestions' | 'abort' | 'collapse' | null {
+}): 'dismissSettings' | 'clearSuggestions' | 'abort' | 'collapse' | null {
+    if (input.showSettings) return 'dismissSettings'
     if (input.hasSuggestions) return 'clearSuggestions'
     if (input.threadIsRunning) return 'abort'
     if (input.isExpanded) return 'collapse'
@@ -290,6 +295,8 @@ export function HappyComposer(props: {
     focusInputRef?: MutableRefObject<(() => void) | null>
     onUploadDraftSnapshot?: (text: string, attachments: AttachmentDraftInput[]) => void
     canRestoreAttachments?: boolean
+    /** False when SessionChat has no attachment adapter for this session. */
+    attachmentsEnabled?: boolean
     disabled?: boolean
     permissionMode?: PermissionMode
     collaborationMode?: CodexCollaborationMode
@@ -301,6 +308,7 @@ export function HappyComposer(props: {
     allowSendWhenInactive?: boolean
     thinking?: boolean
     agentState?: AgentState | null
+    onPendingRequestClick?: (requestId: string) => void
     backgroundTaskCount?: number
     contextSize?: number
     contextCacheRead?: number
@@ -308,9 +316,8 @@ export function HappyComposer(props: {
     /** Model for the context-window heuristic; see StatusBar.contextModel. */
     contextModel?: string | null
     controlledByUser?: boolean
-    concurrentClients?: boolean
     agentFlavor?: string | null
-    availableModelOptions?: Array<{ value: string | null; label: string }>
+    availableModelOptions?: Array<{ value: string | null; label: string; group?: string }>
     /** Full Pi model data with thinkingLevelMap for provider grouping + thinking level filtering */
     piModels?: PiModelSummary[]
     /** Pi: provider-qualified selected model from metadata (survives reload;
@@ -342,13 +349,30 @@ export function HappyComposer(props: {
     onTerminal?: () => void
     terminalUnsupported?: boolean
     autocompletePrefixes?: string[]
-    autocompleteSuggestions?: (query: string) => Promise<Suggestion[]>
+    autocompleteSuggestions?: SuggestionHandler
     // Voice assistant props
     voiceStatus?: ConversationStatus
     voiceMicMuted?: boolean
     onVoiceToggle?: () => void
     onVoiceMicToggle?: () => void
     voiceTranscriptionApi?: ApiClient
+    /**
+     * Resolves the target session for a voice dictation direct-send (same
+     * contract as `useSendMessage`'s `resolveSessionId`): an inactive
+     * session must be resumed before the message POST, otherwise the hub
+     * rejects it with 409 `session_inactive`. Captured at send time and
+     * applied after transcription completes, so the send survives
+     * navigation while the recording is being processed. When provided,
+     * direct voice sends are allowed on inactive sessions (they resume
+     * first instead of being downgraded to a plain stop).
+     */
+    resolveSessionIdForVoice?: (sessionId: string) => Promise<{ sessionId: string; resumed: boolean }>
+    /**
+     * Called when the voice direct-send resumed an inactive session and
+     * the message was delivered to the resumed session id, so the caller
+     * can navigate/seed the live session (mirrors `onSessionResolved`).
+     */
+    onVoiceSessionResolved?: (sessionId: string) => void
     // Schedule props (lifted from internal state when provided)
     pendingSchedule?: PendingSchedule | null
     onSchedule?: (pending: PendingSchedule) => void
@@ -377,10 +401,6 @@ export function HappyComposer(props: {
     sendError?: ComposerSendError | null
     onClearSendError?: () => void
     onSuppressSendErrorRestore?: (id: number) => void
-    /** Emitted by SessionChat after a send is accepted. Null attempt ids are settled scratchlist sends. */
-    sendAcceptance?: { attemptId: string | null } | null
-    /** Terminal result for a chat mutation, including attachment-bearing failures. */
-    sendSettlement?: { attemptId: string; status: 'success' | 'error' } | null
     /**
      * Resume/handoff path for inactive drafts that only exist in IndexedDB
      * (no visible text/attachments for assistant-ui to append).
@@ -411,13 +431,13 @@ export function HappyComposer(props: {
         allowSendWhenInactive = false,
         thinking = false,
         agentState,
+        onPendingRequestClick,
         backgroundTaskCount,
         contextSize,
         contextCacheRead,
         contextWindow,
         contextModel,
         controlledByUser = false,
-        concurrentClients = false,
         agentFlavor,
         availableModelOptions,
         piModels,
@@ -473,6 +493,7 @@ export function HappyComposer(props: {
     const attachments = useAuiState((s) => s.composer.attachments)
     const localAttachmentOrderRef = useRef<string[]>([])
     const attachmentOrderRef = externalAttachmentOrderRef ?? localAttachmentOrderRef
+    const retryingAttachmentIdsRef = useRef<Set<string>>(new Set())
     const attachmentIds = useMemo(
         () => attachments.map((attachment) => attachment.id),
         [attachments],
@@ -487,6 +508,16 @@ export function HappyComposer(props: {
         attachmentOrderRef.current = nextOrder
         setAttachmentOrderRevision((revision) => revision + 1)
     }, [attachmentIds, attachmentOrderRef])
+    const handleAttachmentRetry = useCallback<AttachmentRetryHandler>((originalId, retryId, originalIndex) => {
+        const currentIndex = attachmentOrderRef.current.indexOf(originalId)
+        attachmentOrderRef.current = replaceAttachmentId(
+            attachmentOrderRef.current,
+            originalId,
+            retryId,
+            currentIndex >= 0 ? currentIndex : originalIndex,
+        )
+        setAttachmentOrderRevision((revision) => revision + 1)
+    }, [attachmentOrderRef])
     const orderedAttachments = orderItemsById(attachments, orderedAttachmentIds)
     const threadIsRunning = useAuiState((s) => s.thread.isRunning)
     const threadIsDisabled = useAuiState((s) => s.thread.isDisabled)
@@ -500,7 +531,12 @@ export function HappyComposer(props: {
         provider: voiceInput.provider,
         mode: voiceInput.transcriptionMode,
         getCurrentText: getCurrentComposerText,
-        onTextChange: setComposerText
+        onTextChange: setComposerText,
+        sendMessage: async (sessionId: string, text: string, deliveryMode?: MessageDeliveryMode) => {
+            if (props.voiceTranscriptionApi) {
+                await sendVoiceMessage(props.voiceTranscriptionApi, sessionId, text, deliveryMode)
+            }
+        }
     }), [
         props.voiceTranscriptionApi,
         voiceInput.provider,
@@ -511,8 +547,13 @@ export function HappyComposer(props: {
     const dictation = useDictation(dictationConfig)
     const dictationActive = voiceInput.voiceMode === 'dictation'
     const effectiveVoiceStatus = dictationActive ? dictation.status : voiceStatus
+    const handleDictationToggle = useCallback(async () => {
+        await dictation.toggle()
+    }, [dictation])
+
+
     const effectiveVoiceToggle = dictationActive
-        ? (dictation.supported ? dictation.toggle : undefined)
+        ? (dictation.supported ? handleDictationToggle : undefined)
         : onVoiceToggle
     const previousVoiceModeRef = useRef(voiceInput.voiceMode)
     useEffect(() => {
@@ -554,8 +595,6 @@ export function HappyComposer(props: {
         selection: { start: 0, end: 0 }
     })
     const [isExpanded, setIsExpanded] = useState(false)
-    const lastSendAcceptanceRef = useRef(props.sendAcceptance)
-    const pendingSendAttemptIdRef = useRef<string | null>(null)
     const [showSettings, setShowSettings] = useState(false)
     // Anchored settings sheet: the model/effort value buttons open only their
     // own section; the gear (null) opens the full sheet.
@@ -568,32 +607,6 @@ export function HappyComposer(props: {
     const isControlled = onScheduleProp !== undefined
     const pendingSchedule = isControlled ? (pendingScheduleProp ?? null) : pendingScheduleLocal
     const setPendingSchedule = isControlled ? onScheduleProp : setPendingScheduleLocal
-
-    useEffect(() => {
-        const acceptance = props.sendAcceptance
-        if (!acceptance || acceptance === lastSendAcceptanceRef.current) return
-        lastSendAcceptanceRef.current = acceptance
-        if (acceptance.attemptId === null) {
-            pendingSendAttemptIdRef.current = null
-            setIsExpanded(false)
-            return
-        }
-        pendingSendAttemptIdRef.current = acceptance.attemptId
-        const settlement = props.sendSettlement
-        if (!settlement || settlement.attemptId !== acceptance.attemptId) return
-        pendingSendAttemptIdRef.current = null
-        if (settlement.status === 'success') setIsExpanded(false)
-    }, [props.sendAcceptance, props.sendSettlement])
-
-    // Match the terminal mutation result to the exact accepted attempt. Text
-    // failures also expose sendError for draft restoration, while attachment
-    // failures intentionally do not, so settlement must be the outcome source.
-    useEffect(() => {
-        const settlement = props.sendSettlement
-        if (!settlement || settlement.attemptId !== pendingSendAttemptIdRef.current) return
-        pendingSendAttemptIdRef.current = null
-        if (settlement.status === 'success') setIsExpanded(false)
-    }, [props.sendSettlement])
 
     const textareaRef = useRef<HTMLTextAreaElement>(null)
     const richInputRef = useRef<RichComposerInputHandle>(null)
@@ -686,6 +699,20 @@ export function HappyComposer(props: {
     const hasAnyAttachments = hasAttachments || hasHiddenAttachments
     const blocksScheduling =
         hasAttachments || hasHiddenAttachments || hiddenAttachmentStatePending
+    // Mirrors handleSend's dictation branch (see dictationDirectSendEligible):
+    // the dictation Send button must only appear when clicking it will actually
+    // run the session-bound stopAndSend path. With attachments (visible or
+    // hidden persisted) / a pending schedule / scratchlist mode handleSend
+    // falls back to dictation.toggle() (stop + transcribe), so a visible
+    // "Send" control would be misleading.
+    const dictationCanDirectSend = dictationActive
+        && dictationDirectSendEligible({
+            active,
+            resolveSessionIdAvailable: props.resolveSessionIdForVoice !== undefined,
+            blocksScheduling,
+            pendingSchedule,
+            scratchlistMode: props.scratchlistMode ?? false,
+        })
     const canSend = (hasText || hasAnyAttachments) && attachmentsReady && !controlsDisabled
 
     useEffect(() => {
@@ -923,6 +950,11 @@ export function HappyComposer(props: {
     const handleSuggestionSelect = useCallback((index: number) => {
         const suggestion = suggestions[index]
         if (!suggestion) return
+        if (suggestion.action) {
+            suggestion.action.onSelect()
+            haptic('light')
+            return
+        }
         if (suggestion.text.startsWith('$')) {
             markSkillUsed(suggestion.text.slice(1))
         }
@@ -1019,8 +1051,8 @@ export function HappyComposer(props: {
     }, [switchDisabled, onSwitchToRemote, haptic])
 
     const permissionModeOptions = useMemo(
-        () => getPermissionModeOptionsForFlavor(agentFlavor).filter(option => !concurrentClients || option.mode !== 'safe-yolo'),
-        [agentFlavor, concurrentClients]
+        () => getPermissionModeOptionsForFlavor(agentFlavor),
+        [agentFlavor]
     )
     const collaborationModeOptions = useMemo(
         () => agentFlavor === 'codex' ? getCodexCollaborationModeOptions() : [],
@@ -1059,7 +1091,7 @@ export function HappyComposer(props: {
 
     const visibleModelEffortOptions = cursorDrillDownVariantOptions ?? modelEffortOptions
     const codexReasoningEffortOptions = useMemo(
-        () => agentFlavor === 'codex' || agentFlavor === 'opencode'
+        () => agentFlavor === 'codex' || agentFlavor === 'opencode' || agentFlavor === 'dsh'
             ? getCodexComposerReasoningEffortOptions(
                 modelReasoningEffort,
                 agentFlavor,
@@ -1100,7 +1132,7 @@ export function HappyComposer(props: {
     const claudeEffortOptions = useMemo(
         () => agentFlavor === 'pi'
             ? getPiThinkingLevelOptions(effort, selectedPiModel?.thinkingLevelMap)
-            : agentFlavor === 'grok' && availableEffortOptions && availableEffortOptions.length > 0
+            : (agentFlavor === 'grok' || agentFlavor === 'agy' || agentFlavor === 'kimi' || agentFlavor === 'copilot') && availableEffortOptions && availableEffortOptions.length > 0
                 ? [
                     { value: null, label: 'Default' },
                     ...availableEffortOptions.map((option) => ({
@@ -1108,7 +1140,7 @@ export function HappyComposer(props: {
                         label: option.name ?? option.value
                     }))
                 ]
-            : getClaudeComposerEffortOptions(effort),
+            : getClaudeComposerEffortOptions(effort, availableEffortOptions?.map((option) => option.value)),
         [agentFlavor, effort, selectedPiModel, availableEffortOptions]
     )
     const permissionModes = useMemo(
@@ -1143,6 +1175,42 @@ export function HappyComposer(props: {
     }, [pendingSendIntentRef])
 
     const handleSend = useCallback(async (intent: ComposerSendIntent = 'default') => {
+        if (dictationActive && (dictation.status === 'connected' || dictation.status === 'connecting')) {
+            const canDirectSend = dictation.status === 'connected'
+                && dictationDirectSendEligible({
+                    active,
+                    resolveSessionIdAvailable: props.resolveSessionIdForVoice !== undefined,
+                    blocksScheduling,
+                    pendingSchedule,
+                    scratchlistMode: props.scratchlistMode ?? false,
+                })
+                && intent === 'default'
+            if (canDirectSend) {
+                richInputRef.current?.flushSerializedText()
+                const targetSessionId = props.sessionId ?? ''
+                const initialText = api.composer().getState().text
+                const deliveryMode = resolveMessageDeliveryMode({
+                    agentFlavor: props.agentFlavor,
+                    isSessionThinking: props.thinking ?? false,
+                    intent: 'default'
+                })
+                api.composer().setText('')
+                if (targetSessionId && dictation.stopAndSend) {
+                    await dictation.stopAndSend(targetSessionId, initialText, deliveryMode, {
+                        // Inactive sessions cannot accept a message POST until they
+                        // are resumed (hub returns 409 `session_inactive`), so the
+                        // voice send runs the same resume step as the text pipeline.
+                        resolveSessionId: props.resolveSessionIdForVoice,
+                        onSessionResolved: props.onVoiceSessionResolved,
+                    })
+                } else {
+                    await dictation.toggle()
+                }
+            } else {
+                await dictation.toggle()
+            }
+            return
+        }
         // SessionChat preloads the ref only when restoring a rejected send:
         // queue retries remain queue, while an ordinary fresh send always
         // starts from the explicit/default argument. Capture it before the
@@ -1222,6 +1290,10 @@ export function HappyComposer(props: {
             // Must be adjacent to send(): useHappyRuntime consumes and resets
             // this ref synchronously from assistant-ui's onNew callback.
             if (pendingSendIntentRef) pendingSendIntentRef.current = effectiveIntent
+            // The editor is a transient full-screen editing surface. Collapse
+            // when the submit action is dispatched, rather than waiting for a
+            // queued or slow network request to settle.
+            setIsExpanded(false)
             api.composer().send()
         } catch (error) {
             resetPendingSendIntent()
@@ -1241,6 +1313,7 @@ export function HappyComposer(props: {
         api,
         attachments,
         canSend,
+        blocksScheduling,
         draftHydration.hasStoredAttachments,
         hasAttachments,
         hasText,
@@ -1254,17 +1327,63 @@ export function HappyComposer(props: {
         attachmentOrderRef,
         pendingSendIntentRef,
         resetPendingSendIntent,
+        dictationActive,
+        dictation.status,
+        dictation.toggle,
+        dictation.stopAndSend,
+        props.sessionId,
+        props.agentFlavor,
+        props.thinking,
+        active,
+        props.resolveSessionIdForVoice,
+        props.onVoiceSessionResolved,
     ])
 
     const flushAndSend = useCallback((intent: ComposerSendIntent = 'default') => {
         void handleSend(intent)
     }, [handleSend])
 
+    const clearCursorDrillDown = useCallback(() => {
+        setCursorDrillDownBase(null)
+        setCursorDrillDownDefaultVariant(null)
+    }, [])
+
+    const dismissSettings = useCallback(() => {
+        clearCursorDrillDown()
+        setShowSettings(false)
+        setSettingsSection(null)
+    }, [clearCursorDrillDown])
+
+    const dismissSettingsWithFocus = useCallback(() => {
+        const trigger = settingsSection === 'model' ? modelValueButtonRef.current
+            : settingsSection === 'effort' ? effortValueButtonRef.current
+            : settingsButtonRef.current
+        dismissSettings()
+        trigger?.focus({ preventScroll: true })
+    }, [dismissSettings, settingsSection])
+
     const handleKeyDown = useCallback((e: ReactKeyboardEvent<HTMLTextAreaElement | HTMLDivElement>) => {
         const key = e.key
 
         // Avoid intercepting IME composition keystrokes (Enter, arrows, etc.)
         if (e.nativeEvent.isComposing) {
+            return
+        }
+
+        // Alt+S is an explicit send shortcut, independent of the Enter setting.
+        // Match the logical key so keyboard layouts can map Alt+S to another physical key.
+        const isAltSShortcut =
+            (e.key === 's' || e.key === 'S')
+            && e.altKey
+            && !e.ctrlKey
+            && !e.metaKey
+            && !e.shiftKey
+        if (isAltSShortcut) {
+            e.preventDefault()
+            if (canSend) {
+                flushAndSend()
+                setShowContinueHint(false)
+            }
             return
         }
 
@@ -1328,13 +1447,17 @@ export function HappyComposer(props: {
                 return
             }
             const action = getComposerEscapeAction({
+                showSettings,
                 hasSuggestions: suggestions.length > 0,
                 threadIsRunning,
                 isExpanded,
             })
             if (action) {
                 e.preventDefault()
-                if (action === 'clearSuggestions') clearSuggestions()
+                if (action === 'dismissSettings') {
+                    e.stopPropagation()
+                    dismissSettingsWithFocus()
+                } else if (action === 'clearSuggestions') clearSuggestions()
                 else if (action === 'abort') handleAbort()
                 else handleExpandedToggle()
                 return
@@ -1368,6 +1491,8 @@ export function HappyComposer(props: {
         richMentionsEnabled,
         richComposerFueStatus,
         dismissRichComposerFue,
+        showSettings,
+        dismissSettingsWithFocus,
         flushAndSend,
         isExpanded,
         handleExpandedToggle,
@@ -1457,17 +1582,6 @@ export function HappyComposer(props: {
         setShowSettings(true)
     }, [haptic, showSettings, settingsSection])
 
-    const clearCursorDrillDown = useCallback(() => {
-        setCursorDrillDownBase(null)
-        setCursorDrillDownDefaultVariant(null)
-    }, [])
-
-    const dismissSettings = useCallback(() => {
-        clearCursorDrillDown()
-        setShowSettings(false)
-        setSettingsSection(null)
-    }, [clearCursorDrillDown])
-
     const handleModelChange = useCallback((nextModel: { provider: string; modelId: string } | string | null) => {
         if (!onModelChange || configurationControlsDisabled) return
         onModelChange(nextModel)
@@ -1529,9 +1643,21 @@ export function HappyComposer(props: {
             dismissSettings()
         }
 
+        const handleEscape = (event: KeyboardEvent) => {
+            // Child inputs and dialogs handle Escape first. The first-use
+            // callout also keeps priority over settings and running turns.
+            if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || richComposerFueStatus === 'engaging') return
+            if (document.querySelector('[role="dialog"]')) return
+            event.preventDefault()
+            dismissSettingsWithFocus()
+        }
         document.addEventListener('pointerdown', handlePointerDown, true)
-        return () => document.removeEventListener('pointerdown', handlePointerDown, true)
-    }, [dismissSettings, showSettings])
+        window.addEventListener('keydown', handleEscape)
+        return () => {
+            document.removeEventListener('pointerdown', handlePointerDown, true)
+            window.removeEventListener('keydown', handleEscape)
+        }
+    }, [dismissSettings, dismissSettingsWithFocus, showSettings, richComposerFueStatus])
 
     const handleSubmit = useCallback((event?: ReactFormEvent<HTMLFormElement>) => {
         event?.preventDefault()
@@ -1613,7 +1739,8 @@ export function HappyComposer(props: {
     // fallback levels would mutate a set_thinking_level the model may reject.
     const piEffortUnavailable = agentFlavor === 'pi'
         && (!selectedPiModel || selectedPiModel.reasoning === false)
-    const showEffortSettings = Boolean(onEffortChange && supportsEffort(agentFlavor) && !piEffortUnavailable)
+    const showEffortSettings = Boolean(onEffortChange && supportsEffort(agentFlavor) && !piEffortUnavailable
+        && (agentFlavor !== 'agy' || availableEffortOptions?.length))
     const showFastModeSettings = Boolean(onServiceTierChange)
     const showModelAreaSettings = showModelSettings || showModelEffortSettings || showModelReasoningEffortSettings || showEffortSettings
     const showOtherSettings = showFastModeSettings || showCollaborationSettings || showCopilotAgentModeSettings
@@ -1698,7 +1825,14 @@ export function HappyComposer(props: {
     }, [isNarrowViewport, onModelChange, agentFlavor, selectedPiModel, model, modelOptions, selectedModelBase])
     const effortValueLabel = useMemo(() => {
         if (isNarrowViewport) return undefined
+        // Codex/OpenCode keep effort in modelReasoningEffort; same button, same wording.
+        if (showModelReasoningEffortSettings) {
+            if (!modelReasoningEffort) return t('composer.effortDefault')
+            const option = codexReasoningEffortOptions.find((candidate) => candidate.value === modelReasoningEffort)
+            return option?.label ?? modelReasoningEffort
+        }
         if (!onEffortChange || !supportsEffort(agentFlavor)) return undefined
+        if (agentFlavor === 'agy' && !availableEffortOptions?.length) return undefined
         // Pi: without a resolved catalog entry there is no capability map to
         // derive levels from; hide the button until the selected model is known.
         if (agentFlavor === 'pi') {
@@ -1710,9 +1844,10 @@ export function HappyComposer(props: {
                 ? (PI_THINKING_LEVEL_LABELS[effectiveLevel as PiThinkingLevel] ?? effectiveLevel)
                 : undefined
         }
+        if (!effort) return t('composer.effortDefault')
         const option = claudeEffortOptions.find((candidate) => candidate.value === effort)
-        return option?.label ?? (effort ? effort : undefined)
-    }, [isNarrowViewport, onEffortChange, agentFlavor, selectedPiModel, effort, claudeEffortOptions])
+        return option?.label ?? effort
+    }, [isNarrowViewport, showModelReasoningEffortSettings, modelReasoningEffort, codexReasoningEffortOptions, t, onEffortChange, agentFlavor, selectedPiModel, effort, claudeEffortOptions, availableEffortOptions])
 
     // Wrapper for DOM onClick consumers: never leak the MouseEvent into the
     // `section` parameter (the gear must always open the full sheet).
@@ -1746,7 +1881,7 @@ export function HappyComposer(props: {
         const sheetModelReasoningEffortSettings = showModelReasoningEffortSettings && sheetEffortAreaOn
         const sheetEffortSettings = showEffortSettings && sheetEffortAreaOn
         const sheetPermissionSettings = showPermissionSettings && sheetOthersOn
-        const sheetFastModeSettings = showFastModeSettings && sheetOthersOn
+        const sheetFastModeSettings = showFastModeSettings && (sheetOthersOn || settingsSection === 'model')
         const sheetCollaborationSettings = showCollaborationSettings && sheetOthersOn
         const sheetCopilotAgentModeSettings = showCopilotAgentModeSettings && sheetOthersOn
         const sheetModelAreaSettings = sheetModelSettings || sheetModelEffortSettings || sheetModelReasoningEffortSettings || sheetEffortSettings
@@ -1803,13 +1938,20 @@ export function HappyComposer(props: {
                                             })}
                                         </div>
                                     ))
-                                    : modelOptions.map((option) => {
+                                    : modelOptions.map((option, index) => {
                                         const isSelected = selectedModelBase !== undefined
                                             ? selectedModelBase === option.value
                                             : model === option.value
+                                        const startsGroup = option.group !== undefined
+                                            && option.group !== modelOptions[index - 1]?.group
                                         return (
+                                        <Fragment key={option.value ?? 'auto'}>
+                                        {startsGroup ? (
+                                            <div className="px-3 pt-2 pb-0.5 text-xs font-medium text-[var(--app-hint)]">
+                                                {option.group}
+                                            </div>
+                                        ) : null}
                                         <button
-                                            key={option.value ?? 'auto'}
                                             type="button"
                                             disabled={modelEffortControlsDisabled}
                                             className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
@@ -1841,6 +1983,7 @@ export function HappyComposer(props: {
                                                 {option.label}
                                             </span>
                                         </button>
+                                        </Fragment>
                                         )
                                     })}
                             </div>
@@ -1876,7 +2019,7 @@ export function HappyComposer(props: {
                         {sheetModelReasoningEffortSettings ? (
                             <div className="py-2">
                                 <div className="px-3 pb-1 text-xs font-semibold text-[var(--app-hint)]">
-                                    {t('misc.reasoningEffort')}
+                                    {t('misc.effort')}
                                 </div>
                                 {codexReasoningEffortOptions.map((option) => (
                                     <button
@@ -2113,7 +2256,6 @@ export function HappyComposer(props: {
                             </div>
                         ) : null}
 
-                        
                     </FloatingOverlay>
                 </div>
             )
@@ -2216,6 +2358,7 @@ export function HappyComposer(props: {
                         active={active}
                         thinking={thinking}
                         agentState={agentState}
+                        onPendingRequestClick={onPendingRequestClick}
                         backgroundTaskCount={backgroundTaskCount}
                         contextSize={contextSize}
                         contextCacheRead={contextCacheRead}
@@ -2289,6 +2432,9 @@ export function HappyComposer(props: {
                                         orderedAttachmentIds={orderedAttachmentIds}
                                         disabled={controlsDisabled}
                                         onReorder={handleAttachmentReorder}
+                                        attachmentOrderRef={attachmentOrderRef}
+                                        retryingAttachmentIdsRef={retryingAttachmentIdsRef}
+                                        onRetry={handleAttachmentRetry}
                                     />
                                 </div>
                             ) : null}
@@ -2405,6 +2551,7 @@ export function HappyComposer(props: {
                                 onSwitch={handleSwitch}
                                 voiceEnabled={voiceEnabled}
                                 dictationEnabled={dictationActive}
+                                dictationCanDirectSend={dictationCanDirectSend}
                                 voiceStatus={effectiveVoiceStatus}
                                 voiceMicMuted={dictationActive ? false : voiceMicMuted}
                                 onVoiceToggle={effectiveVoiceToggle ?? (() => {})}
@@ -2414,10 +2561,15 @@ export function HappyComposer(props: {
                                 onSchedule={handleUserSchedule}
                                 onClearSchedule={onUserClearSchedule}
                                 hasAttachments={blocksScheduling}
+                                attachmentsEnabled={props.attachmentsEnabled}
                                 modelValueLabel={modelValueLabel}
                                 modelValueDisabled={modelEffortControlsDisabled}
                                 modelValueOpen={showSettings && settingsSection !== 'effort'}
                                 onModelValueToggle={handleModelValueToggle}
+                                fastModeEnabled={displayedServiceTier === 'fast'}
+                                onFastModeToggle={onServiceTierChange
+                                    ? () => handleServiceTierChange(displayedServiceTier === 'fast' ? 'standard' : 'fast')
+                                    : undefined}
                                 effortValueLabel={effortValueLabel}
                                 effortValueDisabled={modelEffortControlsDisabled}
                                 effortValueOpen={showSettings && settingsSection !== 'model'}
@@ -2440,6 +2592,8 @@ export function HappyComposer(props: {
                                 canSend={canSend}
                                 voiceStatus={effectiveVoiceStatus}
                                 voiceEnabled={voiceEnabled}
+                                dictationEnabled={dictationActive}
+                                dictationCanDirectSend={dictationCanDirectSend}
                                 controlsDisabled={controlsDisabled}
                                 onSend={handleSend}
                                 onVoiceToggle={effectiveVoiceToggle ?? (() => {})}

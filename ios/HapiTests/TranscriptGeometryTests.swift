@@ -58,6 +58,34 @@ final class TranscriptGeometryTests: XCTestCase {
         XCTAssertEqual(collection.collectionViewLayout, layout)
     }
 
+    func testStaleSelfSizingAttributesDoNotMoveTheWidthChangeAnchor() throws {
+        let layout = TranscriptLayout()
+        let collection = UICollectionView(frame: CGRect(x: 0, y: 0, width: 390, height: 100), collectionViewLayout: layout)
+        let ids = ["above", "anchor", "below"]
+        layout.setItems(ids, width: 390)
+        layout.prepare()
+        let first = try XCTUnwrap(layout.layoutAttributesForItem(at: IndexPath(item: 0, section: 0)))
+        let measured = first.copy() as! UICollectionViewLayoutAttributes
+        measured.size.height = 200
+        _ = layout.invalidationContext(forPreferredLayoutAttributes: measured, withOriginalAttributes: first)
+        layout.prepare()
+        let stale = try XCTUnwrap(layout.layoutAttributesForItem(at: first.indexPath))
+        layout.followsTail = false
+        layout.anchorForUpdate = ReadingAnchor(id: "anchor", offset: -31)
+        layout.setItems(ids, width: 1024)
+        layout.prepare()
+        let anchor = try XCTUnwrap(layout.layoutAttributesForItem(at: IndexPath(item: 1, section: 0)))
+        collection.contentOffset.y = anchor.frame.minY + 31
+        let preferred = stale.copy() as! UICollectionViewLayoutAttributes
+        preferred.size.height = 50
+        let context = layout.invalidationContext(forPreferredLayoutAttributes: preferred, withOriginalAttributes: stale)
+        XCTAssertEqual(context.contentOffsetAdjustment.y, -50, accuracy: 0.01)
+        collection.contentOffset.y += context.contentOffsetAdjustment.y
+        layout.prepare()
+        let updatedAnchor = try XCTUnwrap(layout.layoutAttributesForItem(at: anchor.indexPath))
+        XCTAssertEqual(updatedAnchor.frame.minY - collection.contentOffset.y, -31, accuracy: 0.01)
+    }
+
     func testMetricsInvalidateOffscreenHeightsButTabletRecenteringDoesNot() throws {
         let layout = TranscriptLayout()
         let collection = UICollectionView(frame: CGRect(x: 0, y: 0, width: 1024, height: 768), collectionViewLayout: layout)

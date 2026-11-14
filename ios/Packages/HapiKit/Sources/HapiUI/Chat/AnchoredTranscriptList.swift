@@ -22,6 +22,7 @@ public struct AnchoredTranscriptList<Item: Identifiable & Equatable>: UIViewCont
     public var isInspectionPresented: Bool
     public var onViewport: (TranscriptViewport) -> Void
     public var onLayout: (Int, Bool) -> Void
+    public var onTailDisplayed: () -> Void
     public var spacingBefore: (Item?, Item) -> CGFloat
     public var content: (Item) -> AnyView
     fileprivate var environment = EnvironmentValues()
@@ -30,6 +31,7 @@ public struct AnchoredTranscriptList<Item: Identifiable & Equatable>: UIViewCont
                 isInspectionPresented: Bool = false,
                 onViewport: @escaping (TranscriptViewport) -> Void,
                 onLayout: @escaping (Int, Bool) -> Void,
+                onTailDisplayed: @escaping () -> Void = {},
                 spacingBefore: @escaping (Item?, Item) -> CGFloat = { _, _ in 12 },
                 content: @escaping (Item) -> AnyView) {
         self.items = items
@@ -39,6 +41,7 @@ public struct AnchoredTranscriptList<Item: Identifiable & Equatable>: UIViewCont
         self.isInspectionPresented = isInspectionPresented
         self.onViewport = onViewport
         self.onLayout = onLayout
+        self.onTailDisplayed = onTailDisplayed
         self.spacingBefore = spacingBefore
         self.content = content
     }
@@ -50,6 +53,19 @@ public struct AnchoredTranscriptList<Item: Identifiable & Equatable>: UIViewCont
     public func updateUIViewController(_ controller: TranscriptCollectionController<Item>, context: Context) {
         var next = self
         next.environment = context.environment
+        // SwiftUI re-runs this update only when an environment value read here
+        // changes (strictly so on iOS 27; even `@Environment(\.self)` is tracked
+        // per key). Hosted rows render from the copied snapshot in their own
+        // hosting roots, so read every value they follow at runtime.
+        _ = context.environment.dynamicTypeSize
+        _ = context.environment.legibilityWeight
+        _ = context.environment.hapiTypography
+        _ = context.environment.locale
+        _ = context.environment.layoutDirection
+        _ = context.environment.colorScheme
+        _ = context.environment.hapiTheme
+        _ = context.environment.hapiOpenURL
+        _ = context.environment.isEnabled
         controller.update(next)
     }
 }
@@ -194,6 +210,9 @@ final class TranscriptLayout: UICollectionViewLayout {
                                                withOriginalAttributes: originalAttributes)
         let index = originalAttributes.indexPath.item
         guard ids.indices.contains(index), let view = collectionView else { return context }
+        // UIKit may supply attributes from before width or typography invalidation.
+        prepare()
+        let currentFrame = frames[index]
         let height = max(1, preferredAttributes.size.height)
         let delta = height - estimatedHeight(for: ids[index])
         heights[ids[index]] = height
@@ -201,13 +220,13 @@ final class TranscriptLayout: UICollectionViewLayout {
         dirtyFromIndex = min(dirtyFromIndex ?? index, index)
         context.invalidateItems(at: [preferredAttributes.indexPath])
         let viewportTop = view.contentOffset.y + view.adjustedContentInset.top
-        if followsTail || originalAttributes.frame.maxY <= viewportTop {
+        if followsTail || currentFrame.maxY <= viewportTop {
             context.contentOffsetAdjustment.y += delta
-        } else if originalAttributes.frame.minY <= viewportTop,
-                  originalAttributes.frame.minY + height <= viewportTop {
+        } else if currentFrame.minY <= viewportTop,
+                  currentFrame.minY + height <= viewportTop {
             // A font reduction can make the first partial row shorter than
             // the reading offset. Keep its last point visible, not a later row.
-            context.contentOffsetAdjustment.y += originalAttributes.frame.minY + height - 1 - viewportTop
+            context.contentOffsetAdjustment.y += currentFrame.minY + height - 1 - viewportTop
         }
         return context
     }
@@ -237,6 +256,39 @@ final class TranscriptLayout: UICollectionViewLayout {
         context.contentOffsetAdjustment.y = y - view.contentOffset.y
         invalidateLayout(with: context)
     }
+
+    #if DEBUG
+    /// Read-only state for CI diagnosis; callers must not use this to advance layout.
+    func diagnosticSnapshot(anchorID: String, in view: UICollectionView) -> [String: Any] {
+        let index = indicesByID[anchorID]
+        let frame = index.flatMap { frames.indices.contains($0) ? frames[$0] : nil }
+        let updateAnchor: Any = anchorForUpdate.map {
+            ["id": $0.id, "offset": Double($0.offset)]
+        } ?? NSNull()
+        let heightEstimate: Any = anchorHeightEstimate.map {
+            ["id": $0.id, "height": Double($0.height)]
+        } ?? NSNull()
+        let viewportTop = view.contentOffset.y + view.adjustedContentInset.top
+        return [
+            "anchorItemID": anchorID,
+            "anchorIndex": index ?? -1,
+            "anchorFrame": (frame.map {
+                [Double($0.minX), Double($0.minY), Double($0.width), Double($0.height)]
+            } as Any?) ?? NSNull(),
+            "anchorOffsetFromViewportTop": (frame.map { Double($0.minY - viewportTop) } as Any?) ?? NSNull(),
+            "anchorMeasuredHeight": (heights[anchorID].map { Double($0) } as Any?) ?? NSNull(),
+            "anchorEstimatedHeight": Double(estimatedHeight(for: anchorID)),
+            "anchorHeightEstimate": heightEstimate,
+            "anchorForUpdate": updateAnchor,
+            "contentOffset": [Double(view.contentOffset.x), Double(view.contentOffset.y)],
+            "contentSize": [Double(collectionViewContentSize.width), Double(collectionViewContentSize.height)],
+            "viewportHeight": Double(view.bounds.height),
+            "adjustedTopInset": Double(view.adjustedContentInset.top),
+            "followsTail": followsTail,
+            "dirtyFromIndex": dirtyFromIndex ?? -1,
+        ]
+    }
+    #endif
 }
 
 private final class TranscriptCollectionView: UICollectionView {
@@ -467,6 +519,10 @@ public final class TranscriptCollectionController<Item: Identifiable & Equatable
             isAtBottom: bottomDistance <= 1,
             isAwayFromBottom: bottomProximity.isAwayFromBottom
         )
+        if viewport.isAtBottom && viewport.followsTail && configuration?.isInspectionPresented != true
+            && !collection.isDragging && !collection.isDecelerating {
+            configuration?.onTailDisplayed()
+        }
         guard viewport != lastViewport else { return }
         lastViewport = viewport
         configuration?.onViewport(viewport)

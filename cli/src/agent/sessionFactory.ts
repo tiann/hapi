@@ -12,6 +12,7 @@ import { configuration } from '@/configuration'
 import { logger } from '@/ui/logger'
 import { runtimePath } from '@/projectPath'
 import { getInvokedCwd } from '@/utils/invokedCwd'
+import { getProcessStartMarker } from '@/utils/process'
 import { readWorktreeEnv } from '@/utils/worktreeEnv'
 import { CURRENT_MACHINE_CAPABILITIES } from '@hapi/protocol/runnerCapabilities'
 import { exportHapiSessionEnv } from '@/agent/hapiSessionEnv'
@@ -131,6 +132,13 @@ export function buildSessionMetadata(options: {
         happyToolsDir: resolve(happyLibDir, 'tools', 'unpacked'),
         startedFromRunner: options.startedBy === 'runner',
         hostPid: process.pid,
+        // Proves which process generation owns hostPid: the runner adopts an
+        // untracked runner-started webhook only when this matches the live
+        // PID. It never reads the marker of a terminal session, so skip the
+        // probe there (on Windows it is a synchronous PowerShell spawn).
+        ...(options.startedBy === 'runner'
+            ? { hostStartMarker: getProcessStartMarker(process.pid) ?? undefined }
+            : {}),
         startedBy: options.startedBy,
         lifecycleState: 'running',
         lifecycleStateSince: now,
@@ -150,7 +158,9 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
 
     if (metadata.name !== undefined) preserved.name = metadata.name
     if (metadata.summary !== undefined) preserved.summary = metadata.summary
+    if (metadata.acpManualTitle !== undefined) preserved.acpManualTitle = metadata.acpManualTitle
     if (metadata.claudeSessionId !== undefined) preserved.claudeSessionId = metadata.claudeSessionId
+    if (metadata.claudeSessionIdHistory !== undefined) preserved.claudeSessionIdHistory = metadata.claudeSessionIdHistory
     if (metadata.codexSessionId !== undefined) preserved.codexSessionId = metadata.codexSessionId
     if (metadata.codexSourceSessionId !== undefined) preserved.codexSourceSessionId = metadata.codexSourceSessionId
     if (metadata.geminiSessionId !== undefined) preserved.geminiSessionId = metadata.geminiSessionId
@@ -162,6 +172,7 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     if (metadata.kimiSessionId !== undefined) preserved.kimiSessionId = metadata.kimiSessionId
     if (metadata.copilotSessionId !== undefined) preserved.copilotSessionId = metadata.copilotSessionId
     if (metadata.piSessionId !== undefined) preserved.piSessionId = metadata.piSessionId
+    if (metadata.dshSessionId !== undefined) preserved.dshSessionId = metadata.dshSessionId
     if (metadata.piResumeAttempt !== undefined) preserved.piResumeAttempt = metadata.piResumeAttempt
     if (metadata.ptyResumeAttempt !== undefined) preserved.ptyResumeAttempt = metadata.ptyResumeAttempt
     if (metadata.preferredPermissionMode !== undefined) preserved.preferredPermissionMode = metadata.preferredPermissionMode
@@ -179,6 +190,10 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     if (metadata.conversationHistoryIndexes !== undefined) {
         preserved.conversationHistoryIndexes = metadata.conversationHistoryIndexes
     }
+    if (metadata.opencodeHistoryCheckpoint !== undefined) preserved.opencodeHistoryCheckpoint = metadata.opencodeHistoryCheckpoint
+    if (metadata.opencodeRewind !== undefined) preserved.opencodeRewind = metadata.opencodeRewind
+    if (metadata.opencodeWorkerId !== undefined) preserved.opencodeWorkerId = metadata.opencodeWorkerId
+    if (metadata.opencodeForkPending !== undefined) preserved.opencodeForkPending = metadata.opencodeForkPending
     if (metadata.conversationHistoryTurns !== undefined) {
         preserved.conversationHistoryTurns = metadata.conversationHistoryTurns
     }
@@ -378,6 +393,7 @@ export async function bootstrapExistingSession(options: {
     startedBy?: SessionStartedBy
     workingDirectory: string
     metadataOverrides?: Partial<Metadata>
+    requireMetadataFlush?: (metadata: Metadata | null | undefined) => boolean
 }): Promise<SessionBootstrapResult> {
     const startedBy = options.startedBy ?? 'terminal'
     const api = await ApiClient.create()
@@ -389,6 +405,11 @@ export async function bootstrapExistingSession(options: {
     })
 
     const sessionInfo = await api.getSession(options.sessionId)
+    // Shared Codex cold-resume calls bootstrap while holding native ownership.
+    // The source reservation outlives the native fork through child startup.
+    if (options.flavor === 'codex' && sessionInfo.metadata?.codexArchivedFork) {
+        throw new Error(`HAPI session ${options.sessionId} has a pending archived fork; retry that fork before resuming the source`)
+    }
     // #1911 M1 belt: match hub merge-preserve scope — only hub-authored archive.
     // CLI self-archive (archivedBy=cli) must still reopen; hub clears before spawn
     // for intentional revive. CAS closed hub-side (success+preserve + ack EXIT).
@@ -424,6 +445,9 @@ export async function bootstrapExistingSession(options: {
 
     const session = api.sessionSyncClient(sessionInfo)
     session.updateMetadata(buildUpdatedMetadata)
+    if (options.requireMetadataFlush?.(sessionInfo.metadata) && !await session.flushMetadata()) {
+        throw new Error('Unable to persist existing-session metadata')
+    }
 
     if (options.exportSessionEnv !== false) exportHapiSessionEnv(sessionInfo.id)
 

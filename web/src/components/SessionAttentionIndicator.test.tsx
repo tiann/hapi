@@ -29,6 +29,8 @@ function makeSummary(overrides: Partial<SessionSummary> & { id: string }): Sessi
         backgroundTaskCount: 0,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
+        attachedJob: null,
+        attachedJobUpdatedAt: 0,
         model: null,
         effort: null,
         ...overrides
@@ -40,6 +42,31 @@ function makeRequest(overrides: Partial<PendingRequest> & { id: string; kind: Pe
 }
 
 describe('SessionAttentionIndicator tooltip', () => {
+    it('keeps background tooltips left-anchored while pending tooltips stay inside the right edge', () => {
+        const pending = renderWithI18n(
+            <SessionAttentionIndicator
+                attention={{ kind: 'input' }}
+                summary={makeSummary({ id: 'pending' })}
+                label="Awaiting your answer"
+                tooltipId="pending-alignment"
+            />
+        )
+        expect(screen.getByRole('tooltip', { hidden: true })).toHaveClass('right-0')
+        expect(screen.getByRole('tooltip', { hidden: true })).not.toHaveClass('left-0')
+        pending.unmount()
+
+        renderWithI18n(
+            <SessionAttentionIndicator
+                attention={{ kind: 'background' }}
+                summary={makeSummary({ id: 'background', backgroundTaskCount: 1 })}
+                label="Background tasks running"
+                tooltipId="background-alignment"
+            />
+        )
+        expect(screen.getByRole('tooltip', { hidden: true })).toHaveClass('left-0')
+        expect(screen.getByRole('tooltip', { hidden: true })).not.toHaveClass('right-0')
+    })
+
     it('renders permission tooltip body listing each pending tool', () => {
         const summary = makeSummary({
             id: 's1',
@@ -155,13 +182,13 @@ describe('SessionAttentionIndicator tooltip', () => {
         expect(tooltip.textContent).not.toMatch(/\+\d+ more/)
     })
 
-    it('renders background task count', () => {
+    it('renders background task count behind a waiting spinner', () => {
         const summary = makeSummary({
             id: 's1',
             backgroundTaskCount: 3
         })
 
-        renderWithI18n(
+        const { container } = renderWithI18n(
             <SessionAttentionIndicator
                 attention={{ kind: 'background' }}
                 summary={summary}
@@ -173,6 +200,8 @@ describe('SessionAttentionIndicator tooltip', () => {
         const tooltip = screen.getByRole('tooltip', { hidden: true })
         expect(tooltip.textContent).toContain('Background tasks running')
         expect(tooltip.textContent).toContain('3 tasks running')
+        expect(container.querySelector('svg.animate-spin-slow.text-blue-400')).not.toBeNull()
+        expect(container.querySelector('.rounded-full')).toBeNull()
     })
 
     it('renders only the title for unread attention (relative time is already on the row)', () => {

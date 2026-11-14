@@ -4,11 +4,14 @@ import app.hapi.data.api.AttachmentUploadApi
 import app.hapi.protocol.wire.DeleteUploadResponse
 import app.hapi.protocol.wire.UploadFileResponse
 import java.util.Base64
+import kotlin.coroutines.ContinuationInterceptor
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
@@ -57,12 +60,29 @@ private fun prepared(
 
 class ComposerAttachmentsTest {
 
+    /**
+     * Test scaffold: production shape except the base64 encode hop, which is
+     * pinned to the scope's own dispatcher instead of the constructor default
+     * `Dispatchers.Default`. That default is a real thread pool: with two
+     * uploads in flight the second-launched one can finish encoding first and
+     * reach `uploadFile` first, consuming the fake's scripted `results` deque
+     * out of launch order (the queued failure stolen by the upload meant to
+     * succeed) — the robbed chip then never settles to its scripted state and
+     * `items.first {}` hangs until runTest's dispatch timeout
+     * (`UncompletedCoroutinesError`, observed intermittently under suite
+     * load). Keeping the hop on the runTest scheduler makes upload arrival
+     * order equal launch order deterministically, while `upload` still hops
+     * dispatchers exactly as in production. The `Dispatchers.Default`
+     * fallback only covers scopes whose interceptor is not a dispatcher.
+     */
     private fun harness(scope: kotlinx.coroutines.CoroutineScope, api: FakeUploadApi) =
         ComposerAttachments(
             api = api,
             sessionId = SESSION,
             scope = scope,
             detachedCleanupScope = scope,
+            encodeDispatcher = scope.coroutineContext[ContinuationInterceptor] as? CoroutineDispatcher
+                ?: Dispatchers.Default,
         )
 
     @Test
@@ -117,6 +137,36 @@ class ComposerAttachmentsTest {
         tray.items.first { it.size == 1 && it[0].status == ComposerAttachmentStatus.Ready }
         assertEquals(2, api.uploads.value.size)
         assertEquals(api.uploads.value[0].contentBase64, api.uploads.value[1].contentBase64)
+    }
+
+    @Test
+    fun `concurrent uploads take scripted results in launch order`() = runTest {
+        // Regression lock for the scheduler pin in `harness`: the fake's
+        // scripted `results` deque is consumed by uploadFile arrival order,
+        // which must equal launch order. With the production
+        // Dispatchers.Default encode hop the second upload can reach the
+        // fake first, steal the queued success, and flip which chip settles
+        // Ready (surfaced as an UncompletedCoroutinesError flake when the
+        // first chip then never matches the awaited state).
+        val api = FakeUploadApi().apply {
+            results += Result.success(UploadFileResponse(success = true, path = "/uploads/ok.jpg"))
+            results += Result.failure(RuntimeException("boom"))
+        }
+        val tray = harness(backgroundScope, api)
+        tray.add(prepared(id = "first", filename = "ok.jpg"))
+        tray.add(prepared(id = "second", filename = "bad.jpg"))
+
+        val settled = tray.items.first { list ->
+            list.size == 2 && list.all { it.status != ComposerAttachmentStatus.Uploading }
+        }
+
+        assertEquals(
+            listOf(
+                ComposerAttachmentStatus.Ready to "first",
+                ComposerAttachmentStatus.Failed to "second",
+            ),
+            settled.map { it.status to it.id },
+        )
     }
 
     @Test

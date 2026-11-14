@@ -386,7 +386,7 @@ export function createCodexEventConverter(): CodexEventConverter {
         currentTurnId = extractEventTurnId(parsed.data) ?? currentTurnId;
         const projection = extractAssistantMessageProjection(parsed.data, currentTurnId);
         const converted = convertCodexEvent(parsed.data);
-        const convertedActions = convertProjectionToActions(converted, projection?.turnId ?? null);
+        const convertedActions = convertProjectionToActions(converted, projection?.turnId ?? extractEventTurnId(parsed.data));
         const payload = asRecord(parsed.data.payload);
 
         if (parsed.data.type === 'compacted') {

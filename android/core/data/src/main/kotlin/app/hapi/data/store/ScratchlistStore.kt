@@ -110,6 +110,14 @@ interface SessionScratchlist {
     /** Optimistic delete; restores on failure. A 404 counts as success (already gone). */
     suspend fun deleteEntry(sessionId: String, entryId: String): Boolean
 
+    /**
+     * Local-only reorder (web v2 parity): swaps the entry with its neighbor
+     * in the cached list and sends no request — the hub has no position
+     * column, so the next refresh restores `createdAt DESC` order. Edge and
+     * unknown-id moves are no-ops.
+     */
+    fun moveEntry(sessionId: String, entryId: String, direction: ScratchlistMoveDirection)
+
     /** Base64-JSON upload; in flight it appears in [ScratchlistSessionState.uploadsInFlight]. */
     suspend fun uploadAttachment(
         sessionId: String,
@@ -365,6 +373,12 @@ class ScratchlistStore(
                 }
             }
             false
+        }
+    }
+
+    override fun moveEntry(sessionId: String, entryId: String, direction: ScratchlistMoveDirection) {
+        update(sessionId) { st ->
+            withEntries(st, ScratchlistEntryOps.moveEntry(st.entries, entryId, direction))
         }
     }
 

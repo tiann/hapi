@@ -7,7 +7,7 @@
  * `getProviderEnvironment()` — they are never copied into `process.env`.
  */
 
-import { getSettingsFile, readSettings, updateSettings, type Settings } from './settings'
+import { getSettingsFile, readSettings, readSettingsCached, updateSettings, type Settings } from './settings'
 import { VOICE_MAX_DURATION_DEFAULT_SECONDS, resolveVoiceMaxDurationSeconds } from '@hapi/protocol/voice'
 
 export const PROVIDER_CREDENTIAL_ENV_KEYS = [
@@ -328,7 +328,7 @@ function buildStatus(
 export async function getTranscriptionCredentialStatus(
     dataDir: string
 ): Promise<TranscriptionCredentialStatus> {
-    const settings = await readSettings(getSettingsFile(dataDir))
+    const settings = await readSettingsCached(getSettingsFile(dataDir))
     const stored = settings === null ? {} : readProviderCredentials(settings)
     const maxDurationSeconds = settings === null
         ? undefined

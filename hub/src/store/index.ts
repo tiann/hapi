@@ -5,14 +5,25 @@ import { dirname } from 'node:path'
 import { MachineStore } from './machineStore'
 import { MessageStore } from './messageStore'
 import { addMessage } from './messages'
+import { clearCachedStatements } from './statementCache'
+import { backfillLastUserMessageAt } from './sessionUserActivity'
 import type { StoredMessage } from './types'
 import { PushStore } from './pushStore'
 import { FcmStore } from './fcmStore'
 import { ScratchlistStore } from './scratchlistStore'
+import { SessionJobsStore } from './sessionJobsStore'
+import { SessionRedirectStore } from './sessionRedirectStore'
 import { SessionStore } from './sessionStore'
 import { UserStore } from './userStore'
+import { TurnStore } from './turnStore'
 import { UsageStore } from './usageStore'
 import { WorkGraphStore } from './workGraphStore'
+import {
+    backfillMessageContentSearchLookup,
+    backfillMessageContentSearchShortIndex,
+    createMessageContentSearchTable,
+    rebuildMessageContentSearch
+} from './messageContentSearch'
 
 export type {
     NativeDevicePlatform,
@@ -22,6 +33,7 @@ export type {
     StoredPushSubscription,
     StoredFcmDevice,
     StoredScratchlistEntry,
+    StoredSessionJob,
     StoredSession,
     StoredUser,
     VersionedUpdateResult
@@ -32,8 +44,11 @@ export { MessageStore } from './messageStore'
 export { PushStore } from './pushStore'
 export { FcmStore } from './fcmStore'
 export { ScratchlistStore } from './scratchlistStore'
+export { SessionJobsStore } from './sessionJobsStore'
 export { SessionStore } from './sessionStore'
 export { UserStore } from './userStore'
+export { TurnStore } from './turnStore'
+export type { SessionTurn, SessionTurnEndReason, SessionTurnTrigger } from './turns'
 export { UsageStore } from './usageStore'
 export { WorkGraphStore } from './workGraphStore'
 export {
@@ -42,20 +57,26 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 26
+const SCHEMA_VERSION: number = 35
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
     'messages',
+    'message_content_search',
+    'message_content_search_lookup',
+    'message_content_search_short',
     'message_epochs',
     'users',
     'push_subscriptions',
     'fcm_devices',
     'session_scratchlist',
+    'session_jobs',
     'usage_events',
     'usage_scan_state',
     'events',
-    'event_links'
+    'event_links',
+    'session_turns',
+    'session_redirects'
 ] as const
 
 export class Store {
@@ -70,7 +91,10 @@ export class Store {
     readonly push: PushStore
     readonly fcm: FcmStore
     readonly scratchlist: ScratchlistStore
+    readonly sessionJobs: SessionJobsStore
+    readonly sessionRedirects: SessionRedirectStore
     readonly usage: UsageStore
+    readonly turns: TurnStore
     readonly workGraph: WorkGraphStore
 
     /**
@@ -124,7 +148,10 @@ export class Store {
         this.push = new PushStore(this.db)
         this.fcm = new FcmStore(this.db)
         this.scratchlist = new ScratchlistStore(this.db)
+        this.sessionJobs = new SessionJobsStore(this.db)
+        this.sessionRedirects = new SessionRedirectStore(this.db)
         this.usage = new UsageStore(this.db)
+        this.turns = new TurnStore(this.db)
         this.workGraph = new WorkGraphStore(this.db)
     }
 
@@ -302,8 +329,17 @@ export class Store {
         })()
     }
 
+    /**
+     * Run `fn` in one SQLite transaction. Nested `runInTransaction` calls
+     * become savepoints (bun:sqlite). Throw to roll back.
+     */
+    runInTransaction<T>(fn: () => T): T {
+        return this.db.transaction(fn)()
+    }
+
     close(): void {
         if (this.closed) return
+        clearCachedStatements(this.db)
         this.db.close()
         this.closed = true
 
@@ -343,11 +379,29 @@ export class Store {
             18: () => this.migrateFromV18ToV19(),
             19: () => this.migrateFromV19ToV20(),
             20: () => this.migrateFromV20ToV21(),
+            // Upstream #1115 dual-pin at v21→v22; #1467 A2A events at v22→v23;
+            // iOS push_key at v23→v24; steer delivery_state at v24→v25;
+            // immediate-queue heartbeat index at v25→v26;
+            // upstream future-scheduled index at v26→v27;
+            // upstream session_turns at v27→v28; last_user_message_at at v28→v29;
+            // upstream read-state at v29→v30;
+            // #1404 session_jobs at v31→v32 (after upstream FTS v30→v31); run_id fence at v32→v33;
+            // #1489 wake-on-terminal at v33→v34; session_redirects at v34→v35
+            // (jobs remapped again after upstream took 28/29/30).
             21: () => this.migrateFromV21ToV22(),
             22: () => this.migrateFromV22ToV23(),
             23: () => this.migrateFromV23ToV24(),
             24: () => this.migrateFromV24ToV25(),
             25: () => this.migrateFromV25ToV26(),
+            26: () => this.migrateFromV26ToV27(),
+            27: () => this.migrateFromV27ToV28(),
+            28: () => this.migrateFromV28ToV29(),
+            29: () => this.migrateFromV29ToV30(),
+            30: () => this.migrateFromV30ToV31(),
+            31: () => this.migrateFromV31ToV32(),
+            32: () => this.migrateFromV32ToV33(),
+            33: () => this.migrateFromV33ToV34(),
+            34: () => this.migrateFromV34ToV35(),
         })
 
         if (currentVersion === 0) {
@@ -366,22 +420,42 @@ export class Store {
                 // Backfill any *missing* tables (sessions, machines, ...) that
                 // a partially-built legacy DB may not have yet.
                 this.createSchema()
+                this.ensureUsageScanParserVersion()
                 this.setUserVersion(SCHEMA_VERSION)
                 return
             }
 
             this.createSchema()
+            this.ensureUsageScanParserVersion()
             this.setUserVersion(SCHEMA_VERSION)
             return
         }
 
         const stepMigrations = buildStepMigrations(false)
+        // A v26 database predates all three derived-index refinements. Create
+        // the final schema and rebuild once instead of running the v26→v27
+        // rebuild, v28→v29 short-index backfill, and v29→v30 rebuild in turn.
+        // Keep the individual steps below for databases that resume from an
+        // intermediate schema version after an interrupted upgrade.
+        if (currentVersion === 26) {
+            this.migrateFromV26ToV30()
+            this.migrateFromV29ToV30()
+            this.migrateFromV30ToV31()
+            this.migrateFromV31ToV32()
+            this.migrateFromV32ToV33()
+            this.migrateFromV33ToV34()
+            this.migrateFromV34ToV35()
+            this.ensureUsageScanParserVersion()
+            this.setUserVersion(SCHEMA_VERSION)
+            return
+        }
         if (currentVersion < SCHEMA_VERSION && stepMigrations[currentVersion]) {
             for (let v = currentVersion; v < SCHEMA_VERSION; v++) {
                 const step = stepMigrations[v]
                 if (!step) throw this.buildSchemaMismatchError(currentVersion)
                 step()
             }
+            this.ensureUsageScanParserVersion()
             this.setUserVersion(SCHEMA_VERSION)
             return
         }
@@ -391,6 +465,7 @@ export class Store {
         }
 
         this.assertRequiredTablesPresent()
+        this.ensureUsageScanParserVersion()
     }
 
     private createSchema(): void {
@@ -402,6 +477,11 @@ export class Store {
                 machine_id TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
+                last_user_message_at INTEGER,
+                content_revision INTEGER NOT NULL DEFAULT 0,
+                read_revision INTEGER NOT NULL DEFAULT 0,
+                read_state_version INTEGER NOT NULL DEFAULT 0,
+                manual_unread INTEGER NOT NULL DEFAULT 0,
                 metadata TEXT,
                 metadata_version INTEGER DEFAULT 1,
                 agent_state TEXT,
@@ -439,6 +519,7 @@ export class Store {
             CREATE INDEX IF NOT EXISTS idx_machines_namespace ON machines(namespace);
 
             CREATE TABLE IF NOT EXISTS messages (
+                content_revision INTEGER NOT NULL DEFAULT 0,
                 id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
                 content TEXT NOT NULL,
@@ -462,6 +543,12 @@ export class Store {
                 WHERE invoked_at IS NULL
                   AND local_id IS NOT NULL
                   AND scheduled_at IS NULL
+                  AND delivery_state = 'queued';
+            CREATE INDEX IF NOT EXISTS idx_messages_future_scheduled_queued
+                ON messages(session_id, scheduled_at)
+                WHERE invoked_at IS NULL
+                  AND local_id IS NOT NULL
+                  AND scheduled_at IS NOT NULL
                   AND delivery_state = 'queued';
 
             CREATE TABLE IF NOT EXISTS message_epochs (
@@ -519,6 +606,38 @@ export class Store {
             CREATE INDEX IF NOT EXISTS idx_session_scratchlist_session_created
                 ON session_scratchlist(session_id, created_at DESC);
 
+            CREATE TABLE IF NOT EXISTS session_jobs (
+                session_id TEXT NOT NULL,
+                job_key TEXT NOT NULL,
+                label TEXT NOT NULL,
+                status TEXT NOT NULL,
+                done REAL,
+                total REAL,
+                remaining REAL,
+                unit TEXT,
+                detail TEXT,
+                run_id TEXT,
+                wake_on_terminal INTEGER NOT NULL DEFAULT 0,
+                wake_prompt TEXT,
+                wake_emitted_run_id TEXT,
+                heartbeat_at INTEGER NOT NULL,
+                started_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (session_id, job_key),
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_jobs_session_status_updated
+                ON session_jobs(session_id, status, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS session_redirects (
+                old_id TEXT PRIMARY KEY,
+                new_id TEXT NOT NULL,
+                namespace TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_redirects_namespace_new
+                ON session_redirects(namespace, new_id);
+
             CREATE TABLE IF NOT EXISTS usage_events (
                 session_id TEXT NOT NULL,
                 source_key TEXT NOT NULL,
@@ -547,6 +666,7 @@ export class Store {
                 session_id TEXT PRIMARY KEY,
                 message_epoch INTEGER NOT NULL DEFAULT 0,
                 last_seq INTEGER NOT NULL DEFAULT 0,
+                parser_version INTEGER NOT NULL DEFAULT 2,
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             );
 
@@ -598,7 +718,27 @@ export class Store {
                 ON event_links(namespace, from_event_id);
             CREATE INDEX IF NOT EXISTS idx_event_links_namespace_to
                 ON event_links(namespace, to_event_id);
+
+            CREATE TABLE IF NOT EXISTS session_turns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                namespace TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                ended_at INTEGER,
+                end_reason TEXT,
+                started_by TEXT NOT NULL,
+                recover_until INTEGER,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_turns_namespace_started
+                ON session_turns(namespace, started_at);
+            CREATE INDEX IF NOT EXISTS idx_session_turns_session_started
+                ON session_turns(session_id, started_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_session_turns_one_open
+                ON session_turns(session_id)
+                WHERE ended_at IS NULL;
         `)
+        createMessageContentSearchTable(this.db)
     }
 
     private migrateLegacySchemaIfNeeded(): void {
@@ -922,6 +1062,7 @@ export class Store {
                 session_id TEXT PRIMARY KEY,
                 message_epoch INTEGER NOT NULL DEFAULT 0,
                 last_seq INTEGER NOT NULL DEFAULT 0,
+                parser_version INTEGER NOT NULL DEFAULT 2,
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             );
             DELETE FROM usage_events;
@@ -941,6 +1082,7 @@ export class Store {
                 session_id TEXT PRIMARY KEY,
                 message_epoch INTEGER NOT NULL DEFAULT 0,
                 last_seq INTEGER NOT NULL DEFAULT 0,
+                parser_version INTEGER NOT NULL DEFAULT 2,
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
             );
             DELETE FROM usage_scan_state;
@@ -958,6 +1100,7 @@ export class Store {
     }
 
     private migrateFromV21ToV22(): void {
+        // Upstream #1115 dual-pin columns.
         const columns = this.getSessionColumnNames()
         if (columns.size === 0) return
         if (!columns.has('pinned')) {
@@ -1054,6 +1197,92 @@ export class Store {
         `)
     }
 
+    /**
+     * v26→v27: keep the session-list future-scheduled lookup indexed and
+     * initialize the derived message-content search tables.
+     */
+    private migrateFromV26ToV27(): void {
+        this.db.exec(`
+            CREATE INDEX IF NOT EXISTS idx_messages_future_scheduled_queued
+                ON messages(session_id, scheduled_at)
+                WHERE invoked_at IS NULL
+                  AND local_id IS NOT NULL
+                  AND scheduled_at IS NOT NULL
+                  AND delivery_state = 'queued';
+        `)
+        createMessageContentSearchTable(this.db)
+        if (this.getMessageColumnNames().size === 0) return
+        rebuildMessageContentSearch(this.db)
+    }
+
+    private migrateFromV26ToV30(): void {
+        this.migrateFromV26ToV27()
+        this.migrateFromV27ToV28()
+        this.migrateFromV28ToV29()
+    }
+
+    /** Complete the derived message-content index lookup added after v27. */
+    private migrateFromV27ToV28(): void {
+        createMessageContentSearchTable(this.db)
+        backfillMessageContentSearchLookup(this.db)
+        if (this.getSessionColumnNames().size === 0) return
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS session_turns (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                namespace TEXT NOT NULL,
+                started_at INTEGER NOT NULL,
+                ended_at INTEGER,
+                end_reason TEXT,
+                started_by TEXT NOT NULL,
+                recover_until INTEGER,
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_turns_namespace_started
+                ON session_turns(namespace, started_at);
+            CREATE INDEX IF NOT EXISTS idx_session_turns_session_started
+                ON session_turns(session_id, started_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_session_turns_one_open
+                ON session_turns(session_id)
+                WHERE ended_at IS NULL;
+        `)
+    }
+
+    /** Add the indexed short-query n-gram table to the message-content index. */
+    private migrateFromV28ToV29(): void {
+        createMessageContentSearchTable(this.db)
+        backfillMessageContentSearchShortIndex(this.db)
+        const columns = this.getSessionColumnNames()
+        if (columns.size === 0 || columns.has('last_user_message_at')) return
+        this.db.transaction(() => {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN last_user_message_at INTEGER')
+            if (this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'messages'").get()) {
+                backfillLastUserMessageAt(this.db)
+            }
+        })()
+    }
+
+    /** v29→v30: add read-state revisions. */
+    private migrateFromV29ToV30(): void {
+        const columns = this.getSessionColumnNames()
+        for (const name of ['content_revision', 'read_revision', 'read_state_version', 'manual_unread']) {
+            if (columns.size > 0 && !columns.has(name)) {
+                this.db.exec(`ALTER TABLE sessions ADD COLUMN ${name} INTEGER NOT NULL DEFAULT 0`)
+            }
+        }
+
+        const messageColumns = this.getMessageColumnNames()
+        if (messageColumns.size > 0 && !messageColumns.has('content_revision')) {
+            this.db.exec('ALTER TABLE messages ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 0')
+        }
+    }
+
+    /** v30→v31: create and backfill the message-content search index. */
+    private migrateFromV30ToV31(): void {
+        createMessageContentSearchTable(this.db)
+        if (this.getMessageColumnNames().size > 0) rebuildMessageContentSearch(this.db)
+    }
+
     private getSessionColumnNames(): Set<string> {
         const rows = this.db.prepare('PRAGMA table_info(sessions)').all() as Array<{ name: string }>
         return new Set(rows.map((row) => row.name))
@@ -1067,6 +1296,98 @@ export class Store {
     private getMessageColumnNames(): Set<string> {
         const rows = this.db.prepare('PRAGMA table_info(messages)').all() as Array<{ name: string }>
         return new Set(rows.map((row) => row.name))
+    }
+
+    /**
+     * v31→v32: #1404 session-attached jobs (after upstream took v30→v31 for FTS).
+     * Also repairs session_turns + last_user_message_at for fork DBs that
+     * previously burned those version numbers on an earlier jobs remap —
+     * both ensures are idempotent.
+     */
+    private migrateFromV31ToV32(): void {
+        this.migrateFromV27ToV28()
+        this.migrateFromV28ToV29()
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS session_jobs (
+                session_id TEXT NOT NULL,
+                job_key TEXT NOT NULL,
+                label TEXT NOT NULL,
+                status TEXT NOT NULL,
+                done REAL,
+                total REAL,
+                remaining REAL,
+                unit TEXT,
+                detail TEXT,
+                wake_on_terminal INTEGER NOT NULL DEFAULT 0,
+                wake_prompt TEXT,
+                wake_emitted_run_id TEXT,
+                heartbeat_at INTEGER NOT NULL,
+                started_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (session_id, job_key),
+                FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_jobs_session_status_updated
+                ON session_jobs(session_id, status, updated_at DESC);
+        `)
+    }
+
+    /**
+     * v32→v33: supervisor run generation — CAS fence for key reuse (#1424).
+     * Also ensures message-content FTS for fork DBs that already sat at tip 32
+     * (jobs+run_id) before this merge absorbed upstream v30→v31 search.
+     * Also ensures upstream read-state columns for older fork tips.
+     */
+    private migrateFromV32ToV33(): void {
+        this.migrateFromV29ToV30()
+        this.migrateFromV30ToV31()
+        const cols = this.db.prepare('PRAGMA table_info(session_jobs)').all() as Array<{ name: string }>
+        if (cols.length > 0 && !cols.some((c) => c.name === 'run_id')) {
+            this.db.exec('ALTER TABLE session_jobs ADD COLUMN run_id TEXT')
+        }
+    }
+
+    /**
+     * v33→v34: tiann/hapi#1489 — opt-in terminal wake + one-shot claim marker.
+     */
+    private migrateFromV33ToV34(): void {
+        const cols = this.db.prepare('PRAGMA table_info(session_jobs)').all() as Array<{ name: string }>
+        const names = new Set(cols.map((c) => c.name))
+        if (!names.has('wake_on_terminal')) {
+            this.db.exec('ALTER TABLE session_jobs ADD COLUMN wake_on_terminal INTEGER NOT NULL DEFAULT 0')
+        }
+        if (!names.has('wake_prompt')) {
+            this.db.exec('ALTER TABLE session_jobs ADD COLUMN wake_prompt TEXT')
+        }
+        if (!names.has('wake_emitted_run_id')) {
+            this.db.exec('ALTER TABLE session_jobs ADD COLUMN wake_emitted_run_id TEXT')
+        }
+    }
+
+    /**
+     * v34→v35: durable redirects from merged-away session ids to the surviving
+     * row, so links and peer references to a merged session keep resolving.
+     */
+    private migrateFromV34ToV35(): void {
+        this.db.exec(`
+            CREATE TABLE IF NOT EXISTS session_redirects (
+                old_id TEXT PRIMARY KEY,
+                new_id TEXT NOT NULL,
+                namespace TEXT NOT NULL,
+                created_at INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_redirects_namespace_new
+                ON session_redirects(namespace, new_id);
+        `)
+    }
+
+    private ensureUsageScanParserVersion(): void {
+        const columns = this.db.prepare('PRAGMA table_info(usage_scan_state)').all() as Array<{ name: string }>
+        if (columns.length === 0) return
+        if (!columns.some((col) => col.name === 'parser_version')) {
+            this.db.exec('ALTER TABLE usage_scan_state ADD COLUMN parser_version INTEGER NOT NULL DEFAULT 2')
+            this.db.exec('DELETE FROM usage_scan_state')
+        }
     }
 
     private getUserVersion(): number {

@@ -215,6 +215,70 @@ describe('AppServerEventConverter', () => {
         }]);
     });
 
+    it('preserves command identity when completion arrives without a start', () => {
+        const converter = new AppServerEventConverter();
+        const events = converter.handleNotification('item/completed', {
+            item: { id: 'late-command', type: 'commandExecution', command: 'node server.js', cwd: '/repo',
+                status: 'failed', exitCode: -1, durationMs: 16_636_720 }
+        });
+        expect(events).toEqual([expect.objectContaining({ type: 'exec_command_end', call_id: 'late-command',
+            command: 'node server.js', cwd: '/repo', status: 'failed', exit_code: -1, duration_ms: 16_636_720 })]);
+    });
+
+    it('carries item timing on tool events for the generation ledger', () => {
+        const converter = new AppServerEventConverter();
+
+        const command = converter.handleNotification('item/started', {
+            item: { id: 'cmd-1', type: 'commandExecution', command: 'ls', startedAtMs: 1_000 }
+        });
+        expect(command).toEqual([expect.objectContaining({ type: 'exec_command_begin', call_id: 'cmd-1', started_at_ms: 1_000 })]);
+        const commandEnd = converter.handleNotification('item/completed', {
+            item: { id: 'cmd-1', type: 'commandExecution', status: 'completed', durationMs: 500, completedAtMs: 1_500 }
+        });
+        expect(commandEnd).toEqual([expect.objectContaining({
+            type: 'exec_command_end', call_id: 'cmd-1', duration_ms: 500, completed_at_ms: 1_500
+        })]);
+
+        const mcp = converter.handleNotification('item/started', {
+            item: { id: 'mcp-1', type: 'mcpToolCall', server: 's', tool: 't', arguments: {}, startedAtMs: 2_000 }
+        });
+        expect(mcp).toEqual([expect.objectContaining({ type: 'mcp_tool_call_begin', call_id: 'mcp-1', started_at_ms: 2_000 })]);
+        const mcpEnd = converter.handleNotification('item/completed', {
+            item: { id: 'mcp-1', type: 'mcpToolCall', server: 's', tool: 't', result: { Ok: 'done' }, durationMs: 250, completedAtMs: 2_250 }
+        });
+        expect(mcpEnd).toEqual([expect.objectContaining({
+            type: 'mcp_tool_call_end', call_id: 'mcp-1', duration_ms: 250, completed_at_ms: 2_250
+        })]);
+
+        const patch = converter.handleNotification('item/started', {
+            item: { id: 'patch-1', type: 'fileChange', changes: {}, startedAtMs: 3_000 }
+        });
+        expect(patch).toEqual([expect.objectContaining({ type: 'patch_apply_begin', call_id: 'patch-1', started_at_ms: 3_000 })]);
+        const patchEnd = converter.handleNotification('item/completed', {
+            item: { id: 'patch-1', type: 'fileChange', success: true, completedAtMs: 3_400 }
+        });
+        expect(patchEnd).toEqual([expect.objectContaining({ type: 'patch_apply_end', call_id: 'patch-1', completed_at_ms: 3_400 })]);
+
+        const collab = converter.handleNotification('item/started', {
+            item: { id: 'agent-1', type: 'collabAgentToolCall', tool: 'spawn_agent', startedAtMs: 4_000 }
+        });
+        expect(collab).toEqual([expect.objectContaining({ type: 'codex_tool_call_begin', call_id: 'agent-1', started_at_ms: 4_000 })]);
+        const collabEnd = converter.handleNotification('item/completed', {
+            item: { id: 'agent-1', type: 'collabAgentToolCall', tool: 'spawn_agent', status: 'completed', completedAtMs: 5_000 }
+        });
+        expect(collabEnd).toEqual([expect.objectContaining({ type: 'codex_tool_call_end', call_id: 'agent-1', completed_at_ms: 5_000 })]);
+    });
+
+    it('omits item timing keys the agent did not send', () => {
+        const converter = new AppServerEventConverter();
+        const started = converter.handleNotification('item/started', {
+            item: { id: 'cmd-1', type: 'commandExecution', command: 'ls' }
+        });
+        expect(started).toEqual([{
+            type: 'exec_command_begin', call_id: 'cmd-1', command: 'ls'
+        }]);
+    });
+
     it('maps MCP tool call items', () => {
         const converter = new AppServerEventConverter();
 
@@ -1199,6 +1263,20 @@ describe('AppServerEventConverter', () => {
             mime_type: 'image/png'
         }]);
         expect(JSON.stringify(events)).not.toContain(largeImageResult);
+    });
+
+    it('converts completed image views into viewed_image events keyed by the tool call', () => {
+        const converter = new AppServerEventConverter();
+
+        expect(converter.handleNotification('item/started', {
+            item: { id: 'exec-view-1', type: 'imageView', path: '/tmp/shot.png' }
+        })).toEqual([]);
+        expect(converter.handleNotification('item/completed', {
+            item: { id: 'exec-view-1', type: 'imageView', path: '/tmp/shot.png' }
+        })).toEqual([{ type: 'viewed_image', call_id: 'exec-view-1', path: '/tmp/shot.png' }]);
+        expect(converter.handleNotification('item/completed', {
+            item: { id: 'call-view-2', type: 'imageView', path: 'file:///tmp/a%20b.png' }
+        })).toEqual([{ type: 'viewed_image', call_id: 'call-view-2', path: '/tmp/a b.png' }]);
     });
 
     it('truncates large unhandled notification payloads before logging', () => {
