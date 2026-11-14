@@ -15,6 +15,13 @@ export const TITLE_SUGGESTION_RATE_LIMIT = 5
 export const TITLE_SUGGESTION_RATE_WINDOW_MS = 10 * 60 * 1000
 export const TITLE_SUGGESTION_TIMEOUT_MS = 10_000
 export const TITLE_SUGGESTION_MAX_TOKENS = 64
+/**
+ * How many newest-first windows suggestTitle may scan when the recent rows
+ * are all non-conversational (tool output, reasoning, progress, bookkeeping).
+ * 25 pages x 200 rows = 5,000 rows, bounded so a noise-only session cannot
+ * walk an unbounded history on every (rate-limited) request.
+ */
+export const TITLE_SUGGESTION_MAX_SCAN_PAGES = 25
 const TITLE_SUGGESTION_RATE_LIMIT_ENV = 'HAPI_TITLE_SUGGESTION_RATE_LIMIT'
 const TITLE_SUGGESTION_RATE_WINDOW_ENV = 'HAPI_TITLE_SUGGESTION_RATE_WINDOW_MS'
 const TITLE_PROVIDER_MAX_TOKENS_ENV = 'HAPI_TITLE_PROVIDER_MAX_TOKENS'
@@ -376,6 +383,35 @@ export class TitleSuggestionService {
         }
     }
 
+    /**
+     * Page backward past non-conversational rows until real user/assistant
+     * text enters the window or the store is exhausted. A single newest-first
+     * window can be entirely tool noise on long agent sessions (a busy turn
+     * emits hundreds of reasoning/tool rows), which surfaced as "no
+     * conversation content" even though the last user prompt sat only a few
+     * hundred rows back. Sibling scans in this class (hasTitleResponse,
+     * hasCompletedFirstTurn) already page the same way.
+     */
+    private collectTitleConversation(sessionId: string): string | null {
+        const collected: StoredMessage[] = []
+        let before: { at: number; seq: number } | undefined
+        for (let page = 0; page < TITLE_SUGGESTION_MAX_SCAN_PAGES; page += 1) {
+            const messages = this.store.messages.getMessagesByPosition(sessionId, TITLE_SUGGESTION_MESSAGE_LIMIT, before)
+            if (messages.length === 0) break
+            collected.push(...messages)
+            const conversation = buildTitleConversation(collected)
+            if (conversation.length > 0
+                && (conversation.length >= TITLE_SUGGESTION_MAX_INPUT_CHARS - 2_000
+                    || messages.length < TITLE_SUGGESTION_MESSAGE_LIMIT)) {
+                return conversation
+            }
+            const oldest = messages[0]!
+            before = { at: oldest.invokedAt ?? oldest.createdAt, seq: oldest.seq }
+        }
+        const conversation = buildTitleConversation(collected)
+        return conversation.length > 0 ? conversation : null
+    }
+
     async suggestTitle(sessionId: string): Promise<string> {
         if (!this.provider) {
             throw new TitleSuggestionError(
@@ -385,10 +421,8 @@ export class TitleSuggestionService {
             )
         }
 
-        const conversation = buildTitleConversation(
-            this.store.messages.getMessagesByPosition(sessionId, TITLE_SUGGESTION_MESSAGE_LIMIT)
-        )
-        if (!conversation) {
+        const conversation = this.collectTitleConversation(sessionId)
+        if (conversation === null) {
             throw new TitleSuggestionError(
                 'empty',
                 'No conversation content is available for a title suggestion',
