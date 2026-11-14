@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { getProjectPath } from './utils/path'
+import { claudeCheckSession } from './utils/claudeCheckSession'
 import { isExternalUserMessage } from '@/api/apiSession'
 import type { RawJSONLines } from '@/claude/types'
 import {
@@ -52,9 +53,27 @@ export function readNativeTurns(workingDirectory: string, sessionId: string): Na
         if (typeof entry.uuid !== 'string') continue
         byUuid.set(entry.uuid, {
             entry,
-            parent: typeof entry.parentUuid === 'string' ? entry.parentUuid : null
+            // Claude Code severs the parentUuid chain at compaction:
+            // compact_boundary entries carry parentUuid=null and
+            // logicalParentUuid=<pre-compaction leaf> (verified against a
+            // real v2.1.310 transcript). Following the logical parent keeps
+            // pre-compaction turns reachable for rewind resolution and
+            // prevents falsely proving a rewind that spans a compaction.
+            parent: typeof entry.parentUuid === 'string'
+                ? entry.parentUuid
+                : typeof (entry as { logicalParentUuid?: unknown }).logicalParentUuid === 'string'
+                    ? (entry as { logicalParentUuid: string }).logicalParentUuid
+                    : null
         })
-        tailUuid = entry.uuid
+        // Only message records may become the tailUuid: auxiliary records
+        // (attachments, queue operations) can carry a uuid without being
+        // parented into the message chain, and starting the backwalk at a
+        // disconnected node would see an empty conversation and silently
+        // disable rewind reconciliation. They stay in byUuid so a chain that
+        // links through them still walks.
+        if (entry.type === 'user' || entry.type === 'assistant' || entry.type === 'system') {
+            tailUuid = entry.uuid
+        }
     }
     if (!tailUuid) return []
 
@@ -207,13 +226,99 @@ export function stripRewindFlags(args: string[] | undefined): string[] | undefin
     if (!args) return undefined
     const filtered: string[] = []
     for (let i = 0; i < args.length; i++) {
-        if ((args[i] === '--resume-session-at' || args[i] === '--resume-drops-turn') && i + 1 < args.length) {
+        if (args[i] === '--resume-session-at' && i + 1 < args.length) {
             i++
             continue
         }
         filtered.push(args[i]!)
     }
     return filtered.length > 0 ? filtered : undefined
+}
+
+/**
+ * The session id a fresh claudeRemote() spawn would resume: claudeRemote
+ * falls back to parsing `--resume <id>` from claudeArgs when no live session
+ * id is passed, so a rewind armed on a not-yet-attached session must resolve
+ * its plan against that same id. Mirrors claudeRemote's dash-heuristic parse.
+ */
+export function resumeSessionIdFromClaudeArgs(args: string[] | undefined): string | null {
+    if (!args) return null
+    for (let i = 0; i < args.length; i++) {
+        if (args[i] !== '--resume') continue
+        const nextArg = args[i + 1]
+        if (nextArg && !nextArg.startsWith('-') && nextArg.includes('-')) {
+            return nextArg
+        }
+        return null
+    }
+    return null
+}
+
+/** The resume-at boundary value of a spawn request, if any. */
+export function resumeSessionAtFromArgs(args: string[] | undefined): string | null {
+    if (!args) return null
+    for (let i = 0; i < args.length; i++) {
+        if (args[i] === '--resume-session-at' && i + 1 < args.length) {
+            return args[i + 1]!
+        }
+    }
+    return null
+}
+
+/**
+ * The spawn-time resume-at decision — the single source of truth for the
+ * boundary flag. Every Claude spawn (remote and local) derives its args
+ * here instead of carrying a mutated flag buffer:
+ *
+ * - A same-session rewind's boundary comes from the durable
+ *   `metadata.claudeRewind` intent and applies while the dropped turns are
+ *   still on the active chain — evaluated FRESH against the transcript, so
+ *   a spawn landing after the proof self-corrects to no boundary.
+ * - A fork-at-message request's boundary rides the hub-built spawn args and
+ *   applies only while the child has not materialized (no sessionId yet);
+   * once it has, the child file already carries the truncated history and
+ *   re-applying would cut post-fork turns from every later respawn.
+ *
+ * `session.claudeArgs` is only ever READ here: the returned args are a
+ * filtered copy with at most one boundary appended, and no code path may
+ * add or strip rewind flags on the buffer as a side effect of init, /clear,
+ * consumeOneTimeFlags or respawn.
+ */
+export function deriveSpawnArgs(options: {
+    claudeArgs: string[] | undefined
+    sessionId: string | null
+    intent: ClaudeRewindIntent | undefined
+    workingDirectory: string
+}): { args: string[] | undefined; boundary: string | null } {
+    // Materialization is a transcript ON DISK, not a bound session id: the
+    // remote SessionStart hook binds session.sessionId before system/init
+    // consumes the one-shot flags, so an attempt that exits in between must
+    // still re-derive the fork boundary. This is the single fact every fork
+    // decision derives from, matching claudeRemote/claudeLocal's own
+    // claudeCheckSession startFrom gate.
+    const materialized = options.sessionId != null && claudeCheckSession(options.sessionId, options.workingDirectory)
+    let baseArgs = stripRewindFlags(options.claudeArgs)
+    const forkPending = options.claudeArgs?.includes('--fork-session') === true && !materialized
+    const forkBoundary = forkPending ? resumeSessionAtFromArgs(options.claudeArgs) : null
+    if (materialized) {
+        // The fork already happened; keeping --fork-session would re-fork the
+        // materialized child on a respawn that races the one-shot consumption
+        // (e.g. the local launcher's launch-success consume).
+        baseArgs = baseArgs?.filter((arg) => arg !== '--fork-session')
+    }
+    const intentSessionId = options.sessionId ?? resumeSessionIdFromClaudeArgs(options.claudeArgs)
+    let intentBoundary: string | null = null
+    if (options.intent && intentSessionId) {
+        const turns = readNativeTurns(options.workingDirectory, intentSessionId)
+        const plan = planPendingRewindRestart(options.intent, turns)
+        // A missing or empty transcript can never be truncated: emitting the
+        // boundary only makes claudeRemote throw 'Pending resume-at request
+        // has no native session to resume' in a respawn storm.
+        intentBoundary = plan.action === 'rearm' && turns.length > 0 ? options.intent.keepBoundary : null
+    }
+    const boundary = intentBoundary ?? forkBoundary
+    const args = boundary ? [...(baseArgs ?? []), '--resume-session-at', boundary] : baseArgs
+    return { args, boundary }
 }
 
 /**

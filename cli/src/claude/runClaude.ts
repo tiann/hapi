@@ -1,9 +1,8 @@
 import { logger } from '@/ui/logger';
 import { loop } from '@/claude/loop';
 import { AgentState, SessionEffort, SessionModel } from '@/api/types';
-import { claudeProcessModeKey, EnhancedMode, PermissionMode } from './loop';
+import { claudeBatchModeHash, EnhancedMode, PermissionMode } from './loop';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
-import { hashObject } from '@/utils/deterministicJson';
 import { classifyClaudeSlashCatalog, extractSDKMetadata } from '@/claude/sdk/metadataExtractor';
 import { parseSpecialCommand } from '@/parsers/specialCommands';
 import { getEnvironmentInfo } from '@/ui/doctor';
@@ -26,7 +25,7 @@ import { normalizeHookPermissionMode } from './utils/hookPermissionMode';
 import { execFileSync } from 'node:child_process';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { getDefaultClaudeCodePath } from './sdk/utils';
-import { claudeConversationHistoryCapabilities, nativeRewindApplied, planPendingRewindRestart, readNativeTurns, resolveForkAtMessagePlan, resolveRewindPlan, stripRewindFlags, type ClaudeRewindIntent } from './conversationHistory';
+import { claudeConversationHistoryCapabilities, nativeRewindApplied, planPendingRewindRestart, readNativeTurns, resolveForkAtMessagePlan, resolveRewindPlan, resumeSessionIdFromClaudeArgs, type ClaudeRewindIntent } from './conversationHistory';
 import { listSkills, type SkillSummary } from '@/modules/common/skills';
 
 export interface StartOptions {
@@ -177,6 +176,26 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                 const previousSessionId = currentSession.sessionId;
                 if (previousSessionId !== sessionId) {
                     logger.debug(`[START] Claude session ID changed: ${previousSessionId} -> ${sessionId}`);
+                    // A 'clear' rotation is the local twin of the remote
+                    // onSessionReset: the TUI discarded the conversation, so a
+                    // pending rewind pointing into it can never be proven and
+                    // would be re-armed onto the fresh, empty session at the
+                    // next reconcile. Non-clear rotations (startup attach,
+                    // genuine resume - including the rewind re-arm's own
+                    // respawn) must keep the intent. The cancellation commits
+                    // BEFORE the rotated id: if the process dies between the
+                    // two metadata writes, the hub must not hold
+                    // {claudeSessionId: <cleared session>, claudeRewind:
+                    // intent}, which reconcile would re-arm.
+                    if (data.source === 'clear') {
+                        currentSession.onConversationReset?.();
+                        // The rotation discards the resume anchor with the
+                        // conversation (the remote twin consumes in
+                        // onSessionReset): without this, the next local spawn
+                        // would resume the cleared session through the stale
+                        // --resume flag on claudeArgs.
+                        currentSession.consumeOneTimeFlags();
+                    }
                     currentSession.onSessionFound(sessionId);
                 }
             }
@@ -193,6 +212,13 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                 const event = data.hook_event_name;
                 if (event === 'UserPromptSubmit') {
                     currentSession.localTurnStartedAt = Date.now();
+                    // A local turn re-parents onto the kept boundary exactly
+                    // like a remote one: it is the proof that a pending
+                    // rewind's native branch applied. The remote launcher's
+                    // onInputSubmitted never fires in local mode (only its
+                    // settings file forwards UserPromptSubmit), so settle the
+                    // durable intent and consume the boundary flags from here.
+                    handleNativeInputSubmitted();
                 }
                 const thinking = event === 'UserPromptSubmit' || event === 'PreToolUse' ? true
                     : event === 'Stop' || event === 'StopFailure' || event === 'SessionEnd' ? false
@@ -295,8 +321,11 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
 
     // Crash consistency for rewinds (two systems: native branch, hub
     // truncation): the session-metadata intent is the durable key. On start,
-    // an intent whose native branch applied re-requests the idempotent hub
-    // truncation; one whose branch never applied is cleared, changing nothing.
+    // dropped turns still on the native chain mean the branch never applied:
+    // re-arm the boundary flags for this launch and keep the intent. Dropped
+    // turns gone mean the branch applied: clear the intent - the hub
+    // truncated at rewind-RPC success, or at RPC failure with the committed
+    // intent visible, so no hub re-request exists or is needed.
     let rearmPendingIntent: ClaudeRewindIntent | null = null;
     const reconcilePendingRewind = () => {
         const intent = session.getMetadata()?.claudeRewind
@@ -318,25 +347,23 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                 const { claudeRewind: _cleared, ...rest } = metadata;
                 return rest;
             });
+            // Pure housekeeping, but the deletion must reach the hub: a stale
+            // intent stranded there would issue a bogus native rewind on the
+            // next start.
+            void session.flushMetadata();
         }
     };
     reconcilePendingRewind();
 
     let pendingRewind: ClaudeRewindIntent | null = null;
-const armRewindFlags = (claudeSession: { claudeArgs?: string[] }, intent: ClaudeRewindIntent) => {
-        // resume-session-at alone truncates unconditionally after the boundary;
-        // droppedPrompts stays in the intent for crash-consistency evidence.
-        claudeSession.claudeArgs = [
-            ...(claudeSession.claudeArgs ?? []),
-            '--resume-session-at', intent.keepBoundary
-        ];
-    };
 
     // The rewind's native branch materializes when the respawned process
     // writes its first real input re-parented onto the kept boundary. The
     // submitted prompt's uuid is that input; once the dropped turns leave the
     // active chain, commit the hub side through the keyed metadata intent.
-    const handleNativeInputSubmitted = (nativePromptUuid: string) => {
+    // The uuid itself is unused - the transcript poll is the evidence - so
+    // the local UserPromptSubmit hook can trigger the same proof without one.
+    const handleNativeInputSubmitted = (nativePromptUuid?: string) => {
         const intent = pendingRewind;
         if (!intent) return;
         const nativeSessionId = currentSessionRef.current?.sessionId
@@ -348,10 +375,9 @@ const armRewindFlags = (claudeSession: { claudeArgs?: string[] }, intent: Claude
             if (pendingRewind !== intent) return;
             if (nativeRewindApplied(workingDirectory, nativeSessionId, intent.droppedPrompts)) {
                 pendingRewind = null;
-                const claudeSession = currentSessionRef.current;
-                if (claudeSession) {
-                    claudeSession.claudeArgs = stripRewindFlags(claudeSession.claudeArgs);
-                }
+                // The boundary flag needs no cleanup here: spawns derive it
+                // from the durable intent (deriveSpawnArgs), which this
+                // metadata deletion removes.
                 session.updateMetadata((metadata) => {
                     const { claudeRewind: _cleared, ...rest } = metadata;
                     return rest;
@@ -369,16 +395,48 @@ const armRewindFlags = (claudeSession: { claudeArgs?: string[] }, intent: Claude
         poll();
     };
 
+    // /clear wipes the conversation a pending rewind points into: an intent
+    // whose evidence can never materialize would keep fork/rewind blocked
+    // until the wrapper restarts. Cancel the durable key together with the
+    // live pending state when the launcher reports the reset - the next
+    // spawn's boundary derivation then sees no intent. The boundary flag
+    // itself is never stored on claudeArgs, so there is nothing to strip.
+    const cancelPendingRewind = () => {
+        // Clear even without a live pending rewind: an intent can sit in
+        // metadata without one (e.g. left inside a rejected rewind's flush
+        // window), and a reset must not leave it blocking history actions
+        // until a restart.
+        if (!pendingRewind && !session.getMetadata()?.claudeRewind) return;
+        pendingRewind = null;
+        session.updateMetadata((metadata) => {
+            const { claudeRewind: _cleared, ...rest } = metadata;
+            return rest;
+        });
+        void session.flushMetadata();
+        logger.debug('[claude] rewind: cancelled by session reset');
+    };
+
     session.rpcHandlerManager.registerHandler(RPC_METHODS.ForkConversation, async (payload: unknown) => {
         const messageLocalId = payload && typeof payload === 'object' && typeof (payload as { messageLocalId?: unknown }).messageLocalId === 'string'
             ? (payload as { messageLocalId: string }).messageLocalId
             : undefined
-        const nativeSessionId = currentSessionRef.current?.sessionId
+        const liveSession = currentSessionRef.current;
+        const liveNativeId = liveSession?.sessionId ?? null;
+        const resumeArgId = liveSession ? resumeSessionIdFromClaudeArgs(liveSession.claudeArgs) : null;
+        const nativeSessionId = liveNativeId
+            ?? resumeArgId
             ?? session.getMetadata()?.claudeSessionId
             ?? sessionInfo.metadata?.claudeSessionId
             ?? null
         if (!nativeSessionId) {
             throw new Error('Claude session id is not ready')
+        }
+        // Mirror RewindConversation's live-session guard: a live session with
+        // neither a bound id nor a resume anchor - right after /clear consumed
+        // both - has no native conversation to fork; falling back to the stale
+        // metadata id would fork the discarded pre-/clear conversation.
+        if (liveSession && !liveNativeId && !resumeArgId) {
+            throw new Error('No active native session to fork; send a message to start a new conversation first')
         }
         if (!messageLocalId) {
             return { nativeSessionId, forkSession: true as const }
@@ -414,12 +472,28 @@ const armRewindFlags = (claudeSession: { claudeArgs?: string[] }, intent: Claude
         if (pendingRewind) {
             return rejected('A rewind is already pending; send a message to settle it first')
         }
-        const nativeSessionId = currentSessionRef.current?.sessionId
+        // Resolve the native session the way the respawn will actually resume
+        // it: the live session's id, else the --resume anchor claudeRemote
+        // parses from claudeArgs (startFrom), else the hub metadata. A live
+        // session with neither a session id nor a resume anchor - right after
+        // /clear consumed both, before any new prompt - has no native
+        // conversation to rewind into: falling back to the stale metadata id
+        // would persist a fresh intent and truncate the hub while the respawn
+        // throws 'Pending resume-at request has no native session to resume'
+        // on every attempt, looping forever.
+        const liveSession = currentSessionRef.current;
+        const liveNativeId = liveSession?.sessionId ?? null;
+        const resumeArgId = liveSession ? resumeSessionIdFromClaudeArgs(liveSession.claudeArgs) : null;
+        const nativeSessionId = liveNativeId
+            ?? resumeArgId
             ?? session.getMetadata()?.claudeSessionId
             ?? sessionInfo.metadata?.claudeSessionId
             ?? null
         if (!nativeSessionId) {
             return rejected('Claude session id is not ready')
+        }
+        if (liveSession && !liveNativeId && !resumeArgId) {
+            return rejected('No active native session to rewind; send a message to start a new conversation first')
         }
         const promptUuid = session.getMetadata()?.conversationHistoryEntryIds?.[messageLocalId]
         if (!promptUuid) {
@@ -442,21 +516,39 @@ const armRewindFlags = (claudeSession: { claudeArgs?: string[] }, intent: Claude
             keepBoundary,
             droppedPrompts
         }
-        // Persist the durable key BEFORE respawning: a crash after the native
-        // branch applies is recovered by the next start's reconciliation.
-        session.updateMetadata((metadata) => ({ ...metadata, claudeRewind: intent }))
-        if (!await session.flushMetadata()) {
-            return rejected('Rewind intent could not be persisted')
-        }
+        // Bail before any persistence: a session that cannot restart would
+        // otherwise persist the intent and roll it back in metadata only.
         const claudeSession = currentSessionRef.current;
         if (!claudeSession?.requestRemoteRestart) {
+            return rejected('Claude session is not ready for a rewind restart')
+        }
+        // Persist the durable key BEFORE respawning: a crash after the native
+        // branch applies is recovered by the next start's reconciliation. The
+        // queued write's handler is re-invoked on every backoff retry, so it
+        // is gated on keepIntent: after a flush failure the still-retrying
+        // write must converge to metadata WITHOUT the intent (the hub never
+        // truncated for a rejected rewind).
+        let keepIntent = true;
+        session.updateMetadata((metadata) => (keepIntent ? { ...metadata, claudeRewind: intent } : metadata));
+        // The persist wait must outlive transient socket congestion: a 5s
+        // drain timeout rejects the rewind while the intent write may still
+        // land moments later, and the hub's lost-RPC fallback then sees the
+        // very intent this rejection rolls back - hub truncated, native not.
+        // The hub RPC allows 120s; waiting here keeps the common congestion
+        // case on the committed path (and any residual ambiguity is resolved
+        // by the hub's fail-closed diverged marker, not by a silent split).
+        if (!await session.flushMetadata(60_000)) {
+            // Cover the window where the stuck write acked just before the
+            // flip, and drop the intent from the local snapshot. Queued
+            // fire-and-forget: the rejection must not wait another drain
+            // timeout behind the retrying write.
+            keepIntent = false;
             session.updateMetadata((metadata) => {
                 const { claudeRewind: _cleared, ...rest } = metadata;
                 return rest;
             });
-            return rejected('Claude session is not ready for a rewind restart')
+            return rejected('Rewind intent could not be persisted')
         }
-        armRewindFlags(claudeSession, intent)
         // The proof handler must be live for THIS respawn too: the previous
         // rewind in this wrapper lifetime already consumed one proof, and
         // settle must never detach the notification the next one depends on.
@@ -472,11 +564,10 @@ const armRewindFlags = (claudeSession: { claudeArgs?: string[] }, intent: Claude
     setControlledByUser(session, startingMode);
 
     // Batches split on any mode change that needs a new Claude process, and
-    // on effort so each batch runs at its own effort.
-    const messageQueue = new MessageQueue2<EnhancedMode>(mode => hashObject({
-        ...claudeProcessModeKey(mode),
-        effort: mode.effort
-    }));
+    // on effort so each batch runs at its own effort. claudeBatchModeHash is
+    // shared with the launcher's resume-at spawn gate so spawned-config and
+    // batch hashes compare directly.
+    const messageQueue = new MessageQueue2<EnhancedMode>(claudeBatchModeHash);
 
     // Forward messages to the queue
     let currentPermissionMode: PermissionMode = options.permissionMode ?? 'default';
@@ -774,11 +865,26 @@ const armRewindFlags = (claudeSession: { claudeArgs?: string[] }, intent: Claude
             onSessionReady: (sessionInstance) => {
                 currentSessionRef.current = sessionInstance;
                 if (rearmPendingIntent && !pendingRewind) {
-                    armRewindFlags(sessionInstance, rearmPendingIntent);
+                    // Proof wiring only: the boundary flag is derived at
+                    // spawn time from the durable intent (deriveSpawnArgs),
+                    // so there is nothing to arm on claudeArgs.
                     pendingRewind = rearmPendingIntent;
                     rearmPendingIntent = null;
                 }
                 sessionInstance.onNativeInputSubmitted = handleNativeInputSubmitted;
+                sessionInstance.onConversationReset = cancelPendingRewind;
+                // Turn-completion proof re-check (Minor: the post-submit poll
+                // gives up after 5s; a transcript write landing later left the
+                // intent armed until another turn or a restart). The launcher
+                // reads session.onThinkingChange per spawn, so wrapping it here
+                // reaches every respawn: a completed turn (thinking false)
+                // re-runs the proof, which early-returns when no intent is
+                // pending.
+                const baseOnThinkingChange = sessionInstance.onThinkingChange.bind(sessionInstance);
+                sessionInstance.onThinkingChange = (thinking: boolean) => {
+                    baseOnThinkingChange(thinking);
+                    if (!thinking) handleNativeInputSubmitted();
+                };
                 resolveSessionReady(sessionInstance);
                 if (nativeSkills) {
                     sessionInstance.setNativeSkillNames(nativeSkills.map((skill) => skill.name));

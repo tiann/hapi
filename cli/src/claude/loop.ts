@@ -1,6 +1,7 @@
 import { ApiSessionClient } from "@/api/apiSession"
 import { MessageQueue2 } from "@/utils/MessageQueue2"
 import { logger } from "@/ui/logger"
+import { hashObject } from "@/utils/deterministicJson"
 import { runLocalRemoteSession } from "@/agent/loopBase"
 import { Session } from "./session"
 import { claudeLocalLauncher } from "./claudeLocalLauncher"
@@ -38,6 +39,16 @@ export function claudeProcessModeKey(mode: EnhancedMode) {
         allowedTools: mode.allowedTools,
         disallowedTools: mode.disallowedTools
     };
+}
+
+/**
+ * Hash identifying a message batch's launch configuration: the
+ * process-affecting mode key plus effort (batches split on both). Shared by
+ * the message queue's batch hashing (runClaude's constructor) and the remote
+ * launcher's resume-at spawn gate so their hashes compare directly.
+ */
+export function claudeBatchModeHash(mode: EnhancedMode): string {
+    return hashObject({ ...claudeProcessModeKey(mode), effort: mode.effort });
 }
 
 interface LoopOptions {

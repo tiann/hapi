@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
     claudeConversationHistoryCapabilities,
+    deriveSpawnArgs,
     nativeRewindApplied,
     parseClaudeVersion,
     planPendingRewindRestart,
@@ -11,6 +12,8 @@ import {
     readNativeTurns,
     resolveForkAtMessagePlan,
     resolveRewindPlan,
+    resumeSessionAtFromArgs,
+    resumeSessionIdFromClaudeArgs,
     stripRewindFlags,
     supportsNativeRewind
 } from './conversationHistory'
@@ -154,6 +157,49 @@ describe('readNativeTurns', () => {
         })
         rmSync(root, { recursive: true, force: true })
     })
+
+    it('keeps the chain tail when auxiliary uuid records trail the transcript', () => {
+        // A trailing queue-operation/attachment record carries a uuid but is
+        // not parented into the message chain; if it became the tailUuid the
+        // parent backwalk would start at a disconnected node and see an empty
+        // conversation - silently disabling rewind reconciliation.
+        const root = writeTranscript([
+            prompt('u1', 'first'),
+            assistant('as1', 'first answer', 'u1'),
+            line({ type: 'user', uuid: 'u2', parentUuid: 'as1', message: { role: 'user', content: [{ type: 'text', text: 'second' }] } }),
+            assistant('as2', 'second answer', 'u2'),
+            line({ type: 'queue-operation', uuid: 'q9' }),
+            attachment('a9')
+        ])
+        withConfigDir(root, () => {
+            expect(readNativeTurns(CWD, 'session-a')).toEqual([
+                { promptUuid: 'u1', endUuid: 'as1' },
+                { promptUuid: 'u2', endUuid: 'as2' }
+            ])
+        })
+    })
+
+    it('does not treat a compact-summary user record as a rewind boundary', () => {
+        // Claude writes compaction summaries as synthetic user records with
+        // isCompactSummary: true on the active chain; they are not human turns
+        // and must not become fork/rewind boundaries.
+        const root = writeTranscript([
+            prompt('u1', 'first'),
+            assistant('as1', 'first answer', 'u1'),
+            line({
+                type: 'user',
+                uuid: 'cs1',
+                parentUuid: 'as1',
+                isCompactSummary: true,
+                message: { role: 'user', content: [{ type: 'text', text: 'Conversation summary so far' }] }
+            })
+        ])
+        withConfigDir(root, () => {
+            expect(readNativeTurns(CWD, 'session-a')).toEqual([
+                { promptUuid: 'u1', endUuid: 'as1' }
+            ])
+        })
+    })
 })
 
 describe('resolveForkAtMessagePlan', () => {
@@ -219,12 +265,185 @@ describe('nativeRewindApplied', () => {
     })
 })
 
+/**
+ * State-table cells for the spawn-time boundary derivation (the SSOT
+ * decision point). Rows reference the design note's table:
+ * ~/workspace/artifacts/2417-resume-at-design.md (S0-S8).
+ */
+describe('deriveSpawnArgs', () => {
+    const intent = {
+        targetLocalId: 'local-2',
+        truncateFromLocalId: 'local-2',
+        keepBoundary: 'as1',
+        droppedPrompts: ['u2']
+    }
+    // Session ids must carry a dash: resumeSessionIdFromClaudeArgs only
+    // accepts uuid-shaped anchors (see its heuristic test below).
+    const unprovenRoot = () => writeTranscript([
+        prompt('u1', 'first'),
+        assistant('as1', 'first answer', 'u1'),
+        prompt('u2', 'second'),
+        assistant('as2', 'second answer', 'u2')
+    ], 'sess-1')
+    const appliedRoot = () => writeTranscript([
+        prompt('u1', 'first'),
+        assistant('as1', 'first answer', 'u1'),
+        line({ type: 'user', uuid: 'u9', parentUuid: 'as1', message: { role: 'user', content: [{ type: 'text', text: 'after rewind' }] } })
+    ], 'sess-1')
+
+    it('S0: derives no boundary without intent or fork request', () => {
+        expect(deriveSpawnArgs({ claudeArgs: ['--resume', 'sess-1'], sessionId: 'sess-1', intent: undefined, workingDirectory: CWD }))
+            .toEqual({ args: ['--resume', 'sess-1'], boundary: null })
+        expect(deriveSpawnArgs({ claudeArgs: undefined, sessionId: null, intent: undefined, workingDirectory: CWD }))
+            .toEqual({ args: undefined, boundary: null })
+    })
+
+    it('S1/S2: re-derives the intent boundary fresh on every spawn while unproven', () => {
+        const root = unprovenRoot()
+        withConfigDir(root, () => {
+            const options = {
+                claudeArgs: ['--resume', 'sess-1'] as string[] | undefined,
+                sessionId: 'sess-1' as string | null,
+                intent,
+                workingDirectory: CWD
+            }
+            // Two spawns of the same unproven intent (initial respawn, then a
+            // post-init retry or crash relaunch) each truncate again.
+            expect(deriveSpawnArgs(options)).toEqual({ args: ['--resume', 'sess-1', '--resume-session-at', 'as1'], boundary: 'as1' })
+            expect(deriveSpawnArgs(options)).toEqual({ args: ['--resume', 'sess-1', '--resume-session-at', 'as1'], boundary: 'as1' })
+        })
+    })
+
+    it('S3/S8: drops the boundary once the transcript shows the rewind applied', () => {
+        const root = appliedRoot()
+        withConfigDir(root, () => {
+            // The intent may still sit in metadata inside the proof's
+            // async-flush window; the fresh transcript evaluation wins.
+            expect(deriveSpawnArgs({ claudeArgs: ['--resume', 'sess-1'], sessionId: 'sess-1', intent, workingDirectory: CWD }))
+                .toEqual({ args: ['--resume', 'sess-1'], boundary: null })
+        })
+    })
+
+    it('S4: after /clear there is no session to resume, so no boundary applies', () => {
+        // Remote /clear: sessionId null and no --resume anchor. Even a
+        // not-yet-cancelled intent cannot truncate anything.
+        expect(deriveSpawnArgs({ claudeArgs: undefined, sessionId: null, intent, workingDirectory: CWD }))
+            .toEqual({ args: undefined, boundary: null })
+    })
+
+    it('S5: applies the hub-built fork boundary while the child is unbuilt', () => {
+        const args = ['--resume', 'source-id', '--fork-session', '--resume-session-at', 'fork-boundary']
+        expect(deriveSpawnArgs({ claudeArgs: args, sessionId: null, intent: undefined, workingDirectory: CWD }))
+            .toEqual({ args, boundary: 'fork-boundary' })
+    })
+
+    it('S5b: keeps the fork boundary when a SessionStart hook bound the id before the transcript exists', () => {
+        // Major 1 (r6): the remote SessionStart hook binds session.sessionId
+        // before system/init consumes the one-shot flags. Materialization is
+        // the transcript on disk, not the bound id: a spawn attempt that exits
+        // between the two must re-derive the boundary and keep --fork-session.
+        const args = ['--resume', 'source-id', '--fork-session', '--resume-session-at', 'fork-boundary']
+        expect(deriveSpawnArgs({ claudeArgs: args, sessionId: 'sess-1', intent: undefined, workingDirectory: CWD }))
+            .toEqual({ args, boundary: 'fork-boundary' })
+    })
+
+    it('S6: drops the fork boundary and the fork flag once the child transcript materialized', () => {
+        const root = unprovenRoot()
+        withConfigDir(root, () => {
+            const args = ['--resume', 'sess-1', '--fork-session', '--resume-session-at', 'fork-boundary']
+            // The sessionId proves the child .jsonl exists and already carries
+            // the truncation - even if a crash skipped consumeOneTimeFlags, a
+            // later respawn must not re-truncate or re-fork.
+            expect(deriveSpawnArgs({ claudeArgs: args, sessionId: 'sess-1', intent: undefined, workingDirectory: CWD }))
+                .toEqual({ args: ['--resume', 'sess-1'], boundary: null })
+        })
+    })
+
+    it('derives no boundary from an intent whose transcript is missing or empty', () => {
+        // Minor 4 (r6): a missing/empty transcript can never be truncated, and
+        // emitting the boundary makes claudeRemote throw
+        // 'Pending resume-at request has no native session to resume' in a
+        // respawn storm. No transcript on disk means no boundary.
+        expect(deriveSpawnArgs({ claudeArgs: ['--resume', 'sess-1'], sessionId: 'sess-1', intent, workingDirectory: CWD }))
+            .toEqual({ args: ['--resume', 'sess-1'], boundary: null })
+    })
+
+    it('walks the active chain across a compaction boundary via logicalParentUuid', () => {
+        // Minor 6 (r6, verified against a real Claude Code 2.1.310 transcript):
+        // compact_boundary entries carry parentUuid=null and
+        // logicalParentUuid=<pre-compaction leaf>; the parentUuid-only walk
+        // severed the chain there, hiding pre-compaction turns from rewind
+        // resolution and falsely proving rewinds that span a compaction.
+        const root = writeTranscript([
+            prompt('u0', 'before compaction'),
+            assistant('as0', 'old answer', 'u0'),
+            line({ type: 'system', subtype: 'compact_boundary', uuid: 'cb-1', parentUuid: null, logicalParentUuid: 'as0' }),
+            line({ type: 'user', uuid: 'u9', parentUuid: 'cb-1', isCompactSummary: true, message: { role: 'user', content: 'summary' } }),
+            line({ type: 'user', uuid: 'u2', parentUuid: 'u9', message: { role: 'user', content: [{ type: 'text', text: 'after compaction' }] } }),
+            assistant('as2', 'new answer', 'u2')
+        ], 'sess-1')
+        withConfigDir(root, () => {
+            const turns = readNativeTurns(CWD, 'sess-1')
+            // The synthetic compaction summary (isCompactSummary) is on the
+            // chain but is not a human turn.
+            expect(turns.map((turn) => turn.promptUuid)).toEqual(['u0', 'u2'])
+        })
+    })
+
+    it('S7: resolves the resume anchor from args when no sessionId is captured yet', () => {
+        const root = unprovenRoot()
+        withConfigDir(root, () => {
+            // Wrapper restart before the child id was captured: the anchor
+            // comes from the --resume value.
+            expect(deriveSpawnArgs({ claudeArgs: ['--resume', 'sess-1'], sessionId: null, intent, workingDirectory: CWD }).boundary)
+                .toBe('as1')
+        })
+    })
+
+    it('filters a stale boundary flag off claudeArgs but keeps --resume', () => {
+        expect(deriveSpawnArgs({ claudeArgs: ['--resume', 'native-a', '--resume-session-at', 'stale'], sessionId: 'native-a', intent: undefined, workingDirectory: CWD }))
+            .toEqual({ args: ['--resume', 'native-a'], boundary: null })
+    })
+
+    it('prefers the intent boundary over the fork boundary when both resolve', () => {
+        const root = unprovenRoot()
+        withConfigDir(root, () => {
+            expect(deriveSpawnArgs({
+                claudeArgs: ['--resume', 'sess-1', '--fork-session', '--resume-session-at', 'fork-boundary'],
+                sessionId: null,
+                intent,
+                workingDirectory: CWD
+            })).toEqual({
+                args: ['--resume', 'sess-1', '--fork-session', '--resume-session-at', 'as1'],
+                boundary: 'as1'
+            })
+        })
+    })
+})
+
+describe('resumeSessionAtFromArgs', () => {
+    it('reads the boundary value of a spawn request', () => {
+        expect(resumeSessionAtFromArgs(['--resume', 'sid', '--resume-session-at', 'b1'])).toBe('b1')
+        expect(resumeSessionAtFromArgs(['--resume', 'sid'])).toBeNull()
+        expect(resumeSessionAtFromArgs(undefined)).toBeNull()
+    })
+})
+
 describe('stripRewindFlags', () => {
-    it('removes one-shot resume-at flags with their values and keeps the rest', () => {
-        expect(stripRewindFlags(['--resume', 'sid', '--resume-session-at', 'b1', '--resume-drops-turn', 'u2', '--resume-drops-turn', 'u3']))
+    it('removes the one-shot resume-at flag with its value and keeps the rest', () => {
+        expect(stripRewindFlags(['--resume', 'sid', '--resume-session-at', 'b1']))
             .toEqual(['--resume', 'sid'])
         expect(stripRewindFlags(['--resume-session-at', 'b1'])).toBeUndefined()
         expect(stripRewindFlags(undefined)).toBeUndefined()
+    })
+})
+
+describe('resumeSessionIdFromClaudeArgs', () => {
+    it('parses the --resume anchor the way claudeRemote resolves startFrom', () => {
+        expect(resumeSessionIdFromClaudeArgs(['--resume', 'native-a', '--resume-session-at', 'b1'])).toBe('native-a')
+        expect(resumeSessionIdFromClaudeArgs(['--permission-mode', 'default', '--resume', 'sid-x'])).toBe('sid-x')
+        expect(resumeSessionIdFromClaudeArgs(['--permission-mode', 'default'])).toBeNull()
+        expect(resumeSessionIdFromClaudeArgs(undefined)).toBeNull()
     })
 })
 

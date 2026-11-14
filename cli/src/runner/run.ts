@@ -2209,10 +2209,7 @@ export function buildCliArgs(
     args.push('--fork-session');
   }
   // Fork at a message / rewind: native resume-time truncation (v2.1.223+).
-  // resume-session-at alone truncates unconditionally. --resume-drops-turn is
-  // NOT emitted: it takes a single prompt uuid (repeated flags overwrite, last
-  // wins) and its guard refuses any dropped range holding a second external
-  // prompt, so multi-turn drops cannot be expressed with it.
+  // resume-session-at alone truncates unconditionally.
   if (agentCommand === 'claude' && options.resumeSessionAt) {
     args.push('--resume-session-at', options.resumeSessionAt);
   }

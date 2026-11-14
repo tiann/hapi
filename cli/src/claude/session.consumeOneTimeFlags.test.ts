@@ -40,4 +40,14 @@ describe('Session.consumeOneTimeFlags', () => {
         session.consumeOneTimeFlags()
         expect(session.claudeArgs).toEqual(['--permission-mode', 'acceptEdits'])
     })
+
+    it('leaves the rewind boundary flag for the spawn-time derivation', () => {
+        // The boundary is never managed through this buffer: spawns derive it
+        // fresh from the durable rewind intent (deriveSpawnArgs), and a stale
+        // flag left on claudeArgs is filtered out at every spawn. The one-shot
+        // consumption here covers --resume/--fork-session only.
+        const session = makeSession(['--resume-session-at', 'boundary-uuid', '--permission-mode', 'default'])
+        session.consumeOneTimeFlags()
+        expect(session.claudeArgs).toEqual(['--resume-session-at', 'boundary-uuid', '--permission-mode', 'default'])
+    })
 })
