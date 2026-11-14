@@ -35,6 +35,7 @@ export type NotificationChannel = {
     sendReady: (session: Session, ctx?: NotificationSendContext) => Promise<void>
     sendPermissionRequest: (session: Session, ctx?: NotificationSendContext) => Promise<void>
     sendSessionCompletion?: (session: Session, reason: SessionEndReason) => Promise<void>
+    sendSessionError?: (session: Session, reason: SessionEndReason) => Promise<void>
     /**
      * Optional. Channels that don't implement it just skip model-error
      * pings (matches sendSessionCompletion's pattern). Wire this when
@@ -50,6 +51,7 @@ export type NotificationChannel = {
         notification: ModelErrorNotification,
         ctx?: NotificationSendContext
     ) => Promise<ModelErrorSendOutcome>
+
 }
 
 export type NotificationHubOptions = {

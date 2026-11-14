@@ -7,6 +7,7 @@ import type {
     NotificationChannel
 } from './notificationTypes'
 import { NotificationHub } from './notificationHub'
+import { WxPusherChannel } from '../wxpusher/channel'
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -80,7 +81,11 @@ class StubChannel implements NotificationChannel {
     readonly readySessions: Session[] = []
     readonly permissionSessions: Session[] = []
     readonly sessionCompletions: Session[] = []
+
+    readonly sessionErrors: Session[] = []
+
     readonly modelErrors: Array<{ session: Session; notification: ModelErrorNotification }> = []
+
 
     async sendReady(session: Session): Promise<void> {
         this.readySessions.push(session)
@@ -94,9 +99,15 @@ class StubChannel implements NotificationChannel {
         this.sessionCompletions.push(session)
     }
 
+
+    async sendSessionError(session: Session): Promise<void> {
+        this.sessionErrors.push(session)
+    }
+
     async sendModelError(session: Session, notification: ModelErrorNotification): Promise<ModelErrorSendOutcome> {
         this.modelErrors.push({ session, notification })
         return 'delivered'
+
     }
 }
 
@@ -217,7 +228,7 @@ describe('NotificationHub', () => {
     })
 
 
-    it('sends session completion only for completed session-ended events', async () => {
+    it('sends completion and error notifications for matching session-ended events', async () => {
         const engine = new FakeSyncEngine()
         const channel = new StubChannel()
         const hub = new NotificationHub(engine as unknown as SyncEngine, [channel], {
@@ -226,14 +237,21 @@ describe('NotificationHub', () => {
         })
 
         const completedSession = createSession({ id: 'session-completed', active: false })
+        const errorSession = createSession({ id: 'session-error', active: false })
         const terminatedSession = createSession({ id: 'session-terminated', active: false })
         engine.setSession(completedSession)
+        engine.setSession(errorSession)
         engine.setSession(terminatedSession)
 
         engine.emit({
             type: 'session-ended',
             sessionId: completedSession.id,
             reason: 'completed' satisfies SessionEndReason
+        })
+        engine.emit({
+            type: 'session-ended',
+            sessionId: errorSession.id,
+            reason: 'error' satisfies SessionEndReason
         })
         engine.emit({
             type: 'session-ended',
@@ -244,9 +262,65 @@ describe('NotificationHub', () => {
 
         expect(channel.sessionCompletions).toHaveLength(1)
         expect(channel.sessionCompletions[0]?.id).toBe(completedSession.id)
+        expect(channel.sessionErrors).toHaveLength(1)
+        expect(channel.sessionErrors[0]?.id).toBe(errorSession.id)
 
         hub.stop()
     })
+
+
+    it('continues with later completion channels after a WxPusher request times out', async () => {
+        const engine = new FakeSyncEngine()
+        const laterChannel = new StubChannel()
+        const originalFetch = globalThis.fetch
+        const originalConsoleError = console.error
+        const fetchMock = async (_input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+            const signal = init?.signal
+            return await new Promise<Response>((_resolve, reject) => {
+                if (!signal) {
+                    reject(new Error('missing abort signal'))
+                    return
+                }
+                const rejectOnAbort = () => reject(signal.reason ?? new DOMException('The operation was aborted.', 'AbortError'))
+                if (signal.aborted) {
+                    rejectOnAbort()
+                    return
+                }
+                signal.addEventListener('abort', rejectOnAbort, { once: true })
+            })
+        }
+        globalThis.fetch = fetchMock as unknown as typeof fetch
+        console.error = () => {}
+
+        try {
+            const wxPusherChannel = new WxPusherChannel(
+                'AT_TEST',
+                ['UID_ONE'],
+                [],
+                'https://hapi.example.com',
+                null,
+                false,
+                5
+            )
+            const hub = new NotificationHub(engine as unknown as SyncEngine, [wxPusherChannel, laterChannel])
+            const session = createSession({ id: 'session-timeout', active: false })
+            engine.setSession(session)
+
+            engine.emit({
+                type: 'session-ended',
+                sessionId: session.id,
+                reason: 'completed' satisfies SessionEndReason
+            })
+            await sleep(25)
+
+            expect(laterChannel.sessionCompletions).toHaveLength(1)
+            hub.stop()
+        } finally {
+            globalThis.fetch = originalFetch
+            console.error = originalConsoleError
+        }
+    })
+
 
     it('fires model-error notification when lastModelError.atTs advances', async () => {
         const engine = new FakeSyncEngine()
@@ -895,5 +969,6 @@ describe('NotificationHub', () => {
         )
 
         hub.stop()
+
     })
 })
