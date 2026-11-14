@@ -114,6 +114,55 @@ describe('LocalSessionImportDialog', () => {
         await waitFor(() => expect(onConfirm).toHaveBeenCalledWith(['pi-1']))
     })
 
+    it('filters to the current work directory once the first scan arrives', async () => {
+        const onConfirm = vi.fn().mockResolvedValue(undefined)
+        const props = {
+            isOpen: true,
+            onClose: () => {},
+            labels,
+            currentWorkDirectory: '/tmp/project',
+            onConfirm,
+            isPending: false
+        }
+        // The dialog opens while the scan is still running.
+        const { rerender } = render(<LocalSessionImportDialog {...props} sessions={[]} isLoading />)
+        const scanned = [
+            session({ hapiSessionId: undefined }),
+            session({ id: 'pi-2', title: 'Other project session', cwd: '/tmp/other', hapiSessionId: undefined })
+        ]
+        rerender(<LocalSessionImportDialog {...props} sessions={scanned} isLoading={false} />)
+
+        expect(screen.queryByText('Other project session')).toBeNull()
+        fireEvent.click(screen.getByRole('button', { name: 'Select all' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Import' }))
+        await waitFor(() => expect(onConfirm).toHaveBeenCalledWith(['pi-1']))
+    })
+
+    it('keeps a directory filter the user changed when the list refreshes', () => {
+        const props = {
+            isOpen: true,
+            onClose: () => {},
+            labels,
+            currentWorkDirectory: '/tmp/project',
+            onConfirm: vi.fn(),
+            isPending: false,
+            isLoading: false
+        }
+        const scanned = [
+            session({ hapiSessionId: undefined }),
+            session({ id: 'pi-2', title: 'Other project session', cwd: '/tmp/other', hapiSessionId: undefined })
+        ]
+        const { rerender } = render(<LocalSessionImportDialog {...props} sessions={scanned} />)
+        expect(screen.queryByText('Other project session')).toBeNull()
+
+        fireEvent.change(screen.getByDisplayValue('/tmp/project'), { target: { value: '__all__' } })
+        expect(screen.getByText('Other project session')).toBeTruthy()
+
+        rerender(<LocalSessionImportDialog {...props} sessions={[...scanned, session({ id: 'pi-3', title: 'Newer session', hapiSessionId: undefined })]} />)
+        expect(screen.getByText('Other project session')).toBeTruthy()
+        expect(screen.getByText('Newer session')).toBeTruthy()
+    })
+
     it('shows the loading and empty states', () => {
         const { rerender } = render(
             <LocalSessionImportDialog

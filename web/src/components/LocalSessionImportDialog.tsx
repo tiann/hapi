@@ -46,6 +46,7 @@ export function LocalSessionImportDialog(props: {
     const [directory, setDirectory] = useState(ALL_DIRECTORIES)
     const [query, setQuery] = useState('')
     const wasOpenRef = useRef(false)
+    const directoryChosenRef = useRef(false)
 
     const directories = useMemo(() => Array.from(new Set(props.sessions
         .map((session) => session.cwd?.trim())
@@ -71,11 +72,28 @@ export function LocalSessionImportDialog(props: {
         // picks.
         if (wasOpenRef.current) return
         wasOpenRef.current = true
+        directoryChosenRef.current = false
         setSelectedIds(props.currentSessionId ? [props.currentSessionId] : [])
+        setDirectory(ALL_DIRECTORIES)
+        setQuery('')
+    }, [props.currentSessionId, props.isOpen])
+
+    useEffect(() => {
+        // The default directory filter needs the scanned directories: the
+        // dialog usually opens while the scan is still running, so pick it
+        // once the first scan completes (the current work directory when it
+        // has sessions, all directories otherwise) and never override a
+        // filter the user already changed.
+        if (!props.isOpen || props.isLoading || directoryChosenRef.current) return
+        directoryChosenRef.current = true
         const cwd = props.currentWorkDirectory?.trim()
         setDirectory(cwd && directories.includes(cwd) ? cwd : ALL_DIRECTORIES)
-        setQuery('')
-    }, [directories, props.currentSessionId, props.currentWorkDirectory, props.isOpen])
+    }, [directories, props.currentWorkDirectory, props.isLoading, props.isOpen])
+
+    const chooseDirectory = (value: string) => {
+        directoryChosenRef.current = true
+        setDirectory(value)
+    }
 
     const toggle = (id: string) => {
         if (props.isPending || props.isLoading) return
@@ -108,7 +126,7 @@ export function LocalSessionImportDialog(props: {
                     </div>
                     {props.sessions.length > 0 ? (
                         <div className="grid gap-2 sm:grid-cols-2">
-                            <SelectControl value={directory} disabled={props.isPending} onChange={(event) => setDirectory(event.target.value)}>
+                            <SelectControl value={directory} disabled={props.isPending} onChange={(event) => chooseDirectory(event.target.value)}>
                                 <option value={ALL_DIRECTORIES}>{labels.allDirectories}</option>
                                 {directories.map((value) => <option key={value} value={value}>{value}</option>)}
                             </SelectControl>
