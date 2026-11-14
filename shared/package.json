@@ -8,6 +8,7 @@
     "exports": {
         ".": "./src/index.ts",
         "./apiTypes": "./src/apiTypes.ts",
+        "./localTranscript": "./src/localTranscript.ts",
         "./messages": "./src/messages.ts",
         "./slashCommands": "./src/slashCommands.ts",
         "./buildInfo": "./src/buildInfo.ts",

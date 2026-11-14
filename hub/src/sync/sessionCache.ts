@@ -20,12 +20,32 @@ const TURN_RECOVERY_WINDOW_MS = 10 * 60_000
 const METADATA_RETRY_ATTEMPTS = 5
 type RuntimeConfigKey = 'permissionMode' | 'model' | 'modelReasoningEffort' | 'effort' | 'serviceTier' | 'collaborationMode' | 'copilotAgentMode'
 
+/**
+ * Codex and Claude keep their native session files on one machine, and
+ * local-session import binds a HAPI session to the machine it read the
+ * transcript from. Two sessions recorded on different machines are
+ * therefore separate conversations even when the native ids collide
+ * (copied or shared agent homes): dedup must not merge one into the other.
+ * Rows without a machine keep the id-only match. Pi and OpenCode are
+ * scoped strictly by their dedupe key instead.
+ */
+function isRecordedOnAnotherMachine(
+    field: string,
+    a: NonNullable<Session['metadata']>,
+    b: NonNullable<Session['metadata']>
+): boolean {
+    if (field !== 'codexSessionId' && field !== 'claudeSessionId') return false
+    return typeof a.machineId === 'string'
+        && typeof b.machineId === 'string'
+        && a.machineId !== b.machineId
+}
+
 export class SessionCache {
     private readonly sessions: Map<string, Session> = new Map()
     private readonly lastBroadcastAtBySessionId: Map<string, number> = new Map()
     private readonly todoBackfillAttemptedSessionIds: Set<string> = new Set()
     private readonly deduplicateInProgress: Set<string> = new Set()
-    private readonly deduplicatePending: Set<string> = new Set()
+    private readonly deduplicatePending: Map<string, Set<string>> = new Map()
     private readonly pendingThinkingUntilBySessionId: Map<string, number> = new Map()
     private readonly runtimeConfigUpdatedAtBySessionId: Map<string, Partial<Record<RuntimeConfigKey, number>>> = new Map()
     /**
@@ -2736,31 +2756,56 @@ export class SessionCache {
         // coalesce this trigger and run one more pass afterwards. This matters
         // for active duplicates: a session can become inactive while the first
         // pass is only allowed to move history, and the follow-up pass should
-        // then be allowed to delete the inactive duplicate record.
+        // then be allowed to delete the inactive duplicate record. The pass
+        // re-runs from each session that asked: Codex and Claude candidates
+        // are filtered by the triggering session's machine, so a trigger from
+        // another machine needs its own pass.
         if (this.deduplicateInProgress.has(agentId.dedupeKey)) {
-            this.deduplicatePending.add(agentId.dedupeKey)
+            const pending = this.deduplicatePending.get(agentId.dedupeKey) ?? new Set<string>()
+            pending.add(sessionId)
+            this.deduplicatePending.set(agentId.dedupeKey, pending)
             return
         }
         this.deduplicateInProgress.add(agentId.dedupeKey)
 
+        let passSessionId = sessionId
+        const queued: string[] = []
+        const takeNextPass = (): boolean => {
+            const pending = this.deduplicatePending.get(agentId.dedupeKey)
+            this.deduplicatePending.delete(agentId.dedupeKey)
+            for (const id of pending ?? []) {
+                if (!queued.includes(id)) queued.push(id)
+            }
+            while (queued.length > 0) {
+                const next = queued.shift()!
+                const nextSession = this.sessions.get(next)
+                if (nextSession?.metadata && this.extractAgentSessionId(nextSession.metadata)?.dedupeKey === agentId.dedupeKey) {
+                    passSessionId = next
+                    return true
+                }
+            }
+            return false
+        }
+
         try {
             do {
-                this.deduplicatePending.delete(agentId.dedupeKey)
-
-                const currentSession = this.sessions.get(sessionId)
+                const currentSession = this.sessions.get(passSessionId)
+                const passSession = currentSession ?? session
+                const passMetadata = currentSession?.metadata ?? session.metadata
                 const candidates: { id: string; session: Session }[] = []
                 const machineScoped = agentId.field === 'piSessionId' || agentId.field === 'opencodeSessionId'
                 if (currentSession?.metadata && currentSession.metadata[agentId.field] === agentId.value) {
                     if (!machineScoped || currentSession.metadata.machineId === agentId.machineId) {
-                        candidates.push({ id: sessionId, session: currentSession })
+                        candidates.push({ id: passSessionId, session: currentSession })
                     }
                 }
                 for (const [existingId, existing] of this.sessions) {
-                    if (existingId === sessionId) continue
-                    if (existing.namespace !== session.namespace) continue
+                    if (existingId === passSessionId) continue
+                    if (existing.namespace !== passSession.namespace) continue
                     if (!existing.metadata) continue
                     if (existing.metadata[agentId.field] !== agentId.value) continue
                     if (machineScoped && existing.metadata.machineId !== agentId.machineId) continue
+                    if (isRecordedOnAnotherMachine(agentId.field, passMetadata, existing.metadata)) continue
                     candidates.push({ id: existingId, session: existing })
                 }
 
@@ -2782,8 +2827,8 @@ export class SessionCache {
                     if (a.session.active !== b.session.active) return a.session.active ? -1 : 1
                     const updatedDelta = b.session.updatedAt - a.session.updatedAt
                     if (updatedDelta !== 0) return updatedDelta
-                    if (a.id === sessionId) return -1
-                    if (b.id === sessionId) return 1
+                    if (a.id === passSessionId) return -1
+                    if (b.id === passSessionId) return 1
                     return b.session.activeAt - a.session.activeAt
                 })
                 const targetId = candidates[0].id
@@ -2808,7 +2853,7 @@ export class SessionCache {
                         // best-effort: duplicate remains if merge fails
                     }
                 }
-            } while (this.deduplicatePending.has(agentId.dedupeKey))
+            } while (takeNextPass())
         } finally {
             this.deduplicateInProgress.delete(agentId.dedupeKey)
             this.deduplicatePending.delete(agentId.dedupeKey)
