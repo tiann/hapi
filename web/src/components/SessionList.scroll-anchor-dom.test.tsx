@@ -77,4 +77,40 @@ describe('SessionList scroll-anchor DOM invariant', () => {
         expect(row).not.toBeNull()
         expect(row).toHaveClass('session-list-item')
     })
+
+    // Regression: index.css's tooltip-overflow-release rule used to read
+    // `.session-list-item:focus-visible` — valid only if the SAME element
+    // carries both the class and the focus, which stopped being true the
+    // moment hapi#238 moved the row's actual focusable element to an inner
+    // div while `session-list-item` stayed on the outer wrapper (same split
+    // as the invariant above, different consequence: a dead CSS rule instead
+    // of a scroll-anchor misclassification). `:has(:focus-visible)` is the
+    // fix — it only needs a focus-visible *descendant*, not an exact-element
+    // match. Exercised via querySelector against the live DOM rather than
+    // computed-style assertions: jsdom doesn't apply an external stylesheet's
+    // cascade, so this tests the selector's structural correctness — does it
+    // find the right element once real keyboard focus lands — not anything
+    // stylesheet-loading-dependent (review finding, tiann/hapi#2147).
+    it('matches the focused row via :has(:focus-visible), not :focus-visible on the wrapper itself', () => {
+        const session = makeSession({ id: 'session-1', updatedAt: Date.now(), metadata: { path: '/x', name: 'Fix the thing', flavor: 'codex' } })
+        renderWithProviders(
+            <SessionList
+                sessions={[session]}
+                selectedSessionId="session-1"
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                renderHeader={false}
+                api={null}
+            />
+        )
+        const row = screen.getByText('Fix the thing').closest('.session-list-item')!
+        const focusTarget = row.querySelector<HTMLElement>('[role="button"]')!
+        focusTarget.focus()
+        expect(document.activeElement).toBe(focusTarget)
+
+        expect(row.matches(':has(:focus-visible)')).toBe(true)
+        expect(row.matches(':focus-visible')).toBe(false)
+    })
 })
