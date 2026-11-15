@@ -397,26 +397,17 @@ export function deriveSpawnArgs(options: {
         // child or making claudeLocal resume a stale `--resume <sourceId>`.
         baseArgs = stripOneTimeFlags(baseArgs)
     }
-    const target = resolveNativeTranscriptTarget({
-        claudeArgs: options.claudeArgs,
-        sessionId: options.sessionId,
-        workingDirectory: options.workingDirectory
-    })
+    const intentSessionId = forkPending
+        ? null
+        : (options.sessionId ?? resumeSessionIdFromClaudeArgs(options.claudeArgs))
     let intentBoundary: string | null = null
-    if (options.intent && target) {
-        const turns = readNativeTurns(options.workingDirectory, target.sessionId)
-        if (target.isUnmaterializedFork) {
-            // An unmaterialized fork child cannot have proven its rewind on
-            // disk yet, and edits in the source session must not suppress the
-            // child's requested truncation boundary.
-            intentBoundary = turns.length > 0 ? options.intent.keepBoundary : null
-        } else {
-            const plan = planPendingRewindRestart(options.intent, turns)
-            // A missing or empty transcript can never be truncated: emitting the
-            // boundary only makes claudeRemote throw 'Pending resume-at request
-            // has no native session to resume' in a respawn storm.
-            intentBoundary = plan.action === 'rearm' && turns.length > 0 ? options.intent.keepBoundary : null
-        }
+    if (options.intent && intentSessionId) {
+        const turns = readNativeTurns(options.workingDirectory, intentSessionId)
+        const plan = planPendingRewindRestart(options.intent, turns)
+        // A missing or empty transcript can never be truncated: emitting the
+        // boundary only makes claudeRemote throw 'Pending resume-at request
+        // has no native session to resume' in a respawn storm.
+        intentBoundary = plan.action === 'rearm' && turns.length > 0 ? options.intent.keepBoundary : null
     }
     const boundary = intentBoundary ?? forkBoundary ?? (options.startupBoundary || null)
     const args = boundary ? [...(baseArgs ?? []), '--resume-session-at', boundary] : baseArgs

@@ -25,7 +25,7 @@ import { normalizeHookPermissionMode } from './utils/hookPermissionMode';
 import { execFileSync } from 'node:child_process';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { getDefaultClaudeCodePath } from './sdk/utils';
-import { claudeConversationHistoryCapabilities, nativeRewindApplied, planPendingRewindRestart, readNativeTurns, resolveForkAtMessagePlan, resolveNativeTranscriptTarget, resolveRewindPlan, resumeSessionIdFromClaudeArgs, sliceTurnsToForkBoundary, type ClaudeRewindIntent, type ResolvedTranscriptTarget } from './conversationHistory';
+import { claudeConversationHistoryCapabilities, isSessionMaterialized, nativeRewindApplied, planPendingRewindRestart, readNativeTurns, resolveForkAtMessagePlan, resolveNativeTranscriptTarget, resolveRewindPlan, resumeSessionIdFromClaudeArgs, sliceTurnsToForkBoundary, type ClaudeRewindIntent, type ResolvedTranscriptTarget } from './conversationHistory';
 import { listSkills, type SkillSummary } from '@/modules/common/skills';
 
 export interface StartOptions {
@@ -352,20 +352,13 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         const metadataNativeId = session.getMetadata()?.claudeSessionId
             ?? sessionInfo.metadata?.claudeSessionId
             ?? null
-        const target = resolveNativeTranscriptTarget({
-            claudeArgs: options.claudeArgs,
-            sessionId: metadataNativeId,
-            workingDirectory
-        })
-        if (!target) return
-        if (target.isUnmaterializedFork) {
-            if (readNativeTurns(workingDirectory, target.sessionId).length > 0) {
-                logger.debug(`[claude] rewind ${intent.truncateFromLocalId}: unmaterialized fork pending; re-arming boundary ${intent.keepBoundary} on launch`)
-                rearmPendingIntent = intent;
-            }
-            return
-        }
-        const turns = readNativeTurns(workingDirectory, target.sessionId)
+        const forkPending = options.claudeArgs?.includes('--fork-session') === true
+            && !isSessionMaterialized(metadataNativeId, workingDirectory)
+        const nativeSessionId = forkPending
+            ? null
+            : (metadataNativeId ?? resumeSessionIdFromClaudeArgs(options.claudeArgs))
+        if (!nativeSessionId && !forkPending) return
+        const turns = nativeSessionId ? readNativeTurns(workingDirectory, nativeSessionId) : []
         const plan = planPendingRewindRestart(intent, turns)
         if (plan.action === 'rearm' && turns.length > 0) {
             // Durable re-arm: the hub truncated at rewind-RPC success, but the
@@ -661,17 +654,14 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             return rejected(resolved.error ?? 'Claude session id is not ready')
         }
         const { claudeSession, target } = resolved;
-        if (target.isUnmaterializedFork && !target.inheritedBoundary) {
+        if (target.isUnmaterializedFork) {
             return rejected('Send a message in this fork first, then rewind')
         }
         const promptUuid = session.getMetadata()?.conversationHistoryEntryIds?.[messageLocalId]
         if (!promptUuid) {
             return rejected(`No native history point for message ${messageLocalId}`)
         }
-        const turns = sliceTurnsToForkBoundary(readNativeTurns(workingDirectory, target.sessionId), target.inheritedBoundary)
-        if (target.isUnmaterializedFork && turns.length === 0) {
-            return rejected('Send a message in this fork first, then rewind')
-        }
+        const turns = readNativeTurns(workingDirectory, target.sessionId)
         let keepBoundary: string
         let droppedPrompts: string[]
         try {
@@ -691,9 +681,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         // Bail before any persistence: a session that cannot restart would
         // otherwise persist the intent and roll it back in metadata only.
         if (!claudeSession?.requestRemoteRestart) {
-            return rejected(target.isUnmaterializedFork
-                ? 'Send a message in this fork first, then rewind'
-                : 'Claude session is not ready for a rewind restart')
+            return rejected('Claude session is not ready for a rewind restart')
         }
         // Persist the durable key BEFORE respawning: a crash after the native
         // branch applies is recovered by the next start's reconciliation. If

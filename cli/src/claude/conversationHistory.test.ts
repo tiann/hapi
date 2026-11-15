@@ -417,7 +417,7 @@ describe('deriveSpawnArgs', () => {
             .toEqual({ args: ['--resume', 'native-a'], boundary: null })
     })
 
-    it('prefers the intent boundary over the fork boundary when both resolve', () => {
+    it('ignores any stale rewind intent on an unmaterialized fork and preserves only the fork boundary', () => {
         const root = unprovenRoot()
         withConfigDir(root, () => {
             expect(deriveSpawnArgs({
@@ -426,38 +426,28 @@ describe('deriveSpawnArgs', () => {
                 intent,
                 workingDirectory: CWD
             })).toEqual({
-                args: ['--resume', 'sess-1', '--fork-session', '--resume-session-at', 'as1'],
-                boundary: 'as1'
+                args: ['--resume', 'sess-1', '--fork-session', '--resume-session-at', 'fork-boundary'],
+                boundary: 'fork-boundary'
             })
-        })
-    })
 
-    it('prefers the intent boundary from the source transcript when a SessionStart hook bound an unmaterialized child id', () => {
-        const root = unprovenRoot()
-        withConfigDir(root, () => {
             expect(deriveSpawnArgs({
                 claudeArgs: ['--resume', 'sess-1', '--fork-session', '--resume-session-at', 'fork-boundary'],
                 sessionId: 'unmaterialized-child-id',
                 intent,
                 workingDirectory: CWD
             })).toEqual({
-                args: ['--resume', 'sess-1', '--fork-session', '--resume-session-at', 'as1'],
-                boundary: 'as1'
+                args: ['--resume', 'sess-1', '--fork-session', '--resume-session-at', 'fork-boundary'],
+                boundary: 'fork-boundary'
             })
-        })
-    })
 
-    it('keeps the child intent boundary even if the parent transcript no longer contains droppedPrompts', () => {
-        const root = appliedRoot()
-        withConfigDir(root, () => {
             expect(deriveSpawnArgs({
                 claudeArgs: ['--resume', 'sess-1', '--fork-session'],
                 sessionId: 'unmaterialized-child-id',
                 intent,
                 workingDirectory: CWD
             })).toEqual({
-                args: ['--resume', 'sess-1', '--fork-session', '--resume-session-at', 'as1'],
-                boundary: 'as1'
+                args: ['--resume', 'sess-1', '--fork-session'],
+                boundary: null
             })
         })
     })

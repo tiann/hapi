@@ -457,7 +457,7 @@ describe('runClaude unmaterialized fork child history actions', () => {
         }
     })
 
-    it('arms rewind on a copied turn before child materialization, restarts with source boundary, and proves once materialized', { timeout: 20_000 }, async () => {
+    it('rejects rewind on an unmaterialized fork child even when inheritedBoundary is set, while fork-at-message still works', { timeout: 20_000 }, async () => {
         const claudeArgs = ['--resume', 'source-native-1', '--fork-session', '--resume-session-at', 'as-2']
         const prev = snapshotRunner()
         const runPromise = runClaude({
@@ -483,96 +483,100 @@ describe('runClaude unmaterialized fork child history actions', () => {
                     'local-2': 'uuid-2'
                 }
             }))
+
+            const rewind = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
+            // Before SessionStart:fork binds a child id, rewind is already rejected.
+            await expect(rewind({ messageLocalId: 'local-2' })).resolves.toEqual({
+                success: false,
+                outcome: 'rejected',
+                error: 'Send a message in this fork first, then rewind'
+            })
+
             harness.hookHandlers.onSessionHook('child-native-unbuilt', {
                 hook_event_name: 'SessionStart',
                 source: 'fork'
             })
 
-            const rewind = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
-            const res = await rewind({ messageLocalId: 'local-2' })
-            expect(res).toEqual({ success: true, truncateFromLocalId: 'local-2' })
-            expect(restartCalls).toBe(1)
-            expect(harness.state.metadata.claudeRewind).toEqual({
-                targetLocalId: 'local-2',
-                truncateFromLocalId: 'local-2',
-                keepBoundary: 'as-1',
-                droppedPrompts: ['uuid-2']
+            // After SessionStart:fork binds an unmaterialized child id, rewind is still rejected
+            // and leaves metadata and the running session untouched.
+            await expect(rewind({ messageLocalId: 'local-2' })).resolves.toEqual({
+                success: false,
+                outcome: 'rejected',
+                error: 'Send a message in this fork first, then rewind'
             })
+            expect(restartCalls).toBe(0)
+            expect(harness.state.metadata.claudeRewind).toBeUndefined()
 
-            // Next respawn must target source-native-1 with --fork-session and the rewound boundary as-1.
-            const derived = deriveSpawnArgs({
-                claudeArgs: sessionInstance.claudeArgs,
-                sessionId: sessionInstance.sessionId,
-                intent: harness.state.metadata.claudeRewind,
-                workingDirectory: WORK_DIR
+            // Fork-at-message still works from the unmaterialized fork child via its pinned snapshot.
+            const fork = harness.rpcHandlers.get(RPC_METHODS.ForkConversation)!
+            await expect(fork({ messageLocalId: 'local-2' })).resolves.toEqual({
+                nativeSessionId: 'source-native-1',
+                forkSession: true,
+                resumeSessionAt: 'as-1'
             })
-            expect(derived).toEqual({
-                args: ['--resume', 'source-native-1', '--fork-session', '--resume-session-at', 'as-1'],
-                boundary: 'as-1'
-            })
-
-            // When the first prompt runs on the respawned fork, Claude writes the child transcript up to as-1 + new prompt.
-            writeFileSync(join(projectDir, 'child-native-after-rewind.jsonl'), [
-                JSON.stringify({ type: 'user', uuid: 'uuid-1', message: { role: 'user', content: [{ type: 'text', text: 'turn 1' }] } }),
-                JSON.stringify({ type: 'assistant', uuid: 'as-1', parentUuid: 'uuid-1', message: { role: 'assistant', content: [{ type: 'text', text: 'ans 1' }] } }),
-                JSON.stringify({ type: 'user', uuid: 'uuid-new', parentUuid: 'as-1', message: { role: 'user', content: [{ type: 'text', text: 'fresh prompt' }] } })
-            ].join('\n') + '\n')
-            sessionInstance.onSessionFound('child-native-after-rewind')
-            sessionInstance.consumeOneTimeFlags()
-            sessionInstance.onNativeInputSubmitted?.('uuid-new')
-
-            await vi.waitFor(() => {
-                expect(harness.state.metadata.claudeRewind).toBeUndefined()
-            })
-            expect(deriveSpawnArgs({
-                claudeArgs: sessionInstance.claudeArgs,
-                sessionId: sessionInstance.sessionId,
-                intent: harness.state.metadata.claudeRewind,
-                workingDirectory: WORK_DIR
-            })).toEqual({ args: undefined, boundary: null })
         } finally {
             sessionInstance.stopKeepAlive()
         }
     })
 
-    it('preserves pending claudeRewind across reconcilePendingRewind on an unmaterialized fork restart', { timeout: 20_000 }, async () => {
-        const claudeArgs = ['--resume', 'source-native-1', '--fork-session']
+    it('clears stale claudeRewind on unmaterialized fork startup reconciliation and on normal reopen', { timeout: 20_000 }, async () => {
         const pendingIntent = {
             targetLocalId: 'local-2',
             truncateFromLocalId: 'local-2',
             keepBoundary: 'as-1',
             droppedPrompts: ['uuid-2', 'uuid-3']
         }
+
+        // 1. Restart while --fork-session is still present and the child is unmaterialized.
+        const forkArgs = ['--resume', 'source-native-1', '--fork-session', '--resume-session-at', 'as-2']
         harness.state.metadata = {
             claudeSessionId: 'child-native-unbuilt',
             claudeRewind: pendingIntent
         }
-
-        const prev = snapshotRunner()
-        const runPromise = runClaude({
+        const prevRestart = snapshotRunner()
+        const restartPromise = runClaude({
             workingDirectory: WORK_DIR,
-            claudeArgs,
+            claudeArgs: forkArgs,
             startedBy: 'runner',
             startingMode: 'remote'
         })
-        runPromise.catch((error) => { harness.runError = error })
-        await waitForFreshRunner(prev)
+        restartPromise.catch((error) => { harness.runError = error })
+        await waitForFreshRunner(prevRestart)
+        expect(harness.state.metadata.claudeRewind).toBeUndefined()
+        expect(deriveSpawnArgs({
+            claudeArgs: forkArgs,
+            sessionId: 'child-native-unbuilt',
+            intent: harness.state.metadata.claudeRewind,
+            workingDirectory: WORK_DIR
+        })).toEqual({
+            args: forkArgs,
+            boundary: 'as-2'
+        })
 
-        const sessionInstance = createForkRunnerSession([...claudeArgs])
-        try {
-            harness.loopOpts.onSessionReady(sessionInstance)
-            expect(harness.state.metadata.claudeRewind).toEqual(pendingIntent)
-
-            // Double rewind remains blocked while the pending rewind waits for a prompt to materialize it.
-            const rewind = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
-            await expect(rewind({ messageLocalId: 'local-2' })).resolves.toEqual({
-                success: false,
-                outcome: 'rejected',
-                error: 'A rewind is already pending; send a message to settle it first'
-            })
-        } finally {
-            sessionInstance.stopKeepAlive()
+        // 2. Reopen as a normal session (hub resumes child-native-unbuilt without --fork-session).
+        harness.state.metadata = {
+            claudeSessionId: 'child-native-unbuilt',
+            claudeRewind: pendingIntent
         }
+        const prevReopen = snapshotRunner()
+        const reopenPromise = runClaude({
+            workingDirectory: WORK_DIR,
+            claudeArgs: ['--resume', 'child-native-unbuilt'],
+            startedBy: 'runner',
+            startingMode: 'remote'
+        })
+        reopenPromise.catch((error) => { harness.runError = error })
+        await waitForFreshRunner(prevReopen)
+        expect(harness.state.metadata.claudeRewind).toBeUndefined()
+        expect(deriveSpawnArgs({
+            claudeArgs: ['--resume', 'child-native-unbuilt'],
+            sessionId: 'child-native-unbuilt',
+            intent: harness.state.metadata.claudeRewind,
+            workingDirectory: WORK_DIR
+        })).toEqual({
+            args: ['--resume', 'child-native-unbuilt'],
+            boundary: null
+        })
     })
 
     it('rejects unsupported rewind on an unmaterialized fork with a clear prompt-first message', { timeout: 20_000 }, async () => {
