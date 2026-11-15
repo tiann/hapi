@@ -770,9 +770,9 @@ function parseIssueTemplateDirResponse(response: GhIssueTemplateDirResponse): { 
             && hasRequiredLegacyTemplateFrontmatter(entry.object.text)
         ) {
             // README.md (a widespread convention for documenting the
-            // templates in this directory) and any other .md lacking valid
-            // name/about frontmatter aren't templates GitHub's own chooser
-            // would offer either — parseLegacyIssueTemplate stays
+            // templates in this directory) and any other .md lacking a
+            // `name` in its frontmatter aren't templates GitHub's own
+            // chooser would offer either — parseLegacyIssueTemplate stays
             // deliberately lenient about frontmatter quality for callers
             // that accept a file as a template candidate by other means, but
             // this discovery loop decides candidacy itself, so the stricter,

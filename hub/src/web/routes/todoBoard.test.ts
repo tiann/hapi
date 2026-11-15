@@ -1998,7 +1998,7 @@ body:
                         issueTemplateDir: {
                             entries: [
                                 { name: 'bug_report.yml', object: { text: BUG_REPORT_YAML } },
-                                { name: 'feature_request.md', object: { text: '---\nname: Feature\nabout: Suggest a new feature\n---\nBody text' } },
+                                { name: 'feature_request.md', object: { text: '---\nname: Feature\n---\nBody text' } },
                                 { name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }
                             ]
                         }
@@ -2025,7 +2025,7 @@ body:
                         issueTemplateDir: {
                             entries: [
                                 { name: 'README.md', object: { text: 'These templates follow our usual format.' } },
-                                { name: 'feature_request.md', object: { text: '---\nname: Feature\nabout: Suggest a new feature\n---\nBody text' } }
+                                { name: 'feature_request.md', object: { text: '---\nname: Feature\n---\nBody text' } }
                             ]
                         }
                     }

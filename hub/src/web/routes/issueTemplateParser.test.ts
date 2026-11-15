@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { parseIssueFormYaml, parseIssueTemplateConfig, parseLegacyIssueTemplate } from './issueTemplateParser'
+import { hasRequiredLegacyTemplateFrontmatter, parseIssueFormYaml, parseIssueTemplateConfig, parseLegacyIssueTemplate } from './issueTemplateParser'
 
 describe('parseIssueFormYaml', () => {
     it('parses a real-shaped bug-report form with every supported field kind', () => {
@@ -270,6 +270,24 @@ Body text.
         expect(template.name).toBe('plain.md')
         expect(template.body).toBe('Just some text, no frontmatter.')
         expect(template.labels).toEqual([])
+    })
+})
+
+describe('hasRequiredLegacyTemplateFrontmatter', () => {
+    it('accepts frontmatter with a name, even without about — about is a real-world convention, not a confirmed GitHub requirement', () => {
+        expect(hasRequiredLegacyTemplateFrontmatter('---\nname: Bug\n---\nBody text')).toBe(true)
+    })
+
+    it('rejects a file with no frontmatter at all', () => {
+        expect(hasRequiredLegacyTemplateFrontmatter('Just some ordinary notes, no frontmatter at all.')).toBe(false)
+    })
+
+    it('rejects frontmatter missing name', () => {
+        expect(hasRequiredLegacyTemplateFrontmatter('---\nabout: Suggest a new feature\n---\nBody text')).toBe(false)
+    })
+
+    it('rejects malformed frontmatter', () => {
+        expect(hasRequiredLegacyTemplateFrontmatter('---\n: : not yaml {{{\n---\nBody text')).toBe(false)
     })
 })
 

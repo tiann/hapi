@@ -217,24 +217,28 @@ function splitFrontmatter(raw: string): { frontmatter: Record<string, unknown>; 
 }
 
 /**
- * GitHub's chooser only lists a legacy `.md` template when its frontmatter
- * declares both `name` and `about` — an ordinary markdown file with no (or
- * malformed) frontmatter isn't a template at all, even though
- * `parseLegacyIssueTemplate` itself stays deliberately lenient about it
- * (review finding, tiann/hapi#2147: a repository with
- * `blank_issues_enabled: false` and only such a file would otherwise have
- * its "force a real template" setting defeated by a file GitHub's own UI
- * would never have offered). This check belongs at the caller deciding
- * *whether a file is a template candidate at all*, not in the parser that
- * answers *how to read one once it's accepted as a candidate* —
+ * GitHub's docs require *some* frontmatter for a legacy `.md` to appear in
+ * the chooser at all, but only document `name` as the key every real-world
+ * template actually carries — `about` is universal by convention (sampled
+ * across 16 major OSS repos), not confirmed as independently enforced. An
+ * ordinary markdown file with no (or malformed) frontmatter isn't a
+ * template candidate at all, even though `parseLegacyIssueTemplate` itself
+ * stays deliberately lenient about it (review finding, tiann/hapi#2147: a
+ * repository with `blank_issues_enabled: false` and only such a file would
+ * otherwise have its "force a real template" setting defeated by a file
+ * GitHub's own UI would never have offered). Checking only `name` closes
+ * that gap without the false-negative risk of also requiring `about` for a
+ * real template that happens to omit it — this check belongs at the caller
+ * deciding *whether a file is a template candidate at all*, not in the
+ * parser that answers *how to read one once it's accepted as a candidate* —
  * `parseLegacyIssueTemplate`'s own leniency (falling back to the filename,
- * treating a frontmatter-less file as a usable freeform template) is exercised
- * directly by callers outside Boards' own GitHub-parity discovery loop and
- * is intentionally unaffected by this.
+ * treating a frontmatter-less file as a usable freeform template) is
+ * exercised directly by callers outside Boards' own GitHub-parity discovery
+ * loop and is intentionally unaffected by this.
  */
 export function hasRequiredLegacyTemplateFrontmatter(raw: string): boolean {
     const { frontmatter } = splitFrontmatter(raw)
-    return Boolean(asString(frontmatter.name)) && Boolean(asString(frontmatter.about))
+    return Boolean(asString(frontmatter.name))
 }
 
 /** YAML list or GitHub's comma-separated legacy frontmatter shorthand, both valid for `labels`/`assignees`. */
