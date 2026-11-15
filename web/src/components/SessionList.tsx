@@ -323,12 +323,19 @@ type MachineGroup = {
 export const UNKNOWN_MACHINE_ID = '__unknown__'
 export const GROUP_SESSION_PREVIEW_LIMIT = DEFAULT_SESSION_PREVIEW_LIMIT
 
+const MACHINE_LOCAL_AGENT_FLAVORS = new Set(['codex', 'claude', 'pi', 'opencode'])
+
 export function getSessionDedupKey(session: SessionSummary): string | null {
     const agentId = session.metadata?.agentSessionId?.trim()
     if (!agentId) return null
     // Scope by flavor: agentSessionId is flattened from native ids and can retain a
     // stale cross-flavor value (codexSessionId ?? claudeSessionId ?? ...).
-    return `${session.metadata?.flavor ?? 'unknown'}:${agentId}`
+    const flavor = session.metadata?.flavor ?? 'unknown'
+    // These native ids live in one machine's local store, and the hub keeps
+    // sessions recorded on different machines apart: hiding one behind the
+    // other would make an imported session look deleted.
+    const machineId = MACHINE_LOCAL_AGENT_FLAVORS.has(flavor) ? session.metadata?.machineId : undefined
+    return machineId ? `${flavor}:${machineId}:${agentId}` : `${flavor}:${agentId}`
 }
 
 export function deduplicateSessionsByAgentId(sessions: SessionSummary[], selectedSessionId?: string | null): SessionSummary[] {
