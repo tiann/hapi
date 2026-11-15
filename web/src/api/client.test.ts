@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthProxyRedirectError } from './authProxy'
-import { ApiClient, ApiError } from './client'
+import { ApiClient, ApiError, apiErrorMessage } from './client'
 
 describe('ApiClient error mapping', () => {
     let originalFetch: typeof globalThis.fetch
@@ -10,6 +10,17 @@ describe('ApiClient error mapping', () => {
         originalFetch = globalThis.fetch
         fetchMock = vi.fn()
         globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
+    })
+
+    it('apiErrorMessage unwraps the hub error string and falls back cleanly', () => {
+        const body = '{"success":false,"error":"No online machine available for Pi history import"}'
+        const error = new ApiError(`HTTP 503 Service Unavailable: ${body}`, 503, 'No online machine available for Pi history import', body)
+        expect(apiErrorMessage(error, 'Failed to load local sessions')).toBe('No online machine available for Pi history import')
+        // No parseable body: the raw envelope must not leak; use the fallback.
+        expect(apiErrorMessage(new ApiError('HTTP 400 Bad Request: not json', 400), 'fallback')).toBe('fallback')
+        // Plain Errors keep their message; non-Errors use the fallback.
+        expect(apiErrorMessage(new Error('boom'), 'fallback')).toBe('boom')
+        expect(apiErrorMessage(undefined, 'fallback')).toBe('fallback')
     })
 
     it('passes an optional maxBytes bound to session file reads', async () => {
