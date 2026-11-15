@@ -48,6 +48,7 @@ export const RPC_METHODS = {
     ListCodexModels: 'listCodexModels',
     ListPiModelsForMachine: 'listPiModelsForMachine',
     ListCodexSessions: 'listCodexSessions',
+    ListLocalSessions: 'listLocalSessions',
     ArchiveCodexSession: 'archiveCodexSession',
     ListCursorModels: 'listCursorModels',
     ListPiModels: 'listPiModels',

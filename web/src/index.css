@@ -475,9 +475,20 @@ html:has(.chat-scroll-y) #root {
     }
 }
 
-/* Row quick action (archive): replaces the time/progress cluster on hover,
-   and on keyboard focus (not a click or tap) so it stays reachable without a
-   mouse. Touch devices keep the long-press menu instead. */
+/* Row quick actions (unpin, archive): replace the time/progress cluster on
+   hover, and on keyboard focus (not a click or tap) so they stay reachable
+   without a mouse. Touch devices keep the long-press menu instead.
+   Reserve the visible action group width (1 button = 2rem from row edge / 1.5rem
+   after pr-2; 2 buttons = 3.875rem from row edge / 3.375rem after pr-2) so short
+   timestamps like "刚刚" never let the action buttons overlap title/indicators. */
+.session-list-row[data-quick-action-count="1"] {
+    --session-row-action-reserve: 1.5rem;
+    --session-row-action-span: 2rem;
+}
+.session-list-row[data-quick-action-count="2"] {
+    --session-row-action-reserve: 3.375rem;
+    --session-row-action-span: 3.875rem;
+}
 .session-row-quick-action {
     display: none;
 }
@@ -488,6 +499,11 @@ html:has(.chat-scroll-y) #root {
 .session-list-row:has(:focus-visible) .session-row-trailing,
 .session-list-row[data-quick-action-pending] .session-row-trailing {
     visibility: hidden;
+    min-width: var(--session-row-action-reserve, 0px);
+}
+.session-list-row:has(:focus-visible) .session-row-header,
+.session-list-row[data-quick-action-pending] .session-row-header {
+    grid-template-columns: minmax(min(9rem, calc(100% - var(--session-row-action-span, 0px))), 1fr) minmax(0, max-content);
 }
 @media (hover: hover) and (pointer: fine) {
     .session-list-row:hover .session-row-quick-action {
@@ -495,6 +511,10 @@ html:has(.chat-scroll-y) #root {
     }
     .session-list-row:hover .session-row-trailing {
         visibility: hidden;
+        min-width: var(--session-row-action-reserve, 0px);
+    }
+    .session-list-row:hover .session-row-header {
+        grid-template-columns: minmax(min(9rem, calc(100% - var(--session-row-action-span, 0px))), 1fr) minmax(0, max-content);
     }
 }
 

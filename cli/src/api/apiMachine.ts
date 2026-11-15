@@ -42,10 +42,6 @@ import {
     type ListOpencodeModelsForCwdResponse
 } from '../modules/common/opencodeModels'
 import {
-    listLocalOpencodeSessionSummaries,
-    listLocalOpencodeSessionsWithMessagesByIds
-} from '../modules/common/opencodeSessions'
-import {
     listOpencodeModelVariants,
     type ListOpencodeModelVariantsResponse
 } from '../modules/common/opencodeModelVariants'
@@ -70,8 +66,19 @@ import {
 } from '../modules/common/kimiModels'
 import type { SpawnSessionOptions, SpawnSessionResult } from '../modules/common/rpcTypes'
 import { applyVersionedAck } from './versionedUpdate'
-import { archiveLocalCodexSession, listLocalCodexSessionSummaries, listLocalCodexSessionsWithMessagesByIds } from '../modules/common/codexSessions'
+import {
+    archiveLocalCodexSession,
+    listLocalCodexSessionSummaries,
+    listLocalCodexSessionsWithMessagesByIds
+} from '../modules/common/codexSessions'
 import { listLocalPiSessionSummaries, listLocalPiSessionsWithMessagesByIds } from '../modules/common/piSessions'
+import { listLocalOpencodeSessionSummaries, listLocalOpencodeSessionsWithMessagesByIds } from '../modules/common/opencodeSessions'
+import { registerLocalSessionHandlers } from '../modules/common/localSessions/rpcHandlers'
+import { registerLocalSessionSource } from '../modules/common/localSessions/registry'
+import { codexLocalSessionSource } from '../modules/common/localSessions/sources/codex'
+import { piLocalSessionSource } from '../modules/common/localSessions/sources/pi'
+import { opencodeLocalSessionSource } from '../modules/common/localSessions/sources/opencode'
+import { claudeLocalSessionSource } from '../modules/common/localSessions/sources/claude'
 import { buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
 import { collectMachineHealth } from '@/utils/machineHealth'
 import { inspectCursorChatStore } from '@/cursor/cursorChatStoreStatus'
@@ -543,6 +550,16 @@ export class ApiMachineClient {
                 return { success: true, sessions }
             }
         )
+
+        for (const source of [codexLocalSessionSource, piLocalSessionSource, opencodeLocalSessionSource, claudeLocalSessionSource]) {
+            registerLocalSessionSource(source)
+        }
+        registerLocalSessionHandlers({
+            registerHandler: (method, handler) => this.rpcHandlerManager.registerHandler(method, handler),
+            resolveForCheck: (path) => this.pathPolicy.resolveForCheck(path),
+            isWithinSpawnRoots: (path) => this.pathPolicy.isWithinSpawnRoots(path),
+            isSessionWithinWorkspaceRoots: (session) => this.isLocalSessionWithinWorkspaceRoots(session)
+        })
     }
 
     private async isLocalSessionWithinWorkspaceRoots(session: { cwd?: string | null }): Promise<boolean> {

@@ -56,11 +56,14 @@ describe('SessionRowSummary background status', () => {
         localStorage.clear()
     })
 
-    it('keeps presence independent of the title-side activity spinner', () => {
+    it('uses a title blue dot and waiting presence for background-only work', () => {
         const background = renderSummary(false).container
         const backgroundBadge = background.querySelector('[data-testid="session-presence"]')
-        expect(backgroundBadge).toHaveClass('bg-blue-400', 'animate-pulse')
-        expect(background.querySelector('svg.animate-spin-slow')).toHaveClass('text-[var(--app-hint)]')
+        expect(backgroundBadge).toHaveAttribute('data-presence', 'waiting')
+        expect(backgroundBadge).not.toHaveClass('animate-pulse')
+        expect(backgroundBadge).toHaveClass('border-2', 'border-[var(--app-badge-success-text)]')
+        expect(background.querySelector('[data-testid="session-background"]')).toHaveClass('bg-blue-500')
+        expect(background.querySelector('svg.animate-spin-slow')).toBeNull()
         cleanup()
 
         const thinking = render(
@@ -71,6 +74,8 @@ describe('SessionRowSummary background status', () => {
         expect(thinking.querySelector('[data-testid="session-presence"]'))
             .toHaveClass('bg-[var(--app-badge-success-text)]', 'animate-pulse')
         expect(thinking.querySelector('[data-testid="session-presence"]')).toHaveAttribute('data-presence', 'working')
+        expect(thinking.querySelector('[data-testid="session-activity"]')).not.toBeNull()
+        expect(thinking.querySelector('[data-testid="session-background"]')).toBeNull()
         expect(screen.queryByText('Running', { exact: true })).not.toBeInTheDocument()
         cleanup()
 
@@ -253,8 +258,8 @@ describe('SessionRowSummary background status', () => {
         expect(container.querySelector('[data-testid="session-presence"]')).toHaveClass('animate-pulse')
     })
 
-    it('shows unseen output from a running session', () => {
-        const session = makeSummary({ id: 'running-unread', backgroundTaskCount: 1, updatedAt: 2_000 })
+    it('shows unseen output with background-only work using a blue dot', () => {
+        const session = makeSummary({ id: 'background-unread', backgroundTaskCount: 1, updatedAt: 2_000 })
         markSessionSeen(session.id, 1_000)
 
         const { container } = render(
@@ -263,9 +268,10 @@ describe('SessionRowSummary background status', () => {
             </I18nProvider>
         )
 
-        expectRunningUnread()
-        expect(container.querySelector('[data-testid="session-presence"]')).toHaveClass('bg-blue-400', 'animate-pulse')
-    })
+        expectUnread()
+        expect(screen.getByTestId('session-background')).toHaveClass('bg-blue-500')
+        expect(container.querySelector('[data-testid="session-presence"]')).toHaveAttribute('data-presence', 'waiting')
+        expect(container.querySelector('[data-testid="session-presence"]')).not.toHaveClass('animate-pulse')    })
 
     it('shows and clears the unread dot in standard session rows', () => {
         const session = makeSummary({ id: 'standard-unread', backgroundTaskCount: 0, contentRevision: 5 })
@@ -517,6 +523,35 @@ describe('SessionRowSummary combined activity and unread indicator', () => {
         view.rerender(row())
         expect(screen.queryByTestId('session-unread')).toBeNull()
         expect(screen.queryByTestId('session-activity')).toBeNull()
+    })
+
+    it('shows background-only work as a blue dot for both read and unread output', () => {
+        let session = makeSummary({ thinking: false, backgroundTaskCount: 1, contentRevision: 2 })
+        markSessionSeen(session.id, 2)
+        const row = () => <I18nProvider><SessionRowSummary session={session} lastSeenVersion={session.contentRevision} /></I18nProvider>
+        const view = render(row())
+        expect(screen.getByTestId('session-background')).toHaveClass('bg-blue-500')
+        expect(screen.queryByTestId('session-activity')).toBeNull()
+        expect(screen.queryByTestId('session-unread')).toBeNull()
+        expect(screen.getByText('Background demo')).toHaveClass('font-normal')
+
+        session = { ...session, contentRevision: 3 }
+        view.rerender(row())
+        expect(screen.getByTestId('session-background')).toHaveClass('bg-blue-500')
+        expect(screen.queryByTestId('session-activity')).toBeNull()
+        expect(screen.queryByTestId('session-unread')).toBeNull()
+        expect(screen.getByText('Background demo')).toHaveClass('font-semibold')
+
+        session = { ...session, thinking: true }
+        view.rerender(row())
+        expect(screen.queryByTestId('session-background')).toBeNull()
+        expect(screen.getByTestId('session-activity')).toBeVisible()
+
+        session = { ...session, thinking: false, backgroundTaskCount: 0 }
+        view.rerender(row())
+        expect(screen.queryByTestId('session-background')).toBeNull()
+        expect(screen.queryByTestId('session-activity')).toBeNull()
+        expect(screen.getByTestId('session-unread')).toHaveClass('bg-[var(--app-fg)]')
     })
 
     it('returns to a grey spinner when running content is read, and keeps manual unread blue', () => {

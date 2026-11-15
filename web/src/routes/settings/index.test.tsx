@@ -483,6 +483,16 @@ describe('responsive settings pages', () => {
         expect(screen.getByRole('link', { name: 'hapi.run' })).toHaveAttribute('rel', 'noopener noreferrer')
     })
 
+    it('reports an invalid settings import file and keeps current settings', async () => {
+        localStorage.setItem('hapi-appearance', 'dark')
+        const { container } = renderPage(<SettingsAboutPage />)
+        expect(screen.getByRole('button', { name: 'Export' })).toBeInTheDocument()
+        const input = container.querySelector('input[type="file"]') as HTMLInputElement
+        fireEvent.change(input, { target: { files: [new File(['{}'], 'other.json', { type: 'application/json' })] } })
+        expect(await screen.findByRole('alert')).toHaveTextContent('not a HAPI settings export')
+        expect(localStorage.getItem('hapi-appearance')).toBe('dark')
+    })
+
     it('links common voice settings to full-page voices and advanced pages', () => {
         renderPage(<SettingsVoicePage />)
         fireEvent.click(screen.getByRole('button', { name: /Voice/ }))

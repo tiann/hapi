@@ -18,6 +18,8 @@ import {
     ListOpencodeSessionsRpcResponseSchema,
     ListPiSessionsRpcResponseSchema
 } from '@hapi/protocol/apiTypes'
+import { ListLocalSessionsRpcResponseSchema } from '@hapi/protocol/localTranscript'
+import type { ListLocalSessionsRpcResponse, LocalSessionFlavor } from '@hapi/protocol/localTranscript'
 import type {
     AbortChunkedUploadResponse,
     AgyModelsResponse,
@@ -660,6 +662,20 @@ export class RpcGateway {
     async archiveCodexSessionForMachine(machineId: string, sessionId: string): Promise<RpcArchiveCodexSessionResponse> {
         const result = await this.machineRpc(machineId, RPC_METHODS.ArchiveCodexSession, { sessionId }, MODEL_LIST_RPC_TIMEOUT_MS)
         return ArchiveCodexSessionRpcResponseSchema.parse(result)
+    }
+
+    async listLocalSessionsForMachine(machineId: string, params: {
+        flavor: LocalSessionFlavor
+        cwd?: string | null
+        sessionIds?: string[] | null
+    }): Promise<ListLocalSessionsRpcResponse> {
+        const result = await this.machineRpc(
+            machineId,
+            RPC_METHODS.ListLocalSessions,
+            { flavor: params.flavor, cwd: params.cwd ?? null, sessionIds: params.sessionIds ?? undefined },
+            MODEL_LIST_RPC_TIMEOUT_MS
+        )
+        return ListLocalSessionsRpcResponseSchema.parse(result)
     }
 
     async listCursorModelsForSession(sessionId: string): Promise<RpcListCursorModelsResponse> {
