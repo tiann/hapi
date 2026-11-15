@@ -320,7 +320,8 @@ describe('MarkdownRenderer end-to-end local file:/// links', () => {
                             '[hash](file:///D:/3d/report.md%23draft.md) '
                             + '[query](file:///D:/3d/report%3Fdraft.md) '
                             + '[pct](file:///D:/3d/report%25draft.md) '
-                            + '[pct20](file:///D:/3d/report%2520draft.md)'
+                            + '[pct20](file:///D:/3d/report%2520draft.md) '
+                            + '[explicit](D:/3d/foo%20bar.md)'
                         }
                     />
                 </HappyChatProvider>
@@ -332,6 +333,7 @@ describe('MarkdownRenderer end-to-end local file:/// links', () => {
             ['query', 'D:/3d/report?draft.md'],
             ['pct', 'D:/3d/report%draft.md'],
             ['pct20', 'D:/3d/report%20draft.md'],
+            ['explicit', 'D:/3d/foo bar.md'],
         ] as const
 
         for (const [name, expectedPath] of expectedPaths) {

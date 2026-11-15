@@ -271,8 +271,14 @@ function rewriteFileLinkNode(node: MarkdownNode): void {
     // containment — leave POSIX for <A>; encode Windows as candidate so
     // backslashes survive mdast→hast URI normalization.
     if (isWindowsAbsolutePath(target)) {
-        if (!hasKnownFileExtension(target)) return
-        node.url = createFileCandidateHref(target)
+        let decodedTarget: string
+        try {
+            decodedTarget = stripLineSuffix(decodeURIComponent(target))
+        } catch {
+            return
+        }
+        if (!hasKnownFileExtension(decodedTarget)) return
+        node.url = createFileCandidateHref(decodedTarget)
         return
     }
     if (target.startsWith('/') && !target.startsWith('//')) return

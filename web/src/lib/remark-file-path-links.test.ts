@@ -195,11 +195,12 @@ describe('remarkFilePathLinks — explicit markdown links', () => {
         'C:\\Users\\dev\\project\\handoff.md',
         'D:/work/app/src/main.ts:12',
         'D:/outside/secret.ts#L1',
+        'D:/3d/foo%20bar.md',
     ])('rewrites Windows absolute file link %s to hapi-file-candidate (not premature hapi-file)', (url) => {
         const nodes = transformNodes([linkNode(url)])
         const link = nodes.find((node) => node.type === 'link')!
         const withoutMeta = url.replace(/#.*$/, '').replace(/\?.*$/, '')
-        const expectedPath = withoutMeta.replace(/:\d+(?::\d+)?$/, '')
+        const expectedPath = decodeURIComponent(withoutMeta).replace(/:\d+(?::\d+)?$/, '')
         expect(decodeFilePathHref(link.url as string)).toBeNull()
         expect(link.url).toBe('hapi-file-candidate:' + encodeURIComponent(expectedPath))
     })
