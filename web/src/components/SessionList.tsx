@@ -1493,7 +1493,8 @@ const SessionItem = memo(function SessionItem(props: {
                 ref={rowRef}
                 data-session-scroll-anchor
                 data-session-row-id={s.id}
-                className={`session-list-item session-list-row relative flex w-full items-start gap-1 rounded-lg py-2 pl-2.5 transition-colors ${hasQuickAction ? 'pr-10' : 'pr-2'} ${selected ? 'bg-[var(--app-secondary-bg)]' : ''}`}
+                className={`session-list-item session-list-row relative flex w-full items-start gap-1 rounded-lg py-2 pl-2.5 pr-2 transition-colors ${selected ? 'bg-[var(--app-secondary-bg)]' : ''}`}
+                style={hasQuickAction ? { paddingRight: 'var(--session-row-action-span)' } : undefined}
                 data-quick-action-count={quickActionCount > 0 ? quickActionCount : undefined}
                 data-quick-action-pending={quickArchivePending || quickUnpinPending ? '' : undefined}
             >

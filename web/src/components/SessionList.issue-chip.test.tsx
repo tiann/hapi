@@ -236,11 +236,12 @@ describe('SessionList issue-ref chip isolation', () => {
         const activeRow = screen.getByText('Active with issue').closest('[role="button"]')?.parentElement
         const activeChip = activeRow?.querySelector('[data-testid="issue-ref-chip"]')
         expect(activeChip?.className).not.toContain('session-row-trailing')
-        expect(activeRow?.className).toContain('pr-10')
+        expect(activeRow).toHaveStyle({ paddingRight: 'var(--session-row-action-span)' })
 
         const idleRow = screen.getByText('Idle with issue').closest('[role="button"]')?.parentElement
         const idleChip = idleRow?.querySelector('[data-testid="issue-ref-chip"]')
         expect(idleChip?.className).not.toContain('session-row-trailing')
         expect(idleRow?.className).toContain('pr-2')
+        expect(idleRow?.style.paddingRight).toBe('')
     })
 })

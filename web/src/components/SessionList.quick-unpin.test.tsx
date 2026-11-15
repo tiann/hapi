@@ -109,6 +109,19 @@ describe('session row hover unpin', () => {
         expect(screen.queryByRole('button', { name: 'Archive' })).toBeNull()
     })
 
+    it('reserves the two-button action-group width on a pinned active row showing both Unpin and Archive', () => {
+        renderList(
+            [makeSession({ id: 'pinned-active', active: true, pinned: true })],
+            {}
+        )
+
+        expect(screen.getByRole('button', { name: 'Unpin' })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Archive' })).toBeInTheDocument()
+        const row = screen.getByRole('button', { name: 'Unpin' }).closest('[data-quick-action-count]')
+        expect(row).toHaveAttribute('data-quick-action-count', '2')
+        expect(row).toHaveStyle({ paddingRight: 'var(--session-row-action-span)' })
+    })
+
     it('shows no Unpin button for unpinned rows', () => {
         renderList(
             [
