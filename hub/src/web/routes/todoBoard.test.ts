@@ -2016,6 +2016,27 @@ body:
         expect(body.githubNewIssueUrl).toBe('https://github.com/heavygee/hapi/issues/new/choose')
     })
 
+    it('excludes README.md from the template list — a widespread convention for documenting the directory, not a template GitHub itself would offer', async () => {
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            () => ({
+                data: {
+                    repository: {
+                        issueTemplateDir: {
+                            entries: [
+                                { name: 'README.md', object: { text: 'These templates follow our usual format.' } },
+                                { name: 'feature_request.md', object: { text: '---\nname: Feature\n---\nBody text' } }
+                            ]
+                        }
+                    }
+                }
+            })
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/hapi`)
+        const body = await response.json() as { templates: Array<{ id: string }> }
+        expect(body.templates.map(t => t.id)).toEqual(['feature_request.md'])
+    })
+
     it('honors blank_issues_enabled: false even when every template is unsupported (operator ruling, hapi#238: do not fall back to blank)', async () => {
         const app = await createApp(
             () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,

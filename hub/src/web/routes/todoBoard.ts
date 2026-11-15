@@ -764,7 +764,15 @@ function parseIssueTemplateDirResponse(response: GhIssueTemplateDirResponse): { 
             blankIssuesEnabled = parseIssueTemplateConfig(entry.object.text).blankIssuesEnabled
         } else if (lowerName.endsWith('.yml') || lowerName.endsWith('.yaml')) {
             templates.push(parseIssueFormYaml(entry.name, entry.object.text))
-        } else if (lowerName.endsWith('.md')) {
+        } else if (lowerName.endsWith('.md') && lowerName !== 'readme.md') {
+            // README.md is a widespread convention for documenting the
+            // templates in this directory, not a template itself — GitHub's
+            // own chooser doesn't offer it. parseLegacyIssueTemplate stays
+            // deliberately lenient about frontmatter quality (a real
+            // template with partial metadata should still work), so this
+            // exclusion has to live here, at "is this file a template at
+            // all," rather than in the parser itself (review finding,
+            // tiann/hapi#2147).
             templates.push(parseLegacyIssueTemplate(entry.name, entry.object.text))
         }
     }
