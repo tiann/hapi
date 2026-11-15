@@ -721,6 +721,7 @@ export default {
   'tool.requestUserInput.dismissHint': 'Remove this question without sending an answer or stopping the agent.',
   'tool.requestUserInput.textPlaceholder': 'Type your answer…',
   'tool.requestUserInput.noteLabel': 'Additional note (optional)',
+  'tool.requestUserInput.addNote': 'Add a note',
   'tool.requestUserInput.notePlaceholder': 'Add a note…',
   'tool.requestUserInput.otherLabel': 'None of the above',
   'tool.requestUserInput.otherDescription': 'Optionally, add details in notes.',

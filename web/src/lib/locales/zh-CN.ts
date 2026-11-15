@@ -719,6 +719,7 @@ export default {
   'tool.requestUserInput.dismissHint': '移除此问题，不发送答案，也不停止 Agent。',
   'tool.requestUserInput.textPlaceholder': '输入您的答案…',
   'tool.requestUserInput.noteLabel': '补充说明（可选）',
+  'tool.requestUserInput.addNote': '添加备注',
   'tool.requestUserInput.notePlaceholder': '添加备注…',
   'tool.requestUserInput.otherLabel': '以上都不是',
   'tool.requestUserInput.otherDescription': '可在备注中补充说明（可选）。',

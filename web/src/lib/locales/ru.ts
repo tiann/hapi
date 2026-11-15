@@ -650,6 +650,7 @@ export default {
   'tool.requestUserInput.dismissHint': 'Убрать вопрос, не отправляя ответ и не останавливая агента.',
   'tool.requestUserInput.textPlaceholder': 'Введите ответ…',
   'tool.requestUserInput.noteLabel': 'Дополнительное примечание (необязательно)',
+  'tool.requestUserInput.addNote': 'Добавить примечание',
   'tool.requestUserInput.notePlaceholder': 'Добавить примечание…',
   'tool.requestUserInput.otherLabel': 'Ничего из вышеперечисленного',
   'tool.requestUserInput.otherDescription': 'При желании добавьте детали в примечаниях.',
