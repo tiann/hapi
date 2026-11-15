@@ -1,12 +1,12 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MessageQueue2 } from '@/utils/MessageQueue2'
 import { Session } from './session'
 import { runClaude } from './runClaude'
-import { deriveSpawnArgs, isSessionMaterialized } from './conversationHistory'
+import { deriveSpawnArgs, isSessionMaterialized, readNativeTurns, sliceTurnsToForkBoundary } from './conversationHistory'
 import type { EnhancedMode } from './loop'
 
 const harness = vi.hoisted(() => {
@@ -216,7 +216,7 @@ describe('runClaude unmaterialized fork child history actions', () => {
         }, { timeout: 10_000, interval: 25 })
     }
 
-    it('resolves fork-at-message and fork-current from source transcript when child transcript is not materialized', { timeout: 20_000 }, async () => {
+    it('refuses fork and rewind on an unmaterialized fork child when its snapshot boundary cannot be determined', { timeout: 20_000 }, async () => {
         const claudeArgs = ['--resume', 'source-native-1', '--fork-session']
         const prev = snapshotRunner()
         const runPromise = runClaude({
@@ -249,15 +249,162 @@ describe('runClaude unmaterialized fork child history actions', () => {
             expect(isSessionMaterialized('child-native-unbuilt', WORK_DIR)).toBe(false)
 
             const fork = harness.rpcHandlers.get(RPC_METHODS.ForkConversation)!
-            await expect(fork({ messageLocalId: 'local-2' })).resolves.toEqual({
-                nativeSessionId: 'source-native-1',
-                forkSession: true,
-                resumeSessionAt: 'as-1'
+            await expect(fork({})).rejects.toThrow('Send a message in this fork first')
+            await expect(fork({ messageLocalId: 'local-2' })).rejects.toThrow('Send a message in this fork first')
+
+            const rewind = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
+            await expect(rewind({ messageLocalId: 'local-2' })).resolves.toEqual({
+                success: false,
+                outcome: 'rejected',
+                error: 'Send a message in this fork first, then rewind'
             })
-            await expect(fork({})).resolves.toEqual({
-                nativeSessionId: 'source-native-1',
-                forkSession: true
+        } finally {
+            sessionInstance.stopKeepAlive()
+        }
+    })
+
+    it('snapshots fork-current boundary and keeps unprompted child forks isolated when the source advances', { timeout: 20_000 }, async () => {
+        const sourceId = 'source-snapshot-advance'
+        writeSourceTranscript(sourceId)
+        try {
+            // 1. Materialized source receives a fork-current request after 3 turns.
+            const sourcePrev = snapshotRunner()
+            const sourceRun = runClaude({
+                workingDirectory: WORK_DIR,
+                claudeArgs: ['--resume', sourceId],
+                startedBy: 'runner',
+                startingMode: 'remote'
             })
+            sourceRun.catch((error) => { harness.runError = error })
+            await waitForFreshRunner(sourcePrev)
+
+            const sourceSession = createForkRunnerSession(['--resume', sourceId])
+            sourceSession.sessionId = sourceId
+            let forkSnapshotResult: { nativeSessionId: string; forkSession: boolean; resumeSessionAt?: string }
+            try {
+                harness.loopOpts.onSessionReady(sourceSession)
+                const sourceFork = harness.rpcHandlers.get(RPC_METHODS.ForkConversation)!
+                forkSnapshotResult = await sourceFork({})
+                expect(forkSnapshotResult).toEqual({
+                    nativeSessionId: sourceId,
+                    forkSession: true,
+                    resumeSessionAt: 'as-3'
+                })
+            } finally {
+                sourceSession.stopKeepAlive()
+            }
+
+            // 2. Source advances with turn 4 while child A remains unprompted.
+            appendFileSync(join(projectDir, `${sourceId}.jsonl`), [
+                JSON.stringify({ type: 'user', uuid: 'uuid-4', parentUuid: 'as-3', message: { role: 'user', content: [{ type: 'text', text: 'turn 4 on source' }] } }),
+                JSON.stringify({ type: 'assistant', uuid: 'as-4', parentUuid: 'uuid-4', message: { role: 'assistant', content: [{ type: 'text', text: 'ans 4 on source' }] } })
+            ].join('\n') + '\n')
+
+            // 3. Child A boots with the recorded snapshot boundary and stays unmaterialized.
+            const childArgs = [
+                '--resume',
+                forkSnapshotResult.nativeSessionId,
+                '--fork-session',
+                ...(forkSnapshotResult.resumeSessionAt ? ['--resume-session-at', forkSnapshotResult.resumeSessionAt] : [])
+            ]
+            const childPrev = snapshotRunner()
+            const childRun = runClaude({
+                workingDirectory: WORK_DIR,
+                claudeArgs: childArgs,
+                startedBy: 'runner',
+                startingMode: 'remote'
+            })
+            childRun.catch((error) => { harness.runError = error })
+            await waitForFreshRunner(childPrev)
+
+            const childSession = createForkRunnerSession(childArgs)
+            try {
+                harness.loopOpts.onSessionReady(childSession)
+                harness.sessionStub.updateMetadata((metadata: any) => ({
+                    ...metadata,
+                    conversationHistoryEntryIds: {
+                        'local-1': 'uuid-1',
+                        'local-2': 'uuid-2',
+                        'local-3': 'uuid-3',
+                        // Even if a stale/external mapping points at turn 4, child A's snapshot boundary must exclude it.
+                        'local-4': 'uuid-4'
+                    }
+                }))
+                // Even before SessionStart:fork binds childSession.sessionId, fork-current stays pinned to as-3.
+                const forkChildA = harness.rpcHandlers.get(RPC_METHODS.ForkConversation)!
+                await expect(forkChildA({})).resolves.toEqual({
+                    nativeSessionId: sourceId,
+                    forkSession: true,
+                    resumeSessionAt: 'as-3'
+                })
+
+                harness.hookHandlers.onSessionHook('child-a-unmaterialized', {
+                    hook_event_name: 'SessionStart',
+                    source: 'fork'
+                })
+                expect(isSessionMaterialized('child-a-unmaterialized', WORK_DIR)).toBe(false)
+
+                // Forking child A at a copied turn respects its original snapshot.
+                const atTurn2 = await forkChildA({ messageLocalId: 'local-2' })
+                expect(atTurn2).toEqual({
+                    nativeSessionId: sourceId,
+                    forkSession: true,
+                    resumeSessionAt: 'as-1'
+                })
+
+                // Forking child A's current state pins grandchild B to child A's snapshot, not source's turn 4.
+                const forkCurrentChildA = await forkChildA({})
+                expect(forkCurrentChildA).toEqual({
+                    nativeSessionId: sourceId,
+                    forkSession: true,
+                    resumeSessionAt: 'as-3'
+                })
+
+                const grandchildTurns = sliceTurnsToForkBoundary(
+                    readNativeTurns(WORK_DIR, forkCurrentChildA.nativeSessionId),
+                    forkCurrentChildA.resumeSessionAt ?? null
+                )
+                expect(grandchildTurns.map((t) => t.promptUuid)).toEqual(['uuid-1', 'uuid-2', 'uuid-3'])
+                expect(grandchildTurns.map((t) => t.promptUuid)).not.toContain('uuid-4')
+
+                // Turn 4 added to source after child A forked is outside child A's snapshot.
+                await expect(forkChildA({ messageLocalId: 'local-4' })).rejects.toThrow(/No native history point/)
+            } finally {
+                childSession.stopKeepAlive()
+            }
+        } finally {
+            try {
+                rmSync(join(projectDir, `${sourceId}.jsonl`), { force: true })
+            } catch {}
+        }
+    })
+
+    it('refuses fork when an unmaterialized child snapshot boundary is missing from the source transcript', { timeout: 20_000 }, async () => {
+        const claudeArgs = ['--resume', 'source-native-1', '--fork-session', '--resume-session-at', 'missing-boundary']
+        const prev = snapshotRunner()
+        const runPromise = runClaude({
+            workingDirectory: WORK_DIR,
+            claudeArgs,
+            startedBy: 'runner',
+            startingMode: 'remote'
+        })
+        runPromise.catch((error) => { harness.runError = error })
+        await waitForFreshRunner(prev)
+
+        const sessionInstance = createForkRunnerSession([...claudeArgs])
+        try {
+            harness.loopOpts.onSessionReady(sessionInstance)
+            harness.sessionStub.updateMetadata((metadata: any) => ({
+                ...metadata,
+                conversationHistoryEntryIds: {
+                    'local-1': 'uuid-1',
+                    'local-2': 'uuid-2'
+                }
+            }))
+
+            const fork = harness.rpcHandlers.get(RPC_METHODS.ForkConversation)!
+            await expect(fork({})).rejects.toThrow('Send a message in this fork first')
+            await expect(fork({ messageLocalId: 'local-2' })).rejects.toThrow('Send a message in this fork first')
         } finally {
             sessionInstance.stopKeepAlive()
         }

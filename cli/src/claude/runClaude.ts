@@ -553,9 +553,15 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         if (liveSession && !liveNativeId && !resumeArgId) {
             return { claudeSession: liveSession, error: noActiveSessionError };
         }
+        // Pass only the child's own bound native ID (never resumeArgId) so an
+        // unprompted --fork-session child isn't misclassified as materialized
+        // just because the source transcript exists on disk.
+        const boundSessionId = liveSession
+            ? liveNativeId
+            : (session.getMetadata()?.claudeSessionId ?? sessionInfo.metadata?.claudeSessionId ?? null);
         const target = resolveNativeTranscriptTarget({
             claudeArgs: effectiveArgs,
-            sessionId: nativeSessionId,
+            sessionId: boundSessionId,
             workingDirectory
         });
         if (!target) {
@@ -580,30 +586,57 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             throw new Error(resolved.error ?? 'Claude session id is not ready')
         }
         const { target } = resolved;
-        if (!messageLocalId) {
+        const forkAtMessageFromTurns = (turns: ReturnType<typeof readNativeTurns>, targetLocalId: string) => {
+            // Fork at a message: the child resumes the source truncated to the turn
+            // before the selected one, so its history ends at the chosen point.
+            if (session.getMetadata()?.capabilities?.conversationHistory?.forkAtMessage !== true) {
+                throw new Error('Historical fork is not supported for Claude')
+            }
+            const promptUuid = session.getMetadata()?.conversationHistoryEntryIds?.[targetLocalId]
+            if (!promptUuid) {
+                throw new Error(`No native history point for message ${targetLocalId}`)
+            }
+            const plan = resolveForkAtMessagePlan(turns, promptUuid)
+            logger.debug(`[claude] fork at message ${targetLocalId}: boundary ${plan.resumeSessionAt}`)
             return {
                 nativeSessionId: target.sessionId,
                 forkSession: true as const,
-                ...(target.inheritedBoundary ? { resumeSessionAt: target.inheritedBoundary } : {})
+                ...(plan.resumeSessionAt ? { resumeSessionAt: plan.resumeSessionAt } : {})
             }
         }
-        // Fork at a message: the child resumes the source truncated to the turn
-        // before the selected one, so its history ends at the chosen point.
-        if (session.getMetadata()?.capabilities?.conversationHistory?.forkAtMessage !== true) {
-            throw new Error('Historical fork is not supported for Claude')
+        if (target.isUnmaterializedFork) {
+            // An unmaterialized fork shares the source JSONL until its first turn,
+            // so it must stay pinned to the boundary recorded when it was created.
+            if (!target.inheritedBoundary) {
+                throw new Error('Send a message in this fork first')
+            }
+            const scopedTurns = sliceTurnsToForkBoundary(
+                readNativeTurns(workingDirectory, target.sessionId),
+                target.inheritedBoundary
+            );
+            if (scopedTurns.length === 0) {
+                throw new Error('Send a message in this fork first')
+            }
+            if (!messageLocalId) {
+                return {
+                    nativeSessionId: target.sessionId,
+                    forkSession: true as const,
+                    resumeSessionAt: target.inheritedBoundary
+                }
+            }
+            return forkAtMessageFromTurns(scopedTurns, messageLocalId)
         }
-        const promptUuid = session.getMetadata()?.conversationHistoryEntryIds?.[messageLocalId]
-        if (!promptUuid) {
-            throw new Error(`No native history point for message ${messageLocalId}`)
+        const sourceTurns = readNativeTurns(workingDirectory, target.sessionId);
+        if (!messageLocalId) {
+            const supportsResumeAt = session.getMetadata()?.capabilities?.conversationHistory?.forkAtMessage === true;
+            const snapshotBoundary = supportsResumeAt ? sourceTurns.at(-1)?.endUuid : undefined;
+            return {
+                nativeSessionId: target.sessionId,
+                forkSession: true as const,
+                ...(snapshotBoundary ? { resumeSessionAt: snapshotBoundary } : {})
+            }
         }
-        const turns = sliceTurnsToForkBoundary(readNativeTurns(workingDirectory, target.sessionId), target.inheritedBoundary)
-        const plan = resolveForkAtMessagePlan(turns, promptUuid)
-        logger.debug(`[claude] fork at message ${messageLocalId}: boundary ${plan.resumeSessionAt}`)
-        return {
-            nativeSessionId: target.sessionId,
-            forkSession: true as const,
-            ...(plan.resumeSessionAt ? { resumeSessionAt: plan.resumeSessionAt } : {})
-        }
+        return forkAtMessageFromTurns(sourceTurns, messageLocalId)
     })
     session.rpcHandlerManager.registerHandler(RPC_METHODS.RewindConversation, async (payload: unknown) => {
         const rejected = (error: string) => ({ success: false as const, outcome: 'rejected' as const, error })
@@ -628,6 +661,9 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             return rejected(resolved.error ?? 'Claude session id is not ready')
         }
         const { claudeSession, target } = resolved;
+        if (target.isUnmaterializedFork && !target.inheritedBoundary) {
+            return rejected('Send a message in this fork first, then rewind')
+        }
         const promptUuid = session.getMetadata()?.conversationHistoryEntryIds?.[messageLocalId]
         if (!promptUuid) {
             return rejected(`No native history point for message ${messageLocalId}`)
