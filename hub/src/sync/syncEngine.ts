@@ -2941,11 +2941,37 @@ export class SyncEngine {
         this.sessionCache.refreshSession(sessionId)
     }
 
-    private clearUncommittedClaudeRewind(sessionId: string, namespace: string, messageLocalId: string): void {
+    /**
+     * A `claudeRewind` intent visible in hub metadata means the rewind is
+     * committed: the CLI's unknown-outcome settlement arms the native boundary
+     * as soon as it sees the intent (flush timeout released the local launch),
+     * so the hub transcript cut has to happen here too. The RPC reply can be a
+     * rejection that was produced after the write landed; deleting the intent
+     * then would leave the hub with turns the native side already dropped.
+     * Returns the truncate key when that committed intent matches the request.
+     */
+    private committedClaudeRewindLocalId(sessionId: string, messageLocalId: string): string | null {
+        const intent = asRecord(asRecord(this.sessionCache.refreshSession(sessionId)?.metadata)?.claudeRewind)
+        const truncateFromLocalId = typeof intent?.truncateFromLocalId === 'string' && intent.truncateFromLocalId.length > 0
+            ? intent.truncateFromLocalId
+            : null
+        return truncateFromLocalId === messageLocalId ? truncateFromLocalId : null
+    }
+
+    /**
+     * Drop a `claudeRewind` intent that the RPC outcome proved was never
+     * committed: this rewind's own target (`messageLocalId`), or a stale
+     * intent for an older target whose retrying metadata write lost its
+     * version race (that write's rejection finds nothing matching and lands
+     * here). Leaving one behind would arm a bogus native boundary on the next
+     * start and block history actions behind the pending-rewind guard.
+     */
+    private clearUncommittedClaudeRewind(sessionId: string, namespace: string): void {
         for (let attempt = 0; attempt < 3; attempt += 1) {
-            const session = this.sessionCache.refreshSession(sessionId)
-            const intent = session?.metadata?.claudeRewind as { truncateFromLocalId?: string } | undefined
-            if (!session?.metadata || intent?.truncateFromLocalId !== messageLocalId) return
+            const session = this.sessionCache.getSessionByNamespace(sessionId, namespace)
+                ?? this.sessionCache.refreshSession(sessionId)
+            if (!session?.metadata) return
+            if (asRecord(session.metadata.claudeRewind) === null) return
 
             const { claudeRewind: _cleared, ...nextMetadata } = session.metadata
             const result = this.store.sessions.updateSessionMetadata(
@@ -3028,7 +3054,25 @@ export class SyncEngine {
 
         try {
             if (rpcResult?.success !== true) {
-                this.clearUncommittedClaudeRewind(sessionId, namespace, messageLocalId)
+                // The write can land while the RPC reply is still a rejection
+                // (the CLI aborts the retrying write on a flush timeout but the
+                // first attempt persisted). A rejection then must not delete an
+                // intent that the CLI's local settlement already consumed:
+                // treat it as committed and reconcile the cut idempotently.
+                // (The lost-RPC catch above does the same.)
+                const committedLocalId = this.committedClaudeRewindLocalId(sessionId, messageLocalId)
+                if (committedLocalId) {
+                    // Nothing to truncate (already cut) or the boundary is gone:
+                    // the native side already dropped those turns either way.
+                    try {
+                        this.truncateHubTranscriptFrom(sessionId, namespace, committedLocalId)
+                    } catch {
+                        // Preserve the committed intent: the startup reconcile
+                        // owns the cut once the transcript is repairable again.
+                    }
+                    return { type: 'success' }
+                }
+                this.clearUncommittedClaudeRewind(sessionId, namespace)
                 return {
                     type: 'error',
                     message: rpcResult?.error ?? 'Native rewind failed',

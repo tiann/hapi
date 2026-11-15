@@ -242,7 +242,7 @@ describe('Claude rewind hub integration', () => {
         }
     })
 
-    it('scrubs an uncommitted rewind intent when the CLI rejects the rewind after a slow metadata write landed', async () => {
+    it('keeps the rejection error and does not cut when no matching persisted rewind intent exists', async () => {
         const { store, engine } = createEngine()
         try {
             const session = engine.getOrCreateSession('claude-rewind-rejected-flush', {
@@ -253,13 +253,49 @@ describe('Claude rewind hub integration', () => {
             engine.handleSessionAlive({ sid: session.id, time: Date.now(), mode: 'remote' })
             seedTwoTurns(store, session)
 
+            ;(engine as any).rpcGateway.rewindConversation = async () => ({
+                success: false,
+                outcome: 'rejected',
+                error: 'Rewind intent could not be persisted'
+            })
+
+            await expect(engine.rewindConversation(session.id, 'default', 'local-t2')).resolves.toEqual({
+                type: 'error',
+                message: 'Rewind intent could not be persisted'
+            })
+
+            const kept = store.messages.getAllMessages(session.id).map((m) => m.localId)
+            expect(kept).toContain('local-t1')
+            expect(kept).toContain('local-t2')
+            expect((engine.getSession(session.id)?.metadata as Record<string, unknown> | null)?.claudeRewind).toBeUndefined()
+            expect((store.sessions.getSession(session.id)?.metadata as Record<string, unknown> | null)?.claudeRewind).toBeUndefined()
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('clears a stale uncommitted rewind intent for another target when the CLI rejects the rewind', async () => {
+        const { store, engine } = createEngine()
+        try {
+            const session = engine.getOrCreateSession('claude-rewind-rejected-stale-intent', {
+                path: '/tmp/project', host: 'localhost', flavor: 'claude',
+                capabilities: { conversationHistory: { forkCurrent: true, rewindToMessage: true } },
+                claudeSessionId: 'native-session-1',
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: session.id, time: Date.now(), mode: 'remote' })
+            seedTwoTurns(store, session)
+
             ;(engine as any).rpcGateway.rewindConversation = async () => {
+                // A stale uncommitted intent for a different target is not this
+                // rewind's commitment; a later startup reconcile would mark the
+                // transcript diverged and block history actions, so the
+                // rejection still clears it.
                 const stored = store.sessions.getSession(session.id) as { metadataVersion?: number; metadata?: Record<string, unknown> }
                 store.sessions.updateSessionMetadata(session.id, {
                     ...(stored?.metadata ?? {}),
                     claudeRewind: {
-                        targetLocalId: 'local-t2',
-                        truncateFromLocalId: 'local-t2',
+                        targetLocalId: 'stale-target',
+                        truncateFromLocalId: 'stale-target',
                         keepBoundary: 'native-boundary-uuid',
                         droppedPrompts: ['native-prompt-uuid'],
                     },
@@ -282,6 +318,79 @@ describe('Claude rewind hub integration', () => {
             expect(kept).toContain('local-t2')
             expect((engine.getSession(session.id)?.metadata as Record<string, unknown> | null)?.claudeRewind).toBeUndefined()
             expect((store.sessions.getSession(session.id)?.metadata as Record<string, unknown> | null)?.claudeRewind).toBeUndefined()
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('truncates once and keeps the intent when a delayed RPC rejection follows a timed-out persisted write settled locally', async () => {
+        const { store, engine } = createEngine()
+        try {
+            const session = engine.getOrCreateSession('claude-rewind-rejected-after-settle', {
+                path: '/tmp/project', host: 'localhost', flavor: 'claude',
+                capabilities: { conversationHistory: { forkCurrent: true, rewindToMessage: true } },
+                claudeSessionId: 'native-session-1',
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: session.id, time: Date.now(), mode: 'remote' })
+            seedTwoTurns(store, session)
+
+            let resolveRpc!: (value: {
+                success: false
+                outcome: 'rejected'
+                error: string
+            }) => void
+            ;(engine as any).rpcGateway.rewindConversation = () => new Promise((resolve) => {
+                // The CLI's flush timed out, so it aborted the retrying write
+                // and released the local launch. A waiting local spawn
+                // refreshed metadata, saw this intent, and settled the rewind
+                // (armed its boundary) - the persisted intent landed even
+                // though the reply will later report a rejection.
+                const stored = store.sessions.getSession(session.id) as {
+                    metadataVersion?: number
+                    metadata?: Record<string, unknown>
+                }
+                store.sessions.updateSessionMetadata(session.id, {
+                    ...(stored?.metadata ?? {}),
+                    claudeRewind: {
+                        targetLocalId: 'local-t2',
+                        truncateFromLocalId: 'local-t2',
+                        keepBoundary: 'native-boundary-uuid',
+                        droppedPrompts: ['native-prompt-uuid'],
+                    },
+                }, (stored?.metadataVersion ?? 1) as number, 'default')
+                ;(engine as any).sessionCache.refreshSession(session.id)
+                resolveRpc = resolve
+            })
+
+            const rewindPromise = engine.rewindConversation(session.id, 'default', 'local-t2')
+            await new Promise((resolve) => setTimeout(resolve, 10))
+
+            // The local launch settled from metadata: the intent is visible
+            // and the hub transcript is still intact while the RPC hangs.
+            expect((engine.getSession(session.id)?.metadata as Record<string, unknown> | null)?.claudeRewind).toBeTruthy()
+            expect(store.messages.getAllMessages(session.id).map((m) => m.localId)).toContain('local-t2')
+
+            resolveRpc({ success: false, outcome: 'rejected', error: 'Rewind intent could not be persisted' })
+
+            // A rejection must not delete an intent that local settlement
+            // already consumed: the native branch is armed from it, so the
+            // hub transcript cut is committed and the outcome is success.
+            await expect(rewindPromise).resolves.toEqual({ type: 'success' })
+
+            const kept = store.messages.getAllMessages(session.id).map((m) => m.localId)
+            expect(kept).toContain('local-t1')
+            expect(kept).not.toContain('local-t2')
+            expect(((engine.getSession(session.id)?.metadata ?? {}) as Record<string, unknown>).claudeRewind).toBeTruthy()
+            expect(((engine.getSession(session.id)?.metadata ?? {}) as Record<string, unknown>).conversationHistoryDiverged).not.toBe(true)
+
+            // Later conversation survives: the cut is idempotent and must not
+            // run again for the settled intent.
+            const laterPrompt = store.messages.addMessage(session.id, { role: 'user', content: 'after settled rewind' }, 'local-t3')
+            store.messages.markMessagesInvoked(session.id, ['local-t3'], Date.now())
+            const laterReply = store.messages.addMessage(session.id, agentText('OK, after settled rewind'))
+            const survivingIds = new Set(store.messages.getAllMessages(session.id).map((m) => m.id))
+            expect(survivingIds.has(laterPrompt.id)).toBe(true)
+            expect(survivingIds.has(laterReply.id)).toBe(true)
         } finally {
             engine.stop()
         }
@@ -516,7 +625,7 @@ describe('Claude rewind hub integration', () => {
         }
     })
 
-    it('does not truncate during an in-flight rewind RPC and clears uncommitted claudeRewind when rejected', async () => {
+    it('does not truncate during an in-flight rewind RPC and truncates on a rejection whose matching intent settled locally', async () => {
         const store = new Store(':memory:')
         const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
 
@@ -548,8 +657,11 @@ describe('Claude rewind hub integration', () => {
 
             const rewindPromise = engine.rewindConversation(session.id, 'default', 'local-t2')
 
-            // While the RPC is in flight on this hub process, update-metadata writes claudeRewind.
-            // Hub must wait for the in-flight RPC outcome rather than truncating early.
+            // While the RPC is in flight on this hub process, update-metadata
+            // writes claudeRewind for this same rewind. Hub must wait for the
+            // in-flight RPC outcome rather than truncating early - and once a
+            // rejection arrives, the visible intent is already committed on the
+            // native side (the CLI settled from it), so the hub follows it.
             const storedBefore = store.sessions.getSession(session.id)!
             handlers.get('update-metadata')!({
                 sid: session.id,
@@ -570,9 +682,11 @@ describe('Claude rewind hub integration', () => {
             resolveRpc({ success: false, outcome: 'rejected', error: 'Rewind intent could not be persisted' })
             const result = await rewindPromise
 
-            expect(result).toEqual({ type: 'error', message: 'Rewind intent could not be persisted' })
-            expect(store.messages.getAllMessages(session.id).map((m) => m.localId)).toContain('local-t2')
-            expect((store.sessions.getSession(session.id)?.metadata as Record<string, unknown>).claudeRewind).toBeUndefined()
+            expect(result).toEqual({ type: 'success' })
+            const kept = store.messages.getAllMessages(session.id).map((m) => m.localId)
+            expect(kept).toContain('local-t1')
+            expect(kept).not.toContain('local-t2')
+            expect((store.sessions.getSession(session.id)?.metadata as Record<string, unknown>).claudeRewind).toBeTruthy()
         } finally {
             engine.stop()
             store.close()
