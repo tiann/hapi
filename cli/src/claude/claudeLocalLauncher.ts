@@ -86,6 +86,12 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
         startedBy: session.startedBy,
         startingMode: session.startingMode,
         launch: async (abortSignal) => {
+            if (session.beforeLocalLaunch && !await session.beforeLocalLaunch()) {
+                throw new Error('Could not verify pending rewind state with hub; please retry');
+            }
+            if (abortSignal.aborted) {
+                return;
+            }
             session.localPermissionBridge.start(session.sessionId);
             abortSignal.addEventListener('abort', session.localPermissionBridge.stop, { once: true });
             // Spawn-time boundary derivation (see deriveSpawnArgs): the

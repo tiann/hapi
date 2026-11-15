@@ -71,6 +71,7 @@ interface LoopOptions {
     hookSettingsPath: string
     localHookSettingsPath?: string
     resumeSessionId?: string
+    beforeLocalLaunch?: () => Promise<boolean>
 }
 
 export async function loop(opts: LoopOptions) {
@@ -99,7 +100,8 @@ export async function loop(opts: LoopOptions) {
         localHookSettingsPath: opts.localHookSettingsPath,
         permissionMode: opts.permissionMode ?? 'default',
         model: opts.model,
-        effort: opts.effort
+        effort: opts.effort,
+        beforeLocalLaunch: opts.beforeLocalLaunch
     });
 
     await runLocalRemoteSession({

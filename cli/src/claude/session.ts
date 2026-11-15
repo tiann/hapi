@@ -41,6 +41,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
     onConversationReset: (() => void) | null = null;
     /** Epoch ms of the latest local UserPromptSubmit hook; older interrupt markers are stale. */
     localTurnStartedAt = 0;
+    readonly beforeLocalLaunch?: () => Promise<boolean>;
     private nativeSkillNames = new Set<string>();
     private permissionModeListener: ((mode: PermissionMode) => void) | null = null;
 
@@ -65,6 +66,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         permissionMode?: PermissionMode;
         model?: SessionModel;
         effort?: SessionEffort;
+        beforeLocalLaunch?: () => Promise<boolean>;
     }) {
         super({
             api: opts.api,
@@ -106,6 +108,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         this.localPermissionBridge = new LocalPermissionBridge(opts.client);
         this.startedBy = opts.startedBy;
         this.startingMode = opts.startingMode;
+        this.beforeLocalLaunch = opts.beforeLocalLaunch;
         this.permissionMode = opts.permissionMode;
         this.model = opts.model;
         this.effort = opts.effort;

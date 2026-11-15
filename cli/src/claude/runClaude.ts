@@ -1176,7 +1176,8 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             startedBy,
             resumeSessionId: options.resumeSessionId,
             hookSettingsPath,
-            localHookSettingsPath
+            localHookSettingsPath,
+            beforeLocalLaunch: settleNow
         });
     } catch (error) {
         loopError = error;
