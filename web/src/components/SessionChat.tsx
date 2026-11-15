@@ -67,7 +67,7 @@ import {
     resolveMessageDeliveryMode,
     type ComposerSendIntent,
 } from '@/lib/messageDelivery'
-import type { MessageDeliveryMode } from '@hapi/protocol'
+import type { ContextDetails, MessageDeliveryMode } from '@hapi/protocol'
 import { hasActiveSteeringTurn } from '@hapi/protocol'
 import { AGY_MODEL_LABELS, AGY_MODEL_PRESETS, getAgyModelChoices, splitAgyModelSelection, getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
 import { getClaudeCatalogOptions } from '@/components/AssistantChat/modelOptions'
@@ -2584,6 +2584,9 @@ function SessionChatInner(props: SessionChatProps) {
                         contextSize={reduced.latestUsage?.contextSize}
                         contextCacheRead={reduced.latestUsage?.cacheRead}
                         contextWindow={reduced.latestUsage?.contextWindow ?? piContextWindow}
+                        contextDetails={props.session.metadata?.contextDetails as ContextDetails | undefined}
+                        legacyTools={props.session.metadata?.tools}
+                        legacySlashCommands={props.session.metadata?.slashCommands}
                         contextModel={reduced.latestUsage?.model ?? props.session.model}
                         controlledByUser={controlledByUser}
                         onCollaborationModeChange={

@@ -6,7 +6,7 @@ import { convertAgentMessage } from "@/agent/messageConverter";
 import { PermissionHandler } from "./utils/permissionHandler";
 import { Future } from "@/utils/future";
 import { hashObject } from "@/utils/deterministicJson";
-import { SDKAssistantMessage, SDKMessage, SDKUserMessage } from "./sdk";
+import { SDKAssistantMessage, SDKMessage, SDKResultMessage, SDKSystemMessage, SDKUserMessage } from "./sdk";
 import { formatClaudeMessageForInk } from "@/ui/messageFormatterInk";
 import { logger } from "@/ui/logger";
 import { SDKToLogConverter } from "./utils/sdkToLogConverter";
@@ -23,6 +23,7 @@ import {
     type RemoteLauncherDisplayContext,
     type RemoteLauncherExitReason
 } from "@/modules/common/remote/RemoteLauncherBase";
+import { buildClaudeContextDetails, publishContextDetails, sameClaudeModelID } from '@/agent/contextDetails';
 
 interface PermissionsField {
     date: number;
@@ -48,6 +49,13 @@ function getRespawnBackoffMs(): number {
     const parsed = Number.parseInt(raw, 10);
     if (Number.isNaN(parsed) || parsed < 0) return 1000;
     return parsed;
+}
+
+function hasPositiveClaudeUsage(value: unknown): boolean {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+    const usage = value as Record<string, unknown>;
+    return ['input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens']
+        .some((key) => typeof usage[key] === 'number' && usage[key] > 0);
 }
 
 class ClaudeRemoteLauncher extends RemoteLauncherBase {
@@ -268,8 +276,62 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
 
         let planModeToolCalls = new Set<string>();
         let ongoingToolCalls = new Map<string, { parentToolCallId: string | null }>();
+        let lastSystemModel = session.getModel();
+        let effectiveContextModel: string | undefined;
+        let effectiveContextWindow: number | undefined;
+        const effectiveLimitFor = (model: string | null | undefined): number | undefined => {
+            if (effectiveContextWindow === undefined) return undefined;
+            if (!effectiveContextModel || !model) return effectiveContextWindow;
+            return sameClaudeModelID(effectiveContextModel, model) ? effectiveContextWindow : undefined;
+        };
 
         function onMessage(message: SDKMessage) {
+            const rawPayload = message as unknown as Record<string, unknown>;
+            const isSidechain = typeof rawPayload.parent_tool_use_id === 'string';
+            if (!isSidechain) {
+                if (message.type === 'system') {
+                    const systemMessage = message as SDKSystemMessage;
+                    if (systemMessage.model) {
+                        lastSystemModel = systemMessage.model;
+                    }
+                    const details = buildClaudeContextDetails({ system: systemMessage, model: systemMessage.model });
+                    if (details) {
+                        publishContextDetails(session.client, details);
+                    }
+                } else if (message.type === 'assistant') {
+                    const assistantMessage = message as SDKAssistantMessage;
+                    const rawAssistantPayload = assistantMessage as unknown as Record<string, unknown>;
+                    const rawMessage = assistantMessage.message as unknown as Record<string, unknown>;
+                    const isSyntheticApiError = rawAssistantPayload.isApiErrorMessage === true
+                        || rawAssistantPayload.is_api_error_message === true
+                        || typeof rawAssistantPayload.error === 'string';
+                    if (!isSyntheticApiError) {
+                        const details = buildClaudeContextDetails({
+                            contextUsage: assistantMessage.context_usage ?? rawAssistantPayload.context_usage,
+                            messageUsage: rawMessage.usage,
+                            model: assistantMessage.model ?? (typeof rawAssistantPayload.model === 'string' ? rawAssistantPayload.model : null)
+                        });
+                        if (details) {
+                            publishContextDetails(session.client, details);
+                        }
+                    }
+                } else if (message.type === 'result') {
+                    const resultMessage = message as SDKResultMessage;
+                    if (!resultMessage.is_error || hasPositiveClaudeUsage(resultMessage.usage)) {
+                        const resultModel = resultMessage.model ?? lastSystemModel;
+                        const details = buildClaudeContextDetails({
+                            result: resultMessage,
+                            messageUsage: resultMessage.usage,
+                            model: resultModel,
+                            effectiveContextWindow: effectiveLimitFor(resultModel)
+                        });
+                        if (details) {
+                            publishContextDetails(session.client, details, { preserveUsageSnapshot: true });
+                        }
+                    }
+                }
+            }
+
             formatClaudeMessageForInk(message, messageBuffer);
             permissionHandler.onMessage(message);
 
@@ -626,7 +688,21 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         claudeEnvVars: session.claudeEnvVars,
                         claudeArgs: session.claudeArgs,
                         onMessage,
-                        onContextUsage: (usage) => sdkToLogConverter.applyContextUsage(usage.model, usage.maxTokens),
+                        onContextUsage: (usage) => {
+                            sdkToLogConverter.applyContextUsage(usage.model, usage.maxTokens);
+                            if (usage.maxTokens !== undefined && usage.maxTokens > 0) {
+                                effectiveContextModel = usage.model;
+                                effectiveContextWindow = usage.maxTokens;
+                            }
+                            const details = buildClaudeContextDetails({
+                                contextUsage: {
+                                    model: usage.model,
+                                    context_window: usage.maxTokens
+                                },
+                                effectiveContextWindow: usage.maxTokens
+                            });
+                            if (details) publishContextDetails(session.client, details);
+                        },
                         onAccountIdentity: (identity) => sdkToLogConverter.updateAccountIdentity?.(identity),
                         onFirstResult: (initialMessage) => {
                             // SDK streams omit Claude Code's native ai-title; it is only in the transcript.

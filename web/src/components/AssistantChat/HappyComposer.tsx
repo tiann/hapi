@@ -1,6 +1,7 @@
 import {
     getCodexCollaborationModeOptions,
     getCopilotAgentModeOptions,
+    type ContextDetails,
     getPermissionModeOptionsForFlavor,
     type CopilotAgentMode
 } from '@hapi/protocol'
@@ -313,6 +314,10 @@ export function HappyComposer(props: {
     contextSize?: number
     contextCacheRead?: number
     contextWindow?: number | null
+    contextDetails?: ContextDetails | null
+    /** Legacy Claude capability lists stored at the metadata top level. */
+    legacyTools?: readonly string[] | null
+    legacySlashCommands?: readonly string[] | null
     /** Model for the context-window heuristic; see StatusBar.contextModel. */
     contextModel?: string | null
     controlledByUser?: boolean
@@ -436,6 +441,9 @@ export function HappyComposer(props: {
         contextSize,
         contextCacheRead,
         contextWindow,
+        contextDetails,
+        legacyTools,
+        legacySlashCommands,
         contextModel,
         controlledByUser = false,
         agentFlavor,
@@ -2363,6 +2371,9 @@ export function HappyComposer(props: {
                         contextSize={contextSize}
                         contextCacheRead={contextCacheRead}
                         contextWindow={contextWindow}
+                        contextDetails={contextDetails}
+                        legacyTools={legacyTools}
+                        legacySlashCommands={legacySlashCommands}
                         contextModel={contextModel}
                         model={model}
                         modelReasoningEffort={modelReasoningEffort}

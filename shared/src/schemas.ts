@@ -3,6 +3,7 @@ import { SessionReadStateSchema } from './sessionReadState'
 import { COPILOT_AGENT_MODES, type CopilotAgentMode } from './copilotModes'
 import { CODEX_COLLABORATION_MODES, PERMISSION_MODES } from './modes'
 import { AgentConfigDescriptorSchema } from './agentConfig'
+import { ContextDetailsSchema } from './contextDetails'
 
 export const PermissionModeSchema = z.enum(PERMISSION_MODES)
 export const CodexCollaborationModeSchema = z.enum(CODEX_COLLABORATION_MODES)
@@ -250,6 +251,7 @@ export const MetadataSchema = z.object({
     // the provider so web can resolve the exact model when two providers
     // share a modelId.
     piSelectedModel: z.object({ provider: z.string(), modelId: z.string() }).nullable().optional(),
+    contextDetails: ContextDetailsSchema.optional(),
     lastModelError: z.object({
         /** Stable identity for this error event (not wall-clock order). */
         eventId: z.string().min(1),
