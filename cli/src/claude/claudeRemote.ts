@@ -38,9 +38,10 @@ export interface ClaudeSteerTarget {
     /**
      * Null when the turn can no longer accept a message. `delivered` resolves
      * true once Claude echoes the message (it is processing it), false when the
-     * stream closes first.
+     * stream closes first. `uuid` is the native transcript entry id assigned to
+     * the injected user message.
      */
-    steer(message: string): { delivered: Promise<boolean> } | null;
+    steer(message: string): { delivered: Promise<boolean>; uuid: string } | null;
 }
 
 interface ActiveCompact {
@@ -220,7 +221,7 @@ export async function claudeRemote(opts: {
                 const delivered = new Promise<boolean>((resolve) => pendingSteers.set(uuid, resolve));
                 pushUserMessage(message, uuid);
                 logger.debug(`${debugPrefix} steered message pushed uuid=${uuid} length=${message.length}`);
-                return { delivered };
+                return { delivered, uuid };
             }
         };
         steerTarget = target;

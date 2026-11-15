@@ -169,6 +169,22 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
             messageQueue.releaseToolCall(toolCallId);
         });
 
+        const recordHistoryPoint = (localId: string | undefined, nativePromptUuid: string) => {
+            if (!localId || !nativePromptUuid) return;
+            session.client.updateMetadata((metadata) => ({
+                ...metadata,
+                conversationHistoryPoints: {
+                    ...metadata?.conversationHistoryPoints,
+                    [localId]: true
+                },
+                conversationHistoryEntryIds: {
+                    ...metadata?.conversationHistoryEntryIds,
+                    [localId]: nativePromptUuid
+                }
+            }));
+            session.onNativeInputSubmitted?.(nativePromptUuid);
+        };
+
         // Per-message steer from the waiting queue (web "Steer" button), the
         // same as Ctrl+X Ctrl+S in the Claude TUI: the row is written to the
         // running process and Claude folds it in at its next tool boundary.
@@ -247,6 +263,10 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         await messageQueue.flush();
                         session.queue.commitReservation(taken);
                         messageBuffer.addMessage(taken.item.message, 'user');
+                        // Steered messages become real native user turns only
+                        // once Claude echoes pickup; publish history locators
+                        // and run rewind branch proof then.
+                        recordHistoryPoint(localId, delivery.uuid);
                         session.client.emitMessagesConsumed([localId], { steered: true });
                         return;
                     }
@@ -601,19 +621,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             // fork-at-message and rewind can resolve boundaries
                             // and the web can show the per-message affordances.
                             const localId = inFlightMessage?.items.find((item) => item.localId)?.localId;
-                            if (!localId || !nativePromptUuid) return;
-                            session.client.updateMetadata((metadata) => ({
-                                ...metadata,
-                                conversationHistoryPoints: {
-                                    ...metadata?.conversationHistoryPoints,
-                                    [localId]: true
-                                },
-                                conversationHistoryEntryIds: {
-                                    ...metadata?.conversationHistoryEntryIds,
-                                    [localId]: nativePromptUuid
-                                }
-                            }));
-                            session.onNativeInputSubmitted?.(nativePromptUuid);
+                            recordHistoryPoint(localId, nativePromptUuid);
                         },
                         nextMessage: async () => {
                             // Flush any pending outgoing messages before consuming the next user
