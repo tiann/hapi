@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test'
 import { randomUUID } from 'node:crypto'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Hono } from 'hono'
@@ -9,313 +9,9 @@ import { Store } from '../../store'
 import { SyncEngine, type Machine } from '../../sync/syncEngine'
 import { RpcRegistry } from '../../socket/rpcRegistry'
 import type { WebAppEnv } from '../middleware/auth'
-import { createCodexDesktopRoutes, getDarwinCodexOpenArgs, importSelectedCodexSessions } from './codexDesktop'
+import { createCodexDesktopRoutes, getDarwinCodexOpenArgs, importSelectedCodexSessions, type CodexImportedMessageContent } from './codexDesktop'
 
 const originalCodexHome = process.env.CODEX_HOME
-
-function createTranscript(codexHome: string, sessionId: string, cwd = 'C:\\work\\project'): void {
-    const sessionDir = join(codexHome, 'sessions', '2026', '06', '04')
-    mkdirSync(sessionDir, { recursive: true })
-    const transcriptPath = join(sessionDir, `rollout-${sessionId}.jsonl`)
-    const lines = [
-        {
-            type: 'session_meta',
-            payload: {
-                id: sessionId,
-                cwd,
-                originator: 'codex_cli_rs',
-                cli_version: '0.0.0-test'
-            }
-        },
-        {
-            type: 'response_item',
-            payload: {
-                type: 'message',
-                role: 'user',
-                content: [{ type: 'input_text', text: 'normal user message' }]
-            }
-        },
-        {
-            type: 'response_item',
-            payload: {
-                type: 'message',
-                role: 'assistant',
-                content: [{ type: 'output_text', text: 'normal assistant message' }]
-            }
-        }
-    ]
-    writeFileSync(transcriptPath, `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`, 'utf-8')
-}
-
-function createMirroredTranscript(codexHome: string, sessionId: string): void {
-    const sessionDir = join(codexHome, 'sessions', '2026', '06', '04')
-    mkdirSync(sessionDir, { recursive: true })
-    const transcriptPath = join(sessionDir, 'rollout-' + sessionId + '.jsonl')
-    const transcriptLines = [
-        {
-            type: 'session_meta',
-            payload: {
-                id: sessionId,
-                cwd: 'C:/work/project',
-                originator: 'codex_cli_rs',
-                cli_version: '0.0.0-test'
-            }
-        },
-        {
-            type: 'event_msg',
-            payload: { type: 'user_message', message: 'mirrored user message' }
-        },
-        {
-            type: 'response_item',
-            payload: {
-                type: 'message',
-                role: 'user',
-                content: [{ type: 'input_text', text: 'mirrored user message\n' }]
-            }
-        }
-    ]
-    writeFileSync(transcriptPath, transcriptLines.map((line) => JSON.stringify(line)).join('\n') + '\n', 'utf-8')
-}
-
-function createMirroredAgentMessageTranscript(codexHome: string, sessionId: string): void {
-    const sessionDir = join(codexHome, 'sessions', '2026', '06', '04')
-    mkdirSync(sessionDir, { recursive: true })
-    const transcriptPath = join(sessionDir, 'rollout-' + sessionId + '.jsonl')
-    const transcriptLines = [
-        {
-            type: 'session_meta',
-            payload: {
-                id: sessionId,
-                cwd: 'C:/work/project',
-                originator: 'codex_cli_rs',
-                cli_version: '0.0.0-test'
-            }
-        },
-        {
-            type: 'event_msg',
-            payload: { type: 'agent_message', message: 'duplicated assistant message' }
-        },
-        {
-            type: 'response_item',
-            payload: {
-                type: 'message',
-                role: 'assistant',
-                content: [{ type: 'output_text', text: 'duplicated assistant message' }]
-            }
-        }
-    ]
-    writeFileSync(transcriptPath, transcriptLines.map((line) => JSON.stringify(line)).join('\n') + '\n', 'utf-8')
-}
-
-function createInjectedResponseUserTranscript(codexHome: string, sessionId: string): void {
-    const sessionDir = join(codexHome, 'sessions', '2026', '06', '04')
-    mkdirSync(sessionDir, { recursive: true })
-    const transcriptPath = join(sessionDir, 'rollout-' + sessionId + '.jsonl')
-    const transcriptLines = [
-        {
-            type: 'session_meta',
-            payload: {
-                id: sessionId,
-                cwd: 'C:/work/project',
-                originator: 'codex_cli_rs',
-                cli_version: '0.0.0-test'
-            }
-        },
-        {
-            type: 'response_item',
-            payload: {
-                type: 'message',
-                role: 'user',
-                content: [{ type: 'input_text', text: `# AGENTS.md instructions for /repo
-<INSTRUCTIONS>ignore</INSTRUCTIONS>` }]
-            }
-        },
-        {
-            type: 'response_item',
-            payload: {
-                type: 'message',
-                role: 'user',
-                content: [{ type: 'input_text', text: `<environment_context>
-<current_date>2026-07-07</current_date>
-<filesystem>workspace</filesystem>
-</environment_context>` }]
-            }
-        },
-        {
-            type: 'event_msg',
-            payload: { type: 'user_message', message: 'real event user message' }
-        }
-    ]
-    writeFileSync(transcriptPath, transcriptLines.map((line) => JSON.stringify(line)).join('\n') + '\n', 'utf-8')
-}
-
-function createEmbeddedEnvironmentPromptTranscript(codexHome: string, sessionId: string): void {
-    const sessionDir = join(codexHome, 'sessions', '2026', '06', '04')
-    mkdirSync(sessionDir, { recursive: true })
-    const transcriptPath = join(sessionDir, 'rollout-' + sessionId + '.jsonl')
-    const transcriptLines = [
-        {
-            type: 'session_meta',
-            payload: {
-                id: sessionId,
-                cwd: 'C:/work/project',
-                originator: 'codex_cli_rs',
-                cli_version: '0.0.0-test'
-            }
-        },
-        {
-            type: 'response_item',
-            payload: {
-                type: 'message',
-                role: 'user',
-                content: [{ type: 'input_text', text: `Please inspect this transcript block:
-<environment_context>
-<current_date>2026-07-07</current_date>
-</environment_context>
-This is part of my prompt.` }]
-            }
-        }
-    ]
-    writeFileSync(transcriptPath, transcriptLines.map((line) => JSON.stringify(line)).join('\n') + '\n', 'utf-8')
-}
-
-function createSameSourceDuplicateTranscript(codexHome: string, sessionId: string): void {
-    const sessionDir = join(codexHome, 'sessions', '2026', '06', '04')
-    mkdirSync(sessionDir, { recursive: true })
-    const transcriptPath = join(sessionDir, 'rollout-' + sessionId + '.jsonl')
-    const transcriptLines = [
-        {
-            type: 'session_meta',
-            payload: {
-                id: sessionId,
-                cwd: 'C:/work/project',
-                originator: 'codex_cli_rs',
-                cli_version: '0.0.0-test'
-            }
-        },
-        {
-            type: 'response_item',
-            payload: {
-                type: 'message',
-                role: 'user',
-                content: [{ type: 'input_text', text: 'same source user message' }]
-            }
-        },
-        {
-            type: 'response_item',
-            payload: {
-                type: 'message',
-                role: 'user',
-                content: [{ type: 'input_text', text: 'same source user message' }]
-            }
-        },
-        {
-            type: 'response_item',
-            payload: {
-                type: 'message',
-                role: 'assistant',
-                content: [{ type: 'output_text', text: 'same source assistant message' }]
-            }
-        },
-        {
-            type: 'response_item',
-            payload: {
-                type: 'message',
-                role: 'assistant',
-                content: [{ type: 'output_text', text: 'same source assistant message' }]
-            }
-        }
-    ]
-    writeFileSync(transcriptPath, transcriptLines.map((line) => JSON.stringify(line)).join('\n') + '\n', 'utf-8')
-}
-
-function createRepeatedSameTextDistinctTurnTranscript(codexHome: string, sessionId: string): void {
-    const sessionDir = join(codexHome, 'sessions', '2026', '06', '04')
-    mkdirSync(sessionDir, { recursive: true })
-    const transcriptPath = join(sessionDir, 'rollout-' + sessionId + '.jsonl')
-    const transcriptLines = [
-        {
-            type: 'session_meta',
-            payload: {
-                id: sessionId,
-                cwd: 'C:/work/project',
-                originator: 'codex_cli_rs',
-                cli_version: '0.0.0-test'
-            }
-        },
-        {
-            type: 'event_msg',
-            payload: { type: 'user_message', message: 'repeat user message' }
-        },
-        {
-            type: 'response_item',
-            payload: {
-                type: 'message',
-                role: 'user',
-                content: [{ type: 'input_text', text: 'repeat user message' }]
-            }
-        },
-        {
-            type: 'response_item',
-            payload: {
-                type: 'message',
-                role: 'assistant',
-                content: [{ type: 'output_text', text: 'assistant answer' }]
-            }
-        },
-        {
-            type: 'response_item',
-            payload: {
-                type: 'message',
-                role: 'user',
-                content: [{ type: 'input_text', text: 'repeat user message' }]
-            }
-        }
-    ]
-    writeFileSync(transcriptPath, transcriptLines.map((line) => JSON.stringify(line)).join('\n') + '\n', 'utf-8')
-}
-
-function createMirroredAndDistinctUserTranscript(codexHome: string, sessionId: string): void {
-    const sessionDir = join(codexHome, 'sessions', '2026', '06', '04')
-    mkdirSync(sessionDir, { recursive: true })
-    const transcriptPath = join(sessionDir, 'rollout-' + sessionId + '.jsonl')
-    const transcriptLines = [
-        {
-            type: 'session_meta',
-            payload: {
-                id: sessionId,
-                cwd: 'C:/work/project',
-                originator: 'codex_cli_rs',
-                cli_version: '0.0.0-test'
-            }
-        },
-        {
-            type: 'event_msg',
-            payload: { type: 'user_message', message: 'first user message' }
-        },
-        {
-            type: 'response_item',
-            payload: {
-                type: 'message',
-                role: 'user',
-                content: [{ type: 'input_text', text: 'first user message' }]
-            }
-        },
-        {
-            type: 'event_msg',
-            payload: { type: 'user_message', message: 'second user message' }
-        }
-    ]
-    writeFileSync(transcriptPath, transcriptLines.map((line) => JSON.stringify(line)).join('\n') + '\n', 'utf-8')
-}
-
-function writeSessionIndex(codexHome: string, records: Array<{ id: string; thread_name: string; updated_at: string }>): void {
-    writeFileSync(
-        join(codexHome, 'session_index.jsonl'),
-        records.map((record) => JSON.stringify(record)).join('\n') + '\n',
-        'utf-8'
-    )
-}
 
 function createMachine(id: string, workspaceRoots: string[], namespace = 'default'): Machine {
     return {
@@ -338,8 +34,8 @@ function createMachine(id: string, workspaceRoots: string[], namespace = 'defaul
     }
 }
 
-function createImportSyncEngine(store: Store, machines: Machine[]): SyncEngine {
-    return {
+function createImportSyncEngine(store: Store, machines: Machine[], transcripts?: () => unknown[]): SyncEngine {
+    const engine = {
         getOnlineMachinesByNamespace: (namespace: string) => machines.filter((machine) => (
             machine.namespace === namespace && machine.active
         )),
@@ -359,6 +55,59 @@ function createImportSyncEngine(store: Store, machines: Machine[]): SyncEngine {
             store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
         }
     } as unknown as SyncEngine
+    return transcripts ? withLegacyCodexSessions(engine, transcripts) : engine
+}
+
+/**
+ * Serve the legacy ListCodexSessions RPC from the given provider: the
+ * pre-registry wire shape the hub consumes through the source descriptor's
+ * legacy fallback (summaries for list calls, transcripts for id fetches).
+ */
+function withLegacyCodexSessions(engine: SyncEngine, provider: () => unknown[]): SyncEngine {
+    ;(engine as unknown as Record<string, unknown>).listCodexSessionsForMachine = async (_machineId: string, _cwd: unknown, sessionIds?: string[] | null) => {
+        const wanted = sessionIds?.length ? new Set(sessionIds) : null
+        const sessions = provider()
+            .filter((session): session is Record<string, unknown> => session !== null && typeof session === 'object')
+            .filter((session) => !wanted || wanted.has(session.id as string))
+        return {
+            success: true,
+            sessions: wanted
+                ? sessions
+                : sessions.map((session) => ({ ...session, messages: undefined }))
+        }
+    }
+    return engine
+}
+
+function codexUserMessage(text: string) {
+    return {
+        role: 'user',
+        content: { type: 'text', text },
+        meta: { sentFrom: 'cli' }
+    } as const
+}
+
+function codexAgentMessage(message: string, id = 'assistant-1') {
+    return {
+        role: 'agent',
+        content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', message, id } },
+        meta: { sentFrom: 'cli' }
+    } as const
+}
+
+/** Commit-3 runner fixture: the transcript rows ListLocalSessions delivers. */
+function codexThreadFixture(id: string, messages: CodexImportedMessageContent[], overrides: {
+    title?: string
+    cwd?: string
+} = {}) {
+    return {
+        id,
+        title: overrides.title ?? `Codex thread ${id}`,
+        cwd: overrides.cwd ?? 'C:\\work\\project',
+        file: `rollout-${id}.jsonl`,
+        modifiedAt: 1,
+        messages
+    }
 }
 
 function createRoutesApp(namespace: string): Hono<WebAppEnv> {
@@ -384,20 +133,16 @@ describe('Codex Desktop import routes', () => {
     })
 
     it('imports normal response_item chat messages', async () => {
-        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-test-'))
         const store = new Store(':memory:')
         const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
         const codexSessionId = '11111111-1111-4111-8111-111111111111'
-        process.env.CODEX_HOME = codexHome
 
         try {
-            createTranscript(codexHome, codexSessionId)
-
             const result = await importSelectedCodexSessions({
                 codexSessionIds: [codexSessionId],
                 store,
                 namespace: 'default',
-                getSyncEngine: () => engine
+                getSyncEngine: () => withLegacyCodexSessions(engine, () => [codexThreadFixture(codexSessionId, [ codexUserMessage('normal user message'), codexAgentMessage('normal assistant message', 'assistant-1') ])]),
             })
 
             expect(result.success).toBe(true)
@@ -433,18 +178,14 @@ describe('Codex Desktop import routes', () => {
         } finally {
             engine.stop()
             store.close()
-            rmSync(codexHome, { recursive: true, force: true })
         }
     })
 
     it('refuses a transcript import for an active Codex thread when stored messages do not match its prefix', async () => {
-        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-active-sync-test-'))
         const store = new Store(':memory:')
         const codexSessionId = '10101010-1010-4010-8010-101010101010'
-        process.env.CODEX_HOME = codexHome
 
         try {
-            createTranscript(codexHome, codexSessionId)
             const liveSession = store.sessions.getOrCreateSession('live-session', {
                 path: 'C:\\work\\project',
                 flavor: 'codex',
@@ -462,7 +203,7 @@ describe('Codex Desktop import routes', () => {
                 codexSessionIds: [codexSessionId],
                 store,
                 namespace: 'default',
-                getSyncEngine: () => engine
+                getSyncEngine: () => withLegacyCodexSessions(engine, () => [codexThreadFixture(codexSessionId, [ codexUserMessage('normal user message'), codexAgentMessage('normal assistant message') ])]),
             })
 
             expect(result.success).toBe(false)
@@ -472,24 +213,19 @@ describe('Codex Desktop import routes', () => {
             expect(store.messages.getAllMessages(liveSession.id)).toHaveLength(1)
         } finally {
             store.close()
-            rmSync(codexHome, { recursive: true, force: true })
         }
     })
 
     it('updates an existing forked import when syncing the original Codex session id', async () => {
-        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-source-test-'))
         const store = new Store(':memory:')
         const codexSessionId = '12121212-1212-4121-8121-121212121212'
-        process.env.CODEX_HOME = codexHome
 
         try {
-            createTranscript(codexHome, codexSessionId)
-
             const first = await importSelectedCodexSessions({
                 codexSessionIds: [codexSessionId],
                 store,
                 namespace: 'default',
-                getSyncEngine: () => null
+                getSyncEngine: () => createImportSyncEngine(store, [], () => [codexThreadFixture(codexSessionId, [ codexUserMessage('normal user message'), codexAgentMessage('normal assistant message') ])]),
             })
             expect(first.success).toBe(true)
 
@@ -505,7 +241,7 @@ describe('Codex Desktop import routes', () => {
                 codexSessionIds: [codexSessionId],
                 store,
                 namespace: 'default',
-                getSyncEngine: () => null
+                getSyncEngine: () => createImportSyncEngine(store, [], () => [codexThreadFixture(codexSessionId, [ codexUserMessage('normal user message'), codexAgentMessage('normal assistant message') ])]),
             })
 
             expect(second.success).toBe(true)
@@ -517,24 +253,19 @@ describe('Codex Desktop import routes', () => {
             })
         } finally {
             store.close()
-            rmSync(codexHome, { recursive: true, force: true })
         }
     })
 
     it('deduplicates mirrored event_msg and response_item user messages', async () => {
-        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-mirror-test-'))
         const store = new Store(':memory:')
         const codexSessionId = '66666666-6666-4666-8666-666666666666'
-        process.env.CODEX_HOME = codexHome
 
         try {
-            createMirroredTranscript(codexHome, codexSessionId)
-
             const result = await importSelectedCodexSessions({
                 codexSessionIds: [codexSessionId],
                 store,
                 namespace: 'default',
-                getSyncEngine: () => null
+                getSyncEngine: () => createImportSyncEngine(store, [], () => [codexThreadFixture(codexSessionId, [ codexUserMessage('mirrored user message') ])]),
             })
 
             expect(result.success).toBe(true)
@@ -554,24 +285,19 @@ describe('Codex Desktop import routes', () => {
             })
         } finally {
             store.close()
-            rmSync(codexHome, { recursive: true, force: true })
         }
     })
 
     it('deduplicates adjacent mirrored agent messages with different ids', async () => {
-        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-agent-mirror-test-'))
         const store = new Store(':memory:')
         const codexSessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
-        process.env.CODEX_HOME = codexHome
 
         try {
-            createMirroredAgentMessageTranscript(codexHome, codexSessionId)
-
             const result = await importSelectedCodexSessions({
                 codexSessionIds: [codexSessionId],
                 store,
                 namespace: 'default',
-                getSyncEngine: () => null
+                getSyncEngine: () => createImportSyncEngine(store, [], () => [codexThreadFixture(codexSessionId, [ codexAgentMessage('duplicated assistant message', 'event-msg-id') ])]),
             })
 
             expect(result.success).toBe(true)
@@ -595,24 +321,19 @@ describe('Codex Desktop import routes', () => {
             })
         } finally {
             store.close()
-            rmSync(codexHome, { recursive: true, force: true })
         }
     })
 
     it('skips injected response_item user context messages', async () => {
-        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-injected-user-test-'))
         const store = new Store(':memory:')
         const codexSessionId = '88888888-8888-4888-8888-888888888888'
-        process.env.CODEX_HOME = codexHome
 
         try {
-            createInjectedResponseUserTranscript(codexHome, codexSessionId)
-
             const result = await importSelectedCodexSessions({
                 codexSessionIds: [codexSessionId],
                 store,
                 namespace: 'default',
-                getSyncEngine: () => null
+                getSyncEngine: () => createImportSyncEngine(store, [], () => [codexThreadFixture(codexSessionId, [ codexUserMessage('real event user message') ])]),
             })
 
             expect(result.success).toBe(true)
@@ -632,24 +353,19 @@ describe('Codex Desktop import routes', () => {
             })
         } finally {
             store.close()
-            rmSync(codexHome, { recursive: true, force: true })
         }
     })
 
     it('preserves a real response_item user prompt containing embedded environment_context text', async () => {
-        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-embedded-env-test-'))
         const store = new Store(':memory:')
         const codexSessionId = 'abababab-abab-4bab-8bab-abababababab'
-        process.env.CODEX_HOME = codexHome
 
         try {
-            createEmbeddedEnvironmentPromptTranscript(codexHome, codexSessionId)
-
             const result = await importSelectedCodexSessions({
                 codexSessionIds: [codexSessionId],
                 store,
                 namespace: 'default',
-                getSyncEngine: () => null
+                getSyncEngine: () => createImportSyncEngine(store, [], () => [codexThreadFixture(codexSessionId, [ codexUserMessage('Please inspect this transcript block:\n<environment_context>\n<current_date>2026-07-07</current_date>\n</environment_context>\nThis is part of my prompt.') ])]),
             })
 
             expect(result.success).toBe(true)
@@ -666,24 +382,19 @@ describe('Codex Desktop import routes', () => {
             })
         } finally {
             store.close()
-            rmSync(codexHome, { recursive: true, force: true })
         }
     })
 
     it('preserves adjacent duplicate messages from the same transcript source', async () => {
-        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-same-source-duplicate-test-'))
         const store = new Store(':memory:')
         const codexSessionId = 'babababa-baba-4aba-8aba-babababababa'
-        process.env.CODEX_HOME = codexHome
 
         try {
-            createSameSourceDuplicateTranscript(codexHome, codexSessionId)
-
             const result = await importSelectedCodexSessions({
                 codexSessionIds: [codexSessionId],
                 store,
                 namespace: 'default',
-                getSyncEngine: () => null
+                getSyncEngine: () => createImportSyncEngine(store, [], () => [codexThreadFixture(codexSessionId, [ codexUserMessage('same source user message'), codexUserMessage('same source user message'), codexAgentMessage('same source assistant message', 'assistant-1'), codexAgentMessage('same source assistant message', 'assistant-2') ])]),
             })
 
             expect(result.success).toBe(true)
@@ -699,24 +410,19 @@ describe('Codex Desktop import routes', () => {
             ])
         } finally {
             store.close()
-            rmSync(codexHome, { recursive: true, force: true })
         }
     })
 
     it('keeps a later response_item-only user turn with the same text', async () => {
-        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-repeat-user-test-'))
         const store = new Store(':memory:')
         const codexSessionId = '99999999-9999-4999-8999-999999999999'
-        process.env.CODEX_HOME = codexHome
 
         try {
-            createRepeatedSameTextDistinctTurnTranscript(codexHome, codexSessionId)
-
             const result = await importSelectedCodexSessions({
                 codexSessionIds: [codexSessionId],
                 store,
                 namespace: 'default',
-                getSyncEngine: () => null
+                getSyncEngine: () => createImportSyncEngine(store, [], () => [codexThreadFixture(codexSessionId, [ codexUserMessage('repeat user message'), codexAgentMessage('assistant answer'), codexUserMessage('repeat user message') ])]),
             })
 
             expect(result.success).toBe(true)
@@ -741,24 +447,19 @@ describe('Codex Desktop import routes', () => {
             })
         } finally {
             store.close()
-            rmSync(codexHome, { recursive: true, force: true })
         }
     })
 
     it('keeps distinct user turns while deduplicating mirrored user events', async () => {
-        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-distinct-user-test-'))
         const store = new Store(':memory:')
         const codexSessionId = '77777777-7777-4777-8777-777777777777'
-        process.env.CODEX_HOME = codexHome
 
         try {
-            createMirroredAndDistinctUserTranscript(codexHome, codexSessionId)
-
             const result = await importSelectedCodexSessions({
                 codexSessionIds: [codexSessionId],
                 store,
                 namespace: 'default',
-                getSyncEngine: () => null
+                getSyncEngine: () => createImportSyncEngine(store, [], () => [codexThreadFixture(codexSessionId, [ codexUserMessage('first user message'), codexUserMessage('second user message') ])]),
             })
 
             expect(result.success).toBe(true)
@@ -790,36 +491,19 @@ describe('Codex Desktop import routes', () => {
             ])
         } finally {
             store.close()
-            rmSync(codexHome, { recursive: true, force: true })
         }
     })
 
-    it('uses the latest session_index thread_name for list and imported session title', async () => {
-        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-index-title-test-'))
+    it('uses the runner-resolved thread title for the imported session name', async () => {
         const store = new Store(':memory:')
         const codexSessionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
-        process.env.CODEX_HOME = codexHome
 
         try {
-            createTranscript(codexHome, codexSessionId)
-            writeSessionIndex(codexHome, [
-                {
-                    id: codexSessionId,
-                    thread_name: 'old thread title',
-                    updated_at: '2026-07-07T01:00:00.000000000Z'
-                },
-                {
-                    id: codexSessionId,
-                    thread_name: 'new thread title',
-                    updated_at: '2026-07-07T02:00:00.000000000Z'
-                }
-            ])
-
             const result = await importSelectedCodexSessions({
                 codexSessionIds: [codexSessionId],
                 store,
                 namespace: 'default',
-                getSyncEngine: () => null
+                getSyncEngine: () => createImportSyncEngine(store, [], () => [codexThreadFixture(codexSessionId, [ codexUserMessage('normal user message'), codexAgentMessage('normal assistant message') ], { title: 'new thread title' })]),
             })
 
             expect(result.success).toBe(true)
@@ -831,24 +515,19 @@ describe('Codex Desktop import routes', () => {
             })
         } finally {
             store.close()
-            rmSync(codexHome, { recursive: true, force: true })
         }
     })
 
-    it('falls back to transcript title when session_index is missing', async () => {
-        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-no-index-title-test-'))
+    it('uses the transcript-derived title when the runner sends no thread name override', async () => {
         const store = new Store(':memory:')
         const codexSessionId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
-        process.env.CODEX_HOME = codexHome
 
         try {
-            createTranscript(codexHome, codexSessionId)
-
             const result = await importSelectedCodexSessions({
                 codexSessionIds: [codexSessionId],
                 store,
                 namespace: 'default',
-                getSyncEngine: () => null
+                getSyncEngine: () => createImportSyncEngine(store, [], () => [codexThreadFixture(codexSessionId, [ codexUserMessage('normal user message'), codexAgentMessage('normal assistant message') ], { title: 'normal user message' })]),
             })
 
             expect(result.success).toBe(true)
@@ -860,31 +539,19 @@ describe('Codex Desktop import routes', () => {
             })
         } finally {
             store.close()
-            rmSync(codexHome, { recursive: true, force: true })
         }
     })
 
-    it('falls back to transcript title when session_index has no matching id', async () => {
-        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-index-miss-title-test-'))
+    it('uses the fixture title when the runner index has no entry for the thread', async () => {
         const store = new Store(':memory:')
         const codexSessionId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
-        process.env.CODEX_HOME = codexHome
 
         try {
-            createTranscript(codexHome, codexSessionId)
-            writeSessionIndex(codexHome, [
-                {
-                    id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
-                    thread_name: 'unrelated title',
-                    updated_at: '2026-07-07T03:00:00.000000000Z'
-                }
-            ])
-
             const result = await importSelectedCodexSessions({
                 codexSessionIds: [codexSessionId],
                 store,
                 namespace: 'default',
-                getSyncEngine: () => null
+                getSyncEngine: () => createImportSyncEngine(store, [], () => [codexThreadFixture(codexSessionId, [ codexUserMessage('normal user message'), codexAgentMessage('normal assistant message') ], { title: 'normal user message' })]),
             })
 
             expect(result.success).toBe(true)
@@ -896,33 +563,28 @@ describe('Codex Desktop import routes', () => {
             })
         } finally {
             store.close()
-            rmSync(codexHome, { recursive: true, force: true })
         }
     })
 
     it('applies selected Standard and Plan config before an imported session is resumed', async () => {
-        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-config-test-'))
         const store = new Store(':memory:')
         const codexSessionId = '23232323-2323-4232-8232-232323232323'
-        process.env.CODEX_HOME = codexHome
+        const engine = createImportSyncEngine(store, [
+            createMachine('machine-1', ['/home/user/workspace'])
+        ])
+        const applied: Array<{ sessionId: string; config: unknown }> = []
+        ;(engine as unknown as { applySessionConfig: (sessionId: string, config: unknown) => Promise<void> }).applySessionConfig = async (sessionId, config) => {
+            applied.push({ sessionId, config })
+        }
 
         try {
-            createTranscript(codexHome, codexSessionId, '/home/user/workspace/project')
-            const engine = createImportSyncEngine(store, [
-                createMachine('machine-1', ['/home/user/workspace'])
-            ])
-            const applied: Array<{ sessionId: string; config: unknown }> = []
-            ;(engine as unknown as { applySessionConfig: (sessionId: string, config: unknown) => Promise<void> }).applySessionConfig = async (sessionId, config) => {
-                applied.push({ sessionId, config })
-            }
-
             const result = await importSelectedCodexSessions({
                 codexSessionIds: [codexSessionId],
                 store,
                 namespace: 'default',
-                getSyncEngine: () => engine,
+                getSyncEngine: () => withLegacyCodexSessions(engine, () => [codexThreadFixture(codexSessionId, [ codexUserMessage('normal user message'), codexAgentMessage('normal assistant message') ], { cwd: '/home/user/workspace/project' })]),
                 serviceTier: 'standard',
-                collaborationMode: 'plan'
+                collaborationMode: 'plan',
             })
 
             expect(result.success).toBe(true)
@@ -937,31 +599,42 @@ describe('Codex Desktop import routes', () => {
             }])
         } finally {
             store.close()
-            rmSync(codexHome, { recursive: true, force: true })
         }
     })
 
-    it('binds imported transcripts to the unique online machine that owns the cwd', async () => {
-        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-machine-test-'))
+    it('binds the sync to the unique online machine that owns the cwd', async () => {
         const store = new Store(':memory:')
         const codexSessionId = '22222222-2222-4222-8222-222222222222'
-        process.env.CODEX_HOME = codexHome
+        const engine = createImportSyncEngine(store, [
+            createMachine('machine-1', ['/home/user/workspace']),
+            createMachine('machine-2', ['/other/workspace'])
+        ])
+        const listCalls: Array<{ machineId: string; cwd: string | null }> = []
+        ;(engine as unknown as { listCodexSessionsForMachine: unknown }).listCodexSessionsForMachine = async (machineId: string, cwd: string | null) => {
+            listCalls.push({ machineId, cwd })
+            return {
+                success: true,
+                sessions: [codexThreadFixture(codexSessionId, [
+                    codexUserMessage('normal user message'),
+                    codexAgentMessage('normal assistant message')
+                ], { cwd: '/home/user/workspace/project' })]
+            }
+        }
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
 
         try {
-            createTranscript(codexHome, codexSessionId, '/home/user/workspace/project')
-            const engine = createImportSyncEngine(store, [
-                createMachine('machine-1', ['/home/user/workspace']),
-                createMachine('machine-2', ['/other/workspace'])
-            ])
-
-            const result = await importSelectedCodexSessions({
-                codexSessionIds: [codexSessionId],
-                store,
-                namespace: 'default',
-                getSyncEngine: () => engine
+            const response = await app.request('/api/codex/sync-session', {
+                method: 'POST',
+                body: JSON.stringify({ sessionIds: [codexSessionId], cwd: '/home/user/workspace/project' })
             })
-
-            expect(result.success).toBe(true)
+            const body = await response.json() as { success: boolean }
+            expect(body.success).toBe(true)
+            expect(listCalls).toEqual([{ machineId: 'machine-1', cwd: '/home/user/workspace/project' }])
             const session = store.sessions.getSessionsByNamespace('default')[0]
             expect(session.metadata).toMatchObject({
                 path: '/home/user/workspace/project',
@@ -969,97 +642,108 @@ describe('Codex Desktop import routes', () => {
             })
         } finally {
             store.close()
-            rmSync(codexHome, { recursive: true, force: true })
         }
     })
 
-    it('does not bind imported transcripts when multiple online machines own the cwd', async () => {
-        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-machine-ambiguous-test-'))
+    it('syncs through the first online machine when several machines own the cwd', async () => {
         const store = new Store(':memory:')
         const codexSessionId = '33333333-3333-4333-8333-333333333333'
-        process.env.CODEX_HOME = codexHome
+        const engine = createImportSyncEngine(store, [
+            createMachine('machine-1', ['/home/user/workspace']),
+            createMachine('machine-2', ['/home/user/workspace/project'])
+        ])
+        const listCalls: string[] = []
+        ;(engine as unknown as { listCodexSessionsForMachine: unknown }).listCodexSessionsForMachine = async (machineId: string) => {
+            listCalls.push(machineId)
+            return {
+                success: true,
+                sessions: [codexThreadFixture(codexSessionId, [
+                    codexUserMessage('normal user message'),
+                    codexAgentMessage('normal assistant message')
+                ], { cwd: '/home/user/workspace/project' })]
+            }
+        }
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
 
         try {
-            createTranscript(codexHome, codexSessionId, '/home/user/workspace/project')
-            const engine = createImportSyncEngine(store, [
-                createMachine('machine-1', ['/home/user/workspace']),
-                createMachine('machine-2', ['/home/user/workspace/project'])
-            ])
-
-            const result = await importSelectedCodexSessions({
-                codexSessionIds: [codexSessionId],
-                store,
-                namespace: 'default',
-                getSyncEngine: () => engine
+            const response = await app.request('/api/codex/sync-session', {
+                method: 'POST',
+                body: JSON.stringify({ sessionIds: [codexSessionId], cwd: '/home/user/workspace/project' })
             })
-
-            expect(result.success).toBe(true)
+            const body = await response.json() as { success: boolean }
+            expect(body.success).toBe(true)
+            expect(listCalls).toEqual(['machine-1'])
             const session = store.sessions.getSessionsByNamespace('default')[0]
-            expect(session.metadata).toMatchObject({
-                path: '/home/user/workspace/project'
-            })
-            expect(session.metadata).not.toHaveProperty('machineId')
+            expect(session.metadata).toMatchObject({ machineId: 'machine-1' })
         } finally {
             store.close()
-            rmSync(codexHome, { recursive: true, force: true })
         }
     })
 
-    it('does not bind imported transcripts when no online machine owns the cwd', async () => {
-        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-machine-miss-test-'))
+    it('syncs through the first online machine when none owns the cwd', async () => {
         const store = new Store(':memory:')
         const codexSessionId = '44444444-4444-4444-8444-444444444444'
-        process.env.CODEX_HOME = codexHome
+        const engine = createImportSyncEngine(store, [
+            createMachine('machine-1', ['/home/user/other'])
+        ])
+        const listCalls: string[] = []
+        ;(engine as unknown as { listCodexSessionsForMachine: unknown }).listCodexSessionsForMachine = async (machineId: string) => {
+            listCalls.push(machineId)
+            return {
+                success: true,
+                sessions: [codexThreadFixture(codexSessionId, [
+                    codexUserMessage('normal user message'),
+                    codexAgentMessage('normal assistant message')
+                ], { cwd: '/home/user/workspace/project' })]
+            }
+        }
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
 
         try {
-            createTranscript(codexHome, codexSessionId, '/home/user/workspace/project')
-            const engine = createImportSyncEngine(store, [
-                createMachine('machine-1', ['/home/user/other'])
-            ])
-
-            const result = await importSelectedCodexSessions({
-                codexSessionIds: [codexSessionId],
-                store,
-                namespace: 'default',
-                getSyncEngine: () => engine
+            const response = await app.request('/api/codex/sync-session', {
+                method: 'POST',
+                body: JSON.stringify({ sessionIds: [codexSessionId], cwd: '/home/user/workspace/project' })
             })
-
-            expect(result.success).toBe(true)
+            const body = await response.json() as { success: boolean }
+            expect(body.success).toBe(true)
+            expect(listCalls).toEqual(['machine-1'])
             const session = store.sessions.getSessionsByNamespace('default')[0]
-            expect(session.metadata).toMatchObject({
-                path: '/home/user/workspace/project'
-            })
-            expect(session.metadata).not.toHaveProperty('machineId')
+            expect(session.metadata).toMatchObject({ machineId: 'machine-1' })
         } finally {
             store.close()
-            rmSync(codexHome, { recursive: true, force: true })
         }
     })
 
     it('does not append a Runner transcript to a session bound to another machine', async () => {
-        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-machine-existing-test-'))
         const store = new Store(':memory:')
         const codexSessionId = '55555555-5555-4555-8555-555555555555'
-        process.env.CODEX_HOME = codexHome
+        store.sessions.getOrCreateSession(randomUUID(), {
+            path: '/home/user/workspace/project',
+            flavor: 'codex',
+            codexSessionId,
+            machineId: 'machine-existing'
+        }, {}, 'default')
+        const engine = createImportSyncEngine(store, [
+            createMachine('machine-new', ['/home/user/workspace'])
+        ])
 
         try {
-            createTranscript(codexHome, codexSessionId, '/home/user/workspace/project')
-            store.sessions.getOrCreateSession(randomUUID(), {
-                path: '/home/user/workspace/project',
-                flavor: 'codex',
-                codexSessionId,
-                machineId: 'machine-existing'
-            }, {}, 'default')
-            const engine = createImportSyncEngine(store, [
-                createMachine('machine-new', ['/home/user/workspace'])
-            ])
-
             const result = await importSelectedCodexSessions({
                 codexSessionIds: [codexSessionId],
                 store,
                 namespace: 'default',
-                getSyncEngine: () => engine,
-                machineId: 'machine-new'
+                getSyncEngine: () => withLegacyCodexSessions(engine, () => [codexThreadFixture(codexSessionId, [ codexUserMessage('normal user message'), codexAgentMessage('normal assistant message') ], { cwd: '/home/user/workspace/project' })]),
+                machineId: 'machine-new',
             })
 
             expect(result.success).toBe(true)
@@ -1075,18 +759,25 @@ describe('Codex Desktop import routes', () => {
             ))).toBe(true)
         } finally {
             store.close()
-            rmSync(codexHome, { recursive: true, force: true })
         }
     })
 
-    it('rejects Codex transcript endpoints outside the default namespace', async () => {
+    it('rejects Codex desktop sidecar routes outside the default namespace', async () => {
         const app = createRoutesApp('team-a')
-        const response = await app.request('/api/codex/sessions')
+        const response = await app.request('/api/codex/status')
 
         expect(response.status).toBe(403)
         expect(await response.json()).toEqual({
             success: false,
             error: 'Codex transcript import is not available outside the default namespace'
+        })
+
+        // Transcript list and sync are available in every namespace.
+        const listResponse = await app.request('/api/codex/sessions')
+        expect(listResponse.status).toBe(503)
+        expect(await listResponse.json()).toMatchObject({
+            success: false,
+            error: 'No online machine available for Codex history import'
         })
     })
 
@@ -1136,26 +827,22 @@ describe('Codex Desktop import routes', () => {
     })
 
     it('does not append imports to an archived Codex session', async () => {
-        const codexHome = mkdtempSync(join(tmpdir(), 'hapi-codex-home-archived-target-test-'))
         const store = new Store(':memory:')
         const codexSessionId = '15151515-1515-4515-8515-151515151515'
-        process.env.CODEX_HOME = codexHome
+        const archived = store.sessions.getOrCreateSession('archived-session', {
+            path: 'C:\\work\\project',
+            flavor: 'codex',
+            codexSessionId,
+            lifecycleState: 'archived'
+        }, {}, 'default')
+        store.messages.addMessage(archived.id, { type: 'text', text: 'archived old message' }, 'archived-1')
 
         try {
-            createTranscript(codexHome, codexSessionId)
-            const archived = store.sessions.getOrCreateSession('archived-session', {
-                path: 'C:\\work\\project',
-                flavor: 'codex',
-                codexSessionId,
-                lifecycleState: 'archived'
-            }, {}, 'default')
-            store.messages.addMessage(archived.id, { type: 'text', text: 'archived old message' }, 'archived-1')
-
             const result = await importSelectedCodexSessions({
                 codexSessionIds: [codexSessionId],
                 store,
                 namespace: 'default',
-                getSyncEngine: () => null
+                getSyncEngine: () => createImportSyncEngine(store, [], () => [codexThreadFixture(codexSessionId, [ codexUserMessage('normal user message'), codexAgentMessage('normal assistant message') ])]),
             })
 
             expect(result.success).toBe(true)
@@ -1166,7 +853,6 @@ describe('Codex Desktop import routes', () => {
             expect(store.messages.getAllMessages(result.hapiSessionIds![0]!)).toHaveLength(2)
         } finally {
             store.close()
-            rmSync(codexHome, { recursive: true, force: true })
         }
     })
 

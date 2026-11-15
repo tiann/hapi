@@ -332,12 +332,19 @@ type MachineGroup = {
 export const UNKNOWN_MACHINE_ID = '__unknown__'
 export const GROUP_SESSION_PREVIEW_LIMIT = DEFAULT_SESSION_PREVIEW_LIMIT
 
+const MACHINE_LOCAL_AGENT_FLAVORS = new Set(['codex', 'claude', 'pi', 'opencode'])
+
 export function getSessionDedupKey(session: SessionSummary): string | null {
     const agentId = session.metadata?.agentSessionId?.trim()
     if (!agentId) return null
     // Scope by flavor: agentSessionId is flattened from native ids and can retain a
     // stale cross-flavor value (codexSessionId ?? claudeSessionId ?? ...).
-    return `${session.metadata?.flavor ?? 'unknown'}:${agentId}`
+    const flavor = session.metadata?.flavor ?? 'unknown'
+    // These native ids live in one machine's local store, and the hub keeps
+    // sessions recorded on different machines apart: hiding one behind the
+    // other would make an imported session look deleted.
+    const machineId = MACHINE_LOCAL_AGENT_FLAVORS.has(flavor) ? session.metadata?.machineId : undefined
+    return machineId ? `${flavor}:${machineId}:${agentId}` : `${flavor}:${agentId}`
 }
 
 export function deduplicateSessionsByAgentId(sessions: SessionSummary[], selectedSessionId?: string | null): SessionSummary[] {
@@ -1120,6 +1127,7 @@ export function SessionListSearch(props: {
 
 // A row with an open menu or dialog holds its collapsed panel mounted.
 const CollapsiblePanelHoldContext = createContext<((held: boolean) => void) | null>(null)
+const CollapsiblePanelOpenContext = createContext(true)
 
 type QuickUnpinFocusTarget = { sessionId: string; pending: boolean }
 const QuickUnpinFocusContext = createContext<{ current: QuickUnpinFocusTarget | null } | null>(null)
@@ -1145,9 +1153,11 @@ function CollapsiblePanel(props: { open: boolean; children: ReactNode }) {
             }}
         >
             <div className="collapsible-inner">
-                <CollapsiblePanelHoldContext.Provider value={hold}>
-                    {!settled || holds > 0 ? props.children : null}
-                </CollapsiblePanelHoldContext.Provider>
+                <CollapsiblePanelOpenContext.Provider value={props.open}>
+                    <CollapsiblePanelHoldContext.Provider value={hold}>
+                        {!settled || holds > 0 ? props.children : null}
+                    </CollapsiblePanelHoldContext.Provider>
+                </CollapsiblePanelOpenContext.Provider>
             </div>
         </div>
     )
@@ -1209,6 +1219,7 @@ const SessionItem = memo(function SessionItem(props: {
     const rowRef = useRef<HTMLDivElement>(null)
     const rowButtonRef = useRef<HTMLButtonElement>(null)
     const quickUnpinFocusRef = useContext(QuickUnpinFocusContext)
+    const panelOpen = useContext(CollapsiblePanelOpenContext)
     const {
         status: cursorChatStoreStatus,
         isApplicable: cursorChatStoreApplicable,
@@ -1320,14 +1331,20 @@ const SessionItem = memo(function SessionItem(props: {
         const target = quickUnpinFocusRef?.current
         if (!target || target.sessionId !== s.id) return
         const activeEl = document.activeElement
-        if (activeEl && activeEl !== document.body && !rowRef.current?.contains(activeEl)) {
+        const activeRowId = activeEl instanceof Element
+            ? activeEl.closest('[data-session-row-id]')?.getAttribute('data-session-row-id')
+            : null
+        if (activeEl && activeEl !== document.body && activeRowId !== s.id) {
             quickUnpinFocusRef.current = null
+            return
+        }
+        if (!panelOpen || rowRef.current?.closest('.collapsible-panel:not([data-open])')) {
             return
         }
         if (activeEl !== rowButtonRef.current) {
             rowButtonRef.current?.focus({ preventScroll: true })
         }
-    }, [s.id, isPinned, quickUnpinPending, quickUnpinFocusRef])
+    }, [s.id, isPinned, quickUnpinPending, quickUnpinFocusRef, panelOpen])
 
     // Hover archive: an idle session archives in one click with a Reopen toast;
     // one that is replying, waiting on approval or running background work
@@ -2371,10 +2388,13 @@ export function SessionList(props: {
 
     const renderDirectoryGroup = (group: SessionGroup) => {
         const isCollapsed = isGroupCollapsed(group)
-        // A collapsed group still shows its unread rows, so new output in a
-        // quiet project is never folded out of sight.
-        const collapsedUnreadSessions = isCollapsed && keepUnreadSessionsVisible ? group.sessions.filter(isSessionUnread) : []
         const visibleGroupSessions = getVisibleGroupSessions(group)
+        // A collapsed group still shows its unread rows, so new output in a
+        // quiet project is never folded out of sight. Each row folds on its
+        // own instead of moving to a separate list, so toggling the group
+        // never remounts (and re-animates) the rows that stay visible.
+        const isRowOpen = (s: SessionSummary) => !isCollapsed || (keepUnreadSessionsVisible && isSessionUnread(s))
+        const anyRowOpen = visibleGroupSessions.some(isRowOpen)
         const hiddenSessionCount = group.sessions.length - visibleGroupSessions.length
         const currentLimit = Math.min(
             getGroupVisibleCount(group),
@@ -2417,33 +2437,30 @@ export function SessionList(props: {
                     </span>
                 </ProjectGroupRow>
 
-                {collapsedUnreadSessions.length > 0 ? (
-                    <div data-testid="session-group-unread-peek" className="flex flex-col gap-0.5 ml-3 pl-1 py-1">
-                        {collapsedUnreadSessions.map((s) => (
-                            <div key={s.id} className="contents">
-                                {renderGroupSessionItem(s)}
-                            </div>
-                        ))}
-                    </div>
-                ) : null}
-
-                {/* Sessions */}
-                <CollapsiblePanel open={!isCollapsed}>
-                    <div className="flex flex-col gap-0.5 ml-3 pl-1 py-1">
-                        {visibleGroupSessions.map((s, index) => (
-                            <div key={s.id} className="contents">
-                                {shouldShowPinnedDivider(visibleGroupSessions, index) ? (
+                {/* Sessions. Spacing lives inside the panels so folded rows take no room. */}
+                <div className="flex flex-col ml-3 pl-1" data-open={!isCollapsed || undefined}>
+                    <CollapsiblePanel open={anyRowOpen}>
+                        <div className="h-1" />
+                    </CollapsiblePanel>
+                    {visibleGroupSessions.map((s, index) => (
+                        <CollapsiblePanel key={s.id} open={isRowOpen(s)}>
+                            {shouldShowPinnedDivider(visibleGroupSessions, index) ? (
+                                <CollapsiblePanel open={!isCollapsed}>
                                     <div
                                         data-testid="session-pin-divider"
-                                        className="ml-2.5 mr-2 my-1 border-t border-[var(--app-border)]"
+                                        className="ml-2.5 mr-2 mb-1.5 mt-1 border-t border-[var(--app-border)]"
                                         aria-hidden="true"
                                     />
-                                ) : null}
+                                </CollapsiblePanel>
+                            ) : null}
+                            <div className="pb-0.5">
                                 {renderGroupSessionItem(s)}
                             </div>
-                        ))}
-                        {group.sessions.length > sessionPreviewLimit && (hiddenSessionCount > 0 || canShowFewerSessions) ? (
-                            <div className="ml-2.5 mr-2 my-1 flex gap-1.5">
+                        </CollapsiblePanel>
+                    ))}
+                    {group.sessions.length > sessionPreviewLimit && (hiddenSessionCount > 0 || canShowFewerSessions) ? (
+                        <CollapsiblePanel open={!isCollapsed}>
+                            <div className="ml-2.5 mr-2 mt-1 mb-1.5 flex gap-1.5">
                                 {canShowFewerSessions ? (
                                     <button
                                         type="button"
@@ -2465,9 +2482,12 @@ export function SessionList(props: {
                                     </button>
                                 ) : null}
                             </div>
-                        ) : null}
-                    </div>
-                </CollapsiblePanel>
+                        </CollapsiblePanel>
+                    ) : null}
+                    <CollapsiblePanel open={anyRowOpen}>
+                        <div className="h-0.5" />
+                    </CollapsiblePanel>
+                </div>
             </div>
         )
     }
