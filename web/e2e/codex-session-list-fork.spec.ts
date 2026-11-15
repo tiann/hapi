@@ -98,7 +98,10 @@ test('forks an active Codex session from the session-list menu', async ({ page, 
         await page.setViewportSize({ width: 1440, height: 1000 })
         await page.goto(`${base}/sessions/${source}`)
         await dismissOverlays(page)
-        const sourceRow = page.locator('button[data-session-scroll-anchor]')
+        // The row's scroll-anchor attribute lives on a <div>, not a native
+        // <button> (hapi#238: a focusable PR/issue chip can't be a DOM
+        // descendant of a real button per ARIA), so match by attribute only.
+        const sourceRow = page.locator('[data-session-scroll-anchor]')
             .filter({ hasText: title }).filter({ hasNotText: 'Fork:' }).first()
         await expect(sourceRow).toBeVisible()
         await sourceRow.click({ button: 'right' })
