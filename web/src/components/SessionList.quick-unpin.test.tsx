@@ -408,20 +408,19 @@ describe('session row hover unpin', () => {
         await waitFor(() => expect(screen.queryByRole('button', { name: 'Unpin' })).toBeNull())
         expect(screen.getByTitle('/work/quiet')).toHaveAttribute('aria-expanded', 'false')
 
-        // #2434: unread rows stay mounted in their own open CollapsiblePanel while
-        // the group header stays collapsed (no separate unread-peek list).
-        const unreadPreviewButton = await screen.findByRole('button', { name: /Title unread-project-pin/ })
-        expect(unreadPreviewButton.closest('[data-session-row-id="unread-project-pin"]')).not.toBeNull()
-        expect(unreadPreviewButton.closest('.collapsible-panel:not([data-open])')).toBeNull()
+        // A collapsed group keeps its unread row mounted in its own open
+        // panel; there is no separate peek list to look in.
+        const unreadRow = document.querySelector<HTMLElement>('[data-session-row-id="unread-project-pin"]')
+        expect(unreadRow).not.toBeNull()
+        const unreadPreviewButton = unreadRow!.querySelector<HTMLButtonElement>('button[data-session-scroll-anchor]')
+        expect(unreadPreviewButton).not.toBeNull()
+        // No ancestor panel of the row is folding closed, so it stays visible.
+        expect(unreadRow!.closest('.collapsible-panel:not([data-open])')).toBeNull()
+        expect(unreadRow!.closest('.collapsible-panel')).toHaveAttribute('data-open')
 
-        // Settle any panels that did fold (siblings / pin section); focus must
-        // land on the still-open unread row rather than document.body.
-        for (const panel of document.querySelectorAll('.collapsible-panel:not([data-open])')) {
-            fireEvent.transitionEnd(panel)
-        }
-        fireEvent.transitionEnd(unreadPreviewButton.closest('.collapsible-panel')!)
-
-        await waitFor(() => expect(document.activeElement).toBe(unreadPreviewButton))
+        expect(unreadRow!.isConnected).toBe(true)
+        expect(document.activeElement).not.toBe(document.body)
+        expect(document.activeElement).toBe(unreadPreviewButton)
     })
 
     it('moves focus to a visible fallback instead of document.body if the unpinned row disappears from the list', async () => {
