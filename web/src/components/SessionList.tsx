@@ -1506,6 +1506,16 @@ const SessionItem = memo(function SessionItem(props: {
                 hover/focus to avoid the overlap made them unreachable
                 exactly when a pointer or keyboard user was approaching the
                 row to use them (bot review, hapi#2147, second pass). */}
+            {/* Naming convention (review finding, hapi#2147, third pass —
+                four separate bugs across JS and CSS all traced back to this
+                same split before this comment existed): focus concerns
+                target `.session-row-control` (the inner role="button" div
+                below); row concerns — scroll anchoring, hover/quick-action
+                CSS, data attributes — target `.session-list-item` (the
+                outer div). `session-list-item` has no relationship to focus
+                despite its name being the only one historically in scope at
+                this call site; reaching for it to mean "the focusable
+                element" has been the actual root cause every time. */}
             <div
                 ref={rowRef}
                 data-session-scroll-anchor
@@ -1538,7 +1548,7 @@ const SessionItem = memo(function SessionItem(props: {
                         pendingRequestPressedRef.current = event.target instanceof Element
                             && event.target.closest('[data-session-pending-request-id]') !== null
                     }}
-                    className="group/session-row flex min-w-0 flex-1 flex-col gap-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none rounded-lg cursor-pointer"
+                    className="session-row-control group/session-row flex min-w-0 flex-1 flex-col gap-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] select-none rounded-lg cursor-pointer"
                     style={{ WebkitTouchCallout: 'none' }}
                     aria-current={selected ? 'page' : undefined}
                     aria-describedby={describedBy}
