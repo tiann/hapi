@@ -72,12 +72,59 @@ describe('Codex queued follow-up questions', () => {
         expect(f.state().completedRequests![q.id].status).toBe('resolved');
         expect(await f.manager.answer({ id: q.id, approved: true, answers: { [q.questionItemId]: ['Web'] } })).toBe(false);
         expect(f.submit).not.toHaveBeenCalled();
+        f.manager.observeItem('thread', reply);
         f.manager.observeItem('thread', item);
         expect(Object.keys(f.state().requests!)).toEqual([questions[1].id]);
         expect(f.send.mock.lastCall![0]).toMatchObject({ type: 'tool-call-result', callId: q.id, output: {
             answers: { [q.questionItemId]: { answers: ['Terminal'] } }
         } });
     });
+
+    it('defers pre-scanned history results until the answer turn', () => {
+        const f = fixture()
+        const q = questions[0]
+        const reply = nativeReply(q.questionItemId, 'Web')
+        f.manager.history('thread', { turns: [
+            { id: 'question-turn', items: [item] },
+            { id: 'answer-turn', items: [reply] },
+        ] })
+
+        f.manager.observeItem('thread', item)
+        expect(f.send).not.toHaveBeenCalled()
+
+        f.manager.observeItem('thread', reply)
+        expect(f.send).toHaveBeenCalledOnce()
+        expect(f.send.mock.lastCall![0]).toMatchObject({ type: 'tool-call-result', callId: q.id,
+            output: { status: 'resolved' } })
+    })
+
+    it('defers a scanned answer even when the question was already loaded', () => {
+        const f = fixture()
+        const q = questions[0]
+        const reply = nativeReply(q.questionItemId, 'Web')
+        f.manager.observeItem('thread', item)
+        expect(f.state().requests?.[q.id]).toBeDefined()
+
+        f.manager.history('thread', { turns: [{ items: [reply] }] })
+        expect(f.send).not.toHaveBeenCalled()
+
+        f.manager.observeItem('thread', reply)
+        expect(f.send).toHaveBeenCalledOnce()
+        expect(f.send.mock.lastCall![0]).toMatchObject({ type: 'tool-call-result', callId: q.id,
+            output: { status: 'resolved' } })
+    })
+
+    it('clears answer-only completions when the question was never loaded', () => {
+        const f = fixture()
+        const q = questions[0]
+        const reply = nativeReply(q.questionItemId, 'Web')
+        f.manager.history('thread', { turns: [{ items: [reply] }] })
+        f.manager.reconcileHistory('thread', { turns: [{ items: [] }] })
+        f.manager.observeItem('thread', item)
+
+        expect(f.state().requests?.[q.id]).toMatchObject({ tool: 'request_user_input', toolCallId: q.id })
+        expect(f.state().completedRequests?.[q.id]).toBeUndefined()
+    })
 
     it('scopes child replies and cards to their own thread', async () => {
         const f = fixture(); f.manager.observeItem('child', item);

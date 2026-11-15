@@ -19,6 +19,18 @@ function requestId(threadId: string, questionItemId: string): string {
     return `codex-async-question:${JSON.stringify([threadId, questionItemId])}`;
 }
 
+function parseRequestId(id: string): { threadId: string; questionItemId: string } | null {
+    const prefix = 'codex-async-question:';
+    if (!id.startsWith(prefix)) return null;
+    try {
+        const parsed = JSON.parse(id.slice(prefix.length));
+        if (!Array.isArray(parsed) || typeof parsed[0] !== 'string' || typeof parsed[1] !== 'string') return null;
+        return { threadId: parsed[0], questionItemId: parsed[1] };
+    } catch {
+        return null;
+    }
+}
+
 export function asyncQuestionReplies(text: string): Array<{ questionItemId: string; question?: string; answer: string }> {
     const opening = '<send_user_message_question_reply>';
     const closing = '</send_user_message_question_reply>';
@@ -62,12 +74,15 @@ export class SharedCodexAsyncQuestions {
     private readonly pending = new Map<string, Pending>();
     private readonly questions = new Map<string, AsyncQuestion>();
     private readonly completed = new Map<string, Resolution>();
+    // History replays scan all answers before emitting items. Hold those results
+    // until the answer-bearing turn so Hub truncation rewinds them together.
+    private readonly deferredHistoryResults = new Set<string>();
     private closed = false;
 
     constructor(private readonly session: ApiSessionClient,
         private readonly submit: (threadId: string, text: string, clientUserMessageId: string) => Promise<void>) {}
 
-    observeItem(threadId: string, value: unknown): void {
+    observeItem(threadId: string, value: unknown, emitResults = true): void {
         if (this.closed) return;
         const item = record(value);
         if (item.type === 'userMessage' && Array.isArray(item.content)) {
@@ -75,18 +90,28 @@ export class SharedCodexAsyncQuestions {
                 if (record(part).type !== 'text') continue;
                 for (const reply of asyncQuestionReplies(string(record(part).text) ?? '')) {
                     const id = requestId(threadId, reply.questionItemId);
-                    if (this.completed.get(id)?.status === 'resolved') continue;
+                    const completed = this.completed.get(id);
+                    if (completed?.status === 'resolved') {
+                        if (this.deferredHistoryResults.delete(id)) {
+                            const question = this.questions.get(id);
+                            if (question) this.resolve(question, completed, emitResults);
+                        }
+                        continue;
+                    }
                     const resolution = { status: 'resolved' as const, answer: reply.answer };
                     this.completed.set(id, resolution);
                     const question = this.questions.get(id);
-                    if (question) this.resolve(question, resolution);
+                    if (question) this.resolve(question, resolution, emitResults);
                 }
             }
         }
         for (const question of asyncQuestionsForItem(threadId, item)) {
             this.questions.set(question.id, question);
             const resolution = this.completed.get(question.id);
-            if (resolution) { this.resolve(question, resolution); continue; }
+            if (resolution) {
+                this.resolve(question, resolution, emitResults && !this.deferredHistoryResults.has(question.id));
+                continue;
+            }
             if (this.pending.has(question.id)) continue;
             this.pending.set(question.id, { question, submitted: false });
             this.session.updateAgentState(state => {
@@ -100,14 +125,93 @@ export class SharedCodexAsyncQuestions {
         }
     }
 
+    /** Reconcile cards whose native items were removed, then pre-scan surviving answers. */
+    reconcileHistory(threadId: string, thread: unknown, emitResults = true): void {
+        const live = new Map<string, AsyncQuestion>()
+        const answered = new Set<string>()
+        const turns = record(thread).turns
+        if (Array.isArray(turns)) {
+            for (const value of turns) {
+                const items = record(value).items
+                if (!Array.isArray(items)) continue
+                for (const item of items) {
+                    for (const question of asyncQuestionsForItem(threadId, item)) live.set(question.id, question)
+                    if (record(item).type !== 'userMessage' || !Array.isArray(record(item).content)) continue
+                    for (const part of record(item).content as unknown[]) {
+                        if (record(part).type !== 'text') continue
+                        for (const reply of asyncQuestionReplies(string(record(part).text) ?? '')) {
+                            answered.add(reply.questionItemId)
+                        }
+                    }
+                }
+            }
+        }
+
+        const stale = new Set<string>()
+        const reset = new Set<string>()
+        for (const [id, question] of this.questions) {
+            if (question.threadId !== threadId) continue
+            if (!live.has(id)) stale.add(id)
+            else if (this.completed.get(id)?.status === 'resolved' && !answered.has(question.questionItemId)) {
+                // The question survived a rewind but its answer turn did not.
+                reset.add(id)
+            }
+        }
+        for (const [id, resolution] of this.completed) {
+            if (resolution.status !== 'resolved') continue
+            const parsed = parseRequestId(id)
+            if (parsed?.threadId === threadId && !answered.has(parsed.questionItemId)) reset.add(id)
+        }
+        for (const id of stale) {
+            this.pending.delete(id)
+            this.questions.delete(id)
+            this.completed.delete(id)
+            this.deferredHistoryResults.delete(id)
+        }
+        for (const id of reset) {
+            this.pending.delete(id)
+            this.completed.delete(id)
+            this.deferredHistoryResults.delete(id)
+        }
+        const cleared = new Set([...stale, ...reset])
+        if (cleared.size > 0) {
+            this.session.updateAgentState(state => {
+                const requests = { ...state.requests }
+                const completedRequests = { ...state.completedRequests }
+                for (const id of cleared) {
+                    delete requests[id]
+                    delete completedRequests[id]
+                }
+                return { ...state, requests, completedRequests }
+            })
+        }
+        this.history(threadId, thread, emitResults)
+    }
+
     /** Read answers first so replay never briefly resurrects answered questions. */
-    history(threadId: string, thread: unknown): void {
+    history(threadId: string, thread: unknown, emitResults = true): void {
         const turns = record(thread).turns;
         if (!Array.isArray(turns)) return;
         for (const turn of turns) {
             const items = record(turn).items;
             if (!Array.isArray(items)) continue;
-            for (const item of items) if (record(item).type === 'userMessage') this.observeItem(threadId, item);
+            for (const item of items) this.preScanHistory(threadId, item)
+        }
+    }
+
+    /** Record answers without projecting them before their native user item. */
+    private preScanHistory(threadId: string, value: unknown): void {
+        const item = record(value);
+        if (item.type !== 'userMessage' || !Array.isArray(item.content)) return;
+        for (const part of item.content) {
+            if (record(part).type !== 'text') continue;
+            for (const reply of asyncQuestionReplies(string(record(part).text) ?? '')) {
+                const id = requestId(threadId, reply.questionItemId);
+                if (this.completed.get(id)?.status !== 'resolved') {
+                    this.completed.set(id, { status: 'resolved', answer: reply.answer });
+                }
+                this.deferredHistoryResults.add(id);
+            }
         }
     }
 
