@@ -157,7 +157,8 @@ export const UpdateCancelQueuedMessageBodySchema = z.object({
     t: z.literal('cancel-queued-message'),
     sid: z.string(),
     messageId: z.string(),
-    localId: z.string().optional()
+    localId: z.string().optional(),
+    abandon: z.literal(true).optional()
 })
 
 export type UpdateCancelQueuedMessageBody = z.infer<typeof UpdateCancelQueuedMessageBodySchema>
@@ -167,7 +168,8 @@ export const CancelQueuedMessageAckSchema = z.object({
     inFlight: z.boolean().optional(),
     indeterminate: z.boolean().optional(),
     accepted: z.boolean().optional(),
-    consumed: z.boolean().optional()
+    consumed: z.boolean().optional(),
+    abandoned: z.boolean().optional()
 })
 
 export type CancelQueuedMessageAck = z.infer<typeof CancelQueuedMessageAckSchema>
