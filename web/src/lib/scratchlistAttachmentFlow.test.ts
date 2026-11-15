@@ -5,8 +5,32 @@ import {
     finalizeMigratedScratchlistParkCleanup,
     migrateChatPathAttachmentsToScratchlist,
     prepareScratchlistParkAttachments,
+    prepareScratchlistAttachmentsForSend,
     type ParkAttachmentMetadata,
 } from './scratchlistAttachmentFlow'
+
+describe('saved draft attachment send order', () => {
+    it('keeps interleaved Hub and normal files in the selected order when staging', async () => {
+        const a = { ...hubAttachment(), id: 'a', filename: 'a.png' }
+        const b = { ...chatAttachment(), id: 'b', filename: 'b.txt', mimeType: 'text/plain' }
+        const c = { ...hubAttachment(), id: 'c', filename: 'c.png' }
+        const fetchScratchlistAttachmentBlob = vi.fn(async () => new Blob(['image']))
+        const uploadFile = vi.fn(async (_session: string, filename: string) => ({ success: true, path: `/staged/${filename}` }))
+        const api = { fetchScratchlistAttachmentBlob, uploadFile } as never
+        const prepared = await prepareScratchlistAttachmentsForSend(api, 'session', [a, b, c], null)
+        expect(prepared.attachments.map((a) => a.id)).toEqual(['a', 'b', 'c'])
+        expect(prepared.attachments.map((a) => a.path)).toEqual(['/staged/a.png', b.path, '/staged/c.png'])
+        expect(prepared.staged.map((a) => a.id)).toEqual(['a', 'c'])
+    })
+
+    it('leaves scheduled attachment order and Hub paths intact for deferred materialization', async () => {
+        const attachments = [hubAttachment(), chatAttachment()]
+        const api = { uploadFile: vi.fn(), fetchScratchlistAttachmentBlob: vi.fn() }
+        expect(await prepareScratchlistAttachmentsForSend(api as never, 'session', attachments, 123)).toEqual({ attachments, staged: [] })
+        expect(api.uploadFile).not.toHaveBeenCalled()
+        expect(api.fetchScratchlistAttachmentBlob).not.toHaveBeenCalled()
+    })
+})
 
 function chatAttachment(path = '/tmp/hapi-blobs/a.png'): AttachmentMetadata {
     return {

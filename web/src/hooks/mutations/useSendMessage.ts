@@ -1,6 +1,6 @@
 import { useMutation } from '@tanstack/react-query'
 import { useRef, useState } from 'react'
-import type { ApiClient } from '@/api/client'
+import { ApiError, type ApiClient } from '@/api/client'
 import type { AttachmentMetadata, DecryptedMessage } from '@/types/api'
 import { makeClientSideId } from '@/lib/messages'
 import {
@@ -12,6 +12,7 @@ import {
 import { usePlatform } from '@/hooks/usePlatform'
 import type { MessageDeliveryMode } from '@hapi/protocol'
 import { getRetryDeliveryMode } from '@/lib/messageDelivery'
+import { prepareScratchlistAttachmentsForSend } from '@/lib/scratchlistAttachmentFlow'
 
 type SendMessageInput = {
     sessionId: string
@@ -25,6 +26,13 @@ type SendMessageInput = {
 
 export type SendMessageAcceptance = {
     attemptId: string
+    /** Session id the Hub mutation was actually submitted to after resume. */
+    sessionId: string
+}
+
+export type SendMessageSettlement = {
+    attemptId: string
+    status: 'success' | 'error'
 }
 
 type BlockedReason = 'no-api' | 'no-session' | 'pending'
@@ -98,6 +106,7 @@ type UseSendMessageOptions = {
     onBlocked?: (reason: BlockedReason) => void
     onSuccess?: (sessionId: string) => void
     onError?: (info: SendErrorInfo) => void
+    onSettlement?: (settlement: SendMessageSettlement) => void
     isSessionThinking?: boolean
 }
 
@@ -197,26 +206,57 @@ export function useSendMessage(
     ) => Promise<SendMessageAcceptance | false>
     retryMessage: (localId: string) => boolean
     isSending: boolean
+    sendSettlement: SendMessageSettlement | null
 } {
     const { haptic } = usePlatform()
     const [isResolving, setIsResolving] = useState(false)
+    const [sendSettlement, setSendSettlement] = useState<SendMessageSettlement | null>(null)
     const resolveGuardRef = useRef(false)
     const isSessionThinkingRef = useRef(options?.isSessionThinking ?? false)
     isSessionThinkingRef.current = options?.isSessionThinking ?? false
+    const settlementCallbackRef = useRef(options?.onSettlement)
+    settlementCallbackRef.current = options?.onSettlement
 
     const mutation = useMutation({
         mutationFn: async (input: SendMessageInput) => {
             if (!api) {
                 throw new Error('API unavailable')
             }
-            await api.sendMessage(
-                input.sessionId,
-                input.text,
-                input.localId,
-                input.attachments,
-                input.scheduledAt,
-                input.deliveryMode,
-            )
+            const prepared = input.attachments && input.attachments.length > 0
+                ? await prepareScratchlistAttachmentsForSend(
+                    api,
+                    input.sessionId,
+                    input.attachments,
+                    input.scheduledAt ?? null,
+                )
+                : null
+            // Once the POST starts, a client-side failure can mean the Hub
+            // accepted and queued the message before the response was lost.
+            // Keep staged uploads because the accepted row may still reference
+            // them; deleting here can leave the queued prompt unusable.
+            try {
+                await api.sendMessage(
+                    input.sessionId,
+                    input.text,
+                    input.localId,
+                    prepared?.attachments ?? input.attachments,
+                    input.scheduledAt,
+                    input.deliveryMode,
+                )
+            } catch (error) {
+                const definitePreAcceptanceRejection = error instanceof ApiError
+                    && error.status >= 400
+                    && error.status < 500
+                    && error.status !== 408
+                    && error.status !== 499
+                if (definitePreAcceptanceRejection && prepared && prepared.staged.length > 0) {
+                    await Promise.allSettled(prepared.staged.map((attachment) => api.deleteUploadFile(
+                        input.sessionId,
+                        attachment.path,
+                    )))
+                }
+                throw error
+            }
         },
         onMutate: async (input) => {
             const successStatus = isSessionThinkingRef.current ? 'queued' as const : 'sent' as const
@@ -224,6 +264,9 @@ export function useSendMessage(
             return { successStatus }
         },
         onSuccess: (_, input, context) => {
+            const settlement = { attemptId: input.localId, status: 'success' as const }
+            setSendSettlement(settlement)
+            settlementCallbackRef.current?.(settlement)
             updateMessageStatus(
                 input.sessionId,
                 input.localId,
@@ -233,6 +276,9 @@ export function useSendMessage(
             options?.onSuccess?.(input.sessionId)
         },
         onError: (error, input) => {
+            const settlement = { attemptId: input.localId, status: 'error' as const }
+            setSendSettlement(settlement)
+            settlementCallbackRef.current?.(settlement)
             // Attachment sends keep the legacy failed-bubble UX: the
             // composer-restore path can only re-seat text + scheduledAt,
             // not the uploaded attachment metadata.  Removing the row
@@ -347,7 +393,7 @@ export function useSendMessage(
             scheduledAt,
             deliveryMode,
         })
-        return { attemptId: localId }
+        return { attemptId: localId, sessionId: targetSessionId }
     }
 
     const retryMessage = (localId: string): boolean => {
@@ -387,5 +433,6 @@ export function useSendMessage(
         sendMessage,
         retryMessage,
         isSending: mutation.isPending || isResolving,
+        sendSettlement,
     }
 }

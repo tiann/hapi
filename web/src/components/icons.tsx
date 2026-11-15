@@ -60,6 +60,14 @@ export function PlusIcon(props: IconProps) {
     )
 }
 
+export function PaperclipIcon(props: IconProps) {
+    return createIcon(
+        <path d="M21.44 11.05l-8.49 8.49a5.5 5.5 0 0 1-7.78-7.78l8.49-8.49a3.5 3.5 0 0 1 4.95 4.95l-8.49 8.49a1.5 1.5 0 0 1-2.12-2.12l7.78-7.78" />,
+        props,
+        2
+    )
+}
+
 export function ShareIcon(props: IconProps) {
     return createIcon(
         <path d="M9 8.25H7.5a2.25 2.25 0 0 0-2.25 2.25v9a2.25 2.25 0 0 0 2.25 2.25h9a2.25 2.25 0 0 0 2.25-2.25v-9a2.25 2.25 0 0 0-2.25-2.25H15m0-3-3-3m0 0-3 3m3-3v12" />,
