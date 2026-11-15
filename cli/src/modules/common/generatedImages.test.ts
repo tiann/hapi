@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { clearGeneratedImages, decodeGeneratedImageBase64, detectAudioMimeType, detectDisplayMediaMimeType, detectImageMimeType, detectVideoMimeType, getGeneratedImage, MAX_GENERATED_IMAGE_BASE64_CHARS, MAX_GENERATED_IMAGE_BYTES, readBoundedRegularFile, registerGeneratedImage, registerGeneratedImageFromAcpBlock, registerGeneratedImageFromPath, resolveGeneratedImage, safeAcpFileName } from './generatedImages'
+import { clearGeneratedImages, decodeGeneratedImageBase64, detectAudioMimeType, detectDisplayMediaMimeType, detectImageMimeType, detectVideoMimeType, getGeneratedImage, MAX_GENERATED_IMAGE_BASE64_CHARS, MAX_GENERATED_IMAGE_BYTES, readBoundedRegularFile, registerGeneratedImage, registerGeneratedImageFromAcpBlock, registerGeneratedImageFromPath, resetGeneratedImageMemoryCacheForTesting, resolveGeneratedImage, safeAcpFileName } from './generatedImages'
 
 const execFileAsync = promisify(execFile)
 
@@ -308,15 +308,20 @@ describe('generatedImages', () => {
         clearGeneratedImages()
     })
 
-    it('reloads evicted generated media from its recorded disk path', async () => {
+    it('recovers immutable snapshots after memory eviction and restart even if source file changes', async () => {
         clearGeneratedImages()
         const dir = await mkdtemp(join(tmpdir(), 'hapi-genimg-reload-'))
         try {
             const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x00])
+            const replacementBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xde, 0xad, 0xbe, 0xef])
             const firstPath = join(dir, 'first.png')
             await writeFile(firstPath, pngBytes)
             const first = await registerGeneratedImageFromPath({ id: 'first-id', path: firstPath })
             expect(first).not.toBeNull()
+
+            // Overwrite and remove the original file before eviction; snapshot must remain immutable.
+            await writeFile(firstPath, replacementBytes)
+            await rm(firstPath)
 
             for (let i = 0; i < 105; i++) {
                 registerGeneratedImage({
@@ -332,16 +337,37 @@ describe('generatedImages', () => {
             expect(reloaded?.id).toBe('first-id')
             expect(reloaded?.content.equals(pngBytes)).toBe(true)
 
-            await rm(firstPath)
-            for (let i = 0; i < 105; i++) {
-                registerGeneratedImage({
-                    id: `extra2-${i}`,
-                    path: `extra2-${i}.png`,
-                    mimeType: 'image/png',
-                    bytes: pngBytes,
-                })
-            }
-            expect(await resolveGeneratedImage('first-id')).toBeNull()
+            // Simulate process restart (empty in-memory map, intact disk snapshot cache).
+            resetGeneratedImageMemoryCacheForTesting()
+            expect(getGeneratedImage('first-id')).toBeNull()
+            const afterRestart = await resolveGeneratedImage('first-id')
+            expect(afterRestart?.id).toBe('first-id')
+            expect(afterRestart?.content.equals(pngBytes)).toBe(true)
+        } finally {
+            clearGeneratedImages()
+            await rm(dir, { recursive: true, force: true })
+        }
+    })
+
+    it('never reads untrusted ACP URI paths after memory eviction', async () => {
+        clearGeneratedImages()
+        const dir = await mkdtemp(join(tmpdir(), 'hapi-genimg-acp-'))
+        try {
+            const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x00])
+            const secretPath = join(dir, 'secret.png')
+            await writeFile(secretPath, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x99, 0x99, 0x99, 0x99]))
+
+            const acpImage = registerGeneratedImageFromAcpBlock({
+                type: 'image',
+                mimeType: 'image/png',
+                data: pngBytes.toString('base64'),
+                uri: pathToFileURL(secretPath).href,
+            })
+            expect(acpImage).not.toBeNull()
+
+            resetGeneratedImageMemoryCacheForTesting()
+            const resolved = await resolveGeneratedImage(acpImage!.id)
+            expect(resolved?.content.equals(pngBytes)).toBe(true)
         } finally {
             clearGeneratedImages()
             await rm(dir, { recursive: true, force: true })

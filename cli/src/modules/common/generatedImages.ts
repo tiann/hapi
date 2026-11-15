@@ -1,8 +1,9 @@
-import { basename, extname, isAbsolute, posix } from 'node:path'
-import { constants } from 'node:fs'
+import { basename, extname, join, posix } from 'node:path'
+import { constants, rmSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { fileURLToPath } from 'node:url'
-import { open } from 'node:fs/promises'
-import { randomUUID } from 'node:crypto'
+import { mkdir, open, readdir, rename, rm, stat, utimes, writeFile } from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
 import { asString, isObject } from '@hapi/protocol'
 
 /**
@@ -58,12 +59,15 @@ export const MAX_GENERATED_IMAGE_BYTES = 25 * 1024 * 1024
 export const MAX_GENERATED_IMAGE_BASE64_CHARS = Math.ceil(MAX_GENERATED_IMAGE_BYTES * 4 / 3) + 4
 const MAX_GENERATED_IMAGE_TOTAL_BYTES = 100 * 1024 * 1024
 const MAX_GENERATED_IMAGE_COUNT = 100
-const MAX_GENERATED_IMAGE_SOURCE_COUNT = 2000
+const MAX_GENERATED_IMAGE_DISK_COUNT = 200
+const MAX_GENERATED_IMAGE_DISK_BYTES = 256 * 1024 * 1024
+const MAX_GENERATED_IMAGE_META_BYTES = 64 * 1024
 
-type GeneratedImageSource = {
-    path: string
+type PersistedGeneratedImageMeta = {
+    id: string
     fileName: string
     mimeType: string
+    createdAt: number
 }
 
 /** Decode inline media base64 only after a cheap length gate (avoids huge Buffer allocations). */
@@ -79,8 +83,112 @@ export function decodeGeneratedImageBase64(data: string): Buffer | null {
 }
 
 const generatedImages = new Map<string, GeneratedImageMetadata>()
-const generatedImageSources = new Map<string, GeneratedImageSource>()
+const pendingDiskWrites = new Map<string, Promise<void>>()
+let diskWriteQueue: Promise<void> = Promise.resolve()
+let cacheGeneration = 0
+let tmpWriteSequence = 0
 let generatedImageBytes = 0
+
+function resolveGeneratedMediaCacheDir(): string {
+    const home = process.env.HAPI_HOME
+        ? process.env.HAPI_HOME.replace(/^~/, homedir())
+        : join(homedir(), '.hapi')
+    return join(home, 'cache', 'generated-media')
+}
+
+function diskCacheKey(id: string): string {
+    return createHash('sha256').update(id).digest('hex')
+}
+
+async function writeFileAtomic(targetPath: string, data: string | Uint8Array): Promise<void> {
+    tmpWriteSequence += 1
+    const tmpPath = `${targetPath}.${process.pid}.${tmpWriteSequence}.tmp`
+    try {
+        await writeFile(tmpPath, data)
+        await rename(tmpPath, targetPath)
+    } catch (error) {
+        await rm(tmpPath, { force: true }).catch(() => undefined)
+        throw error
+    }
+}
+
+async function pruneDiskCache(cacheDir: string, generation: number): Promise<void> {
+    if (generation !== cacheGeneration) return
+    const entries = await readdir(cacheDir, { withFileTypes: true }).catch(() => [])
+    const snapshots: Array<{ key: string; binPath: string; metaPath: string; size: number; mtimeMs: number }> = []
+    let totalBytes = 0
+
+    for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith('.bin')) continue
+        const key = entry.name.slice(0, -4)
+        const binPath = join(cacheDir, entry.name)
+        const metaPath = join(cacheDir, `${key}.json`)
+        const info = await stat(binPath).catch(() => null)
+        if (!info || !info.isFile()) continue
+        totalBytes += info.size
+        snapshots.push({ key, binPath, metaPath, size: info.size, mtimeMs: info.mtimeMs })
+    }
+
+    if (snapshots.length <= MAX_GENERATED_IMAGE_DISK_COUNT && totalBytes <= MAX_GENERATED_IMAGE_DISK_BYTES) {
+        return
+    }
+
+    snapshots.sort((a, b) => a.mtimeMs - b.mtimeMs)
+    let remainingCount = snapshots.length
+    for (const snap of snapshots) {
+        if (generation !== cacheGeneration) return
+        if (remainingCount <= MAX_GENERATED_IMAGE_DISK_COUNT && totalBytes <= MAX_GENERATED_IMAGE_DISK_BYTES) {
+            break
+        }
+        await rm(snap.binPath, { force: true }).catch(() => undefined)
+        await rm(snap.metaPath, { force: true }).catch(() => undefined)
+        remainingCount -= 1
+        totalBytes -= snap.size
+    }
+}
+
+function scheduleSnapshotWrite(metadata: GeneratedImageMetadata): void {
+    const generation = cacheGeneration
+    const cacheDir = resolveGeneratedMediaCacheDir()
+    const key = diskCacheKey(metadata.id)
+    const binPath = join(cacheDir, `${key}.bin`)
+    const metaPath = join(cacheDir, `${key}.json`)
+    const payload: PersistedGeneratedImageMeta = {
+        id: metadata.id,
+        fileName: metadata.fileName,
+        mimeType: metadata.mimeType,
+        createdAt: metadata.createdAt
+    }
+    const bytesCopy = Buffer.from(metadata.content)
+
+    const task = diskWriteQueue.then(async () => {
+        if (generation !== cacheGeneration) return
+        await mkdir(cacheDir, { recursive: true })
+        if (generation !== cacheGeneration) return
+        await writeFileAtomic(binPath, bytesCopy)
+        await writeFileAtomic(metaPath, JSON.stringify(payload))
+        await pruneDiskCache(cacheDir, generation)
+    }).catch(() => undefined)
+
+    diskWriteQueue = task
+    pendingDiskWrites.set(metadata.id, task)
+    void task.finally(() => {
+        if (pendingDiskWrites.get(metadata.id) === task) {
+            pendingDiskWrites.delete(metadata.id)
+        }
+    })
+}
+
+function storeInMemoryGeneratedImage(metadata: GeneratedImageMetadata): void {
+    const previous = generatedImages.get(metadata.id)
+    if (previous) {
+        generatedImageBytes -= previous.content.byteLength
+        generatedImages.delete(metadata.id)
+    }
+    generatedImages.set(metadata.id, metadata)
+    generatedImageBytes += metadata.content.byteLength
+    evictOldGeneratedImages()
+}
 
 export function detectImageMimeType(bytes: Uint8Array): string | null {
     if (bytes.length >= 8
@@ -331,11 +439,6 @@ export function registerGeneratedImage(args: { id: string; path: string; mimeTyp
         throw new Error('Unsupported generated media MIME type')
     }
 
-    const previous = generatedImages.get(args.id)
-    if (previous) {
-        generatedImageBytes -= previous.content.byteLength
-    }
-
     const fallbackFileName = basename(args.path) || `${args.id}.png`
     const metadata: GeneratedImageMetadata = {
         id: args.id,
@@ -344,19 +447,8 @@ export function registerGeneratedImage(args: { id: string; path: string; mimeTyp
         mimeType: args.mimeType,
         createdAt: Date.now()
     }
-    generatedImages.set(args.id, metadata)
-    generatedImageBytes += content.byteLength
-
-    if (isAbsolute(args.path)) {
-        generatedImageSources.delete(args.id)
-        generatedImageSources.set(args.id, {
-            path: args.path,
-            fileName: metadata.fileName,
-            mimeType: metadata.mimeType
-        })
-    }
-
-    evictOldGeneratedImages()
+    storeInMemoryGeneratedImage(metadata)
+    scheduleSnapshotWrite(metadata)
 
     return metadata
 }
@@ -370,11 +462,6 @@ function evictOldGeneratedImages(): void {
             generatedImageBytes -= oldest.content.byteLength
         }
         generatedImages.delete(oldestId)
-    }
-    while (generatedImageSources.size > MAX_GENERATED_IMAGE_SOURCE_COUNT) {
-        const oldestSourceId = generatedImageSources.keys().next().value
-        if (!oldestSourceId) break
-        generatedImageSources.delete(oldestSourceId)
     }
 }
 
@@ -393,28 +480,65 @@ export async function resolveGeneratedImage(id: string): Promise<GeneratedImageM
     if (cached) {
         return cached
     }
-    const source = generatedImageSources.get(id)
-    if (!source) {
-        return null
+    const pendingWrite = pendingDiskWrites.get(id)
+    if (pendingWrite) {
+        await pendingWrite
+        const afterWrite = getGeneratedImage(id)
+        if (afterWrite) {
+            return afterWrite
+        }
     }
+
+    const cacheDir = resolveGeneratedMediaCacheDir()
+    const key = diskCacheKey(id)
+    const binPath = join(cacheDir, `${key}.bin`)
+    const metaPath = join(cacheDir, `${key}.json`)
+
     try {
-        const bytes = await readBoundedRegularFile(source.path, MAX_GENERATED_IMAGE_BYTES)
-        return registerGeneratedImage({
+        const metaBytes = await readBoundedRegularFile(metaPath, MAX_GENERATED_IMAGE_META_BYTES)
+        const parsed = JSON.parse(metaBytes.toString('utf8')) as Partial<PersistedGeneratedImageMeta>
+        if (
+            !parsed
+            || parsed.id !== id
+            || typeof parsed.fileName !== 'string'
+            || typeof parsed.mimeType !== 'string'
+            || typeof parsed.createdAt !== 'number'
+            || (!isInlineMediaMimeType(parsed.mimeType) && parsed.mimeType !== 'application/octet-stream')
+        ) {
+            return null
+        }
+        const content = await readBoundedRegularFile(binPath, MAX_GENERATED_IMAGE_BYTES)
+        const metadata: GeneratedImageMetadata = {
             id,
-            path: source.path,
-            fileName: source.fileName,
-            mimeType: source.mimeType,
-            bytes
-        })
+            fileName: parsed.fileName,
+            content,
+            mimeType: parsed.mimeType,
+            createdAt: parsed.createdAt
+        }
+        storeInMemoryGeneratedImage(metadata)
+        const now = new Date()
+        await utimes(binPath, now, now).catch(() => undefined)
+        return metadata
     } catch {
         return null
     }
 }
 
-export function clearGeneratedImages(): void {
+export function resetGeneratedImageMemoryCacheForTesting(): void {
     generatedImages.clear()
-    generatedImageSources.clear()
     generatedImageBytes = 0
+}
+
+export function clearGeneratedImages(): void {
+    cacheGeneration += 1
+    generatedImages.clear()
+    pendingDiskWrites.clear()
+    generatedImageBytes = 0
+    try {
+        rmSync(resolveGeneratedMediaCacheDir(), { recursive: true, force: true })
+    } catch {
+        // ignore cleanup errors in tests
+    }
 }
 
 export async function registerGeneratedImageFromPath(args: {
