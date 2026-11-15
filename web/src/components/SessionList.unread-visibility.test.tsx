@@ -84,14 +84,17 @@ describe('SessionList unread visibility', () => {
         ])
 
         // Inactive projects start collapsed; only the unread row peeks out.
-        expect(screen.getByTestId('session-group-unread-peek')).toBeInTheDocument()
-        expect(screen.getByRole('button', { name: /Unread row/ })).toBeInTheDocument()
+        const unreadRow = screen.getByRole('button', { name: /Unread row/ })
         expect(screen.queryByRole('button', { name: /Read row/ })).toBeNull()
 
         fireEvent.click(screen.getByTitle('/work/quiet'))
-        expect(screen.queryByTestId('session-group-unread-peek')).toBeNull()
-        expect(screen.getByRole('button', { name: /Unread row/ })).toBeInTheDocument()
         expect(screen.getByRole('button', { name: /Read row/ })).toBeInTheDocument()
+        // Toggling the group keeps the unread row mounted in place instead of
+        // moving it between lists, which restarted its icon and spinner.
+        expect(screen.getByRole('button', { name: /Unread row/ })).toBe(unreadRow)
+
+        fireEvent.click(screen.getByTitle('/work/quiet'))
+        expect(screen.getByRole('button', { name: /Unread row/ })).toBe(unreadRow)
     })
 
     it('shows nothing under a collapsed project once everything is read', () => {
@@ -100,7 +103,6 @@ describe('SessionList unread visibility', () => {
             makeSession({ id: 'read', updatedAt: 1000, metadata: { path: '/work/quiet', name: 'Read row' } })
         ])
 
-        expect(screen.queryByTestId('session-group-unread-peek')).toBeNull()
         expect(screen.queryByRole('button', { name: /Read row/ })).toBeNull()
     })
 })
@@ -118,7 +120,6 @@ describe('SessionList unread visibility setting off', () => {
             makeSession({ id: 'unread', updatedAt: 2000, metadata: { path: '/work/quiet', name: 'Unread row' } })
         ])
 
-        expect(screen.queryByTestId('session-group-unread-peek')).toBeNull()
         expect(screen.queryByRole('button', { name: /Unread row/ })).toBeNull()
         expect(screen.queryByRole('button', { name: /Read row/ })).toBeNull()
     })

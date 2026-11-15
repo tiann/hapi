@@ -37,6 +37,8 @@ export const MACHINE_CAPABILITIES = {
     UsageQuery: RPC_METHODS.UsageQuery,
     /** Read-only file/Git/search RPCs available on the long-lived runner. */
     WorkspaceFileAccess: 'workspace-file-access',
+    /** Normalized local-session import transcripts via ListLocalSessions. */
+    LocalSessionImport: 'local-session-import',
 } as const
 
 export type MachineCapability =
@@ -51,6 +53,7 @@ export const CURRENT_MACHINE_CAPABILITIES: readonly MachineCapability[] = [
     MACHINE_CAPABILITIES.StopRunner,
     MACHINE_CAPABILITIES.UsageQuery,
     MACHINE_CAPABILITIES.WorkspaceFileAccess,
+    MACHINE_CAPABILITIES.LocalSessionImport,
 ]
 
 /**

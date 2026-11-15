@@ -307,6 +307,43 @@ export type PiImportSessionsResponse = {
     error?: string
 }
 
+export type ClaudeLocalSessionSummary = {
+    id: string
+    title: string
+    lastUserMessage?: string | null
+    cwd?: string | null
+    file: string
+    modifiedAt: number
+    messageCount?: number
+    hapiSessionId?: string
+}
+
+export type ClaudeLocalSessionsResponse = {
+    success: true
+    sessions: ClaudeLocalSessionSummary[]
+    machineId: string
+} | {
+    success: false
+    error: string
+    sessions: []
+    machineId?: string
+}
+
+export type ClaudeImportResult = {
+    claudeSessionId: string
+    hapiSessionId?: string
+    action?: 'created' | 'updated' | 'unchanged'
+    appended?: number
+    error?: { code: string; message: string }
+}
+
+export type ClaudeImportSessionsResponse = {
+    success: boolean
+    results: ClaudeImportResult[]
+    machineId?: string
+    error?: string
+}
+
 export type OpencodeLocalSessionSummary = {
     id: string
     title: string
