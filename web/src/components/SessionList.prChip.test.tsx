@@ -157,7 +157,14 @@ describe('SessionList PR chip', () => {
         expect(screen.getByRole('dialog', { name: 'Link pull request' })).toBeInTheDocument()
 
         fireEvent.click(header)
-        const panel = document.querySelector('.collapsible-panel')!
+        // Each row now has its own CollapsiblePanel (upstream #2434: rows
+        // render once each, no longer a separate peek list) — a decorative
+        // spacer panel (open={anyRowOpen}) precedes it in DOM order, so a
+        // bare `.collapsible-panel` query would settle the wrong one and
+        // leave this row's own panel permanently unsettled. Target the row's
+        // own panel via its row-id, which is still in the hold-open'd tree.
+        const row = document.querySelector('[data-session-row-id="session-link-pr"]')!
+        const panel = row.closest('.collapsible-panel')!
         fireEvent.transitionEnd(panel)
         expect(screen.getByRole('dialog', { name: 'Link pull request' })).toBeInTheDocument()
 

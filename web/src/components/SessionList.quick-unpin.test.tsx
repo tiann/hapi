@@ -421,22 +421,20 @@ describe('session row hover unpin', () => {
         await waitFor(() => expect(screen.queryByRole('button', { name: 'Unpin' })).toBeNull())
         expect(screen.getByTitle('/work/quiet')).toHaveAttribute('aria-expanded', 'false')
 
-        const unreadPeek = screen.getByTestId('session-group-unread-peek')
-        // The row's scroll-anchor attribute lives on a non-focusable wrapper
-        // <div>, not a native <button> (hapi#238: a focusable PR/issue chip
-        // can't be a descendant of a real button per ARIA) — the actually
-        // focusable element is its role="button" descendant, matching what
-        // SessionList.tsx's own fallback-focus logic drills into.
-        const unreadPeekRow = unreadPeek.querySelector<HTMLElement>('[data-session-scroll-anchor]')
-        const unreadPreviewButton = unreadPeekRow?.querySelector<HTMLElement>('[role="button"], button') ?? null
-        expect(unreadPreviewButton).not.toBeNull()
-
-        const closingPanel = document.querySelector('.collapsible-panel:not([data-open])')!
-        expect(closingPanel).not.toBeNull()
-        fireEvent.transitionEnd(closingPanel)
-
-        expect(closingPanel.querySelector('[data-session-row-id="unread-project-pin"]')).toBeNull()
-        expect(document.activeElement).toBe(unreadPreviewButton)
+        // An unread row keeps its own CollapsiblePanel open even while its
+        // group collapses (upstream fix, #2434: rows render once each, no
+        // longer duplicated into a separate "peek" list) — the row's own
+        // row-level focus effect (SessionItem, via CollapsiblePanelOpenContext)
+        // re-focuses it directly, so there's no separate preview element or
+        // closing-panel dance to account for here anymore. The row's
+        // scroll-anchor attribute lives on a non-focusable wrapper <div>, not
+        // a native <button> (hapi#238: a focusable PR/issue chip can't be a
+        // descendant of a real button per ARIA) — the actually focusable
+        // element is its role="button" descendant.
+        const row = document.querySelector<HTMLElement>('[data-session-row-id="unread-project-pin"]')
+        const rowButton = row?.querySelector<HTMLElement>('[role="button"], button') ?? null
+        expect(rowButton).not.toBeNull()
+        expect(document.activeElement).toBe(rowButton)
     })
 
     it('moves focus to a visible fallback instead of document.body if the unpinned row disappears from the list', async () => {
