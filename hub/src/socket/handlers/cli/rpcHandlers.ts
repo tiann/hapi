@@ -11,12 +11,14 @@ const rpcUnregisterSchema = z.object({
 })
 
 export function registerRpcHandlers(socket: CliSocketWithData, rpcRegistry: RpcRegistry): void {
-    socket.on('rpc-register', (data: unknown) => {
+    socket.on('rpc-register', (data: unknown, callback?: (result: { ok: boolean }) => void) => {
         const parsed = rpcRegisterSchema.safeParse(data)
         if (!parsed.success) {
+            callback?.({ ok: false })
             return
         }
         rpcRegistry.register(socket, parsed.data.method)
+        callback?.({ ok: true })
     })
 
     socket.on('rpc-unregister', (data: unknown) => {

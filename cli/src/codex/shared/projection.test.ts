@@ -12,7 +12,7 @@ describe('shared history projection', () => {
     it('displays async answers as readable user messages while preserving native IDs', async () => {
         const sendUserMessage = vi.fn(); const committed = vi.fn(async () => {});
         const observe = vi.fn();
-        const session = { getMetadata: () => ({}), updateMetadata: vi.fn(), sendUserMessage } as unknown as ApiSessionClient;
+        const session = { getMetadata: () => ({}), updateMetadata: vi.fn(), sendUserMessage , emitMessagesConsumed: vi.fn() } as unknown as ApiSessionClient;
         const projection = new SharedCodexProjection(session, 'thread', committed, undefined, undefined, observe);
         const text = `<send_user_message_question_reply>\n${JSON.stringify([{
             questionItemId: '["request_user_input_async","call_async",0]', question: 'Which client?', answer: 'Web'
@@ -21,12 +21,12 @@ describe('shared history projection', () => {
         await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item });
         expect(observe).toHaveBeenCalledWith('thread', item);
         expect(committed).toHaveBeenCalledWith('client-answer');
-        expect(sendUserMessage).toHaveBeenCalledWith('Which client?\nWeb', undefined, 'client-answer');
+        expect(sendUserMessage).toHaveBeenCalledWith('Which client?\nWeb', undefined, 'client-answer', { acknowledgeConsumption: false });
     });
     it.each([undefined, 'root'])('projects async questions as actionable cards, including active snapshots (parent: %s)', async parentThreadId => {
         const send = vi.fn();
         const observe = vi.fn();
-        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const session = { getMetadata: () => ({}), sendAgentMessage: send , emitMessagesConsumed: vi.fn() } as unknown as ApiSessionClient;
         const projection = new SharedCodexProjection(session, 'thread', async () => {}, parentThreadId, undefined, observe);
         const item = { type: 'agentMessage', id: 'call_async', delivery: 'async', phase: 'final_answer',
             text: 'Which client?\n- Web\n- Terminal', questions: [{ title: 'Which client?', options: ['Web', 'Terminal'] }] };
@@ -48,13 +48,66 @@ describe('shared history projection', () => {
             item: { ...item, id: 'update', text: 'Still working', questions: null } });
         expect(parentThreadId ? send.mock.lastCall![0].message : send.mock.lastCall![0]).toMatchObject({ type: 'message', message: 'Still working' });
     });
+    it('acknowledges child output after projecting its trace rows', async () => {
+        const order: string[] = [];
+        const session = { getMetadata: () => ({}),
+            sendAgentMessage: vi.fn(() => { order.push('message'); }),
+            emitMessagesConsumed: vi.fn(() => { order.push('ack'); }) } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'child', async () => {}, 'parent');
+        await projection.history({ turns: [{ id: 'turn', status: 'completed', items: [
+            { id: 'reply', type: 'agentMessage', text: 'child reply' }
+        ] }] });
+        expect(session.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'agent-run-trace' }),
+            'codex:child:turn:reply:agent_message', { acknowledgeConsumption: false });
+        expect(session.emitMessagesConsumed).toHaveBeenCalledWith(['codex:child:turn:reply:agent_message']);
+        expect(order).toEqual(['message', 'ack']);
+    });
+    it('persists historical user IDs before replay and acknowledges only after inserting the transcript', async () => {
+        const order: string[] = [];
+        const session = { emitMessagesConsumed: vi.fn(() => { order.push('ack'); }), getMetadata: () => ({}), updateMetadata: vi.fn(),
+            sendUserMessage: () => order.push('user'), sendAgentMessage: vi.fn() } as unknown as ApiSessionClient;
+        const batch = vi.fn(async () => { order.push('batch'); });
+        const projection = new SharedCodexProjection(session, 'thread', async () => { order.push('commit'); }, undefined, undefined, undefined, batch);
+        await projection.history({ turns: [{ id: 'turn', status: 'completed', items: [
+            { id: 'native', type: 'userMessage', content: [{ type: 'text', text: 'first' }] },
+            { id: 'remote', clientId: 'local', type: 'userMessage', content: [{ type: 'text', text: 'second' }] }
+        ] }] });
+        expect(batch).toHaveBeenCalledWith(['codex:thread:user:native', 'local']);
+        expect(order[0]).toBe('batch');
+        expect(order).toContain('user');
+        expect(order).not.toContain('commit');
+        expect(order.at(-1)).toBe('ack');
+        expect(session.emitMessagesConsumed).toHaveBeenCalledWith(['codex:thread:user:native', 'local']);
+    });
+    it('replays known user history without rewriting its persisted turn mapping', async () => {
+        let metadata = { conversationHistoryTurns: { local: 'turn' }, conversationHistoryPoints: { local: true } };
+        const updateMetadata = vi.fn((handler: (value: typeof metadata) => typeof metadata) => { metadata = handler(metadata); });
+        const committed = vi.fn(async () => {});
+        const session = { emitMessagesConsumed: vi.fn(), getMetadata: () => metadata, updateMetadata, sendUserMessage: vi.fn(), sendAgentMessage: vi.fn() } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', committed);
+        const history = { turns: [{ id: 'turn', status: 'completed', items: [
+            { id: 'user', clientId: 'local', type: 'userMessage', content: [{ type: 'text', text: 'existing prompt' }] }
+        ] }] };
+        await projection.history(history);
+        projection.reset();
+        await projection.history(history);
+        expect(committed).toHaveBeenCalledWith('local');
+        expect(session.sendUserMessage).toHaveBeenCalledWith('existing prompt', undefined, 'local', { acknowledgeConsumption: false });
+        expect(updateMetadata).not.toHaveBeenCalled();
+        await projection.notification('item/started', { threadId: 'thread', turnId: 'next', item: {
+            id: 'new-user', clientId: 'new-local', type: 'userMessage', content: [{ type: 'text', text: 'new prompt' }]
+        } });
+        expect(updateMetadata).toHaveBeenCalledTimes(1);
+        expect(metadata.conversationHistoryTurns).toMatchObject({ local: 'turn', 'new-local': 'next' });
+        expect(metadata.conversationHistoryPoints).toMatchObject({ local: true, 'new-local': true });
+    });
     it('projects viewed images as inline media tied to the view_image call', async () => {
         const dir = await mkdtemp(join(tmpdir(), 'hapi-view-image-'));
         try {
             const path = join(dir, 'shot.png');
             await writeFile(path, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]));
             const send = vi.fn();
-            const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+            const session = { getMetadata: () => ({}), sendAgentMessage: send, emitMessagesConsumed: vi.fn() } as unknown as ApiSessionClient;
             const projection = new SharedCodexProjection(session, 'thread', async () => {});
             const item = { id: 'exec-view', type: 'imageView', path };
             await projection.notification('item/started', { threadId: 'thread', turnId: 'turn', item });
@@ -71,7 +124,7 @@ describe('shared history projection', () => {
     });
     it.each([undefined, 'root'])('projects command outcomes for live output and replay (parent: %s)', async parentThreadId => {
         const send = vi.fn();
-        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const session = { emitMessagesConsumed: vi.fn(), getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
         const projection = new SharedCodexProjection(session, 'thread', async () => {}, parentThreadId);
         const items = [
             { id: 'failed', type: 'commandExecution', command: 'sleep 100', status: 'failed', exitCode: -1, durationMs: 2000 },
@@ -89,7 +142,7 @@ describe('shared history projection', () => {
     });
     it.each([undefined, 'root'])('publishes only final summaries in live output and history replay (parent: %s)', async parentThreadId => {
         const send = vi.fn();
-        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const session = { emitMessagesConsumed: vi.fn(), getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
         const projection = new SharedCodexProjection(session, 'thread', async () => {}, parentThreadId);
         const footer = 'AGENT_NOTIFY_SUMMARY {"status":"done","summary":"Finished"}';
         const items = [
@@ -112,7 +165,7 @@ describe('shared history projection', () => {
 
     it('keeps plan cards distinct across native turns and stable within each turn', async () => {
         const send = vi.fn();
-        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const session = { emitMessagesConsumed: vi.fn(), getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
         const projection = new SharedCodexProjection(session, 'thread', async () => {});
         for (const turnId of ['first', 'second']) {
             for (const status of ['pending', 'completed']) {
@@ -130,7 +183,7 @@ describe('shared history projection', () => {
 
     it.each([undefined, 'root'])('persists proposals without approval and replays the same IDs (parent: %s)', async parentThreadId => {
         const send = vi.fn();
-        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const session = { emitMessagesConsumed: vi.fn(), getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
         const projection = new SharedCodexProjection(session, 'thread', async () => {}, parentThreadId);
         const item = { id: 'plan', type: 'plan', text: '# Final plan' };
         const params = { threadId: 'thread', turnId: 'turn', item };
@@ -157,7 +210,7 @@ describe('shared history projection', () => {
 
     it('waits for final proposal content after an active snapshot', async () => {
         const send = vi.fn();
-        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const session = { emitMessagesConsumed: vi.fn(), getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
         const projection = new SharedCodexProjection(session, 'thread', async () => {});
         await projection.history({ turns: [{ id: 'turn', status: 'inProgress', items: [{ id: 'plan', type: 'plan', text: 'partial' }] }] });
         expect(send).not.toHaveBeenCalled();
@@ -168,7 +221,7 @@ describe('shared history projection', () => {
 
     it.each([undefined, 'root'])('emits canonical error flags for tools (parent: %s)', async parentThreadId => {
         const send = vi.fn();
-        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const session = { emitMessagesConsumed: vi.fn(), getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
         const projection = new SharedCodexProjection(session, 'thread', async () => {}, parentThreadId);
         for (const failed of [true, false]) {
             for (const type of ['mcpToolCall', 'collabAgentToolCall']) {
@@ -189,7 +242,8 @@ describe('shared history projection', () => {
         const session = {
             getMetadata: () => metadata,
             updateMetadata: (fn: (value: typeof metadata) => typeof metadata) => { metadata = fn(metadata) },
-            sendAgentMessage: vi.fn()
+            sendAgentMessage: vi.fn(),
+            emitMessagesConsumed: vi.fn()
         } as unknown as ApiSessionClient;
         const projection = new SharedCodexProjection(session, 'child', async () => {});
 
@@ -210,7 +264,7 @@ describe('shared history projection', () => {
 
     it('persists a live duration once and never times history snapshots', async () => {
         const send = vi.fn();
-        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const session = { emitMessagesConsumed: vi.fn(), getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
         const projection = new SharedCodexProjection(session, 'thread', async () => {});
         await projection.history({ turns: [{ id: 'old', status: 'completed', items: [{ id: 'old-answer', type: 'agentMessage', text: 'history' }] }] });
         await projection.notification('turn/completed', { threadId: 'thread', turn: { id: 'old', status: 'completed' } }, undefined, 5000);
@@ -226,6 +280,7 @@ describe('shared history projection', () => {
         expect(send.mock.calls.map(([body]) => body).filter(body => body.type === 'turn_duration')).toEqual([
             expect.objectContaining({ durationMs: 39_426, turn_id: 'live' })
         ]);
+        expect(session.emitMessagesConsumed).toHaveBeenCalledWith(['codex:thread:duration:live']);
     });
 
     it('fills the live turn duration with generation time and round output tokens', async () => {
@@ -452,7 +507,7 @@ describe('shared history projection', () => {
 
     it('keeps each turn model through settings changes, reconnect replay and rerouting', async () => {
         const send = vi.fn();
-        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const session = { emitMessagesConsumed: vi.fn(), getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
         const projection = new SharedCodexProjection(session, 'thread', async () => {});
         await projection.notification('turn/started', { threadId: 'thread', turn: { id: 'old' } }, 'model-a');
         await projection.notification('turn/started', { threadId: 'thread', turn: { id: 'new' } }, 'model-b');
@@ -473,7 +528,7 @@ describe('shared history projection', () => {
         expect(inputText([{ type: 'localImage', path: '/tmp/image.png' }])).toBe('[Image: /tmp/image.png]');
     });
     it('replays after hub reconnect using the same durable local id', async () => {
-        const send = vi.fn(); const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const send = vi.fn(); const session = { emitMessagesConsumed: vi.fn(), getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
         const projection = new SharedCodexProjection(session, 'thread', async () => {});
         const snapshot = { turns: [{ id: 'turn', status: 'completed', items: [{ id: 'item', type: 'agentMessage', text: 'complete' }] }] };
         await projection.history(snapshot); projection.reset(); await projection.history(snapshot);
@@ -481,19 +536,19 @@ describe('shared history projection', () => {
     });
     it('does not settle an active snapshot under the final message id', async () => {
         const send = vi.fn();
-        const session = { getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
+        const session = { emitMessagesConsumed: vi.fn(), getMetadata: () => ({}), sendAgentMessage: send } as unknown as ApiSessionClient;
         const projection = new SharedCodexProjection(session, 'thread', async () => {});
         await projection.history({ turns: [{ id: 'turn', status: 'inProgress', items: [{ id: 'item', type: 'agentMessage', text: 'partial' }] }] });
         expect(send).not.toHaveBeenCalled();
         await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item: { id: 'item', type: 'agentMessage', text: 'complete' } });
-        expect(send).toHaveBeenCalledWith(expect.objectContaining({ type: 'message', message: 'complete' }), expect.any(String));
+        expect(send).toHaveBeenCalledWith(expect.objectContaining({ type: 'message', message: 'complete' }), expect.any(String), { acknowledgeConsumption: false });
     });
     it('routes descendant answers into a scoped agent trace, not a root message', async () => {
         const send = vi.fn(); const user = vi.fn(); const committed = vi.fn(async () => {});
-        const session = { getMetadata: () => ({}), sendAgentMessage: send, sendUserMessage: user } as unknown as ApiSessionClient;
+        const session = { emitMessagesConsumed: vi.fn(), getMetadata: () => ({}), sendAgentMessage: send, sendUserMessage: user } as unknown as ApiSessionClient;
         const projection = new SharedCodexProjection(session, 'child', committed, 'root');
         await projection.notification('item/completed', { threadId: 'child', turnId: 'turn', item: { id: 'item', type: 'agentMessage', text: 'child answer' } });
-        expect(send).toHaveBeenCalledWith(expect.objectContaining({ type: 'agent-run-trace', agentId: 'child', message: expect.objectContaining({ message: 'child answer' }) }), expect.any(String));
+        expect(send).toHaveBeenCalledWith(expect.objectContaining({ type: 'agent-run-trace', agentId: 'child', message: expect.objectContaining({ message: 'child answer' }) }), expect.any(String), { acknowledgeConsumption: false });
         await projection.notification('item/completed', { threadId: 'child', turnId: 'turn', item: { id: 'prompt', type: 'userMessage', content: [{ type: 'text', text: 'child prompt' }], clientId: 'cid' } });
         expect(user).not.toHaveBeenCalled(); expect(committed).not.toHaveBeenCalled();
     });
@@ -509,7 +564,7 @@ describe('shared history projection', () => {
                 { type: 'event_msg', payload: { type: 'item_completed', thread_id: 'thread', turn_id: 'turn', item: { type: 'ContextCompaction', id: 'compact' } } }
             ].map(x => JSON.stringify(x) + '\n').join(''));
             const send = vi.fn();
-            const session = { getMetadata: () => ({}), sendAgentMessage: send, sendSessionEvent: vi.fn() } as unknown as ApiSessionClient;
+            const session = { getMetadata: () => ({}), sendAgentMessage: send, sendSessionEvent: vi.fn() , emitMessagesConsumed: vi.fn() } as unknown as ApiSessionClient;
             const source = { id: 'thread', path };
             const projection = new SharedCodexProjection(session, 'thread', async () => {}, undefined, async () => source);
             const item = { type: 'contextCompaction', id: 'compact' };
@@ -539,7 +594,7 @@ describe('shared history projection', () => {
                 { type: 'event_msg', payload: { type: 'item_completed', thread_id: 'thread', turn_id: 'turn', item: { type: 'ContextCompaction', id: 'compact' } } }
             ].map(x => JSON.stringify(x) + '\n').join(''));
             const send = vi.fn();
-            const session = { getMetadata: () => ({}), sendAgentMessage: send, sendSessionEvent: vi.fn() } as unknown as ApiSessionClient;
+            const session = { getMetadata: () => ({}), sendAgentMessage: send, sendSessionEvent: vi.fn() , emitMessagesConsumed: vi.fn() } as unknown as ApiSessionClient;
             const projection = new SharedCodexProjection(session, 'thread', async () => {}, undefined, async () => ({ id: 'thread', path }));
             await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item: { type: 'contextCompaction', id: 'compact' } });
             expect(send.mock.calls[0][0]).toMatchObject({ type: 'compact-summary', summary: '', estimatedTokensAfter: 0, compactionId: 'codex:thread:turn:compact:context_compacted' });
@@ -550,7 +605,7 @@ describe('shared history projection', () => {
     it('keeps native completion identity across duplicates, reset and history, preserving adjacent output', async () => {
         const send = vi.fn(); const sendEvent = vi.fn(); const user = vi.fn();
         const session = { getMetadata: () => ({}), sendAgentMessage: send, sendSessionEvent: sendEvent,
-            sendUserMessage: user, updateMetadata: vi.fn() } as unknown as ApiSessionClient;
+            sendUserMessage: user, updateMetadata: vi.fn() , emitMessagesConsumed: vi.fn() } as unknown as ApiSessionClient;
         const projection = new SharedCodexProjection(session, 'thread', async () => {});
         const item = { type: 'contextCompaction', id: 'compact', startedAtMs: 10, completedAtMs: 20 };
         const params = { threadId: 'thread', turnId: 'turn', item };
@@ -570,12 +625,12 @@ describe('shared history projection', () => {
         await projection.notification('item/completed', { threadId: 'thread', turnId: 'turn', item: {
             type: 'agentMessage', id: 'answer', text: 'Normal answer preserved.', phase: 'final_answer'
         } });
-        expect(user).toHaveBeenCalledWith('Synthetic context summary.', undefined, expect.any(String));
+        expect(user).toHaveBeenCalledWith('Synthetic context summary.', undefined, 'codex:thread:user:user', { acknowledgeConsumption: false });
         expect(send.mock.calls.at(-1)?.[0]).toMatchObject({ type: 'message', message: 'Normal answer preserved.' });
     });
     it.each(['failed', 'interrupted'])('does not turn a failed or interrupted compaction into a completion (%s)', async status => {
         const send = vi.fn(); const sendEvent = vi.fn();
-        const session = { getMetadata: () => ({}), sendAgentMessage: send, sendSessionEvent: sendEvent } as unknown as ApiSessionClient;
+        const session = { getMetadata: () => ({}), sendAgentMessage: send, sendSessionEvent: sendEvent , emitMessagesConsumed: vi.fn() } as unknown as ApiSessionClient;
         const projection = new SharedCodexProjection(session, 'thread', async () => {});
         await projection.notification('item/started', { threadId: 'thread', turnId: 'failed', item: { type: 'contextCompaction', id: 'attempt' } });
         await projection.notification('turn/completed', { threadId: 'thread', turn: { id: 'failed', status } });
@@ -587,7 +642,7 @@ describe('shared history projection', () => {
     });
     it('announces parent compaction start via session event, deduping repeats', async () => {
         const send = vi.fn(); const sendEvent = vi.fn();
-        const session = { getMetadata: () => ({}), sendAgentMessage: send, sendSessionEvent: sendEvent } as unknown as ApiSessionClient;
+        const session = { emitMessagesConsumed: vi.fn(), getMetadata: () => ({}), sendAgentMessage: send, sendSessionEvent: sendEvent } as unknown as ApiSessionClient;
         const projection = new SharedCodexProjection(session, 'thread', async () => {});
         const params = { threadId: 'thread', turnId: 'turn', item: { id: 'c1', type: 'contextCompaction' } };
         await projection.notification('item/started', params);
@@ -601,7 +656,7 @@ describe('shared history projection', () => {
     });
     it('keeps child compaction start as trace with statusText, never a parent status', async () => {
         const send = vi.fn(); const sendEvent = vi.fn();
-        const session = { getMetadata: () => ({}), sendAgentMessage: send, sendSessionEvent: sendEvent } as unknown as ApiSessionClient;
+        const session = { emitMessagesConsumed: vi.fn(), getMetadata: () => ({}), sendAgentMessage: send, sendSessionEvent: sendEvent } as unknown as ApiSessionClient;
         const projection = new SharedCodexProjection(session, 'child', async () => {}, 'root');
         await projection.notification('item/started', { threadId: 'child', turnId: 'turn', item: { id: 'c1', type: 'contextCompaction' } });
         expect(sendEvent).not.toHaveBeenCalled();
@@ -613,7 +668,7 @@ describe('shared history projection', () => {
     });
     it('emits live compaction start but not for completed history replay', async () => {
         const send = vi.fn(); const sendEvent = vi.fn();
-        const session = { getMetadata: () => ({}), sendAgentMessage: send, sendSessionEvent: sendEvent } as unknown as ApiSessionClient;
+        const session = { emitMessagesConsumed: vi.fn(), getMetadata: () => ({}), sendAgentMessage: send, sendSessionEvent: sendEvent } as unknown as ApiSessionClient;
         const projection = new SharedCodexProjection(session, 'thread', async () => {});
         await projection.history({ turns: [{ id: 'turn', status: 'completed',
             items: [{ id: 'c1', type: 'contextCompaction' }] }] });

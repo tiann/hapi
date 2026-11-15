@@ -194,8 +194,11 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         // consumer there (onUserMessage), agent rows do not.
         const callId = getToolCallId(content)
         const stored = callId !== null && !wasStored
-            ? store.messages.upsertToolCallMessage(sid, content, callId, localId, createdAt)
-            : { message: store.messages.addMessage(sid, content, localId, undefined, createdAt), updated: false }
+            ? { ...store.messages.upsertToolCallMessage(sid, content, callId, localId, createdAt), inserted: true }
+            : (() => {
+                const added = store.messages.addMessageWithStatus(sid, content, localId, undefined, createdAt)
+                return { message: added.message, updated: false, inserted: added.inserted }
+            })()
         const msg = stored.message
         // A merged row keeps its first snapshot's createdAt for stable
         // ordering, but derived todo/team versions must strictly advance
@@ -208,9 +211,10 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         // first-snapshot timestamp lets an ACP call with thinking=false and
         // no background task be marked idle despite fresh updates.
         const progressAt = stored.updated ? Date.now() : msg.createdAt
-        // The durable row already exists; replay must not be mistaken for
-        // fresh agent progress or trigger another round of UI updates.
-        if (wasStored) return
+        // Native reconnect/cold-resume replays stable local IDs, and an
+        // insertion conflict also duplicates work that already ran. Neither
+        // may re-ingest summaries, broadcast, or count as fresh progress.
+        if (wasStored || !stored.inserted) return
 
         // A reasoning stream arrives as a series of growing snapshots under one
         // stable id, so a stream should cost one row rather than one per
