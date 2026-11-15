@@ -315,6 +315,63 @@ export function stripOneTimeFlags(args: string[] | undefined): string[] | undefi
  * add or strip rewind flags on the buffer as a side effect of init, /clear,
  * consumeOneTimeFlags or respawn.
  */
+export type ResolvedTranscriptTarget = {
+    /** Native session ID whose transcript holds the active chain. */
+    sessionId: string
+    /** Inherited `--resume-session-at` boundary scoping an unmaterialized fork child. */
+    inheritedBoundary: string | null
+    /** True when falling back from an unmaterialized fork child to its `--resume` source. */
+    isUnmaterializedFork: boolean
+}
+
+/**
+ * Resolves which on-disk native transcript backs history lookups and planning.
+ * Before an unmaterialized fork child writes `<childId>.jsonl` on its first
+ * prompt, `SessionStart:fork` has already bound the child session ID while
+ * `--resume <sourceId> --fork-session` still rides `claudeArgs`; history lives
+ * in the source transcript (scoped to any inherited boundary) until the child
+ * materializes.
+ */
+export function resolveNativeTranscriptTarget(options: {
+    claudeArgs: string[] | undefined
+    sessionId: string | null
+    workingDirectory: string
+}): ResolvedTranscriptTarget | null {
+    const resumeArgId = resumeSessionIdFromClaudeArgs(options.claudeArgs)
+    const materialized = isSessionMaterialized(options.sessionId, options.workingDirectory)
+    if (!materialized && options.claudeArgs?.includes('--fork-session') === true && resumeArgId) {
+        return {
+            sessionId: resumeArgId,
+            inheritedBoundary: resumeSessionAtFromArgs(options.claudeArgs),
+            isUnmaterializedFork: true
+        }
+    }
+    const resolvedId = options.sessionId ?? resumeArgId
+    if (!resolvedId) {
+        return null
+    }
+    return {
+        sessionId: resolvedId,
+        inheritedBoundary: null,
+        isUnmaterializedFork: false
+    }
+}
+
+/**
+ * Clips source transcript turns to `inheritedBoundary` when resolving history
+ * for an unmaterialized fork-at-message child.
+ */
+export function sliceTurnsToForkBoundary(turns: NativeTurn[], inheritedBoundary: string | null): NativeTurn[] {
+    if (!inheritedBoundary) {
+        return turns
+    }
+    const boundaryIndex = turns.findIndex((turn) => turn.endUuid === inheritedBoundary)
+    if (boundaryIndex < 0) {
+        return []
+    }
+    return turns.slice(0, boundaryIndex + 1)
+}
+
 export function deriveSpawnArgs(options: {
     claudeArgs: string[] | undefined
     sessionId: string | null
@@ -339,15 +396,26 @@ export function deriveSpawnArgs(options: {
         // child or making claudeLocal resume a stale `--resume <sourceId>`.
         baseArgs = stripOneTimeFlags(baseArgs)
     }
-    const intentSessionId = options.sessionId ?? resumeSessionIdFromClaudeArgs(options.claudeArgs)
+    const target = resolveNativeTranscriptTarget({
+        claudeArgs: options.claudeArgs,
+        sessionId: options.sessionId,
+        workingDirectory: options.workingDirectory
+    })
     let intentBoundary: string | null = null
-    if (options.intent && intentSessionId) {
-        const turns = readNativeTurns(options.workingDirectory, intentSessionId)
-        const plan = planPendingRewindRestart(options.intent, turns)
-        // A missing or empty transcript can never be truncated: emitting the
-        // boundary only makes claudeRemote throw 'Pending resume-at request
-        // has no native session to resume' in a respawn storm.
-        intentBoundary = plan.action === 'rearm' && turns.length > 0 ? options.intent.keepBoundary : null
+    if (options.intent && target) {
+        const turns = readNativeTurns(options.workingDirectory, target.sessionId)
+        if (target.isUnmaterializedFork) {
+            // An unmaterialized fork child cannot have proven its rewind on
+            // disk yet, and edits in the source session must not suppress the
+            // child's requested truncation boundary.
+            intentBoundary = turns.length > 0 ? options.intent.keepBoundary : null
+        } else {
+            const plan = planPendingRewindRestart(options.intent, turns)
+            // A missing or empty transcript can never be truncated: emitting the
+            // boundary only makes claudeRemote throw 'Pending resume-at request
+            // has no native session to resume' in a respawn storm.
+            intentBoundary = plan.action === 'rearm' && turns.length > 0 ? options.intent.keepBoundary : null
+        }
     }
     const boundary = intentBoundary ?? forkBoundary
     const args = boundary ? [...(baseArgs ?? []), '--resume-session-at', boundary] : baseArgs

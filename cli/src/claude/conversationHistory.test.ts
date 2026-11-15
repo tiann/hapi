@@ -431,6 +431,36 @@ describe('deriveSpawnArgs', () => {
             })
         })
     })
+
+    it('prefers the intent boundary from the source transcript when a SessionStart hook bound an unmaterialized child id', () => {
+        const root = unprovenRoot()
+        withConfigDir(root, () => {
+            expect(deriveSpawnArgs({
+                claudeArgs: ['--resume', 'sess-1', '--fork-session', '--resume-session-at', 'fork-boundary'],
+                sessionId: 'unmaterialized-child-id',
+                intent,
+                workingDirectory: CWD
+            })).toEqual({
+                args: ['--resume', 'sess-1', '--fork-session', '--resume-session-at', 'as1'],
+                boundary: 'as1'
+            })
+        })
+    })
+
+    it('keeps the child intent boundary even if the parent transcript no longer contains droppedPrompts', () => {
+        const root = appliedRoot()
+        withConfigDir(root, () => {
+            expect(deriveSpawnArgs({
+                claudeArgs: ['--resume', 'sess-1', '--fork-session'],
+                sessionId: 'unmaterialized-child-id',
+                intent,
+                workingDirectory: CWD
+            })).toEqual({
+                args: ['--resume', 'sess-1', '--fork-session', '--resume-session-at', 'as1'],
+                boundary: 'as1'
+            })
+        })
+    })
 })
 
 describe('resumeSessionAtFromArgs', () => {
