@@ -44,27 +44,32 @@ export function decodeFilePathHref(href: string): string | null {
 }
 
 export function decodeFilePathCandidateHref(href: string): string | null {
-    // Decode scheme bypass spellings (`HAPI-FILE-CANDIDATE:`, percent-encoded)
-    // before extracting the payload. Empty payload → null (caller fails closed).
-    let value = href.trimStart()
+    const trimmed = href.trimStart()
+    const colonIdx = trimmed.indexOf(':')
+    if (colonIdx <= 0) return null
+
+    // Normalize only the scheme prefix (case, control/whitespace, percent-encoded
+    // bypass spellings) so the payload is decoded exactly once.
+    let scheme = trimmed.slice(0, colonIdx)
     for (let i = 0; i < 2; i++) {
         try {
-            const next = decodeURIComponent(value)
-            if (next === value) break
-            value = next
+            const next = decodeURIComponent(scheme)
+            if (next === scheme) break
+            scheme = next
         } catch {
             break
         }
     }
-    const match = /^hapi-file-candidate:(.*)$/i.exec(value)
-    if (!match) return null
-    const payload = match[1]
+    if (scheme.replace(/[\x00-\x1F\x7F\s]/g, '').toLowerCase() !== 'hapi-file-candidate') {
+        return null
+    }
+
+    const payload = trimmed.slice(colonIdx + 1)
     if (!payload) return null
     try {
-        // Payload may already be decoded by the loop above; retry is a no-op.
         return decodeURIComponent(payload)
     } catch {
-        return payload
+        return null
     }
 }
 

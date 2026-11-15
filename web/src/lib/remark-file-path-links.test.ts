@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { decodeFilePathHref, remarkFilePathLinks } from '@/lib/remark-file-path-links'
+import { decodeFilePathCandidateHref, decodeFilePathHref, remarkFilePathLinks } from '@/lib/remark-file-path-links'
 
 type TestNode = {
     type: string
@@ -208,11 +208,23 @@ describe('remarkFilePathLinks — explicit markdown links', () => {
         ['file:///D:/3d/result.json', 'D:/3d/result.json'],
         ['file:///D:/3d/foo%20bar/preview.png#L10', 'D:/3d/foo bar/preview.png'],
         ['file://localhost/C:/Users/dev/docs/handoff.md:12:4', 'C:/Users/dev/docs/handoff.md'],
+        ['file:///D:/3d/report%2520draft.md', 'D:/3d/report%20draft.md'],
     ])('rewrites local Windows file URI %s to hapi-file-candidate', (url, expectedPath) => {
         const nodes = transformNodes([linkNode(url)])
         const link = nodes.find((node) => node.type === 'link')!
         expect(decodeFilePathHref(link.url as string)).toBeNull()
         expect(link.url).toBe('hapi-file-candidate:' + encodeURIComponent(expectedPath))
+    })
+
+    it('decodes hapi-file-candidate payloads exactly once while normalizing scheme bypasses', () => {
+        expect(
+            decodeFilePathCandidateHref('hapi-file-candidate:' + encodeURIComponent('D:/3d/report%20draft.md'))
+        ).toBe('D:/3d/report%20draft.md')
+        expect(
+            decodeFilePathCandidateHref('hapi%2Dfile%2Dcandidate:' + encodeURIComponent('D:/3d/report%20draft.md'))
+        ).toBe('D:/3d/report%20draft.md')
+        expect(decodeFilePathCandidateHref('hapi-file-candidate:')).toBeNull()
+        expect(decodeFilePathCandidateHref('hapi-file-candidate:D:/3d/%ZZbad.md')).toBeNull()
     })
 
     it('unwraps local POSIX file:/// URI to scheme-less path for <A> workspace check', () => {
