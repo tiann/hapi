@@ -205,6 +205,34 @@ describe('remarkFilePathLinks — explicit markdown links', () => {
     })
 
     it.each([
+        ['file:///D:/3d/result.json', 'D:/3d/result.json'],
+        ['file:///D:/3d/foo%20bar/preview.png#L10', 'D:/3d/foo bar/preview.png'],
+        ['file://localhost/C:/Users/dev/docs/handoff.md:12:4', 'C:/Users/dev/docs/handoff.md'],
+    ])('rewrites local Windows file URI %s to hapi-file-candidate', (url, expectedPath) => {
+        const nodes = transformNodes([linkNode(url)])
+        const link = nodes.find((node) => node.type === 'link')!
+        expect(decodeFilePathHref(link.url as string)).toBeNull()
+        expect(link.url).toBe('hapi-file-candidate:' + encodeURIComponent(expectedPath))
+    })
+
+    it('unwraps local POSIX file:/// URI to scheme-less path for <A> workspace check', () => {
+        const nodes = transformNodes([linkNode('file:///home/ada/coding/hapi/docs/a.md#section')])
+        const link = nodes.find((node) => node.type === 'link')!
+        expect(decodeFilePathHref(link.url as string)).toBeNull()
+        expect(link.url).toBe('/home/ada/coding/hapi/docs/a.md')
+    })
+
+    it.each([
+        'file://remote-server/share/a.md',
+        'file:///D:/3d/unknown.bin',
+        'file:///D:/3d/%ZZbad.md',
+    ])('leaves unsafe or non-allowlisted file URI %s untouched', (url) => {
+        const nodes = transformNodes([linkNode(url)])
+        const link = nodes.find((node) => node.type === 'link')!
+        expect(link.url).toBe(url)
+    })
+
+    it.each([
         'https://example.com/a.md',
         'mailto:dev@example.com',
         'obsidian://open?file=a.md',

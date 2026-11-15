@@ -13,8 +13,10 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, cleanup, act, waitFor } from '@testing-library/react'
 import React from 'react'
 import { defaultComponents, classifyScheme, denyOnlyTransform, UriConfirmProvider } from '@/components/assistant-ui/markdown-text'
+import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import { HappyChatProvider, type HappyChatContextValue } from '@/components/AssistantChat/context'
 import { I18nProvider } from '@/lib/i18n-context'
+import { encodeBase64 } from '@/lib/utils'
 import type { ApiClient } from '@/api/client'
 
 const navigate = vi.fn()
@@ -245,6 +247,39 @@ describe('markdown <A> component — click handler', () => {
         fireEvent.click(document.querySelector('a')!)
         expect(openSpy).not.toHaveBeenCalled()
         openSpy.mockRestore()
+    })
+})
+
+describe('MarkdownRenderer end-to-end local file:/// links', () => {
+    it('routes in-workspace file:/// links to FilePathAnchor and keeps out-of-workspace links inert', () => {
+        render(
+            <I18nProvider>
+                <HappyChatProvider value={chatContext({ metadata: { path: 'D:\\3d', host: 'win' } })}>
+                    <MarkdownRenderer
+                        content={'[result](file:///D:/3d/result.json) and [outside](file:///C:/Windows/win.ini)'}
+                    />
+                </HappyChatProvider>
+            </I18nProvider>
+        )
+
+        const resultLink = screen.getByRole('link', { name: 'result' })
+        const href = new URL(resultLink.getAttribute('href')!, 'https://hapi.example')
+        expect(href.pathname).toBe('/sessions/session-1/file')
+        expect(href.searchParams.get('path')).toBe(encodeBase64('D:/3d/result.json'))
+
+        fireEvent.click(resultLink)
+        expect(navigate).toHaveBeenCalledWith({
+            to: '/sessions/$sessionId/file',
+            params: { sessionId: 'session-1' },
+            search: {
+                path: encodeBase64('D:/3d/result.json'),
+                origin: 'chat',
+            },
+            resetScroll: false,
+        })
+
+        expect(screen.queryByRole('link', { name: 'outside' })).toBeNull()
+        expect(screen.getByText('outside')).toBeTruthy()
     })
 })
 

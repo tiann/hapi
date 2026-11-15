@@ -113,6 +113,22 @@ function isWindowsAbsolutePath(value: string): boolean {
     return /^[A-Za-z]:[\\/]/.test(value)
 }
 
+function extractLocalFileUriPath(rawUrl: string): string | null {
+    const match = /^file:\/\/(?:localhost)?(\/.*)$/i.exec(rawUrl)
+    if (!match) return null
+    let decoded: string
+    try {
+        decoded = decodeURIComponent(match[1])
+    } catch {
+        return null
+    }
+    const stripped = stripLineSuffix(decoded)
+    if (/^\/[A-Za-z]:[\\/]/.test(stripped)) {
+        return stripped.slice(1)
+    }
+    return stripped
+}
+
 function shouldLinkPath(value: string): boolean {
     if (value.includes('://')) return false
     const path = stripLineSuffix(value)
@@ -227,6 +243,20 @@ function rewriteFileLinkNode(node: MarkdownNode): void {
     const withoutMeta = cut >= 0 ? url.slice(0, cut) : url
 
     const target = stripLineSuffix(withoutMeta)
+
+    const fileUriPath = extractLocalFileUriPath(withoutMeta)
+    if (fileUriPath) {
+        if (isWindowsAbsolutePath(fileUriPath)) {
+            if (hasKnownFileExtension(fileUriPath)) {
+                node.url = createFileCandidateHref(fileUriPath)
+            }
+            return
+        }
+        if (fileUriPath.startsWith('/') && !fileUriPath.startsWith('//') && hasKnownFileExtension(fileUriPath)) {
+            node.url = fileUriPath
+        }
+        return
+    }
 
     // Absolute paths (POSIX or Windows) need chat workspace metadata for
     // containment — leave POSIX for <A>; encode Windows as candidate so

@@ -1,4 +1,4 @@
-import { basename, extname } from 'node:path'
+import { basename, extname, isAbsolute, posix } from 'node:path'
 import { constants } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { open } from 'node:fs/promises'
@@ -58,6 +58,13 @@ export const MAX_GENERATED_IMAGE_BYTES = 25 * 1024 * 1024
 export const MAX_GENERATED_IMAGE_BASE64_CHARS = Math.ceil(MAX_GENERATED_IMAGE_BYTES * 4 / 3) + 4
 const MAX_GENERATED_IMAGE_TOTAL_BYTES = 100 * 1024 * 1024
 const MAX_GENERATED_IMAGE_COUNT = 100
+const MAX_GENERATED_IMAGE_SOURCE_COUNT = 2000
+
+type GeneratedImageSource = {
+    path: string
+    fileName: string
+    mimeType: string
+}
 
 /** Decode inline media base64 only after a cheap length gate (avoids huge Buffer allocations). */
 export function decodeGeneratedImageBase64(data: string): Buffer | null {
@@ -72,6 +79,7 @@ export function decodeGeneratedImageBase64(data: string): Buffer | null {
 }
 
 const generatedImages = new Map<string, GeneratedImageMetadata>()
+const generatedImageSources = new Map<string, GeneratedImageSource>()
 let generatedImageBytes = 0
 
 export function detectImageMimeType(bytes: Uint8Array): string | null {
@@ -339,6 +347,15 @@ export function registerGeneratedImage(args: { id: string; path: string; mimeTyp
     generatedImages.set(args.id, metadata)
     generatedImageBytes += content.byteLength
 
+    if (isAbsolute(args.path)) {
+        generatedImageSources.delete(args.id)
+        generatedImageSources.set(args.id, {
+            path: args.path,
+            fileName: metadata.fileName,
+            mimeType: metadata.mimeType
+        })
+    }
+
     evictOldGeneratedImages()
 
     return metadata
@@ -354,14 +371,49 @@ function evictOldGeneratedImages(): void {
         }
         generatedImages.delete(oldestId)
     }
+    while (generatedImageSources.size > MAX_GENERATED_IMAGE_SOURCE_COUNT) {
+        const oldestSourceId = generatedImageSources.keys().next().value
+        if (!oldestSourceId) break
+        generatedImageSources.delete(oldestSourceId)
+    }
 }
 
 export function getGeneratedImage(id: string): GeneratedImageMetadata | null {
-    return generatedImages.get(id) ?? null
+    const existing = generatedImages.get(id) ?? null
+    if (!existing) {
+        return null
+    }
+    generatedImages.delete(id)
+    generatedImages.set(id, existing)
+    return existing
+}
+
+export async function resolveGeneratedImage(id: string): Promise<GeneratedImageMetadata | null> {
+    const cached = getGeneratedImage(id)
+    if (cached) {
+        return cached
+    }
+    const source = generatedImageSources.get(id)
+    if (!source) {
+        return null
+    }
+    try {
+        const bytes = await readBoundedRegularFile(source.path, MAX_GENERATED_IMAGE_BYTES)
+        return registerGeneratedImage({
+            id,
+            path: source.path,
+            fileName: source.fileName,
+            mimeType: source.mimeType,
+            bytes
+        })
+    } catch {
+        return null
+    }
 }
 
 export function clearGeneratedImages(): void {
     generatedImages.clear()
+    generatedImageSources.clear()
     generatedImageBytes = 0
 }
 
@@ -407,7 +459,19 @@ export function safeAcpFileName(uri: string | undefined | null): string | null {
     if (!uri) return null
     try {
         if (uri.startsWith('file://')) {
-            return basename(fileURLToPath(uri)).slice(0, 255) || null
+            try {
+                return basename(fileURLToPath(uri)).slice(0, 255) || null
+            } catch {
+                const parsed = new URL(uri)
+                if (
+                    parsed.protocol === 'file:'
+                    && (!parsed.hostname || parsed.hostname.toLowerCase() === 'localhost')
+                    && parsed.pathname.startsWith('/')
+                ) {
+                    return posix.basename(decodeURIComponent(parsed.pathname)).slice(0, 255) || null
+                }
+                return null
+            }
         }
         if (/^https?:\/\//i.test(uri)) {
             const name = basename(new URL(uri).pathname)

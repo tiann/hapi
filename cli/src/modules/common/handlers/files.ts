@@ -6,7 +6,7 @@ import type { FileReadResponse, GeneratedImageResponse } from '@hapi/protocol/ap
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager'
 import { validatePath } from '../pathSecurity'
-import { getGeneratedImage, readBoundedRegularFile } from '../generatedImages'
+import { readBoundedRegularFile, resolveGeneratedImage } from '../generatedImages'
 import { getErrorMessage, rpcError } from '../rpcResponses'
 
 interface ReadFileRequest {
@@ -81,7 +81,7 @@ export function registerFileHandlers(rpcHandlerManager: RpcHandlerManager, worki
     rpcHandlerManager.registerHandler<ReadGeneratedImageRequest, ReadGeneratedImageResponse>(RPC_METHODS.ReadGeneratedImage, async (data) => {
         logger.debug('Read generated image request:', data.id)
 
-        const image = getGeneratedImage(data.id)
+        const image = await resolveGeneratedImage(data.id)
         if (!image) {
             return rpcError('Generated image not found')
         }
