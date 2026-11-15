@@ -30,6 +30,7 @@ const harness = vi.hoisted(() => {
     let reconnectHandlers: Array<() => void | Promise<void>> = []
     let queuedSignalWrites: Array<{ mutator: (m: any) => any; signal: AbortSignal }> = []
     let autoResolveNextLocal = false
+    let flushGate: Promise<void> | null = null
 
     const resetHub = () => {
         localMetadata = {}
@@ -42,6 +43,7 @@ const harness = vi.hoisted(() => {
         reconnectHandlers = []
         queuedSignalWrites = []
         autoResolveNextLocal = false
+        flushGate = null
     }
 
     const sessionStub: any = {
@@ -67,6 +69,7 @@ const harness = vi.hoisted(() => {
         getAgentState: () => agentState,
         flushMetadata: async () => {
             const pending = queuedSignalWrites.splice(0)
+            if (flushGate) await flushGate
             if (flushResult) {
                 for (const item of pending) {
                     if (item.signal.aborted) continue
@@ -133,6 +136,8 @@ const harness = vi.hoisted(() => {
         get refreshResult() { return refreshResult },
         set refreshResult(v: boolean) { refreshResult = v },
         get refreshCalls() { return refreshCalls },
+        get flushGate() { return flushGate },
+        set flushGate(v: Promise<void> | null) { flushGate = v },
         get autoResolveNextLocal() { return autoResolveNextLocal },
         set autoResolveNextLocal(v: boolean) { autoResolveNextLocal = v },
         triggerReconnect: async () => {
@@ -500,6 +505,60 @@ describe('runClaude unknown rewind outcome before local mode', () => {
             expect(harness.localSpawns).toHaveLength(1)
         })
         expect(harness.localSpawns[0]!.claudeArgs).toEqual(['--resume-session-at', 'as-1'])
+    })
+
+    it('holds the local spawn while rewind persistence is in flight and leaves history actions unblocked', { timeout: 20_000 }, async () => {
+        writeUnprovenNativeTranscript('native-a')
+        const baseMeta = {
+            claudeSessionId: 'native-a',
+            capabilities: { conversationHistory: { rewindToMessage: true } },
+            conversationHistoryEntryIds: { 'local-1': 'uuid-1', 'local-2': 'uuid-2' }
+        }
+        harness.localMetadata = structuredClone(baseMeta)
+        harness.hubMetadata = structuredClone(baseMeta)
+
+        const prevSeq = harness.runnerSeq
+        const runPromise = runClaude({
+            workingDirectory: WORK_DIR,
+            claudeArgs: ['--resume', 'native-a'],
+            startedBy: 'runner',
+            startingMode: 'remote'
+        })
+        runPromise.catch((error) => { harness.runError = error })
+        await vi.waitFor(() => {
+            expect(harness.runnerSeq).toBeGreaterThan(prevSeq)
+            expect(harness.rpcHandlers.get(RPC_METHODS.RewindConversation)).toBeDefined()
+            expect(harness.rpcHandlers.get(RPC_METHODS.Switch)).toBeDefined()
+        }, { timeout: 10_000, interval: 20 })
+        harness.hookHandlers!.onSessionHook('native-a', { hook_event_name: 'SessionStart', source: 'resume' })
+
+        // The metadata write is delayed: the flush stays unresolved.
+        let releaseFlush!: () => void
+        harness.flushGate = new Promise<void>((resolve) => { releaseFlush = resolve })
+        const rewindPromise = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!({ messageLocalId: 'local-2' })
+        await new Promise((resolve) => setTimeout(resolve, 30))
+
+        await harness.rpcHandlers.get(RPC_METHODS.Switch)?.({})
+        await new Promise((resolve) => setTimeout(resolve, 60))
+        expect(harness.localSpawns).toHaveLength(0)
+
+        releaseFlush()
+        await expect(rewindPromise).resolves.toEqual({ success: true, truncateFromLocalId: 'local-2' })
+        await vi.waitFor(() => {
+            expect(harness.localSpawns).toHaveLength(1)
+        })
+        expect(harness.localSpawns[0]!.claudeArgs).toEqual(['--resume-session-at', 'as-1'])
+
+        // The local prompt proves the branch; the rewind must not stay armed.
+        writeAppliedNativeTranscript('native-a')
+        harness.hookHandlers!.onSessionHook('native-a', { hook_event_name: 'UserPromptSubmit' })
+        await vi.waitFor(() => {
+            expect(harness.localMetadata.claudeRewind).toBeUndefined()
+        })
+        await expect(harness.rpcHandlers.get(RPC_METHODS.ForkConversation)!({})).resolves.toMatchObject({
+            nativeSessionId: 'native-a',
+            forkSession: true
+        })
     })
 
     it('awaits pre-launch settlement on initial local launch and refuses spawn when settlement fails', { timeout: 20_000 }, async () => {

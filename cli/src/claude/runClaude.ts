@@ -384,6 +384,10 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     let pendingRewind: ClaudeRewindIntent | null = null;
     let unknownRewindIntent: ClaudeRewindIntent | null = null;
     let settleInFlight: Promise<boolean> | null = null;
+    // Set while a rewind intent write awaits hub confirmation. Local launch
+    // must wait for it: until the flush resolves the outcome is neither
+    // persisted nor an unknown intent that settle could verify.
+    let rewindPersistInFlight: Promise<void> | null = null;
 
     const armSettledRewind = async (intent: ClaudeRewindIntent): Promise<void> => {
         const claudeSession = currentSessionRef.current;
@@ -689,10 +693,23 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         // cannot overwrite or delete an intent that landed on the hub, and
         // settle the unknown outcome from hub metadata instead.
         const intentWriteAbort = new AbortController();
-        session.updateMetadata((metadata) => ({ ...metadata, claudeRewind: intent }), { signal: intentWriteAbort.signal });
-        if (!await session.flushMetadata(60_000)) {
-            intentWriteAbort.abort();
-            unknownRewindIntent = intent;
+        let releasePersist!: () => void
+        rewindPersistInFlight = new Promise<void>((resolve) => { releasePersist = resolve })
+        let persisted: boolean
+        try {
+            session.updateMetadata((metadata) => ({ ...metadata, claudeRewind: intent }), { signal: intentWriteAbort.signal });
+            persisted = await session.flushMetadata(60_000)
+            if (!persisted) {
+                intentWriteAbort.abort();
+                unknownRewindIntent = intent;
+            }
+        } finally {
+            // Release only after unknownRewindIntent is recorded so a waiting
+            // local launch sees the failure and settles it.
+            rewindPersistInFlight = null
+            releasePersist()
+        }
+        if (!persisted) {
             return rejected('Rewind intent could not be persisted')
         }
         // The proof handler must be live for THIS respawn too: the previous
@@ -700,6 +717,14 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         // settle must never detach the notification the next one depends on.
         claudeSession.onNativeInputSubmitted = handleNativeInputSubmitted
         pendingRewind = intent
+        // The session may have switched to local while the write was in
+        // flight (remote cleanup nulls requestRemoteRestart). The local spawn
+        // waited for persistence and derives its boundary from the durable
+        // intent, so it stays armed for the proof instead of a failed restart.
+        if (!claudeSession.requestRemoteRestart) {
+            logger.debug(`[claude] rewind ${messageLocalId}: persisted after local handoff; armed on local session`)
+            return { success: true, truncateFromLocalId: messageLocalId }
+        }
         logger.debug(`[claude] rewind ${messageLocalId}: boundary ${keepBoundary}, ${droppedPrompts.length} dropped turn(s); restarting Claude`)
         await claudeSession.requestRemoteRestart()
         return { success: true, truncateFromLocalId: messageLocalId }
@@ -936,6 +961,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         return !unknownRewindIntent;
     };
     const settleNow = async (): Promise<boolean> => {
+        if (rewindPersistInFlight) await rewindPersistInFlight;
         if (!unknownRewindIntent) return awaitSettleInFlight();
         if (await trySettleUnknownRewind()) return true;
         return awaitSettleInFlight();
