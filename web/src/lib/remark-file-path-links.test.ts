@@ -223,6 +223,18 @@ describe('remarkFilePathLinks — explicit markdown links', () => {
     })
 
     it.each([
+        ['file:///home/ada/coding/hapi/docs/report%23draft.md', '/home/ada/coding/hapi/docs/report%23draft.md'],
+        ['file:///home/ada/coding/hapi/docs/report%3Fdraft.md', '/home/ada/coding/hapi/docs/report%3Fdraft.md'],
+        ['file:///home/ada/coding/hapi/docs/report%25draft.md', '/home/ada/coding/hapi/docs/report%25draft.md'],
+        ['file:///home/ada/coding/hapi/docs/report%23draft.md#section', '/home/ada/coding/hapi/docs/report%23draft.md'],
+    ])('preserves encoded delimiters when unwrapping local POSIX file URI %s', (url, expectedHref) => {
+        const nodes = transformNodes([linkNode(url)])
+        const link = nodes.find((node) => node.type === 'link')!
+        expect(decodeFilePathHref(link.url as string)).toBeNull()
+        expect(link.url).toBe(expectedHref)
+    })
+
+    it.each([
         'file://remote-server/share/a.md',
         'file:///D:/3d/unknown.bin',
         'file:///D:/3d/%ZZbad.md',

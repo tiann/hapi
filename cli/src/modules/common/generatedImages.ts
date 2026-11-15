@@ -62,6 +62,8 @@ const MAX_GENERATED_IMAGE_COUNT = 100
 const MAX_GENERATED_IMAGE_DISK_COUNT = 200
 const MAX_GENERATED_IMAGE_DISK_BYTES = 256 * 1024 * 1024
 const MAX_GENERATED_IMAGE_META_BYTES = 64 * 1024
+const MAX_PENDING_SNAPSHOT_COUNT = 32
+const MAX_PENDING_SNAPSHOT_BYTES = MAX_GENERATED_IMAGE_TOTAL_BYTES
 
 type PersistedGeneratedImageMeta = {
     id: string
@@ -84,12 +86,19 @@ export function decodeGeneratedImageBase64(data: string): Buffer | null {
 
 const generatedImages = new Map<string, GeneratedImageMetadata>()
 const pendingDiskWrites = new Map<string, Promise<void>>()
+const writtenDiskFilePaths = new Set<string>()
 let diskWriteQueue: Promise<void> = Promise.resolve()
 let cacheGeneration = 0
 let tmpWriteSequence = 0
 let generatedImageBytes = 0
+let pendingDiskWriteCount = 0
+let pendingDiskWriteBytes = 0
 
 function resolveGeneratedMediaCacheDir(): string {
+    const overrideDir = process.env.HAPI_GENERATED_MEDIA_CACHE_DIR?.trim()
+    if (overrideDir) {
+        return overrideDir.replace(/^~/, homedir())
+    }
     const home = process.env.HAPI_HOME
         ? process.env.HAPI_HOME.replace(/^~/, homedir())
         : join(homedir(), '.hapi')
@@ -142,12 +151,22 @@ async function pruneDiskCache(cacheDir: string, generation: number): Promise<voi
         }
         await rm(snap.binPath, { force: true }).catch(() => undefined)
         await rm(snap.metaPath, { force: true }).catch(() => undefined)
+        writtenDiskFilePaths.delete(snap.binPath)
+        writtenDiskFilePaths.delete(snap.metaPath)
         remainingCount -= 1
         totalBytes -= snap.size
     }
 }
 
 function scheduleSnapshotWrite(metadata: GeneratedImageMetadata): void {
+    const byteLength = metadata.content.byteLength
+    if (
+        pendingDiskWriteCount >= MAX_PENDING_SNAPSHOT_COUNT
+        || pendingDiskWriteBytes + byteLength > MAX_PENDING_SNAPSHOT_BYTES
+    ) {
+        return
+    }
+
     const generation = cacheGeneration
     const cacheDir = resolveGeneratedMediaCacheDir()
     const key = diskCacheKey(metadata.id)
@@ -159,20 +178,38 @@ function scheduleSnapshotWrite(metadata: GeneratedImageMetadata): void {
         mimeType: metadata.mimeType,
         createdAt: metadata.createdAt
     }
-    const bytesCopy = Buffer.from(metadata.content)
+
+    pendingDiskWriteCount += 1
+    pendingDiskWriteBytes += byteLength
 
     const task = diskWriteQueue.then(async () => {
         if (generation !== cacheGeneration) return
         await mkdir(cacheDir, { recursive: true })
         if (generation !== cacheGeneration) return
-        await writeFileAtomic(binPath, bytesCopy)
+        writtenDiskFilePaths.add(binPath)
+        writtenDiskFilePaths.add(metaPath)
+        await writeFileAtomic(binPath, metadata.content)
+        if (generation !== cacheGeneration) {
+            await rm(binPath, { force: true }).catch(() => undefined)
+            writtenDiskFilePaths.delete(binPath)
+            return
+        }
         await writeFileAtomic(metaPath, JSON.stringify(payload))
+        if (generation !== cacheGeneration) {
+            await rm(binPath, { force: true }).catch(() => undefined)
+            await rm(metaPath, { force: true }).catch(() => undefined)
+            writtenDiskFilePaths.delete(binPath)
+            writtenDiskFilePaths.delete(metaPath)
+            return
+        }
         await pruneDiskCache(cacheDir, generation)
     }).catch(() => undefined)
 
     diskWriteQueue = task
     pendingDiskWrites.set(metadata.id, task)
     void task.finally(() => {
+        pendingDiskWriteCount = Math.max(0, pendingDiskWriteCount - 1)
+        pendingDiskWriteBytes = Math.max(0, pendingDiskWriteBytes - byteLength)
         if (pendingDiskWrites.get(metadata.id) === task) {
             pendingDiskWrites.delete(metadata.id)
         }
@@ -529,16 +566,23 @@ export function resetGeneratedImageMemoryCacheForTesting(): void {
     generatedImageBytes = 0
 }
 
+export async function flushGeneratedImageDiskWritesForTesting(): Promise<void> {
+    await diskWriteQueue
+}
+
 export function clearGeneratedImages(): void {
     cacheGeneration += 1
     generatedImages.clear()
     pendingDiskWrites.clear()
     generatedImageBytes = 0
-    try {
-        rmSync(resolveGeneratedMediaCacheDir(), { recursive: true, force: true })
-    } catch {
-        // ignore cleanup errors in tests
+    for (const filePath of writtenDiskFilePaths) {
+        try {
+            rmSync(filePath, { force: true })
+        } catch {
+            // ignore cleanup errors in tests
+        }
     }
+    writtenDiskFilePaths.clear()
 }
 
 export async function registerGeneratedImageFromPath(args: {

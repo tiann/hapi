@@ -1,17 +1,36 @@
-import { describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { execFile, spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { promisify } from 'node:util'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { clearGeneratedImages, decodeGeneratedImageBase64, detectAudioMimeType, detectDisplayMediaMimeType, detectImageMimeType, detectVideoMimeType, getGeneratedImage, MAX_GENERATED_IMAGE_BASE64_CHARS, MAX_GENERATED_IMAGE_BYTES, readBoundedRegularFile, registerGeneratedImage, registerGeneratedImageFromAcpBlock, registerGeneratedImageFromPath, resetGeneratedImageMemoryCacheForTesting, resolveGeneratedImage, safeAcpFileName } from './generatedImages'
+import { clearGeneratedImages, decodeGeneratedImageBase64, detectAudioMimeType, detectDisplayMediaMimeType, detectImageMimeType, detectVideoMimeType, flushGeneratedImageDiskWritesForTesting, getGeneratedImage, MAX_GENERATED_IMAGE_BASE64_CHARS, MAX_GENERATED_IMAGE_BYTES, readBoundedRegularFile, registerGeneratedImage, registerGeneratedImageFromAcpBlock, registerGeneratedImageFromPath, resetGeneratedImageMemoryCacheForTesting, resolveGeneratedImage, safeAcpFileName } from './generatedImages'
 
 const execFileAsync = promisify(execFile)
 
 describe('generatedImages', () => {
+    let prevCacheDirOverride: string | undefined
+    let suiteCacheDir: string
+
+    beforeAll(async () => {
+        prevCacheDirOverride = process.env.HAPI_GENERATED_MEDIA_CACHE_DIR
+        suiteCacheDir = await mkdtemp(join(tmpdir(), 'hapi-genimg-suite-'))
+        process.env.HAPI_GENERATED_MEDIA_CACHE_DIR = suiteCacheDir
+    })
+
+    afterAll(async () => {
+        clearGeneratedImages()
+        await flushGeneratedImageDiskWritesForTesting()
+        if (prevCacheDirOverride === undefined) {
+            delete process.env.HAPI_GENERATED_MEDIA_CACHE_DIR
+        } else {
+            process.env.HAPI_GENERATED_MEDIA_CACHE_DIR = prevCacheDirOverride
+        }
+        await rm(suiteCacheDir, { recursive: true, force: true })
+    })
     it('detects supported image MIME types from file bytes', () => {
         expect(detectImageMimeType(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))).toBe('image/png')
         expect(detectImageMimeType(Buffer.from([0xff, 0xd8, 0xff, 0xdb]))).toBe('image/jpeg')
@@ -371,6 +390,84 @@ describe('generatedImages', () => {
         } finally {
             clearGeneratedImages()
             await rm(dir, { recursive: true, force: true })
+        }
+    })
+
+    it('clearGeneratedImages does not wipe sibling worker snapshot files in a shared cache directory', async () => {
+        const prevOverride = process.env.HAPI_GENERATED_MEDIA_CACHE_DIR
+        const prevHome = process.env.HAPI_HOME
+        const sharedHome = await mkdtemp(join(tmpdir(), 'hapi-genimg-shared-'))
+        delete process.env.HAPI_GENERATED_MEDIA_CACHE_DIR
+        process.env.HAPI_HOME = sharedHome
+        const sharedCacheDir = join(sharedHome, 'cache', 'generated-media')
+        mkdirSync(sharedCacheDir, { recursive: true })
+        const foreignBin = join(sharedCacheDir, 'foreign-worker.bin')
+        writeFileSync(foreignBin, Buffer.from([1, 2, 3, 4]))
+        try {
+            const pngBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x00])
+            const own = registerGeneratedImage({
+                id: 'own-worker-img',
+                path: 'own.png',
+                mimeType: 'image/png',
+                bytes: pngBytes,
+            })
+            expect(own).not.toBeNull()
+            await flushGeneratedImageDiskWritesForTesting()
+            await resolveGeneratedImage('own-worker-img')
+
+            clearGeneratedImages()
+            expect(await readdir(sharedCacheDir)).toContain('foreign-worker.bin')
+        } finally {
+            clearGeneratedImages()
+            await flushGeneratedImageDiskWritesForTesting()
+            if (prevHome === undefined) delete process.env.HAPI_HOME
+            else process.env.HAPI_HOME = prevHome
+            if (prevOverride === undefined) delete process.env.HAPI_GENERATED_MEDIA_CACHE_DIR
+            else process.env.HAPI_GENERATED_MEDIA_CACHE_DIR = prevOverride
+            await rm(sharedHome, { recursive: true, force: true })
+        }
+    })
+
+    it('bounds pending async disk snapshot writes during synchronous large bursts', async () => {
+        const prevOverride = process.env.HAPI_GENERATED_MEDIA_CACHE_DIR
+        const prevHome = process.env.HAPI_HOME
+        const burstHome = await mkdtemp(join(tmpdir(), 'hapi-genimg-burst-'))
+        delete process.env.HAPI_GENERATED_MEDIA_CACHE_DIR
+        process.env.HAPI_HOME = burstHome
+        clearGeneratedImages()
+        try {
+            const chunk = Buffer.alloc(16 * 1024 * 1024)
+            chunk[0] = 0x89
+            chunk[1] = 0x50
+            chunk[2] = 0x4e
+            chunk[3] = 0x47
+            chunk[4] = 0x0d
+            chunk[5] = 0x0a
+            chunk[6] = 0x1a
+            chunk[7] = 0x0a
+
+            for (let i = 0; i < 8; i++) {
+                registerGeneratedImage({
+                    id: `burst-${i}`,
+                    path: `burst-${i}.png`,
+                    mimeType: 'image/png',
+                    bytes: chunk,
+                })
+            }
+
+            await flushGeneratedImageDiskWritesForTesting()
+            const cacheDir = join(burstHome, 'cache', 'generated-media')
+            const binFiles = (await readdir(cacheDir)).filter((name) => name.endsWith('.bin'))
+            // 8 x 16 MiB = 128 MiB exceeds the 100 MiB pending snapshot budget, so later items must be skipped.
+            expect(binFiles.length).toBe(6)
+        } finally {
+            clearGeneratedImages()
+            await flushGeneratedImageDiskWritesForTesting()
+            if (prevHome === undefined) delete process.env.HAPI_HOME
+            else process.env.HAPI_HOME = prevHome
+            if (prevOverride === undefined) delete process.env.HAPI_GENERATED_MEDIA_CACHE_DIR
+            else process.env.HAPI_GENERATED_MEDIA_CACHE_DIR = prevOverride
+            await rm(burstHome, { recursive: true, force: true })
         }
     })
 })

@@ -281,6 +281,35 @@ describe('MarkdownRenderer end-to-end local file:/// links', () => {
         expect(screen.queryByRole('link', { name: 'outside' })).toBeNull()
         expect(screen.getByText('outside')).toBeTruthy()
     })
+
+    it('preserves #, ?, and % in POSIX file:/// links through MarkdownRenderer to FilePathAnchor', () => {
+        render(
+            <I18nProvider>
+                <HappyChatProvider value={chatContext({ metadata: { path: '/home/ada/coding/hapi', host: 'linux' } })}>
+                    <MarkdownRenderer
+                        content={
+                            '[hash](file:///home/ada/coding/hapi/docs/report%23draft.md) '
+                            + '[query](file:///home/ada/coding/hapi/docs/report%3Fdraft.md) '
+                            + '[pct](file:///home/ada/coding/hapi/docs/report%25draft.md)'
+                        }
+                    />
+                </HappyChatProvider>
+            </I18nProvider>
+        )
+
+        const expectedPaths = [
+            ['hash', '/home/ada/coding/hapi/docs/report#draft.md'],
+            ['query', '/home/ada/coding/hapi/docs/report?draft.md'],
+            ['pct', '/home/ada/coding/hapi/docs/report%draft.md'],
+        ] as const
+
+        for (const [name, expectedPath] of expectedPaths) {
+            const link = screen.getByRole('link', { name })
+            const href = new URL(link.getAttribute('href')!, 'https://hapi.example')
+            expect(href.pathname).toBe('/sessions/session-1/file')
+            expect(href.searchParams.get('path')).toBe(encodeBase64(expectedPath))
+        }
+    })
 })
 
 // ── relative / no-scheme hrefs — fail-closed (#1452) ─────────────────────────

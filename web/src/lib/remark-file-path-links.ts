@@ -227,6 +227,10 @@ function linkInlineCodeNode(node: MarkdownNode): MarkdownNode | null {
 //
 // Still rejects: POSIX/Windows abs / `~/` (need session cwd — handled fail-closed in <A>),
 // `../`, scheme-bearing URLs, and non-file targets (`/settings`, `#section`).
+function encodePosixHrefPath(path: string): string {
+    return path.replace(/[%#?\s]/g, (ch) => encodeURIComponent(ch))
+}
+
 function rewriteFileLinkNode(node: MarkdownNode): void {
     if (node.type !== 'link') return
     const url = node.url
@@ -253,7 +257,7 @@ function rewriteFileLinkNode(node: MarkdownNode): void {
             return
         }
         if (fileUriPath.startsWith('/') && !fileUriPath.startsWith('//') && hasKnownFileExtension(fileUriPath)) {
-            node.url = fileUriPath
+            node.url = encodePosixHrefPath(fileUriPath)
         }
         return
     }
