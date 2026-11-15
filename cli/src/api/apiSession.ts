@@ -187,6 +187,7 @@ type PendingOutboundEvent = {
 const MAX_PENDING_DROPPABLE_EVENTS = 256
 const MATERIALIZATION_RETRY_MIN_MS = 1_000
 const MATERIALIZATION_RETRY_MAX_MS = 30_000
+const UPDATE_METADATA_ACK_TIMEOUT_MS = 5_000
 
 function isTransientMaterializationError(error: unknown): boolean {
     if (!axios.isAxiosError(error)) {
@@ -1351,11 +1352,17 @@ export class ApiSessionClient extends EventEmitter {
                     throw new Error('Socket not connected')
                 }
 
-                const answer = await this.socket.emitWithAck('update-metadata', {
-                    sid: this.sessionId,
-                    expectedVersion: this.metadataVersion,
-                    metadata: updated
-                }) as unknown
+                let answer: unknown
+                try {
+                    answer = await this.socket.timeout(UPDATE_METADATA_ACK_TIMEOUT_MS).emitWithAck('update-metadata', {
+                        sid: this.sessionId,
+                        expectedVersion: this.metadataVersion,
+                        metadata: updated
+                    })
+                } catch (error) {
+                    if (signal?.aborted || this.isClosed()) return
+                    throw error
+                }
                 if (signal?.aborted || this.isClosed()) return
 
                 try {

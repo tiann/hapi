@@ -11,6 +11,7 @@ const socketHarness = vi.hoisted(() => ({
         trigger: (event: string, ...args: any[]) => void
         triggerConnect: () => void
         triggerConnectError: () => void
+        timeoutEmits: Array<{ event: string; ms: number }>
         emitWithAckImpl: (event: string, ...args: unknown[]) => Promise<unknown>
     }>
 }))
@@ -30,6 +31,7 @@ vi.mock('socket.io-client', () => ({
             trigger: () => {},
             triggerConnect: () => {},
             triggerConnectError: () => {},
+            timeoutEmits: [] as Array<{ event: string; ms: number }>,
             emitWithAckImpl: async () => ({})
         }
         state.trigger = (event: string, ...args: any[]) => {
@@ -65,8 +67,23 @@ vi.mock('socket.io-client', () => ({
                 return socket
             },
             emitWithAck: async (event: string, ...args: unknown[]) => state.emitWithAckImpl(event, ...args),
-            timeout: () => ({
-                emitWithAck: async (event: string, ...args: unknown[]) => state.emitWithAckImpl(event, ...args)
+            timeout: (ms: number) => ({
+                emitWithAck: async (event: string, ...args: unknown[]) => {
+                    state.timeoutEmits.push({ event, ms })
+                    let timer: ReturnType<typeof setTimeout> | undefined
+                    try {
+                        return await Promise.race([
+                            state.emitWithAckImpl(event, ...args),
+                            new Promise<never>((_, reject) => {
+                                timer = setTimeout(() => reject(new Error('operation has timed out')), ms)
+                            })
+                        ])
+                    } finally {
+                        if (timer !== undefined) {
+                            clearTimeout(timer)
+                        }
+                    }
+                }
             }),
             connect: () => {
                 state.connectCalls += 1
@@ -1279,5 +1296,131 @@ describe('ApiSessionClient metadata cancellation and reconnect ordering', () => 
         // Without stopping on closed state, backoff keeps retrying every 250-1000ms forever.
         await new Promise((r) => setTimeout(r, 1_100))
         expect(handlerCalls).toBe(callsAtClose)
+    })
+
+    it('retries timed-out updateMetadata ack, releases metadataLock, and allows subsequent writes', async () => {
+        vi.useFakeTimers()
+        try {
+            socketHarness.sockets.length = 0
+            axiosHarness.get.mockResolvedValue({ data: { messages: [] } })
+            const client = new ApiSessionClient('token', createSession({
+                namespace: 'default',
+                metadata: { path: '/tmp', host: 'h', flavor: 'claude' },
+                metadataVersion: 1
+            }))
+            const socket = socketHarness.sockets[0]!
+            const firstEmitStarted = deferred<void>()
+            let secondEmitAcked = false
+            let thirdEmitAcked = false
+            const seenNames: Array<unknown> = []
+
+            let emitCalls = 0
+            socket.emitWithAckImpl = async (event, payload) => {
+                if (event !== 'update-metadata') return {}
+                emitCalls += 1
+                const req = payload as { expectedVersion: number; metadata: Record<string, unknown> }
+                seenNames.push(req.metadata.name)
+                if (emitCalls === 1) {
+                    firstEmitStarted.resolve()
+                    return await new Promise<never>(() => {})
+                }
+                if (emitCalls === 2) {
+                    secondEmitAcked = true
+                    return {
+                        result: 'success',
+                        version: req.expectedVersion + 1,
+                        metadata: req.metadata
+                    }
+                }
+                thirdEmitAcked = true
+                return {
+                    result: 'success',
+                    version: req.expectedVersion + 1,
+                    metadata: req.metadata
+                }
+            }
+
+            client.updateMetadata((meta) => ({ ...meta, name: 'first' }))
+            client.updateMetadata((meta) => ({ ...meta, name: 'second' }))
+
+            await firstEmitStarted.promise
+            // Before the fix, update-metadata uses untimed emitWithAck, so advancing past 5s + backoff never retries.
+            await vi.advanceTimersByTimeAsync(5_000)
+            await vi.advanceTimersByTimeAsync(1_100)
+            await vi.advanceTimersByTimeAsync(10)
+
+            expect(socket.timeoutEmits.filter((entry) => entry.event === 'update-metadata')).toEqual([
+                { event: 'update-metadata', ms: 5_000 },
+                { event: 'update-metadata', ms: 5_000 },
+                { event: 'update-metadata', ms: 5_000 }
+            ])
+            expect(secondEmitAcked).toBe(true)
+            expect(thirdEmitAcked).toBe(true)
+            expect(seenNames).toEqual(['first', 'first', 'second'])
+            expect(client.getMetadata()?.name).toBe('second')
+            client.close()
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it('stops retrying an aborted updateMetadata write after ack timeout and releases metadataLock', async () => {
+        vi.useFakeTimers()
+        try {
+            socketHarness.sockets.length = 0
+            axiosHarness.get.mockResolvedValue({ data: { messages: [] } })
+            const client = new ApiSessionClient('token', createSession({
+                namespace: 'default',
+                metadata: { path: '/tmp', host: 'h', flavor: 'claude' },
+                metadataVersion: 1
+            }))
+            const socket = socketHarness.sockets[0]!
+            const firstEmitStarted = deferred<void>()
+            let subsequentAcked = false
+            const emittedNames: Array<unknown> = []
+
+            let emitCalls = 0
+            socket.emitWithAckImpl = async (event, payload) => {
+                if (event !== 'update-metadata') return {}
+                emitCalls += 1
+                const req = payload as { expectedVersion: number; metadata: Record<string, unknown> }
+                emittedNames.push(req.metadata.name)
+                if (emitCalls === 1) {
+                    firstEmitStarted.resolve()
+                    return await new Promise<never>(() => {})
+                }
+                subsequentAcked = true
+                return {
+                    result: 'success',
+                    version: req.expectedVersion + 1,
+                    metadata: req.metadata
+                }
+            }
+
+            const abortController = new AbortController()
+            client.updateMetadata(
+                (meta) => ({ ...meta, name: 'aborted-intent' }),
+                { signal: abortController.signal }
+            )
+
+            await firstEmitStarted.promise
+            abortController.abort()
+            client.updateMetadata((meta) => ({ ...meta, name: 'after-abort' }))
+
+            await vi.advanceTimersByTimeAsync(5_000)
+            await vi.advanceTimersByTimeAsync(1_100)
+            await vi.advanceTimersByTimeAsync(10)
+
+            expect(subsequentAcked).toBe(true)
+            expect(socket.timeoutEmits.filter((entry) => entry.event === 'update-metadata')).toEqual([
+                { event: 'update-metadata', ms: 5_000 },
+                { event: 'update-metadata', ms: 5_000 }
+            ])
+            expect(emittedNames).toEqual(['aborted-intent', 'after-abort'])
+            expect(client.getMetadata()?.name).toBe('after-abort')
+            client.close()
+        } finally {
+            vi.useRealTimers()
+        }
     })
 })
