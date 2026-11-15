@@ -17,6 +17,7 @@ import type { UsageQueryAgent, UsageQueryAgentSettings, UsageQueryResult, UsageQ
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
 import type { AgentFlavor, BackgroundTask, CodexCollaborationMode, CopilotAgentMode, DecryptedMessage, ExternalRef, PermissionMode, Session, SyncEvent } from '@hapi/protocol/types'
+import type { ListLocalSessionsRpcResponse, LocalSessionFlavor } from '@hapi/protocol/localTranscript'
 import { hasConversationMessageContent, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import type { Server } from 'socket.io'
 import { randomUUID, createHash } from 'node:crypto'
@@ -6076,6 +6077,14 @@ export class SyncEngine {
 
     async archiveCodexSessionForMachine(machineId: string, sessionId: string): Promise<RpcArchiveCodexSessionResponse> {
         return await this.rpcGateway.archiveCodexSessionForMachine(machineId, sessionId)
+    }
+
+    async listLocalSessionsForMachine(machineId: string, params: {
+        flavor: LocalSessionFlavor
+        cwd?: string | null
+        sessionIds?: string[] | null
+    }): Promise<ListLocalSessionsRpcResponse> {
+        return await this.rpcGateway.listLocalSessionsForMachine(machineId, params)
     }
 
     async listCursorModelsForSession(sessionId: string): Promise<RpcListCursorModelsResponse> {

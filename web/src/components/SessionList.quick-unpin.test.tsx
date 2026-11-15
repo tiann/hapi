@@ -382,6 +382,63 @@ describe('session row hover unpin', () => {
         expect(document.activeElement).toBe(screen.getByRole('button', { name: /Title project-pin/ }))
     })
 
+    it('keeps focus on the unread preview after transitionend when keyboard-unpinning an unselected unread inactive project pin', async () => {
+        let finishUnpin: () => void = () => {}
+        const setSessionPinMode = vi.fn(() => new Promise<void>((resolve) => {
+            finishUnpin = resolve
+        }))
+        const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+        const { rerenderSessions } = renderList(
+            [
+                makeSession({
+                    id: 'unread-project-pin',
+                    active: false,
+                    pinned: true,
+                    updatedAt: 1000,
+                    metadata: { path: '/work/quiet', name: 'Title unread-project-pin' },
+                }),
+            ],
+            { setSessionPinMode },
+            { client }
+        )
+
+        const unpinButton = screen.getByRole('button', { name: 'Unpin' })
+        unpinButton.focus()
+        fireEvent.click(unpinButton, { detail: 0 })
+        await waitFor(() => expect(setSessionPinMode).toHaveBeenCalledWith('unread-project-pin', 'none'))
+
+        await act(async () => finishUnpin())
+        rerenderSessions([
+            makeSession({
+                id: 'unread-project-pin',
+                active: false,
+                pinned: false,
+                updatedAt: 1000,
+                metadata: { path: '/work/quiet', name: 'Title unread-project-pin' },
+            }),
+        ])
+
+        await waitFor(() => expect(screen.queryByRole('button', { name: 'Unpin' })).toBeNull())
+        expect(screen.getByTitle('/work/quiet')).toHaveAttribute('aria-expanded', 'false')
+
+        const unreadPeek = screen.getByTestId('session-group-unread-peek')
+        // The row's scroll-anchor attribute lives on a non-focusable wrapper
+        // <div>, not a native <button> (hapi#238: a focusable PR/issue chip
+        // can't be a descendant of a real button per ARIA) — the actually
+        // focusable element is its role="button" descendant, matching what
+        // SessionList.tsx's own fallback-focus logic drills into.
+        const unreadPeekRow = unreadPeek.querySelector<HTMLElement>('[data-session-scroll-anchor]')
+        const unreadPreviewButton = unreadPeekRow?.querySelector<HTMLElement>('[role="button"], button') ?? null
+        expect(unreadPreviewButton).not.toBeNull()
+
+        const closingPanel = document.querySelector('.collapsible-panel:not([data-open])')!
+        expect(closingPanel).not.toBeNull()
+        fireEvent.transitionEnd(closingPanel)
+
+        expect(closingPanel.querySelector('[data-session-row-id="unread-project-pin"]')).toBeNull()
+        expect(document.activeElement).toBe(unreadPreviewButton)
+    })
+
     it('moves focus to a visible fallback instead of document.body if the unpinned row disappears from the list', async () => {
         let finishUnpin: () => void = () => {}
         const setSessionPinMode = vi.fn(() => new Promise<void>((resolve) => {

@@ -336,12 +336,19 @@ type MachineGroup = {
 export const UNKNOWN_MACHINE_ID = '__unknown__'
 export const GROUP_SESSION_PREVIEW_LIMIT = DEFAULT_SESSION_PREVIEW_LIMIT
 
+const MACHINE_LOCAL_AGENT_FLAVORS = new Set(['codex', 'claude', 'pi', 'opencode'])
+
 export function getSessionDedupKey(session: SessionSummary): string | null {
     const agentId = session.metadata?.agentSessionId?.trim()
     if (!agentId) return null
     // Scope by flavor: agentSessionId is flattened from native ids and can retain a
     // stale cross-flavor value (codexSessionId ?? claudeSessionId ?? ...).
-    return `${session.metadata?.flavor ?? 'unknown'}:${agentId}`
+    const flavor = session.metadata?.flavor ?? 'unknown'
+    // These native ids live in one machine's local store, and the hub keeps
+    // sessions recorded on different machines apart: hiding one behind the
+    // other would make an imported session look deleted.
+    const machineId = MACHINE_LOCAL_AGENT_FLAVORS.has(flavor) ? session.metadata?.machineId : undefined
+    return machineId ? `${flavor}:${machineId}:${agentId}` : `${flavor}:${agentId}`
 }
 
 export function deduplicateSessionsByAgentId(sessions: SessionSummary[], selectedSessionId?: string | null): SessionSummary[] {
@@ -1124,6 +1131,7 @@ export function SessionListSearch(props: {
 
 // A row with an open menu or dialog holds its collapsed panel mounted.
 const CollapsiblePanelHoldContext = createContext<((held: boolean) => void) | null>(null)
+const CollapsiblePanelOpenContext = createContext(true)
 
 type QuickUnpinFocusTarget = { sessionId: string; pending: boolean }
 const QuickUnpinFocusContext = createContext<{ current: QuickUnpinFocusTarget | null } | null>(null)
@@ -1149,9 +1157,11 @@ function CollapsiblePanel(props: { open: boolean; children: ReactNode }) {
             }}
         >
             <div className="collapsible-inner">
-                <CollapsiblePanelHoldContext.Provider value={hold}>
-                    {!settled || holds > 0 ? props.children : null}
-                </CollapsiblePanelHoldContext.Provider>
+                <CollapsiblePanelOpenContext.Provider value={props.open}>
+                    <CollapsiblePanelHoldContext.Provider value={hold}>
+                        {!settled || holds > 0 ? props.children : null}
+                    </CollapsiblePanelHoldContext.Provider>
+                </CollapsiblePanelOpenContext.Provider>
             </div>
         </div>
     )
@@ -1217,6 +1227,7 @@ const SessionItem = memo(function SessionItem(props: {
     const rowRef = useRef<HTMLDivElement>(null)
     const rowButtonRef = useRef<HTMLDivElement>(null)
     const quickUnpinFocusRef = useContext(QuickUnpinFocusContext)
+    const panelOpen = useContext(CollapsiblePanelOpenContext)
     const {
         status: cursorChatStoreStatus,
         isApplicable: cursorChatStoreApplicable,
@@ -1328,14 +1339,20 @@ const SessionItem = memo(function SessionItem(props: {
         const target = quickUnpinFocusRef?.current
         if (!target || target.sessionId !== s.id) return
         const activeEl = document.activeElement
-        if (activeEl && activeEl !== document.body && !rowRef.current?.contains(activeEl)) {
+        const activeRowId = activeEl instanceof Element
+            ? activeEl.closest('[data-session-row-id]')?.getAttribute('data-session-row-id')
+            : null
+        if (activeEl && activeEl !== document.body && activeRowId !== s.id) {
             quickUnpinFocusRef.current = null
+            return
+        }
+        if (!panelOpen || rowRef.current?.closest('.collapsible-panel:not([data-open])')) {
             return
         }
         if (activeEl !== rowButtonRef.current) {
             rowButtonRef.current?.focus({ preventScroll: true })
         }
-    }, [s.id, isPinned, quickUnpinPending, quickUnpinFocusRef])
+    }, [s.id, isPinned, quickUnpinPending, quickUnpinFocusRef, panelOpen])
 
     // Hover archive: an idle session archives in one click with a Reopen toast;
     // one that is replying, waiting on approval or running background work
