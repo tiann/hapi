@@ -71,7 +71,9 @@ function Pipeline({ state, api, concise, search, running = false, sessionId = st
         terminalToolDisplayMode: 'compact', showSessionSummaryInChat: false, disabled: false,
         onRefresh: () => {}, onForkConversation: async () => {}, isLatestCompletedBoundary: id => id === boundary,
         hasMoreMessages: state.hasMore, isSyncingTail: false, isLoadingMoreMessages: false,
-        loadOlderMessagesPreservingScroll: async () => 'terminal-stop' }}>
+        loadOlderMessagesPreservingScroll: async () => 'terminal-stop',
+        jumpToPrompt: async () => false, loadingPromptMessageId: null, scrollToConversationStart: async () => false,
+        isLoadingConversationStart: false, isNavigationInFlight: false }}>
         <output data-testid="boundary">{boundary ?? 'none'}</output>
         <output data-testid="immutable">{canonicalSnapshot === JSON.stringify(canonical) ? 'true' : 'false'}</output>
         <ThreadPrimitive.Root><ThreadPrimitive.Messages components={{ UserMessage: () => null, AssistantMessage: HappyAssistantMessage }} /></ThreadPrimitive.Root>

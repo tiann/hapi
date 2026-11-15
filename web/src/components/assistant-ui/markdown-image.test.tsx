@@ -21,6 +21,11 @@ function chatValue(api: ApiClient, metadataPath: string | null = '/home/ada/codi
         isSyncingTail: false,
         isLoadingMoreMessages: false,
         loadOlderMessagesPreservingScroll: async () => 'loaded',
+        jumpToPrompt: async () => false,
+        loadingPromptMessageId: null,
+        scrollToConversationStart: async () => false,
+        isLoadingConversationStart: false,
+        isNavigationInFlight: false,
     }
 }
 
