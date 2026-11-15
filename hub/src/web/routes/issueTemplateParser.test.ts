@@ -114,6 +114,38 @@ body:
         expect(template.reason).toContain('some-future-field-type')
     })
 
+    it('marks the whole template unsupported for a top-level type declaration, not silently dropped', () => {
+        const yaml = `
+name: Bug report
+type: Bug
+body:
+  - type: input
+    id: contact
+    attributes:
+      label: Contact Details
+`
+        const template = parseIssueFormYaml('typed.yml', yaml)
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.reason).toContain('type')
+    })
+
+    it('marks the whole template unsupported for a top-level projects declaration, not silently dropped', () => {
+        const yaml = `
+name: Bug report
+projects: ["acme/2"]
+body:
+  - type: input
+    id: contact
+    attributes:
+      label: Contact Details
+`
+        const template = parseIssueFormYaml('projected.yml', yaml)
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.reason).toContain('projects')
+    })
+
     it('is unsupported for invalid YAML', () => {
         const template = parseIssueFormYaml('broken.yml', ': : not yaml {{{')
         expect(template.kind).toBe('unsupported')

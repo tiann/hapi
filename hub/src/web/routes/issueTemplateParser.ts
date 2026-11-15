@@ -71,6 +71,21 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
         return { id, name, kind: 'unsupported', reason: 'Template has no body elements' }
     }
 
+    // GitHub issue forms can also declare a top-level `type:` (issue type)
+    // or `projects:` (project board auto-assignment) — neither survives
+    // Boards' own create path (hub only ever submits title/body/labels/
+    // assignees), so silently proceeding would create an issue missing
+    // metadata the template author expected every submission to carry.
+    // Same "fail loudly" principle as an unsupported body-element type
+    // above: the whole template is excluded rather than rendered with
+    // one of its declared properties silently dropped (review finding).
+    if (asString(obj.type)) {
+        return { id, name, kind: 'unsupported', reason: 'Uses a form feature not supported yet (type)' }
+    }
+    if (asStringArray(obj.projects).length > 0) {
+        return { id, name, kind: 'unsupported', reason: 'Uses a form feature not supported yet (projects)' }
+    }
+
     // Seeded with every EXPLICIT id in the form up front — a field whose id
     // is generated later in iteration order must not collide with an
     // explicit id declared further down the body (generateFieldId only
