@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import { getProjectPath } from './utils/path'
+import { findClaudeSessionFileSync } from './utils/transcriptEntry'
 import { claudeCheckSession } from './utils/claudeCheckSession'
 import { isExternalUserMessage } from '@/api/apiSession'
 import type { RawJSONLines } from '@/claude/types'
@@ -26,6 +26,17 @@ type TranscriptEntry = {
 }
 
 /**
+ * Resolve the on-disk transcript backing a session, following Claude Code's
+ * relocation into a worktree project directory. History reads, materialization
+ * checks and spawn derivation must all see the SAME file, so they share the
+ * one relocation-aware resolver instead of rebuilding
+ * `<projectPath>/<sessionId>.jsonl`.
+ */
+function resolveSessionTranscriptFile(workingDirectory: string, sessionId: string): string {
+    return findClaudeSessionFileSync(sessionId, { projectDir: getProjectPath(workingDirectory) })
+}
+
+/**
  * Parse the native Claude transcript for a session into ordered turns.
  *
  * The transcript is append-only: rewinds and fork-at-message boundaries
@@ -33,9 +44,15 @@ type TranscriptEntry = {
  * branches. Turns are therefore resolved over the ACTIVE parentUuid chain —
  * the one reachable backwards from the last entry in the file — never over
  * raw file order.
+ *
+ * Claude Code moves the transcript into the worktree's project directory once
+ * a running session enters a worktree; reading only the launch directory
+ * returned an empty turn list and made fork/rewind fail with "No native
+ * history point" for boundaries that were still recorded. Path resolution is
+ * therefore delegated to the relocation-aware resolver.
  */
 export function readNativeTurns(workingDirectory: string, sessionId: string): NativeTurn[] {
-    const file = join(getProjectPath(workingDirectory), `${sessionId}.jsonl`)
+    const file = resolveSessionTranscriptFile(workingDirectory, sessionId)
     if (!existsSync(file)) return []
 
     type Node = { entry: TranscriptEntry; parent: string | null }
@@ -268,6 +285,11 @@ export function resumeSessionAtFromArgs(args: string[] | undefined): string | nu
 /**
  * Single source of truth for whether a Claude session has materialized on disk
  * (a transcript `.jsonl` exists and carries at least one `uuid` line).
+ *
+ * Resolution goes through the relocation-aware resolver: a session that moved
+ * its transcript into a worktree project directory HAS materialized and must
+ * not be mistaken for an unmaterialized fork child (which would re-apply a
+ * fork/rewind boundary over an already-truncated transcript).
  */
 export function isSessionMaterialized(sessionId: string | null | undefined, workingDirectory: string): boolean {
     return Boolean(sessionId && claudeCheckSession(sessionId, workingDirectory))

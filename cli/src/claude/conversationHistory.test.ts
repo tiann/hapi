@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import {
     claudeConversationHistoryCapabilities,
     deriveSpawnArgs,
+    isSessionMaterialized,
     nativeRewindApplied,
     parseClaudeVersion,
     planPendingRewindRestart,
@@ -47,6 +48,20 @@ function writeTranscript(lines: string[], sessionId = 'session-a'): string {
     const projectId = CWD.replace(/[^a-zA-Z0-9]/g, '-')
     mkdirSync(join(projectDir, projectId), { recursive: true })
     writeFileSync(join(projectDir, projectId, `${sessionId}.jsonl`), lines.join('\n') + '\n')
+    return root
+}
+
+/**
+ * Writes a transcript into the project dir Claude Code uses once a running
+ * session enters a git worktree, leaving the launch project dir empty - the
+ * exact relocation the transcript scanner already follows (#1950).
+ */
+function writeRelocatedTranscript(lines: string[], sessionId = 'session-a'): string {
+    const root = mkdtempSync(join(tmpdir(), 'hapi-claude-conv-relocated-'))
+    const projectDir = join(root, 'projects')
+    const worktreeId = join(CWD, '.claude', 'worktrees', 'wt').replace(/[^a-zA-Z0-9]/g, '-')
+    mkdirSync(join(projectDir, worktreeId), { recursive: true })
+    writeFileSync(join(projectDir, worktreeId, `${sessionId}.jsonl`), lines.join('\n') + '\n')
     return root
 }
 
@@ -198,6 +213,51 @@ describe('readNativeTurns', () => {
             expect(readNativeTurns(CWD, 'session-a')).toEqual([
                 { promptUuid: 'u1', endUuid: 'as1' }
             ])
+        })
+    })
+})
+
+describe('relocated transcripts for history actions', () => {
+    // Claude Code moves the transcript into the worktree's project dir when a
+    // running session enters a worktree; the launch dir then holds no
+    // `<sessionId>.jsonl`. History reads must follow the move (same resolver
+    // the transcript scanner uses), or fork-at-message and rewind fail with
+    // "No native history point" for boundaries that were still recorded.
+    const turns = [
+        prompt('u1', 'first'),
+        assistant('as1', 'first answer', 'u1'),
+        line({ type: 'user', uuid: 'u2', parentUuid: 'as1', message: { role: 'user', content: [{ type: 'text', text: 'second' }] } }),
+        assistant('as2', 'second answer', 'u2')
+    ]
+
+    it('resolves recorded fork-at-message boundaries from the worktree transcript', () => {
+        const root = writeRelocatedTranscript(turns)
+        withConfigDir(root, () => {
+            const resolved = readNativeTurns(CWD, 'session-a')
+            expect(resolved).toEqual([
+                { promptUuid: 'u1', endUuid: 'as1' },
+                { promptUuid: 'u2', endUuid: 'as2' }
+            ])
+            expect(readCompletedNativeTurn(CWD, 'session-a', 'u1')).toEqual({ promptUuid: 'u1', endUuid: 'as1' })
+            expect(resolveForkAtMessagePlan(resolved, 'u2')).toEqual({ resumeSessionAt: 'as1' })
+        })
+    })
+
+    it('resolves recorded rewind boundaries and native proof from the worktree transcript', () => {
+        const root = writeRelocatedTranscript(turns)
+        withConfigDir(root, () => {
+            expect(resolveRewindPlan(readNativeTurns(CWD, 'session-a'), 'u2')).toEqual({ resumeSessionAt: 'as1' })
+            expect(nativeRewindApplied(CWD, 'session-a', ['u2'])).toBe(false)
+            expect(nativeRewindApplied(CWD, 'session-a', ['u1'])).toBe(false)
+        })
+    })
+
+    it('treats a worktree-relocated transcript as materialized instead of an unbuilt fork child', () => {
+        // A false "unmaterialized" verdict re-applies the fork/rewind boundary
+        // over a transcript that already carries the truncation.
+        const root = writeRelocatedTranscript(turns)
+        withConfigDir(root, () => {
+            expect(isSessionMaterialized('session-a', CWD)).toBe(true)
         })
     })
 })

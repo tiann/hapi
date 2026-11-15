@@ -1,5 +1,6 @@
 import { join } from 'node:path'
-import { readdir, readFile, stat } from 'node:fs/promises'
+import { readdir, readFile } from 'node:fs/promises'
+import { readdirSync, statSync } from 'node:fs'
 import { logger } from '@/ui/logger'
 import { getClaudeProjectsDir } from './path'
 import { isClaudeChatVisibleMessage } from './chatVisibility'
@@ -82,19 +83,71 @@ export function isImportableClaudeEntry(message: RawJSONLines): boolean {
     return isClaudeChatVisibleMessage(message)
 }
 
-async function isFile(filePath: string): Promise<boolean> {
-    return stat(filePath).then((s) => s.isFile(), () => false);
+function isFileSync(filePath: string): boolean {
+    try {
+        return statSync(filePath).isFile();
+    } catch {
+        return false;
+    }
 }
 
 /**
- * Resolve a session's transcript file. Claude Code moves the transcript to the
- * project dir of the new cwd when the session enters or leaves a git worktree,
- * so look for it by session id across all project dirs once the known path is
- * gone.
+ * Relocation-aware transcript resolver — the single implementation both the
+ * async scanner resolver and the synchronous history readers use.
+ *
+ * Claude Code moves the transcript to the project dir of the new cwd when the
+ * session enters or leaves a git worktree, so once the known path is gone the
+ * newest same-id transcript across ALL project dirs wins.
  *
  * `sessionFiles` is the caller's session id → transcript path cache; it is
  * updated in place when the transcript has moved. `onFileMoved` lets the
  * caller react to a move (e.g. re-read from the top and re-point watchers).
+ */
+export function findClaudeSessionFileSync(
+    sessionId: string,
+    opts: {
+        projectDir: string;
+        sessionFiles?: Map<string, string>;
+        onFileMoved?: (newPath: string, knownPath: string) => void;
+    }
+): string {
+    const known = opts.sessionFiles?.get(sessionId) ?? join(opts.projectDir, `${sessionId}.jsonl`);
+    if (isFileSync(known)) {
+        return known;
+    }
+    const projectsDir = getClaudeProjectsDir();
+    let newest: { path: string; mtimeMs: number } | null = null;
+    let projectNames: string[];
+    try {
+        projectNames = readdirSync(projectsDir, { withFileTypes: true })
+            .flatMap((entry) => entry.isDirectory() ? [entry.name] : []);
+    } catch {
+        // No projects dir yet: nothing to relocate from.
+        projectNames = [];
+    }
+    for (const dir of projectNames) {
+        const candidate = join(projectsDir, dir, `${sessionId}.jsonl`);
+        if (!isFileSync(candidate)) {
+            continue;
+        }
+        const mtimeMs = statSync(candidate).mtimeMs;
+        if (!newest || mtimeMs > newest.mtimeMs) {
+            newest = { path: candidate, mtimeMs };
+        }
+    }
+    if (!newest || newest.path === known) {
+        return known;
+    }
+    logger.debug(`[SESSION_SCANNER] Session ${sessionId} transcript moved to ${newest.path}`);
+    opts.sessionFiles?.set(sessionId, newest.path);
+    // Re-read the moved file from the top; processed event keys drop what was already sent.
+    opts.onFileMoved?.(newest.path, known);
+    return newest.path;
+}
+
+/**
+ * Async facade over `findClaudeSessionFileSync` for the transcript scanner
+ * (the scanner's call surface is async; the search itself is synchronous).
  */
 export async function findClaudeSessionFile(
     sessionId: string,
@@ -104,27 +157,7 @@ export async function findClaudeSessionFile(
         onFileMoved?: (newPath: string, knownPath: string) => void;
     }
 ): Promise<string> {
-    const known = opts.sessionFiles.get(sessionId) ?? join(opts.projectDir, `${sessionId}.jsonl`);
-    if (await isFile(known)) {
-        return known;
-    }
-    const projectsDir = getClaudeProjectsDir();
-    let newest: { path: string; mtimeMs: number } | null = null;
-    for (const dir of await readdir(projectsDir).catch(() => [])) {
-        const candidate = join(projectsDir, dir, `${sessionId}.jsonl`);
-        const mtimeMs = await stat(candidate).then((s) => s.mtimeMs, () => null);
-        if (mtimeMs !== null && (!newest || mtimeMs > newest.mtimeMs)) {
-            newest = { path: candidate, mtimeMs };
-        }
-    }
-    if (!newest || newest.path === known) {
-        return known;
-    }
-    logger.debug(`[SESSION_SCANNER] Session ${sessionId} transcript moved to ${newest.path}`);
-    opts.sessionFiles.set(sessionId, newest.path);
-    // Re-read the moved file from the top; processed event keys drop what was already sent.
-    opts.onFileMoved?.(newest.path, known);
-    return newest.path;
+    return findClaudeSessionFileSync(sessionId, opts);
 }
 
 /**
