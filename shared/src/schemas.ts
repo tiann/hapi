@@ -223,12 +223,15 @@ export const MetadataSchema = z.object({
     // already truncated at rewind-RPC success, and the CLI derives the
     // boundary flag on every spawn until the dropped turns leave the native
     // active chain. History RPCs (fork/rewind) must refuse while this is set.
+    // A malformed value (e.g. an older shape written by a previous hub) parses
+    // as undefined instead of failing MetadataSchema: the hub would otherwise
+    // drop the whole session metadata (flavor, machine, path, lifecycle).
     claudeRewind: z.object({
         targetLocalId: z.string().min(1),
         truncateFromLocalId: z.string().min(1),
         keepBoundary: z.string().min(1),
         droppedPrompts: z.array(z.string().min(1))
-    }).optional(),
+    }).optional().catch(undefined),
     // Latest Pi append-log entry observed by HAPI. Import uses it as the
     // incremental cursor so native history already streamed live is not copied twice.
     piHistoryLeafEntryId: z.string().optional(),
