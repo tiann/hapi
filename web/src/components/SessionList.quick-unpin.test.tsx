@@ -408,16 +408,20 @@ describe('session row hover unpin', () => {
         await waitFor(() => expect(screen.queryByRole('button', { name: 'Unpin' })).toBeNull())
         expect(screen.getByTitle('/work/quiet')).toHaveAttribute('aria-expanded', 'false')
 
-        const unreadPeek = screen.getByTestId('session-group-unread-peek')
-        const unreadPreviewButton = unreadPeek.querySelector<HTMLButtonElement>('button[data-session-scroll-anchor]')
-        expect(unreadPreviewButton).not.toBeNull()
+        // #2434: unread rows stay mounted in their own open CollapsiblePanel while
+        // the group header stays collapsed (no separate unread-peek list).
+        const unreadPreviewButton = await screen.findByRole('button', { name: /Title unread-project-pin/ })
+        expect(unreadPreviewButton.closest('[data-session-row-id="unread-project-pin"]')).not.toBeNull()
+        expect(unreadPreviewButton.closest('.collapsible-panel:not([data-open])')).toBeNull()
 
-        const closingPanel = document.querySelector('.collapsible-panel:not([data-open])')!
-        expect(closingPanel).not.toBeNull()
-        fireEvent.transitionEnd(closingPanel)
+        // Settle any panels that did fold (siblings / pin section); focus must
+        // land on the still-open unread row rather than document.body.
+        for (const panel of document.querySelectorAll('.collapsible-panel:not([data-open])')) {
+            fireEvent.transitionEnd(panel)
+        }
+        fireEvent.transitionEnd(unreadPreviewButton.closest('.collapsible-panel')!)
 
-        expect(closingPanel.querySelector('[data-session-row-id="unread-project-pin"]')).toBeNull()
-        expect(document.activeElement).toBe(unreadPreviewButton)
+        await waitFor(() => expect(document.activeElement).toBe(unreadPreviewButton))
     })
 
     it('moves focus to a visible fallback instead of document.body if the unpinned row disappears from the list', async () => {
