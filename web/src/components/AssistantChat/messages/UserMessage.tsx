@@ -6,7 +6,7 @@ import { MessageAttachments } from '@/components/AssistantChat/messages/MessageA
 import { UserBubbleContent, getUserBubbleClassName, shouldShowMessageStatus } from '@/components/AssistantChat/messages/user-bubble'
 import { CliOutputBlock } from '@/components/CliOutputBlock'
 import { getConversationMessageAnchorId } from '@/chat/outline'
-import { MessageActions } from '@/components/AssistantChat/messages/MessageActions'
+import { MessageActions, isConversationHistoryBlocked } from '@/components/AssistantChat/messages/MessageActions'
 import { useTranslation } from '@/lib/use-translation'
 
 export function HappyUserMessage() {
@@ -56,9 +56,12 @@ export function HappyUserMessage() {
     const onRetry = canRetry ? () => ctx.onRetryMessage!(localId) : undefined
     const showStatus = shouldShowMessageStatus(status)
 
-    const history = ctx.allowInactiveFork
-        ? { forkCurrent: true, forkAtMessage: true, rewindToMessage: false }
-        : ctx.metadata?.capabilities?.conversationHistory
+    const historyLocked = isConversationHistoryBlocked(ctx.metadata)
+    const history = historyLocked
+        ? undefined
+        : ctx.allowInactiveFork
+            ? { forkCurrent: true, forkAtMessage: true, rewindToMessage: false }
+            : ctx.metadata?.capabilities?.conversationHistory
     const hasNativePoint = typeof localId === 'string'
         && localId.length > 0
         && ctx.metadata?.conversationHistoryPoints?.[localId] === true

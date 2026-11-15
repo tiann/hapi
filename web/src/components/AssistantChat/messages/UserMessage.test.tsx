@@ -12,7 +12,21 @@ const state = {
         metadata: { custom: { kind: 'user', localId: 'local-interrupted' } } },
     thread: { isRunning: true, messages: [] }
 }
-const ctx = {
+const ctx: {
+    metadata: {
+        flavor: string
+        capabilities: { conversationHistory: { forkCurrent: boolean; forkAtMessage: boolean; rewindToMessage: boolean } }
+        conversationHistoryPoints: Record<string, true>
+        conversationHistoryDiverged?: boolean
+        claudeRewind?: { targetLocalId: string; truncateFromLocalId: string; keepBoundary: string; droppedPrompts: string[] }
+    }
+    disabled: boolean
+    historyActionPending: boolean
+    allowInactiveFork: boolean
+    isLatestCompletedBoundary: (_id: string) => boolean
+    onForkConversation: typeof onFork
+    onRewindConversation: () => Promise<void>
+} = {
     metadata: { flavor: 'codex', capabilities: { conversationHistory: { forkCurrent: true, forkAtMessage: true, rewindToMessage: true } },
         conversationHistoryPoints: { 'local-interrupted': true } as Record<string, true> },
     disabled: false, historyActionPending: false, allowInactiveFork: false,
@@ -52,7 +66,10 @@ describe('user-only completed fork boundary', () => {
         state.thread.isRunning = true
         ctx.metadata.flavor = 'codex'
         ctx.metadata.capabilities.conversationHistory.forkAtMessage = true
+        ctx.metadata.capabilities.conversationHistory.rewindToMessage = true
         ctx.metadata.conversationHistoryPoints = { 'local-interrupted': true }
+        delete ctx.metadata.conversationHistoryDiverged
+        delete ctx.metadata.claudeRewind
         ctx.disabled = false
         ctx.allowInactiveFork = false
         ctx.historyActionPending = false
@@ -114,5 +131,35 @@ describe('user-only completed fork boundary', () => {
         mount()
         expect(screen.queryByRole('button', { name: 'Fork' })).toBeNull()
         expect(onFork).not.toHaveBeenCalled()
+    })
+
+    it.each(['claudeRewind', 'diverged'] as const)(
+        'hides Fork and Rewind actions when %s blocks history mutations',
+        blocker => {
+            state.thread.isRunning = false
+            ctx.metadata.flavor = 'claude'
+            if (blocker === 'claudeRewind') {
+                ctx.metadata.claudeRewind = {
+                    targetLocalId: 'local-interrupted',
+                    truncateFromLocalId: 'local-next',
+                    keepBoundary: 'keep-1',
+                    droppedPrompts: ['drop-1']
+                }
+            } else {
+                ctx.metadata.conversationHistoryDiverged = true
+            }
+            mount()
+            expect(screen.queryByRole('button', { name: 'Fork' })).toBeNull()
+            expect(screen.queryByRole('button', { name: 'Rewind' })).toBeNull()
+        }
+    )
+
+    it('hides archived Codex Fork when conversationHistoryDiverged is true', () => {
+        state.thread.isRunning = false
+        ctx.disabled = true
+        ctx.allowInactiveFork = true
+        ctx.metadata.conversationHistoryDiverged = true
+        mount()
+        expect(screen.queryByRole('button', { name: 'Fork' })).toBeNull()
     })
 })
