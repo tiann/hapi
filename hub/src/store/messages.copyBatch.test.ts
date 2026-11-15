@@ -30,4 +30,41 @@ describe('copyMessagesToSession', () => {
         expect(store.messages.getAllMessages(child.id)).toHaveLength(2)
         expect(store.messages.getMessageEpoch(child.id)).toBe(beforeEpoch + 1)
     })
+
+    it('indexes updated and inserted messages during shared-fork hydration', () => {
+        const store = new Store(':memory:')
+        const child = store.sessions.getOrCreateSession('shared-child', { path: '/tmp' }, null, 'default')
+        const existing = store.messages.addMessage(
+            child.id,
+            { role: 'user', content: { type: 'text', text: 'stale projection text' } },
+            'shared-turn'
+        )
+        store.messages.markMessagesInvoked(child.id, ['shared-turn'], Date.now())
+
+        const hydratedAt = Date.now()
+        store.messages.mergeCopiedMessagesToSession(child.id, [
+            {
+                content: { role: 'user', content: { type: 'text', text: 'updated hydration needle' } },
+                createdAt: existing.createdAt,
+                localId: 'shared-turn',
+                invokedAt: hydratedAt,
+                scheduledAt: null
+            },
+            {
+                content: { role: 'agent', content: { type: 'text', text: 'inserted hydration needle' } },
+                createdAt: hydratedAt,
+                localId: null,
+                invokedAt: hydratedAt,
+                scheduledAt: null
+            }
+        ])
+
+        expect(store.messages.searchContent('stale projection', 'default')).toEqual([])
+        expect(store.messages.searchContent('updated hydration', 'default')).toMatchObject([
+            { sessionId: child.id, messageId: existing.id }
+        ])
+        expect(store.messages.searchContent('inserted hydration', 'default')).toMatchObject([
+            { sessionId: child.id }
+        ])
+    })
 })

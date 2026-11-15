@@ -1,4 +1,6 @@
-import { describe, expect, it, spyOn } from 'bun:test'
+import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test'
+
+afterEach(() => mock.restore())
 import type { SyncEvent } from '@hapi/protocol/types'
 import { MetadataSchema } from '@hapi/protocol/schemas'
 import { Store } from '../store'

@@ -9,6 +9,7 @@ import {
     listScratchlistEntries,
     sumScratchlistAttachmentBytesForSession,
     transferScratchlistEntries,
+    transferScratchlistEntriesInTransaction,
     updateScratchlistEntry,
     type CreateScratchlistResult
 } from './scratchlist'
@@ -72,5 +73,9 @@ export class ScratchlistStore {
      */
     transfer(fromSessionId: string, toSessionId: string): { moved: number; collided: number } {
         return transferScratchlistEntries(this.db, fromSessionId, toSessionId)
+    }
+
+    transferInTransaction(fromSessionId: string, toSessionId: string): { moved: number; collided: number } {
+        return transferScratchlistEntriesInTransaction(this.db, fromSessionId, toSessionId)
     }
 }

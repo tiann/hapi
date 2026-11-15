@@ -24,7 +24,8 @@ private fun projectAttachments(attachments: List<ChatAttachment>?): JsonArray? {
             obj["filename"] = JsonPrimitive(attachment.filename)
             obj["mimeType"] = JsonPrimitive(attachment.mimeType)
             obj["size"] = jsNumber(attachment.size)
-            obj["path"] = JsonPrimitive(attachment.path)
+            attachment.path?.let { obj["path"] = JsonPrimitive(it) }
+            attachment.attachmentId?.let { obj["attachmentId"] = JsonPrimitive(it) }
             JsonObject(obj)
         }
     )

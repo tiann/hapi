@@ -20,7 +20,7 @@
         "readThroughRevision": null,
         "viewMode": "tail"
     },
-    "fixtureVersion": 1,
+    "fixtureVersion": 2,
     "name": "read-receipt-requires-initial-tail-sync",
     "ops": [
         {

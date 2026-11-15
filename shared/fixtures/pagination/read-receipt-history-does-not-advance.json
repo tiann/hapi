@@ -36,7 +36,7 @@
         "readThroughRevision": 5,
         "viewMode": "history"
     },
-    "fixtureVersion": 1,
+    "fixtureVersion": 2,
     "name": "read-receipt-history-does-not-advance",
     "ops": [
         {

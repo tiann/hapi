@@ -36,6 +36,7 @@ import java.io.File
 data class ChatMedia(
     val imageLoader: ImageLoader?,
     val generatedImageUrl: (imageId: String) -> String?,
+    val attachmentUrl: (attachmentId: String) -> String? = { _ -> null },
     val fetchGeneratedMedia: (suspend (url: String, imageId: String, fileName: String) -> File)? = null,
 )
 

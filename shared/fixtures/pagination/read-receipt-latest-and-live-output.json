@@ -33,7 +33,7 @@
         "readThroughRevision": 6,
         "viewMode": "tail"
     },
-    "fixtureVersion": 1,
+    "fixtureVersion": 2,
     "name": "read-receipt-latest-and-live-output",
     "ops": [
         {

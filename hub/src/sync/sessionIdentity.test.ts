@@ -88,6 +88,16 @@ describe('SessionCache merge keeps the merged-away id reachable', () => {
         }
     })
 
+    it('rolls back the old-id redirect when the atomic merge fails', () => {
+        const { store, cache, oldSession, newSession } = setup()
+
+        expect(() => store.mergeSessionMessagesAndAttachmentsAndDeleteSession(
+            'default', oldSession.id, newSession.id, new Map([['missing', []]])
+        )).toThrow('Failed to update merged scratchlist entry')
+        expect(store.sessionRedirects.resolve(oldSession.id, 'default')).toBeNull()
+        expect(cache.getSession(oldSession.id)).toBeDefined()
+    })
+
     it('does not resolve the old id from another namespace', async () => {
         const { cache, oldSession, newSession } = setup()
         await cache.mergeSessions(oldSession.id, newSession.id, 'default')

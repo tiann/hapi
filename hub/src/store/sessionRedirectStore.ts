@@ -20,25 +20,31 @@ export class SessionRedirectStore {
     /** Record that `oldId` was merged into `newId` (both in `namespace`). */
     record(oldId: string, newId: string, namespace: string, now: number = Date.now()): void {
         if (oldId === newId) return
-        this.db.transaction(() => {
-            // Anything that pointed at the row being removed now points at the survivor.
-            this.db.prepare(
-                'UPDATE session_redirects SET new_id = ? WHERE new_id = ? AND namespace = ?'
-            ).run(newId, oldId, namespace)
-            // The survivor is a live row; a stale pointer away from it would be
-            // shadowed anyway, and could form a cycle if it is merged back later.
-            this.db.prepare(
-                'DELETE FROM session_redirects WHERE old_id = ? AND namespace = ?'
-            ).run(newId, namespace)
-            this.db.prepare(`
-                INSERT INTO session_redirects (old_id, new_id, namespace, created_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(old_id) DO UPDATE SET
-                    new_id = excluded.new_id,
-                    namespace = excluded.namespace,
-                    created_at = excluded.created_at
-            `).run(oldId, newId, namespace, now)
-        })()
+        if (this.db.inTransaction) {
+            this.recordInTransaction(oldId, newId, namespace, now)
+            return
+        }
+        this.db.transaction(() => this.recordInTransaction(oldId, newId, namespace, now))()
+    }
+
+    private recordInTransaction(oldId: string, newId: string, namespace: string, now: number): void {
+        // Anything that pointed at the row being removed now points at the survivor.
+        this.db.prepare(
+            'UPDATE session_redirects SET new_id = ? WHERE new_id = ? AND namespace = ?'
+        ).run(newId, oldId, namespace)
+        // The survivor is a live row; a stale pointer away from it would be
+        // shadowed anyway, and could form a cycle if it is merged back later.
+        this.db.prepare(
+            'DELETE FROM session_redirects WHERE old_id = ? AND namespace = ?'
+        ).run(newId, namespace)
+        this.db.prepare(`
+            INSERT INTO session_redirects (old_id, new_id, namespace, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(old_id) DO UPDATE SET
+                new_id = excluded.new_id,
+                namespace = excluded.namespace,
+                created_at = excluded.created_at
+        `).run(oldId, newId, namespace, now)
     }
 
     /**

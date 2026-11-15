@@ -6,6 +6,7 @@ import {
 } from '@assistant-ui/react'
 import '../src/index.css'
 import { SortableComposerAttachments } from '../src/components/AssistantChat/SortableComposerAttachments'
+import { I18nProvider } from '../src/lib/i18n-context'
 import { MessageAttachments } from '../src/components/AssistantChat/messages/MessageAttachments'
 import { moveAttachmentId, reconcileAttachmentOrder, type AttachmentDropPosition } from '../src/lib/attachmentOrder'
 
@@ -79,7 +80,7 @@ function App() {
                 <section aria-label="Sent" className="mb-4">
                     <MessageAttachments attachments={[{
                         id: 'sent', filename: 'sent.png', mimeType: 'image/png', size: 1, path: '/sent.png', previewUrl,
-                    }]} />
+                    }]} api={{} as never} sessionId="e2e-session" />
                 </section>
                 <Composer />
             </main>
@@ -87,4 +88,4 @@ function App() {
     )
 }
 
-ReactDOM.createRoot(document.getElementById('root')!).render(<App />)
+ReactDOM.createRoot(document.getElementById('root')!).render(<I18nProvider><App /></I18nProvider>)

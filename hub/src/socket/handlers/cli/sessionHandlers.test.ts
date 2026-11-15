@@ -534,6 +534,7 @@ it.each([
         ['jobsAcceptedFromSessionIds', ['foreign-session']],
         ['jobsTransferredToSessionId', 'foreign-session'],
         ['jobKeyRedirects', { 'foreign-session/beets': 'beets.foreign' }],
+        ['sharedForkAttachmentsHydrated', true],
     ] as const)(
         'ignores a forged hub-owned %s addition from CLI metadata',
         (field, forged) => {
@@ -567,6 +568,7 @@ it.each([
             jobsAcceptedFromSessionIds: ['old-session'],
             jobsTransferredToSessionId: 'merge-target',
             jobKeyRedirects: { 'old-session/beets': 'beets.oldsess1' },
+            sharedForkAttachmentsHydrated: true,
         }, null, 'default')
         const socket = new FakeSocket()
         registerSessionHandlers(socket as unknown as CliSocketWithData, {
@@ -594,6 +596,7 @@ it.each([
             jobsTransferredToSessionId: 'merge-target',
             jobKeyRedirects: { 'old-session/beets': 'beets.oldsess1' },
             lifecycleState: 'archived',
+            sharedForkAttachmentsHydrated: true,
         })
     })
 

@@ -74,6 +74,7 @@ const HUB_OWNED_METADATA_KEYS = [
     'opencodeRewind',
     'supersededBySessionId',
     'opencodeClearOperation',
+    'sharedForkAttachmentsHydrated',
     'opencodeForkPending',
     'titleSuggestionAutoAttemptedAt',
     'titleSuggestionTurn',

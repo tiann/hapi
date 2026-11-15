@@ -35,7 +35,7 @@
         "readThroughRevision": 0,
         "viewMode": "tail"
     },
-    "fixtureVersion": 1,
+    "fixtureVersion": 2,
     "name": "messages-consumed-stamps-invoked-at",
     "ops": [
         {

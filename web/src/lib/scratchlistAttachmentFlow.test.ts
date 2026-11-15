@@ -5,6 +5,8 @@ import {
     finalizeMigratedScratchlistParkCleanup,
     migrateChatPathAttachmentsToScratchlist,
     prepareScratchlistParkAttachments,
+    sendStagedComposeAttachments,
+    stageScratchlistAttachmentsForComposeSend,
     type ParkAttachmentMetadata,
 } from './scratchlistAttachmentFlow'
 
@@ -296,5 +298,69 @@ describe('finalizeMigratedScratchlistParkCleanup (#1226)', () => {
 
         expect(deleteUploadFile).not.toHaveBeenCalled()
         expect(deleteScratchlistAttachment).not.toHaveBeenCalled()
+    })
+})
+
+describe('stageScratchlistAttachmentsForComposeSend', () => {
+    it('does not persist a preview Data URL beside a durable attachment id', async () => {
+        const fetchScratchlistAttachmentBlob = vi.fn().mockResolvedValue(
+            new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' })
+        )
+        const uploadFile = vi.fn().mockResolvedValue({
+            success: true,
+            attachmentId: 'durable-attachment-1'
+        })
+        const api = { fetchScratchlistAttachmentBlob, uploadFile } as never
+
+        const [staged] = await stageScratchlistAttachmentsForComposeSend(api, 'session-1', [{
+            id: 'scratch-1',
+            filename: 'photo.png',
+            mimeType: 'image/png',
+            size: 3,
+            path: 'hapi-hub:scratchlist/default/session-1/scratch-1-photo.png'
+        }])
+
+        expect(staged).toEqual({
+            id: 'scratch-1',
+            filename: 'photo.png',
+            mimeType: 'image/png',
+            size: 3,
+            attachmentId: 'durable-attachment-1'
+        })
+        expect(staged).not.toHaveProperty('previewUrl')
+    })
+
+    it('cleans durable staged attachments when the send is rejected', async () => {
+        const deleteAttachment = vi.fn().mockResolvedValue({ success: true })
+        const api = { deleteAttachment } as never
+        const staged = [{
+            id: 'scratch-1',
+            filename: 'photo.png',
+            mimeType: 'image/png',
+            size: 3,
+            attachmentId: 'durable-attachment-1'
+        }]
+
+        await expect(sendStagedComposeAttachments(api, 'session-1', staged, async () => false))
+            .resolves.toBe(false)
+        expect(deleteAttachment).toHaveBeenCalledWith('session-1', 'durable-attachment-1')
+    })
+
+    it('cleans durable staged attachments when the send throws', async () => {
+        const deleteAttachment = vi.fn().mockResolvedValue({ success: true })
+        const api = { deleteAttachment } as never
+        const staged = [{
+            id: 'scratch-1',
+            filename: 'photo.png',
+            mimeType: 'image/png',
+            size: 3,
+            attachmentId: 'durable-attachment-1'
+        }]
+        const error = new Error('send failed')
+
+        await expect(sendStagedComposeAttachments(api, 'session-1', staged, async () => {
+            throw error
+        })).rejects.toBe(error)
+        expect(deleteAttachment).toHaveBeenCalledWith('session-1', 'durable-attachment-1')
     })
 })

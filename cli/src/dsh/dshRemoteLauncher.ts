@@ -414,7 +414,10 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                     batch.mode.imageAttachments,
                     {
                         sessionId: this.session.client.sessionId,
-                        onNotice: (message) => this.session.sendSessionEvent({ type: 'message', message })
+                        onNotice: (message) => this.session.sendSessionEvent({ type: 'message', message }),
+                        authorizeImagePath: (path) => this.session.client.isMaterializedAttachmentPath(path),
+                        authorizeOpenedImage: (path, identity) =>
+                            this.session.client.isAuthorizedMaterializedAttachment(path, identity)
                     }
                 )
             } catch (error) {

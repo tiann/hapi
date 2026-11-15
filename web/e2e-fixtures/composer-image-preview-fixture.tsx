@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import { AssistantRuntimeProvider, ComposerPrimitive, useAuiState, useLocalRuntime, type AttachmentAdapter, type ChatModelAdapter } from '@assistant-ui/react'
 import '../src/index.css'
 import { SortableComposerAttachments } from '../src/components/AssistantChat/SortableComposerAttachments'
+import { I18nProvider } from '../src/lib/i18n-context'
 import { MessageAttachments } from '../src/components/AssistantChat/messages/MessageAttachments'
 import { moveAttachmentId, reconcileAttachmentOrder } from '../src/lib/attachmentOrder'
 
@@ -45,7 +46,7 @@ function Composer({ disabled }: { disabled: boolean }) {
         <main className="mx-auto max-w-2xl p-4">
             <p data-testid="refresh-count">{ticks}</p>
             <section aria-label="Sent images" className="mb-4">
-                <MessageAttachments attachments={[{ id: 'sent', filename: 'sent.png', mimeType: 'image/png', size: 1, path: '/sent.png', previewUrl }]} />
+                <MessageAttachments attachments={[{ id: 'sent', filename: 'sent.png', mimeType: 'image/png', size: 1, path: '/sent.png', previewUrl }]} api={{} as never} sessionId="e2e-session" />
             </section>
             <section aria-label="Composer" className="rounded-xl border p-4">
                 <div className="flex flex-wrap gap-2">
@@ -77,4 +78,4 @@ function App() {
     return <AssistantRuntimeProvider runtime={runtime}><Composer disabled={disabled} /></AssistantRuntimeProvider>
 }
 
-ReactDOM.createRoot(document.getElementById('root')!).render(<App />)
+ReactDOM.createRoot(document.getElementById('root')!).render(<I18nProvider><App /></I18nProvider>)

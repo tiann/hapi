@@ -10,6 +10,7 @@ type StoredAttachment = {
     lastModified: number
     blob: Blob
     path?: string
+    attachmentId?: string
     previewUrl?: string
     uploadSessionId?: string
 }
@@ -28,6 +29,7 @@ export type AttachmentDraftInput = {
     id: string
     file: File
     path?: string
+    attachmentId?: string
     previewUrl?: string
     uploadSessionId?: string
 }
@@ -35,6 +37,7 @@ export type AttachmentDraftInput = {
 export type RestoredUploadMetadata = {
     id: string
     path?: string
+    attachmentId?: string
     previewUrl?: string
     uploadSessionId?: string
 }
@@ -76,6 +79,7 @@ function toStoredFile(attachment: AttachmentDraftInput): StoredAttachment {
         lastModified: file.lastModified,
         blob: file,
         path: attachment.path,
+        attachmentId: attachment.attachmentId,
         previewUrl: attachment.previewUrl,
         uploadSessionId: attachment.uploadSessionId,
     }
@@ -91,6 +95,7 @@ function toFile(file: StoredAttachment): File {
     restoredUploadMetadata.set(restored, {
         id: file.id,
         path: file.path,
+        attachmentId: file.attachmentId,
         previewUrl: file.previewUrl,
         uploadSessionId: file.uploadSessionId,
     })

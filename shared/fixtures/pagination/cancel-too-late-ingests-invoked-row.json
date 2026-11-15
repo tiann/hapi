@@ -26,7 +26,7 @@
         "readThroughRevision": 0,
         "viewMode": "tail"
     },
-    "fixtureVersion": 1,
+    "fixtureVersion": 2,
     "name": "cancel-too-late-ingests-invoked-row",
     "ops": [
         {

@@ -14,6 +14,7 @@ public enum ScratchlistRestoreChoice: Sendable {
 public struct ComposerAttachmentSnapshot: Equatable, Sendable {
     public enum Source: Equatable, Sendable {
         case chatUpload(String)
+        case durableUpload(String)
         case scratchlist(ScratchlistAttachment)
     }
     public let ui: ComposerAttachmentUI
@@ -64,6 +65,19 @@ enum ScratchlistTransfer {
                         result.attachments.append(attachment)
                     case .failed: throw ScratchlistTransferError.attachment(item.ui.filename)
                     }
+                case .durableUpload(let attachmentId):
+                    let bytes: Data
+                    do {
+                        bytes = try await api.attachment(sessionId: sessionId, attachmentId: attachmentId).data
+                    } catch {
+                        throw ScratchlistTransferError.attachment(item.ui.filename)
+                    }
+                    switch await store.uploadAttachment(sessionId: sessionId, filename: item.ui.filename, data: bytes, mimeType: item.ui.mimeType) {
+                    case .uploaded(let attachment):
+                        result.uploaded.append(attachment)
+                        result.attachments.append(attachment)
+                    case .failed: throw ScratchlistTransferError.attachment(item.ui.filename)
+                    }
                 }
             }
             return result
@@ -83,29 +97,74 @@ enum ScratchlistTransfer {
     static func prepareSend(api: APIClient, sourceSessionId: String, targetSessionId: String,
                             snapshot: [ComposerAttachmentSnapshot]) async throws -> [AttachmentMetadata] {
         var result: [AttachmentMetadata] = []
-        var createdPaths: [String] = []
+        var created: [AttachmentMetadata] = []
         do {
             for item in snapshot {
-                let path: String
+                var path: String?
+                var attachmentId: String?
+                var createdByPreparation = false
                 switch item.source {
-                case .chatUpload(let existing): path = existing
+                case .chatUpload(let existing):
+                    if sourceSessionId == targetSessionId {
+                        path = existing
+                    } else {
+                        let file = try await api.readSessionFile(sessionId: sourceSessionId, path: existing)
+                        guard file.success, let content = file.content, let bytes = Data(base64Encoded: content) else {
+                            throw ScratchlistTransferError.attachment(item.ui.filename)
+                        }
+                        let uploaded = try await api.uploadFile(sessionId: targetSessionId, filename: item.ui.filename,
+                                                                data: bytes, mimeType: item.ui.mimeType)
+                        guard uploaded.success, uploaded.path != nil || uploaded.attachmentId != nil else {
+                            throw ScratchlistTransferError.attachment(item.ui.filename)
+                        }
+                        path = uploaded.path
+                        attachmentId = uploaded.attachmentId
+                        createdByPreparation = true
+                    }
+                case .durableUpload(let existing):
+                    if sourceSessionId == targetSessionId {
+                        attachmentId = existing
+                    } else {
+                        let bytes = try await api.attachment(sessionId: sourceSessionId, attachmentId: existing).data
+                        let uploaded = try await api.uploadFile(sessionId: targetSessionId, filename: item.ui.filename,
+                                                                data: bytes, mimeType: item.ui.mimeType)
+                        guard uploaded.success, uploaded.path != nil || uploaded.attachmentId != nil else {
+                            throw ScratchlistTransferError.attachment(item.ui.filename)
+                        }
+                        path = uploaded.path
+                        attachmentId = uploaded.attachmentId
+                        createdByPreparation = true
+                    }
                 case .scratchlist(let attachment):
                     let bytes = try await api.scratchlistAttachment(sessionId: sourceSessionId, attachmentId: attachment.id).data
                     let uploaded = try await api.uploadFile(sessionId: targetSessionId, filename: attachment.filename,
-                                                           data: bytes, mimeType: attachment.mimeType)
-                    guard uploaded.success, let uploadedPath = uploaded.path else {
+                                                            data: bytes, mimeType: attachment.mimeType)
+                    guard uploaded.success, uploaded.path != nil || uploaded.attachmentId != nil else {
                         throw ScratchlistTransferError.attachment(attachment.filename)
                     }
-                    path = uploadedPath
-                    createdPaths.append(path)
+                    path = uploaded.path
+                    attachmentId = uploaded.attachmentId
+                    createdByPreparation = true
                 }
-                result.append(AttachmentMetadata(id: item.ui.id, filename: item.ui.filename, mimeType: item.ui.mimeType,
-                    size: item.ui.sizeBytes, path: path,
-                    previewUrl: item.ui.previewBytes.map { AttachmentPolicy.dataUrl(mimeType: "image/jpeg", bytes: $0) }))
+                guard path != nil || attachmentId != nil else {
+                    throw ScratchlistTransferError.attachment(item.ui.filename)
+                }
+                let metadata = AttachmentMetadata(id: item.ui.id, filename: item.ui.filename, mimeType: item.ui.mimeType,
+                    size: item.ui.sizeBytes, path: path, attachmentId: attachmentId,
+                    previewUrl: attachmentId == nil
+                        ? item.ui.previewBytes.map { AttachmentPolicy.dataUrl(mimeType: "image/jpeg", bytes: $0) }
+                        : nil)
+                if createdByPreparation {
+                    created.append(metadata)
+                }
+                result.append(metadata)
             }
             return result
         } catch {
-            for path in createdPaths { _ = try? await api.deleteUpload(sessionId: targetSessionId, path: path) }
+            for attachment in created {
+                _ = try? await api.deleteUpload(sessionId: targetSessionId, path: attachment.path,
+                                                attachmentId: attachment.attachmentId)
+            }
             throw error
         }
     }

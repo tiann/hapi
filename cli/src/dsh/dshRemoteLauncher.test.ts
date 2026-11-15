@@ -61,7 +61,8 @@ const harness = vi.hoisted(() => ({
     // Mirrors the backend's advertised promptCapabilities.image gate.
     supportsImages: false,
     // Recorded by the buildDshPromptContent mock.
-    promptContentInputs: [] as Array<{ text: string; images: unknown[] | undefined }>
+    promptContentInputs: [] as Array<{ text: string; images: unknown[] | undefined }>,
+    promptContentOpts: [] as Array<Record<string, unknown>>
 }))
 
 vi.mock('./utils/dshBackend', () => ({
@@ -143,9 +144,10 @@ vi.mock('./utils/dshPromptContent', async (importOriginal) => {
             _backend: unknown,
             text: string,
             images: unknown[] | undefined,
-            _opts: unknown
+            opts: unknown
         ) => {
             harness.promptContentInputs.push({ text, images })
+            harness.promptContentOpts.push(opts as Record<string, unknown>)
             const prompt: Array<Record<string, unknown>> = [{ type: 'text', text }]
             if (images && images.length > 0 && harness.supportsImages) {
                 for (const image of images) {
@@ -215,7 +217,10 @@ function createSession(queue = createQueue(), sessionId: string | null = null) {
         path: '/tmp/dsh-test',
         logPath: '/tmp/dsh-test/hapi.log',
         client: {
+            sessionId: 'hapi-session',
             rpcHandlerManager: { registerHandler: vi.fn() },
+            isMaterializedAttachmentPath: vi.fn((path: string) => path.includes('materialized')),
+            isAuthorizedMaterializedAttachment: vi.fn((path: string) => path.includes('materialized')),
             updateMetadata: vi.fn((fn: (metadata: unknown) => unknown) => fn({})),
             flushMetadata: vi.fn(async () => true)
         },
@@ -280,6 +285,7 @@ describe('DshRemoteLauncher', () => {
         harness.setConfigOptionErrorQueue = []
         harness.supportsImages = false
         harness.promptContentInputs = []
+        harness.promptContentOpts = []
     })
 
     it('creates a fresh ACP session and forwards text prompts', async () => {
@@ -1408,6 +1414,14 @@ describe('DshRemoteLauncher', () => {
         await launcher.launch()
 
         expect(harness.promptContentInputs).toEqual([{ text: 'look at this', images }])
+        const promptOpts = harness.promptContentOpts[0] as {
+            sessionId: string
+            authorizeImagePath: (path: string) => boolean
+            authorizeOpenedImage: (path: string, identity: { dev: number; ino: number }) => boolean
+        }
+        expect(promptOpts.sessionId).toBe('hapi-session')
+        expect(promptOpts.authorizeImagePath('/tmp/materialized.png')).toBe(true)
+        expect(promptOpts.authorizeOpenedImage('/tmp/materialized.png', { dev: 1, ino: 2 })).toBe(true)
         expect(harness.prompts).toEqual([[
             { type: 'text', text: 'look at this' },
             { type: 'image', data: 'b64:/uploads/screenshot.png', mimeType: 'image/png' }
