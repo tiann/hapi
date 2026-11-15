@@ -169,25 +169,30 @@ function looksPathLike(path: string): boolean {
  */
 export function classifyNoSchemeHref(
     href: string,
-    options: { workspacePath?: string | null } = {}
+    options: { workspacePath?: string | null; literalPath?: boolean } = {}
 ): MarkdownHrefDecision {
     const trimmed = href.trim()
     if (!trimmed) return { action: 'inert' }
 
-    // Protocol-relative URLs keep browser navigation (existing policy).
-    if (trimmed.startsWith('//')) return { action: 'navigate' }
+    let path: string
+    if (options.literalPath) {
+        path = trimmed
+    } else {
+        // Protocol-relative URLs keep browser navigation (existing policy).
+        if (trimmed.startsWith('//')) return { action: 'navigate' }
 
-    if (isKnownSpaHref(trimmed)) return { action: 'navigate' }
+        if (isKnownSpaHref(trimmed)) return { action: 'navigate' }
 
-    const { path: rawPath } = splitHrefMeta(trimmed)
-    // mdast→hast percent-encodes spaces etc.; compare against literal workspace.
-    let decodedPath: string
-    try {
-        decodedPath = decodeURIComponent(rawPath)
-    } catch {
-        return { action: 'inert' }
+        const { path: rawPath } = splitHrefMeta(trimmed)
+        // mdast→hast percent-encodes spaces etc.; compare against literal workspace.
+        let decodedPath: string
+        try {
+            decodedPath = decodeURIComponent(rawPath)
+        } catch {
+            return { action: 'inert' }
+        }
+        path = stripLineSuffix(decodedPath)
     }
-    const path = stripLineSuffix(decodedPath)
     const workspacePath = options.workspacePath ?? null
 
     if (isRepoRelativeCandidate(path)) {

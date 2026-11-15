@@ -310,6 +310,35 @@ describe('MarkdownRenderer end-to-end local file:/// links', () => {
             expect(href.searchParams.get('path')).toBe(encodeBase64(expectedPath))
         }
     })
+
+    it('preserves literal #, ?, and % in Windows file:/// links through MarkdownRenderer to FilePathAnchor', () => {
+        render(
+            <I18nProvider>
+                <HappyChatProvider value={chatContext({ metadata: { path: 'D:\\3d', host: 'win' } })}>
+                    <MarkdownRenderer
+                        content={
+                            '[hash](file:///D:/3d/report.md%23draft.md) '
+                            + '[query](file:///D:/3d/report%3Fdraft.md) '
+                            + '[pct](file:///D:/3d/report%25draft.md)'
+                        }
+                    />
+                </HappyChatProvider>
+            </I18nProvider>
+        )
+
+        const expectedPaths = [
+            ['hash', 'D:/3d/report.md#draft.md'],
+            ['query', 'D:/3d/report?draft.md'],
+            ['pct', 'D:/3d/report%draft.md'],
+        ] as const
+
+        for (const [name, expectedPath] of expectedPaths) {
+            const link = screen.getByRole('link', { name })
+            const href = new URL(link.getAttribute('href')!, 'https://hapi.example')
+            expect(href.pathname).toBe('/sessions/session-1/file')
+            expect(href.searchParams.get('path')).toBe(encodeBase64(expectedPath))
+        }
+    })
 })
 
 // ── relative / no-scheme hrefs — fail-closed (#1452) ─────────────────────────
