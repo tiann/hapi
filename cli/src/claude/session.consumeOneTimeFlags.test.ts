@@ -50,4 +50,19 @@ describe('Session.consumeOneTimeFlags', () => {
         session.consumeOneTimeFlags()
         expect(session.claudeArgs).toEqual(['--resume-session-at', 'boundary-uuid', '--permission-mode', 'default'])
     })
+
+    it('consumes startupResumeSessionAt when consumeOneTimeFlags runs even with undefined claudeArgs', () => {
+        const session = makeSession(undefined)
+        ;(session as { startupResumeSessionAt?: string }).startupResumeSessionAt = 'user-boundary'
+        session.consumeOneTimeFlags()
+        expect((session as { startupResumeSessionAt?: string }).startupResumeSessionAt).toBeUndefined()
+    })
+
+    it('consumes startupResumeSessionAt directly without stripping claudeArgs', () => {
+        const session = makeSession(['--permission-mode', 'acceptEdits'])
+        ;(session as { startupResumeSessionAt?: string }).startupResumeSessionAt = 'user-boundary'
+        ;(session as { consumeStartupResumeSessionAt?: () => void }).consumeStartupResumeSessionAt?.()
+        expect((session as { startupResumeSessionAt?: string }).startupResumeSessionAt).toBeUndefined()
+        expect(session.claudeArgs).toEqual(['--permission-mode', 'acceptEdits'])
+    })
 })

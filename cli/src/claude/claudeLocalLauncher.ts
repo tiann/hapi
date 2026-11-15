@@ -95,7 +95,8 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
                 claudeArgs: session.claudeArgs,
                 sessionId: session.sessionId,
                 intent: session.client.getMetadata()?.claudeRewind,
-                workingDirectory: session.path
+                workingDirectory: session.path,
+                startupBoundary: session.startupResumeSessionAt
             });
             session.localContextModel = resolveClaudeLaunchModel({
                 model: session.getModel(),
@@ -132,6 +133,7 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
             if (isSessionMaterialized(session.sessionId, session.path)) {
                 session.consumeOneTimeFlags();
             }
+            session.consumeStartupResumeSessionAt?.();
         },
         sendFailureMessage: (message) => {
             session.client.sendSessionEvent({ type: 'message', message });

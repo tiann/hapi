@@ -829,4 +829,27 @@ describe('claudeRemoteLauncher resume anchor', () => {
         } finally { session.stopKeepAlive() }
     })
 
+    it('applies startupResumeSessionAt on initial remote launch without --fork-session and omits it on respawn', async () => {
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+        ;(session as { startupResumeSessionAt?: string }).startupResumeSessionAt = 'user-boundary-uuid'
+
+        queue.push('hello', { permissionMode: 'default' }, 'local-1')
+        queue.push('follow-up', { permissionMode: 'plan' }, 'local-2')
+        harness.switchAfterCall = 2
+        harness.triggerSwitch = () => {
+            client.rpcHandlers.get(RPC_METHODS.Switch)?.()
+        }
+
+        try {
+            await claudeRemoteLauncher(session as never)
+
+            expect(harness.claudeArgsPerCall[0]).toEqual(['--resume-session-at', 'user-boundary-uuid'])
+            expect(harness.claudeArgsPerCall[1]).toBeUndefined()
+            expect((session as { startupResumeSessionAt?: string }).startupResumeSessionAt).toBeUndefined()
+        } finally {
+            session.stopKeepAlive()
+        }
+    })
+
 })

@@ -545,7 +545,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     claudeArgs: session.claudeArgs,
                     sessionId: session.sessionId,
                     intent: session.client.getMetadata()?.claudeRewind,
-                    workingDirectory: session.path
+                    workingDirectory: session.path,
+                    startupBoundary: session.startupResumeSessionAt
                 });
                 const resumeAtArmed = spawnBoundary != null;
                 const resumeAtBootstrapMode: EnhancedMode | null = !resumeAtArmed ? null
@@ -774,6 +775,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             // longer "in flight" either.
                             reachedReadyThisAttempt = true;
                             inFlightMessage = null;
+                            session.consumeStartupResumeSessionAt?.();
 
                             await messageQueue.flush();
 
@@ -864,6 +866,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     // never fire (livelock).
                     if (reachedReadyThisAttempt || deliveredMessageThisAttempt) {
                         immediateFailureCount = 0;
+                        session.consumeStartupResumeSessionAt?.();
                     }
                 } catch (e) {
                     logger.debug('[remote]: launch error', e);

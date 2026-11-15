@@ -6,12 +6,18 @@ import type { Metadata } from '@/api/types'
 
 const harness = vi.hoisted(() => ({
     launches: [] as Array<Record<string, unknown>>,
-    scannerOnMessage: null as ((message: Record<string, unknown>) => void) | null
+    scannerOnMessage: null as ((message: Record<string, unknown>) => void) | null,
+    nextLaunchError: null as Error | null
 }))
 
 vi.mock('./claudeLocal', () => ({
     claudeLocal: async (opts: Record<string, unknown>) => {
         harness.launches.push(opts)
+        if (harness.nextLaunchError) {
+            const err = harness.nextLaunchError
+            harness.nextLaunchError = null
+            throw err
+        }
     }
 }))
 
@@ -27,10 +33,18 @@ vi.mock('./utils/sessionScanner', () => ({
 
 vi.mock('@/modules/common/launcher/BaseLocalLauncher', () => ({
     BaseLocalLauncher: class {
-        constructor(private readonly opts: { launch: (signal: AbortSignal) => Promise<void> }) {}
+        constructor(private readonly opts: {
+            launch: (signal: AbortSignal) => Promise<void>
+            onLaunchSuccess?: () => void
+        }) {}
         async run(): Promise<'exit'> {
-            await this.opts.launch(new AbortController().signal)
-            return 'exit'
+            try {
+                await this.opts.launch(new AbortController().signal)
+                this.opts.onLaunchSuccess?.()
+                return 'exit'
+            } catch {
+                return 'exit'
+            }
         }
     }
 }))
@@ -40,37 +54,44 @@ import { claudeLocalLauncher } from './claudeLocalLauncher'
 function createSessionStub() {
     const sentMessages: Array<Record<string, unknown>> = []
     let metadata: Metadata = { path: '/tmp/test', host: 'localhost' }
-    return {
-        session: {
-            localPermissionBridge: { start: vi.fn(), stop: vi.fn(), onTranscript: vi.fn() },
-            sessionId: 'test-session',
-            thinking: false,
-            localTurnStartedAt: 0,
-            onThinkingChange: vi.fn(),
-            path: '/tmp/test',
-            startedBy: 'terminal' as const,
-            startingMode: 'local' as const,
-            claudeEnvVars: {},
-            claudeArgs: [],
-            getModel: () => 'claude-opus-4-1',
-            getPermissionMode: () => 'default',
-            mcpServers: [],
-            allowedTools: [],
-            hookSettingsPath: null,
-            queue: { size: () => 0, reset: () => {}, setOnMessage: () => {} },
-            client: {
-                getMetadata: () => metadata,
-                sendClaudeSessionMessage: (msg: Record<string, unknown>) => { sentMessages.push(msg) },
-                updateMetadata: (handler: (current: Metadata) => Metadata) => {
-                    metadata = handler(metadata)
-                },
-                rpcHandlerManager: { registerHandler: () => {} }
+    const session = {
+        localPermissionBridge: { start: vi.fn(), stop: vi.fn(), onTranscript: vi.fn() },
+        sessionId: 'test-session',
+        thinking: false,
+        localTurnStartedAt: 0,
+        onThinkingChange: vi.fn(),
+        path: '/tmp/test',
+        startedBy: 'terminal' as const,
+        startingMode: 'local' as const,
+        claudeEnvVars: {},
+        claudeArgs: [] as string[] | undefined,
+        startupResumeSessionAt: undefined as string | undefined,
+        getModel: () => 'claude-opus-4-1',
+        getPermissionMode: () => 'default',
+        mcpServers: [],
+        allowedTools: [],
+        hookSettingsPath: null,
+        queue: { size: () => 0, reset: () => {}, setOnMessage: () => {} },
+        client: {
+            getMetadata: () => metadata,
+            sendClaudeSessionMessage: (msg: Record<string, unknown>) => { sentMessages.push(msg) },
+            updateMetadata: (handler: (current: Metadata) => Metadata) => {
+                metadata = handler(metadata)
             },
-            addSessionFoundCallback: () => {},
-            removeSessionFoundCallback: () => {},
-            consumeOneTimeFlags: () => {},
-            recordLocalLaunchFailure: () => {}
+            rpcHandlerManager: { registerHandler: () => {} }
         },
+        addSessionFoundCallback: () => {},
+        removeSessionFoundCallback: () => {},
+        consumeOneTimeFlags: () => {
+            session.startupResumeSessionAt = undefined
+        },
+        consumeStartupResumeSessionAt: () => {
+            session.startupResumeSessionAt = undefined
+        },
+        recordLocalLaunchFailure: () => {}
+    }
+    return {
+        session,
         sentMessages,
         getMetadata: () => metadata,
         setMetadata: (value: Metadata) => { metadata = value }
@@ -81,6 +102,7 @@ describe('claudeLocalLauncher message filtering', () => {
     afterEach(() => {
         harness.launches = []
         harness.scannerOnMessage = null
+        harness.nextLaunchError = null
     })
 
     it('uses Claude Code summary messages as a title fallback', async () => {
@@ -252,6 +274,7 @@ describe('claudeLocalLauncher context window seed (#1858)', () => {
     afterEach(() => {
         harness.launches = []
         harness.scannerOnMessage = null
+        harness.nextLaunchError = null
     })
 
     function assistant(model: string, usage: Record<string, unknown> = { input_tokens: 1, output_tokens: 1 }) {
@@ -326,5 +349,46 @@ describe('claudeLocalLauncher context window seed (#1858)', () => {
             else process.env.CLAUDE_CONFIG_DIR = previousConfigDir
             rmSync(root, { recursive: true, force: true })
         }
+    })
+
+    it('applies startupResumeSessionAt to the initial launch without --fork-session and consumes it before respawn', async () => {
+        const { session } = createSessionStub()
+        session.sessionId = 'resumed-session-id'
+        session.claudeArgs = undefined
+        session.startupResumeSessionAt = 'user-boundary-uuid'
+
+        await claudeLocalLauncher(session as never)
+        expect(harness.launches[0]).toMatchObject({
+            sessionId: 'resumed-session-id',
+            claudeArgs: ['--resume-session-at', 'user-boundary-uuid']
+        })
+        expect(session.startupResumeSessionAt).toBeUndefined()
+
+        // Subsequent launch/respawn must not re-apply the startup boundary.
+        await claudeLocalLauncher(session as never)
+        expect(harness.launches[1]).toMatchObject({
+            sessionId: 'resumed-session-id',
+            claudeArgs: undefined
+        })
+    })
+
+    it('retains startupResumeSessionAt across an aborted initial launch failure until launch succeeds', async () => {
+        const { session } = createSessionStub()
+        session.sessionId = 'resumed-session-id'
+        session.claudeArgs = undefined
+        session.startupResumeSessionAt = 'user-boundary-uuid'
+        harness.nextLaunchError = new Error('transient launch error')
+
+        await claudeLocalLauncher(session as never)
+        expect(harness.launches[0]).toMatchObject({
+            claudeArgs: ['--resume-session-at', 'user-boundary-uuid']
+        })
+        expect(session.startupResumeSessionAt).toBe('user-boundary-uuid')
+
+        await claudeLocalLauncher(session as never)
+        expect(harness.launches[1]).toMatchObject({
+            claudeArgs: ['--resume-session-at', 'user-boundary-uuid']
+        })
+        expect(session.startupResumeSessionAt).toBeUndefined()
     })
 })

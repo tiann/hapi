@@ -461,6 +461,73 @@ describe('deriveSpawnArgs', () => {
             })
         })
     })
+
+    it('emits an explicit startup boundary for an initial launch without --fork-session and omits it after consumption', () => {
+        const root = appliedRoot()
+        withConfigDir(root, () => {
+            expect(deriveSpawnArgs({
+                claudeArgs: ['--resume', 'sess-1', '--resume-session-at', 'stale'],
+                sessionId: 'sess-1',
+                intent: undefined,
+                workingDirectory: CWD,
+                startupBoundary: 'user-boundary'
+            })).toEqual({
+                args: ['--resume-session-at', 'user-boundary'],
+                boundary: 'user-boundary'
+            })
+
+            // Reopened HAPI session where --resume was already stripped into sessionId.
+            expect(deriveSpawnArgs({
+                claudeArgs: undefined,
+                sessionId: 'sess-1',
+                intent: undefined,
+                workingDirectory: CWD,
+                startupBoundary: 'user-boundary'
+            })).toEqual({
+                args: ['--resume-session-at', 'user-boundary'],
+                boundary: 'user-boundary'
+            })
+
+            // Once consumed after initial continuation, respawn omits --resume-session-at.
+            expect(deriveSpawnArgs({
+                claudeArgs: undefined,
+                sessionId: 'sess-1',
+                intent: undefined,
+                workingDirectory: CWD,
+                startupBoundary: undefined
+            })).toEqual({
+                args: undefined,
+                boundary: null
+            })
+        })
+    })
+
+    it('prefers intent or fork boundaries over startupBoundary', () => {
+        const root = unprovenRoot()
+        withConfigDir(root, () => {
+            expect(deriveSpawnArgs({
+                claudeArgs: ['--resume', 'sess-1'],
+                sessionId: 'sess-1',
+                intent,
+                workingDirectory: CWD,
+                startupBoundary: 'user-boundary'
+            })).toEqual({
+                args: ['--resume-session-at', 'as1'],
+                boundary: 'as1'
+            })
+
+            expect(deriveSpawnArgs({
+                claudeArgs: ['--resume', 'sess-1', '--fork-session', '--resume-session-at', 'fork-boundary'],
+                sessionId: null,
+                intent: undefined,
+                workingDirectory: CWD,
+                startupBoundary: 'user-boundary'
+            })).toEqual({
+                args: ['--resume', 'sess-1', '--fork-session', '--resume-session-at', 'fork-boundary'],
+                boundary: 'fork-boundary'
+            })
+        })
+    })
 })
 
 describe('resumeSessionAtFromArgs', () => {

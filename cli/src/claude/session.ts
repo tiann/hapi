@@ -17,6 +17,7 @@ type LocalLaunchFailure = {
 export class Session extends AgentSessionBase<EnhancedMode> {
     readonly claudeEnvVars?: Record<string, string>;
     claudeArgs?: string[];
+    startupResumeSessionAt?: string;
     readonly mcpServers: Record<string, any>;
     readonly allowedTools?: string[];
     readonly hookSettingsPath: string;
@@ -51,6 +52,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         sessionId: string | null;
         claudeEnvVars?: Record<string, string>;
         claudeArgs?: string[];
+        startupResumeSessionAt?: string;
         mcpServers: Record<string, any>;
         messageQueue: MessageQueue2<EnhancedMode>;
         onModeChange: (mode: 'local' | 'remote') => void;
@@ -96,6 +98,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
 
         this.claudeEnvVars = opts.claudeEnvVars;
         this.claudeArgs = opts.claudeArgs;
+        this.startupResumeSessionAt = opts.startupResumeSessionAt;
         this.mcpServers = opts.mcpServers;
         this.allowedTools = opts.allowedTools;
         this.hookSettingsPath = opts.hookSettingsPath;
@@ -169,6 +172,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
      * so a stale one on the buffer is inert.
      */
     consumeOneTimeFlags = (): void => {
+        this.consumeStartupResumeSessionAt();
         if (!this.claudeArgs) return;
 
         const filteredArgs: string[] = [];
@@ -200,4 +204,15 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         this.claudeArgs = filteredArgs.length > 0 ? filteredArgs : undefined;
         logger.debug(`[Session] Consumed one-time flags, remaining args:`, this.claudeArgs);
     };
+
+    /**
+     * Consume an explicit one-shot startup `--resume-session-at` boundary so
+     * subsequent respawns never re-truncate the session.
+     */
+    consumeStartupResumeSessionAt = (): void => {
+        if (this.startupResumeSessionAt !== undefined) {
+            logger.debug('[Session] Consumed startup --resume-session-at boundary');
+            this.startupResumeSessionAt = undefined;
+        }
+    }
 }

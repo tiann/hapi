@@ -64,6 +64,7 @@ interface LoopOptions {
     api: ApiClient,
     claudeEnvVars?: Record<string, string>
     claudeArgs?: string[]
+    startupResumeSessionAt?: string
     messageQueue: MessageQueue2<EnhancedMode>
     allowedTools?: string[]
     onSessionReady?: (session: Session) => void
@@ -85,6 +86,7 @@ export async function loop(opts: LoopOptions) {
         sessionId: opts.resumeSessionId ?? null,
         claudeEnvVars: opts.claudeEnvVars,
         claudeArgs: opts.claudeArgs,
+        startupResumeSessionAt: opts.startupResumeSessionAt,
         mcpServers: opts.mcpServers,
         logPath: logPath,
         messageQueue: opts.messageQueue,

@@ -377,6 +377,7 @@ export function deriveSpawnArgs(options: {
     sessionId: string | null
     intent: ClaudeRewindIntent | undefined
     workingDirectory: string
+    startupBoundary?: string | null
 }): { args: string[] | undefined; boundary: string | null } {
     // Materialization is a transcript ON DISK, not a bound session id: the
     // remote SessionStart hook binds session.sessionId before system/init
@@ -417,7 +418,7 @@ export function deriveSpawnArgs(options: {
             intentBoundary = plan.action === 'rearm' && turns.length > 0 ? options.intent.keepBoundary : null
         }
     }
-    const boundary = intentBoundary ?? forkBoundary
+    const boundary = intentBoundary ?? forkBoundary ?? (options.startupBoundary || null)
     const args = boundary ? [...(baseArgs ?? []), '--resume-session-at', boundary] : baseArgs
     return { args, boundary }
 }

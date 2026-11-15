@@ -36,6 +36,7 @@ export interface StartOptions {
     shouldStartRunner?: boolean
     claudeEnvVars?: Record<string, string>
     claudeArgs?: string[]
+    startupResumeSessionAt?: string
     startedBy?: 'runner' | 'terminal'
     existingSessionId?: string
     /**
@@ -1147,6 +1148,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             session,
             claudeEnvVars: options.claudeEnvVars,
             claudeArgs: options.claudeArgs,
+            startupResumeSessionAt: options.startupResumeSessionAt,
             startedBy,
             resumeSessionId: options.resumeSessionId,
             hookSettingsPath,
