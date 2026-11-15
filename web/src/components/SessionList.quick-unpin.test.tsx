@@ -430,11 +430,20 @@ describe('session row hover unpin', () => {
         // scroll-anchor attribute lives on a non-focusable wrapper <div>, not
         // a native <button> (hapi#238: a focusable PR/issue chip can't be a
         // descendant of a real button per ARIA) — the actually focusable
-        // element is its role="button" descendant.
-        const row = document.querySelector<HTMLElement>('[data-session-row-id="unread-project-pin"]')
-        const rowButton = row?.querySelector<HTMLElement>('[role="button"], button') ?? null
-        expect(rowButton).not.toBeNull()
-        expect(document.activeElement).toBe(rowButton)
+        // element is its role="button" descendant, not a selector qualified
+        // by the `button` tag (upstream's own row IS a button, so its
+        // equivalent assertion uses that selector; it would never match here).
+        const unreadRow = document.querySelector<HTMLElement>('[data-session-row-id="unread-project-pin"]')
+        expect(unreadRow).not.toBeNull()
+        const unreadPreviewButton = unreadRow!.querySelector<HTMLElement>('[role="button"], button')
+        expect(unreadPreviewButton).not.toBeNull()
+        // No ancestor panel of the row is folding closed, so it stays visible.
+        expect(unreadRow!.closest('.collapsible-panel:not([data-open])')).toBeNull()
+        expect(unreadRow!.closest('.collapsible-panel')).toHaveAttribute('data-open')
+
+        expect(unreadRow!.isConnected).toBe(true)
+        expect(document.activeElement).not.toBe(document.body)
+        expect(document.activeElement).toBe(unreadPreviewButton)
     })
 
     it('moves focus to a visible fallback instead of document.body if the unpinned row disappears from the list', async () => {
