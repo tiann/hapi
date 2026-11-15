@@ -1998,7 +1998,7 @@ body:
                         issueTemplateDir: {
                             entries: [
                                 { name: 'bug_report.yml', object: { text: BUG_REPORT_YAML } },
-                                { name: 'feature_request.md', object: { text: '---\nname: Feature\n---\nBody text' } },
+                                { name: 'feature_request.md', object: { text: '---\nname: Feature\nabout: Suggest a new feature\n---\nBody text' } },
                                 { name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }
                             ]
                         }
@@ -2025,7 +2025,7 @@ body:
                         issueTemplateDir: {
                             entries: [
                                 { name: 'README.md', object: { text: 'These templates follow our usual format.' } },
-                                { name: 'feature_request.md', object: { text: '---\nname: Feature\n---\nBody text' } }
+                                { name: 'feature_request.md', object: { text: '---\nname: Feature\nabout: Suggest a new feature\n---\nBody text' } }
                             ]
                         }
                     }
@@ -2035,6 +2035,28 @@ body:
         const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/hapi`)
         const body = await response.json() as { templates: Array<{ id: string }> }
         expect(body.templates.map(t => t.id)).toEqual(['feature_request.md'])
+    })
+
+    it('excludes a non-README .md with no valid name/about frontmatter, so it cannot defeat blank_issues_enabled: false', async () => {
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            () => ({
+                data: {
+                    repository: {
+                        issueTemplateDir: {
+                            entries: [
+                                { name: 'notes.md', object: { text: 'Just some ordinary notes, no frontmatter at all.' } },
+                                { name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }
+                            ]
+                        }
+                    }
+                }
+            })
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/hapi`)
+        const body = await response.json() as { templates: Array<{ id: string }>; blankAllowed: boolean }
+        expect(body.templates).toEqual([])
+        expect(body.blankAllowed).toBe(false)
     })
 
     it('honors blank_issues_enabled: false even when every template is unsupported (operator ruling, hapi#238: do not fall back to blank)', async () => {

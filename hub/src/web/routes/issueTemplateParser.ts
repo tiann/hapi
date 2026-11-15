@@ -216,6 +216,27 @@ function splitFrontmatter(raw: string): { frontmatter: Record<string, unknown>; 
     }
 }
 
+/**
+ * GitHub's chooser only lists a legacy `.md` template when its frontmatter
+ * declares both `name` and `about` — an ordinary markdown file with no (or
+ * malformed) frontmatter isn't a template at all, even though
+ * `parseLegacyIssueTemplate` itself stays deliberately lenient about it
+ * (review finding, tiann/hapi#2147: a repository with
+ * `blank_issues_enabled: false` and only such a file would otherwise have
+ * its "force a real template" setting defeated by a file GitHub's own UI
+ * would never have offered). This check belongs at the caller deciding
+ * *whether a file is a template candidate at all*, not in the parser that
+ * answers *how to read one once it's accepted as a candidate* —
+ * `parseLegacyIssueTemplate`'s own leniency (falling back to the filename,
+ * treating a frontmatter-less file as a usable freeform template) is exercised
+ * directly by callers outside Boards' own GitHub-parity discovery loop and
+ * is intentionally unaffected by this.
+ */
+export function hasRequiredLegacyTemplateFrontmatter(raw: string): boolean {
+    const { frontmatter } = splitFrontmatter(raw)
+    return Boolean(asString(frontmatter.name)) && Boolean(asString(frontmatter.about))
+}
+
 /** YAML list or GitHub's comma-separated legacy frontmatter shorthand, both valid for `labels`/`assignees`. */
 function asStringListField(value: unknown): string[] {
     if (typeof value === 'string') {

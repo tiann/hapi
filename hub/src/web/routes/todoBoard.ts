@@ -24,7 +24,7 @@ import {
 import { GithubRepoSlugSchema } from '@hapi/protocol/schemas'
 import type { WebAppEnv } from '../middleware/auth'
 import { getSettingsFile, readSettingsOrThrow, updateSettings, type StoredTodoBoard } from '../../config/settings'
-import { parseIssueFormYaml, parseIssueTemplateConfig, parseLegacyIssueTemplate } from './issueTemplateParser'
+import { hasRequiredLegacyTemplateFrontmatter, parseIssueFormYaml, parseIssueTemplateConfig, parseLegacyIssueTemplate } from './issueTemplateParser'
 
 /**
  * First shippable slice of the board view (hapi#235): GitHub Projects
@@ -764,15 +764,19 @@ function parseIssueTemplateDirResponse(response: GhIssueTemplateDirResponse): { 
             blankIssuesEnabled = parseIssueTemplateConfig(entry.object.text).blankIssuesEnabled
         } else if (lowerName.endsWith('.yml') || lowerName.endsWith('.yaml')) {
             templates.push(parseIssueFormYaml(entry.name, entry.object.text))
-        } else if (lowerName.endsWith('.md') && lowerName !== 'readme.md') {
-            // README.md is a widespread convention for documenting the
-            // templates in this directory, not a template itself — GitHub's
-            // own chooser doesn't offer it. parseLegacyIssueTemplate stays
-            // deliberately lenient about frontmatter quality (a real
-            // template with partial metadata should still work), so this
-            // exclusion has to live here, at "is this file a template at
-            // all," rather than in the parser itself (review finding,
-            // tiann/hapi#2147).
+        } else if (
+            lowerName.endsWith('.md')
+            && lowerName !== 'readme.md'
+            && hasRequiredLegacyTemplateFrontmatter(entry.object.text)
+        ) {
+            // README.md (a widespread convention for documenting the
+            // templates in this directory) and any other .md lacking valid
+            // name/about frontmatter aren't templates GitHub's own chooser
+            // would offer either — parseLegacyIssueTemplate stays
+            // deliberately lenient about frontmatter quality for callers
+            // that accept a file as a template candidate by other means, but
+            // this discovery loop decides candidacy itself, so the stricter,
+            // GitHub-matching check belongs here (review finding, tiann/hapi#2147).
             templates.push(parseLegacyIssueTemplate(entry.name, entry.object.text))
         }
     }
