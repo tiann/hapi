@@ -267,6 +267,8 @@ export class ApiSessionClient extends EventEmitter {
     private retryQueuedMessageCallback: ((localId: string) => boolean | Promise<boolean>) | null = null
     private readonly incomingFilter = new IncomingMessageFilter()
     private reconciledRewindOperationId: string | undefined
+    // truncateFromLocalId of the Claude rewind intent last seen in metadata.
+    private observedClaudeRewindId: string | undefined
     private incomingCursorEpoch = 0
     private pendingRewindBackfill: { operationId: string; epoch: number; afterSeq: number } | null = null
     private rewindBackfillScheduled = false
@@ -371,6 +373,9 @@ export class ApiSessionClient extends EventEmitter {
                 ? this.refreshMetadata().then((refreshed) => { metadataRefreshed = refreshed })
                 : Promise.resolve()
             void afterMeta.finally(() => {
+                if (isReconnect && this.observedClaudeRewindId !== undefined) {
+                    this.armRewindBackfill(`claude:${this.observedClaudeRewindId}`)
+                }
                 void this.backfillIfNeeded()
 if (isReconnect) {
                     this.reconnectHandler?.(metadataRefreshed)
@@ -877,6 +882,7 @@ if (isReconnect) {
     }
 
     private reconcileCommittedRewindCursor(metadata: Metadata | null): void {
+        this.reconcileClaudeRewindCursor(metadata?.claudeRewind?.truncateFromLocalId)
         const operation = metadata?.opencodeRewind
         if (operation?.phase !== 'committed') {
             this.scheduleRewindBackfill()
@@ -887,19 +893,37 @@ if (isReconnect) {
         // metadata for the committed tombstone must not rewind later deliveries.
         if (operation.operationId !== this.reconciledRewindOperationId) {
             this.reconciledRewindOperationId = operation.operationId
-            // Invocation order can remove rows below the boundary's insertion
-            // seq too. New inputs may reuse those slots, so rescan from zero.
-            this.incomingFilter.rewindCursor(0)
-            // A newer rewind cannot retire an earlier, still-unscanned prefix.
-            const previousFloor = this.pendingRewindBackfill?.afterSeq
-            const cursor = this.incomingFilter.cursorSeq()
-            const afterSeq = previousFloor === undefined ? cursor : Math.min(previousFloor, cursor ?? previousFloor)
-            this.incomingCursorEpoch += 1
-            this.pendingRewindBackfill = afterSeq === null ? null : {
-                operationId: operation.operationId, epoch: this.incomingCursorEpoch, afterSeq
-            }
+            this.armRewindBackfill(operation.operationId)
         }
         this.scheduleRewindBackfill()
+    }
+
+    /**
+     * Claude rewind truncates the Hub tail at RPC success while the intent is
+     * already in metadata, and the native restart keeps this client (and its
+     * cursor). Rescan from zero once the intent is gone (native branch proven,
+     * so Hub truncation is certain) and on each reconnect while it is pending.
+     */
+    private reconcileClaudeRewindCursor(intentId: string | undefined): void {
+        const previous = this.observedClaudeRewindId
+        this.observedClaudeRewindId = intentId
+        if (previous !== undefined && intentId === undefined) {
+            this.armRewindBackfill(`claude:${previous}`)
+        }
+    }
+
+    private armRewindBackfill(operationId: string): void {
+        // Invocation order can remove rows below the boundary's insertion
+        // seq too. New inputs may reuse those slots, so rescan from zero.
+        this.incomingFilter.rewindCursor(0)
+        // A newer rewind cannot retire an earlier, still-unscanned prefix.
+        const previousFloor = this.pendingRewindBackfill?.afterSeq
+        const cursor = this.incomingFilter.cursorSeq()
+        const afterSeq = previousFloor === undefined ? cursor : Math.min(previousFloor, cursor ?? previousFloor)
+        this.incomingCursorEpoch += 1
+        this.pendingRewindBackfill = afterSeq === null ? null : {
+            operationId, epoch: this.incomingCursorEpoch, afterSeq
+        }
     }
 
     private scheduleRewindBackfill(): void {

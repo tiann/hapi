@@ -1078,6 +1078,56 @@ describe('ApiSessionClient incoming user messages', () => {
         })
     })
 
+    describe('committed Claude rewind cursor', () => {
+        const intent = { targetLocalId: 'cut', truncateFromLocalId: 'cut', keepBoundary: 'boundary', droppedPrompts: ['p1'] }
+        const base = { path: '/tmp', host: 'test', flavor: 'claude' as const }
+        const prompt = (id: string, seq: number) => ({ id, seq, createdAt: seq, localId: id, invokedAt: null,
+            content: { role: 'user', content: { type: 'text', text: id }, meta: { sentFrom: 'webapp' } } })
+
+        // Hub truncation after a Claude rewind lets later prompts reuse seqs below
+        // the CLI's retained cursor; reconnect backfill must still retrieve them.
+        it.each(['intent still pending', 'intent cleared after native proof'] as const)(
+            'delivers a prompt that reuses a truncated seq after reconnect (%s)', async phase => {
+                socketHarness.sockets.length = 0
+                axiosHarness.get.mockReset()
+                const hubMessages = [prompt('queued-low', 4)]
+                const hubMetadata = { current: { ...base, claudeRewind: intent } as Record<string, unknown>, version: 2 }
+                axiosHarness.get.mockImplementation(async (url: string, config: { params?: { afterSeq: number } }) =>
+                    url.endsWith('/messages')
+                        ? { data: { messages: hubMessages.filter(m => m.seq > config.params!.afterSeq) } }
+                        : { data: { session: { metadataVersion: hubMetadata.version, metadata: hubMetadata.current } } })
+                const client = new ApiSessionClient('token', createSession({ metadataVersion: 1, metadata: base }))
+                const socket = socketHarness.sockets[0]
+                const received = vi.fn()
+                client.onUserMessage(received)
+                await Promise.resolve()
+                triggerIncomingUserMessage(socket, { id: 'old-tail', seq: 9, text: 'pre-rewind tail', sentFrom: 'webapp' })
+                socket.trigger('update', { body: { t: 'update-session', metadata: { version: 2, value: hubMetadata.current } } })
+                if (phase === 'intent cleared after native proof') {
+                    hubMetadata.current = { ...base }
+                    hubMetadata.version = 3
+                    socket.trigger('update', { body: { t: 'update-session', metadata: { version: 3, value: hubMetadata.current } } })
+                }
+                received.mockClear()
+                try {
+                    socket.connected = false
+                    socket.trigger('disconnect', 'transport close')
+                    socket.triggerConnect()
+                    await vi.waitFor(() => expect(received).toHaveBeenCalledTimes(1))
+                    expect(received.mock.calls.map(([, id]) => id)).toEqual(['queued-low'])
+                    expect(axiosHarness.get).toHaveBeenCalledWith(expect.stringContaining('/messages'),
+                        expect.objectContaining({ params: { afterSeq: 0, limit: 200 } }))
+                    // A second reconnect must not deliver the prompt again.
+                    socket.connected = false
+                    socket.trigger('disconnect', 'transport close')
+                    socket.triggerConnect()
+                    await vi.waitFor(() => expect((client as unknown as { backfillInFlight: Promise<void> | null })
+                        .backfillInFlight).toBeNull())
+                    expect(received).toHaveBeenCalledTimes(1)
+                } finally { client.close() }
+            })
+    })
+
     describe('HAPI7-CURSOR-R1 unscanned recovery floor', () => {
         const metadata = (operationId = 'floor-a', cutoffSeq = 3) => ({
             path: '/tmp', host: 'test', flavor: 'opencode' as const,
