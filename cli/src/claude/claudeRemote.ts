@@ -467,7 +467,8 @@ export async function claudeRemote(opts: {
             options: sdkOptions,
         });
     } catch (e) {
-        // The initial prompt already opened the steer target.
+        // The initial prompt already flipped thinking on and opened the steer target.
+        updateThinking(false);
         closeSteering();
         throw e;
     }
