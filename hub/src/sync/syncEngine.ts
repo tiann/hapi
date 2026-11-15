@@ -256,6 +256,8 @@ export class SyncEngine {
     private readonly reopenTails = new Map<string, Promise<ReopenSessionResult>>()
     /** Serialize fork/rewind per session so concurrent native rollbacks cannot stack. */
     private readonly historyActionsInFlight = new Set<string>()
+    /** Track Claude rewind RPCs in flight on this hub process so live metadata writes wait for the RPC outcome. */
+    private readonly claudeRewindRpcsInFlight = new Map<string, string>()
     /** Pending #1489 wake retries after recoverable pre-delivery failures. */
     private readonly jobTerminalWakeRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
     private readonly jobTerminalWakeRetryAttempts = new Map<string, number>()
@@ -733,6 +735,7 @@ export class SyncEngine {
                 this.eventPublisher.emit(event)
                 const after = this.sessionCache.getSession(event.sessionId)
                 this.reconcileSteerDeliveryOwner(beforeMetadata, after)
+                this.reconcilePendingClaudeRewind(after)
                 if (after?.metadata && !this.hasSameAgentSessionIds(beforeMetadata, after.metadata)) {
                     if (!this.canRunCursorDedup(after)) {
                         return
@@ -750,6 +753,7 @@ export class SyncEngine {
             this.sessionCache.refreshSession(event.sessionId)
             const after = this.sessionCache.getSession(event.sessionId)
             this.reconcileSteerDeliveryOwner(beforeMetadata, after)
+            this.reconcilePendingClaudeRewind(after)
             if (after?.metadata && !this.hasSameAgentSessionIds(beforeMetadata, after.metadata)) {
                 if (!this.canRunCursorDedup(after)) {
                     return
@@ -2845,56 +2849,74 @@ export class SyncEngine {
      */
     private reconcilePendingClaudeRewinds(): void {
         for (const session of this.sessionCache.getSessions()) {
-            const stored = this.store.sessions.getSession(session.id)
-            const rawMetadata = asRecord(stored?.metadata)
-            const hasRawRewind = rawMetadata !== null && rawMetadata.claudeRewind !== undefined
-            const intent = session.metadata?.claudeRewind
-            if (!intent && !hasRawRewind) {
-                continue
-            }
-            if (session.metadata?.conversationHistoryDiverged === true || rawMetadata?.conversationHistoryDiverged === true) {
-                continue
-            }
+            this.reconcilePendingClaudeRewind(session)
+        }
+    }
 
-            const truncateFromLocalId = typeof intent?.truncateFromLocalId === 'string' && intent.truncateFromLocalId.length > 0
-                ? intent.truncateFromLocalId
-                : null
-            if (!truncateFromLocalId) {
-                if (session.metadata) {
-                    this.markConversationHistoryDiverged(session.id, session.namespace)
-                } else if (rawMetadata && stored) {
-                    const { claudeRewind: _invalid, ...rest } = rawMetadata
-                    this.store.sessions.updateSessionMetadata(
-                        session.id,
-                        { ...rest, conversationHistoryDiverged: true } as unknown as Session['metadata'],
-                        stored.metadataVersion,
-                        session.namespace,
-                        { touchUpdatedAt: false }
-                    )
-                    this.sessionCache.refreshSession(session.id)
-                }
-                continue
-            }
+    /** Clear the in-flight RPC marker only if it still belongs to the same rewind request. */
+    private clearClaudeRewindInFlight(sessionId: string, messageLocalId: string): void {
+        if (this.claudeRewindRpcsInFlight.get(sessionId) === messageLocalId) {
+            this.claudeRewindRpcsInFlight.delete(sessionId)
+        }
+    }
 
-            const states = this.store.messages.getLocalMessageStates(session.id, [truncateFromLocalId])
-            if (states.length === 0) {
-                // Already truncated before restart (RPC reply, catch recovery, or prior startup).
-                continue
-            }
+    /** Idempotently reconcile a persisted claudeRewind intent when no matching rewind RPC is active. */
+    private reconcilePendingClaudeRewind(session: Session | undefined): void {
+        if (!session) {
+            return
+        }
+        const stored = this.store.sessions.getSession(session.id)
+        const rawMetadata = asRecord(stored?.metadata)
+        const hasRawRewind = rawMetadata !== null && rawMetadata.claudeRewind !== undefined
+        const intent = session.metadata?.claudeRewind
+        if (!intent && !hasRawRewind) {
+            return
+        }
+        if (session.metadata?.conversationHistoryDiverged === true || rawMetadata?.conversationHistoryDiverged === true) {
+            return
+        }
 
-            const targetState = states[0]
-            const hasUninvokedMessages = this.store.messages.getUninvokedLocalMessages(session.id).length > 0
-            const isClaudeSession = session.metadata?.flavor === undefined || session.metadata.flavor === 'claude'
-            if (!isClaudeSession || targetState?.invokedAt == null || hasUninvokedMessages) {
+        const truncateFromLocalId = typeof intent?.truncateFromLocalId === 'string' && intent.truncateFromLocalId.length > 0
+            ? intent.truncateFromLocalId
+            : null
+        if (truncateFromLocalId && this.claudeRewindRpcsInFlight.get(session.id) === truncateFromLocalId) {
+            return
+        }
+        if (!truncateFromLocalId) {
+            if (session.metadata) {
                 this.markConversationHistoryDiverged(session.id, session.namespace)
-                continue
+            } else if (rawMetadata && stored) {
+                const { claudeRewind: _invalid, ...rest } = rawMetadata
+                this.store.sessions.updateSessionMetadata(
+                    session.id,
+                    { ...rest, conversationHistoryDiverged: true } as unknown as Session['metadata'],
+                    stored.metadataVersion,
+                    session.namespace,
+                    { touchUpdatedAt: false }
+                )
+                this.sessionCache.refreshSession(session.id)
             }
+            return
+        }
 
-            try {
-                this.truncateHubTranscriptFrom(session.id, session.namespace, truncateFromLocalId)
-            } catch {
-                this.markConversationHistoryDiverged(session.id, session.namespace)
-            }
+        const states = this.store.messages.getLocalMessageStates(session.id, [truncateFromLocalId])
+        if (states.length === 0) {
+            // Already truncated before restart (RPC reply, catch recovery, or prior startup).
+            return
+        }
+
+        const targetState = states[0]
+        const hasUninvokedMessages = this.store.messages.getUninvokedLocalMessages(session.id).length > 0
+        const isClaudeSession = session.metadata?.flavor === undefined || session.metadata.flavor === 'claude'
+        if (!isClaudeSession || targetState?.invokedAt == null || hasUninvokedMessages) {
+            this.markConversationHistoryDiverged(session.id, session.namespace)
+            return
+        }
+
+        try {
+            this.truncateHubTranscriptFrom(session.id, session.namespace, truncateFromLocalId)
+        } catch {
+            this.markConversationHistoryDiverged(session.id, session.namespace)
         }
     }
 
@@ -2966,6 +2988,7 @@ export class SyncEngine {
 
         if (session.metadata?.flavor === 'opencode') return await this.rewindOpenCode(session, namespace, messageLocalId)
 
+        this.claudeRewindRpcsInFlight.set(sessionId, messageLocalId)
         let rpcResult: Awaited<ReturnType<RpcGateway['rewindConversation']>>
         try {
             rpcResult = await this.rpcGateway.rewindConversation(sessionId, { messageLocalId })
@@ -2977,34 +3000,42 @@ export class SyncEngine {
             // committed - truncate now (idempotent with the success path)
             // instead of leaving the hub transcript diverged from the native
             // side that will inevitably cut the same turns.
-            this.sessionCache.refreshSession(sessionId)
-            const intent = this.getSession(sessionId)?.metadata?.claudeRewind as { truncateFromLocalId?: string } | undefined
-            if (intent?.truncateFromLocalId === messageLocalId) {
-                try {
-                    this.truncateHubTranscriptFrom(sessionId, namespace, messageLocalId)
-                    return { type: 'success' }
-                } catch {
-                    // Fall through: the diverged marker below is the honest state.
+            try {
+                this.sessionCache.refreshSession(sessionId)
+                const intent = this.getSession(sessionId)?.metadata?.claudeRewind as { truncateFromLocalId?: string } | undefined
+                if (intent?.truncateFromLocalId === messageLocalId) {
+                    try {
+                        this.truncateHubTranscriptFrom(sessionId, namespace, messageLocalId)
+                        return { type: 'success' }
+                    } catch {
+                        // Fall through: the diverged marker below is the honest state.
+                    }
                 }
-            }
-            if (!(error instanceof RpcTargetMissingError)) {
-                this.markConversationHistoryDiverged(sessionId, namespace)
-                return {
-                    type: 'error',
-                    hydrateFailed: true,
-                    message: 'Rewind outcome is unknown; session history requires reconciliation'
+                if (!(error instanceof RpcTargetMissingError)) {
+                    this.markConversationHistoryDiverged(sessionId, namespace)
+                    return {
+                        type: 'error',
+                        hydrateFailed: true,
+                        message: 'Rewind outcome is unknown; session history requires reconciliation'
+                    }
                 }
+                return { type: 'error', message: error.message }
+            } finally {
+                this.clearClaudeRewindInFlight(sessionId, messageLocalId)
             }
-            return { type: 'error', message: error.message }
         }
 
-        if (rpcResult?.success !== true) {
-            this.clearUncommittedClaudeRewind(sessionId, namespace, messageLocalId)
-            return {
-                type: 'error',
-                message: rpcResult?.error ?? 'Native rewind failed',
-                ...(rpcResult?.success === false && rpcResult.code ? { code: rpcResult.code } : {})
+        try {
+            if (rpcResult?.success !== true) {
+                this.clearUncommittedClaudeRewind(sessionId, namespace, messageLocalId)
+                return {
+                    type: 'error',
+                    message: rpcResult?.error ?? 'Native rewind failed',
+                    ...(rpcResult?.success === false && rpcResult.code ? { code: rpcResult.code } : {})
+                }
             }
+        } finally {
+            this.clearClaudeRewindInFlight(sessionId, messageLocalId)
         }
 
         try {

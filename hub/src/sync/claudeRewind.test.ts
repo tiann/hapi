@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'bun:test'
+import type { SyncEvent } from '@hapi/protocol/types'
 import { Store } from '../store'
 import { RpcRegistry } from '../socket/rpcRegistry'
+import { registerSessionHandlers } from '../socket/handlers/cli/sessionHandlers'
+import type { CliSocketWithData } from '../socket/socketTypes'
 import { SyncEngine } from './syncEngine'
 
 function createEngine() {
@@ -402,6 +405,228 @@ describe('Claude rewind hub integration', () => {
         } finally {
             engine1.stop()
             engine2?.stop()
+        }
+    })
+
+    it('reconciles a claudeRewind intent persisted via update-metadata retry after hub restart and keeps later messages', async () => {
+        const store = new Store(':memory:')
+        const engine1 = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        let engine2: SyncEngine | null = null
+        let engine3: SyncEngine | null = null
+        const rpcHolder: { release?: () => void } = {}
+
+        try {
+            const session = engine1.getOrCreateSession('claude-rewind-late-intent', {
+                path: '/tmp/project', host: 'localhost', flavor: 'claude',
+                capabilities: { conversationHistory: { rewindToMessage: true } },
+                claudeSessionId: 'native-session-1',
+            }, null, 'default')
+            engine1.handleSessionAlive({ sid: session.id, time: Date.now(), mode: 'remote' })
+            seedTwoTurns(store, session)
+            const initialVersion = store.sessions.getSession(session.id)!.metadataVersion
+
+            // Hub 1 dispatches rewind RPC, then crashes/restarts before the CLI's
+            // claudeRewind metadata write lands in SQLite.
+            ;(engine1 as any).rpcGateway.rewindConversation = () => new Promise((resolve) => {
+                rpcHolder.release = () => resolve({ success: false, error: 'hub restarted' })
+            })
+            const abandonedRpc = engine1.rewindConversation(session.id, 'default', 'local-t2')
+            engine1.stop()
+
+            // Hub 2 starts with no claudeRewind in DB yet.
+            const restart2Broadcasts: SyncEvent[] = []
+            engine2 = new SyncEngine(store, {} as never, new RpcRegistry(), {
+                broadcast: (event: SyncEvent) => restart2Broadcasts.push(event),
+            } as never)
+            expect(store.messages.getAllMessages(session.id).map((m) => m.localId)).toContain('local-t2')
+
+            // CLI reconnects to Hub 2 and retries update-metadata with claudeRewind.
+            const handlers = new Map<string, (data: unknown, ack: (result: unknown) => void) => void>()
+            const socket = {
+                on: (name: string, handler: (data: unknown, ack: (result: unknown) => void) => void) => handlers.set(name, handler),
+                to: () => ({ emit() {} }),
+            }
+            registerSessionHandlers(socket as unknown as CliSocketWithData, {
+                store,
+                resolveSessionAccess: () => ({ ok: true, value: store.sessions.getSession(session.id)! }),
+                emitAccessError() {},
+                onWebappEvent: (event) => engine2!.handleRealtimeEvent(event),
+            })
+
+            const storedBeforeRetry = store.sessions.getSession(session.id)!
+            let ack: unknown
+            handlers.get('update-metadata')!({
+                sid: session.id,
+                expectedVersion: initialVersion,
+                metadata: {
+                    ...(storedBeforeRetry.metadata as Record<string, unknown>),
+                    claudeRewind: {
+                        targetLocalId: 'local-t2',
+                        truncateFromLocalId: 'local-t2',
+                        keepBoundary: 'native-boundary-uuid',
+                        droppedPrompts: ['native-prompt-uuid'],
+                    },
+                },
+            }, (result) => {
+                ack = result
+            })
+
+            expect(ack).toMatchObject({ result: 'success' })
+            const afterCutLocalIds = store.messages.getAllMessages(session.id).map((m) => m.localId)
+            expect(afterCutLocalIds).toContain('local-t1')
+            expect(afterCutLocalIds).not.toContain('local-t2')
+            expect(restart2Broadcasts.filter((e) => e.type === 'messages-invalidated').length).toBe(1)
+
+            // User sends a new message after the late cut and another metadata update arrives
+            // while claudeRewind is still present; truncation must not run again.
+            const laterPrompt = store.messages.addMessage(session.id, { role: 'user', content: 'after late rewind' }, 'local-t3')
+            store.messages.markMessagesInvoked(session.id, ['local-t3'], Date.now())
+            const laterReply = store.messages.addMessage(session.id, agentText('OK, after late rewind'))
+
+            const storedBeforeSecondUpdate = store.sessions.getSession(session.id)!
+            handlers.get('update-metadata')!({
+                sid: session.id,
+                expectedVersion: storedBeforeSecondUpdate.metadataVersion,
+                metadata: {
+                    ...(storedBeforeSecondUpdate.metadata as Record<string, unknown>),
+                    name: 'Updated title after late rewind',
+                },
+            }, () => {})
+
+            engine2.stop()
+            const restart3Broadcasts: SyncEvent[] = []
+            engine3 = new SyncEngine(store, {} as never, new RpcRegistry(), {
+                broadcast: (event: SyncEvent) => restart3Broadcasts.push(event),
+            } as never)
+
+            const survivingIds = new Set(store.messages.getAllMessages(session.id).map((m) => m.id))
+            expect(survivingIds.has(laterPrompt.id)).toBe(true)
+            expect(survivingIds.has(laterReply.id)).toBe(true)
+            expect(restart2Broadcasts.filter((e) => e.type === 'messages-invalidated').length).toBe(1)
+            expect(restart3Broadcasts.some((e) => e.type === 'messages-invalidated')).toBe(false)
+
+            rpcHolder.release?.()
+            await abandonedRpc
+        } finally {
+            rpcHolder.release?.()
+            engine1.stop()
+            engine2?.stop()
+            engine3?.stop()
+            store.close()
+        }
+    })
+
+    it('does not truncate during an in-flight rewind RPC and clears uncommitted claudeRewind when rejected', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+
+        try {
+            const session = engine.getOrCreateSession('claude-rewind-inflight-rejected', {
+                path: '/tmp/project', host: 'localhost', flavor: 'claude',
+                capabilities: { conversationHistory: { rewindToMessage: true } },
+                claudeSessionId: 'native-session-1',
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: session.id, time: Date.now(), mode: 'remote' })
+            seedTwoTurns(store, session)
+
+            const handlers = new Map<string, (data: unknown, ack: (result: unknown) => void) => void>()
+            const socket = {
+                on: (name: string, handler: (data: unknown, ack: (result: unknown) => void) => void) => handlers.set(name, handler),
+                to: () => ({ emit() {} }),
+            }
+            registerSessionHandlers(socket as unknown as CliSocketWithData, {
+                store,
+                resolveSessionAccess: () => ({ ok: true, value: store.sessions.getSession(session.id)! }),
+                emitAccessError() {},
+                onWebappEvent: (event) => engine.handleRealtimeEvent(event),
+            })
+
+            let resolveRpc!: (value: { success: false; outcome: 'rejected'; error: string }) => void
+            ;(engine as any).rpcGateway.rewindConversation = () => new Promise((resolve) => {
+                resolveRpc = resolve
+            })
+
+            const rewindPromise = engine.rewindConversation(session.id, 'default', 'local-t2')
+
+            // While the RPC is in flight on this hub process, update-metadata writes claudeRewind.
+            // Hub must wait for the in-flight RPC outcome rather than truncating early.
+            const storedBefore = store.sessions.getSession(session.id)!
+            handlers.get('update-metadata')!({
+                sid: session.id,
+                expectedVersion: storedBefore.metadataVersion,
+                metadata: {
+                    ...(storedBefore.metadata as Record<string, unknown>),
+                    claudeRewind: {
+                        targetLocalId: 'local-t2',
+                        truncateFromLocalId: 'local-t2',
+                        keepBoundary: 'native-boundary-uuid',
+                        droppedPrompts: ['native-prompt-uuid'],
+                    },
+                },
+            }, () => {})
+
+            expect(store.messages.getAllMessages(session.id).map((m) => m.localId)).toContain('local-t2')
+
+            resolveRpc({ success: false, outcome: 'rejected', error: 'Rewind intent could not be persisted' })
+            const result = await rewindPromise
+
+            expect(result).toEqual({ type: 'error', message: 'Rewind intent could not be persisted' })
+            expect(store.messages.getAllMessages(session.id).map((m) => m.localId)).toContain('local-t2')
+            expect((store.sessions.getSession(session.id)?.metadata as Record<string, unknown>).claudeRewind).toBeUndefined()
+        } finally {
+            engine.stop()
+            store.close()
+        }
+    })
+
+    it('marks history diverged when a late update-metadata claudeRewind arrives alongside uninvoked queued messages', () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+
+        try {
+            const session = engine.getOrCreateSession('claude-rewind-late-unsafe', {
+                path: '/tmp/project', host: 'localhost', flavor: 'claude',
+                capabilities: { conversationHistory: { rewindToMessage: true } },
+                claudeSessionId: 'native-session-1',
+            }, null, 'default')
+            seedTwoTurns(store, session)
+            store.messages.addMessage(session.id, { role: 'user', content: 'queued before reconnect' }, 'local-queued')
+
+            const handlers = new Map<string, (data: unknown, ack: (result: unknown) => void) => void>()
+            const socket = {
+                on: (name: string, handler: (data: unknown, ack: (result: unknown) => void) => void) => handlers.set(name, handler),
+                to: () => ({ emit() {} }),
+            }
+            registerSessionHandlers(socket as unknown as CliSocketWithData, {
+                store,
+                resolveSessionAccess: () => ({ ok: true, value: store.sessions.getSession(session.id)! }),
+                emitAccessError() {},
+                onWebappEvent: (event) => engine.handleRealtimeEvent(event),
+            })
+
+            const storedBefore = store.sessions.getSession(session.id)!
+            handlers.get('update-metadata')!({
+                sid: session.id,
+                expectedVersion: storedBefore.metadataVersion,
+                metadata: {
+                    ...(storedBefore.metadata as Record<string, unknown>),
+                    claudeRewind: {
+                        targetLocalId: 'local-t2',
+                        truncateFromLocalId: 'local-t2',
+                        keepBoundary: 'native-boundary-uuid',
+                        droppedPrompts: ['native-prompt-uuid'],
+                    },
+                },
+            }, () => {})
+
+            expect(((engine.getSession(session.id)?.metadata ?? {}) as Record<string, unknown>).conversationHistoryDiverged).toBe(true)
+            const localIds = store.messages.getAllMessages(session.id).map((m) => m.localId)
+            expect(localIds).toContain('local-t1')
+            expect(localIds).toContain('local-t2')
+            expect(localIds).toContain('local-queued')
+        } finally {
+            engine.stop()
+            store.close()
         }
     })
 })
