@@ -276,11 +276,29 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     logger.infoDeveloper(`Session: ${sessionInfo.id}`);
     logger.infoDeveloper(`Logs: ${logPath}`);
 
+    const settleRetryAbort = new AbortController();
+    let backgroundSettleAbort: AbortController | null = null;
+    let backgroundSettleTask: Promise<void> | null = null;
+    const stopBackgroundSettleRetry = () => {
+        if (backgroundSettleAbort) {
+            backgroundSettleAbort.abort();
+            backgroundSettleAbort = null;
+        }
+        backgroundSettleTask = null;
+    };
     const lifecycle = createRunnerLifecycle({
         session,
         logTag: 'claude',
         stopKeepAlive: () => currentSessionRef.current?.stopKeepAlive(),
+        onBeforeClose: () => {
+            settleRetryAbort.abort();
+            stopBackgroundSettleRetry();
+            deferredMessages.length = 0;
+        },
         onAfterClose: () => {
+            settleRetryAbort.abort();
+            stopBackgroundSettleRetry();
+            deferredMessages.length = 0;
             happyServer.stop();
             currentSessionRef.current?.localPermissionBridge.stop();
             hookServer.stop();
@@ -357,6 +375,69 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     reconcilePendingRewind();
 
     let pendingRewind: ClaudeRewindIntent | null = null;
+    let unknownRewindIntent: ClaudeRewindIntent | null = null;
+    let settleInFlight: Promise<boolean> | null = null;
+
+    const armSettledRewind = async (intent: ClaudeRewindIntent): Promise<void> => {
+        const claudeSession = currentSessionRef.current;
+        if (!claudeSession) {
+            rearmPendingIntent = intent;
+            logger.debug(`[claude] rewind ${intent.truncateFromLocalId}: settled from hub metadata; armed for next spawn`);
+            return;
+        }
+        claudeSession.onNativeInputSubmitted = handleNativeInputSubmitted;
+        pendingRewind = intent;
+        if (claudeSession.mode === 'remote' && claudeSession.requestRemoteRestart) {
+            logger.debug(`[claude] rewind ${intent.truncateFromLocalId}: settled from hub metadata; restarting Claude`);
+            await claudeSession.requestRemoteRestart();
+            return;
+        }
+        logger.debug(`[claude] rewind ${intent.truncateFromLocalId}: settled from hub metadata; armed on active session`);
+    };
+
+    const settleUnknownRewind = (useLoadedMetadata = false): Promise<boolean> => {
+        if (!unknownRewindIntent) {
+            return Promise.resolve(true);
+        }
+        if (settleRetryAbort.signal.aborted) {
+            return Promise.resolve(false);
+        }
+        if (!useLoadedMetadata && settleInFlight) {
+            return settleInFlight;
+        }
+        const promise = (async () => {
+            const intent = unknownRewindIntent;
+            if (!intent || settleRetryAbort.signal.aborted) return !unknownRewindIntent;
+            if (!useLoadedMetadata) {
+                const refreshed = await session.refreshMetadata();
+                if (settleRetryAbort.signal.aborted) {
+                    return false;
+                }
+                if (unknownRewindIntent !== intent) {
+                    return true;
+                }
+                if (!refreshed) {
+                    return false;
+                }
+            }
+            if (settleRetryAbort.signal.aborted) {
+                return false;
+            }
+            unknownRewindIntent = null;
+            stopBackgroundSettleRetry();
+            const hubIntent = session.getMetadata()?.claudeRewind;
+            if (hubIntent?.truncateFromLocalId === intent.truncateFromLocalId) {
+                await armSettledRewind(hubIntent);
+            }
+            return true;
+        })().finally(() => {
+            if (settleInFlight === promise) {
+                settleInFlight = null;
+            }
+        });
+        settleInFlight = promise;
+        return promise;
+    };
 
     // The rewind's native branch materializes when the respawned process
     // writes its first real input re-parented onto the kept boundary. The
@@ -407,17 +488,41 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         // metadata without one (e.g. left inside a rejected rewind's flush
         // window), and a reset must not leave it blocking history actions
         // until a restart.
-        if (!pendingRewind && !session.getMetadata()?.claudeRewind) return;
+        if (!pendingRewind && !rearmPendingIntent && !unknownRewindIntent && !session.getMetadata()?.claudeRewind) return;
         pendingRewind = null;
+        rearmPendingIntent = null;
+        unknownRewindIntent = null;
+        settleInFlight = null;
+        stopBackgroundSettleRetry();
         session.updateMetadata((metadata) => {
             const { claudeRewind: _cleared, ...rest } = metadata;
             return rest;
         });
         void session.flushMetadata();
+        if (deferredMessages.length > 0) void flushUserMessages();
         logger.debug('[claude] rewind: cancelled by session reset');
     };
 
+    session.onReconnect((metadataRefreshed = false) => {
+        if (unknownRewindIntent) {
+            void settleUnknownRewind(metadataRefreshed).then((settled) => {
+                if (settled && deferredMessages.length > 0) void flushUserMessages();
+            }).catch((error) => {
+                logger.debug('[claude] rewind settle on reconnect failed:', error);
+            });
+            return;
+        }
+        if (deferredMessages.length > 0) void flushUserMessages();
+    });
+
     session.rpcHandlerManager.registerHandler(RPC_METHODS.ForkConversation, async (payload: unknown) => {
+        if (!await settleUnknownRewind()) {
+            throw new Error('Could not verify pending rewind state with hub; please retry')
+        }
+        if (deferredMessages.length > 0) void flushUserMessages();
+        if (pendingRewind || rearmPendingIntent) {
+            throw new Error('A rewind is already pending; send a message to settle it first')
+        }
         const messageLocalId = payload && typeof payload === 'object' && typeof (payload as { messageLocalId?: unknown }).messageLocalId === 'string'
             ? (payload as { messageLocalId: string }).messageLocalId
             : undefined
@@ -461,6 +566,10 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     })
     session.rpcHandlerManager.registerHandler(RPC_METHODS.RewindConversation, async (payload: unknown) => {
         const rejected = (error: string) => ({ success: false as const, outcome: 'rejected' as const, error })
+        if (!await settleUnknownRewind()) {
+            return rejected('Could not verify pending rewind state with hub; please retry')
+        }
+        if (deferredMessages.length > 0) void flushUserMessages();
         const messageLocalId = payload && typeof payload === 'object' && typeof (payload as { messageLocalId?: unknown }).messageLocalId === 'string'
             ? (payload as { messageLocalId: string }).messageLocalId
             : undefined
@@ -470,7 +579,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         if (session.getMetadata()?.capabilities?.conversationHistory?.rewindToMessage !== true) {
             return rejected('Rewind is not supported for Claude')
         }
-        if (pendingRewind) {
+        if (pendingRewind || rearmPendingIntent) {
             return rejected('A rewind is already pending; send a message to settle it first')
         }
         // Resolve the native session the way the respawn will actually resume
@@ -524,30 +633,15 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             return rejected('Claude session is not ready for a rewind restart')
         }
         // Persist the durable key BEFORE respawning: a crash after the native
-        // branch applies is recovered by the next start's reconciliation. The
-        // queued write's handler is re-invoked on every backoff retry, so it
-        // is gated on keepIntent: after a flush failure the still-retrying
-        // write must converge to metadata WITHOUT the intent (the hub never
-        // truncated for a rejected rewind).
-        let keepIntent = true;
-        session.updateMetadata((metadata) => (keepIntent ? { ...metadata, claudeRewind: intent } : metadata));
-        // The persist wait must outlive transient socket congestion: a 5s
-        // drain timeout rejects the rewind while the intent write may still
-        // land moments later, and the hub's lost-RPC fallback then sees the
-        // very intent this rejection rolls back - hub truncated, native not.
-        // The hub RPC allows 120s; waiting here keeps the common congestion
-        // case on the committed path (and any residual ambiguity is resolved
-        // by the hub's fail-closed diverged marker, not by a silent split).
+        // branch applies is recovered by the next start's reconciliation. If
+        // the flush times out, abort the queued retrying write so a later retry
+        // cannot overwrite or delete an intent that landed on the hub, and
+        // settle the unknown outcome from hub metadata instead.
+        const intentWriteAbort = new AbortController();
+        session.updateMetadata((metadata) => ({ ...metadata, claudeRewind: intent }), { signal: intentWriteAbort.signal });
         if (!await session.flushMetadata(60_000)) {
-            // Cover the window where the stuck write acked just before the
-            // flip, and drop the intent from the local snapshot. Queued
-            // fire-and-forget: the rejection must not wait another drain
-            // timeout behind the retrying write.
-            keepIntent = false;
-            session.updateMetadata((metadata) => {
-                const { claudeRewind: _cleared, ...rest } = metadata;
-                return rest;
-            });
+            intentWriteAbort.abort();
+            unknownRewindIntent = intent;
             return rejected('Rewind intent could not be persisted')
         }
         // The proof handler must be live for THIS respawn too: the previous
@@ -761,18 +855,141 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         messageQueue.push(formattedText, enhancedMode, localId);
         logger.debugLargeJson('User message pushed to queue:', message)
     };
+    const sleepWithAbort = (ms: number, signal: AbortSignal): Promise<boolean> => {
+        if (signal.aborted) return Promise.resolve(false);
+        return new Promise<boolean>((resolve) => {
+            const onAbort = () => {
+                clearTimeout(timer);
+                resolve(false);
+            };
+            const timer = setTimeout(() => {
+                signal.removeEventListener('abort', onAbort);
+                resolve(true);
+            }, ms);
+            signal.addEventListener('abort', onAbort, { once: true });
+        });
+    };
+    const SETTLE_RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
+    const BACKGROUND_SETTLE_RETRY_DELAYS_MS = [15_000, 30_000, 60_000];
+    const trySettleUnknownRewind = () => settleUnknownRewind().catch((error) => {
+        logger.debug('[claude] rewind settle before user message failed:', error);
+        return false;
+    });
+    const awaitSettleInFlight = async (): Promise<boolean> => {
+        if (!unknownRewindIntent && settleInFlight) {
+            await settleInFlight.catch((error) => {
+                logger.debug('[claude] rewind settle before user message failed:', error);
+                return false;
+            });
+        }
+        return !unknownRewindIntent;
+    };
+    const settleNow = async (): Promise<boolean> => {
+        if (!unknownRewindIntent) return awaitSettleInFlight();
+        if (await trySettleUnknownRewind()) return true;
+        return awaitSettleInFlight();
+    };
+    const startBackgroundSettleRetry = () => {
+        if (
+            backgroundSettleTask
+            || settleRetryAbort.signal.aborted
+            || deferredMessages.length === 0
+            || !unknownRewindIntent
+        ) {
+            return;
+        }
+        const abortController = new AbortController();
+        backgroundSettleAbort = abortController;
+        const onSessionAbort = () => abortController.abort();
+        settleRetryAbort.signal.addEventListener('abort', onSessionAbort, { once: true });
+
+        const task = (async () => {
+            let attempt = 0;
+            while (
+                !abortController.signal.aborted
+                && !settleRetryAbort.signal.aborted
+                && deferredMessages.length > 0
+                && unknownRewindIntent
+            ) {
+                const delayMs = BACKGROUND_SETTLE_RETRY_DELAYS_MS[
+                    Math.min(attempt, BACKGROUND_SETTLE_RETRY_DELAYS_MS.length - 1)
+                ];
+                attempt += 1;
+                if (!await sleepWithAbort(delayMs, abortController.signal)) {
+                    return;
+                }
+                if (
+                    abortController.signal.aborted
+                    || settleRetryAbort.signal.aborted
+                    || deferredMessages.length === 0
+                    || !unknownRewindIntent
+                ) {
+                    return;
+                }
+                if (await trySettleUnknownRewind()) {
+                    if (!settleRetryAbort.signal.aborted && deferredMessages.length > 0) {
+                        void flushUserMessages();
+                    }
+                    return;
+                }
+            }
+        })().catch((error) => {
+            logger.debug('[claude] background rewind settle loop failed:', error);
+        }).finally(() => {
+            settleRetryAbort.signal.removeEventListener('abort', onSessionAbort);
+            if (backgroundSettleAbort === abortController) {
+                backgroundSettleAbort = null;
+            }
+            if (backgroundSettleTask === task) {
+                backgroundSettleTask = null;
+            }
+        });
+        backgroundSettleTask = task;
+    };
+    const ensureUnknownRewindSettledForMessages = async (): Promise<boolean> => {
+        stopBackgroundSettleRetry();
+        if (settleRetryAbort.signal.aborted) return false;
+        if (await settleNow()) return true;
+        for (const delayMs of SETTLE_RETRY_DELAYS_MS) {
+            if (deferredMessages.length === 0 || settleRetryAbort.signal.aborted) return false;
+            if (!await sleepWithAbort(delayMs, settleRetryAbort.signal)) return false;
+            if (deferredMessages.length === 0) return false;
+            if (await settleNow()) return true;
+        }
+        if (unknownRewindIntent && deferredMessages.length > 0 && !settleRetryAbort.signal.aborted) {
+            logger.warn('[claude] rewind state could not be verified with hub; keeping user messages deferred');
+            startBackgroundSettleRetry();
+        }
+        return !unknownRewindIntent;
+    };
+    let drainingUserMessages = false;
+    const flushUserMessages = async () => {
+        if (drainingUserMessages || !messagePipelineReady || settleRetryAbort.signal.aborted) return;
+        drainingUserMessages = true;
+        try {
+            while (deferredMessages.length > 0 && !settleRetryAbort.signal.aborted) {
+                if ((unknownRewindIntent || settleInFlight) && !await ensureUnknownRewindSettledForMessages()) {
+                    return;
+                }
+                if (settleRetryAbort.signal.aborted) return;
+                const next = deferredMessages.shift();
+                if (next) handleUserMessage(...next);
+            }
+        } finally {
+            drainingUserMessages = false;
+        }
+    };
     session.onUserMessage((...args) => {
-        if (!messagePipelineReady) {
+        if (!messagePipelineReady || unknownRewindIntent || drainingUserMessages || deferredMessages.length > 0 || settleInFlight !== null) {
             deferredMessages.push(args);
+            void flushUserMessages();
             return;
         }
         handleUserMessage(...args);
     });
     void Promise.allSettled([sessionReady, getCatalog()]).then(() => {
         messagePipelineReady = true;
-        for (const args of deferredMessages.splice(0)) {
-            handleUserMessage(...args);
-        }
+        void flushUserMessages();
     });
 
     session.onCancelQueuedMessage((localId) => {
@@ -780,6 +997,9 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         if (deferredIndex >= 0) {
             deferredMessages.splice(deferredIndex, 1);
             session.discardPendingHubPromptEcho(localId);
+            if (deferredMessages.length === 0) {
+                stopBackgroundSettleRetry();
+            }
             return true;
         }
         const removed = messageQueue.cancelByLocalId(localId);

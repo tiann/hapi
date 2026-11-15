@@ -234,8 +234,8 @@ function hasSameJsonValue(left: unknown, right: unknown): boolean {
 }
 
 export class ApiSessionClient extends EventEmitter {
-    private reconnectHandler: (() => void) | null = null
-    onReconnect(handler: (() => void) | null): void { this.reconnectHandler = handler }
+    private reconnectHandler: ((metadataRefreshed?: boolean) => void) | null = null
+    onReconnect(handler: ((metadataRefreshed?: boolean) => void) | null): void { this.reconnectHandler = handler }
     /** When false, socket.io must not keep the CLI immortal after hub archive (#1910). */
     private allowReconnect = true
     /**
@@ -352,14 +352,17 @@ export class ApiSessionClient extends EventEmitter {
             // Hub may have archived while we were offline (KillSession miss +
             // no live update-session). On reconnect, reconcile metadata before
             // message backfill so hub-archived can stop reconnect immortality (#1910).
+            let metadataRefreshed = false
             const afterMeta = isReconnect
-                ? this.refreshMetadata()
+                ? this.refreshMetadata().then((refreshed) => { metadataRefreshed = refreshed })
                 : Promise.resolve()
             void afterMeta.finally(() => {
                 void this.backfillIfNeeded()
+                if (isReconnect) {
+                    this.reconnectHandler?.(metadataRefreshed)
+                }
             })
             this.hasConnectedOnce = true
-            this.reconnectHandler?.()
             this.socket.emit('session-alive', {
                 sid: this.sessionId,
                 time: Date.now(),
@@ -1320,7 +1323,9 @@ export class ApiSessionClient extends EventEmitter {
         })
     }
 
-    updateMetadata(handler: (metadata: Metadata) => Metadata): void {
+    updateMetadata(handler: (metadata: Metadata) => Metadata, options?: { signal?: AbortSignal }): void {
+        const signal = options?.signal
+        if (signal?.aborted) return
         if (this.state !== 'active') {
             if (this.state === 'closed') return
             const current = this.metadata ?? ({} as Metadata)
@@ -1332,6 +1337,7 @@ export class ApiSessionClient extends EventEmitter {
         }
         this.metadataLock.inLock(async () => {
             await backoff(async () => {
+                if (signal?.aborted || this.isClosed()) return
                 // #1911 M1 criterion 6: hub-archived → EXIT (same as applyRemoteMetadata).
                 if (this.metadata?.lifecycleState === 'archived' && this.metadata.archivedBy === 'hub') {
                     this.noteHubArchived()
@@ -1341,12 +1347,16 @@ export class ApiSessionClient extends EventEmitter {
 
                 const current = this.metadata ?? ({} as Metadata)
                 const updated = handler(current)
+                if (!this.socket.connected) {
+                    throw new Error('Socket not connected')
+                }
 
                 const answer = await this.socket.emitWithAck('update-metadata', {
                     sid: this.sessionId,
                     expectedVersion: this.metadataVersion,
                     metadata: updated
                 }) as unknown
+                if (signal?.aborted || this.isClosed()) return
 
                 try {
                     applyVersionedAck(answer, {

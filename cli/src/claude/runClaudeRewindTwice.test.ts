@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { MessageQueue2 } from '@/utils/MessageQueue2'
+import { logger } from '@/ui/logger'
 import { Session } from './session'
 import { runClaude } from './runClaude'
 import { deriveSpawnArgs } from './conversationHistory'
@@ -23,10 +24,16 @@ const harness = vi.hoisted(() => {
         rpcHandlerManager: {
             registerHandler: (method: string, handler: any) => { rpcHandlers.set(method, handler) }
         },
-        updateMetadata: (mutator: any) => {
+        updateMetadata: (mutator: any, options?: { signal?: AbortSignal }) => {
             harness.metadataMutators.push(mutator)
+            harness.metadataWriteSignals.push(options?.signal)
+            if (options?.signal?.aborted) return
+            if (harness.deferUnflushedMetadata) {
+                harness.queuedMutators.push(mutator)
+                return
+            }
             const next = mutator(state.metadata)
-            if (next !== undefined) state.metadata = next
+            if (next != null) state.metadata = next
         },
         updateAgentState: (mutator: any) => {
             const next = mutator(state.agentState)
@@ -37,27 +44,55 @@ const harness = vi.hoisted(() => {
             harness.flushTimeouts.push(timeoutMs ?? 0)
             return harness.flushResult ?? true
         },
+        refreshMetadata: async () => {
+            harness.refreshCalls += 1
+            if (harness.refreshImpl) {
+                return await harness.refreshImpl()
+            }
+            if (harness.refreshResult === false) return false
+            if (harness.hubMetadata !== undefined) {
+                state.metadata = structuredClone(harness.hubMetadata)
+            }
+            return true
+        },
+        onReconnect: (handler: ((metadataRefreshed?: boolean) => void) | null) => {
+            harness.reconnectHandler = handler
+        },
         keepAlive: () => {},
         sendSessionEvent: () => {},
         sendAgentMessage: () => {},
         sendClaudeSessionMessage: () => {},
+        sendSessionDeath: () => {},
+        flush: async () => true,
+        close: async () => {},
         emitMessagesConsumed: () => {},
         notePendingHubPromptEcho: () => {},
         discardPendingHubPromptEcho: () => {},
         discardPendingHubPromptEchoText: () => {},
-        onUserMessage: () => {},
-        onCancelQueuedMessage: () => {}
+        onUserMessage: (handler: any) => { harness.userMessageHandler = handler },
+        onCancelQueuedMessage: (handler: any) => { harness.cancelQueuedMessageHandler = handler }
     }
     return {
         state,
         rpcHandlers,
         sessionStub,
         loopOpts: null as any,
+        loopImpl: null as ((opts: any) => Promise<void>) | null,
         runError: null as unknown,
         hookHandlers: null as any,
         flushResult: null as boolean | null,
         flushTimeouts: [] as number[],
         metadataMutators: [] as Array<(metadata: any) => any>,
+        metadataWriteSignals: [] as Array<AbortSignal | undefined>,
+        queuedMutators: [] as Array<(metadata: any) => any>,
+        deferUnflushedMetadata: false,
+        hubMetadata: undefined as any,
+        refreshResult: true,
+        refreshImpl: null as (() => Promise<boolean>) | null,
+        refreshCalls: 0,
+        reconnectHandler: null as ((metadataRefreshed?: boolean) => void) | null,
+        userMessageHandler: null as ((message: any, localId?: string) => void) | null,
+        cancelQueuedMessageHandler: null as ((localId: string) => boolean) | null,
         nativeTurns: null as Array<{ promptUuid: string; endUuid: string }> | null
     }
 })
@@ -85,6 +120,9 @@ vi.mock('@/claude/loop', async (importOriginal) => {
         ...actual,
         loop: async (opts: any) => {
             harness.loopOpts = opts
+            if (harness.loopImpl) {
+                return await harness.loopImpl(opts)
+            }
             // The real loop runs for the session's lifetime; the test drives
             // onSessionReady and the history RPCs directly.
             return new Promise(() => {})
@@ -214,8 +252,20 @@ describe('runClaude rewind proof lifetime', () => {
         harness.state.metadata = {}
         harness.state.agentState = {}
         harness.metadataMutators = []
+        harness.metadataWriteSignals = []
+        harness.queuedMutators = []
+        harness.deferUnflushedMetadata = false
+        harness.hubMetadata = undefined
+        harness.refreshResult = true
+        harness.refreshImpl = null
+        harness.refreshCalls = 0
+        harness.reconnectHandler = null
+        harness.userMessageHandler = null
+        harness.cancelQueuedMessageHandler = null
         harness.flushTimeouts = []
         harness.nativeTurns = null
+        harness.loopImpl = null
+        harness.runError = null
     })
 
     // Each test starts its own runClaude() while the previous instance is
@@ -480,7 +530,7 @@ describe('runClaude rewind proof lifetime', () => {
         }
     })
 
-    it('rolls back the intent when the metadata flush fails', { timeout: 20_000 }, async () => {
+    it('cancels the queued intent write instead of deleting when the metadata flush fails', { timeout: 20_000 }, async () => {
         const prev = snapshotRunner()
         const runPromise = runClaude({
             workingDirectory: '/tmp/hapi-rewind-test',
@@ -493,8 +543,8 @@ describe('runClaude rewind proof lifetime', () => {
 
         const sessionInstance = createRunnerSession()
         sessionInstance.sessionId = 'native-a'
-        sessionInstance.requestRemoteRestart = async () => {}
-        harness.flushResult = false
+        const restartSpy = vi.fn(async () => {})
+        sessionInstance.requestRemoteRestart = restartSpy
         try {
             harness.loopOpts.onSessionReady(sessionInstance)
             harness.sessionStub.updateMetadata((metadata: any) => ({
@@ -502,24 +552,29 @@ describe('runClaude rewind proof lifetime', () => {
                 conversationHistoryEntryIds: { 'local-1': 'uuid-1' }
             }))
 
+            harness.deferUnflushedMetadata = true
+            harness.flushResult = false
+            const mutatorsBefore = harness.metadataMutators.length
+
             const rewind = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
             expect(await rewind({ messageLocalId: 'local-1' })).toMatchObject({
                 success: false,
                 outcome: 'rejected'
             })
-            // The queued metadata write keeps retrying in the background; the
-            // rollback must queue the deletion behind it so the retries
-            // converge without the intent - the hub never truncated for a
-            // rejected rewind, and a stranded intent would rewind natively on
-            // the next start without a matching hub cut.
+            // No intent armed locally and no restart; also no deletion write
+            // queued behind the failed flush (which could clobber a hub-side
+            // intent that landed before the lost reply).
             expect(harness.state.metadata.claudeRewind).toBeUndefined()
+            expect(restartSpy).not.toHaveBeenCalled()
+            expect(harness.metadataMutators.slice(mutatorsBefore)).toHaveLength(1)
         } finally {
             harness.flushResult = null
+            harness.deferUnflushedMetadata = false
             sessionInstance.stopKeepAlive()
         }
     })
 
-    it('converges retried metadata writes to no intent after a flush failure', { timeout: 20_000 }, async () => {
+    it('aborts the queued metadata write signal after a flush failure without deleting hub intent', { timeout: 20_000 }, async () => {
         const prev = snapshotRunner()
         const runPromise = runClaude({
             workingDirectory: '/tmp/hapi-rewind-test',
@@ -533,13 +588,16 @@ describe('runClaude rewind proof lifetime', () => {
         const sessionInstance = createRunnerSession()
         sessionInstance.sessionId = 'native-a'
         sessionInstance.requestRemoteRestart = async () => {}
-        harness.flushResult = false
         try {
             harness.loopOpts.onSessionReady(sessionInstance)
             harness.sessionStub.updateMetadata((metadata: any) => ({
                 ...metadata,
                 conversationHistoryEntryIds: { 'local-1': 'uuid-1' }
             }))
+
+            harness.deferUnflushedMetadata = true
+            harness.flushResult = false
+            const mutatorsBefore = harness.metadataMutators.length
 
             const rewind = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
             expect(await rewind({ messageLocalId: 'local-1' })).toMatchObject({
@@ -548,18 +606,16 @@ describe('runClaude rewind proof lifetime', () => {
             })
             expect(harness.state.metadata.claudeRewind).toBeUndefined()
 
-            // apiSession re-invokes the queued write's handler on every
-            // backoff retry with the current metadata. A rejected rewind's
-            // stuck write must converge to metadata WITHOUT the intent - the
-            // hub never truncated for it - instead of re-adding the intent
-            // after the rollback. The rewind RPC queues exactly two mutators
-            // on this path: the persist write, then the rollback deletion.
-            const persistMutator = harness.metadataMutators[harness.metadataMutators.length - 2]
-            expect(persistMutator).toBeTruthy()
-            harness.sessionStub.updateMetadata(persistMutator!)
+            // apiSession skips retrying once the write's AbortSignal is aborted.
+            // No deletion mutator is queued behind it.
+            const newMutators = harness.metadataMutators.slice(mutatorsBefore)
+            expect(newMutators).toHaveLength(1)
+            const writeSignal = harness.metadataWriteSignals.slice(mutatorsBefore)[0]
+            expect(writeSignal?.aborted).toBe(true)
             expect(harness.state.metadata.claudeRewind).toBeUndefined()
         } finally {
             harness.flushResult = null
+            harness.deferUnflushedMetadata = false
             sessionInstance.stopKeepAlive()
         }
     })
@@ -870,5 +926,1224 @@ describe('runClaude rewind proof lifetime', () => {
         await waitForFreshRunner(prev)
 
         expect(harness.state.metadata.claudeRewind).toBeUndefined()
+    })
+
+    it('arms the rewind after reconnect when flush fails but the intent landed on the hub and the rejected reply was lost', { timeout: 20_000 }, async () => {
+        const prev = snapshotRunner()
+        const runPromise = runClaude({
+            workingDirectory: '/tmp/hapi-rewind-test',
+            startedBy: 'runner',
+            startingMode: 'remote'
+        })
+        runPromise.catch((error) => { harness.runError = error })
+
+        await waitForFreshRunner(prev)
+
+        const sessionInstance = createRunnerSession()
+        sessionInstance.sessionId = 'native-a'
+        const restartSpy = vi.fn(async () => {})
+        sessionInstance.requestRemoteRestart = restartSpy
+        try {
+            harness.loopOpts.onSessionReady(sessionInstance)
+            harness.sessionStub.updateMetadata((metadata: any) => ({
+                ...metadata,
+                conversationHistoryEntryIds: { 'local-1': 'uuid-1', 'local-2': 'uuid-2' }
+            }))
+
+            harness.deferUnflushedMetadata = true
+            harness.flushResult = false
+            const mutatorsBefore = harness.metadataMutators.length
+
+            const rewind = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
+            expect(await rewind({ messageLocalId: 'local-1' })).toMatchObject({
+                success: false,
+                outcome: 'rejected'
+            })
+
+            // No local intent armed and no restart yet.
+            expect(harness.state.metadata.claudeRewind).toBeUndefined()
+            expect(restartSpy).not.toHaveBeenCalled()
+
+            // Only the intent write was queued; no deletion write was queued on failure.
+            const newMutators = harness.metadataMutators.slice(mutatorsBefore)
+            expect(newMutators).toHaveLength(1)
+            const writeSignal = harness.metadataWriteSignals.slice(mutatorsBefore)[0]
+            expect(writeSignal?.aborted).toBe(true)
+
+            // The intent actually landed on the hub before cancellation and the
+            // hub's lost-RPC catch path truncated the transcript keeping claudeRewind.
+            const landedIntent = {
+                targetLocalId: 'local-1',
+                truncateFromLocalId: 'local-1',
+                keepBoundary: 'keep-boundary-uuid',
+                droppedPrompts: ['uuid-1']
+            }
+            harness.hubMetadata = {
+                ...harness.state.metadata,
+                claudeRewind: landedIntent
+            }
+
+            // Reconnect refreshes metadata from hub and settles: arms rewind + restarts.
+            harness.reconnectHandler?.()
+            await vi.waitFor(() => {
+                expect(restartSpy).toHaveBeenCalledTimes(1)
+            })
+            expect(harness.hubMetadata.claudeRewind).toEqual(landedIntent)
+            expect(harness.state.metadata.claudeRewind).toEqual(landedIntent)
+
+            // Subsequent rewind is blocked while the armed rewind is pending.
+            expect(await rewind({ messageLocalId: 'local-2' })).toMatchObject({
+                success: false,
+                outcome: 'rejected',
+                error: expect.stringMatching(/already pending/i)
+            })
+
+            // Submitting a prompt settles the armed rewind cleanly.
+            harness.deferUnflushedMetadata = false
+            harness.flushResult = true
+            sessionInstance.onNativeInputSubmitted?.('uuid-1')
+            expect(harness.state.metadata.claudeRewind).toBeUndefined()
+        } finally {
+            harness.flushResult = null
+            harness.deferUnflushedMetadata = false
+            sessionInstance.stopKeepAlive()
+        }
+    })
+
+    it('clears the unknown rewind flag without restarting when hub metadata has no matching intent on reconnect', { timeout: 20_000 }, async () => {
+        const prev = snapshotRunner()
+        const runPromise = runClaude({
+            workingDirectory: '/tmp/hapi-rewind-test',
+            startedBy: 'runner',
+            startingMode: 'remote'
+        })
+        runPromise.catch((error) => { harness.runError = error })
+
+        await waitForFreshRunner(prev)
+
+        const sessionInstance = createRunnerSession()
+        sessionInstance.sessionId = 'native-a'
+        const restartSpy = vi.fn(async () => {})
+        sessionInstance.requestRemoteRestart = restartSpy
+        try {
+            harness.loopOpts.onSessionReady(sessionInstance)
+            harness.sessionStub.updateMetadata((metadata: any) => ({
+                ...metadata,
+                conversationHistoryEntryIds: { 'local-1': 'uuid-1', 'local-2': 'uuid-2' }
+            }))
+
+            harness.deferUnflushedMetadata = true
+            harness.flushResult = false
+
+            const rewind = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
+            expect(await rewind({ messageLocalId: 'local-1' })).toMatchObject({
+                success: false,
+                outcome: 'rejected'
+            })
+
+            // Hub either never received the intent or cleared it on rejected reply.
+            harness.hubMetadata = { ...harness.state.metadata }
+
+            harness.reconnectHandler?.()
+            await vi.waitFor(() => {
+                expect(harness.refreshCalls).toBeGreaterThanOrEqual(1)
+            })
+            expect(restartSpy).not.toHaveBeenCalled()
+            expect(harness.state.metadata.claudeRewind).toBeUndefined()
+
+            // Flag cleared: a subsequent rewind succeeds normally.
+            harness.deferUnflushedMetadata = false
+            harness.flushResult = true
+            expect(await rewind({ messageLocalId: 'local-2' })).toMatchObject({
+                success: true,
+                truncateFromLocalId: 'local-2'
+            })
+            expect(restartSpy).toHaveBeenCalledTimes(1)
+        } finally {
+            harness.flushResult = null
+            harness.deferUnflushedMetadata = false
+            sessionInstance.stopKeepAlive()
+        }
+    })
+
+    it('rejects next RewindConversation/ForkConversation if metadata refresh fails and settles on a later attempt', { timeout: 20_000 }, async () => {
+        const prev = snapshotRunner()
+        const runPromise = runClaude({
+            workingDirectory: '/tmp/hapi-rewind-test',
+            startedBy: 'runner',
+            startingMode: 'remote'
+        })
+        runPromise.catch((error) => { harness.runError = error })
+
+        await waitForFreshRunner(prev)
+
+        const sessionInstance = createRunnerSession()
+        sessionInstance.sessionId = 'native-a'
+        const restartSpy = vi.fn(async () => {})
+        sessionInstance.requestRemoteRestart = restartSpy
+        try {
+            harness.loopOpts.onSessionReady(sessionInstance)
+            harness.sessionStub.updateMetadata((metadata: any) => ({
+                ...metadata,
+                conversationHistoryEntryIds: { 'local-1': 'uuid-1', 'local-2': 'uuid-2' }
+            }))
+
+            harness.deferUnflushedMetadata = true
+            harness.flushResult = false
+
+            const rewind = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
+            const fork = harness.rpcHandlers.get(RPC_METHODS.ForkConversation)!
+            expect(await rewind({ messageLocalId: 'local-1' })).toMatchObject({
+                success: false,
+                outcome: 'rejected'
+            })
+
+            // Refresh fails: both RewindConversation and ForkConversation reject
+            // with a retryable error and keep the unknown flag.
+            harness.refreshResult = false
+            expect(await rewind({ messageLocalId: 'local-2' })).toMatchObject({
+                success: false,
+                outcome: 'rejected',
+                error: expect.stringMatching(/retry/i)
+            })
+            await expect(fork({ messageLocalId: 'local-2' })).rejects.toThrow(/retry/i)
+            expect(restartSpy).not.toHaveBeenCalled()
+
+            // Next attempt with refresh OK (hub has no intent) settles and proceeds.
+            harness.refreshResult = true
+            harness.hubMetadata = { ...harness.state.metadata }
+            harness.deferUnflushedMetadata = false
+            harness.flushResult = true
+
+            expect(await rewind({ messageLocalId: 'local-2' })).toMatchObject({
+                success: true,
+                truncateFromLocalId: 'local-2'
+            })
+            expect(restartSpy).toHaveBeenCalledTimes(1)
+        } finally {
+            harness.flushResult = null
+            harness.deferUnflushedMetadata = false
+            harness.refreshResult = true
+            sessionInstance.stopKeepAlive()
+        }
+    })
+
+    it('re-arms rearmPendingIntent without remote restart when settling in local mode', { timeout: 20_000 }, async () => {
+        const prev = snapshotRunner()
+        const runPromise = runClaude({
+            workingDirectory: '/tmp/hapi-rewind-test',
+            startedBy: 'runner',
+            startingMode: 'remote'
+        })
+        runPromise.catch((error) => { harness.runError = error })
+
+        await waitForFreshRunner(prev)
+
+        const sessionInstance = createRunnerSession()
+        sessionInstance.sessionId = 'native-a'
+        const restartSpy = vi.fn(async () => {})
+        sessionInstance.requestRemoteRestart = restartSpy
+        try {
+            harness.loopOpts.onSessionReady(sessionInstance)
+            harness.sessionStub.updateMetadata((metadata: any) => ({
+                ...metadata,
+                conversationHistoryEntryIds: { 'local-1': 'uuid-1' }
+            }))
+
+            harness.deferUnflushedMetadata = true
+            harness.flushResult = false
+
+            const rewind = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
+            expect(await rewind({ messageLocalId: 'local-1' })).toMatchObject({
+                success: false,
+                outcome: 'rejected'
+            })
+
+            // Session switched to local mode before reconnect settled the rewind.
+            sessionInstance.mode = 'local'
+            sessionInstance.requestRemoteRestart = null
+            harness.hubMetadata = {
+                ...harness.state.metadata,
+                claudeRewind: {
+                    targetLocalId: 'local-1',
+                    truncateFromLocalId: 'local-1',
+                    keepBoundary: 'keep-boundary-uuid',
+                    droppedPrompts: ['uuid-1']
+                }
+            }
+
+            harness.reconnectHandler?.()
+            await vi.waitFor(() => {
+                expect(harness.state.metadata.claudeRewind).toBeTruthy()
+            })
+            expect(restartSpy).not.toHaveBeenCalled()
+            expect(deriveSpawnArgs({
+                claudeArgs: sessionInstance.claudeArgs,
+                sessionId: sessionInstance.sessionId,
+                intent: harness.state.metadata.claudeRewind,
+                workingDirectory: '/tmp/hapi-rewind-test'
+            }).boundary).toBe('keep-boundary-uuid')
+        } finally {
+            harness.flushResult = null
+            harness.deferUnflushedMetadata = false
+            sessionInstance.stopKeepAlive()
+        }
+    })
+
+    it('settles via ForkConversation by arming a hub-committed rewind and rejecting the fork', { timeout: 20_000 }, async () => {
+        const prev = snapshotRunner()
+        const runPromise = runClaude({
+            workingDirectory: '/tmp/hapi-rewind-test',
+            startedBy: 'runner',
+            startingMode: 'remote'
+        })
+        runPromise.catch((error) => { harness.runError = error })
+
+        await waitForFreshRunner(prev)
+
+        const sessionInstance = createRunnerSession()
+        sessionInstance.sessionId = 'native-a'
+        const restartSpy = vi.fn(async () => {})
+        sessionInstance.requestRemoteRestart = restartSpy
+        try {
+            harness.loopOpts.onSessionReady(sessionInstance)
+            harness.sessionStub.updateMetadata((metadata: any) => ({
+                ...metadata,
+                capabilities: { conversationHistory: { forkCurrent: true, forkAtMessage: true, rewindToMessage: true } },
+                conversationHistoryEntryIds: { 'local-1': 'uuid-1' }
+            }))
+
+            harness.deferUnflushedMetadata = true
+            harness.flushResult = false
+
+            const rewind = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
+            const fork = harness.rpcHandlers.get(RPC_METHODS.ForkConversation)!
+            expect(await rewind({ messageLocalId: 'local-1' })).toMatchObject({
+                success: false,
+                outcome: 'rejected'
+            })
+
+            harness.hubMetadata = {
+                ...harness.state.metadata,
+                claudeRewind: {
+                    targetLocalId: 'local-1',
+                    truncateFromLocalId: 'local-1',
+                    keepBoundary: 'keep-boundary-uuid',
+                    droppedPrompts: ['uuid-1']
+                }
+            }
+            await expect(fork({ messageLocalId: 'local-1' })).rejects.toThrow(/already pending/i)
+            expect(restartSpy).toHaveBeenCalledTimes(1)
+        } finally {
+            harness.flushResult = null
+            harness.deferUnflushedMetadata = false
+            sessionInstance.stopKeepAlive()
+        }
+    })
+
+    it('clears unknownRewindIntent when the session resets before settlement', { timeout: 20_000 }, async () => {
+        const prev = snapshotRunner()
+        const runPromise = runClaude({
+            workingDirectory: '/tmp/hapi-rewind-test',
+            startedBy: 'runner',
+            startingMode: 'remote'
+        })
+        runPromise.catch((error) => { harness.runError = error })
+
+        await waitForFreshRunner(prev)
+
+        const sessionInstance = createRunnerSession()
+        sessionInstance.sessionId = 'native-a'
+        sessionInstance.requestRemoteRestart = async () => {}
+        try {
+            harness.loopOpts.onSessionReady(sessionInstance)
+            harness.sessionStub.updateMetadata((metadata: any) => ({
+                ...metadata,
+                conversationHistoryEntryIds: { 'local-1': 'uuid-1' }
+            }))
+
+            harness.deferUnflushedMetadata = true
+            harness.flushResult = false
+
+            const rewind = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
+            expect(await rewind({ messageLocalId: 'local-1' })).toMatchObject({
+                success: false,
+                outcome: 'rejected'
+            })
+
+            // /clear wipes the conversation while unknownRewindIntent is set:
+            // reconnect afterwards must NOT re-arm the discarded intent.
+            harness.hubMetadata = {
+                ...harness.state.metadata,
+                claudeRewind: {
+                    targetLocalId: 'local-1',
+                    truncateFromLocalId: 'local-1',
+                    keepBoundary: 'keep-boundary-uuid',
+                    droppedPrompts: ['uuid-1']
+                }
+            }
+            harness.deferUnflushedMetadata = false
+            harness.flushResult = true
+            sessionInstance.onConversationReset?.()
+            expect(harness.state.metadata.claudeRewind).toBeUndefined()
+
+            harness.hubMetadata = { ...harness.state.metadata }
+            harness.reconnectHandler?.()
+            await new Promise((r) => setTimeout(r, 20))
+            expect(harness.state.metadata.claudeRewind).toBeUndefined()
+        } finally {
+            harness.flushResult = null
+            harness.deferUnflushedMetadata = false
+            sessionInstance.stopKeepAlive()
+        }
+    })
+
+    it('unblocks ForkConversation and RewindConversation once a local-mode settled rewind is proven (item 1)', { timeout: 20_000 }, async () => {
+        const prev = snapshotRunner()
+        const runPromise = runClaude({
+            workingDirectory: '/tmp/hapi-rewind-test',
+            startedBy: 'runner',
+            startingMode: 'remote'
+        })
+        runPromise.catch((error) => { harness.runError = error })
+
+        await waitForFreshRunner(prev)
+
+        const sessionInstance = createRunnerSession('remote')
+        sessionInstance.sessionId = 'native-a'
+        sessionInstance.requestRemoteRestart = async () => {}
+        try {
+            harness.loopOpts.onSessionReady(sessionInstance)
+            harness.sessionStub.updateMetadata((metadata: any) => ({
+                ...metadata,
+                capabilities: { conversationHistory: { forkCurrent: true, forkAtMessage: true, rewindToMessage: true } },
+                conversationHistoryEntryIds: { 'local-1': 'uuid-1', 'local-2': 'uuid-2' }
+            }))
+
+            harness.deferUnflushedMetadata = true
+            harness.flushResult = false
+
+            const rewind = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
+            const fork = harness.rpcHandlers.get(RPC_METHODS.ForkConversation)!
+            expect(await rewind({ messageLocalId: 'local-1' })).toMatchObject({
+                success: false,
+                outcome: 'rejected'
+            })
+
+            // Live session switches to local mode; rewind landed on hub.
+            sessionInstance.mode = 'local'
+            sessionInstance.requestRemoteRestart = null
+            harness.hubMetadata = {
+                ...harness.state.metadata,
+                claudeRewind: {
+                    targetLocalId: 'local-1',
+                    truncateFromLocalId: 'local-1',
+                    keepBoundary: 'keep-boundary-uuid',
+                    droppedPrompts: ['uuid-1']
+                }
+            }
+            harness.reconnectHandler?.()
+            await vi.waitFor(() => {
+                expect(harness.state.metadata.claudeRewind).toBeTruthy()
+            })
+
+            // Local input proves the rewind and clears claudeRewind.
+            harness.deferUnflushedMetadata = false
+            harness.flushResult = true
+            sessionInstance.onNativeInputSubmitted?.('uuid-1')
+            expect(harness.state.metadata.claudeRewind).toBeUndefined()
+
+            // Fork and Rewind must now be unblocked (rearmPendingIntent must NOT linger).
+            await expect(fork({})).resolves.toMatchObject({ forkSession: true })
+            sessionInstance.mode = 'remote'
+            sessionInstance.requestRemoteRestart = async () => {}
+            expect(await rewind({ messageLocalId: 'local-2' })).toMatchObject({
+                success: true,
+                truncateFromLocalId: 'local-2'
+            })
+        } finally {
+            harness.flushResult = null
+            harness.deferUnflushedMetadata = false
+            sessionInstance.stopKeepAlive()
+        }
+    })
+
+    it('settles onReconnect using already-refreshed metadata without a second refreshMetadata call (item 3a)', { timeout: 20_000 }, async () => {
+        const prev = snapshotRunner()
+        const runPromise = runClaude({
+            workingDirectory: '/tmp/hapi-rewind-test',
+            startedBy: 'runner',
+            startingMode: 'remote'
+        })
+        runPromise.catch((error) => { harness.runError = error })
+
+        await waitForFreshRunner(prev)
+
+        const sessionInstance = createRunnerSession()
+        sessionInstance.sessionId = 'native-a'
+        const restartSpy = vi.fn(async () => {})
+        sessionInstance.requestRemoteRestart = restartSpy
+        try {
+            harness.loopOpts.onSessionReady(sessionInstance)
+            harness.sessionStub.updateMetadata((metadata: any) => ({
+                ...metadata,
+                conversationHistoryEntryIds: { 'local-1': 'uuid-1' }
+            }))
+
+            harness.deferUnflushedMetadata = true
+            harness.flushResult = false
+
+            const rewind = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
+            expect(await rewind({ messageLocalId: 'local-1' })).toMatchObject({
+                success: false,
+                outcome: 'rejected'
+            })
+
+            // Simulate ApiSessionClient having just refreshed metadata on reconnect.
+            const landedIntent = {
+                targetLocalId: 'local-1',
+                truncateFromLocalId: 'local-1',
+                keepBoundary: 'keep-boundary-uuid',
+                droppedPrompts: ['uuid-1']
+            }
+            harness.state.metadata = {
+                ...harness.state.metadata,
+                claudeRewind: landedIntent
+            }
+            // Even if another refresh HTTP call would fail, reconnectHandler(true)
+            // must use the already-loaded metadata with 0 additional refresh calls.
+            harness.refreshResult = false
+            const refreshCallsBefore = harness.refreshCalls
+
+            harness.reconnectHandler?.(true)
+            await vi.waitFor(() => {
+                expect(restartSpy).toHaveBeenCalledTimes(1)
+            })
+            expect(harness.refreshCalls).toBe(refreshCallsBefore)
+        } finally {
+            harness.flushResult = null
+            harness.deferUnflushedMetadata = false
+            harness.refreshResult = true
+            sessionInstance.stopKeepAlive()
+        }
+    })
+
+    it('settles unknownRewindIntent before handing the next user message to Claude (item 3b)', { timeout: 20_000 }, async () => {
+        const prev = snapshotRunner()
+        const runPromise = runClaude({
+            workingDirectory: '/tmp/hapi-rewind-test',
+            startedBy: 'runner',
+            startingMode: 'remote'
+        })
+        runPromise.catch((error) => { harness.runError = error })
+
+        await waitForFreshRunner(prev)
+
+        const sessionInstance = createRunnerSession()
+        sessionInstance.sessionId = 'native-a'
+        const events: string[] = []
+        sessionInstance.requestRemoteRestart = async () => {
+            events.push('restart')
+        }
+        try {
+            harness.loopOpts.onSessionReady(sessionInstance)
+            harness.sessionStub.updateMetadata((metadata: any) => ({
+                ...metadata,
+                conversationHistoryEntryIds: { 'local-1': 'uuid-1' }
+            }))
+
+            harness.deferUnflushedMetadata = true
+            harness.flushResult = false
+
+            const rewind = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
+            expect(await rewind({ messageLocalId: 'local-1' })).toMatchObject({
+                success: false,
+                outcome: 'rejected'
+            })
+
+            const landedIntent = {
+                targetLocalId: 'local-1',
+                truncateFromLocalId: 'local-1',
+                keepBoundary: 'keep-boundary-uuid',
+                droppedPrompts: ['uuid-1']
+            }
+            harness.hubMetadata = {
+                ...harness.state.metadata,
+                claudeRewind: landedIntent
+            }
+            // Hold refreshMetadata so we can prove the user message is NOT pushed
+            // to messageQueue before settlement + restart finish.
+            let resolveRefresh!: (ok: boolean) => void
+            harness.refreshImpl = () => new Promise<boolean>((resolve) => {
+                resolveRefresh = resolve
+            })
+
+            await new Promise((r) => setTimeout(r, 0))
+            harness.userMessageHandler?.({ content: { text: 'continue after rewind', attachments: [] } }, 'user-msg-1')
+            await vi.waitFor(() => {
+                expect(harness.refreshCalls).toBe(1)
+            })
+            expect(harness.loopOpts.messageQueue.size()).toBe(0)
+            expect(events).toEqual([])
+
+            harness.state.metadata = structuredClone(harness.hubMetadata)
+            resolveRefresh(true)
+
+            await vi.waitFor(() => {
+                expect(harness.loopOpts.messageQueue.size()).toBe(1)
+            })
+            expect(events).toEqual(['restart'])
+        } finally {
+            harness.flushResult = null
+            harness.deferUnflushedMetadata = false
+            harness.refreshImpl = null
+            sessionInstance.stopKeepAlive()
+        }
+    })
+
+    it('keeps user messages deferred on refresh failure, retries with backoff, and delivers in order once settled (finding 1a)', { timeout: 20_000 }, async () => {
+        const prev = snapshotRunner()
+        const runPromise = runClaude({
+            workingDirectory: '/tmp/hapi-rewind-test',
+            startedBy: 'runner',
+            startingMode: 'remote'
+        })
+        runPromise.catch((error) => { harness.runError = error })
+
+        await waitForFreshRunner(prev)
+
+        const sessionInstance = createRunnerSession()
+        sessionInstance.sessionId = 'native-a'
+        const events: string[] = []
+        sessionInstance.requestRemoteRestart = async () => {
+            events.push('restart')
+        }
+        try {
+            harness.loopOpts.onSessionReady(sessionInstance)
+            harness.sessionStub.updateMetadata((metadata: any) => ({
+                ...metadata,
+                conversationHistoryEntryIds: { 'local-1': 'uuid-1' }
+            }))
+
+            harness.deferUnflushedMetadata = true
+            harness.flushResult = false
+
+            const rewind = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
+            expect(await rewind({ messageLocalId: 'local-1' })).toMatchObject({
+                success: false,
+                outcome: 'rejected'
+            })
+
+            const landedIntent = {
+                targetLocalId: 'local-1',
+                truncateFromLocalId: 'local-1',
+                keepBoundary: 'keep-boundary-uuid',
+                droppedPrompts: ['uuid-1']
+            }
+            harness.hubMetadata = {
+                ...harness.state.metadata,
+                claudeRewind: landedIntent
+            }
+
+            // Fail initial attempt + first retry, succeed on third attempt.
+            let attempt = 0
+            harness.refreshImpl = async () => {
+                attempt += 1
+                if (attempt < 3) return false
+                harness.state.metadata = structuredClone(harness.hubMetadata)
+                return true
+            }
+
+            await new Promise((r) => setTimeout(r, 0))
+            harness.userMessageHandler?.({ content: { text: 'first', attachments: [] } }, 'user-msg-1')
+            harness.userMessageHandler?.({ content: { text: 'second', attachments: [] } }, 'user-msg-2')
+
+            await vi.waitFor(() => {
+                expect(attempt).toBe(1)
+            })
+            // Critical: after initial failure, do NOT hand messages to un-rewound Claude.
+            expect(harness.loopOpts.messageQueue.size()).toBe(0)
+            expect(events).toEqual([])
+
+            await vi.waitFor(() => {
+                expect(harness.loopOpts.messageQueue.size()).toBe(2)
+            }, { timeout: 6_000 })
+            expect(attempt).toBe(3)
+            expect(events).toEqual(['restart'])
+            expect(harness.loopOpts.messageQueue.queue.map((i: any) => i.localId)).toEqual(['user-msg-1', 'user-msg-2'])
+        } finally {
+            harness.flushResult = null
+            harness.deferUnflushedMetadata = false
+            harness.refreshImpl = null
+            sessionInstance.stopKeepAlive()
+        }
+    })
+
+    it('keeps messages deferred after retries exhaust, honors cancellation, logs warning, and drains on reconnect (finding 1b)', { timeout: 20_000 }, async () => {
+        const prev = snapshotRunner()
+        const runPromise = runClaude({
+            workingDirectory: '/tmp/hapi-rewind-test',
+            startedBy: 'runner',
+            startingMode: 'remote'
+        })
+        runPromise.catch((error) => { harness.runError = error })
+
+        await waitForFreshRunner(prev)
+
+        const sessionInstance = createRunnerSession()
+        sessionInstance.sessionId = 'native-a'
+        const events: string[] = []
+        sessionInstance.requestRemoteRestart = async () => {
+            events.push('restart')
+        }
+        const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+        try {
+            harness.loopOpts.onSessionReady(sessionInstance)
+            harness.sessionStub.updateMetadata((metadata: any) => ({
+                ...metadata,
+                conversationHistoryEntryIds: { 'local-1': 'uuid-1' }
+            }))
+
+            harness.deferUnflushedMetadata = true
+            harness.flushResult = false
+
+            const rewind = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
+            expect(await rewind({ messageLocalId: 'local-1' })).toMatchObject({
+                success: false,
+                outcome: 'rejected'
+            })
+
+            const landedIntent = {
+                targetLocalId: 'local-1',
+                truncateFromLocalId: 'local-1',
+                keepBoundary: 'keep-boundary-uuid',
+                droppedPrompts: ['uuid-1']
+            }
+            harness.hubMetadata = {
+                ...harness.state.metadata,
+                claudeRewind: landedIntent
+            }
+            harness.refreshResult = false
+
+            await new Promise((r) => setTimeout(r, 0))
+            harness.userMessageHandler?.({ content: { text: 'cancel-me', attachments: [] } }, 'user-msg-cancel')
+            harness.userMessageHandler?.({ content: { text: 'keep-me', attachments: [] } }, 'user-msg-keep')
+
+            expect(harness.cancelQueuedMessageHandler?.('user-msg-cancel')).toBe(true)
+
+            // Wait for retry attempts + warning log; message must remain deferred.
+            await vi.waitFor(() => {
+                expect(warnSpy).toHaveBeenCalled()
+            }, { timeout: 10_000 })
+            expect(harness.refreshCalls).toBe(4)
+            expect(harness.loopOpts.messageQueue.size()).toBe(0)
+            expect(events).toEqual([])
+
+            // Next trigger (reconnect with refreshed metadata) settles and drains kept message.
+            harness.refreshResult = true
+            harness.state.metadata = structuredClone(harness.hubMetadata)
+            harness.reconnectHandler?.(true)
+
+            await vi.waitFor(() => {
+                expect(harness.loopOpts.messageQueue.size()).toBe(1)
+            })
+            expect(events).toEqual(['restart'])
+            expect(harness.loopOpts.messageQueue.queue.map((i: any) => i.localId)).toEqual(['user-msg-keep'])
+        } finally {
+            warnSpy.mockRestore()
+            harness.flushResult = null
+            harness.deferUnflushedMetadata = false
+            harness.refreshResult = true
+            sessionInstance.stopKeepAlive()
+        }
+    })
+
+    it('settles immediately onReconnect(true) even when an older settle refresh is still in flight and later fails (finding 2)', { timeout: 20_000 }, async () => {
+        const prev = snapshotRunner()
+        const runPromise = runClaude({
+            workingDirectory: '/tmp/hapi-rewind-test',
+            startedBy: 'runner',
+            startingMode: 'remote'
+        })
+        runPromise.catch((error) => { harness.runError = error })
+
+        await waitForFreshRunner(prev)
+
+        const sessionInstance = createRunnerSession()
+        sessionInstance.sessionId = 'native-a'
+        const restartSpy = vi.fn(async () => {})
+        sessionInstance.requestRemoteRestart = restartSpy
+        try {
+            harness.loopOpts.onSessionReady(sessionInstance)
+            harness.sessionStub.updateMetadata((metadata: any) => ({
+                ...metadata,
+                capabilities: { conversationHistory: { forkCurrent: true, forkAtMessage: true, rewindToMessage: true } },
+                conversationHistoryEntryIds: { 'local-1': 'uuid-1' }
+            }))
+
+            harness.deferUnflushedMetadata = true
+            harness.flushResult = false
+
+            const rewind = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
+            const fork = harness.rpcHandlers.get(RPC_METHODS.ForkConversation)!
+            expect(await rewind({ messageLocalId: 'local-1' })).toMatchObject({
+                success: false,
+                outcome: 'rejected'
+            })
+
+            const landedIntent = {
+                targetLocalId: 'local-1',
+                truncateFromLocalId: 'local-1',
+                keepBoundary: 'keep-boundary-uuid',
+                droppedPrompts: ['uuid-1']
+            }
+            harness.hubMetadata = {
+                ...harness.state.metadata,
+                claudeRewind: landedIntent
+            }
+
+            // Start an older settle via ForkConversation that stalls in refreshMetadata().
+            let resolveStalledRefresh!: (ok: boolean) => void
+            harness.refreshImpl = () => new Promise<boolean>((resolve) => {
+                resolveStalledRefresh = resolve
+            })
+            const forkPromise = fork({})
+            await vi.waitFor(() => {
+                expect(harness.refreshCalls).toBe(1)
+            })
+
+            // Reconnect refreshes metadata and invokes reconnectHandler(true) while fork is stalled.
+            harness.state.metadata = structuredClone(harness.hubMetadata)
+            harness.reconnectHandler?.(true)
+
+            await vi.waitFor(() => {
+                expect(restartSpy).toHaveBeenCalledTimes(1)
+            })
+
+            // Stalled refresh finally fails: it must be a no-op and fork must see "already pending", not "retry".
+            resolveStalledRefresh(false)
+            await expect(forkPromise).rejects.toThrow(/already pending/i)
+            expect(restartSpy).toHaveBeenCalledTimes(1)
+        } finally {
+            harness.flushResult = null
+            harness.deferUnflushedMetadata = false
+            harness.refreshImpl = null
+            sessionInstance.stopKeepAlive()
+        }
+    })
+
+    it('preserves FIFO message order and defers new messages while settleUnknownRewind awaits armSettledRewind (63hA_G item 1)', { timeout: 20_000 }, async () => {
+        const prev = snapshotRunner()
+        const runPromise = runClaude({
+            workingDirectory: '/tmp/hapi-rewind-test',
+            startedBy: 'runner',
+            startingMode: 'remote'
+        })
+        runPromise.catch((error) => { harness.runError = error })
+
+        await waitForFreshRunner(prev)
+
+        const sessionInstance = createRunnerSession()
+        sessionInstance.sessionId = 'native-a'
+        sessionInstance.stopKeepAlive()
+
+        let resolveRestart!: () => void
+        const events: string[] = []
+        sessionInstance.requestRemoteRestart = () => new Promise<void>((resolve) => {
+            events.push('restart-start')
+            resolveRestart = () => {
+                events.push('restart-done')
+                resolve()
+            }
+        })
+        const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+        try {
+            harness.loopOpts.onSessionReady(sessionInstance)
+            harness.sessionStub.updateMetadata((metadata: any) => ({
+                ...metadata,
+                conversationHistoryEntryIds: { 'local-1': 'uuid-1' }
+            }))
+
+            harness.deferUnflushedMetadata = true
+            harness.flushResult = false
+
+            const rewind = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
+            expect(await rewind({ messageLocalId: 'local-1' })).toMatchObject({
+                success: false,
+                outcome: 'rejected'
+            })
+
+            const landedIntent = {
+                targetLocalId: 'local-1',
+                truncateFromLocalId: 'local-1',
+                keepBoundary: 'keep-boundary-uuid',
+                droppedPrompts: ['uuid-1']
+            }
+            harness.hubMetadata = {
+                ...harness.state.metadata,
+                claudeRewind: landedIntent
+            }
+
+            await startDeferredSettlementWithFakeTimers('M1-first', 'user-msg-1')
+
+            // M1 arrives and short retries fail -> M1 sits in deferredMessages with drainingUserMessages = false.
+            await vi.advanceTimersByTimeAsync(1_000)
+            expect(harness.refreshCalls).toBe(2)
+            await vi.advanceTimersByTimeAsync(2_000)
+            expect(harness.refreshCalls).toBe(3)
+            await vi.advanceTimersByTimeAsync(4_000)
+            expect(harness.refreshCalls).toBe(4)
+            expect(harness.loopOpts.messageQueue.size()).toBe(0)
+
+            const pushSpy = vi.spyOn(harness.loopOpts.messageQueue, 'push')
+            const clearSpy = vi.spyOn(harness.loopOpts.messageQueue, 'pushIsolateAndClear')
+
+            // Reconnect starts settleUnknownRewind(true): unknownRewindIntent becomes null while
+            // requestRemoteRestart() is still awaited.
+            harness.state.metadata = structuredClone(harness.hubMetadata)
+            harness.reconnectHandler?.(true)
+            await Promise.resolve()
+            expect(events).toEqual(['restart-start'])
+
+            // M2 (/clear) and M3 arrive while settleUnknownRewind is awaiting armSettledRewind.
+            // Neither must jump ahead of M1 or be pushed before restart finishes.
+            harness.userMessageHandler?.({ content: { text: '/clear', attachments: [] } }, 'user-msg-2-clear')
+            harness.userMessageHandler?.({ content: { text: 'M3-after-clear', attachments: [] } }, 'user-msg-3')
+
+            await Promise.resolve()
+            expect(pushSpy).not.toHaveBeenCalled()
+            expect(clearSpy).not.toHaveBeenCalled()
+            expect(harness.loopOpts.messageQueue.size()).toBe(0)
+
+            resolveRestart()
+            await vi.advanceTimersByTimeAsync(0)
+            await vi.waitFor(() => {
+                expect(harness.loopOpts.messageQueue.queue.map((i: any) => i.localId)).toEqual(['user-msg-2-clear', 'user-msg-3'])
+            })
+            expect(events).toEqual(['restart-start', 'restart-done'])
+            expect(pushSpy.mock.calls.map((c: any[]) => c[2])).toEqual(['user-msg-1', 'user-msg-3'])
+            expect(clearSpy.mock.calls.map((c: any[]) => c[2])).toEqual(['user-msg-2-clear'])
+        } finally {
+            vi.useRealTimers()
+            warnSpy.mockRestore()
+            harness.flushResult = null
+            harness.deferUnflushedMetadata = false
+            harness.refreshImpl = null
+            harness.refreshResult = true
+            sessionInstance.stopKeepAlive()
+        }
+    })
+
+    it('defers a new message arriving while settleUnknownRewind awaits armSettledRewind even when deferredMessages was empty (63hA_G item 1b)', { timeout: 20_000 }, async () => {
+        const prev = snapshotRunner()
+        const runPromise = runClaude({
+            workingDirectory: '/tmp/hapi-rewind-test',
+            startedBy: 'runner',
+            startingMode: 'remote'
+        })
+        runPromise.catch((error) => { harness.runError = error })
+
+        await waitForFreshRunner(prev)
+
+        const sessionInstance = createRunnerSession()
+        sessionInstance.sessionId = 'native-a'
+        let resolveRestart!: () => void
+        const events: string[] = []
+        sessionInstance.requestRemoteRestart = () => new Promise<void>((resolve) => {
+            events.push('restart-start')
+            resolveRestart = () => {
+                events.push('restart-done')
+                resolve()
+            }
+        })
+        try {
+            harness.loopOpts.onSessionReady(sessionInstance)
+            harness.sessionStub.updateMetadata((metadata: any) => ({
+                ...metadata,
+                conversationHistoryEntryIds: { 'local-1': 'uuid-1' }
+            }))
+
+            harness.deferUnflushedMetadata = true
+            harness.flushResult = false
+
+            const rewind = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
+            await rewind({ messageLocalId: 'local-1' })
+
+            const landedIntent = {
+                targetLocalId: 'local-1',
+                truncateFromLocalId: 'local-1',
+                keepBoundary: 'keep-boundary-uuid',
+                droppedPrompts: ['uuid-1']
+            }
+            harness.state.metadata = {
+                ...harness.state.metadata,
+                claudeRewind: landedIntent
+            }
+
+            await new Promise((r) => setTimeout(r, 0))
+
+            // Start settlement while deferredMessages is empty; unknownRewindIntent becomes null
+            // while requestRemoteRestart() is still awaited.
+            harness.reconnectHandler?.(true)
+            await Promise.resolve()
+            expect(events).toEqual(['restart-start'])
+
+            harness.userMessageHandler?.({ content: { text: 'during-restart', attachments: [] } }, 'user-msg-during-restart')
+            await new Promise((r) => setTimeout(r, 10))
+            expect(harness.loopOpts.messageQueue.size()).toBe(0)
+
+            resolveRestart()
+            await vi.waitFor(() => {
+                expect(harness.loopOpts.messageQueue.queue.map((i: any) => i.localId)).toEqual(['user-msg-during-restart'])
+            })
+            expect(events).toEqual(['restart-start', 'restart-done'])
+        } finally {
+            harness.flushResult = null
+            harness.deferUnflushedMetadata = false
+            sessionInstance.stopKeepAlive()
+        }
+    })
+
+    async function startDeferredSettlementWithFakeTimers(messageText: string, localId: string): Promise<void> {
+        const targetRefreshCalls = harness.refreshCalls + 1
+        let resolveInitialRefresh!: (ok: boolean) => void
+        harness.refreshImpl = () => new Promise<boolean>((resolve) => {
+            resolveInitialRefresh = resolve
+        })
+        harness.userMessageHandler?.({ content: { text: messageText, attachments: [] } }, localId)
+        // Wait under real timers for getCatalog()/messagePipelineReady and flushUserMessages()
+        // to enter the initial refreshMetadata() before switching to fake timers.
+        await vi.waitFor(() => {
+            expect(harness.refreshCalls).toBe(targetRefreshCalls)
+        })
+        harness.refreshImpl = null
+        harness.refreshResult = false
+        vi.useFakeTimers()
+        resolveInitialRefresh(false)
+        await vi.advanceTimersByTimeAsync(0)
+        expect(vi.getTimerCount()).toBeGreaterThan(0)
+    }
+
+    it('keeps retrying settle in background with capped backoff while deferredMessages is non-empty (63hA_G item 2a)', { timeout: 20_000 }, async () => {
+        const prev = snapshotRunner()
+        const runPromise = runClaude({
+            workingDirectory: '/tmp/hapi-rewind-test',
+            startedBy: 'runner',
+            startingMode: 'remote'
+        })
+        runPromise.catch((error) => { harness.runError = error })
+
+        await waitForFreshRunner(prev)
+
+        const sessionInstance = createRunnerSession()
+        sessionInstance.sessionId = 'native-a'
+        sessionInstance.stopKeepAlive()
+        const restartSpy = vi.fn(async () => {})
+        sessionInstance.requestRemoteRestart = restartSpy
+        const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+        try {
+            harness.loopOpts.onSessionReady(sessionInstance)
+            harness.sessionStub.updateMetadata((metadata: any) => ({
+                ...metadata,
+                conversationHistoryEntryIds: { 'local-1': 'uuid-1' }
+            }))
+
+            harness.deferUnflushedMetadata = true
+            harness.flushResult = false
+
+            const rewind = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
+            expect(await rewind({ messageLocalId: 'local-1' })).toMatchObject({
+                success: false,
+                outcome: 'rejected'
+            })
+
+            const landedIntent = {
+                targetLocalId: 'local-1',
+                truncateFromLocalId: 'local-1',
+                keepBoundary: 'keep-boundary-uuid',
+                droppedPrompts: ['uuid-1']
+            }
+            harness.hubMetadata = {
+                ...harness.state.metadata,
+                claudeRewind: landedIntent
+            }
+
+            await startDeferredSettlementWithFakeTimers('bg-deferred', 'user-msg-bg')
+
+            // Initial + 3 short retries (1s, 2s, 4s) fail -> 4 calls.
+            await vi.advanceTimersByTimeAsync(1_000)
+            expect(harness.refreshCalls).toBe(2)
+            await vi.advanceTimersByTimeAsync(2_000)
+            expect(harness.refreshCalls).toBe(3)
+            await vi.advanceTimersByTimeAsync(4_000)
+            expect(harness.refreshCalls).toBe(4)
+            expect(warnSpy).toHaveBeenCalledTimes(1)
+
+            // Background retry 1: 15s
+            await vi.advanceTimersByTimeAsync(14_999)
+            expect(harness.refreshCalls).toBe(4)
+            await vi.advanceTimersByTimeAsync(1)
+            expect(harness.refreshCalls).toBe(5)
+
+            // Background retry 2: 30s
+            await vi.advanceTimersByTimeAsync(29_999)
+            expect(harness.refreshCalls).toBe(5)
+            await vi.advanceTimersByTimeAsync(1)
+            expect(harness.refreshCalls).toBe(6)
+
+            // Background retry 3: 60s
+            await vi.advanceTimersByTimeAsync(59_999)
+            expect(harness.refreshCalls).toBe(6)
+            await vi.advanceTimersByTimeAsync(1)
+            expect(harness.refreshCalls).toBe(7)
+
+            // Background retry 4: capped at 60s; succeed on this attempt.
+            harness.refreshResult = true
+            await vi.advanceTimersByTimeAsync(60_000)
+            expect(harness.refreshCalls).toBe(8)
+            expect(restartSpy).toHaveBeenCalledTimes(1)
+            expect(harness.loopOpts.messageQueue.queue.map((i: any) => i.localId)).toEqual(['user-msg-bg'])
+            expect(vi.getTimerCount()).toBe(0)
+        } finally {
+            vi.useRealTimers()
+            warnSpy.mockRestore()
+            harness.flushResult = null
+            harness.deferUnflushedMetadata = false
+            harness.refreshImpl = null
+            harness.refreshResult = true
+            sessionInstance.stopKeepAlive()
+        }
+    })
+
+    it('cancels background settle retry on empty queue, on settle, and on session close with no leaked timers or unhandled rejections (63hA_G item 2b)', { timeout: 20_000 }, async () => {
+        const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+        const unhandledRejections: unknown[] = []
+        const onUnhandled = (reason: unknown) => { unhandledRejections.push(reason) }
+        process.on('unhandledRejection', onUnhandled)
+
+        let sessionInstance: Session | null = null
+        try {
+            // Case A: deferredMessages becomes empty via cancellation + Case B: settle cancels background timer
+            const prevA = snapshotRunner()
+            const runPromiseA = runClaude({
+                workingDirectory: '/tmp/hapi-rewind-test',
+                startedBy: 'runner',
+                startingMode: 'remote'
+            })
+            runPromiseA.catch((error) => { harness.runError = error })
+            await waitForFreshRunner(prevA)
+
+            sessionInstance = createRunnerSession()
+            sessionInstance.sessionId = 'native-a'
+            sessionInstance.stopKeepAlive()
+            sessionInstance.requestRemoteRestart = async () => {}
+
+            harness.loopOpts.onSessionReady(sessionInstance)
+            harness.sessionStub.updateMetadata((metadata: any) => ({
+                ...metadata,
+                conversationHistoryEntryIds: { 'local-1': 'uuid-1' }
+            }))
+
+            harness.deferUnflushedMetadata = true
+            harness.flushResult = false
+            const rewindA = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
+            await rewindA({ messageLocalId: 'local-1' })
+
+            await startDeferredSettlementWithFakeTimers('only-msg', 'user-msg-only')
+            await vi.advanceTimersByTimeAsync(7_000)
+            expect(harness.refreshCalls).toBe(4)
+            expect(vi.getTimerCount()).toBeGreaterThan(0)
+
+            // Cancelling the only deferred message empties deferredMessages -> background timer cancelled.
+            expect(harness.cancelQueuedMessageHandler?.('user-msg-only')).toBe(true)
+            expect(vi.getTimerCount()).toBe(0)
+            await vi.advanceTimersByTimeAsync(120_000)
+            expect(harness.refreshCalls).toBe(4)
+
+            // Re-defer a message, enter background retry, then settle via reconnect -> timer cancelled.
+            harness.userMessageHandler?.({ content: { text: 'second-msg', attachments: [] } }, 'user-msg-second')
+            await vi.advanceTimersByTimeAsync(0)
+            expect(harness.refreshCalls).toBe(5)
+            expect(vi.getTimerCount()).toBeGreaterThan(0)
+            await vi.advanceTimersByTimeAsync(7_000)
+            expect(harness.refreshCalls).toBe(8)
+            expect(vi.getTimerCount()).toBeGreaterThan(0)
+
+            harness.hubMetadata = {
+                ...harness.state.metadata,
+                claudeRewind: {
+                    targetLocalId: 'local-1',
+                    truncateFromLocalId: 'local-1',
+                    keepBoundary: 'keep-boundary-uuid',
+                    droppedPrompts: ['uuid-1']
+                }
+            }
+            harness.state.metadata = structuredClone(harness.hubMetadata)
+            harness.reconnectHandler?.(true)
+            await vi.advanceTimersByTimeAsync(0)
+            expect(vi.getTimerCount()).toBe(0)
+            expect(harness.loopOpts.messageQueue.queue.map((i: any) => i.localId)).toEqual(['user-msg-second'])
+
+            vi.useRealTimers()
+            sessionInstance.stopKeepAlive()
+
+            // Case C: session close cancels background retry timer and leaves no promises/timers/rejections.
+            harness.state.metadata = {}
+            harness.refreshCalls = 0
+            harness.refreshResult = true
+            harness.deferUnflushedMetadata = false
+            harness.flushResult = null
+            harness.hubMetadata = undefined
+            let rejectLoop!: (err: Error) => void
+            harness.loopImpl = () => new Promise<void>((_, reject) => { rejectLoop = reject })
+
+            const prevB = snapshotRunner()
+            const runPromiseB = runClaude({
+                workingDirectory: '/tmp/hapi-rewind-test',
+                startedBy: 'runner',
+                startingMode: 'remote'
+            })
+            await waitForFreshRunner(prevB)
+
+            const sessionB = createRunnerSession()
+            sessionB.sessionId = 'native-a'
+            sessionB.stopKeepAlive()
+            sessionB.requestRemoteRestart = async () => {}
+            sessionInstance = sessionB
+
+            harness.loopOpts.onSessionReady(sessionB)
+            harness.sessionStub.updateMetadata((metadata: any) => ({
+                ...metadata,
+                conversationHistoryEntryIds: { 'local-1': 'uuid-1' }
+            }))
+
+            harness.deferUnflushedMetadata = true
+            harness.flushResult = false
+            const rewindB = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
+            await rewindB({ messageLocalId: 'local-1' })
+
+            await startDeferredSettlementWithFakeTimers('close-msg', 'user-msg-close')
+            await vi.advanceTimersByTimeAsync(7_000)
+            expect(harness.refreshCalls).toBe(4)
+            expect(vi.getTimerCount()).toBeGreaterThan(0)
+
+            rejectLoop(new Error('session closed'))
+            await expect(runPromiseB).rejects.toThrow('session closed')
+
+            expect(vi.getTimerCount()).toBe(0)
+            await vi.advanceTimersByTimeAsync(120_000)
+            expect(harness.refreshCalls).toBe(4)
+            expect(unhandledRejections).toEqual([])
+        } finally {
+            process.off('unhandledRejection', onUnhandled)
+            vi.useRealTimers()
+            warnSpy.mockRestore()
+            harness.loopImpl = null
+            harness.flushResult = null
+            harness.deferUnflushedMetadata = false
+            harness.refreshImpl = null
+            harness.refreshResult = true
+            sessionInstance?.stopKeepAlive()
+        }
     })
 })
