@@ -28,16 +28,26 @@ describe('pi bundled extension source', () => {
 
 type ExtensionHarness = {
     handlers: Map<string, Array<(event: any, ctx?: any) => any>>;
-    registerTool: ReturnType<typeof vi.fn>;
+    registerTool: ReturnType<typeof vi.fn> | null;
     registerMcpServer: ReturnType<typeof vi.fn> | null;
+    registeredTools: Map<string, any>;
     prompt: () => string;
 };
 
 function loadExtension(options: {
     registerMcpServer?: boolean | (() => void);
+    registerTool?: boolean | ((tool: any) => void);
 } = {}): ExtensionHarness {
     const handlers = new Map<string, Array<(event: any, ctx?: any) => any>>();
-    const registerTool = vi.fn();
+    const registeredTools = new Map<string, any>();
+    const registerTool = options.registerTool === false
+        ? null
+        : vi.fn((tool: any) => {
+            registeredTools.set(tool?.name, tool);
+            if (typeof options.registerTool === 'function') {
+                options.registerTool(tool);
+            }
+        });
     const registerMcpServer = options.registerMcpServer === false
         ? null
         : vi.fn(typeof options.registerMcpServer === 'function' ? options.registerMcpServer : undefined);
@@ -47,8 +57,8 @@ function loadExtension(options: {
             current.push(handler);
             handlers.set(event, current);
         },
-        registerTool,
     };
+    if (registerTool) pi.registerTool = registerTool;
     if (registerMcpServer) pi.registerMcpServer = registerMcpServer;
 
     const load = new Function('Type', 'fs', PI_EXTENSION_SOURCE
@@ -56,12 +66,19 @@ function loadExtension(options: {
         .replace('export default function', 'function')
         .replace("await import('node:fs/promises')", 'fs')
         + '\nreturn hapiPiExtension;');
-    load({ Object: (properties: unknown) => properties, String: (options: unknown) => options }, fs)(pi);
+    load({
+        Object: (properties: unknown) => properties,
+        String: (options: unknown) => options,
+        Optional: (type: unknown) => type,
+        Integer: (options: unknown) => options,
+        Boolean: (options: unknown) => options,
+    }, fs)(pi);
 
     return {
         handlers,
         registerTool,
         registerMcpServer,
+        registeredTools,
         prompt: () => {
             const handler = handlers.get('before_agent_start')?.[0];
             if (!handler) throw new Error('before_agent_start handler missing');
@@ -102,11 +119,34 @@ describe('pi peer MCP integration', () => {
         expect(harness.prompt()).not.toContain('mcp__hapi__inspect_peer');
     });
 
-    it('falls back cleanly on older Pi versions without registerMcpServer', () => {
+    it('registers peer tools directly via registerTool when registerMcpServer is absent', () => {
         vi.stubEnv('HAPI_PI_MCP_URL', 'http://127.0.0.1:12345/');
         const harness = loadExtension({ registerMcpServer: false });
 
         expect(harness.registerMcpServer).toBeNull();
+        expect(harness.registerTool).toHaveBeenCalledWith(expect.objectContaining({ name: 'mcp__hapi__inspect_peer' }));
+        expect(harness.registerTool).toHaveBeenCalledWith(expect.objectContaining({ name: 'mcp__hapi__ping_peer' }));
+        expect(harness.registerTool).toHaveBeenCalledWith(expect.objectContaining({ name: 'mcp__hapi__list_peers' }));
+        expect(harness.registerTool).toHaveBeenCalledWith(expect.objectContaining({ name: 'mcp__hapi__spawn_peer' }));
+        expect(harness.prompt()).toContain('mcp__hapi__inspect_peer');
+        expect(harness.prompt()).toContain('mcp__hapi__ping_peer');
+        expect(harness.prompt()).toContain('mcp__hapi__spawn_peer');
+        expect(harness.prompt()).toContain('mcp__hapi__list_peers');
+        expect(harness.prompt()).not.toContain('Peer session tools (inspect_peer / ping_peer / list_peers) are disabled');
+    });
+
+    it('fails closed when both registerMcpServer and registerTool are unavailable or throw', () => {
+        vi.stubEnv('HAPI_PI_MCP_URL', 'http://127.0.0.1:12345/');
+        vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+        const harness = loadExtension({
+            registerMcpServer: false,
+            registerTool: (tool: any) => {
+                if (tool?.name?.startsWith('mcp__hapi__')) {
+                    throw new Error('peer tool registration failed');
+                }
+            },
+        });
+
         expect(harness.prompt()).toContain('Peer session tools (inspect_peer / ping_peer / list_peers) are disabled');
     });
 
@@ -166,12 +206,104 @@ describe('pi peer MCP integration', () => {
 
     it('does not gate peer tools when MCP registration did not succeed', async () => {
         vi.stubEnv('HAPI_PI_MCP_URL', 'http://127.0.0.1:12345/');
+        vi.stubEnv('HAPI_DISABLE_PEER_TOOLS', 'yes');
         const harness = loadExtension({ registerMcpServer: false });
         const toolCall = harness.handlers.get('tool_call')![0];
         const confirm = vi.fn(async () => true);
 
         expect(await toolCall({ toolName: 'mcp__hapi__ping_peer', input: {} }, { ui: { confirm } })).toBeUndefined();
         expect(confirm).not.toHaveBeenCalled();
+    });
+
+    it('executes direct peer tools by proxying to the MCP HTTP server', async () => {
+        vi.stubEnv('HAPI_PI_MCP_URL', 'http://127.0.0.1:12345/');
+        const harness = loadExtension({ registerMcpServer: false });
+        const listTool = harness.registeredTools.get('mcp__hapi__list_peers');
+        expect(listTool).toBeDefined();
+
+        const fetchMock = vi.fn()
+            .mockResolvedValueOnce({
+                ok: true,
+                status: 200,
+                headers: new Headers({ 'mcp-session-id': 'test-session-xyz' }),
+            })
+            .mockResolvedValueOnce({
+                ok: true,
+                status: 200,
+                text: async () => 'event: message\ndata: {"result":{"content":[{"type":"text","text":"peer-session-123"}],"isError":false},"jsonrpc":"2.0","id":1}\n\n',
+            });
+        vi.stubGlobal('fetch', fetchMock);
+
+        const result = await listTool.execute('call-id-1', { limit: 5 });
+        expect(result).toEqual({
+            content: [{ type: 'text', text: 'peer-session-123' }],
+            details: {},
+            isError: false,
+        });
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('propagates cancellation signal to fetch calls', async () => {
+        vi.stubEnv('HAPI_PI_MCP_URL', 'http://127.0.0.1:12345/');
+        const harness = loadExtension({ registerMcpServer: false });
+        const spawnTool = harness.registeredTools.get('mcp__hapi__spawn_peer');
+        expect(spawnTool).toBeDefined();
+
+        const controller = new AbortController();
+        const fetchMock = vi.fn().mockImplementation((_url, options) => {
+            expect(options?.signal).toBe(controller.signal);
+            return Promise.resolve({
+                ok: true,
+                status: 200,
+                headers: new Headers({ 'mcp-session-id': 'test-session-abc' }),
+                text: async () => 'event: message\ndata: {"result":{"content":[{"type":"text","text":"spawned"}],"isError":false},"jsonrpc":"2.0","id":1}\n\n',
+            });
+        });
+        vi.stubGlobal('fetch', fetchMock);
+
+        await spawnTool.execute('call-id-2', { directory: '/tmp', message: 'test' }, controller.signal);
+        expect(fetchMock).toHaveBeenCalled();
+    });
+
+    it('throws on tool failure so older and newer Pi versions record errors', async () => {
+        vi.stubEnv('HAPI_PI_MCP_URL', 'http://127.0.0.1:12345/');
+        const harness = loadExtension({ registerMcpServer: false });
+        const pingTool = harness.registeredTools.get('mcp__hapi__ping_peer');
+        expect(pingTool).toBeDefined();
+
+        const fetchMock = vi.fn()
+            .mockResolvedValueOnce({
+                ok: true,
+                status: 200,
+                headers: new Headers({ 'mcp-session-id': 'test-session-err' }),
+            })
+            .mockResolvedValueOnce({
+                ok: true,
+                status: 200,
+                text: async () => 'event: message\ndata: {"result":{"content":[{"type":"text","text":"Target peer refused"}],"isError":true},"jsonrpc":"2.0","id":1}\n\n',
+            });
+        vi.stubGlobal('fetch', fetchMock);
+
+        await expect(pingTool.execute('call-id-3', { sessionIdPrefix: 'abc', message: 'hello' })).rejects.toThrow('Target peer refused');
+    });
+
+    it('does not replay mutating calls on ambiguous transport failures', async () => {
+        vi.stubEnv('HAPI_PI_MCP_URL', 'http://127.0.0.1:12345/');
+        const harness = loadExtension({ registerMcpServer: false });
+        const pingTool = harness.registeredTools.get('mcp__hapi__ping_peer');
+
+        const fetchMock = vi.fn()
+            .mockResolvedValueOnce({
+                ok: true,
+                status: 200,
+                headers: new Headers({ 'mcp-session-id': 'session-1' }),
+            })
+            .mockRejectedValueOnce(new TypeError('network failure after headers'));
+        vi.stubGlobal('fetch', fetchMock);
+
+        await expect(pingTool.execute('call-id-4', { sessionIdPrefix: 'abc', message: 'msg' })).rejects.toThrow('network failure after headers');
+        // Initialized once, called once, failed - must NOT re-initialize and retry
+        expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 });
 describe('materializePiExtension', () => {
@@ -218,7 +350,7 @@ describe('materializePiExtension', () => {
         const source = await readFile(file, 'utf8');
         const testable = source.replace(
             "import { Type } from '@sinclair/typebox';",
-            'const Type = { Object: (properties) => ({ properties }), String: (options) => options };',
+            'const Type = { Object: (properties) => ({ properties }), String: (options) => options, Optional: (type) => type, Integer: (options) => options, Boolean: (options) => options };',
         );
         const moduleFile = join(dir, 'hapi-extension.mjs');
         await writeFile(moduleFile, testable, 'utf8');
@@ -289,7 +421,13 @@ function loadImageTool(fileSystem: unknown = fs) {
         .replace("await import('node:fs/promises')", 'fs')
         + '\nreturn hapiPiExtension;');
     const registerTool = vi.fn();
-    load({ Object: (properties: unknown) => properties, String: (options: unknown) => options }, fileSystem)({
+    load({
+        Object: (properties: unknown) => properties,
+        String: (options: unknown) => options,
+        Optional: (type: unknown) => type,
+        Integer: (options: unknown) => options,
+        Boolean: (options: unknown) => options,
+    }, fileSystem)({
         on: vi.fn(), registerTool,
     });
     return registerTool.mock.calls.find(([tool]) => tool.name === 'hapi_display_image')![0] as {
@@ -298,10 +436,10 @@ function loadImageTool(fileSystem: unknown = fs) {
 }
 
 describe('hapi_display_image execution', () => {
-    it('honors image delivery preferences while retaining Pi model-image semantics', () => {
-        const tool = loadExtension().registerTool.mock.calls.find(([tool]) => tool.name === 'hapi_display_image')![0]
-        expect(tool.description).toContain('explicit user or workspace preference')
-        expect(tool.description).toContain('10 MiB (10,485,760 bytes)')
+    it('keeps the delivery contract in the tool while retaining Pi model-image semantics', () => {
+        const tool = loadExtension().registerTool!.mock.calls.find(([tool]) => tool.name === 'hapi_display_image')![0]
+        expect(tool.description).toContain('explicit delivery preferences')
+        expect(tool.description).not.toContain('Web/PWA')
         expect(tool.description).toContain('hapi_display_image')
         expect(tool.description).toContain('up to 25 MiB')
         expect(tool.description).toContain('also enters the model context')

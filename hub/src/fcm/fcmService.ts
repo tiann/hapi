@@ -17,8 +17,9 @@ export type FcmDataPayload = {
      *
      *  - `info`     ready / input request                -> blue
      *  - `warning`  permission request                   -> amber
+     *  - `error`    model error (agent-side failure)     -> red
      */
-    severity?: 'info' | 'warning'
+    severity?: 'info' | 'warning' | 'error'
     /**
      * JSON-stringified `AGENT_NOTIFY_SUMMARY` object when the agent emitted
      * one as the trailing line of its last message. The companion app may
@@ -26,6 +27,11 @@ export type FcmDataPayload = {
      * when the agent did not emit a summary.
      */
     notifySummary?: string
+    /**
+     * Coalescing identity. Present on `model-error` as
+     * `model-error-<sessionId>-<eventId>` so distinct errors do not overwrite.
+     */
+    tag?: string
 }
 
 export type FcmSendPayload = {
@@ -180,6 +186,11 @@ export class FcmService {
         }
         if (payload.data.notifySummary) {
             dataRecord.notifySummary = payload.data.notifySummary
+        }
+        if (payload.tag) {
+            dataRecord.tag = payload.tag
+        } else if (payload.data.tag) {
+            dataRecord.tag = payload.data.tag
         }
 
         // Data-only: if we also send `notification`, Android does not call

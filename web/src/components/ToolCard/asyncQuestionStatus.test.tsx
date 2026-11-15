@@ -97,6 +97,43 @@ describe('async question transcript status', () => {
         expect(cardRoot!.firstElementChild!.contains(waiting)).toBe(false)
         expect(container.querySelector('span[title*="Duration"]')).not.toBeNull()
     })
+})
+
+// A synthesized pending question card has no transcript tool-call: the
+// reducer builds it from the agentState request alone (state 'pending',
+// startedAt null — reducerTools seeds exactly that shape), so the waiting
+// count can only come from the permission request's own createdAt, the
+// moment the question was asked.
+function synthesizedPendingQuestion(createdAt: number | null): ToolCallBlock {
+    return {
+        kind: 'tool-call', id: 'synth-q', localId: null, createdAt: 40_000,
+        tool: {
+            id: 'synth-q', name: 'AskUserQuestion', state: 'pending',
+            input: claudeInput,
+            createdAt: 40_000, startedAt: null, completedAt: null,
+            execStartedAt: null, execCompletedAt: null, description: null,
+            permission: { id: 'request-synth', status: 'pending', ...(createdAt != null ? { createdAt } : {}) }
+        }, children: []
+    }
+}
+
+describe('synthesized pending question timing', () => {
+    it('counts the wait from the permission createdAt when the transcript has not loaded', () => {
+        const askedAt = Date.now() - 5_000
+        const { container } = render(card(synthesizedPendingQuestion(askedAt)))
+        const elapsed = container.querySelector('span[title*="Duration"]')
+        expect(elapsed).not.toBeNull()
+        const seconds = Number.parseFloat(elapsed!.textContent ?? '0')
+        expect(seconds).toBeGreaterThanOrEqual(4)
+        expect(seconds).toBeLessThanOrEqual(7)
+    })
+
+    it('shows no time when the permission carries no createdAt', () => {
+        const { container } = render(card(synthesizedPendingQuestion(null)))
+        expect(container.querySelector('span[title*="Duration"]')).toBeNull()
+        expect(container.textContent).not.toMatch(/0\.0s/)
+    })
+})
 
     it('hides the question text from the header while pending; the open body shows it', () => {
         render(card(question('pending')))
@@ -112,4 +149,3 @@ describe('async question transcript status', () => {
         render(card(question('resolved')))
         expect(screen.queryByText('Waiting for your reply')).toBeNull()
     })
-})

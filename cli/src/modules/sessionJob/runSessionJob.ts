@@ -31,6 +31,8 @@ export type RunSessionJobOptions = SessionJobClientOptions & {
     detail?: string
     /** When set, heartbeats re-stamp remaining from wall clock (progress until). */
     untilMs?: number
+    /** Inferred countdown measured from child launch, excluding API preflight. */
+    durationMs?: number
     /**
      * Window start for until-mode total (until − startedAt). Defaults to supervisor
      * launch time. Pass the original window start on mid-window re-attach so the
@@ -244,6 +246,10 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
     const hubDownDeadlineMs = options.terminalHubDownDeadlineMs ?? DEFAULT_TERMINAL_HUB_DOWN_DEADLINE_MS
     const heartbeatMs = options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS
 
+    const childStartedAtMs = now()
+    const untilMs = options.durationMs !== undefined
+        ? childStartedAtMs + options.durationMs
+        : options.untilMs
     const child: ChildProcess = spawnFn(options.command[0]!, options.command.slice(1), {
         stdio: 'inherit',
         env: process.env
@@ -253,16 +259,16 @@ export async function runSessionJob(options: RunSessionJobOptions): Promise<numb
     let inflightHeartbeat: Promise<unknown> = Promise.resolve()
     // Until-mode total = until − windowStart. Prefer explicit startedAtMs so a
     // mid-window move keeps the original 48h (etc.) denominator.
-    const untilWindowStartMs = options.startedAtMs ?? now()
+    const untilWindowStartMs = options.startedAtMs ?? childStartedAtMs
     const heartbeat = setIntervalFn(() => {
         // Never PATCH status:running on the heartbeat — a late in-flight
         // request must not resurrect running after the terminal write.
         // Fence with runId so a superseded run cannot touch a key reuse.
         // Do not re-send --detail: MCP/CLI progress updates would otherwise be
         // clobbered by the next timer tick with the launch-time string.
-        const untilBody = options.untilMs !== undefined
+        const untilBody = untilMs !== undefined
             ? (() => {
-                const stamped = stampUntilProgress(options.untilMs!, now(), untilWindowStartMs)
+                const stamped = stampUntilProgress(untilMs, now(), untilWindowStartMs)
                 return {
                     remaining: stamped.remaining,
                     total: stamped.total,

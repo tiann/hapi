@@ -428,6 +428,62 @@ describe('reduceChatBlocks', () => {
         expect(reduced.blocks.some(b => b.kind === 'tool-call' && b.id === 'ask-done')).toBe(false)
     })
 
+    describe('question card free-text flag from the pending request', () => {
+        const toolCall = (input: unknown): NormalizedMessage => ({
+            id: 'agent-ask', localId: null, createdAt: 1_700_000_000_100, role: 'agent', isSidechain: false,
+            content: [{
+                type: 'tool-call', id: 'call_q', name: 'AskUserQuestion', input,
+                description: null, uuid: 'u-ask', parentUUID: null
+            }]
+        })
+        const pending = (allowFreeText?: boolean) => ({
+            requests: {
+                call_q: {
+                    tool: 'AskUserQuestion',
+                    arguments: { questions: [{ question: 'Pick?', options: [{ label: 'A' }], ...(allowFreeText === undefined ? {} : { allowFreeText }) }] },
+                    createdAt: 1_700_000_000_200
+                }
+            },
+            completedRequests: {}
+        }) as unknown as AgentState
+        const renderedFlag = (agentState: AgentState) => {
+            // agy's tool call input carries no flag: the form arrives later.
+            const reduced = reduceChatBlocks([
+                userMessage('u1', 'hello', 1_700_000_000_000),
+                toolCall({ questions: [{ question: 'Pick?', header: null, options: [{ label: 'A', description: null }], multiSelect: false }] })
+            ], agentState)
+            const block = reduced.blocks.find(b => b.kind === 'tool-call' && b.id === 'call_q')
+            const input = block?.kind === 'tool-call' ? block.tool.input as { questions: Array<{ allowFreeText?: boolean }> } : null
+            return input?.questions[0]?.allowFreeText
+        }
+
+        it('carries allowFreeText=false from the pending request onto the tool call input', () => {
+            expect(renderedFlag(pending(false))).toBe(false)
+        })
+
+        it('leaves the input without a flag when the request has none', () => {
+            expect(renderedFlag(pending())).toBeUndefined()
+        })
+    })
+
+    it('synthesizes the selected live-only request even when it predates the window', () => {
+        const messages = [userMessage('u1', 'hello', 1_700_000_000_000)]
+        const agentState = {
+            requests: {
+                'cursor-old': { tool: 'CursorAskQuestion', toolCallId: 'cursor-tool-call', arguments: { prompt: 'Pick one' }, createdAt: 1_600_000_000_000 },
+                'other-old': { tool: 'Bash', arguments: {}, createdAt: 1_600_000_000_100 }
+            },
+            completedRequests: {}
+        } as unknown as AgentState
+
+        const reduced = reduceChatBlocks(messages, agentState, { pendingRequestTargetId: 'cursor-old' })
+        const rendered = reduced.blocks.filter((block) => block.kind === 'tool-call').map((block) => block.kind === 'tool-call' ? block.id : null)
+        expect(rendered).toContain('cursor-tool-call')
+        const selectedBlock = reduced.blocks.find((block) => block.kind === 'tool-call' && block.id === 'cursor-tool-call')
+        expect(selectedBlock?.kind === 'tool-call' ? selectedBlock.tool.permission?.id : null).toBe('cursor-old')
+        expect(rendered).not.toContain('other-old')
+    })
+
     it('still synthesizes a card for a pending request with no message in the window', () => {
         const messages = [userMessage('u1', 'hello', 1_700_000_000_000)]
         const agentState = {

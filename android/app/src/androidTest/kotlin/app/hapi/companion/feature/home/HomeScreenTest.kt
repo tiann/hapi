@@ -216,7 +216,8 @@ class HomeScreenTest {
         sessions.sessions.value = sessions.sessions.value.map { if (it.id == "research") it.copy(active = false) else it }
         mount()
         openFilters()
-        compose.onNodeWithTag("session-filters").performScrollToNode(hasText(label(R.string.sessions_view_status_archived)))
+        // "Show" is one row whose value opens a menu of statuses.
+        compose.onNodeWithTag("session-status-filter").performClick()
         compose.onNodeWithText(label(R.string.sessions_view_status_archived)).performClick()
         compose.waitUntil(10_000) { viewModel.uiState.value.rows.map { it.id } == listOf("research") }
         compose.onNodeWithTag("session-filters").performScrollToNode(hasTestTag("session-active-first"))

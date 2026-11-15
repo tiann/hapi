@@ -581,7 +581,7 @@ class ChatViewModelInteractionTest {
     }
 
     @Test fun `plan errors survive withdrawal and do not automatically resubmit`() = runTest {
-        for ((status, code) in listOf(409 to "stale_plan", 409 to "unavailable", 502 to "failed", 503 to "indeterminate")) {
+        for ((status, code) in listOf(409 to "stale_plan", 409 to "unavailable", 500 to "failed", 503 to "indeterminate")) {
             val harness = InteractionHarness(this, planDetail())
             harness.api.planFailures.add(ApiError.from(status, """{"ok":false,"code":"$code","error":"Not confirmed"}"""))
             harness.sessionStore.detailToLoad = planDetail().copy(agentState = AgentState())
@@ -599,7 +599,7 @@ class ChatViewModelInteractionTest {
 
     @Test fun `confirmed failure allows an explicit retry and clears its error`() = runTest {
         val harness = InteractionHarness(this, planDetail())
-        harness.api.planFailures.add(ApiError.from(502, """{"code":"failed","error":"Try again"}"""))
+        harness.api.planFailures.add(ApiError.from(500, """{"code":"failed","error":"Try again"}"""))
         harness.viewModel.implementCodexPlan("plan-1")
         testScheduler.runCurrent()
         assertTrue(harness.viewModel.codexPlanActions.value.forPlan("plan-1").canAct)

@@ -73,6 +73,13 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
             // Called when a request starts waiting for the user; the returned
             // callback runs once it is answered (agents timing their own work).
             onUserWait?: () => () => void
+            // Called synchronously when a permission 'abort' decision cancels
+            // the prompt through the backend directly (never via the
+            // launcher's abort handler). Flavors that track cancels — e.g.
+            // dsh's implicit session-end detection on custom wrappers that
+            // close the session on session/cancel — use this to arm their
+            // detector for that cancel.
+            onCancelIssued?: () => void
         } = {}
     ) {
         super(session)
@@ -108,7 +115,7 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
         this.addPendingRequest(request.id, toolName, toolInput, {
             resolve: () => {},
             reject: () => {}
-        })
+        }, request.toolCallId)
         logger.debug(`[ACP] Permission request queued for ${toolName} (${request.id})`)
     }
 
@@ -172,6 +179,7 @@ export class AcpPermissionHandler extends BasePermissionHandler<PermissionRespon
         const decision = response.decision ?? (response.approved ? 'approved' : 'denied')
 
         if (decision === 'abort' && request) {
+            this.options.onCancelIssued?.()
             await this.backend.cancelPrompt(request.sessionId)
         }
         if (request) {

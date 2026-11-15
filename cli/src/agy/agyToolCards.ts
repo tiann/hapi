@@ -31,6 +31,13 @@ function compact(input: Record<string, unknown>): Record<string, unknown> {
     return Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined && value !== null && value !== ''));
 }
 
+/** Like compact, but keeps '' for fields where empty is meaningful (deleted text, an empty file). */
+function compactKeepingEmpty(input: Record<string, unknown>, keep: string[]): Record<string, unknown> {
+    return Object.fromEntries(Object.entries(input).filter(([key, value]) =>
+        value !== undefined && value !== null && (value !== '' || keep.includes(key))
+    ));
+}
+
 function parseArguments(value: unknown): Record<string, unknown> {
     if (typeof value === 'string') {
         try {
@@ -73,7 +80,10 @@ export function mapAgyToolCall(message: ToolCall): ToolCall {
             break;
         case 'edit_file':
             name = 'Edit';
-            input = compact({ file_path: args.Path, old_string: args.Target, new_string: args.Replacement });
+            input = compactKeepingEmpty(
+                { file_path: args.Path, old_string: args.Target, new_string: args.Replacement },
+                ['old_string', 'new_string']
+            );
             break;
         case 'write_file': {
             const plan = artifactPlan(args);
@@ -82,7 +92,7 @@ export function mapAgyToolCall(message: ToolCall): ToolCall {
                 input = { plan };
             } else {
                 name = 'Write';
-                input = compact({ file_path: args.Path, content: args.Content });
+                input = compactKeepingEmpty({ file_path: args.Path, content: args.Content }, ['content']);
             }
             break;
         }

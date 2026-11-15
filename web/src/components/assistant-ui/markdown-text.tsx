@@ -1,7 +1,7 @@
 import '@assistant-ui/react-markdown/styles/dot.css'
 
 import type { ComponentPropsWithoutRef, ComponentType, MouseEvent, ReactNode } from 'react'
-import { useState, useCallback, useEffect, useMemo, createContext, useContext } from 'react'
+import { Children, Fragment, cloneElement, isValidElement, useState, useCallback, useEffect, useMemo, createContext, useContext } from 'react'
 import {
     MarkdownTextPrimitive,
     unstable_memoizeMarkdownComponents as memoizeMarkdownComponents,
@@ -56,12 +56,13 @@ import type { MarkdownTextPrimitiveProps } from '@assistant-ui/react-markdown'
 // Session file being previewed; relative links/images resolve against its directory.
 // fileSearch carries the preview's browsing context (origin/tab/query) so Back still returns to it.
 export type MarkdownFileSearch = { origin?: 'chat'; tab?: 'changes' | 'directories'; query?: string }
-export const MarkdownFileBaseContext = createContext<{
+export type MarkdownFileBaseValue = {
     sessionId: string
     filePath: string
     workspacePath: string | null
     fileSearch: MarkdownFileSearch
-} | null>(null)
+}
+export const MarkdownFileBaseContext = createContext<MarkdownFileBaseValue | null>(null)
 
 // ── Plugin array ────────────────────────────────────────────────────────────
 // Order: remarkGfm → remarkRepairTables → remarkCjkFriendly → remarkLatexBracketMath → remarkNonHttpsAutolink → remarkStripCjkAutolink → remarkMath → remarkDisableIndentedCode → remarkSessionPathLinks → remarkFilePathLinks
@@ -598,6 +599,76 @@ function InertMarkdownHref(props: { href: string; children?: ReactNode; classNam
     )
 }
 
+type LinkChildSegment = {
+    interactiveImage: boolean
+    children: ReactNode[]
+}
+
+type SplitLinkNode = {
+    interactiveImage: boolean
+    node: ReactNode
+}
+
+function splitInteractiveImageNodes(child: ReactNode, fileBase: MarkdownFileBaseValue | null): SplitLinkNode[] {
+    if (!isValidElement<{ children?: ReactNode; src?: unknown }>(child)) {
+        return [{ interactiveImage: false, node: child }]
+    }
+
+    const src = typeof child.props.src === 'string' ? child.props.src : null
+    if (src) {
+        const standalonePath = fileBase
+            ? resolveMarkdownRelativePath(fileBase.filePath, src, fileBase.workspacePath)
+            : null
+        return [{ interactiveImage: !standalonePath, node: child }]
+    }
+
+    const nestedChildren = Children.toArray(child.props.children)
+    if (nestedChildren.length === 0) {
+        return [{ interactiveImage: false, node: child }]
+    }
+    const nested = nestedChildren.flatMap((nestedChild) => splitInteractiveImageNodes(nestedChild, fileBase))
+    if (!nested.some((segment) => segment.interactiveImage)) {
+        return [{ interactiveImage: false, node: child }]
+    }
+
+    return nested.map((segment, index) => ({
+        interactiveImage: segment.interactiveImage,
+        node: cloneElement(
+            child,
+            { key: `${String(child.key ?? 'node')}-${index}` },
+            segment.node,
+        ),
+    }))
+}
+
+function renderSplitInteractiveImageLink(
+    children: ReactNode,
+    fileBase: MarkdownFileBaseValue | null,
+    renderAnchor: (children: ReactNode, key: string) => ReactNode,
+): ReactNode | null {
+    const segments: LinkChildSegment[] = []
+    const splitNodes = Children.toArray(children).flatMap((child) => splitInteractiveImageNodes(child, fileBase))
+    for (const splitNode of splitNodes) {
+        if (splitNode.interactiveImage) {
+            segments.push({ interactiveImage: true, children: [splitNode.node] })
+            continue
+        }
+        const previous = segments.at(-1)
+        if (previous && !previous.interactiveImage) previous.children.push(splitNode.node)
+        else segments.push({ interactiveImage: false, children: [splitNode.node] })
+    }
+
+    if (!segments.some((segment) => segment.interactiveImage)) return null
+
+    return (
+        <>
+            {segments.map((segment, index) => segment.interactiveImage
+                ? <Fragment key={`image-${index}`}>{segment.children}</Fragment>
+                : renderAnchor(segment.children, `link-${index}`))}
+        </>
+    )
+}
+
 function A(props: ComponentPropsWithoutRef<'a'>) {
     const chat = useOptionalHappyChatContext()
     // useContext must be called unconditionally before any early return so that
@@ -622,10 +693,30 @@ function A(props: ComponentPropsWithoutRef<'a'>) {
         if (!chat) {
             return <>{props.children}</>
         }
+        const split = renderSplitInteractiveImageLink(
+            props.children,
+            fileBase,
+            (children, key) => (
+                <FilePathAnchor key={key} {...props} filePath={filePath} sessionId={chat.sessionId}>
+                    {children}
+                </FilePathAnchor>
+            ),
+        )
+        if (split) return split
         return <FilePathAnchor {...props} filePath={filePath} sessionId={chat.sessionId} />
     }
 
     if (targetSessionId) {
+        const split = renderSplitInteractiveImageLink(
+            props.children,
+            fileBase,
+            (children, key) => (
+                <SessionPathAnchor key={key} {...props} targetSessionId={targetSessionId}>
+                    {children}
+                </SessionPathAnchor>
+            ),
+        )
+        if (split) return split
         return <SessionPathAnchor {...props} targetSessionId={targetSessionId} />
     }
 
@@ -633,6 +724,22 @@ function A(props: ComponentPropsWithoutRef<'a'>) {
         ? resolveMarkdownRelativePath(fileBase.filePath, props.href, fileBase.workspacePath)
         : null
     if (fileBase && relativeFilePath) {
+        const split = renderSplitInteractiveImageLink(
+            props.children,
+            fileBase,
+            (children, key) => (
+                <FilePathAnchor
+                    key={key}
+                    {...props}
+                    filePath={relativeFilePath}
+                    sessionId={fileBase.sessionId}
+                    fileSearch={fileBase.fileSearch}
+                >
+                    {children}
+                </FilePathAnchor>
+            ),
+        )
+        if (split) return split
         return (
             <FilePathAnchor
                 {...props}
@@ -681,6 +788,16 @@ function A(props: ComponentPropsWithoutRef<'a'>) {
             if (!chat) {
                 return <InertMarkdownHref href={href ?? windowsPathFromHref ?? ''} className={props.className}>{props.children}</InertMarkdownHref>
             }
+            const split = renderSplitInteractiveImageLink(
+                props.children,
+                fileBase,
+                (children, key) => (
+                    <FilePathAnchor key={key} {...props} filePath={decision.path} sessionId={chat.sessionId}>
+                        {children}
+                    </FilePathAnchor>
+                ),
+            )
+            if (split) return split
             return <FilePathAnchor {...props} filePath={decision.path} sessionId={chat.sessionId} />
         }
         if (decision.action === 'inert') {
@@ -743,6 +860,25 @@ function A(props: ComponentPropsWithoutRef<'a'>) {
         e.preventDefault()
         ctx?.openUri(url, scheme)
     }
+
+    const split = renderSplitInteractiveImageLink(
+        props.children,
+        fileBase,
+        (children, key) => (
+            <a
+                key={key}
+                {...rest}
+                href={domHref}
+                target={target}
+                rel={effectiveRel}
+                onClick={handleClick}
+                className={cn('aui-md-a font-medium text-[var(--app-link)] underline decoration-[color:var(--app-link-muted)] underline-offset-3', props.className)}
+            >
+                {children}
+            </a>
+        ),
+    )
+    if (split) return split
 
     return (
         <a

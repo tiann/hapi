@@ -215,6 +215,19 @@ describe('startHappyServer skill_lookup', () => {
         expect(displayImage?.description).toContain('cannot be used to read, inspect, or analyze image contents')
     })
 
+    it('exposes concise delivery contracts for all media tools', async () => {
+        const mcp = await connect(false)
+        const { tools } = await mcp.listTools()
+        for (const name of ['display_image', 'display_video', 'display_media']) {
+            const description = tools.find(tool => tool.name === name)?.description
+            expect(description).toContain('absolute filesystem path')
+            expect(description).toContain('25 MiB')
+            expect(description).toContain('explicit delivery preferences')
+            expect(description).not.toContain('Web/PWA')
+            expect(description).not.toContain('iOS')
+        }
+    })
+
     it.each([
         [undefined, 'accepted'],
         [undefined, 'steered'],

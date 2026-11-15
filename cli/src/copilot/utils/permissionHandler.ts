@@ -97,7 +97,7 @@ export class CopilotPermissionHandler extends BasePermissionHandler<PermissionRe
         this.addPendingRequest(request.id, toolName, toolInput, {
             resolve: () => {},
             reject: () => {}
-        });
+        }, request.toolCallId);
 
         logger.debug(`[Copilot] Permission request queued for ${toolName} (${request.id})`);
     }

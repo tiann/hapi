@@ -1,8 +1,9 @@
 package app.hapi.companion.feature.chat
 
-import app.hapi.companion.feature.chat.blocks.toolPresentationName
 import android.content.res.Resources
+import androidx.annotation.DrawableRes
 import app.hapi.companion.R
+import app.hapi.companion.feature.chat.blocks.toolPresentationName
 import app.hapi.protocol.chat.ChatToolCall
 import app.hapi.protocol.chat.getInputStringAny
 import app.hapi.protocol.chat.isAskUserQuestionToolName
@@ -17,31 +18,30 @@ import kotlinx.serialization.json.JsonPrimitive
  * Collapsed tool-card header: icon glyph + title + optional subtitle. Port of
  * the presentation registry in `web/src/components/ToolCard/knownTools.tsx`
  * (the read-only subset — the web's `minimal` flag maps to "no inline body by
- * default" and is a per-card expansion default here). Icons are text glyphs in
- * the same family as the event-row emoji the shared protocol presentation
- * already emits.
+ * default" and is a per-card expansion default here). Icons are monochrome
+ * Material Symbols mirroring the iOS SF Symbol choices, tinted at the call site.
  */
 data class ToolCardPresentation(
-    val icon: String,
+    @param:DrawableRes val icon: Int,
     val title: String,
     val subtitle: String?,
 )
 
 private object ToolIcons {
-    const val TERMINAL = "💻"
-    const val READ = "📖"
-    const val SEARCH = "🔍"
-    const val EDIT = "✏️"
-    const val WEB = "🌐"
-    const val AGENT = "🚀"
-    const val QUESTION = "❓"
-    const val PLAN = "📋"
-    const val IDEA = "💡"
-    const val PUZZLE = "🧩"
-    const val MESSAGE = "💬"
-    const val TEAM = "👥"
-    const val WARNING = "⚠️"
-    const val WRENCH = "🔧"
+    val TERMINAL = R.drawable.ic_sym_terminal
+    val READ = R.drawable.ic_sym_visibility
+    val SEARCH = R.drawable.ic_sym_search
+    val EDIT = R.drawable.ic_sym_edit
+    val WEB = R.drawable.ic_sym_language
+    val AGENT = R.drawable.ic_sym_send
+    val QUESTION = R.drawable.ic_sym_help
+    val PLAN = R.drawable.ic_sym_assignment
+    val IDEA = R.drawable.ic_sym_lightbulb
+    val PUZZLE = R.drawable.ic_sym_extension
+    val MESSAGE = R.drawable.ic_sym_chat_bubble
+    val TEAM = R.drawable.ic_sym_group
+    val WARNING = R.drawable.ic_sym_warning
+    val WRENCH = R.drawable.ic_sym_build
 }
 
 // ---------------------------------------------------------------- helpers --

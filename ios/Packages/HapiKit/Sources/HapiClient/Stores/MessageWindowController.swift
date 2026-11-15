@@ -431,7 +431,12 @@ public actor MessageWindowController {
                             requestBaseline: requestBaseline,
                             trimLimit: trimLimit
                         )
-                        next.pendingGapRecovery = false
+                        // The activation flag is consumed here — the upsert
+                        // subsumed its refresh — but the recovery stays
+                        // pending until the row sweep below succeeds, so a
+                        // failed context request retries on the next sync
+                        // instead of leaving the enriched cached call stale
+                        // with no retry path.
                         next.preferLatestOnActivation = false
                         return next
                     }
@@ -499,6 +504,15 @@ public actor MessageWindowController {
                                 return MessageWindowLogic.mergeRefreshedRow(previous, WindowMessage(wire: refreshed!))
                             }
                         }
+                    }
+
+                    // The catch-up, the upsert, and every row refresh
+                    // succeeded: only now is the recovery complete.
+                    update { previous in
+                        guard previous.syncGeneration == generation else { return previous }
+                        var next = previous
+                        next.pendingGapRecovery = false
+                        return next
                     }
                 }
             }

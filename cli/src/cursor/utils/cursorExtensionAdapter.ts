@@ -93,6 +93,7 @@ export class CursorExtensionAdapter {
                     ...currentState.requests,
                     [requestId]: {
                         tool,
+                        toolCallId: requestId,
                         arguments: args,
                         createdAt: Date.now()
                     }

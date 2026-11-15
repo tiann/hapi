@@ -8,6 +8,8 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     // New-session form draft + prefs persist as JSON blobs in DataStore (B-M3d).
     alias(libs.plugins.kotlin.serialization)
+    // Visual specimens: `./gradlew :app:recordRoborazziDebug` (README).
+    alias(libs.plugins.roborazzi)
     // com.google.gms.google-services is applied CONDITIONALLY below (B-M4a):
     // the plugin hard-fails when app/google-services.json is missing, and the
     // repo must build green without any Firebase project configured.
@@ -68,6 +70,27 @@ if (officialBuild) {
     }
 }
 
+// versionCode = number of commits reachable from HEAD. Official builds run
+// from main only, so it increases monotonically with no manual bookkeeping.
+// A shallow clone undercounts, so official builds require full history;
+// local builds without git (e.g. a source tarball) fall back to 1.
+fun git(vararg args: String): String? = runCatching {
+    val exec = providers.exec {
+        commandLine("git", *args)
+        workingDir = rootDir
+        isIgnoreExitValue = true
+    }
+    exec.standardOutput.asText.get().trim().takeIf { exec.result.get().exitValue == 0 }
+}.getOrNull()
+
+val gitCommitCount = git("rev-list", "--count", "HEAD")?.toIntOrNull()?.takeIf { it > 0 }
+if (officialBuild) {
+    require(gitCommitCount != null) { "Official builds require git to derive versionCode" }
+    require(git("rev-parse", "--is-shallow-repository") == "false") {
+        "Official builds require full git history (shallow clones undercount versionCode)"
+    }
+}
+
 android {
     namespace = "app.hapi.companion"
     compileSdk = 36
@@ -76,11 +99,9 @@ android {
         applicationId = "run.hapi.companion"
         minSdk = 26
         targetSdk = 36
-        versionCode = providers.gradleProperty("hapiVersionCode").map { value ->
-            value.toInt().also { require(it > 0) { "hapiVersionCode must be positive" } }
-        }.orElse(1).get()
+        versionCode = gitCommitCount ?: 1
         // Tracks the hapi CLI/hub release train.
-        versionName = providers.gradleProperty("hapiVersionName").orElse("0.35.0").get()
+        versionName = providers.gradleProperty("hapiVersionName").orElse("0.35.1").get()
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -132,6 +153,8 @@ android {
     }
 
     testOptions {
+        // Robolectric specimens resolve fonts, drawables and strings.
+        unitTests.isIncludeAndroidResources = true
         unitTests.all { test ->
             // Chat pipeline smoke tests replay golden fixtures from the repo
             // root (same wiring as :core:protocol / :core:data).
@@ -213,4 +236,10 @@ dependencies {
     testImplementation(libs.turbine)
     // Generated media fetch tests: real HTTP round-trip against localhost.
     testImplementation(libs.okhttp.mockwebserver)
+    // Visual specimens (Compose rendered under Robolectric native graphics).
+    testImplementation(platform(libs.androidx.compose.bom))
+    testImplementation(libs.androidx.compose.ui.test.junit4)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.roborazzi)
+    testImplementation(libs.roborazzi.compose)
 }

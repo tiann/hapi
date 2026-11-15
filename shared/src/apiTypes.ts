@@ -6,7 +6,9 @@ import {
     DecryptedMessageSchema,
     MachineSchema,
     PermissionModeSchema,
-    SessionSchema
+    SessionSchema,
+    MetadataSchema,
+    OpenCodeRewindSchema
 } from './schemas'
 import { AgentFlavorSchema } from './modes'
 import {
@@ -60,6 +62,7 @@ export const CliMessagesResponseSchema = z.object({
         seq: z.number(),
         createdAt: z.number(),
         localId: z.string().nullable().optional(),
+        invokedAt: z.number().nullable().optional(),
         content: z.unknown()
     }))
 })
@@ -69,7 +72,9 @@ export type CliMessagesResponse = z.infer<typeof CliMessagesResponseSchema>
 export const CreateSessionResponseSchema = z.object({
     session: SessionSchema,
     /** Hub opt-in for AGENT_NOTIFY_SUMMARY prompt injection (default off when omitted). */
-    sessionSummaryContract: z.boolean().optional()
+    sessionSummaryContract: z.boolean().optional(),
+    /** Hub opt-in: Cursor auto-bridge after transient model errors (default off). */
+    autoBridgeTransientModelErrors: z.boolean().optional()
 })
 
 export type CreateSessionResponse = z.infer<typeof CreateSessionResponseSchema>
@@ -78,6 +83,7 @@ export const HubSettingsResponseSchema = z.object({
     sessionSummaryContract: z.boolean(),
     /** Show compact AGENT_NOTIFY_SUMMARY in chat (default off / hide). */
     sessionSummaryInChat: z.boolean(),
+    autoBridgeTransientModelErrors: z.boolean(),
     peerSpawnDefaults: ResolvedPeerSpawnDefaultsSchema
 })
 
@@ -87,12 +93,14 @@ export const UpdateHubSettingsRequestSchema = z
     .object({
         sessionSummaryContract: z.boolean().optional(),
         sessionSummaryInChat: z.boolean().optional(),
+        autoBridgeTransientModelErrors: z.boolean().optional(),
         peerSpawnDefaults: PeerSpawnDefaultsSchema.optional()
     })
     .refine(
         (data) =>
             data.sessionSummaryContract !== undefined
             || data.sessionSummaryInChat !== undefined
+            || data.autoBridgeTransientModelErrors !== undefined
             || data.peerSpawnDefaults !== undefined,
         { message: 'At least one hub setting field is required' }
     )
@@ -546,6 +554,20 @@ export const ScratchlistEntryUpdateRequestSchema = z.object({
 
 export type ScratchlistEntryUpdateRequest = z.infer<typeof ScratchlistEntryUpdateRequestSchema>
 
+/** Dismiss the model-error banner for a specific displayed error (by eventId). */
+export const AcknowledgeModelErrorRequestSchema = z.object({
+    eventId: z.string().min(1)
+})
+
+export type AcknowledgeModelErrorRequest = z.infer<typeof AcknowledgeModelErrorRequestSchema>
+
+/** Bridge & retry for the specific displayed model error (by eventId). */
+export const BridgeModelErrorRequestSchema = z.object({
+    eventId: z.string().min(1)
+})
+
+export type BridgeModelErrorRequest = z.infer<typeof BridgeModelErrorRequestSchema>
+
 /** Per-session legacy stream-json → ACP migrator request. See tiann/hapi#824. */
 export const CursorMigrateToAcpRequestSchema = z.object({
     /** Skip removing the legacy ~/.cursor/chats source store.db even after verify passes. */
@@ -582,6 +604,36 @@ export type CursorMigrateRefusalReason =
     | 'size_mismatch'
     | 'internal_error'
 
+export const LEGACY_SINGLE_UPLOAD_MAX_BYTES = 50 * 1024 * 1024
+export const DEFAULT_MAX_UPLOAD_BYTES = 512 * 1024 * 1024
+export const MAX_CONFIGURABLE_UPLOAD_BYTES = 10 * 1024 * 1024 * 1024
+export const UPLOAD_CHUNK_MAX_BYTES = 8 * 1024 * 1024
+export const DEFAULT_UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024
+
+export function resolveMaxUploadBytes(raw?: string | undefined): number {
+    const trimmed = raw?.trim()
+    if (!trimmed || !/^\d+$/.test(trimmed)) {
+        return DEFAULT_MAX_UPLOAD_BYTES
+    }
+    const parsed = Number(trimmed)
+    if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+        return DEFAULT_MAX_UPLOAD_BYTES
+    }
+    return Math.min(parsed, MAX_CONFIGURABLE_UPLOAD_BYTES)
+}
+
+export const UploadErrorCodeSchema = z.enum([
+    'upload_too_large',
+    'upload_chunk_too_large',
+    'upload_not_found',
+    'upload_conflict',
+    'upload_invalid_chunk',
+    'upload_size_mismatch',
+    'upload_incomplete'
+])
+
+export type UploadErrorCode = z.infer<typeof UploadErrorCodeSchema>
+
 export const UploadFileRequestSchema = z.object({
     filename: z.string().min(1).max(255),
     content: z.string().min(1),
@@ -589,6 +641,14 @@ export const UploadFileRequestSchema = z.object({
 })
 
 export type UploadFileRequest = z.infer<typeof UploadFileRequestSchema>
+
+export const InitChunkedUploadRequestSchema = z.object({
+    filename: z.string().min(1).max(255),
+    size: z.number().int().min(0),
+    mimeType: z.string().min(1).max(255)
+})
+
+export type InitChunkedUploadRequest = z.infer<typeof InitChunkedUploadRequestSchema>
 
 export const DeleteUploadRequestSchema = z.object({
     path: z.string().min(1)
@@ -695,6 +755,7 @@ export type RewindConversationResponse = {
 export type ForkConversationRpcResult = {
     completedTurnId?: string
     nativeSessionId: string
+    opencodeHistoryCheckpoint?: NonNullable<Session['metadata']>['opencodeHistoryCheckpoint']
     /** Shared runtimes bind the child themselves; hub must not spawn another engine. */
     sessionId?: string
     /** When true, hub must spawn with --fork-session (Claude). */
@@ -723,6 +784,17 @@ export type ForkArchivedCodexResponse = { nativeSessionId: string } | { error: s
 export type RewindConversationErrorCode =
     | 'ambiguous_native_boundary'
     | 'ambiguous_native_boundary_fork_safe'
+
+export const OpenCodeRewindReportSchema = z.object({
+    operation: OpenCodeRewindSchema,
+    phase: z.enum(['prepared', 'applied', 'unknown', 'rejected']),
+    sourceHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+    prefixHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+    unchanged: z.literal(true).optional(),
+    checkpoint: MetadataSchema.shape.opencodeHistoryCheckpoint,
+    indexes: z.record(z.string(), z.number().int().nonnegative()).optional()
+})
+export type OpenCodeRewindReport = z.infer<typeof OpenCodeRewindReportSchema>
 
 export type RewindConversationRpcResult = {
     success: true
@@ -902,6 +974,29 @@ export type UploadFileResponse = {
     success: boolean
     path?: string
     error?: string
+    code?: string
+}
+
+export type InitChunkedUploadResponse = {
+    success: boolean
+    uploadId?: string
+    chunkSize?: number
+    maxUploadBytes?: number
+    error?: string
+    code?: string
+}
+
+export type UploadChunkResponse = {
+    success: boolean
+    receivedBytes?: number
+    error?: string
+    code?: string
+}
+
+export type AbortChunkedUploadResponse = {
+    success: boolean
+    error?: string
+    code?: string
 }
 
 export type DeleteUploadResponse = {

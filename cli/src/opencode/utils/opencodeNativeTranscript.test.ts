@@ -121,6 +121,111 @@ describe('OpenCode native transcript reconciliation', () => {
         await recovering;
         expect(onText).not.toHaveBeenCalled();
     });
+    it('suppresses inherited compaction outcomes while post-baseline ones still publish', async () => {
+        const inherited = [
+            { info: { id: 'marker', sessionID: 'ses', role: 'user' }, parts: [{ id: 'marker-part', messageID: 'marker', sessionID: 'ses', type: 'compaction', auto: true }] },
+            { info: { id: 'summary', sessionID: 'ses', role: 'assistant', summary: true, parentID: 'marker', finish: 'stop' }, parts: [{ id: 'summary-part', messageID: 'summary', sessionID: 'ses', type: 'text', text: 'inherited', time: { end: 1 } }] }
+        ];
+        const onSummary = vi.fn();
+        const onFailure = vi.fn();
+        const transcript = new OpencodeNativeTranscript({ baseUrl: 'http://127.0.0.1:1', sessionId: 'ses', directory: '/project', mode: 'v1',
+            suppressInheritedCompactions: true, onSummary, onFailure, onText: vi.fn(), fetchImpl: async () => Response.json(inherited) });
+        await transcript.refresh();
+        expect(onSummary).not.toHaveBeenCalled();
+        expect(onFailure).not.toHaveBeenCalled();
+        // Replays after the baseline applied stay published.
+        transcript.event('message.updated', { info: { id: 'summary', sessionID: 'ses', role: 'assistant', summary: true, parentID: 'marker', finish: 'stop' } });
+        expect(onSummary).not.toHaveBeenCalled();
+        transcript.event('message.updated', { info: { id: 'new-marker', sessionID: 'ses', role: 'user' } });
+        transcript.event('message.part.updated', { part: { id: 'new-marker-part', messageID: 'new-marker', sessionID: 'ses', type: 'compaction', auto: true } });
+        transcript.event('message.updated', { info: { id: 'new-summary', sessionID: 'ses', role: 'assistant', summary: true, parentID: 'new-marker' } });
+        transcript.event('message.part.updated', { part: { id: 'new-summary-part', messageID: 'new-summary', sessionID: 'ses', type: 'text', text: 'fresh', time: { end: 2 } } });
+        transcript.event('message.updated', { info: { id: 'new-summary', sessionID: 'ses', role: 'assistant', summary: true, parentID: 'new-marker', finish: 'stop' } });
+        expect(onSummary).toHaveBeenCalledExactlyOnceWith('new-marker', 'fresh', 'auto');
+        transcript.close();
+    });
+    it('publishes a compaction that completes live during baseline recovery exactly once', async () => {
+        // The first read fails, so the baseline never applies. A fork child's
+        // own compaction then completes over the live stream: it belongs to
+        // this runtime, must publish, and must not be lost to the baseline
+        // suppression window.
+        const persisted = [
+            { info: { id: 'marker', sessionID: 'ses', role: 'user' }, parts: [{ id: 'marker-part', messageID: 'marker', sessionID: 'ses', type: 'compaction', auto: true }] },
+            { info: { id: 'summary', sessionID: 'ses', role: 'assistant', summary: true, parentID: 'marker', finish: 'stop' }, parts: [{ id: 'summary-part', messageID: 'summary', sessionID: 'ses', type: 'text', text: 'live summary', time: { end: 1 } }] }
+        ];
+        const fetchImpl = vi.fn().mockResolvedValueOnce(new Response('', { status: 503 }))
+            .mockResolvedValue(Response.json(persisted));
+        const onSummary = vi.fn();
+        const transcript = new OpencodeNativeTranscript({ baseUrl: 'http://127.0.0.1:1', sessionId: 'ses', directory: '/project', mode: 'v1',
+            suppressInheritedCompactions: true, onSummary, onText: vi.fn(), fetchImpl });
+        await transcript.refresh();
+        transcript.event('message.updated', { info: { id: 'marker', sessionID: 'ses', role: 'user' } });
+        transcript.event('message.part.updated', { part: { id: 'marker-part', messageID: 'marker', sessionID: 'ses', type: 'compaction', auto: true } });
+        transcript.event('message.updated', { info: { id: 'summary', sessionID: 'ses', role: 'assistant', summary: true, parentID: 'marker' } });
+        transcript.event('message.part.updated', { part: { id: 'summary-part', messageID: 'summary', sessionID: 'ses', type: 'text', text: 'live summary', time: { end: 1 } } });
+        transcript.event('message.updated', { info: { id: 'summary', sessionID: 'ses', role: 'assistant', summary: true, parentID: 'marker', finish: 'stop' } });
+        expect(onSummary).toHaveBeenCalledExactlyOnceWith('marker', 'live summary', 'auto');
+        transcript.close();
+    });
+    it('publishes a compaction failure that surfaces live during baseline recovery exactly once', async () => {
+        const persisted = [
+            { info: { id: 'marker', sessionID: 'ses', role: 'user' }, parts: [{ id: 'marker-part', messageID: 'marker', sessionID: 'ses', type: 'compaction', auto: true }] },
+            { info: { id: 'summary', sessionID: 'ses', role: 'assistant', summary: true, parentID: 'marker', error: true, finish: 'stop' }, parts: [] }
+        ];
+        const fetchImpl = vi.fn().mockResolvedValueOnce(new Response('', { status: 503 }))
+            .mockResolvedValue(Response.json(persisted));
+        const onSummary = vi.fn();
+        const onFailure = vi.fn();
+        const transcript = new OpencodeNativeTranscript({ baseUrl: 'http://127.0.0.1:1', sessionId: 'ses', directory: '/project', mode: 'v1',
+            suppressInheritedCompactions: true, onSummary, onFailure, onText: vi.fn(), fetchImpl });
+        await transcript.refresh();
+        transcript.event('message.updated', { info: { id: 'marker', sessionID: 'ses', role: 'user' } });
+        transcript.event('message.part.updated', { part: { id: 'marker-part', messageID: 'marker', sessionID: 'ses', type: 'compaction', auto: true } });
+        transcript.event('message.updated', { info: { id: 'summary', sessionID: 'ses', role: 'assistant', summary: true, parentID: 'marker', error: true, finish: 'stop' } });
+        expect(onFailure).toHaveBeenCalledExactlyOnceWith('marker', 'auto');
+        await transcript.refresh();
+        expect(onFailure).toHaveBeenCalledTimes(1);
+        expect(onSummary).not.toHaveBeenCalled();
+        transcript.close();
+    });
+    it('still suppresses an inherited compaction that only the baseline snapshot reports', async () => {
+        const inherited = [
+            { info: { id: 'marker', sessionID: 'ses', role: 'user' }, parts: [{ id: 'marker-part', messageID: 'marker', sessionID: 'ses', type: 'compaction', auto: true }] },
+            { info: { id: 'summary', sessionID: 'ses', role: 'assistant', summary: true, parentID: 'marker', finish: 'stop' }, parts: [{ id: 'summary-part', messageID: 'summary', sessionID: 'ses', type: 'text', text: 'inherited summary', time: { end: 1 } }] }
+        ];
+        const fetchImpl = vi.fn().mockResolvedValue(Response.json(inherited));
+        const onSummary = vi.fn();
+        const transcript = new OpencodeNativeTranscript({ baseUrl: 'http://127.0.0.1:1', sessionId: 'ses', directory: '/project', mode: 'v1',
+            suppressInheritedCompactions: true, onSummary, onText: vi.fn(), fetchImpl });
+        await transcript.refresh();
+        expect(onSummary).not.toHaveBeenCalled();
+        await transcript.refresh();
+        expect(onSummary).not.toHaveBeenCalled();
+        transcript.close();
+    });
+    it('does not double publish a live compaction when the baseline recovers with the same row', async () => {
+        const persisted = [
+            { info: { id: 'marker', sessionID: 'ses', role: 'user' }, parts: [{ id: 'marker-part', messageID: 'marker', sessionID: 'ses', type: 'compaction', auto: true }] },
+            { info: { id: 'summary', sessionID: 'ses', role: 'assistant', summary: true, parentID: 'marker', finish: 'stop' }, parts: [{ id: 'summary-part', messageID: 'summary', sessionID: 'ses', type: 'text', text: 'live summary', time: { end: 1 } }] }
+        ];
+        const fetchImpl = vi.fn().mockResolvedValueOnce(new Response('', { status: 503 }))
+            .mockResolvedValue(Response.json(persisted));
+        const onSummary = vi.fn();
+        const transcript = new OpencodeNativeTranscript({ baseUrl: 'http://127.0.0.1:1', sessionId: 'ses', directory: '/project', mode: 'v1',
+            suppressInheritedCompactions: true, onSummary, onText: vi.fn(), fetchImpl });
+        await transcript.refresh();
+        transcript.event('message.updated', { info: { id: 'marker', sessionID: 'ses', role: 'user' } });
+        transcript.event('message.part.updated', { part: { id: 'marker-part', messageID: 'marker', sessionID: 'ses', type: 'compaction', auto: true } });
+        transcript.event('message.updated', { info: { id: 'summary', sessionID: 'ses', role: 'assistant', summary: true, parentID: 'marker' } });
+        transcript.event('message.part.updated', { part: { id: 'summary-part', messageID: 'summary', sessionID: 'ses', type: 'text', text: 'live summary', time: { end: 1 } } });
+        transcript.event('message.updated', { info: { id: 'summary', sessionID: 'ses', role: 'assistant', summary: true, parentID: 'marker', finish: 'stop' } });
+        // The recovered baseline holds the same completed row; the live
+        // publication must already have marked it.
+        await transcript.refresh();
+        await transcript.refresh();
+        expect(onSummary).toHaveBeenCalledTimes(1);
+        transcript.close();
+    });
     it('drops a stale read and honors an idle/reconnect refresh requested while it was in flight', async () => {
         let resolve!: (r: Response) => void;
         const fetchImpl = vi.fn().mockImplementationOnce(() => new Promise<Response>(r => { resolve = r; })).mockResolvedValue(Response.json([]));

@@ -13,6 +13,7 @@ import type { SessionCache } from './sessionCache'
  * when the runner reports the process still alive (or unknown).
  */
 describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
+    const preparationLease = { id: 'fixture', expiresAt: 123456 }
     let store: Store
     let engine: SyncEngine
     const NAMESPACE = 'default'
@@ -25,7 +26,7 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         tag: string,
         machineId?: string,
         hostPid?: number,
-        opts?: { startedBy?: 'runner' | 'terminal'; startedFromRunner?: boolean }
+        opts?: { startedBy?: 'runner' | 'terminal'; startedFromRunner?: boolean; flavor?: 'claude' | 'opencode' }
     ): string {
         const startedBy = opts?.startedBy ?? 'runner'
         const created = cache().getOrCreateSession(
@@ -33,7 +34,7 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
             {
                 path: '/tmp/proj',
                 host: 'localhost',
-                flavor: 'claude',
+                flavor: opts?.flavor ?? 'claude',
                 startedBy,
                 ...(opts?.startedFromRunner !== undefined
                     ? { startedFromRunner: opts.startedFromRunner }
@@ -64,6 +65,166 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
     beforeEach(() => {
         store = new Store(':memory:')
         engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+    })
+
+    function setRewindPhase(id: string, phase: 'reserved' | 'prepared' | 'unknown' | 'rejected'): void {
+        const current = store.sessions.getSession(id)!
+        const operation = { operationId: 'archive-guard', nativeSessionId: 'native', workerId: 'worker',
+            requestedLocalId: 'turn', nativeMessageId: 'native-turn', cutoffSeq: 1, sourceEpoch: 0,
+            sourceMaxSeq: 1, reservationVersion: 1, sourceTranscriptHash: 'a'.repeat(64), phase }
+        expect(store.sessions.updateSessionMetadata(id, { ...current.metadata as object, opencodeRewind: operation },
+            current.metadataVersion, NAMESPACE).result).toBe('success')
+        cache().refreshSession(id)
+    }
+
+    it.each(['reserved', 'prepared', 'unknown'] as const)('blocks archive and process preparation before side effects during %s rewind', async phase => {
+        const id = insertActiveSession(`archive-${phase}`, 'machine-x', 123, { flavor: 'opencode' })
+        setRewindPhase(id, phase)
+        let calls = 0
+        ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession = async () => { calls++; return {} }
+        await expect(engine.archiveSession(id)).rejects.toThrow('reconciliation')
+        await expect(engine.prepareOpenCodeSessionStop(id, 123, 'gen', preparationLease, 'machine-x')).rejects.toThrow('reconciliation')
+        expect(calls).toBe(0)
+        expect(cache().getSession(id)?.active).toBe(true)
+    })
+
+    it('checks rewind before joining archive singleflight and releases failed cleanup for a safe retry', async () => {
+        const id = insertActiveSession('archive-combined', 'machine-x', 123, { flavor: 'opencode' })
+        store.messages.addMessage(id, { role: 'user', content: 'preserve' }, 'turn')
+        let killCalls = 0, runnerCalls = 0
+        let fail!: (error: Error) => void, entered!: () => void
+        const runnerEntered = new Promise<void>(resolve => { entered = resolve })
+        ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession = async () => { killCalls++; return {} }
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession = async () => {
+            runnerCalls++
+            if (runnerCalls > 1) return 'already_gone'
+            return new Promise((_resolve, reject) => { fail = reject; entered() })
+        }
+        const outcomes = Promise.allSettled([engine.archiveSession(id), engine.archiveSession(id)])
+        await runnerEntered
+        expect(killCalls).toBe(1)
+        expect(runnerCalls).toBe(1)
+        setRewindPhase(id, 'unknown')
+        await expect(engine.archiveSession(id)).rejects.toThrow('reconciliation')
+        fail(new RunnerStopRpcError(true, new Error('ACK timed out')))
+        for (const result of await outcomes) {
+            expect(result.status).toBe('rejected')
+            if (result.status === 'rejected') {
+                expect(result.reason).toBeInstanceOf(ArchiveCleanupError)
+                expect(result.reason.status).toBe(503)
+            }
+        }
+        expect(cache().getSession(id)?.active).toBe(true)
+        expect(store.messages.getAllMessages(id)).toHaveLength(1)
+        expect(store.messages.getMessageEpoch(id)).toBe(0)
+        setRewindPhase(id, 'rejected')
+        await engine.archiveSession(id)
+        expect(killCalls).toBe(2)
+        expect(runnerCalls).toBe(2)
+        expect(cache().getSession(id)?.metadata?.lifecycleState).toBe('archived')
+        expect(store.messages.getAllMessages(id)).toHaveLength(1)
+    })
+
+    it('prepares a direct OpenCode stop by awaiting KillSession without recursing into StopSession', async () => {
+        const id = insertActiveSession('opencode-stop', 'machine-x', 123, { flavor: 'opencode' })
+        let release!: () => void
+        let runnerCalls = 0
+        ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession = (_id: string, options: unknown) => {
+            expect(options).toEqual({ prepareOnly: true, expectedMachineId: 'machine-x', expectedPid: 123, expectedProcessStartMarker: 'gen-a', preparationLease })
+            return new Promise((resolve) => { release = () => resolve({ pid: 123, machineId: 'machine-x', processStartMarker: 'gen-a', preparationLease }) })
+        }
+        ;(engine as unknown as { rpcGateway: { stopRunnerSession: unknown } }).rpcGateway.stopRunnerSession = () => { runnerCalls++; throw new Error('recursive stop') }
+        let ready = false
+        const preparation = engine.prepareOpenCodeSessionStop(id, 123, 'gen-a', preparationLease, 'machine-x').then((status) => { ready = true; return status })
+        await Promise.resolve()
+        expect(ready).toBe(false)
+        release()
+        expect(await preparation).toBe('ready')
+        expect(runnerCalls).toBe(0)
+    })
+
+    it('keeps direct OpenCode shutdown unconfirmed when its RPC is unreachable', async () => {
+        const id = insertActiveSession('opencode-offline', 'machine-x', 123, { flavor: 'opencode' })
+        setKillSessionMissingTarget()
+        await expect(engine.prepareOpenCodeSessionStop(id, 123, 'gen-a', preparationLease, 'machine-x')).rejects.toBeInstanceOf(RpcTargetMissingError)
+        expect(cache().getSession(id)?.active).toBe(true)
+    })
+
+    it('honors the archive-drained generation when the session socket dies before prepare-stop', async () => {
+        const id = insertActiveSession('opencode-drained', 'machine-x', 123, { flavor: 'opencode' })
+        const gateway = engine as unknown as { rpcGateway: { killSession: unknown; stopRunnerSession: unknown } }
+        gateway.rpcGateway.killSession = async (_id: string, options?: { prepareOnly?: boolean }) => {
+            if (options?.prepareOnly) throw new RpcTargetMissingError('KillSession', 'socket-disconnected')
+            return { pid: 123, processStartMarker: 'gen-a' }
+        }
+        let enteredRunner!: () => void
+        let releaseRunner!: () => void
+        const runnerEntered = new Promise<void>(resolve => { enteredRunner = resolve })
+        const holdRunner = new Promise<void>(resolve => { releaseRunner = resolve })
+        gateway.rpcGateway.stopRunnerSession = async () => {
+            // Park the archive mid-flight: KillSession drained, the CLI socket
+            // is closing, the runner prepare-stop is about to arrive.
+            enteredRunner()
+            await holdRunner
+            return 'already_gone'
+        }
+        const archive = engine.archiveSession(id)
+        await runnerEntered
+        await expect(engine.prepareOpenCodeSessionStop(id, 123, 'gen-a', preparationLease, 'machine-x')).resolves.toBe('ready')
+        releaseRunner()
+        await archive
+        // The remembered generation is scoped to the archive in flight: after
+        // cleanup, an unreachable socket is unconfirmed again.
+        setKillSessionMissingTarget()
+        await expect(engine.prepareOpenCodeSessionStop(id, 123, 'gen-a', preparationLease, 'machine-x')).rejects.toBeInstanceOf(RpcTargetMissingError)
+    })
+
+    it('does not honor a drained generation for a different wrapper generation', async () => {
+        const id = insertActiveSession('opencode-drained-other', 'machine-x', 123, { flavor: 'opencode' })
+        const gateway = engine as unknown as { rpcGateway: { killSession: unknown; stopRunnerSession: unknown } }
+        gateway.rpcGateway.killSession = async (_id: string, options?: { prepareOnly?: boolean }) => {
+            if (options?.prepareOnly) throw new RpcTargetMissingError('KillSession', 'socket-disconnected')
+            return { pid: 123, processStartMarker: 'gen-a' }
+        }
+        let enteredRunner!: () => void
+        let releaseRunner!: () => void
+        const runnerEntered = new Promise<void>(resolve => { enteredRunner = resolve })
+        const holdRunner = new Promise<void>(resolve => { releaseRunner = resolve })
+        gateway.rpcGateway.stopRunnerSession = async () => {
+            enteredRunner()
+            await holdRunner
+            return 'already_gone'
+        }
+        const archive = engine.archiveSession(id)
+        await runnerEntered
+        await expect(engine.prepareOpenCodeSessionStop(id, 999, 'gen-a', preparationLease, 'machine-x')).rejects.toBeInstanceOf(RpcTargetMissingError)
+        await expect(engine.prepareOpenCodeSessionStop(id, 123, 'gen-other', preparationLease, 'machine-x')).rejects.toBeInstanceOf(RpcTargetMissingError)
+        releaseRunner()
+        await archive
+    })
+
+    it('skips other flavors but does not trust archived metadata as preparation for a live OpenCode process', async () => {
+        setKillSessionMissingTarget()
+        const claude = insertActiveSession('claude-stop', 'machine-x')
+        expect(await engine.prepareOpenCodeSessionStop(claude, 123, 'gen-a', preparationLease, 'machine-x')).toBe('not_required')
+        const archived = cache().getOrCreateSession('archived-opencode', {
+            path: '/tmp/proj', host: 'localhost', flavor: 'opencode', lifecycleState: 'archived', machineId: 'machine-x'
+        }, null, NAMESPACE)
+        await expect(engine.prepareOpenCodeSessionStop(archived.id, 123, 'gen-a', preparationLease, 'machine-x')).rejects.toBeInstanceOf(RpcTargetMissingError)
+    })
+
+    it('rejects preparation acknowledged by a different wrapper generation', async () => {
+        const id = insertActiveSession('opencode-other-generation', 'machine-x', 123, { flavor: 'opencode' })
+        setKillSessionOk({ pid: 456, processStartMarker: 'gen-b' })
+        await expect(engine.prepareOpenCodeSessionStop(id, 123, 'gen-a', preparationLease, 'machine-x')).rejects.toThrow('target generation')
+    })
+
+    it('rechecks the runner machine before addressing a process alias', async () => {
+        const id = insertActiveSession('machine-transition', 'machine-new', 123, { flavor: 'opencode' })
+        let called = false
+        ;(engine as unknown as { rpcGateway: { killSession: unknown } }).rpcGateway.killSession = async () => { called = true; return {} }
+        await expect(engine.prepareOpenCodeSessionStop(id, 123, 'gen-a', preparationLease, 'machine-old')).rejects.toThrow('machine')
+        expect(called).toBe(false)
     })
 
     it('coalesces concurrent archive requests and releases the operation after completion', async () => {
@@ -105,7 +266,8 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         gateway.stopRunnerSession = async () => { throw new RunnerStopRpcError(true, new Error('operation has timed out')) }
         const error = await engine.archiveSession(sessionId).catch(error => error)
         expect(error).toBeInstanceOf(ArchiveCleanupError)
-        expect(error.status).toBe(504)
+        expect(error.status).toBe(503)
+        expect(error.code).toBe('archive-cleanup-timeout')
         expect(cache().getSession(sessionId)?.active).toBe(true)
         gateway.stopRunnerSession = async () => 'already_gone'
         await engine.archiveSession(sessionId)

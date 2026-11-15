@@ -1,4 +1,4 @@
-import { useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { AgentState } from '@/types/api'
 import type { ChatToolCall } from '@/chat/types'
@@ -13,13 +13,51 @@ export function AsyncQuestionsPanel(props: {
     requests: AgentState['requests']
     disabled: boolean
     onRefresh: () => void
+    targetRequestId?: string
+    targetVersion?: number
+    onTargetConsumed?: () => void
 }) {
     const { t } = useTranslation()
     const [expanded, setExpanded] = useState(false)
+    const [highlightedRequestId, setHighlightedRequestId] = useState<string | null>(null)
     const contentId = useId()
+    const requestRefs = useRef(new Map<string, HTMLDetailsElement>())
+    const highlightTimerRef = useRef<number | null>(null)
     const requests = Object.entries(props.requests ?? {})
         .filter(([, request]) => isAsyncRequestUserInput(request.tool, request.arguments))
         .sort(([aId, a], [bId, b]) => (a.createdAt ?? 0) - (b.createdAt ?? 0) || aId.localeCompare(bId))
+    const requestIds = requests.map(([id]) => id).join('\u0000')
+
+    useEffect(() => () => {
+        if (highlightTimerRef.current !== null) {
+            window.clearTimeout(highlightTimerRef.current)
+        }
+    }, [])
+
+    useEffect(() => {
+        const targetRequestId = props.targetRequestId
+        if (!targetRequestId || !requests.some(([id]) => id === targetRequestId)) return
+        setExpanded(true)
+        setHighlightedRequestId(targetRequestId)
+        const openTimer = window.setTimeout(() => {
+            const target = requestRefs.current.get(targetRequestId)
+            if (!target) return
+            target.open = true
+            target.scrollIntoView?.({ block: 'center', behavior: 'smooth' })
+            target.focus({ preventScroll: true })
+            props.onTargetConsumed?.()
+        }, 0)
+        if (highlightTimerRef.current !== null) {
+            window.clearTimeout(highlightTimerRef.current)
+        }
+        highlightTimerRef.current = window.setTimeout(() => {
+            setHighlightedRequestId(null)
+            highlightTimerRef.current = null
+        }, 1_800)
+        return () => {
+            window.clearTimeout(openTimer)
+        }
+    }, [props.onTargetConsumed, props.targetRequestId, props.targetVersion, requestIds])
 
     if (requests.length === 0) return null
 
@@ -57,7 +95,15 @@ export function AsyncQuestionsPanel(props: {
                     return (
                         <details
                             key={`${props.sessionId}:${id}`}
-                            className="mt-2 rounded-lg border border-[var(--app-border)] p-2"
+                            ref={(element) => {
+                                if (element) requestRefs.current.set(id, element)
+                                else requestRefs.current.delete(id)
+                            }}
+                            data-pending-request-id={id}
+                            tabIndex={-1}
+                            className={`mt-2 rounded-lg border p-2 outline-none transition-shadow ${highlightedRequestId === id
+                                ? 'border-[#FF9500] ring-2 ring-[#FF9500]/40'
+                                : 'border-[var(--app-border)]'}`}
                         >
                             <summary className="cursor-pointer break-words text-sm font-medium">
                                 {parseRequestUserInputInput(request.arguments).questions.map((question) => question.question).filter(Boolean).join(' · ') || t('tool.question')}

@@ -1,7 +1,8 @@
 /**
  * Explicit progress mode for job create (run/set).
  * Omission used to default to indeterminate stripes — that hid known-duration
- * countdowns (2026-11-08 dogfood postmortem). Mode must be chosen on purpose.
+ * countdowns (2026-11-08 dogfood postmortem). The CLI can infer a countdown
+ * for a direct numeric sleep command; other commands need an explicit mode.
  */
 
 import { basename } from 'node:path'
@@ -22,7 +23,25 @@ export type ProgressFields = {
 export function parseUntilTimestamp(raw: string, nowMs: number = Date.now()): number {
     const trimmed = raw.trim()
     if (!trimmed) {
-        throw new SessionJobError('bad_args', '--until requires an ISO-8601 timestamp or epoch ms')
+        throw new SessionJobError('bad_args', '--until requires an ISO-8601 timestamp, epoch ms, or duration (+5m, 300s)')
+    }
+    // Duration: +300s, 300s, +5m, 5m, +1h, 1h, +2d, 2d
+    const durationMatch = /^\+?(\d+)(s|m|h|d)$/i.exec(trimmed)
+    if (durationMatch && durationMatch[1] && durationMatch[2]) {
+        const count = Number(durationMatch[1])
+        const unit = durationMatch[2].toLowerCase()
+        const multipliers: Record<string, number> = {
+            s: 1000,
+            m: 60 * 1000,
+            h: 3600 * 1000,
+            d: 86400 * 1000
+        }
+        const deltaMs = count * multipliers[unit]!
+        const untilMs = nowMs + deltaMs
+        if (deltaMs <= 0 || !Number.isSafeInteger(untilMs) || untilMs > 8_640_000_000_000_000) {
+            throw new SessionJobError('bad_args', '--until duration must be positive and within the supported timestamp range')
+        }
+        return untilMs
     }
     if (/^\d+$/.test(trimmed)) {
         const n = Number(trimmed)
@@ -37,7 +56,7 @@ export function parseUntilTimestamp(raw: string, nowMs: number = Date.now()): nu
     if (!Number.isFinite(parsed)) {
         throw new SessionJobError(
             'bad_args',
-            `--until must be ISO-8601 or epoch ms (got ${JSON.stringify(trimmed)})`
+            `--until must be ISO-8601, epoch ms, or a duration such as +5m (got ${JSON.stringify(trimmed)})`
         )
     }
     if (parsed <= nowMs) {
@@ -55,7 +74,7 @@ export function assertCreateProgressMode(
             'bad_args',
             `${action} requires --progress unknown|fraction|until `
             + '(explicit affordance — do not omit; unknown = indeterminate stripes, '
-            + 'fraction = remaining+total or done+total, until = --until <iso|epoch>)'
+            + 'fraction = remaining+total or done+total, until = --until <iso|epoch|duration>)'
         )
     }
     if (!(JOB_PROGRESS_MODES as readonly string[]).includes(fields.progress)) {
@@ -100,7 +119,7 @@ export function assertCreateProgressMode(
     if (fields.untilMs === undefined) {
         throw new SessionJobError(
             'bad_args',
-            '--progress until requires --until <ISO-8601 or epoch ms>'
+            '--progress until requires --until <ISO-8601, epoch ms, or duration>'
         )
     }
     if (hasDone || hasRemaining || hasTotal) {
@@ -137,12 +156,19 @@ export function stampUntilProgress(
  * `sleep infinity` stays allowed under `--progress unknown`.
  */
 export function commandLooksLikeNumericSleep(command: string[]): boolean {
-    if (command.length < 2) return false
-    const bin = basename(command[0]!)
-    if (bin !== 'sleep') return false
-    const arg = command[1]!.trim()
-    if (!/^\d+$/.test(arg)) return false
-    return Number(arg) > 0
+    return computeNumericSleepSeconds(command) !== null
+}
+
+/**
+ * Compute the total seconds for a numeric sleep command.
+ * Supports multi-argument forms like `sleep 5 60` (65 seconds on GNU sleep).
+ */
+export function computeNumericSleepSeconds(command: string[]): number | null {
+    if (command.length < 2 || basename(command[0]!) !== 'sleep') return null
+    const args = command.slice(1)
+    if (!args.every(arg => /^\d+$/.test(arg) && Number(arg) > 0)) return null
+    const seconds = args.reduce((sum, arg) => sum + Number(arg), 0)
+    return Number.isSafeInteger(seconds) ? seconds : null
 }
 
 export function assertNumericSleepUsesUntil(
@@ -154,7 +180,7 @@ export function assertNumericSleepUsesUntil(
     throw new SessionJobError(
         'bad_args',
         'numeric `sleep N` is a known-duration countdown — use '
-        + '`--progress until --until <ISO|epoch>` (heartbeats keep the bar honest). '
+        + '`--progress until --until <ISO|epoch|duration>` or omit progress flags to infer it. '
         + '`sleep infinity` is OK with `--progress unknown`; do not encode a deadline '
         + 'as sleep-seconds under unknown/fraction (dogfood postmortem 2026-11-08).'
     )

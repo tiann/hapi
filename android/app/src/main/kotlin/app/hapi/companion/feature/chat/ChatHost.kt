@@ -1,11 +1,15 @@
 package app.hapi.companion.feature.chat
 
 import android.net.Uri
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -17,11 +21,14 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.navigation.NavType
 import androidx.navigation.compose.*
 import androidx.navigation.navArgument
@@ -32,7 +39,9 @@ import app.hapi.companion.feature.chat.composer.DictationController
 import app.hapi.companion.ui.markdown.LocalMarkdownLinkHandler
 import app.hapi.companion.ui.markdown.LocalMarkdownRenderCache
 import app.hapi.companion.ui.theme.HapiTypography
+import app.hapi.companion.ui.theme.NeutralChatSurfaces
 import app.hapi.companion.ui.theme.ReadingColumn
+import app.hapi.companion.ui.theme.hapi
 import app.hapi.protocol.chat.*
 import kotlinx.coroutines.launch
 
@@ -125,44 +134,46 @@ internal fun ChatHost(
         LocalMarkdownRenderCache provides viewModel.markdownCache,
         LocalMarkdownLinkHandler provides rememberChatLinkHandler(onOpenFile = openFile),
     ) {
-        Box(Modifier.fillMaxSize()) {
-            NavHost(navigation, startDestination = "thread") {
-                composable("thread") {
-                    ChatScreen(
-                        viewModel, media, onBack, snackbarHostState = snackbar,
-                        dictation = dictation, onOpenFiles = { pauseReading(); onOpenFiles() }, onOpenFile = openFile,
-                        onOpenScratchlist = onOpenScratchlist?.let { open -> { pauseReading(); open() } },
-                        transcriptList = transcriptList, readingState = reading,
-                    )
-                }
-                for (kind in listOf("group", "tool", "process", "message")) {
-                    composable("$kind/{id}", arguments = listOf(navArgument("id") { type = NavType.StringType })) { destination ->
-                        val id = destination.arguments?.getString("id").orEmpty()
-                        val revision by viewModel.inspection.revision.collectAsState()
-                        val back = { navigation.popBackStack(); Unit }
-                        val close = { navigation.popBackStack("thread", false); Unit }
-                        when (kind) {
-                            "group" -> {
-                                val group = remember(id, revision) { viewModel.inspection.group(id) }
-                                if (group == null) MissingInspection(back, close)
-                                else ToolGroupBrowser(group, state.basePath, actions::openTool, back, close)
-                            }
-                            "message" -> {
-                                val message = remember(id, revision) { viewModel.inspection.message(id) }
-                                if (message == null) MissingInspection(back, close)
-                                else MessageReader(message.value.text, message.stale, back, close)
-                            }
-                            else -> {
-                                val tool = remember(id, revision) { viewModel.inspection.tool(id) }
-                                if (tool == null) MissingInspection(back, close)
-                                else ToolReader(tool, kind == "process", state.basePath, openFile, back, close)
+        NeutralChatSurfaces {
+            Box(Modifier.fillMaxSize()) {
+                NavHost(navigation, startDestination = "thread") {
+                    composable("thread") {
+                        ChatScreen(
+                            viewModel, media, onBack, snackbarHostState = snackbar,
+                            dictation = dictation, onOpenFiles = { pauseReading(); onOpenFiles() }, onOpenFile = openFile,
+                            onOpenScratchlist = onOpenScratchlist?.let { open -> { pauseReading(); open() } },
+                            transcriptList = transcriptList, readingState = reading,
+                        )
+                    }
+                    for (kind in listOf("group", "tool", "process", "message")) {
+                        composable("$kind/{id}", arguments = listOf(navArgument("id") { type = NavType.StringType })) { destination ->
+                            val id = destination.arguments?.getString("id").orEmpty()
+                            val revision by viewModel.inspection.revision.collectAsState()
+                            val back = { navigation.popBackStack(); Unit }
+                            val close = { navigation.popBackStack("thread", false); Unit }
+                            when (kind) {
+                                "group" -> {
+                                    val group = remember(id, revision) { viewModel.inspection.group(id) }
+                                    if (group == null) MissingInspection(back, close)
+                                    else ToolGroupBrowser(group, state.basePath, actions::openTool, back, close)
+                                }
+                                "message" -> {
+                                    val message = remember(id, revision) { viewModel.inspection.message(id) }
+                                    if (message == null) MissingInspection(back, close)
+                                    else MessageReader(message.value.text, message.stale, back, close)
+                                }
+                                else -> {
+                                    val tool = remember(id, revision) { viewModel.inspection.tool(id) }
+                                    if (tool == null) MissingInspection(back, close)
+                                    else ToolReader(tool, kind == "process", state.basePath, openFile, back, close)
+                                }
                             }
                         }
                     }
                 }
-            }
-            if (entry?.destination?.route != "thread") {
-                SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding())
+                if (entry?.destination?.route != "thread") {
+                    SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).navigationBarsPadding())
+                }
             }
         }
     }
@@ -235,11 +246,29 @@ internal fun ToolGroupBrowser(
                     state = list,
                     modifier = Modifier.weight(1f).fillMaxWidth().testTag("inspection-tools"),
                 ) {
-                    items(group.tools, key = { it.id }, contentType = { "tool-summary" }) { block ->
+                    val categories = groupCategorySummary(group.summary, resources)
+                    if (categories.isNotEmpty()) item("categories", contentType = "categories") {
+                        Text(
+                            categories, style = HapiTypography.rowSubtitle, color = MaterialTheme.hapi.textSecondary,
+                            modifier = Modifier.padding(top = 8.dp, bottom = 12.dp),
+                        )
+                    }
+                    itemsIndexed(group.tools, key = { _, block -> block.id }, contentType = { _, _ -> "tool-summary" }) { index, block ->
                         val presentation = remember(block.tool.name, block.tool.input, block.tool.description, basePath, resources) {
                             toolSummaryPresentation(block.tool, basePath, resources)
                         }
-                        Box(Modifier.testTag("inspection-tool-${block.id}")) {
+                        // One continuous card: rounded only at the list ends, inset hairlines between calls.
+                        val first = index == 0
+                        val last = index == group.tools.lastIndex
+                        val shape = RoundedCornerShape(
+                            topStart = if (first) 12.dp else 0.dp, topEnd = if (first) 12.dp else 0.dp,
+                            bottomStart = if (last) 12.dp else 0.dp, bottomEnd = if (last) 12.dp else 0.dp,
+                        )
+                        Column(
+                            Modifier.clip(shape).background(MaterialTheme.hapi.cardSurface)
+                                .testTag("inspection-tool-${block.id}"),
+                        ) {
+                            if (!first) HorizontalDivider(color = MaterialTheme.hapi.divider, modifier = Modifier.padding(start = 38.dp))
                             ToolSummaryRow(presentation, block.tool.state) { select(block.id) }
                         }
                     }
@@ -289,16 +318,30 @@ private fun ToolReader(
     val path = getInputStringAny(tool.input, listOf("file_path", "path", "notebook_path"))
     val name = toolPresentationName(tool.name)
     val interactions = LocalChatInteractions.current
+    val resources = LocalContext.current.resources
+    val presentation = remember(tool.name, tool.input, tool.description, basePath, resources) {
+        toolSummaryPresentation(tool, basePath, resources)
+    }
     InspectionScaffold(stringResource(if (process) R.string.chat_agent_process else R.string.chat_tool_details), back, close) { padding ->
         ReadingColumn(Modifier.padding(padding)) {
-            LazyColumn(Modifier.fillMaxSize().testTag("inspection-detail"), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            LazyColumn(
+                Modifier.fillMaxSize().testTag("inspection-detail"),
+                contentPadding = PaddingValues(top = 16.dp, bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
                 item("notice") { InspectionNotice(inspected.stale) }
                 item("body") {
-                    Column {
-                        Text(tool.name, style = MaterialTheme.typography.titleMedium)
-                        ToolStatusIndicator(tool.state)
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        ToolInspectorHeader(presentation, tool.name, tool.state, path?.let { displayToolPath(it, basePath) })
                         if (path != null && name in setOf("Edit", "MultiEdit", "Write", "NotebookEdit")) {
-                            TextButton(onClick = { openFile(path, null) }) { Text(stringResource(R.string.chat_view_current_file)) }
+                            OutlinedButton(
+                                onClick = { openFile(path, null) },
+                                shape = RoundedCornerShape(10.dp),
+                                border = BorderStroke(1.dp, MaterialTheme.hapi.divider),
+                            ) {
+                                Icon(painterResource(R.drawable.ic_sym_description), contentDescription = null, modifier = Modifier.size(16.dp))
+                                Text(stringResource(R.string.chat_view_current_file), modifier = Modifier.padding(start = 6.dp))
+                            }
                         }
                         ToolCallBody(tool, basePath)
                         val permission = tool.permission
@@ -316,4 +359,52 @@ private fun ToolReader(
             }
         }
     }
+}
+
+/**
+ * Inspector header (iOS `ToolDetailView`): symbol + friendly title with the
+ * raw tool name beneath, a labelled status, and a selectable workspace path.
+ */
+@Composable
+private fun ToolInspectorHeader(presentation: ToolCardPresentation, rawName: String, state: String, path: String?) {
+    val secondary = MaterialTheme.hapi.textSecondary
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(verticalAlignment = Alignment.Top) {
+            Icon(
+                painterResource(presentation.icon), contentDescription = null, tint = secondary,
+                modifier = Modifier.padding(top = 3.dp, end = 10.dp).size(20.dp),
+            )
+            Column(Modifier.weight(1f)) {
+                SelectionContainer {
+                    Text(presentation.title, style = MaterialTheme.typography.titleMedium.copy(letterSpacing = 0.sp))
+                }
+                if (rawName != presentation.title) {
+                    Text(rawName, style = HapiTypography.caption.copy(fontFamily = HapiTypography.monoFamily), color = secondary)
+                }
+            }
+        }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.padding(start = 30.dp),
+        ) {
+            ToolStatusIndicator(state)
+            if (state == ToolState.COMPLETED || state == ToolState.RUNNING) {
+                Text(
+                    stringResource(if (state == ToolState.RUNNING) R.string.chat_tool_status_running else R.string.chat_tool_status_done),
+                    style = HapiTypography.rowSubtitle, color = secondary,
+                )
+            }
+        }
+        if (path != null) {
+            SelectionContainer(Modifier.padding(start = 30.dp)) {
+                Text(path, style = HapiTypography.caption.copy(fontFamily = HapiTypography.monoFamily), color = secondary)
+            }
+        }
+    }
+}
+
+private fun displayToolPath(path: String, basePath: String?): String {
+    val root = basePath?.trimEnd('/')?.takeIf { it.isNotEmpty() } ?: return path
+    return if (path.startsWith("$root/")) path.removePrefix("$root/") else path
 }

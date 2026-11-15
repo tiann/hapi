@@ -19,6 +19,63 @@ function fakeChild(exitCode: number, deferExit = false) {
 }
 
 describe('runSessionJob', () => {
+    it.each([false, true])('preserves countdown timing across API preflight (inferred=%s)', async inferred => {
+        const initialClock = 1_800_000_000_000
+        let clock = initialClock
+        const job = { key: 'wait', label: 'wait', status: 'running', heartbeatAt: 1, startedAt: 1, updatedAt: 1 }
+        const http = {
+            post: vi.fn(async () => {
+                clock += 2_000
+                return { status: 200, data: { token: 'jwt' } }
+            }),
+            get: vi.fn(async () => {
+                clock += 3_000
+                return { status: 200, data: { sessions: [{ id: 'aaaaaaaa-1111-1111-1111-111111111111' }] } }
+            }),
+            put: vi.fn(async () => {
+                clock += 5_000
+                return { status: 200, data: { job } }
+            }),
+            patch: vi.fn(async (_url: string, _body: unknown) => ({ status: 200, data: { job } }))
+        }
+        const child = fakeChild(0, true)
+        const spawnImpl = vi.fn(() => child)
+        const timers: Array<() => void> = []
+        const running = runSessionJob({
+            sessionIdPrefix: 'aaaa',
+            jobKey: 'wait',
+            label: 'wait',
+            command: ['sleep', '60'],
+            ...(inferred ? { durationMs: 60_000 } : { untilMs: initialClock + 60_000 }),
+            remaining: 60,
+            total: 60,
+            unit: 's',
+            accessToken: 'token',
+            apiUrl: 'http://127.0.0.1:3006',
+            http: http as never,
+            nowImpl: () => clock,
+            spawnImpl: spawnImpl as never,
+            setIntervalImpl: ((fn: () => void) => {
+                timers.push(fn)
+                return 1 as unknown as NodeJS.Timeout
+            }) as never,
+            clearIntervalImpl: (() => undefined) as never
+        })
+
+        await vi.waitFor(() => expect(spawnImpl).toHaveBeenCalled())
+        expect(clock).toBe(initialClock + 10_000)
+        clock += 5_000
+        timers[0]!()
+        await vi.waitFor(() => expect(http.patch).toHaveBeenCalled())
+        expect(http.patch.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
+            remaining: inferred ? 55 : 45,
+            total: inferred ? 60 : 50,
+            unit: 's'
+        }))
+        child.exit()
+        await expect(running).resolves.toBe(0)
+    })
+
     it('until heartbeats re-stamp remaining against explicit window startedAt', async () => {
         const windowStart = Date.parse('2098-12-01T00:00:00.000Z')
         const until = Date.parse('2099-01-01T00:00:00.000Z')

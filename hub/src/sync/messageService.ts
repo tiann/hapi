@@ -11,7 +11,7 @@ import {
     isRedundantGoalStatusEventContent,
     unwrapRoleWrappedRecordEnvelope
 } from '@hapi/protocol/messages'
-import { isObject } from '@hapi/protocol'
+import { AGENT_MESSAGE_PAYLOAD_TYPE, isObject } from '@hapi/protocol'
 import type {
     MessageContextResponse,
     MessageDeliveryMode,
@@ -33,6 +33,7 @@ type MessagePosition = { at: number; seq: number }
 // can request older pages when the user needs more context.
 const MESSAGE_CONTEXT_BEFORE_LIMIT = 20
 const MESSAGE_CONTEXT_AFTER_LIMIT = 20
+const TOOL_CALL_TARGET_PREFIX = 'tool-call:'
 /**
  * localId prefix for peer submissions (`hapi ping-peer` / MCP `ping_peer`).
  * Excludes peer rows from the session-end synthetic sweep so their invocation
@@ -50,6 +51,37 @@ function messagePosition(message: StoredMessageForDelivery): MessagePosition {
 
 function comparePosition(a: MessagePosition, b: MessagePosition): number {
     return a.at !== b.at ? a.at - b.at : a.seq - b.seq
+}
+
+function contentContainsToolCallId(value: unknown, targetId: string, depth = 0): boolean {
+    if (depth > 12) return false
+    if (Array.isArray(value)) {
+        return value.some((entry) => contentContainsToolCallId(entry, targetId, depth + 1))
+    }
+    if (!isObject(value)) return false
+
+    if (value.type === 'tool-call' || value.type === 'tool_use') {
+        const ids = [value.id, value.callId, value.toolCallId, value.toolUseId, value.tool_use_id]
+        if (ids.some((id) => id === targetId)) return true
+    }
+    if (value.type === AGENT_MESSAGE_PAYLOAD_TYPE && isObject(value.data) && value.data.type === 'tool-call') {
+        const ids = [value.data.id, value.data.callId, value.data.toolCallId]
+        if (ids.some((id) => id === targetId)) return true
+    }
+
+    return Object.values(value).some((entry) => contentContainsToolCallId(entry, targetId, depth + 1))
+}
+
+function findMessageByToolCallTarget(
+    messages: ReturnType<Store['messages']['getAllMessages']>,
+    targetId: string
+): (typeof messages)[number] | null {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const message = messages[index]!
+        const record = unwrapRoleWrappedRecordEnvelope(message.content)
+        if (record && contentContainsToolCallId(record.content, targetId)) return message
+    }
+    return null
 }
 
 function isWebVisibleStoredMessage(message: StoredMessageForDelivery): boolean {
@@ -219,10 +251,17 @@ export class MessageService {
     }
 
     getMessageContext(sessionId: string, messageId: string): MessageContextResponse | null {
-        const target = this.store.messages.getMessageById(sessionId, messageId)
+        const toolCallTarget = messageId.startsWith(TOOL_CALL_TARGET_PREFIX)
+            ? messageId.slice(TOOL_CALL_TARGET_PREFIX.length).trim()
+            : null
+        const directTarget = this.store.messages.getMessageById(sessionId, messageId)
+        const target = directTarget ?? (toolCallTarget
+            ? findMessageByToolCallTarget(this.store.messages.getAllMessages(sessionId), toolCallTarget)
+            : null)
         if (!target) {
             return null
         }
+        const targetMessageId = target.id
 
         const targetPosition = messagePosition(target)
         const before = this.store.messages.getMessagesByPosition(
@@ -249,7 +288,7 @@ export class MessageService {
 
         return {
             messages: toVisibleDecryptedMessages(contextRows),
-            targetMessageId: messageId,
+            targetMessageId,
             page: {
                 epoch: this.store.messages.getMessageEpoch(sessionId),
                 nextBeforeSeq: oldestPosition.seq,

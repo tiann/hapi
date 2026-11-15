@@ -336,26 +336,12 @@ internal fun ChatScreen(
                         .navigationBarsPadding()
                         .imePadding(),
                 ) {
-                    if (!state.header.active && !state.isInitialLoading && !state.loadFailed) {
-                        InactiveSessionBar(onReopen = viewModel::reopenSession)
-                    }
                     QueuedMessagesBar(
                         rows = queuedRows,
                         onSteer = viewModel::steerQueuedMessage,
                         onRetry = viewModel::retryIndeterminateMessage,
                         onEdit = viewModel::editQueuedMessage,
                         onCancel = viewModel::cancelQueuedMessage,
-                    )
-                    // Context-remaining readout; rides the same strip as the
-                    // mode chip and hides until the thread reports usage.
-                    ContextUsageChip(indicator = state.contextUsage)
-                    // Web StatusBar parity: the current permission mode rides
-                    // directly above the composer; tapping opens the config
-                    // sheet that hosts the switcher (the web span itself is
-                    // not clickable).
-                    PermissionModeChip(
-                        config = configState,
-                        onClick = { configSheetOpen = true },
                     )
                     ChatComposer(
                         state = composerState,
@@ -436,6 +422,7 @@ internal fun ChatScreen(
     if (configSheetOpen) {
         SessionConfigSheet(
             config = configState,
+            contextUsage = state.contextUsage,
             onDismiss = { configSheetOpen = false },
             onSetPermissionMode = viewModel::setPermissionMode,
             onSetModel = viewModel::setModel,
@@ -563,31 +550,6 @@ private fun SessionOverflowMenu(
     }
 }
 
-/**
- * Inactive-session affordance above the composer: sending auto-resumes
- * (B-M3ab), Reopen is the explicit restart without a message.
- */
-@Composable
-private fun InactiveSessionBar(onReopen: () -> Unit) {
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = stringResource(R.string.chat_inactive_bar),
-                style = MaterialTheme.typography.labelMedium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(start = 16.dp, top = 4.dp, bottom = 4.dp),
-            )
-            TextButton(onClick = onReopen) { Text(stringResource(R.string.sessions_action_reopen)) }
-        }
-    }
-}
 
 @Composable
 private fun ChatTitle(header: ChatHeaderUi, reconnecting: Boolean, retry: () -> Unit) {

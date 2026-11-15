@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import { EMPTY_READ_STATE, mergeReadState, type SessionReadState, type SessionReadStateRequest } from '@hapi/protocol'
+import { randomId } from '@/lib/randomId'
 
 type SessionInput = { id: string; contentRevision?: number; readState?: SessionReadState }
 type Pending = { id: string; request: SessionReadStateRequest }
@@ -164,7 +165,7 @@ function enqueue(sessionId: string, request: SessionReadStateRequest): void {
     if (request.type === 'read' && previous?.type === 'read') {
         request = { ...request, readRevision: Math.max(request.readRevision, previous.readRevision) }
     }
-    store[sessionId] = { ...entry, pending: { id: crypto.randomUUID(), request } }
+    store[sessionId] = { ...entry, pending: { id: randomId(), request } }
     // Persistence failure must not claim a successful local read.
     if (save(store)) { notify(); void flushSessionReadState() }
 }

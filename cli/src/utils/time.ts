@@ -1,3 +1,10 @@
+import { uptime } from 'node:os';
+
+/** OS-wide clock; whole seconds also match Bun's uptime precision across processes. */
+export function monotonicTimeMs(): number {
+    return Math.floor(uptime()) * 1000;
+}
+
 export async function delay(ms: number) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }

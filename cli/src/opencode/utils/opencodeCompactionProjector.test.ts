@@ -10,6 +10,27 @@ function setup() {
     return { onSummary, onText, projector: new OpencodeCompactionProjector({ sessionId: 'ses', onSummary, onText }) };
 }
 describe('OpenCode native compaction projection', () => {
+    it('observes only structurally identified hidden v1 records and deduplicates replay', () => {
+        const onControlMessage = vi.fn();
+        const projector = new OpencodeCompactionProjector({ sessionId: 'ses', onSummary: vi.fn(), onControlMessage });
+        projector.message(summary);
+        projector.message({ ...summary, id: 'unlinked', parentID: 'missing' });
+        projector.message({ ...summary, id: 'foreign', sessionID: 'other' });
+        projector.message(marker);
+        projector.message({ id: 'continue', sessionID: 'ses', role: 'user' });
+        projector.message({ id: 'real', sessionID: 'ses', role: 'user' });
+        projector.message({ id: 'assistant', sessionID: 'ses', role: 'assistant' });
+        projector.part({ id: 'marker-part', sessionID: 'ses', messageID: 'marker', type: 'compaction', auto: true });
+        for (const [id, messageID, metadata] of [
+            ['continue-part', 'continue', { compaction_continue: true }],
+            ['real-part', 'real', {}],
+            ['assistant-part', 'assistant', { compaction_continue: true }],
+            ['foreign-part', 'missing', { compaction_continue: true }]
+        ] as const) projector.part({ id, messageID, sessionID: 'ses', type: 'text', synthetic: true, metadata, text: 'Continue' });
+        projector.flush();
+        projector.flush();
+        expect(onControlMessage.mock.calls.flat().sort()).toEqual(['continue', 'marker', 'summary']);
+    });
     it('holds summary text, validates its parent, and emits one stable card across replay', () => {
         const { projector, onSummary, onText } = setup();
         projector.message(summary);

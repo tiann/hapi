@@ -1,5 +1,7 @@
 import { shareTargetPathname } from './sharePath'
-import { MAX_UPLOAD_BYTES } from './attachmentAdapter'
+
+/** Bounded deep-link fetch limit (matches legacy single-request upload cap). */
+export const MAX_SHARE_FILE_URL_BYTES = 50 * 1024 * 1024
 
 /**
  * Share-target transfer storage.
@@ -158,7 +160,7 @@ export function buildSharePayloadFromSearchFields(
  * Native companion ingest: text fields plus optional `fileUrl` fetch into
  * `files[]` (same shape as Web Share Target POST). `fileUrl` must be
  * CORS-readable from the HAPI origin (companions send ACAO *).
- * Enforces {@link MAX_UPLOAD_BYTES} while streaming so a crafted link cannot
+ * Enforces {@link MAX_SHARE_FILE_URL_BYTES} while streaming so a crafted link cannot
  * buffer an unbounded response into IndexedDB before the composer rejects it.
  */
 export async function buildSharePayloadFromDeepLink(
@@ -178,13 +180,13 @@ export async function buildSharePayloadFromDeepLink(
     const contentLength = response.headers.get('content-length')
     if (contentLength) {
         const declared = Number(contentLength)
-        if (Number.isFinite(declared) && declared > MAX_UPLOAD_BYTES) {
+        if (Number.isFinite(declared) && declared > MAX_SHARE_FILE_URL_BYTES) {
             throw new Error(
-                `share fileUrl too large: ${declared} bytes (max ${MAX_UPLOAD_BYTES})`
+                `share fileUrl too large: ${declared} bytes (max ${MAX_SHARE_FILE_URL_BYTES})`
             )
         }
     }
-    const blob = await readResponseBlobLimited(response, MAX_UPLOAD_BYTES)
+    const blob = await readResponseBlobLimited(response, MAX_SHARE_FILE_URL_BYTES)
     const headerType = response.headers.get('content-type')?.split(';')[0]?.trim()
     const type = fields.fileType?.trim()
         || headerType

@@ -89,7 +89,7 @@ export class GrokPermissionHandler extends BasePermissionHandler<PermissionRespo
         this.addPendingRequest(request.id, toolName, toolInput, {
             resolve: () => {},
             reject: () => {}
-        })
+        }, request.toolCallId)
         logger.debug(`[Grok] Permission request queued for ${toolName} (${request.id})`)
     }
 

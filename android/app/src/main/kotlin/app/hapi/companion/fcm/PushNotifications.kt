@@ -40,10 +40,11 @@ object PushNotifications {
 
     const val KEY_REMOTE_INPUT = "hapi_reply"
 
-    /** Severity accents per `hub/src/fcm/fcmService.ts` (blue/amber). */
+    /** Severity accents per `hub/src/fcm/fcmService.ts` (blue/amber/red). */
     private fun severityColor(severity: PushSeverity?): Int? = when (severity) {
         PushSeverity.INFO -> 0xFF3B82F6.toInt()
         PushSeverity.WARNING -> 0xFFF59E0B.toInt()
+        PushSeverity.ERROR -> 0xFFEF4444.toInt()
         null -> null
     }
 
@@ -62,7 +63,7 @@ object PushNotifications {
             when (payload.type) {
                 PushType.PERMISSION_REQUEST -> addPermissionActions(context, builder, payload)
                 PushType.READY -> addReplyActions(context, builder, payload)
-                PushType.INPUT_REQUEST, null -> Unit
+                PushType.INPUT_REQUEST, PushType.MODEL_ERROR, null -> Unit
             }
         }
 

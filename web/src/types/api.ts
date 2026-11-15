@@ -12,12 +12,17 @@ import type {
 
 export type {
     AgyModelsResponse,
+    AbortChunkedUploadResponse,
     AgentAvailabilityResponse,
     AgentAvailabilityEntry,
     AgentQuotaAccount,
     AgentQuotaBucket,
     AgentQuotasResponse,
     AgyModelSummary,
+    InitChunkedUploadRequest,
+    InitChunkedUploadResponse,
+    UploadChunkResponse,
+    UploadErrorCode,
     CodexModelsResponse,
     CodexModelSummary,
     CommandResponse,

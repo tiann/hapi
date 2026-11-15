@@ -202,6 +202,8 @@
     <string name="channel_permission_requests_desc">An agent is waiting for you to allow or deny a tool call</string>
     <string name="channel_input_requests">Questions for you</string>
     <string name="channel_input_requests_desc">An agent needs you to answer a question in the session</string>
+    <string name="channel_model_errors">Model errors</string>
+    <string name="channel_model_errors_desc">An agent hit a model-side failure that needs attention</string>
     <string name="channel_ready">Agent ready</string>
     <string name="channel_ready_desc">An agent finished and is waiting for input</string>
     <string name="channel_other">Other notifications</string>
@@ -299,7 +301,6 @@
     <string name="chat_open_settings">Session settings</string>
     <string name="chat_session_actions">Session actions</string>
     <string name="chat_scratchlist_badge">Scratchlist</string>
-    <string name="chat_inactive_bar">Session inactive — send to resume, or</string>
     <string name="chat_retry">Retry</string>
     <string name="chat_loading_messages">Loading messages…</string>
     <string name="chat_loading_older">Loading older messages…</string>
@@ -350,6 +351,9 @@
     <string name="chat_mention_suggestions">Mention suggestions</string>
     <string name="chat_send_steer">Send &amp; steer into current turn</string>
     <string name="chat_schedule_send">Schedule send</string>
+    <string name="chat_schedule_capsule">Scheduled · %1$s</string>
+    <string name="chat_schedule_clear">Clear schedule</string>
+    <string name="chat_attachment_remove">Remove %1$s</string>
     <string name="chat_schedule_relative_tab">Relative</string>
     <string name="chat_schedule_specific_tab">Specific</string>
     <string name="chat_schedule_specific_hint">Max 7 days. Requires the hub running; the CLI catches up the next time it connects after that time.</string>
@@ -375,6 +379,7 @@
 
     <!-- Session config sheet (B-M3b) -->
     <string name="chat_config_offline_note">Session is offline — changes apply after it resumes or may be rejected.</string>
+    <string name="chat_config_context">Context</string>
     <string name="chat_config_terminal_note">Session is controlled from the terminal — config changes will be rejected.</string>
     <string name="chat_config_permission_mode">Permission mode</string>
     <string name="chat_config_model">Model</string>
@@ -384,16 +389,46 @@
 
     <!-- Chat blocks (B-M2c/d) -->
     <string name="chat_tool_awaiting_approval">Awaiting approval</string>
-    <string name="chat_tool_awaiting_approval_badge">⏳ Awaiting approval</string>
-    <string name="chat_tool_approved">✓ Approved</string>
-    <string name="chat_tool_approved_for_session">✓ Approved for session</string>
-    <string name="chat_tool_approved_allow_all_edits">✓ Approved: allow all edits</string>
-    <string name="chat_tool_denied">✕ Denied</string>
-    <string name="chat_tool_aborted">✕ Aborted</string>
+    <string name="chat_tool_awaiting_approval_badge">Awaiting approval</string>
+    <string name="chat_tool_approved">Approved</string>
+    <string name="chat_tool_approved_for_session">Approved for session</string>
+    <string name="chat_tool_approved_allow_all_edits">Approved: allow all edits</string>
+    <string name="chat_tool_denied">Denied</string>
+    <string name="chat_tool_aborted">Aborted</string>
     <string name="chat_tool_resolved">Resolved in Codex</string>
-    <string name="chat_tool_canceled">— Canceled</string>
+    <string name="chat_tool_canceled">Canceled</string>
     <string name="chat_tool_status_pending">pending</string>
     <string name="chat_tool_status_error">error</string>
+    <string name="chat_tool_status_done">Done</string>
+    <string name="chat_tool_status_running">Running</string>
+    <plurals name="chat_group_reads">
+        <item quantity="one">%1$d read</item>
+        <item quantity="other">%1$d reads</item>
+    </plurals>
+    <plurals name="chat_group_searches">
+        <item quantity="one">%1$d search</item>
+        <item quantity="other">%1$d searches</item>
+    </plurals>
+    <plurals name="chat_group_commands">
+        <item quantity="one">%1$d command</item>
+        <item quantity="other">%1$d commands</item>
+    </plurals>
+    <plurals name="chat_group_edits">
+        <item quantity="one">%1$d edit</item>
+        <item quantity="other">%1$d edits</item>
+    </plurals>
+    <plurals name="chat_group_web_requests">
+        <item quantity="one">%1$d web request</item>
+        <item quantity="other">%1$d web requests</item>
+    </plurals>
+    <plurals name="chat_group_other_tools">
+        <item quantity="one">%1$d other tool</item>
+        <item quantity="other">%1$d other tools</item>
+    </plurals>
+    <plurals name="chat_group_failed">
+        <item quantity="one">%1$d failed tool</item>
+        <item quantity="other">%1$d failed tools</item>
+    </plurals>
     <string name="chat_agent_steps_one">1 agent step</string>
     <string name="chat_agent_steps_many">%1$d agent steps</string>
     <string name="chat_group_tools_one">1 tool</string>
@@ -403,9 +438,13 @@
     <string name="chat_edit_n_of_m">Edit %1$d/%2$d</string>
     <string name="chat_empty_snippet">(empty)</string>
     <string name="chat_result">Result</string>
+    <string name="chat_result_waiting">Waiting for output…</string>
+    <string name="chat_result_none">No output</string>
     <string name="chat_result_error">Result · error</string>
-    <string name="chat_reasoning_expanded">💭 Reasoning ▾</string>
-    <string name="chat_reasoning_collapsed">💭 Reasoning ▸</string>
+    <string name="chat_reasoning_expanded">Reasoning</string>
+    <string name="chat_reasoning_collapsed">Reasoning…</string>
+    <string name="chat_reasoning_state_expanded">Expanded</string>
+    <string name="chat_reasoning_state_collapsed">Collapsed</string>
     <string name="chat_not_delivered_retry">Not delivered — tap to retry</string>
     <string name="chat_not_delivered">Not delivered</string>
     <string name="chat_review_title">Code review</string>
@@ -418,6 +457,7 @@
     <string name="chat_perm_abort">Abort</string>
     <string name="chat_perm_allow_for_session">Allow for this session</string>
     <string name="chat_perm_allow_all_edits">Allow all edits</string>
+    <string name="chat_perm_more_options">More options</string>
     <string name="chat_perm_already_handled">Already handled elsewhere</string>
     <string name="chat_perm_type_answer">Type your answer…</string>
     <string name="chat_perm_add_note">Add a note…</string>
@@ -674,13 +714,14 @@
     <string name="sessions_filters">Sort &amp; filter</string>
     <string name="sessions_filters_active">Filters applied</string>
     <string name="sessions_filters_reset">Reset</string>
+    <string name="sessions_filter_section">Filter</string>
+    <string name="sessions_sort_section">Sort</string>
     <string name="sessions_filters_done">Done</string>
     <string name="sessions_filter_machines">Machines</string>
     <string name="sessions_filter_dates">Activity dates</string>
     <string name="sessions_filter_any_date">Any date</string>
     <string name="sessions_filter_clear_dates">Clear date filter</string>
     <string name="sessions_machine_fallback">Machine · %1$s</string>
-    <string name="sessions_time_filter_label">Filter sessions by last activity</string>
     <string name="sessions_time_filter_apply">Apply</string>
     <string name="sessions_time_filter_clear">Clear</string>
     <string name="sessions_time_filter_summary">%1$s – %2$s</string>

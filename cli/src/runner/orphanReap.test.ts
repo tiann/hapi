@@ -151,6 +151,48 @@ describe('orphanReap argv matching', () => {
 })
 
 describe('reapRunnerSpawnedOrphans (stopSession orphan path)', () => {
+    it.each(['same', 'reused', 'unknown', 'exited'] as const)('awaits async identity and liveness after preparation (%s)', async state => {
+        let prepared = false
+        const killed: number[] = []
+        const result = await reapRunnerSpawnedOrphans('async-preparation', {
+            findTargets: async () => [{ pid: 4200, startMarker: 'generation' }],
+            getStartMarker: async () => prepared
+                ? state === 'reused' ? 'replacement' : state === 'unknown' ? null : 'generation'
+                : 'generation',
+            isAlive: async () => state !== 'exited',
+            prepare: async () => { prepared = true; return true },
+            killTree: async pid => { killed.push(pid); return true },
+        })
+        expect(prepared).toBe(true)
+        expect(result).toBe(state === 'reused' || state === 'unknown' ? 'still_alive' : 'stopped')
+        expect(killed).toEqual(state === 'same' ? [4200] : [])
+    })
+
+    it('does not signal an orphan whose own preparation was not confirmed', async () => {
+        const killed: number[] = []
+        const status = await reapRunnerSpawnedOrphans('same-session', {
+            findTargets: async () => [{ pid: 123, startMarker: 'gen-a' }],
+            getStartMarker: () => 'gen-a', isAlive: () => true,
+            prepare: async () => false,
+            killTree: async (pid) => { killed.push(pid); return true }
+        })
+        expect(status).toBe('still_alive')
+        expect(killed).toEqual([])
+    })
+
+    it('rechecks an orphan generation after its preparation await', async () => {
+        let generation = 'gen-a'
+        const killed: number[] = []
+        const status = await reapRunnerSpawnedOrphans('same-session', {
+            findTargets: async () => [{ pid: 123, startMarker: 'gen-a' }],
+            getStartMarker: () => generation, isAlive: () => true,
+            prepare: async () => { generation = 'gen-b'; return true },
+            killTree: async (pid) => { killed.push(pid); return true }
+        })
+        expect(status).toBe('still_alive')
+        expect(killed).toEqual([])
+    })
+
     const stableMarker = (marker = 'gen-a') => {
         let reads = 0
         return () => {

@@ -78,7 +78,10 @@ describe('AcpPermissionHandler auto-approval rules', () => {
 
         expect(backend.respondToPermission).not.toHaveBeenCalled()
         const update = client.updateAgentState.mock.calls[0]![0] as (state: object) => { requests: Record<string, unknown> }
-        expect(update({}).requests['perm-1']).toMatchObject({ tool: 'grep -n think notes.md' })
+        expect(update({}).requests['perm-1']).toMatchObject({
+            tool: 'grep -n think notes.md',
+            toolCallId: 'call_1'
+        })
     })
 
     it('still approves everything in an always-approve mode without hints', async () => {

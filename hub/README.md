@@ -119,13 +119,17 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 - `POST /api/sessions/:id/reopen` - Reopen a session; follow the returned session ID.
 - `POST /api/sessions/:id/clear` - Start a fresh conversation when supported.
 - `POST /api/sessions/:id/upload` - Upload file (base64, max 50MB).
+- `POST /api/sessions/:id/uploads` - Initialize chunked streaming upload (configurable max via `HAPI_MAX_UPLOAD_BYTES`, default 512 MiB, clamped to 10 GiB).
+- `POST /api/sessions/:id/uploads/:uploadId/chunk?index=<n>` - Stream binary chunk (`application/octet-stream`, 1 B – 8 MB).
+- `POST /api/sessions/:id/uploads/:uploadId/finalize` - Finalize chunked upload and authorize file identity.
+- `POST /api/sessions/:id/uploads/:uploadId/abort` - Abort chunked upload and delete partial file.
 - `POST /api/sessions/:id/upload/delete` - Delete uploaded file.
 - `POST /api/sessions/:id/archive` - Archive active session.
   Runner-owned sessions wait for verified cleanup, including retries after an
   early inactive/archived update. Concurrent requests join the same operation.
   Cleanup confirmation has a 90-second budget; failure returns a structured
   `archive-cleanup-unconfirmed` (409), `archive-cleanup-unavailable` (503), or
-  `archive-cleanup-timeout` (504) error. A timeout does not cancel Runner cleanup
+  `archive-cleanup-timeout` (503) error. A timeout does not cancel Runner cleanup
   or prove the process is still alive; retry to verify the final result.
 - `PATCH /api/sessions/:id` - Rename session.
 - `DELETE /api/sessions/:id` - Delete inactive session.

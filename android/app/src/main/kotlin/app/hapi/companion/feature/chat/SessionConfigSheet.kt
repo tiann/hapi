@@ -43,6 +43,7 @@ import app.hapi.protocol.catalog.PermissionModes
 @Composable
 fun SessionConfigSheet(
     config: SessionConfigUi,
+    contextUsage: ContextUsageIndicator?,
     onDismiss: () -> Unit,
     onSetPermissionMode: (PermissionMode) -> Unit,
     onSetModel: (String?) -> Unit,
@@ -54,6 +55,7 @@ fun SessionConfigSheet(
     ModalBottomSheet(onDismissRequest = onDismiss) {
         SessionConfigSheetContent(
             config = config,
+            contextUsage = contextUsage,
             onSetPermissionMode = onSetPermissionMode,
             onSetModel = onSetModel,
             onSetEffort = onSetEffort,
@@ -67,6 +69,7 @@ internal fun SessionConfigSheetContent(
     onSetPermissionMode: (PermissionMode) -> Unit,
     onSetModel: (String?) -> Unit,
     onSetEffort: (String?) -> Unit,
+    contextUsage: ContextUsageIndicator? = null,
 ) {
     Column(
         modifier = Modifier
@@ -80,6 +83,13 @@ internal fun SessionConfigSheetContent(
             Notice(stringResource(R.string.chat_config_offline_note))
         } else if (config.controlledByUser) {
             Notice(stringResource(R.string.chat_config_terminal_note))
+        }
+
+        // Context remaining lives here rather than in a strip above the
+        // composer, which cost a transcript line on every screen.
+        if (contextUsage != null) {
+            SectionTitle(stringResource(R.string.chat_config_context))
+            ContextUsageChip(indicator = contextUsage, modifier = Modifier.padding(vertical = 6.dp))
         }
 
         // Web parity: the permission section disappears only when the switch

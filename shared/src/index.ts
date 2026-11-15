@@ -32,6 +32,7 @@ export * from './copilotModes'
 export * from './slashCommands'
 export * from './utils'
 export * from './usage'
+export * from './usageQuery'
 export * from './version'
 export {
     AttachedJobSchema,

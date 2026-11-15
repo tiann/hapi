@@ -513,7 +513,7 @@ it('resolves relative directory against cwd (MCP session working directory)', as
                     return { status: 200, data: { token: 'jwt' } }
                 }
                 if (url.endsWith(`/api/machines/${MACHINE_ID}/spawn`)) {
-                    return { status: 200, data: { type: 'error', message: 'no runner' } }
+                    return { status: 200, data: { type: 'error', message: 'Path is not a Git repository' } }
                 }
                 throw new Error(`unexpected POST ${url}`)
             }
@@ -526,7 +526,7 @@ it('resolves relative directory against cwd (MCP session working directory)', as
             accessToken: 'tok',
             apiUrl: 'http://hub.test',
             http: http as never
-        })).rejects.toMatchObject({ code: 'spawn_failed' })
+        })).rejects.toMatchObject({ code: 'spawn_failed', message: 'spawn failed: Path is not a Git repository' })
         expect(http.post).toHaveBeenCalledTimes(2)
     })
 

@@ -339,4 +339,29 @@ describe('provider throughput metadata', () => {
             roundSummary: { provider: 'agy', modelUsage: {}, agyUsage: { input_tokens: 15_172, output_tokens: 44, cache_read_tokens: 0 } }
         })).toEqual(['Model: fallback-model', 'Tokens: 15.2k in · 44 out'])
     })
+
+    it('adds the agy turn count to the agy Round line (google-antigravity/antigravity-cli#1045)', () => {
+        const parts = buildMessageMetadataLabels({
+            roundSummary: {
+                provider: 'agy',
+                modelUsage: {},
+                agyUsage: { input_tokens: 4_422, output_tokens: 58 },
+                durationMs: 14_900,
+                numTurns: 3
+            }
+        })
+        expect(parts.at(-1)).toBe('Round: 14.9s · 3 turns')
+        for (const numTurns of [undefined, 0, -2]) {
+            const hidden = buildMessageMetadataLabels({
+                roundSummary: {
+                    provider: 'agy',
+                    modelUsage: {},
+                    agyUsage: { input_tokens: 4_422, output_tokens: 58 },
+                    durationMs: 14_900,
+                    numTurns
+                }
+            })
+            expect(hidden.at(-1)).toBe('Round: 14.9s')
+        }
+    })
 })

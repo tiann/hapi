@@ -113,6 +113,7 @@ function normalizeAgyRoundSummary(value: Record<string, unknown>): RoundSummary 
     }
     const durationMs = nonNegativeNumber(value.duration_ms)
     const model = asString(value.model)
+    const numTurns = nonNegativeSafeInteger(value.num_turns)
     const hasUsage = Object.keys(agyUsage).length > 0
     if (!hasUsage && durationMs === undefined) return undefined
     const generationMs = nonNegativeSafeInteger(value.generation_ms)
@@ -121,6 +122,7 @@ function normalizeAgyRoundSummary(value: Record<string, unknown>): RoundSummary 
         provider: 'agy',
         modelUsage: model ? { [model]: {} } : {},
         ...(hasUsage ? { agyUsage } : {}),
+        ...(numTurns !== undefined && numTurns > 0 ? { numTurns } : {}),
         ...(durationMs !== undefined ? { durationMs } : {}),
         ...(generationMs && generationOutputTokens ? { generationMs, generationOutputTokens } : {})
     }

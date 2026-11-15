@@ -6,6 +6,27 @@ import { collectTitleChanges, ensureToolBlock, extractTitleFromChangeTitleInput,
 import { isSubagentToolName } from '@/chat/subagentTool'
 import { asString, isObject } from '@hapi/protocol'
 
+/**
+ * A question tool call's own input can predate what limits its answers (agy
+ * learns whether free text is allowed only when the form arrives), so take
+ * `allowFreeText` from the pending request's input for questions that carry
+ * none. Anything else is left as is.
+ */
+function withRequestFreeTextFlags(input: unknown, requestInput: unknown): unknown {
+    if (!isObject(input) || !isObject(requestInput)) return input
+    const requestQuestions = requestInput.questions
+    if (!Array.isArray(input.questions) || !Array.isArray(requestQuestions)) return input
+    let changed = false
+    const questions = input.questions.map((question, index) => {
+        const requested: unknown = requestQuestions[index]
+        if (!isObject(question) || 'allowFreeText' in question) return question
+        if (!isObject(requested) || typeof requested.allowFreeText !== 'boolean') return question
+        changed = true
+        return { ...question, allowFreeText: requested.allowFreeText }
+    })
+    return changed ? { ...input, questions } : input
+}
+
 function getEventString(event: Record<string, unknown>, key: string): string | null {
     return asString(event[key])
 }
@@ -1033,7 +1054,8 @@ export function reduceTimeline(
                         continue
                     }
 
-                    const permission = context.permissionsById.get(c.id)?.permission
+                    const permissionEntry = context.permissionsById.get(c.id)
+                    const permission = permissionEntry?.permission
 
                     const block = ensureToolBlock(blocks, toolBlocksById, c.id, {
                         createdAt: msg.createdAt,
@@ -1043,7 +1065,7 @@ export function reduceTimeline(
                         localId: msg.localId,
                         meta: msg.meta,
                         name: c.name,
-                        input: c.input,
+                        input: withRequestFreeTextFlags(c.input, permissionEntry?.input),
                         description: c.description,
                         nativeTitle: c.nativeTitle,
                         nativeKind: c.nativeKind,

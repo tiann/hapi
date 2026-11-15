@@ -202,6 +202,8 @@
     <string name="channel_permission_requests_desc">Агент ждёт, чтобы вы разрешили или отклонили вызов инструмента</string>
     <string name="channel_input_requests">Вопросы к вам</string>
     <string name="channel_input_requests_desc">Агенту нужен ваш ответ на вопрос в сессии</string>
+    <string name="channel_model_errors">Ошибки модели</string>
+    <string name="channel_model_errors_desc">Агент столкнулся со сбоем на стороне модели, который требует внимания</string>
     <string name="channel_ready">Агент готов</string>
     <string name="channel_ready_desc">Агент завершил работу и ждёт ввода</string>
     <string name="channel_other">Другие уведомления</string>
@@ -299,7 +301,6 @@
     <string name="chat_open_settings">Настройки сессии</string>
     <string name="chat_session_actions">Действия с сессией</string>
     <string name="chat_scratchlist_badge">Заметки</string>
-    <string name="chat_inactive_bar">Сессия неактивна — отправьте сообщение, чтобы возобновить, или</string>
     <string name="chat_retry">Повторить</string>
     <string name="chat_loading_messages">Загрузка сообщений…</string>
     <string name="chat_loading_older">Загрузка старых сообщений…</string>
@@ -350,6 +351,9 @@
     <string name="chat_mention_suggestions">Предложения упоминаний</string>
     <string name="chat_send_steer">Отправить и вклиниться в текущий ход</string>
     <string name="chat_schedule_send">Отложенная отправка</string>
+    <string name="chat_schedule_capsule">Запланировано · %1$s</string>
+    <string name="chat_schedule_clear">Отменить расписание</string>
+    <string name="chat_attachment_remove">Удалить %1$s</string>
     <string name="chat_schedule_relative_tab">Относительно</string>
     <string name="chat_schedule_specific_tab">Точное время</string>
     <string name="chat_schedule_specific_hint">Максимум 7 дней. Требуется работающий хаб; CLI наверстает отправку при следующем подключении после этого времени.</string>
@@ -375,6 +379,7 @@
 
     <!-- Session config sheet (B-M3b) -->
     <string name="chat_config_offline_note">Сессия офлайн — изменения применятся после возобновления или могут быть отклонены.</string>
+    <string name="chat_config_context">Контекст</string>
     <string name="chat_config_terminal_note">Сессией управляют из терминала — изменения конфигурации будут отклонены.</string>
     <string name="chat_config_permission_mode">Режим разрешений</string>
     <string name="chat_config_model">Модель</string>
@@ -384,16 +389,60 @@
 
     <!-- Chat blocks (B-M2c/d) -->
     <string name="chat_tool_awaiting_approval">Ожидает одобрения</string>
-    <string name="chat_tool_awaiting_approval_badge">⏳ Ожидает одобрения</string>
-    <string name="chat_tool_approved">✓ Одобрено</string>
-    <string name="chat_tool_approved_for_session">✓ Одобрено для сессии</string>
-    <string name="chat_tool_approved_allow_all_edits">✓ Одобрено: разрешить все правки</string>
-    <string name="chat_tool_denied">✕ Отклонено</string>
-    <string name="chat_tool_aborted">✕ Прервано</string>
+    <string name="chat_tool_awaiting_approval_badge">Ожидает одобрения</string>
+    <string name="chat_tool_approved">Одобрено</string>
+    <string name="chat_tool_approved_for_session">Одобрено для сессии</string>
+    <string name="chat_tool_approved_allow_all_edits">Одобрено: разрешить все правки</string>
+    <string name="chat_tool_denied">Отклонено</string>
+    <string name="chat_tool_aborted">Прервано</string>
     <string name="chat_tool_resolved">Решено в Codex</string>
-    <string name="chat_tool_canceled">— Отменено</string>
+    <string name="chat_tool_canceled">Отменено</string>
     <string name="chat_tool_status_pending">ожидает</string>
     <string name="chat_tool_status_error">ошибка</string>
+    <string name="chat_tool_status_done">Готово</string>
+    <string name="chat_tool_status_running">Выполняется</string>
+    <plurals name="chat_group_reads">
+        <item quantity="one">%1$d чтение</item>
+        <item quantity="few">%1$d чтения</item>
+        <item quantity="many">%1$d чтений</item>
+        <item quantity="other">%1$d чтения</item>
+    </plurals>
+    <plurals name="chat_group_searches">
+        <item quantity="one">%1$d поиск</item>
+        <item quantity="few">%1$d поиска</item>
+        <item quantity="many">%1$d поисков</item>
+        <item quantity="other">%1$d поиска</item>
+    </plurals>
+    <plurals name="chat_group_commands">
+        <item quantity="one">%1$d команда</item>
+        <item quantity="few">%1$d команды</item>
+        <item quantity="many">%1$d команд</item>
+        <item quantity="other">%1$d команды</item>
+    </plurals>
+    <plurals name="chat_group_edits">
+        <item quantity="one">Правки: %1$d</item>
+        <item quantity="few">Правки: %1$d</item>
+        <item quantity="many">Правки: %1$d</item>
+        <item quantity="other">Правки: %1$d</item>
+    </plurals>
+    <plurals name="chat_group_web_requests">
+        <item quantity="one">Веб-запросы: %1$d</item>
+        <item quantity="few">Веб-запросы: %1$d</item>
+        <item quantity="many">Веб-запросы: %1$d</item>
+        <item quantity="other">Веб-запросы: %1$d</item>
+    </plurals>
+    <plurals name="chat_group_other_tools">
+        <item quantity="one">Другие инструменты: %1$d</item>
+        <item quantity="few">Другие инструменты: %1$d</item>
+        <item quantity="many">Другие инструменты: %1$d</item>
+        <item quantity="other">Другие инструменты: %1$d</item>
+    </plurals>
+    <plurals name="chat_group_failed">
+        <item quantity="one">Сбойные инструменты: %1$d</item>
+        <item quantity="few">Сбойные инструменты: %1$d</item>
+        <item quantity="many">Сбойные инструменты: %1$d</item>
+        <item quantity="other">Сбойные инструменты: %1$d</item>
+    </plurals>
     <string name="chat_agent_steps_one">1 шаг агента</string>
     <string name="chat_agent_steps_many">Шаги агента: %1$d</string>
     <string name="chat_group_tools_one">1 инструмент</string>
@@ -403,9 +452,13 @@
     <string name="chat_edit_n_of_m">Правка %1$d/%2$d</string>
     <string name="chat_empty_snippet">(пусто)</string>
     <string name="chat_result">Результат</string>
+    <string name="chat_result_waiting">Ожидание вывода…</string>
+    <string name="chat_result_none">Нет вывода</string>
     <string name="chat_result_error">Результат · ошибка</string>
-    <string name="chat_reasoning_expanded">💭 Рассуждения ▾</string>
-    <string name="chat_reasoning_collapsed">💭 Рассуждения ▸</string>
+    <string name="chat_reasoning_expanded">Рассуждения</string>
+    <string name="chat_reasoning_collapsed">Рассуждения…</string>
+    <string name="chat_reasoning_state_expanded">Развёрнуто</string>
+    <string name="chat_reasoning_state_collapsed">Свёрнуто</string>
     <string name="chat_not_delivered_retry">Не доставлено — нажмите, чтобы повторить</string>
     <string name="chat_not_delivered">Не доставлено</string>
     <string name="chat_review_title">Ревью кода</string>
@@ -418,6 +471,7 @@
     <string name="chat_perm_abort">Прервать</string>
     <string name="chat_perm_allow_for_session">Разрешить для этой сессии</string>
     <string name="chat_perm_allow_all_edits">Разрешить все правки</string>
+    <string name="chat_perm_more_options">Другие варианты</string>
     <string name="chat_perm_already_handled">Уже обработано в другом месте</string>
     <string name="chat_perm_type_answer">Введите ответ…</string>
     <string name="chat_perm_add_note">Добавить примечание…</string>
@@ -674,13 +728,14 @@
     <string name="sessions_filters">Сортировка и фильтр</string>
     <string name="sessions_filters_active">Фильтры применены</string>
     <string name="sessions_filters_reset">Сбросить</string>
+    <string name="sessions_filter_section">Фильтр</string>
+    <string name="sessions_sort_section">Сортировка</string>
     <string name="sessions_filters_done">Готово</string>
     <string name="sessions_filter_machines">Машины</string>
     <string name="sessions_filter_dates">Даты активности</string>
     <string name="sessions_filter_any_date">Любая дата</string>
     <string name="sessions_filter_clear_dates">Сбросить фильтр по дате</string>
     <string name="sessions_machine_fallback">Машина · %1$s</string>
-    <string name="sessions_time_filter_label">Фильтр сессий по последней активности</string>
     <string name="sessions_time_filter_apply">Применить</string>
     <string name="sessions_time_filter_clear">Очистить</string>
     <string name="sessions_time_filter_summary">%1$s – %2$s</string>

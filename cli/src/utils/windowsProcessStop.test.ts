@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const { execFileMock, syncMock } = vi.hoisted(() => ({ execFileMock: vi.fn(), syncMock: vi.fn() }))
+const authority = vi.hoisted(() => ({ now: 0 }))
 vi.mock('node:child_process', () => ({ execFile: execFileMock }))
 vi.mock('cross-spawn', () => ({ default: { sync: syncMock } }))
+vi.mock('./time', () => ({ monotonicTimeMs: () => authority.now }))
 import { killProcessTreeByPid } from './process'
 import { readWindowsProcessTable, windowsGenerationMayBeAlive } from './windowsProcessStop'
 
@@ -20,6 +22,7 @@ describe('Windows asynchronous tree stop', () => {
     beforeEach(() => {
         Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
         rows = [row(0, 0, null), row(100), row(200, 100)]
+        authority.now = 0
         kills = []
         rejectSoft = false
         onKill = pid => { rows = rows.filter(p => p.ProcessId !== pid) }
@@ -48,6 +51,100 @@ describe('Windows asynchronous tree stop', () => {
         await expect(killProcessTreeByPid(100, true)).resolves.toBe(true)
         expect(kills.map(k => k.pid)).toEqual([100, 200])
         expect(syncMock).not.toHaveBeenCalled()
+    })
+
+    it('retains the upstream stop report while an expired lease prevents signalling', async () => {
+        const reports: Array<import('./windowsProcessStop').WindowsStopReport> = []
+        authority.now = 100
+        expect(await killProcessTreeByPid(100, true, report => reports.push(report), 100)).toBe(false)
+        expect(kills).toEqual([])
+        expect(reports).toEqual([expect.objectContaining({ confirmed: false, phase: 'initial-snapshot' })])
+        expect(syncMock).not.toHaveBeenCalled()
+    })
+
+    it.each([1, 2])('does not signal after caller authority expires during async snapshot %s', async scan => {
+        let scans = 0
+        const implementation = execFileMock.getMockImplementation()!
+        execFileMock.mockImplementation((file, ...args) => {
+            if (file === 'powershell' && ++scans === scan) authority.now = 100
+            return implementation(file, ...args)
+        })
+        expect(await killProcessTreeByPid(100, true, undefined, 100)).toBe(false)
+        expect(kills).toEqual([])
+    })
+
+    it.each([false, true])('rejects a deferred generation snapshot completed after lease expiry (force=%s)', async force => {
+        let scans = 0
+        let snapshotBudget = 0
+        let resumeSnapshot!: () => void
+        let snapshotStarted!: () => void
+        const pendingSnapshot = new Promise<void>(resolve => { snapshotStarted = resolve })
+        const implementation = execFileMock.getMockImplementation()!
+        execFileMock.mockImplementation((file, args, options, callback) => {
+            if (file === 'powershell' && ++scans === 2) {
+                snapshotBudget = options.timeout
+                resumeSnapshot = () => callback(null, JSON.stringify({ complete: true, processes: rows }), '')
+                snapshotStarted()
+                return { kill: vi.fn() }
+            }
+            return implementation(file, args, options, callback)
+        })
+        const operation = killProcessTreeByPid(100, force, undefined, 100)
+        await pendingSnapshot
+        expect(authority.now).toBe(0)
+        expect(execFileMock.mock.calls.filter(([file]) => file === 'taskkill')).toEqual([])
+        authority.now = 100
+        resumeSnapshot()
+        expect(await operation).toBe(false)
+        expect(snapshotBudget).toBeLessThanOrEqual(100)
+        expect(execFileMock.mock.calls.filter(([file]) => file === 'taskkill')).toEqual([])
+        expect(kills).toEqual([])
+        expect(syncMock).not.toHaveBeenCalled()
+    })
+
+    it('caps async OS query budgets by remaining caller authority', async () => {
+        const budgets: number[] = []
+        const implementation = execFileMock.getMockImplementation()!
+        execFileMock.mockImplementation((file, args, options, callback) => {
+            budgets.push(options.timeout)
+            return implementation(file, args, options, callback)
+        })
+        expect(await killProcessTreeByPid(100, true, undefined, 100)).toBe(true)
+        expect(budgets.length).toBeGreaterThan(0)
+        expect(budgets.every(budget => budget > 0 && budget <= 100)).toBe(true)
+    })
+
+    it('does not escalate a refused soft stop after its caller lease expires', async () => {
+        rejectSoft = true
+        onKill = (_pid, force) => {
+            if (!force) { authority.now = 100; rows.push(row(300, 100)) }
+            else rows = [row(0, 0, null)]
+        }
+        expect(await killProcessTreeByPid(100, false, undefined, 100)).toBe(false)
+        expect(kills).toEqual([{ pid: 100, force: false, tree: true }])
+    })
+
+    it('does not signal surviving descendants after authority expires following root exit', async () => {
+        onKill = pid => {
+            rows = rows.filter(p => p.ProcessId !== pid)
+            if (pid === 100) authority.now = 100
+        }
+        expect(await killProcessTreeByPid(100, true, undefined, 100)).toBe(false)
+        expect(kills).toEqual([{ pid: 100, force: true, tree: true }])
+    })
+
+    it('does not use the CIM fallback root probe after its caller lease expires', async () => {
+        execFileMock.mockImplementation((file, args, _options, callback) => {
+            queueMicrotask(() => {
+                if (file === 'powershell') {
+                    if (String(args.at(-1)).includes('Get-CimInstance')) callback(new Error('CIM failed'), '', '')
+                    else { authority.now = 100; callback(null, JSON.stringify({ complete: true, processes: [row(100)] }), '') }
+                } else { kills.push({ pid: 100, force: true, tree: true }); callback(null, '', '') }
+            })
+            return { kill: vi.fn() }
+        })
+        expect(await killProcessTreeByPid(100, true, undefined, 100)).toBe(false)
+        expect(kills).toEqual([])
     })
 
     it('does not terminate a PID reused after the original descendant exits', async () => {

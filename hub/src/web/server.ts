@@ -293,7 +293,7 @@ function createWebApp(options: {
     app.route('/api', createPermissionsRoutes(options.getSyncEngine))
     app.route('/api', createMachinesRoutes(options.getSyncEngine, { dataDir: configuration.dataDir }))
     app.route('/api', createStorageRoutes(configuration.dbPath))
-    app.route('/api', createHubSettingsRoutes(configuration.dataDir))
+    app.route('/api', createHubSettingsRoutes(configuration.dataDir, options.getSyncEngine))
     app.route('/api', createUsageRoutes(options.store, options.getSyncEngine))
     app.route('/api', createActivityRoutes(options.store))
     app.route('/api', createGitRoutes(options.getSyncEngine))

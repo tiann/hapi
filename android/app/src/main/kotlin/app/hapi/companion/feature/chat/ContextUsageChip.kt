@@ -1,9 +1,5 @@
 package app.hapi.companion.feature.chat
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -13,14 +9,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
 import app.hapi.companion.ui.theme.HapiExtendedColors
+import app.hapi.companion.ui.theme.HapiTypography
 import app.hapi.companion.ui.theme.hapi
 
 /**
- * Context-remaining indicator in the composer status strip. With a known
+ * Context-remaining indicator in the session config sheet. With a known
  * window it shows the budget and the free share; without one, just the
  * current context size. The color escalates from neutral to amber to red as
  * the window fills — the text itself stays the same in every band.
@@ -37,21 +34,14 @@ internal fun ContextUsageChip(
         stringResource(R.string.chat_context_usage_no_window, value.used)
     }
     val detailsLabel = stringResource(R.string.chat_context_details)
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 6.dp),
-        horizontalArrangement = Arrangement.End,
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelMedium,
-            color = contextUsageColor(value.warning, MaterialTheme.hapi, MaterialTheme.colorScheme),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.semantics { contentDescription = detailsLabel },
-        )
-    }
+    Text(
+        text = label,
+        style = HapiTypography.caption.copy(fontWeight = FontWeight.Medium),
+        color = contextUsageColor(value.warning, MaterialTheme.hapi, MaterialTheme.colorScheme),
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = modifier.semantics { contentDescription = detailsLabel },
+    )
 }
 
 /**

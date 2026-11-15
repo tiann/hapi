@@ -4,6 +4,7 @@ import {
     assertCreateProgressMode,
     assertNumericSleepUsesUntil,
     commandLooksLikeNumericSleep,
+    computeNumericSleepSeconds,
     parseUntilTimestamp,
     stampUntilProgress
 } from './jobProgressMode'
@@ -12,11 +13,33 @@ describe('commandLooksLikeNumericSleep', () => {
     it('detects sleep N and rejects infinity / bare sleep', () => {
         expect(commandLooksLikeNumericSleep(['sleep', '150747'])).toBe(true)
         expect(commandLooksLikeNumericSleep(['/bin/sleep', '60'])).toBe(true)
+        expect(commandLooksLikeNumericSleep(['sleep', '5', '60'])).toBe(true)
         expect(commandLooksLikeNumericSleep(['sleep', '999999'])).toBe(true)
         expect(commandLooksLikeNumericSleep(['sleep', 'infinity'])).toBe(false)
         expect(commandLooksLikeNumericSleep(['sleep'])).toBe(false)
         expect(commandLooksLikeNumericSleep(['./beets-import.sh'])).toBe(false)
     })
+
+    it('computes total seconds across multiple numeric sleep arguments', () => {
+        expect(computeNumericSleepSeconds(['sleep', '60'])).toBe(60)
+        expect(computeNumericSleepSeconds(['sleep', '5', '60'])).toBe(65)
+        expect(computeNumericSleepSeconds(['sleep', '1', '2', '3'])).toBe(6)
+        expect(computeNumericSleepSeconds(['sleep', 'infinity'])).toBeNull()
+        expect(computeNumericSleepSeconds(['sleep'])).toBeNull()
+    })
+    it.each([
+        ['bash', '-c', 'sleep 60'],
+        ['env', 'sleep', '60'],
+        ['sleep', 'infinity'],
+        ['sleep', '1.5'],
+        ['sleep', '1m'],
+        ['sleep', ' 60 '],
+        ['sleep', '9007199254740992'],
+        ['sleep', '9007199254740991', '1'],
+    ])('does not infer unsupported or unsafe command %j', (...command) => {
+        expect(computeNumericSleepSeconds(command)).toBeNull()
+    })
+
 })
 
 describe('assertNumericSleepUsesUntil', () => {
@@ -91,6 +114,24 @@ describe('parseUntilTimestamp', () => {
         expect(() => parseUntilTimestamp('2026-11-07T00:00:00.000Z', now))
             .toThrow(SessionJobError)
     })
+
+    it('parses relative durations (+5m, 300s, 1h)', () => {
+        const now = 1_000_000
+        expect(parseUntilTimestamp('+5m', now)).toBe(now + 5 * 60 * 1000)
+        expect(parseUntilTimestamp('300s', now)).toBe(now + 300 * 1000)
+        expect(parseUntilTimestamp('+1h', now)).toBe(now + 3600 * 1000)
+        expect(parseUntilTimestamp('2d', now)).toBe(now + 2 * 86400 * 1000)
+    })
+    it.each(['0s', '+0m', '-5m', '1.5m', '8640000000000d', '9'.repeat(400) + 's'])('rejects invalid or unrepresentable duration %s', raw => {
+        expect(() => parseUntilTimestamp(raw, 1_000_000)).toThrow(SessionJobError)
+    })
+
+    it('preserves epoch seconds and milliseconds', () => {
+        const now = 1_000_000
+        expect(parseUntilTimestamp('1794531600', now)).toBe(1_794_531_600_000)
+        expect(parseUntilTimestamp('1794531600000', now)).toBe(1_794_531_600_000)
+    })
+
 })
 
 describe('stampUntilProgress', () => {

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '@/api/client'
 import type { AgentState } from '@/types/api'
@@ -84,6 +84,64 @@ describe('AsyncQuestionsPanel', () => {
         expect(screen.queryByRole('region')).not.toBeInTheDocument()
     })
 
+    it('opens, scrolls to, focuses, and highlights a targeted live question', async () => {
+        const onTargetConsumed = vi.fn()
+        const requests = { first: question('First', 1), second: question('Second', 2) }
+        const api = { approvePermission: vi.fn(), denyPermission: vi.fn() } as unknown as ApiClient
+        const { container } = render(
+            <AsyncQuestionsPanel
+                api={api}
+                sessionId="session-1"
+                requests={requests}
+                disabled={false}
+                onRefresh={vi.fn()}
+                targetRequestId="second"
+                targetVersion={1}
+                onTargetConsumed={onTargetConsumed}
+            />
+        )
+
+        await waitFor(() => expect(onTargetConsumed).toHaveBeenCalledOnce())
+        expect(screen.getByRole('button', { name: /chat.asyncQuestions.title/ })).toHaveAttribute('aria-expanded', 'true')
+        const target = container.querySelector<HTMLDetailsElement>('[data-pending-request-id="second"]')
+        expect(target).not.toBeNull()
+        expect(target?.open).toBe(true)
+        expect(target).toHaveFocus()
+        expect(target?.className).toContain('ring-[#FF9500]/40')
+    })
+
+    it('expires the live-question highlight after the parent consumes the target', () => {
+        vi.useFakeTimers()
+        try {
+            const api = { approvePermission: vi.fn(), denyPermission: vi.fn() } as unknown as ApiClient
+            const requests = { second: question('Second', 2) }
+            const onTargetConsumed = vi.fn()
+            const props = {
+                api,
+                sessionId: 'session-1',
+                requests,
+                disabled: false,
+                onRefresh: vi.fn(),
+                onTargetConsumed,
+            }
+            const { container, rerender } = render(
+                <AsyncQuestionsPanel {...props} targetRequestId="second" targetVersion={1} />
+            )
+
+            act(() => { vi.advanceTimersByTime(0) })
+            expect(onTargetConsumed).toHaveBeenCalledOnce()
+            rerender(<AsyncQuestionsPanel {...props} targetRequestId={undefined} targetVersion={1} />)
+
+            const target = container.querySelector<HTMLDetailsElement>('[data-pending-request-id="second"]')
+            expect(target?.className).toContain('ring-[#FF9500]/40')
+            act(() => { vi.advanceTimersByTime(1_799) })
+            expect(target?.className).toContain('ring-[#FF9500]/40')
+            act(() => { vi.advanceTimersByTime(1) })
+            expect(target?.className).not.toContain('ring-[#FF9500]/40')
+        } finally {
+            vi.useRealTimers()
+        }
+    })
     it('disables actions for inactive sessions and does not carry answers into another session', () => {
         const { props, rerender } = setup({ request: question('Question', 1) })
         expand()

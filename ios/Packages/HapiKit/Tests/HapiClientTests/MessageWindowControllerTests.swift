@@ -523,6 +523,59 @@ struct MessageWindowControllerTests {
         #expect(!state.isSyncingTail)
     }
 
+    @Test func anOrdinarySyncRetriesTheSweepWhenTheContextRefreshFails() async {
+        let provider = GatedMessagesProvider()
+        let controller = MessageWindowController(
+            sessionId: "gap-sweep-retry",
+            provider: provider,
+            initialState: warmRecoveryWindow(id: "gap-sweep-retry", callStatus: "in_progress")
+        )
+        await provider.release(afterPage(
+            (11...310).map { agentRow(id: "r-\($0)", seq: $0, at: $0 * 1000) },
+            epoch: 1, nextAfter: (310_000, 310), hasMore: false
+        ))
+        await provider.release(latestPage(
+            (111...310).map { agentRow(id: "r-\($0)", seq: $0, at: $0 * 1000) },
+            epoch: 1
+        ))
+        await provider.failNextContextRequests(1)
+
+        await controller.recoverAfterGapResume()
+
+        // The failed refresh surfaces the warning and leaves the recovery
+        // pending, so the next ORDINARY sync retries the sweep instead of
+        // leaving the enriched cached call stale with no retry path.
+        #expect(await provider.contextRequests == ["call-row"])
+        let failed = await controller.state
+        #expect(failed.warning != nil)
+        #expect(failed.pendingGapRecovery)
+
+        await provider.release(afterPage(
+            (11...310).map { agentRow(id: "r-\($0)", seq: $0, at: $0 * 1000) },
+            epoch: 1, nextAfter: (310_000, 310), hasMore: false
+        ))
+        await provider.release(latestPage(
+            (111...310).map { agentRow(id: "r-\($0)", seq: $0, at: $0 * 1000) },
+            epoch: 1
+        ))
+        await provider.releaseContext(MessageContextResponse(
+            messages: [toolCallRow(id: "call-row", seq: 10, at: 10_000, status: "completed")],
+            targetMessageId: "call-row",
+            page: MessageContextPage(
+                epoch: 1, nextBeforeSeq: 1, nextBeforeAt: 1000,
+                snapshotHeadSeq: 310, snapshotHeadAt: 310_000, hasMore: false
+            )
+        ))
+        await controller.syncTail()
+
+        #expect(await provider.contextRequests == ["call-row", "call-row"])
+        let state = await controller.state
+        #expect(state.messages.first(where: { $0.id == "call-row" })?.content
+            == toolCallRow(id: "call-row", seq: 10, at: 10_000, status: "completed").content)
+        #expect(!state.pendingGapRecovery)
+        #expect(state.warning == nil)
+    }
+
     @Test func stalledOlderCursorDoesNotApplyOrPretendHistoryIsExhausted() async {
         let provider = GatedMessagesProvider()
         var initial = MessageWindowState(sessionId: "history")
@@ -787,6 +840,7 @@ actor GatedMessagesProvider: MessagesProviding {
     private(set) var requests: [MessagesPageQuery] = []
     private(set) var contextRequests: [String] = []
     private var contextResponses: [MessageContextResponse?] = []
+    var contextFailures = 0
     private var buffered: [MessagesResponse] = []
     private var pending: [CheckedContinuation<MessagesResponse, any Error>] = []
     private var requestWaiters: [(threshold: Int, continuation: CheckedContinuation<Void, Never>)] = []
@@ -817,6 +871,10 @@ actor GatedMessagesProvider: MessagesProviding {
 
     func messageContext(sessionId: String, messageId: String) async throws -> MessageContextResponse? {
         contextRequests.append(messageId)
+        if contextFailures > 0 {
+            contextFailures -= 1
+            throw GapSyncFailure()
+        }
         if contextResponses.isEmpty { return nil }
         return contextResponses.removeFirst()
     }
@@ -824,6 +882,11 @@ actor GatedMessagesProvider: MessagesProviding {
     /// Queue a message-context response for the recovery sweep.
     func releaseContext(_ response: MessageContextResponse?) {
         contextResponses.append(response)
+    }
+
+    /// Make the next `count` context requests throw (retry-path tests).
+    func failNextContextRequests(_ count: Int) {
+        contextFailures = count
     }
 
     /// Answer the oldest parked request, or buffer for the next one.

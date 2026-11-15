@@ -29,4 +29,9 @@ describe('readAgyConversationTitle', () => {
 
         await expect(readAgyConversationTitle(conversationId, query)).resolves.toBeNull()
     })
+    it('prefers the native title and falls back to a cleaned prompt preview', async () => {
+        await expect(readAgyConversationTitle(conversationId, async () => ({ title: 'Native title', preview: 'question' }))).resolves.toBe('Native title')
+        await expect(readAgyConversationTitle(conversationId, async () => ({ title: '', preview: 'https://example.com/a 检查问题' }))).resolves.toBe('检查问题')
+    })
+
 })

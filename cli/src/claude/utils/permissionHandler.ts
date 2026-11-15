@@ -124,6 +124,7 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
     private allowedTools = new Set<string>();
     private allowedBashLiterals = new Set<string>();
     private allowedBashPrefixes = new Set<string>();
+    private steerDenied = new Set<string>();
     private onPermissionRequestCallback?: (toolCallId: string) => void;
 
     constructor(session: Session) {
@@ -438,6 +439,10 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
      * Checks if a tool call is rejected
      */
     isAborted(toolCallId: string): boolean {
+        // A steer denial must keep the turn running so Claude reads the steer
+        if (this.steerDenied.has(toolCallId)) {
+            return false;
+        }
 
         // If tool not approved, it's aborted
         if (this.responses.get(toolCallId)?.approved === false) {
@@ -455,10 +460,26 @@ export class PermissionHandler extends BasePermissionHandler<PermissionResponse,
     }
 
     /**
+     * Deny every pending request so a steered message can reach Claude, which
+     * only folds steers in at a tool boundary that a pending request blocks.
+     * isAborted() reports these as not aborted, so the turn keeps running.
+     */
+    denyPendingForSteer(): void {
+        const reason = 'The user sent a new message instead of answering. Read it and continue from there.';
+        for (const [id, pending] of this.pendingRequests) {
+            this.pendingRequests.delete(id);
+            this.steerDenied.add(id);
+            pending.resolve({ behavior: 'deny', message: reason });
+            this.finalizeRequest(id, { status: 'denied', reason });
+        }
+    }
+
+    /**
      * Resets all state for new sessions
      */
     reset(): void {
         this.toolCalls = [];
+        this.steerDenied.clear();
         this.responses.clear();
         this.allowedTools.clear();
         this.allowedBashLiterals.clear();

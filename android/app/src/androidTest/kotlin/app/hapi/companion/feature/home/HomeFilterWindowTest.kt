@@ -81,7 +81,8 @@ class HomeFilterWindowTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val viewModel = SessionListViewModel(HomeSessions(), HomeMachines(), LastSeenStore(scope), scope)
         val today = LocalDate.now().toEpochDay()
-        val laptop = "${context.getString(R.string.sessions_machine_fallback, "laptop")} · 2"
+        // The machine row's value; choices live in its menu (count is a trailing label).
+        val laptop = context.getString(R.string.sessions_machine_fallback, "laptop")
         val scenario = ActivityScenario.launch(ComponentActivity::class.java)
         try {
             scenario.onActivity { activity ->
@@ -99,6 +100,7 @@ class HomeFilterWindowTest {
             }
             await("initial sessions") { viewModel.uiState.value.rows.size == 3 }
             click(R.string.sessions_filters)
+            click(R.string.sessions_filter_machines)
             click(laptop)
             await("machine filter") { viewModel.uiState.value.activeMachineFilter == "laptop" }
             await("sheet remains open") { visible(laptop) }

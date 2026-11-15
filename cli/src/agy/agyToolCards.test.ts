@@ -43,6 +43,20 @@ describe('mapAgyToolCall', () => {
         });
     });
 
+    it('keeps an empty replacement so a deletion edit still has a diff', () => {
+        expect(mapAgyToolCall(call('edit_file', { Path: '/a', Target: 'foo', Replacement: '' }))).toMatchObject({
+            name: 'Edit',
+            input: { file_path: '/a', old_string: 'foo', new_string: '' }
+        });
+    });
+
+    it('keeps empty content so an empty-file write still renders', () => {
+        expect(mapAgyToolCall(call('write_file', { Path: '/a', Content: '' }))).toMatchObject({
+            name: 'Write',
+            input: { file_path: '/a', content: '' }
+        });
+    });
+
     it('maps write_file to Write', () => {
         expect(mapAgyToolCall(call('write_file', { Path: '/a/c.md', Content: 'hello\n' }))).toMatchObject({
             name: 'Write', input: { file_path: '/a/c.md', content: 'hello\n' }

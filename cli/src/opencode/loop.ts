@@ -8,8 +8,10 @@ import { opencodeRemoteLauncher } from './opencodeRemoteLauncher';
 import { ApiClient, ApiSessionClient } from '@/lib';
 import type { OpencodeMode, PermissionMode } from './types';
 import type { OpencodeHookServer } from './utils/startOpencodeHookServer';
+import type { OpenCodeRuntimeGate } from './rewind';
 
 interface OpencodeLoopOptions {
+    runtimeGate?: OpenCodeRuntimeGate;
     path: string;
     startingMode?: 'local' | 'remote';
     startedBy?: 'runner' | 'terminal';
@@ -56,10 +58,11 @@ export async function opencodeLoop(opts: OpencodeLoopOptions): Promise<void> {
         startedBy,
         startingMode,
         permissionMode: opts.permissionMode ?? 'default',
-        modelReasoningEffort: opts.modelReasoningEffort
+        modelReasoningEffort: opts.modelReasoningEffort,
+        runtimeGate: opts.runtimeGate
     });
 
-    if (opts.resumeSessionId) {
+    if (opts.resumeSessionId && startingMode === 'local') {
         session.onSessionFound(opts.resumeSessionId);
     }
 

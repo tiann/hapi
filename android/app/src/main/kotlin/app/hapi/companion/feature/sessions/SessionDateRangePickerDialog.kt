@@ -4,27 +4,27 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.DatePickerDefaults
+import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.DateRangePicker
+import androidx.compose.material3.DateRangePickerDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDateRangePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import app.hapi.companion.R
 import java.time.LocalDate
 import java.time.ZoneId
@@ -73,64 +73,66 @@ internal fun SessionDateRangePickerDialog(
         initialDisplayedMonthMillis = initialMonthEpochDay * MILLIS_PER_DAY,
     )
     val hasSelection = pickerState.selectedStartDateMillis != null
+    val dateFormatter = remember { DatePickerDefaults.dateFormatter() }
 
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Surface(
-            shape = MaterialTheme.shapes.extraLarge,
-            tonalElevation = 6.dp,
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 640.dp),
-        ) {
-            Column {
-                DateRangePicker(
-                    state = pickerState,
-                    title = {
-                        Text(
-                            text = stringResource(R.string.sessions_time_filter_label),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+    // The M3 dialog container: standard width, margins and corner radius; a
+    // full-width custom Dialog clipped the picker title.
+    DatePickerDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(
+                onClick = {
+                    val start = pickerState.selectedStartDateMillis ?: return@TextButton
+                    val end = pickerState.selectedEndDateMillis ?: return@TextButton
+                    onApply(start / MILLIS_PER_DAY, end / MILLIS_PER_DAY)
+                },
+                enabled = pickerState.selectedStartDateMillis != null &&
+                    pickerState.selectedEndDateMillis != null,
+            ) {
+                Text(stringResource(R.string.sessions_time_filter_apply))
+            }
+        },
+        dismissButton = {
+            Row {
+                // Web footer `Clear`: resets the in-progress selection and the
+                // active filter without closing the picker.
+                TextButton(
+                    onClick = {
+                        pickerState.setSelection(null, null)
+                        onClear()
                     },
-                    showModeToggle = false,
-                    modifier = Modifier.weight(1f),
-                )
-                ActivityDayLegend(activityEpochDays)
-                HorizontalDivider()
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(end = 8.dp),
-                    horizontalArrangement = Arrangement.End,
-                    verticalAlignment = Alignment.CenterVertically,
+                    enabled = hasSelection || current != null,
                 ) {
-                    // Web footer `Clear`: resets the in-progress selection and the
-                    // active filter without closing the picker.
-                    TextButton(
-                        onClick = {
-                            pickerState.setSelection(null, null)
-                            onClear()
-                        },
-                        enabled = hasSelection || current != null,
-                    ) {
-                        Text(stringResource(R.string.sessions_time_filter_clear))
-                    }
-                    TextButton(onClick = onDismiss) {
-                        Text(stringResource(R.string.home_cancel))
-                    }
-                    TextButton(
-                        onClick = {
-                            val start = pickerState.selectedStartDateMillis ?: return@TextButton
-                            val end = pickerState.selectedEndDateMillis ?: return@TextButton
-                            onApply(start / MILLIS_PER_DAY, end / MILLIS_PER_DAY)
-                        },
-                        enabled = pickerState.selectedStartDateMillis != null &&
-                            pickerState.selectedEndDateMillis != null,
-                    ) {
-                        Text(stringResource(R.string.sessions_time_filter_apply))
-                    }
+                    Text(stringResource(R.string.sessions_time_filter_clear))
+                }
+                TextButton(onClick = onDismiss) {
+                    Text(stringResource(R.string.home_cancel))
                 }
             }
+        },
+    ) {
+        // DatePickerDialog stacks its content in a Box; give the picker and the
+        // legend their own column so the legend sits under the calendar.
+        Column(Modifier.weight(1f)) {
+            DateRangePicker(
+                state = pickerState,
+                // No title row: the selected range is the headline, aligned with
+                // the dialog's 24dp content edge (the M3 default indents it 64dp
+                // for the full-screen close button this dialog does not have).
+                title = null,
+                headline = {
+                    DateRangePickerDefaults.DateRangePickerHeadline(
+                        selectedStartDateMillis = pickerState.selectedStartDateMillis,
+                        selectedEndDateMillis = pickerState.selectedEndDateMillis,
+                        displayMode = pickerState.displayMode,
+                        dateFormatter = dateFormatter,
+                        modifier = Modifier.padding(start = 24.dp, end = 12.dp, top = 24.dp, bottom = 12.dp),
+                    )
+                },
+                showModeToggle = false,
+                modifier = Modifier.weight(1f),
+            )
+            ActivityDayLegend(activityEpochDays)
         }
     }
 }
@@ -146,7 +148,6 @@ internal fun SessionDateRangePickerDialog(
 private fun ActivityDayLegend(activityEpochDays: Set<Long>) {
     if (activityEpochDays.isEmpty()) return
     val recentDays = activityEpochDays.sortedDescending().take(LEGEND_DAY_CAP)
-    val formatter = DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM).withLocale(JavaLocale.getDefault())
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -171,7 +172,7 @@ private fun ActivityDayLegend(activityEpochDays: Set<Long>) {
                     shape = RoundedCornerShape(6.dp),
                 ) {
                     Text(
-                        text = LocalDate.ofEpochDay(epochDay).format(formatter),
+                        text = formatLegendDay(epochDay),
                         style = MaterialTheme.typography.labelSmall,
                         maxLines = 1,
                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
@@ -180,6 +181,15 @@ private fun ActivityDayLegend(activityEpochDays: Set<Long>) {
             }
         }
     }
+}
+
+/** Recent days rarely span years: drop the year when it is the current one. */
+private fun formatLegendDay(epochDay: Long): String {
+    val date = LocalDate.ofEpochDay(epochDay)
+    val locale = JavaLocale.getDefault()
+    if (date.year != LocalDate.now(ZoneId.systemDefault()).year) return formatEpochDayLocalized(epochDay)
+    val pattern = android.text.format.DateFormat.getBestDateTimePattern(locale, "MMMd")
+    return date.format(DateTimeFormatter.ofPattern(pattern, locale))
 }
 
 /** Locale-aware day label for the filter sheet (machine `YYYY-MM-DD` stays in [SessionDateRangeFilter]). */

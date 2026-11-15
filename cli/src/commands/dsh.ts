@@ -5,11 +5,15 @@ import { authAndSetupMachineIfNeeded } from '@/ui/auth'
 import { parseRemoteAgentCommandOptions } from './agentCommandOptions'
 import type { CommandDefinition } from './types'
 
+/**
+ * dsh accepts the standard permission-mode flags: `read-only` and `yolo` map
+ * onto the server's DSH_PERMISSION_MODE sandbox presets at spawn
+ * (see utils/dshBackend); the other modes only shape HAPI-side auto-approval.
+ */
+export const DSH_PERMISSION_MODES = ['default', 'read-only', 'safe-yolo', 'yolo'] as const
+
 export function parseDshCommandOptions(commandArgs: string[]) {
-    const options = parseRemoteAgentCommandOptions(commandArgs, [], ['remote'])
-    if (commandArgs.includes('--yolo')) {
-        throw new Error('DeepSeek Harness permission policy is configured by the ACP server')
-    }
+    const options = parseRemoteAgentCommandOptions(commandArgs, DSH_PERMISSION_MODES, ['remote'])
     if (options.effort || options.modelReasoningEffort) {
         throw new Error('DeepSeek Harness effort is configured by the ACP server')
     }

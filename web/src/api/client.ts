@@ -1,6 +1,10 @@
 import type {
     AttachmentMetadata,
+    AbortChunkedUploadResponse,
     AuthResponse,
+    InitChunkedUploadRequest,
+    InitChunkedUploadResponse,
+    UploadChunkResponse,
     CodexLocalSessionsResponse,
     CodexDuplicateSessionsResponse,
     CodexMergeDuplicateSessionsResponse,
@@ -667,6 +671,59 @@ export class ApiClient {
         })
     }
 
+    async initChunkedUpload(
+        sessionId: string,
+        payload: InitChunkedUploadRequest,
+        options?: { signal?: AbortSignal }
+    ): Promise<InitChunkedUploadResponse> {
+        return await this.request<InitChunkedUploadResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/uploads`, {
+            method: 'POST',
+            body: JSON.stringify(payload),
+            signal: options?.signal
+        })
+    }
+
+    async uploadFileChunk(
+        sessionId: string,
+        uploadId: string,
+        index: number,
+        chunk: Blob | ArrayBuffer | Uint8Array,
+        options?: { signal?: AbortSignal }
+    ): Promise<UploadChunkResponse> {
+        return await this.request<UploadChunkResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/uploads/${encodeURIComponent(uploadId)}/chunk?index=${index}`,
+            {
+                method: 'POST',
+                headers: { 'content-type': 'application/octet-stream' },
+                body: chunk as BodyInit,
+                signal: options?.signal
+            }
+        )
+    }
+
+    async finalizeChunkedUpload(
+        sessionId: string,
+        uploadId: string,
+        options?: { signal?: AbortSignal }
+    ): Promise<UploadFileResponse> {
+        return await this.request<UploadFileResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/uploads/${encodeURIComponent(uploadId)}/finalize`,
+            {
+                method: 'POST',
+                signal: options?.signal
+            }
+        )
+    }
+
+    async abortChunkedUpload(sessionId: string, uploadId: string): Promise<AbortChunkedUploadResponse> {
+        return await this.request<AbortChunkedUploadResponse>(
+            `/api/sessions/${encodeURIComponent(sessionId)}/uploads/${encodeURIComponent(uploadId)}/abort`,
+            {
+                method: 'POST'
+            }
+        )
+    }
+
     async deleteUploadFile(sessionId: string, path: string): Promise<DeleteUploadResponse> {
         return await this.request<DeleteUploadResponse>(`/api/sessions/${encodeURIComponent(sessionId)}/upload/delete`, {
             method: 'POST',
@@ -787,6 +844,86 @@ export class ApiClient {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/archive`, {
             method: 'POST',
             body: JSON.stringify({})
+        })
+    }
+
+    async acknowledgeModelError(sessionId: string, eventId: string): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/model-error/acknowledge`, {
+            method: 'POST',
+            body: JSON.stringify({ eventId })
+        })
+    }
+
+    async bridgeModelError(sessionId: string, eventId: string): Promise<{ ok: boolean; reason?: string }> {
+        const path = `/api/sessions/${encodeURIComponent(sessionId)}/model-error/bridge`
+        const tryOnce = async (overrideToken: string | null): Promise<Response> => {
+            const headers = new Headers({ 'content-type': 'application/json' })
+            const liveToken = this.getToken ? this.getToken() : null
+            const authToken = overrideToken ?? liveToken ?? this.token
+            if (authToken) {
+                headers.set('authorization', `Bearer ${authToken}`)
+            }
+            return fetchThroughAuthProxy(this.buildUrl(path), {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ eventId })
+            })
+        }
+
+        let res = await tryOnce(null)
+        if (res.status === 401 && this.onUnauthorized) {
+            const refreshed = await this.onUnauthorized()
+            if (refreshed) {
+                this.token = refreshed
+                res = await tryOnce(refreshed)
+            }
+        }
+        if (res.status === 401) {
+            throw new Error('Session expired. Please sign in again.')
+        }
+
+        const text = await res.text()
+        let body: { ok?: boolean; reason?: string; error?: string } | null = null
+        try {
+            body = text ? JSON.parse(text) as { ok?: boolean; reason?: string; error?: string } : null
+        } catch {
+            body = null
+        }
+
+        if (res.status === 409 && body && typeof body.ok === 'boolean') {
+            return { ok: body.ok, reason: body.reason }
+        }
+
+        if (!res.ok) {
+            const detail = body?.error ?? text
+            throw new ApiError(
+                `HTTP ${res.status} ${res.statusText}: ${detail}`,
+                res.status,
+                undefined,
+                detail || undefined
+            )
+        }
+
+        // A 2xx that is not the hub's `{ ok }` envelope never reached the hub:
+        // an auth gateway can answer with an HTML sign-in page at status 200.
+        // Reporting ok:true there makes SessionChat latch the event as pending,
+        // leaving "Bridging…" disabled forever while no CLI request was made.
+        if (!body || typeof body.ok !== 'boolean') {
+            throw new ApiError(
+                `HTTP ${res.status} ${res.statusText}: unexpected bridge response`,
+                res.status,
+                undefined,
+                text || undefined
+            )
+        }
+
+        return { ok: body.ok, reason: body.reason }
+    }
+
+    async setModelErrorAutoBridge(sessionId: string, enabled: boolean): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/model-error/auto-bridge-setting`, {
+            method: 'POST',
+            body: JSON.stringify({ enabled })
         })
     }
 

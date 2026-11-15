@@ -1090,10 +1090,12 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                         requestBaseline,
                         trimLimit
                     })
-                    return buildState(next, {
-                        pendingGapRecovery: false,
-                        preferLatestOnActivation: false
-                    })
+                    // The activation flag is consumed here — the upsert
+                    // subsumed its refresh — but the recovery stays pending
+                    // until the row sweep below succeeds, so a failed context
+                    // request retries on the next sync instead of leaving the
+                    // enriched cached call stale with no retry path.
+                    return buildState(next, { preferLatestOnActivation: false })
                 })
 
                 // A tool-call row the client cached before the gap can be
@@ -1120,9 +1122,9 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                         .slice(0, GAP_ROW_REFRESH_LIMIT)
                     for (const candidate of refreshCandidates) {
                         // A failed refresh propagates to runTailSync's catch and
-                        // surfaces the usual warning; the row stays as is, the
-                        // recovery flags were already consumed, and the next
-                        // sync retries the sweep from the surviving rows.
+                        // surfaces the usual warning; the row stays as is and
+                        // the recovery stays pending, so the next sync —
+                        // ordinary or recovery — retries the whole sweep.
                         const context = await api.getMessageContext(sessionId, candidate.id)
                         if (!isCurrentTailSync(sessionId, generation)) return
                         const refreshed = context?.messages.find((message) => message.id === candidate.id)
@@ -1154,6 +1156,13 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                         })
                     }
                 }
+
+                // The catch-up, the upsert, and every row refresh succeeded:
+                // only now is the recovery complete.
+                updateState(sessionId, (previous) => {
+                    if (previous.syncGeneration !== generation) return previous
+                    return buildState(previous, { pendingGapRecovery: false })
+                })
             }
         }
 
@@ -1571,7 +1580,7 @@ export async function loadMessageContext(
         }
 
         const retained = response.messages.filter(shouldRetainWindowMessage)
-        if (!retained.some((message) => message.id === messageId)) {
+        if (!retained.some((message) => message.id === response.targetMessageId)) {
             updateState(sessionId, (previous) => {
                 if (previous.olderGeneration !== generation) return previous
                 return buildState(previous, {

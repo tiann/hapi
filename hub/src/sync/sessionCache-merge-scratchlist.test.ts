@@ -268,3 +268,92 @@ describe('cascade-delete safety (regression)', () => {
         expect(store.scratchlist.list(newSession.id)).toEqual([])
     })
 })
+
+describe('mergeSessions preserves lastModelError alert state', () => {
+    it('carries unresolved lastModelError from old row onto new (incl hub watermarks)', async () => {
+        const { store, cache } = setup()
+        const { oldSession, newSession } = makeSessions(cache)
+        const eventId = 'evt-merge-1800000000001'
+        const atTs = 1_800_000_000_001
+
+        const result = store.sessions.updateSessionMetadata(
+            oldSession.id,
+            {
+                ...(oldSession.metadata ?? { path: '/tmp/project', host: 'localhost' }),
+                lastModelError: {
+                    eventId,
+                    kind: 'quota_exhausted',
+                    transient: false,
+                    rawSnippet: 'Error: T: [resource_exhausted]',
+                    atTs,
+                    priorAssistantClaimsDone: false,
+                    acknowledgedAt: 1_800_000_000_002,
+                    notifiedAt: 1_800_000_000_003
+                }
+            },
+            oldSession.metadataVersion,
+            'default'
+        )
+        expect(result.result).toBe('success')
+        cache.getSession(oldSession.id) // ensure cache exists
+        // Pull store write into cache via refresh path used by mergeSessions.
+        const refreshedOld = store.sessions.getSession(oldSession.id)
+        expect(refreshedOld?.metadata && (refreshedOld.metadata as { lastModelError?: { atTs: number } }).lastModelError?.atTs).toBe(atTs)
+
+        // Re-load old session into cache from store (mergeSessions reads stored rows).
+        await cache.mergeSessions(oldSession.id, newSession.id, 'default')
+
+        const merged = cache.getSession(newSession.id)?.metadata?.lastModelError
+        expect(merged?.eventId).toBe(eventId)
+        expect(merged?.atTs).toBe(atTs)
+        expect(merged?.acknowledgedAt).toBe(1_800_000_000_002)
+        expect(merged?.notifiedAt).toBe(1_800_000_000_003)
+        expect(merged?.kind).toBe('quota_exhausted')
+    })
+
+    it('keeps the new row eventId when atTs is lower than the old row (clock skew)', async () => {
+        const { store, cache } = setup()
+        const { oldSession, newSession } = makeSessions(cache)
+
+        store.sessions.updateSessionMetadata(
+            oldSession.id,
+            {
+                ...(oldSession.metadata ?? { path: '/tmp/project', host: 'localhost' }),
+                lastModelError: {
+                    eventId: 'evt-old-high-clock',
+                    kind: 'quota_exhausted',
+                    transient: false,
+                    rawSnippet: 'old',
+                    atTs: 9_000,
+                    priorAssistantClaimsDone: false,
+                    notifiedAt: 9_001
+                }
+            },
+            oldSession.metadataVersion,
+            'default'
+        )
+        store.sessions.updateSessionMetadata(
+            newSession.id,
+            {
+                ...(newSession.metadata ?? { path: '/tmp/project', host: 'localhost' }),
+                lastModelError: {
+                    eventId: 'evt-new-low-clock',
+                    kind: 'transport_closed',
+                    transient: true,
+                    rawSnippet: 'new',
+                    atTs: 1_000,
+                    priorAssistantClaimsDone: false
+                }
+            },
+            newSession.metadataVersion,
+            'default'
+        )
+
+        await cache.mergeSessions(oldSession.id, newSession.id, 'default')
+
+        const merged = cache.getSession(newSession.id)?.metadata?.lastModelError
+        expect(merged?.eventId).toBe('evt-new-low-clock')
+        expect(merged?.atTs).toBe(1_000)
+        expect(merged?.kind).toBe('transport_closed')
+    })
+})

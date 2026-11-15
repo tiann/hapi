@@ -16,6 +16,7 @@ import { runSessionJob } from '@/modules/sessionJob/runSessionJob'
 import {
     assertCreateProgressMode,
     assertNumericSleepUsesUntil,
+    computeNumericSleepSeconds,
     type JobProgressMode,
     parseUntilTimestamp,
     stampUntilProgress
@@ -33,6 +34,8 @@ export type ParsedJobArgs = {
     status?: 'running' | 'completed' | 'failed'
     progress?: JobProgressMode
     untilMs?: number
+    /** Inferred sleep duration; the supervisor anchors it after preflight. */
+    durationMs?: number
     done?: number | null
     total?: number | null
     remaining?: number | null
@@ -58,12 +61,12 @@ ${chalk.bold('When to use:')}
 ${chalk.bold('Agent contract:')}
   Prefer ${chalk.bold('hapi job run')} — it heartbeats for you and marks completed/failed on exit.
   An idle agent cannot heartbeat; set-once jobs go amber after ~15m.
-  ${chalk.bold('run/set require --progress')} unknown|fraction|until (explicit affordance).
+  ${chalk.bold('run/set require --progress')} unknown|fraction|until, except inferred numeric sleep countdowns.
   unknown → indeterminate stripes (no counts). fraction → remaining+total or done+total.
-  until → --until <ISO|epoch>; remaining/total derived (job run heartbeats re-stamp remaining).
+  until → --until <ISO|epoch|duration (+5m, 300s)>; remaining/total derived (job run heartbeats re-stamp remaining).
   Fraction without a continuous updater freezes under heartbeats — keep
   ${chalk.bold('job update')}ing done/remaining (or use --progress unknown).
-  Numeric ${chalk.bold('sleep N')} requires ${chalk.bold('--progress until')}.
+  Numeric ${chalk.bold('sleep N')} automatically infers ${chalk.bold('--progress until')} (supports multi-operand sleep N M).
   Never invent a fake percent.
   Do not wrap hapi-restart-hub / stack-switch in job run (hub down → zombie running meter).
 
@@ -421,16 +424,33 @@ export function parseJobArgs(args: string[]): ParsedJobArgs {
     }
 
     if (result.action === 'run' || result.action === 'set') {
+        // Auto-infer until mode when running `sleep N [M...]` without explicit --progress or --until
+        if (
+            result.action === 'run'
+            && result.command
+            && result.progress === undefined
+            && result.untilMs === undefined
+        ) {
+            const sleepSec = computeNumericSleepSeconds(result.command)
+            if (sleepSec !== null && sleepSec > 0) {
+                result.progress = 'until'
+                result.durationMs = sleepSec * 1000
+            }
+        }
+
+        const untilMs = result.untilMs ?? (result.durationMs !== undefined
+            ? parseUntilTimestamp(`${result.durationMs / 1000}s`)
+            : undefined)
         assertCreateProgressMode(result.action, {
             progress: result.progress,
-            untilMs: result.untilMs,
+            untilMs,
             done: result.done,
             total: result.total,
             remaining: result.remaining
         })
-        if (result.progress === 'until' && result.untilMs !== undefined) {
+        if (result.progress === 'until' && untilMs !== undefined) {
             const startedAt = result.startedAt ?? Date.now()
-            const stamped = stampUntilProgress(result.untilMs, Date.now(), startedAt)
+            const stamped = stampUntilProgress(untilMs, Date.now(), startedAt)
             result.remaining = stamped.remaining
             result.total = stamped.total
             result.unit = result.unit ?? stamped.unit
@@ -560,6 +580,7 @@ export async function handleJobCommand(args: string[]): Promise<void> {
             ...(typeof parsed.unit === 'string' ? { unit: parsed.unit } : {}),
             ...(typeof parsed.detail === 'string' ? { detail: parsed.detail } : {}),
             ...(parsed.untilMs !== undefined ? { untilMs: parsed.untilMs } : {}),
+            ...(parsed.durationMs !== undefined ? { durationMs: parsed.durationMs } : {}),
             ...(parsed.startedAt !== undefined ? { startedAtMs: parsed.startedAt } : {}),
             ...(parsed.wakeOnTerminal !== undefined ? { wakeOnTerminal: parsed.wakeOnTerminal } : {}),
             ...(parsed.wakePrompt !== undefined ? { wakePrompt: parsed.wakePrompt } : {})

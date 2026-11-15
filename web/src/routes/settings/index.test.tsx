@@ -28,6 +28,7 @@ const { context, navigate, setAppearance, setColorTheme, setFontScale, setTermin
 const hubSettingsFixture = {
     sessionSummaryContract: false,
     sessionSummaryInChat: false,
+    autoBridgeTransientModelErrors: false,
     peerSpawnDefaults: {
         agent: 'claude' as const,
         permissionMode: 'bypassPermissions' as const,
@@ -244,7 +245,13 @@ vi.mock('@/hooks/useChatSurfaceColors', () => ({
 
 vi.mock('@/lib/app-context', () => ({
     useAppContext: () => ({
-        api: { getHubSettings, updateHubSettings, getUsageSummary, getUsageQuotas },
+        api: {
+            getHubSettings,
+            updateHubSettings,
+            getUsageSummary,
+            getUsageQuotas,
+            getSessions: vi.fn().mockResolvedValue({ sessions: [] })
+        },
         baseUrl: 'http://127.0.0.1:3006',
         token: context.token,
     }),
@@ -400,6 +407,21 @@ describe('responsive settings pages', () => {
         expect(description.compareDocumentPosition(choices) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     })
 
+    it('keeps chat enum choices inline', async () => {
+        renderPage(<SettingsChatPage />)
+        fireEvent.click(screen.getByRole('radio', { name: 'Insert newline' }))
+        expect(setComposerEnterBehavior).toHaveBeenCalledWith('newline')
+        expect(screen.getByText('Combined Tool Use Background')).toBeInTheDocument()
+        expect(await screen.findByRole('checkbox', { name: 'Automatically bridge transient model errors' })).toBeInTheDocument()
+    })
+
+    it('hides the auto-bridge setting from tenant namespaces', () => {
+        context.token = `x.${btoa(JSON.stringify({ ns: 'tenant' }))}.x`
+        renderPage(<SettingsChatPage />)
+        expect(screen.queryByRole('checkbox', { name: 'Automatically bridge transient model errors' })).not.toBeInTheDocument()
+        expect(getHubSettings).not.toHaveBeenCalled()
+    })
+
     it('shows one three-level tool card control with a persistent live preview', () => {
         renderPage(<SettingsChatPage />)
         fireEvent.click(screen.getByRole('radio', { name: 'Insert newline' }))
@@ -459,6 +481,16 @@ describe('responsive settings pages', () => {
         expect(screen.getByText(String(__APP_VERSION__))).toBeInTheDocument()
         expect(screen.getByText('Protocol Version')).toBeInTheDocument()
         expect(screen.getByRole('link', { name: 'hapi.run' })).toHaveAttribute('rel', 'noopener noreferrer')
+    })
+
+    it('reports an invalid settings import file and keeps current settings', async () => {
+        localStorage.setItem('hapi-appearance', 'dark')
+        const { container } = renderPage(<SettingsAboutPage />)
+        expect(screen.getByRole('button', { name: 'Export' })).toBeInTheDocument()
+        const input = container.querySelector('input[type="file"]') as HTMLInputElement
+        fireEvent.change(input, { target: { files: [new File(['{}'], 'other.json', { type: 'application/json' })] } })
+        expect(await screen.findByRole('alert')).toHaveTextContent('not a HAPI settings export')
+        expect(localStorage.getItem('hapi-appearance')).toBe('dark')
     })
 
     it('links common voice settings to full-page voices and advanced pages', () => {

@@ -44,6 +44,16 @@ describe('getPendingRequestKinds', () => {
         expect(kinds).toEqual(['input'])
     })
 
+    it('classifies Cursor questions as input', () => {
+        const kinds = getPendingRequestKinds(makeSession({
+            agentState: {
+                requests: {
+                    req1: { tool: 'CursorAskQuestion', arguments: {} }
+                }
+            }
+        }))
+        expect(kinds).toEqual(['input'])
+    })
     it('classifies other pending tools as permission', () => {
         const kinds = getPendingRequestKinds(makeSession({
             agentState: {
@@ -368,6 +378,24 @@ describe('summary derivation helpers', () => {
             cursorSessionId: 'cursor-xyz'
         })
         expect(summary?.agentSessionId).toBe('cursor-xyz')
+    })
+
+    it('toSessionSummaryMetadata omits lastModelError.lastUserMessage', () => {
+        const summary = toSessionSummaryMetadata({
+            path: '/p',
+            host: 'h',
+            lastModelError: {
+                eventId: 'evt-1',
+                kind: 'transport_closed',
+                transient: true,
+                rawSnippet: 'WritableIterable is closed',
+                atTs: 1,
+                priorAssistantClaimsDone: false,
+                lastUserMessage: 'secret prompt text that must not leak into list payloads'
+            }
+        })
+        expect(summary?.lastModelError?.eventId).toBe('evt-1')
+        expect(summary?.lastModelError).not.toHaveProperty('lastUserMessage')
     })
 
     it('carries current-fork capability into list summaries', () => {

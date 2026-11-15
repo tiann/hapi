@@ -238,6 +238,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     await restoreQueuedReservation();
                     return { steered: false, error: 'Active turn changed' };
                 }
+                permissionHandler.denyPendingForSteer();
                 void delivery.delivered.then(async (delivered) => {
                     if (delivered) {
                         // Agent output preceding the pickup is already in the

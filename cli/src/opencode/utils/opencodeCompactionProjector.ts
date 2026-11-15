@@ -18,6 +18,7 @@ export class OpencodeCompactionProjector {
     private readonly emitted = new Set<string>();
     private readonly started = new Set<string>();
     private readonly emittedText = new Map<string, string>();
+    private readonly observedControls = new Set<string>();
 
     constructor(private readonly options: {
         sessionId: string;
@@ -25,6 +26,7 @@ export class OpencodeCompactionProjector {
         onText?: (part: OpencodeNativeText) => void;
         onFailure?: (id: string, trigger: OpencodeCompactionTrigger) => void;
         onStart?: (id: string, trigger: OpencodeCompactionTrigger) => void;
+        onControlMessage?: (messageId: string) => void;
     }) {}
 
     message(info: RecordValue): void {
@@ -71,6 +73,7 @@ export class OpencodeCompactionProjector {
 
     /** Call after a terminal native update or a complete storage scan. */
     flush(): void {
+        this.observeControlMessages();
         for (const info of this.messages.values()) {
             const id = info.id as string;
             if (info.type === 'compaction') {
@@ -96,6 +99,36 @@ export class OpencodeCompactionProjector {
             if (text.trim()) this.emit(info.parentID, text, this.trigger(info.parentID));
         }
         this.projectText();
+    }
+
+    /** Hidden v1 records still belong to native history, independently of the card's stable marker ID. */
+    private observeControlMessages(): void {
+        const onControlMessage = this.options.onControlMessage;
+        if (!onControlMessage) return;
+        const observe = (id: string) => {
+            if (this.observedControls.has(id)) return;
+            this.observedControls.add(id);
+            onControlMessage(id);
+        };
+        const markers = new Set<string>();
+        for (const part of this.parts.values()) {
+            const info = typeof part.messageID === 'string' ? this.messages.get(part.messageID) : undefined;
+            if (info?.role !== 'user') continue;
+            if (part.type === 'compaction') {
+                markers.add(info.id as string);
+                observe(info.id as string);
+            } else if (part.type === 'text' && part.synthetic === true
+                && isObject(part.metadata) && part.metadata.compaction_continue === true) {
+                observe(info.id as string);
+            }
+        }
+        for (const info of this.messages.values()) {
+            if (info.role !== 'assistant' || info.summary !== true || typeof info.parentID !== 'string'
+                || !markers.has(info.parentID)) continue;
+            const siblings = [...this.messages.values()].filter(message => message.role === 'assistant'
+                && message.summary === true && message.parentID === info.parentID);
+            if (siblings.length === 1) observe(info.id as string);
+        }
     }
 
     private projectText(parts: Iterable<RecordValue> = this.parts.values()): void {

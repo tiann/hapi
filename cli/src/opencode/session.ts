@@ -3,6 +3,8 @@ import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { AgentSessionBase } from '@/agent/sessionBase';
 import type { OpencodeHookEvent, OpencodeMode, PermissionMode } from './types';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
+import type { LocalHistoryPublisher } from './localHistory';
+import { OpenCodeRuntimeGate } from './rewind';
 
 type LocalLaunchFailure = {
     message: string;
@@ -13,6 +15,12 @@ export class OpencodeSession extends AgentSessionBase<OpencodeMode> {
     readonly startedBy: 'runner' | 'terminal';
     readonly startingMode: 'local' | 'remote';
     localLaunchFailure: LocalLaunchFailure | null = null;
+    localHistoryPublisher: LocalHistoryPublisher | null = null;
+    readonly runtimeGate: OpenCodeRuntimeGate;
+    private dequeueRelease: (() => void) | undefined;
+    takeDequeuedRuntimeRelease(): (() => void) | undefined {
+        const release = this.dequeueRelease; this.dequeueRelease = undefined; return release;
+    }
 
     private hookEventHandlers: Array<(event: OpencodeHookEvent) => void> = [];
 
@@ -29,6 +37,7 @@ export class OpencodeSession extends AgentSessionBase<OpencodeMode> {
         startingMode: 'local' | 'remote';
         permissionMode?: PermissionMode;
         modelReasoningEffort?: string | null;
+        runtimeGate?: OpenCodeRuntimeGate;
     }) {
         super({
             api: opts.api,
@@ -50,6 +59,14 @@ export class OpencodeSession extends AgentSessionBase<OpencodeMode> {
         });
 
         this.startedBy = opts.startedBy;
+        this.runtimeGate = opts.runtimeGate ?? new OpenCodeRuntimeGate();
+        this.queue.beforeDequeue = () => {
+            // An aborted collectBatch (an onBatchConsumed throw) leaves the
+            // previous admission unreleased and the launcher never reaches
+            // takeDequeuedRuntimeRelease: take it before acquiring the next.
+            this.dequeueRelease?.();
+            this.dequeueRelease = this.runtimeGate.enterRuntime();
+        };
         this.startingMode = opts.startingMode;
         this.permissionMode = opts.permissionMode;
         this.modelReasoningEffort = opts.modelReasoningEffort;
