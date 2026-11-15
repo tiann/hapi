@@ -132,6 +132,20 @@ export function ArchiveIcon(props: IconProps) {
     )
 }
 
+export function PinOffIcon(props: IconProps) {
+    return createIcon(
+        <>
+            <path d="M12 17v5" />
+            <path d="M15 9.34V4h2V2H7.66" />
+            <path d="M9 9v4l-2 2h8" />
+            <path d="M5 17h12" />
+            <path d="m2 2 20 20" />
+        </>,
+        props,
+        2
+    )
+}
+
 export function ForkIcon(props: IconProps) {
     return createIcon(
         <>

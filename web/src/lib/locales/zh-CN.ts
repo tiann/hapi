@@ -336,6 +336,7 @@ export default {
   'session.action.unpinProject': '取消项目置顶',
   'session.action.pinGlobal': '全局置顶',
   'session.action.unpinGlobal': '取消全局置顶',
+  'session.action.unpin': '取消置顶',
   'session.action.pinFailed': '无法更新置顶状态',
   'sessions.pinnedSection': '置顶会话',
   'session.action.export': '导出对话',
@@ -1306,6 +1307,11 @@ export default {
   'settings.about.website': '官方网站',
   'settings.about.appVersion': '应用版本',
   'settings.about.protocolVersion': '协议版本',
+  'settings.about.backup.title': '设置',
+  'settings.about.backup.description': '仅保存在当前浏览器。',
+  'settings.about.backup.exportButton': '导出',
+  'settings.about.backup.importButton': '导入',
+  'settings.about.backup.importError': '此文件不是 HAPI 设置导出文件。',
 
   // Browse / Workspace
   'browse.title': '浏览',
