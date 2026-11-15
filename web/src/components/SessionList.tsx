@@ -1485,7 +1485,13 @@ const SessionItem = memo(function SessionItem(props: {
                     />
                 </button>
                 {githubPrAwarenessEnabled && primaryPrRef ? (
-                    <div className={`flex shrink-0 items-center self-start py-2 ${hasQuickAction ? 'pr-10' : 'pr-2'}`}>
+                    <div
+                        data-testid="session-pr-chip-wrap"
+                        className="flex shrink-0 items-center self-start py-2 pr-2"
+                        style={hasQuickAction
+                            ? { paddingRight: 'calc(var(--session-row-action-span, 2rem) + 0.5rem)' }
+                            : undefined}
+                    >
                         <SessionPrChip
                             refs={s.metadata?.externalRefs}
                             displayProfile={prChipDisplay}

@@ -109,4 +109,56 @@ describe('SessionList PR chip', () => {
         expect(rowButton.className.split(/\s+/)).toContain('group/session-row')
         expect(rowButton.closest('div')?.className.split(/\s+/)).not.toContain('group/session-row')
     })
+
+    it('reserves PR chip padding for two quick actions on a pinned active row', async () => {
+        render(
+            <QueryClientProvider
+                client={new QueryClient({
+                    defaultOptions: {
+                        queries: { retry: false },
+                        mutations: { retry: false }
+                    }
+                })}
+            >
+                <ToastProvider>
+                    <I18nProvider>
+                        <SessionList
+                            sessions={[makeSession({
+                                id: 'sess-pr-pinned',
+                                active: true,
+                                pinned: true,
+                                metadata: {
+                                    path: '/tmp/demo',
+                                    name: 'Pinned PR session',
+                                    externalRefs: [{
+                                        kind: 'github_pr',
+                                        repo: 'tiann/hapi',
+                                        number: 1163,
+                                        url: 'https://github.com/tiann/hapi/pull/1163',
+                                        role: 'primary',
+                                        source: 'user',
+                                        linkedAt: 1
+                                    }]
+                                }
+                            })]}
+                            selectedSessionId={null}
+                            onSelect={vi.fn()}
+                            onNewSession={vi.fn()}
+                            onRefresh={vi.fn()}
+                            isLoading={false}
+                            renderHeader={false}
+                            api={null}
+                        />
+                    </I18nProvider>
+                </ToastProvider>
+            </QueryClientProvider>
+        )
+
+        fireEvent.click(screen.getByTitle('/tmp/demo'))
+        const chip = await screen.findByTestId('session-pr-chip')
+        const row = chip.closest('.session-list-row')
+        expect(row).toHaveAttribute('data-quick-action-count', '2')
+        const chipWrap = screen.getByTestId('session-pr-chip-wrap')
+        expect(chipWrap.style.paddingRight).toBe('calc(var(--session-row-action-span, 2rem) + 0.5rem)')
+    })
 })
