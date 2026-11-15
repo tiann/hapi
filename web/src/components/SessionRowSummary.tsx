@@ -81,7 +81,6 @@ function getSessionTimeLabel(
 
 const PRESENCE_BADGE_CLASS = {
     working: 'bg-[var(--app-badge-success-text)] animate-pulse',
-    background: 'bg-blue-400 animate-pulse',
     waiting: 'border-2 border-[var(--app-badge-success-text)] bg-[var(--app-bg)]',
     stopped: 'bg-[var(--app-bg)] text-[var(--app-hint)]',
 } as const
@@ -213,23 +212,16 @@ export function SessionRowSummary(props: {
         })
         : null
 
-    // Presence lives on the agent icon and every state has its own mark, so no
-    // state is shown by the absence of one: solid = working (pulsing), ring =
-    // connected and waiting, power mark = stopped or archived. Blue is the
-    // existing background-work state. An outliving attached job counts as
-    // working even when the agent itself is idle or disconnected.
-    // The badge carries *which* state on inspection; the row-level residency
-    // fade below carries *which rows* at a glance. Same predicate (!active),
-    // two scales — a 10px mark doesn't survive a long-list scan on its own.
+    // Presence represents foreground work and connection state on the agent
+    // icon. Connected sessions with only background work are waiting from the
+    // foreground's perspective; the title-side blue dot owns that state.
     const isRunning = s.active && s.thinking
     const isBackgroundOnly = s.active && !s.thinking && (s.backgroundTaskCount ?? 0) > 0
-    const presence: 'working' | 'background' | 'waiting' | 'stopped' = isBackgroundOnly
-        ? 'background'
-        : isRunning || attachedJob
-            ? 'working'
-            : s.active
-                ? 'waiting'
-                : 'stopped'
+    const presence: 'working' | 'waiting' | 'stopped' = isRunning || attachedJob
+        ? 'working'
+        : s.active
+            ? 'waiting'
+            : 'stopped'
     const isUnread = sessionIsUnread(s, {
         lastSeenAt: getSessionLastSeenAt(s.id),
         manualUnreadAt: getSessionManualUnreadAt(s.id, s.readState),
@@ -242,20 +234,16 @@ export function SessionRowSummary(props: {
     // `thinking` is authoritative for foreground activity. A pending input can
     // be blocking or async, and summaries do not distinguish the two, so keep
     // the spinner rather than hiding real work behind the request symbol.
-    // Independent background work/jobs still count, even if the agent is
-    // disconnected. No work running is not a claim of successful completion:
-    // summaries carry no turn-outcome field, and the dot only means unread.
-    const hasRunningWork = Boolean(attachedJob)
-        || (s.active && (s.backgroundTaskCount ?? 0) > 0)
-        || isRunning
-    // While work runs, the spinner colour alone carries unread. A bold title and
-    // accented time are the at-rest unread look, so using them mid-run makes a
-    // working session read as finished.
-    const emphasizeUnread = isUnread && !hasRunningWork
-    const activityLabel = isBackgroundOnly
-        ? t('session.item.background')
-        : t('session.item.running')
+    // Background-only work gets a static title dot so the spinner remains a
+    // stable "foreground turn running" signal. An attached job keeps its own
+    // running spinner because it outlives the agent and is independently visible.
+    const hasForegroundWork = Boolean(attachedJob) || isRunning
+    // At-rest unread styling applies to background-only work too: its title dot
+    // is static, unlike the foreground spinner that carries unread by color.
+    const emphasizeUnread = isUnread && !hasForegroundWork
+    const activityLabel = t('session.item.running')
     const pendingRequestId = s.pendingRequests?.[0]?.id
+
     const agentIcon = (
         <span className="relative inline-flex h-6 w-6 shrink-0 items-center justify-center">
             <AgentFlavorIcon flavor={s.metadata?.flavor} className="h-6 w-6" />
@@ -283,7 +271,7 @@ export function SessionRowSummary(props: {
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                 {/* Fade the disconnected title, keeping activity/unread indicators
                     and outliving job progress at full contrast. */}
-                <div className="grid grid-cols-[minmax(9rem,1fr)_minmax(0,max-content)] items-center gap-2">
+                <div className="session-row-header grid grid-cols-[minmax(9rem,1fr)_minmax(0,max-content)] items-center gap-2">
                     <div className="flex min-w-0 items-center gap-2">
                         <div
                             className={`min-w-0 flex-1 truncate text-sm text-[var(--app-fg)] ${emphasizeUnread ? 'font-semibold' : 'font-normal'} ${!s.active ? 'opacity-50' : ''}`}
@@ -305,10 +293,12 @@ export function SessionRowSummary(props: {
                                 <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500" />
                             </span>
                         ) : null}
-                        {hasRunningWork ? (
+                        {hasForegroundWork ? (
                             <span data-testid="session-activity" role="img" aria-label={activityLabel} title={activityLabel} className="inline-flex shrink-0">
                                 <LoaderIcon className={`h-3.5 w-3.5 animate-spin-slow ${isUnread ? 'text-blue-500' : 'text-[var(--app-hint)]'}`} />
                             </span>
+                        ) : isBackgroundOnly ? (
+                            <span data-testid="session-background" role="img" aria-label={t('session.item.background')} title={t('session.item.background')} className="h-2 w-2 shrink-0 rounded-full bg-blue-500" />
                         ) : isUnread && !requestKind ? (
                             <span data-testid="session-unread" className="h-2 w-2 shrink-0 rounded-full bg-[var(--app-fg)]" aria-hidden="true" />
                         ) : null}

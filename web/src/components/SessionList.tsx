@@ -1,4 +1,4 @@
-import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import * as Popover from '@radix-ui/react-popover'
 import { SessionListScrollAnchor } from './SessionListScrollAnchor'
 import type { SessionContentSearchResponse, SessionSummary } from '@/types/api'
@@ -14,7 +14,7 @@ import {
 } from '@/lib/sessionListSearch'
 import { useLongPress } from '@/hooks/useLongPress'
 import { usePlatform } from '@/hooks/usePlatform'
-import { sessionArchiveMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
+import { sessionArchiveMutationKey, sessionPinMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useIsMutating } from '@tanstack/react-query'
 import { SessionActionMenu } from '@/components/SessionActionMenu'
 import { SessionExportDialog } from '@/components/SessionExportDialog'
@@ -24,7 +24,7 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { ArchiveSessionDialog } from '@/components/ArchiveSessionDialog'
 import { DeleteSessionDialog } from '@/components/DeleteSessionDialog'
 import { ProjectGroupRow } from '@/components/ProjectGroupRow'
-import { ArchiveIcon, CheckIcon, CopyIcon, InfoIcon, LoaderIcon, MarkAllReadIcon } from '@/components/icons'
+import { ArchiveIcon, CheckIcon, CopyIcon, InfoIcon, LoaderIcon, MarkAllReadIcon, PinOffIcon } from '@/components/icons'
 import { useFue } from '@/lib/use-fue'
 import { FueCallout, FueDot } from '@/components/Fue'
 
@@ -1125,6 +1125,10 @@ export function SessionListSearch(props: {
 // A row with an open menu or dialog holds its collapsed panel mounted.
 const CollapsiblePanelHoldContext = createContext<((held: boolean) => void) | null>(null)
 
+type QuickUnpinFocusTarget = { sessionId: string; pending: boolean }
+const QuickUnpinFocusContext = createContext<{ current: QuickUnpinFocusTarget | null } | null>(null)
+const QUICK_ACTION_BUTTON_CLASS_NAME = 'flex h-7 w-7 items-center justify-center rounded-md text-[var(--app-hint)] transition-colors hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] disabled:cursor-wait'
+
 // Collapsed rows unmount after the close transition; mounted-but-hidden rows
 // would otherwise re-render on every session or machine update.
 function CollapsiblePanel(props: { open: boolean; children: ReactNode }) {
@@ -1210,6 +1214,9 @@ const SessionItem = memo(function SessionItem(props: {
     const [forkOpen, setForkOpen] = useState(false)
     const [forkPending, setForkPending] = useState(false)
     const pendingRequestPressedRef = useRef(false)
+    const rowRef = useRef<HTMLDivElement>(null)
+    const rowButtonRef = useRef<HTMLDivElement>(null)
+    const quickUnpinFocusRef = useContext(QuickUnpinFocusContext)
     const {
         status: cursorChatStoreStatus,
         isApplicable: cursorChatStoreApplicable,
@@ -1281,6 +1288,55 @@ const SessionItem = memo(function SessionItem(props: {
         }
     }
 
+    const quickUnpinPending = useIsMutating({
+        mutationKey: sessionPinMutationKey(s.id),
+        exact: true,
+        predicate: (mutation) => mutation.state.variables === 'none',
+    }) > 0
+    const isPinned = Boolean(s.pinned || s.globalPinned)
+    // The row can lose its pinned flags before the unpin request settles;
+    // keep the spinner until it does.
+    const showQuickUnpin = isPinned || quickUnpinPending
+    const handleQuickUnpin = async (event: MouseEvent<HTMLButtonElement>) => {
+        const hadFocus = rowRef.current?.contains(document.activeElement) ?? false
+        if (event.detail === 0 && hadFocus && quickUnpinFocusRef) {
+            quickUnpinFocusRef.current = { sessionId: s.id, pending: true }
+            // Keep focus on the row button before disabling or removing the
+            // unpin button drops focus to document.body.
+            rowButtonRef.current?.focus({ preventScroll: true })
+        }
+        try {
+            await setPinMode('none')
+        } catch (error) {
+            if (quickUnpinFocusRef?.current?.sessionId === s.id) {
+                quickUnpinFocusRef.current = null
+            }
+            addToast({
+                title: t('session.action.pinFailed'),
+                body: error instanceof Error ? error.message : t('dialog.error.default'),
+                sessionId: s.id,
+                url: `/sessions/${s.id}`
+            })
+        } finally {
+            if (quickUnpinFocusRef?.current?.sessionId === s.id) {
+                quickUnpinFocusRef.current.pending = false
+            }
+        }
+    }
+
+    useLayoutEffect(() => {
+        const target = quickUnpinFocusRef?.current
+        if (!target || target.sessionId !== s.id) return
+        const activeEl = document.activeElement
+        if (activeEl && activeEl !== document.body && !rowRef.current?.contains(activeEl)) {
+            quickUnpinFocusRef.current = null
+            return
+        }
+        if (activeEl !== rowButtonRef.current) {
+            rowButtonRef.current?.focus({ preventScroll: true })
+        }
+    }, [s.id, isPinned, quickUnpinPending, quickUnpinFocusRef])
+
     // Hover archive: an idle session archives in one click with a Reopen toast;
     // one that is replying, waiting on approval or running background work
     // still goes through the confirmation, since archiving stops its agent.
@@ -1292,6 +1348,8 @@ const SessionItem = memo(function SessionItem(props: {
     // The row can turn inactive before the archive request settles (the hub
     // still confirms cleanup); keep the spinner until it does.
     const showQuickArchive = s.active || quickArchivePending
+    const quickActionCount = (showQuickUnpin ? 1 : 0) + (showQuickArchive ? 1 : 0)
+    const hasQuickAction = quickActionCount > 0
     const handleQuickArchive = async () => {
         if (archiveNeedsConfirmation) {
             setArchiveOpen(true)
@@ -1432,13 +1490,17 @@ const SessionItem = memo(function SessionItem(props: {
                 exactly when a pointer or keyboard user was approaching the
                 row to use them (bot review, hapi#2147, second pass). */}
             <div
+                ref={rowRef}
                 data-session-scroll-anchor
-                className={`session-list-item session-list-row relative flex w-full items-start gap-1 rounded-lg py-2 pl-2.5 transition-colors ${showQuickArchive ? 'pr-10' : 'pr-2'} ${selected ? 'bg-[var(--app-secondary-bg)]' : ''}`}
-                data-quick-action-pending={quickArchivePending ? '' : undefined}
+                data-session-row-id={s.id}
+                className={`session-list-item session-list-row relative flex w-full items-start gap-1 rounded-lg py-2 pl-2.5 transition-colors ${hasQuickAction ? 'pr-10' : 'pr-2'} ${selected ? 'bg-[var(--app-secondary-bg)]' : ''}`}
+                data-quick-action-count={quickActionCount > 0 ? quickActionCount : undefined}
+                data-quick-action-pending={quickArchivePending || quickUnpinPending ? '' : undefined}
             >
                 <div
                     role="button"
                     tabIndex={0}
+                    ref={rowButtonRef}
                     {...longPressHandlers}
                     onKeyDown={(event) => {
                         // handleRowKeyDown only preventDefaults in its own
@@ -1482,7 +1544,7 @@ const SessionItem = memo(function SessionItem(props: {
                         showIssueChip={false}
                         contentSnippet={contentSnippet}
                         contentSearchTruncated={contentSearchTruncated}
-                        trailingClassName={showQuickArchive ? 'session-row-trailing' : undefined}
+                        trailingClassName={hasQuickAction ? 'session-row-trailing' : undefined}
                     />
                 </div>
                 {linkedIssue ? (
@@ -1503,19 +1565,37 @@ const SessionItem = memo(function SessionItem(props: {
                         />
                     </div>
                 ) : null}
-                {showQuickArchive ? (
-                    <button
-                        type="button"
-                        className="session-row-quick-action absolute right-1 top-1.5 h-7 w-7 items-center justify-center rounded-md text-[var(--app-hint)] transition-colors hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)] disabled:cursor-wait"
-                        aria-label={t('session.action.archive')}
-                        title={t('session.action.archive')}
-                        disabled={quickArchivePending}
-                        onClick={() => void handleQuickArchive()}
-                    >
-                        {quickArchivePending
-                            ? <LoaderIcon className="h-4 w-4 animate-spin" />
-                            : <ArchiveIcon className="h-4 w-4" />}
-                    </button>
+                {hasQuickAction ? (
+                    <div className="session-row-quick-action absolute right-1 top-1.5 items-center gap-0.5">
+                        {showQuickUnpin ? (
+                            <button
+                                type="button"
+                                className={QUICK_ACTION_BUTTON_CLASS_NAME}
+                                aria-label={t('session.action.unpin')}
+                                title={t('session.action.unpin')}
+                                disabled={quickUnpinPending}
+                                onClick={(event) => void handleQuickUnpin(event)}
+                            >
+                                {quickUnpinPending
+                                    ? <LoaderIcon className="h-4 w-4 animate-spin" />
+                                    : <PinOffIcon className="h-4 w-4" />}
+                            </button>
+                        ) : null}
+                        {showQuickArchive ? (
+                            <button
+                                type="button"
+                                className={QUICK_ACTION_BUTTON_CLASS_NAME}
+                                aria-label={t('session.action.archive')}
+                                title={t('session.action.archive')}
+                                disabled={quickArchivePending}
+                                onClick={() => void handleQuickArchive()}
+                            >
+                                {quickArchivePending
+                                    ? <LoaderIcon className="h-4 w-4 animate-spin" />
+                                    : <ArchiveIcon className="h-4 w-4" />}
+                            </button>
+                        ) : null}
+                    </div>
                 ) : null}
             </div>
 
@@ -1745,6 +1825,7 @@ export function SessionList(props: {
     const [contentSearchError, setContentSearchError] = useState(false)
     const [searchExpanded, setSearchExpanded] = useState(false)
     const [markAllReadOpen, setMarkAllReadOpen] = useState(false)
+    const quickUnpinFocusRef = useRef<QuickUnpinFocusTarget | null>(null)
     // Actions-box width is the real icon budget (#2039). Measuring the full
     // row and subtracting a guessed search reserve left empty space after More.
     const headerRowRef = useRef<HTMLDivElement>(null)
@@ -2514,6 +2595,105 @@ export function SessionList(props: {
         setOverrides(prev => expandSelectedSessionCollapseOverrides(prev, group))
     }, [selectedSessionId, groups, isFiltering])
 
+    // Keep a keyboard-unpinned row reachable when it moves into a collapsed or
+    // truncated destination section, or fall back to a visible row if removed.
+    useLayoutEffect(() => {
+        const target = quickUnpinFocusRef.current
+        if (!target) return
+
+        const activeEl = document.activeElement
+        const activeRowId = activeEl instanceof Element
+            ? activeEl.closest('[data-session-row-id]')?.getAttribute('data-session-row-id')
+            : null
+        if (activeEl && activeEl !== document.body && activeRowId !== target.sessionId) {
+            quickUnpinFocusRef.current = null
+            return
+        }
+
+        if (globalPinnedSessions.some((session) => session.id === target.sessionId)) {
+            if (!target.pending) quickUnpinFocusRef.current = null
+            return
+        }
+
+        const inRunning = [...runningSessions.jobs, ...runningSessions.working, ...runningSessions.pending]
+            .some((session) => session.id === target.sessionId)
+        if (inRunning) {
+            if (runningSectionCollapsed && !isFiltering) {
+                setRunningSectionCollapsed(false)
+                return
+            }
+            if (!target.pending) quickUnpinFocusRef.current = null
+            return
+        }
+
+        const targetGroup = groups.find((group) =>
+            group.sessions.some((session) => session.id === target.sessionId)
+        )
+        if (targetGroup) {
+            const collapsed = isGroupCollapsed(targetGroup)
+            const peekingUnread = collapsed
+                && keepUnreadSessionsVisible
+                && targetGroup.sessions.some((session) => session.id === target.sessionId && isSessionUnread(session))
+            let expanding = false
+            if (collapsed && !peekingUnread) {
+                expanding = true
+                const setOverrides = isFiltering ? setFilterCollapseOverrides : setCollapseOverrides
+                setOverrides((prev) => expandSelectedSessionCollapseOverrides(prev, targetGroup))
+            }
+
+            const targetIndex = targetGroup.sessions.findIndex((session) => session.id === target.sessionId)
+            if (targetIndex >= 0 && !getVisibleGroupSessions(targetGroup).some((session) => session.id === target.sessionId)) {
+                expanding = true
+                let neededLimit = targetIndex + 1
+                for (let i = targetIndex + 1; i < targetGroup.sessions.length; i += 1) {
+                    const s = targetGroup.sessions[i]!
+                    if (s.id === selectedSessionId || (s.active && s.pendingRequestsCount > 0) || previewIsUnread?.(s)) {
+                        neededLimit += 1
+                    }
+                }
+                setSessionVisibleCounts((prev) => {
+                    if (neededLimit <= (prev.get(targetGroup.key) ?? sessionPreviewLimit)) return prev
+                    const next = new Map(prev)
+                    next.set(targetGroup.key, Math.min(neededLimit, targetGroup.sessions.length))
+                    return next
+                })
+            }
+            if (!expanding && !target.pending) {
+                quickUnpinFocusRef.current = null
+            }
+            return
+        }
+
+        if (!activeEl || activeEl === document.body) {
+            const container = scrollContainerRef.current
+            const findVisible = (selector: string) =>
+                Array.from(container?.querySelectorAll<HTMLElement>(selector) ?? [])
+                    .find((el) => !el.closest('.collapsible-panel:not([data-open])'))
+            // Prefer a session row over a project-group header when both
+            // carry data-session-scroll-anchor — the row's outer element is
+            // a <div role="button"> (not a native <button>; see the ARIA
+            // comment where this row renders), so `session-list-item` is
+            // the distinguishing marker rather than the tag name. Either
+            // match is a non-focusable wrapper div (the scroll anchor and
+            // the actual interactive element are different nodes here,
+            // unlike upstream's single native <button>), so drill down to
+            // the focusable role="button" descendant before focusing it.
+            const candidate = findVisible('.session-list-item[data-session-scroll-anchor]')
+                ?? findVisible('[data-session-scroll-anchor]')
+                ?? findVisible('[role="button"], button')
+            const fallback = candidate && !candidate.matches('[role="button"], button')
+                ? (candidate.querySelector<HTMLElement>('[role="button"], button') ?? candidate)
+                : candidate
+            fallback?.focus({ preventScroll: true })
+        }
+        quickUnpinFocusRef.current = null
+    }, [
+        globalPinnedSessions, runningSessions, groups, runningSectionCollapsed,
+        collapseOverrides, filterCollapseOverrides, sessionVisibleCounts,
+        isFiltering, selectedSessionId, keepUnreadSessionsVisible,
+        isSessionUnread, sessionPreviewLimit, previewIsUnread,
+    ])
+
     // Clean up stale collapse overrides
     useEffect(() => {
         setCollapseOverrides(prev => {
@@ -2920,6 +3100,7 @@ export function SessionList(props: {
                 </div>
             ) : null}
             <div ref={scrollContainerRef} className="app-scroll-y session-list-scrollbar-left scrollbar-auto-hide min-h-0 flex-1">
+            <QuickUnpinFocusContext.Provider value={quickUnpinFocusRef}>
             <SessionListScrollAnchor sessions={props.sessions} className="mx-auto flex w-full max-w-content flex-col gap-1 pl-1.5 pr-2 pb-2">
                 {props.sessions.length === 0 && !props.isLoading ? (
                     <SessionsEmptyState
@@ -3040,6 +3221,7 @@ export function SessionList(props: {
                 {groups.map(renderDirectoryGroup)}
                 {actionOnlyGroups.map(renderActionOnlyGroupHeader)}
             </SessionListScrollAnchor>
+            </QuickUnpinFocusContext.Provider>
             </div>
             </div>
             <ConfirmDialog

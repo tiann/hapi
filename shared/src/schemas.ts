@@ -431,9 +431,8 @@ export function reconcileExternalRefs(prior: ExternalRef[], next: ExternalRef[])
  * carry-forward tier in that file honors), not have an unrelated prior ref
  * silently resurrected alongside it. Only for an identity `next` actually
  * mentions does `prior`'s freshness get a say — guarding against a stale
- * write (built from a cache snapshot that predates an out-of-band
- * `hapi-meta-daily.sh` status update) rolling back that fresher field-level
- * change.
+ * write (built from a cache snapshot that predates an out-of-band Meta
+ * status-script update) rolling back that fresher field-level change.
  */
 export function mergeContributionRefs(prior: ExternalRef[], next: ExternalRef[]): ExternalRef[] {
     return next.map(nextRef => {
