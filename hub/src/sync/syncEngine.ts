@@ -90,7 +90,7 @@ import { SessionEnumerationCache } from './sessionEnumerationCache'
 import { ingestNotifySummaryFromMessage } from './workGraphNotifyIngest'
 import { MetadataSchema, type OpenCodeRewindOperation } from '@hapi/protocol/schemas'
 import type { OpenCodeRewindReport } from '@hapi/protocol/apiTypes'
-import { extractTodoWriteTodosFromMessageContent } from './todos'
+import { extractSessionTodosFromMessageContent } from './todos'
 import {
     readAutoBridgeTransientModelErrorsEnabled,
     writeAutoBridgeTransientModelErrorsEnabled
@@ -1135,6 +1135,11 @@ export class SyncEngine {
 
     recordSessionActivity(sessionId: string, updatedAt: number): void {
         this.sessionCache.recordSessionActivity(sessionId, updatedAt)
+    }
+
+    /** Rebuild structured task state after a transcript is imported directly. */
+    rebuildSessionTodos(sessionId: string, options?: { touchUpdatedAt?: boolean }): void {
+        this.sessionCache.rebuildTodosFromTranscript(sessionId, options)
     }
 
     /**
@@ -3012,7 +3017,7 @@ export class SyncEngine {
             const updated = this.store.sessions.updateSessionMetadata(sessionId, { ...nextMetadata, opencodeRewind: next }, current.metadataVersion, namespace)
             if (updated.result !== 'success') throw new Error('OpenCode rewind metadata CAS failed')
             if (invalidated) {
-                const todos = this.store.messages.getAllMessages(sessionId).map(m => extractTodoWriteTodosFromMessageContent(m.content)).filter(Boolean).at(-1) ?? null
+                const todos = this.store.messages.getAllMessages(sessionId).map(m => extractSessionTodosFromMessageContent(m.content)).filter(Boolean).at(-1) ?? null
                 this.store.sessions.replaceSessionTodos(sessionId, todos, namespace)
             }
             return next

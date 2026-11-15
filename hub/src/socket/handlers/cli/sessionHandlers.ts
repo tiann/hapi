@@ -6,7 +6,7 @@ import type { AgentState, BackgroundTask, CodexCollaborationMode, Metadata, Perm
 import { getReasoningStreamId, getToolCallId, isRedundantGoalStatusEventContent } from '@hapi/protocol/messages'
 import type { Store, StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
-import { extractTodoWriteTodosFromMessageContent } from '../../../sync/todos'
+import { extractSessionTodosFromMessageContent } from '../../../sync/todos'
 import { extractTeamStateFromMessageContent, applyTeamStateDelta } from '../../../sync/teams'
 import { extractBackgroundTasks } from '../../../sync/backgroundTasks'
 import { shouldRecordSessionActivity } from '../../../sync/sessionActivity'
@@ -199,7 +199,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         const msg = stored.message
         // A merged row keeps its first snapshot's createdAt for stable
         // ordering, but derived todo/team versions must strictly advance
-        // (setSessionTodos/setSessionTeamState gate on *_updated_at < candidate),
+        // (setSessionTeamState gates on team_state_updated_at < candidate),
         // so stamp them at merge time instead.
         const derivedAt = stored.updated ? Math.max(Date.now(), msg.createdAt + 1) : msg.createdAt
         // A merged row keeps its first snapshot's createdAt for stable
@@ -233,9 +233,15 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             onSessionActivity?.(sid, msg.createdAt)
         }
 
-        const todos = extractTodoWriteTodosFromMessageContent(content)
+        const todos = extractSessionTodosFromMessageContent(content)
         if (todos) {
-            const updated = store.sessions.setSessionTodos(sid, todos, derivedAt, session.namespace)
+            const updated = store.sessions.setSessionTodos(
+                sid,
+                todos,
+                { at: msg.invokedAt ?? msg.createdAt, seq: msg.seq },
+                session.namespace,
+                { allowSameSource: stored.updated }
+            )
             if (updated) {
                 const stored = store.sessions.getSession(sid)
                 onWebappEvent?.({
