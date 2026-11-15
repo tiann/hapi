@@ -1884,6 +1884,7 @@ export class SyncEngine {
     private reloadAll(): void {
         this.sessionCache.reloadAll()
         this.machineCache.reloadAll()
+        this.reconcilePendingClaudeRewinds()
         this.queuePersistedActiveCursorAutoBridgeReconcile()
     }
 
@@ -2834,6 +2835,66 @@ export class SyncEngine {
             return await this.rewindConversationUnlocked(sessionId, namespace, messageLocalId)
         } finally {
             this.historyActionsInFlight.delete(sessionId)
+        }
+    }
+
+    /**
+     * Hub-restart recovery for interrupted Claude rewind RPCs: if a committed
+     * `claudeRewind` intent persisted in metadata still has its boundary in SQLite,
+     * apply the idempotent transcript cut before accepting CLI or user traffic.
+     */
+    private reconcilePendingClaudeRewinds(): void {
+        for (const session of this.sessionCache.getSessions()) {
+            const stored = this.store.sessions.getSession(session.id)
+            const rawMetadata = asRecord(stored?.metadata)
+            const hasRawRewind = rawMetadata !== null && rawMetadata.claudeRewind !== undefined
+            const intent = session.metadata?.claudeRewind
+            if (!intent && !hasRawRewind) {
+                continue
+            }
+            if (session.metadata?.conversationHistoryDiverged === true || rawMetadata?.conversationHistoryDiverged === true) {
+                continue
+            }
+
+            const truncateFromLocalId = typeof intent?.truncateFromLocalId === 'string' && intent.truncateFromLocalId.length > 0
+                ? intent.truncateFromLocalId
+                : null
+            if (!truncateFromLocalId) {
+                if (session.metadata) {
+                    this.markConversationHistoryDiverged(session.id, session.namespace)
+                } else if (rawMetadata && stored) {
+                    const { claudeRewind: _invalid, ...rest } = rawMetadata
+                    this.store.sessions.updateSessionMetadata(
+                        session.id,
+                        { ...rest, conversationHistoryDiverged: true } as unknown as Session['metadata'],
+                        stored.metadataVersion,
+                        session.namespace,
+                        { touchUpdatedAt: false }
+                    )
+                    this.sessionCache.refreshSession(session.id)
+                }
+                continue
+            }
+
+            const states = this.store.messages.getLocalMessageStates(session.id, [truncateFromLocalId])
+            if (states.length === 0) {
+                // Already truncated before restart (RPC reply, catch recovery, or prior startup).
+                continue
+            }
+
+            const targetState = states[0]
+            const hasUninvokedMessages = this.store.messages.getUninvokedLocalMessages(session.id).length > 0
+            const isClaudeSession = session.metadata?.flavor === undefined || session.metadata.flavor === 'claude'
+            if (!isClaudeSession || targetState?.invokedAt == null || hasUninvokedMessages) {
+                this.markConversationHistoryDiverged(session.id, session.namespace)
+                continue
+            }
+
+            try {
+                this.truncateHubTranscriptFrom(session.id, session.namespace, truncateFromLocalId)
+            } catch {
+                this.markConversationHistoryDiverged(session.id, session.namespace)
+            }
         }
     }
 

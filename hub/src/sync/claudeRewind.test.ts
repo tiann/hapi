@@ -283,4 +283,125 @@ describe('Claude rewind hub integration', () => {
             engine.stop()
         }
     })
+
+    it('reconciles a persisted claudeRewind intent idempotently on hub startup before RPC completion', async () => {
+        const store = new Store(':memory:')
+        const engine1 = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        let engine2: SyncEngine | null = null
+        let engine3: SyncEngine | null = null
+        const rpcHolder: { release?: () => void } = {}
+
+        try {
+            const session = engine1.getOrCreateSession('claude-rewind-restart', {
+                path: '/tmp/project', host: 'localhost', flavor: 'claude',
+                capabilities: { conversationHistory: { forkCurrent: true, rewindToMessage: true } },
+                claudeSessionId: 'native-session-1',
+            }, null, 'default')
+            engine1.handleSessionAlive({ sid: session.id, time: Date.now(), mode: 'remote' })
+            seedTwoTurns(store, session)
+
+            ;(engine1 as any).rpcGateway.rewindConversation = () => new Promise((resolve) => {
+                const stored = store.sessions.getSession(session.id) as { metadataVersion?: number; metadata?: Record<string, unknown> }
+                store.sessions.updateSessionMetadata(session.id, {
+                    ...(stored?.metadata ?? {}),
+                    claudeRewind: {
+                        targetLocalId: 'local-t2',
+                        truncateFromLocalId: 'local-t2',
+                        keepBoundary: 'native-boundary-uuid',
+                        droppedPrompts: ['native-prompt-uuid'],
+                    },
+                }, (stored?.metadataVersion ?? 1) as number, 'default')
+                rpcHolder.release = () => resolve({ success: true, truncateFromLocalId: 'local-t2' })
+            })
+
+            const inflightRewind = engine1.rewindConversation(session.id, 'default', 'local-t2')
+            await new Promise((resolve) => setTimeout(resolve, 10))
+            // Intent landed in SQLite while RPC is still in flight and hub transcript is untouched.
+            expect(store.messages.getAllMessages(session.id).map((m) => m.localId)).toContain('local-t2')
+            engine1.stop()
+
+            const restart2Broadcasts: Array<Record<string, unknown>> = []
+            engine2 = new SyncEngine(store, {} as never, new RpcRegistry(), {
+                broadcast(event: Record<string, unknown>) { restart2Broadcasts.push(event) }
+            } as never)
+
+            const keptAfterFirstRestart = store.messages.getAllMessages(session.id).map((m) => m.localId)
+            expect(keptAfterFirstRestart).toContain('local-t1')
+            expect(keptAfterFirstRestart).not.toContain('local-t2')
+            expect(restart2Broadcasts).toContainEqual(expect.objectContaining({
+                type: 'messages-invalidated',
+                sessionId: session.id,
+                reason: 'rewind',
+                truncateFromLocalId: 'local-t2',
+            }))
+            expect((engine2.getSession(session.id)?.metadata as Record<string, unknown> | null)?.claudeRewind).toBeDefined()
+            expect((engine2.getSession(session.id)?.metadata as Record<string, unknown> | null)?.conversationHistoryDiverged).toBeUndefined()
+
+            // Post-rewind conversation lands before the intent is later cleared.
+            const newPrompt = store.messages.addMessage(session.id, { role: 'user', content: 'after restart prompt' }, 'local-new')
+            store.messages.markMessagesInvoked(session.id, ['local-new'], Date.now())
+            const newReply = store.messages.addMessage(session.id, agentText('OK, post-restart reply'))
+
+            engine2.stop()
+            engine2 = null
+
+            const restart3Broadcasts: Array<Record<string, unknown>> = []
+            engine3 = new SyncEngine(store, {} as never, new RpcRegistry(), {
+                broadcast(event: Record<string, unknown>) { restart3Broadcasts.push(event) }
+            } as never)
+
+            const rowsAfterSecondRestart = store.messages.getAllMessages(session.id)
+            expect(rowsAfterSecondRestart.map((m) => m.localId)).toContain('local-t1')
+            expect(rowsAfterSecondRestart.map((m) => m.id)).toContain(newPrompt.id)
+            expect(rowsAfterSecondRestart.map((m) => m.id)).toContain(newReply.id)
+            expect(restart3Broadcasts.some((event) => event.type === 'messages-invalidated')).toBe(false)
+
+            rpcHolder.release?.()
+            await inflightRewind
+        } finally {
+            rpcHolder.release?.()
+            engine1.stop()
+            engine2?.stop()
+            engine3?.stop()
+        }
+    })
+
+    it('marks history diverged on startup when a persisted claudeRewind is paired with uninvoked queued messages', () => {
+        const store = new Store(':memory:')
+        const engine1 = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        let engine2: SyncEngine | null = null
+
+        try {
+            const session = engine1.getOrCreateSession('claude-rewind-restart-unsafe', {
+                path: '/tmp/project', host: 'localhost', flavor: 'claude',
+                capabilities: { conversationHistory: { rewindToMessage: true } },
+                claudeSessionId: 'native-session-1',
+            }, null, 'default')
+            seedTwoTurns(store, session)
+            store.messages.addMessage(session.id, { role: 'user', content: 'queued before restart' }, 'local-queued')
+
+            const stored = store.sessions.getSession(session.id) as { metadataVersion?: number; metadata?: Record<string, unknown> }
+            store.sessions.updateSessionMetadata(session.id, {
+                ...(stored?.metadata ?? {}),
+                claudeRewind: {
+                    targetLocalId: 'local-t2',
+                    truncateFromLocalId: 'local-t2',
+                    keepBoundary: 'native-boundary-uuid',
+                    droppedPrompts: ['native-prompt-uuid'],
+                },
+            }, (stored?.metadataVersion ?? 1) as number, 'default')
+            engine1.stop()
+
+            engine2 = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+
+            expect(((engine2.getSession(session.id)?.metadata ?? {}) as Record<string, unknown>).conversationHistoryDiverged).toBe(true)
+            const localIds = store.messages.getAllMessages(session.id).map((m) => m.localId)
+            expect(localIds).toContain('local-t1')
+            expect(localIds).toContain('local-t2')
+            expect(localIds).toContain('local-queued')
+        } finally {
+            engine1.stop()
+            engine2?.stop()
+        }
+    })
 })
