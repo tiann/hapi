@@ -1,4 +1,5 @@
 import { getDraft, saveDraft } from '@/lib/composer-drafts'
+import { recordComposerDraftChange } from '@/lib/composer-send-state'
 
 /** Wrap a workspace-relative path so the agent can spot it in the prompt. */
 export function formatFileReference(relativePath: string): string {
@@ -16,4 +17,5 @@ export function appendFileReferenceToComposerDraft(sessionId: string, relativePa
     const reference = formatFileReference(relativePath)
     const existing = getDraft(sessionId).replace(/[ \t\r\n]+$/, '')
     saveDraft(sessionId, existing.length > 0 ? `${existing}\n${reference}` : reference)
+    recordComposerDraftChange(sessionId)
 }

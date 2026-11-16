@@ -309,6 +309,54 @@ export function clearDraftAttachments(sessionId: string): void {
     saveDraftAttachments(sessionId, [])
 }
 
+export function removeDraftAttachmentsById(
+    sessionId: string,
+    attachmentIds: readonly string[],
+): void {
+    if (attachmentIds.length === 0) return
+    const idSet = new Set(attachmentIds)
+    const toRemainingInputs = (files: readonly File[]): AttachmentDraftInput[] => files.flatMap((file) => {
+        const metadata = restoredUploadMetadata.get(file)
+        if (metadata && idSet.has(metadata.id)) return []
+        return [{
+            id: metadata?.id ?? file.name,
+            file: copyFile(file),
+            path: metadata?.path,
+            previewUrl: metadata?.previewUrl,
+            uploadSessionId: metadata?.uploadSessionId,
+        }]
+    })
+    const cached = cache.get(sessionId)
+    if (cached) {
+        saveDraftAttachments(sessionId, toRemainingInputs(cached))
+        return
+    }
+
+    const previous = pendingWrites.get(sessionId) ?? Promise.resolve()
+    const next = previous
+        .catch(() => {})
+        .then(async () => {
+            const files = await getDraftAttachments(sessionId)
+            const remaining = toRemainingInputs(files)
+            if (remaining.length === 0) {
+                setCachedFiles(sessionId, [])
+                await writeDraft(null, sessionId)
+                return
+            }
+            const storedFiles = remaining.map(toStoredFile)
+            setCachedFiles(sessionId, storedFiles.map(toFile))
+            await writeDraft({
+                sessionId,
+                files: storedFiles,
+                updatedAt: Date.now(),
+            }, sessionId)
+        })
+    pendingWrites.set(sessionId, next)
+    void next.catch(() => {}).finally(() => {
+        if (pendingWrites.get(sessionId) === next) pendingWrites.delete(sessionId)
+    })
+}
+
 export function getRestoredUploadMetadata(file: File): RestoredUploadMetadata | undefined {
     return restoredUploadMetadata.get(file)
 }

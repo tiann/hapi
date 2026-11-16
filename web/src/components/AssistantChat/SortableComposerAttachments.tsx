@@ -31,6 +31,7 @@ type SortableComposerAttachmentProps = {
     index: number
     isDragging: boolean
     disabled: boolean
+    onRemove: () => void
     onPointerDown: (event: ReactPointerEvent<Element>, id: string, surface: boolean) => void
     onKeyDown: (event: ReactKeyboardEvent<HTMLButtonElement>, id: string) => void
     onContextMenu: (event: ReactMouseEvent<Element>, id: string) => void
@@ -47,6 +48,7 @@ type AttachmentDropTarget = {
 
 type AttachmentItemContextValue = {
     dragHandleProps?: AttachmentDragHandleProps
+    onRemove?: () => void
     attachmentOrderRef?: MutableRefObject<string[]>
     retryingAttachmentIdsRef?: MutableRefObject<Set<string>>
     onRetry?: AttachmentRetryHandler
@@ -83,6 +85,7 @@ function SortableComposerAttachment(props: SortableComposerAttachmentProps) {
         index,
         isDragging,
         disabled,
+        onRemove,
         onPointerDown,
         onKeyDown,
         onContextMenu,
@@ -128,11 +131,12 @@ function SortableComposerAttachment(props: SortableComposerAttachmentProps) {
     const attachmentItemContext = useMemo<AttachmentItemContextValue>(
         () => ({
             dragHandleProps,
+            onRemove,
             attachmentOrderRef,
             retryingAttachmentIdsRef,
             onRetry,
         }),
-        [attachmentOrderRef, dragHandleProps, onRetry, retryingAttachmentIdsRef],
+        [attachmentOrderRef, dragHandleProps, onRemove, onRetry, retryingAttachmentIdsRef],
     )
 
     return (
@@ -155,6 +159,7 @@ export function SortableComposerAttachments(props: {
     attachments: readonly Attachment[]
     orderedAttachmentIds: readonly string[]
     disabled?: boolean
+    onRemove?: () => void
     onReorder: (activeId: string, targetId: string, position: AttachmentDropPosition) => void
     attachmentOrderRef?: MutableRefObject<string[]>
     retryingAttachmentIdsRef?: MutableRefObject<Set<string>>
@@ -165,6 +170,7 @@ export function SortableComposerAttachments(props: {
         orderedAttachmentIds,
         onReorder,
         disabled = false,
+        onRemove = () => {},
         attachmentOrderRef,
         retryingAttachmentIdsRef,
         onRetry,
@@ -307,6 +313,7 @@ export function SortableComposerAttachments(props: {
                         index={index}
                         isDragging={draggingId === id}
                         disabled={disabled || attachments.length < 2}
+                        onRemove={onRemove}
                         onPointerDown={handlePointerDown}
                         onKeyDown={handleKeyDown}
                         onContextMenu={handleContextMenu}

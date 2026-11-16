@@ -63,6 +63,20 @@ describe('attachmentAdapter', () => {
         })])
     })
 
+    it('releases sent attachments without deleting their upload files', async () => {
+        const { createAttachmentAdapter } = await import('./attachmentAdapter')
+        const deleteUploadFile = vi.fn(async () => {})
+        const adapter = createAttachmentAdapter({ deleteUploadFile } as never, 'session-1')
+
+        adapter.releaseWithoutDelete(['attachment-ready'])
+        await adapter.remove({
+            id: 'attachment-ready',
+            path: '/uploads/ready.png',
+            uploadSessionId: 'session-1',
+        } as never)
+
+        expect(deleteUploadFile).not.toHaveBeenCalled()
+    })
     it('assigns a fresh id when a restored failed upload is retried', async () => {
         const drafts = await import('./composer-attachment-drafts')
         const { createAttachmentAdapter } = await import('./attachmentAdapter')
