@@ -1908,6 +1908,19 @@ describe('IncomingMessageFilter (HAPI Bot R3 finding #1)', () => {
     })
 })
 
+describe('session capacity lifecycle', () => {
+    it('retains capacity through transport loss and releases exactly once on final close', () => {
+        const onClose = vi.fn()
+        const client = new ApiSessionClient('token', createSession(), { onClose })
+        const socket = socketHarness.sockets.at(-1)!
+        socket.trigger('disconnect', 'transport close')
+        expect(onClose).not.toHaveBeenCalled()
+        client.close()
+        client.close()
+        expect(onClose).toHaveBeenCalledOnce()
+    })
+})
+
 describe('strict OpenCode rewind metadata and socket entry', () => {
     type StrictReader = { readRewindMetadata(): Promise<{ metadata: NonNullable<Session['metadata']>; version: number } | null> };
     it('returns the parsed equal-version REST snapshot itself without rewriting the equal-version cache', async () => {

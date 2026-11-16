@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer } from 'node:http';
-import { EventEmitter } from 'node:events';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import type { AgentState, Metadata } from '@/api/types';
 import type { ApiSessionClient } from '@/api/apiSession';
 import { CodexAppServerClient } from '../codexAppServerClient';
