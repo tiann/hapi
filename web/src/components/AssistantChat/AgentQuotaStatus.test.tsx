@@ -123,6 +123,8 @@ describe('AgentQuotaStatus', () => {
         expect(chip.textContent).toContain('7d 40%')
         // Too-narrow rows clip the chip instead of letting it overlap neighbouring labels.
         expect(chip.className).toContain('overflow-x-clip')
+        // ...and it, not the context meter, absorbs the shrinking.
+        expect(chip.className).toContain('shrink-[1000]')
         expect(screen.getByText(/7d 40%/, { selector: 'span.hidden' }).className).toContain('sm:inline')
     })
 
