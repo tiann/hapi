@@ -535,6 +535,104 @@ describe('Claude rewind hub integration', () => {
         }
     })
 
+    for (const outcome of ['resolves', 'rejects'] as const) {
+        it(`cuts only the range discarded at dispatch when the rewind RPC ${outcome} after post-rewind input arrived`, async () => {
+            const { store, engine } = createEngine()
+            try {
+                const session = engine.getOrCreateSession(`claude-rewind-bounded-${outcome}`, {
+                    path: '/tmp/project', host: 'localhost', flavor: 'claude',
+                    capabilities: { conversationHistory: { rewindToMessage: true } },
+                    claudeSessionId: 'native-session-1',
+                }, null, 'default')
+                engine.handleSessionAlive({ sid: session.id, time: Date.now(), mode: 'remote' })
+                seedTwoTurns(store, session)
+                const maxSeqAtDispatch = Math.max(...store.messages.getAllMessages(session.id).map((m) => m.seq))
+                const added: { prompt?: { id: string }; reply?: { id: string } } = {}
+                let rpcParams: Record<string, unknown> | undefined
+
+                ;(engine as any).rpcGateway.rewindConversation = async (_sid: string, params: Record<string, unknown>) => {
+                    rpcParams = params
+                    // The runner persisted the intent, restarted, and the user
+                    // already continued the conversation natively before this
+                    // RPC settles: the new prompt and its reply are on the hub.
+                    const stored = store.sessions.getSession(session.id) as { metadataVersion?: number; metadata?: Record<string, unknown> }
+                    store.sessions.updateSessionMetadata(session.id, {
+                        ...(stored?.metadata ?? {}),
+                        claudeRewind: {
+                            targetLocalId: 'local-t2',
+                            truncateFromLocalId: 'local-t2',
+                            keepBoundary: 'native-boundary-uuid',
+                            droppedPrompts: ['native-prompt-uuid'],
+                        },
+                    }, (stored?.metadataVersion ?? 1) as number, 'default')
+                    ;(engine as any).sessionCache.refreshSession(session.id)
+                    added.prompt = store.messages.addMessage(session.id, { role: 'user', content: 'after the rewind' }, 'local-new')
+                    store.messages.markMessagesInvoked(session.id, ['local-new'], Date.now())
+                    added.reply = store.messages.addMessage(session.id, agentText('OK, after the rewind'))
+                    if (outcome === 'rejects') throw new Error('rpc gateway timeout')
+                    return { success: true, truncateFromLocalId: 'local-t2' }
+                }
+
+                await expect(engine.rewindConversation(session.id, 'default', 'local-t2')).resolves.toEqual({ type: 'success' })
+
+                const rows = store.messages.getAllMessages(session.id)
+                const ids = new Set(rows.map((m) => m.id))
+                expect(rows.map((m) => m.localId)).not.toContain('local-t2')
+                expect(rows.map((m) => m.localId)).toContain('local-t1')
+                expect(ids.has(added.prompt!.id)).toBe(true)
+                expect(ids.has(added.reply!.id)).toBe(true)
+                expect(rpcParams?.discardedThroughSeq).toBe(maxSeqAtDispatch)
+            } finally {
+                engine.stop()
+            }
+        })
+    }
+
+    it('bounds the startup reconcile cut with the discarded range persisted on the intent', () => {
+        const store = new Store(':memory:')
+        const engine1 = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        let engine2: SyncEngine | null = null
+        try {
+            const session = engine1.getOrCreateSession('claude-rewind-startup-bound', {
+                path: '/tmp/project', host: 'localhost', flavor: 'claude',
+                capabilities: { conversationHistory: { rewindToMessage: true } },
+                claudeSessionId: 'native-session-1',
+            }, null, 'default')
+            seedTwoTurns(store, session)
+            const discardedThroughSeq = Math.max(...store.messages.getAllMessages(session.id).map((m) => m.seq))
+            const stored = store.sessions.getSession(session.id) as { metadataVersion?: number; metadata?: Record<string, unknown> }
+            store.sessions.updateSessionMetadata(session.id, {
+                ...(stored?.metadata ?? {}),
+                claudeRewind: {
+                    targetLocalId: 'local-t2',
+                    truncateFromLocalId: 'local-t2',
+                    keepBoundary: 'native-boundary-uuid',
+                    droppedPrompts: ['native-prompt-uuid'],
+                    discardedThroughSeq,
+                },
+            }, (stored?.metadataVersion ?? 1) as number, 'default')
+            // The hub was down while the user continued after the rewind.
+            const newPrompt = store.messages.addMessage(session.id, { role: 'user', content: 'after rewind' }, 'local-new')
+            store.messages.markMessagesInvoked(session.id, ['local-new'], Date.now())
+            const newReply = store.messages.addMessage(session.id, agentText('OK, after rewind'))
+            engine1.stop()
+
+            engine2 = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+
+            const rows = store.messages.getAllMessages(session.id)
+            expect(rows.map((m) => m.localId)).not.toContain('local-t2')
+            expect(rows.map((m) => m.id)).toContain(newPrompt.id)
+            expect(rows.map((m) => m.id)).toContain(newReply.id)
+            const after = store.sessions.getSession(session.id) as { metadata?: Record<string, any> }
+            expect(after.metadata?.claudeRewind?.hubCutApplied).toBe(true)
+            expect(after.metadata?.claudeRewind?.discardedThroughSeq).toBe(discardedThroughSeq)
+        } finally {
+            engine1.stop()
+            engine2?.stop()
+            store.close()
+        }
+    })
+
     it('marks the intent when a startup reconcile finds the cut already applied and preserves post-rewind input', () => {
         const store = new Store(':memory:')
         const engine1 = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)

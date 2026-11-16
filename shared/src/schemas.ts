@@ -236,7 +236,11 @@ export const MetadataSchema = z.object({
         // only clears the intent once this marker is visible, so a lost RPC
         // reply leaves the intent in place for the hub's timeout/reconnect
         // reconcile instead of stranding the transcript mismatched.
-        hubCutApplied: z.boolean().optional()
+        hubCutApplied: z.boolean().optional(),
+        // Newest transcript seq at dispatch (echoed by the CLI from the RPC
+        // payload): the hub's cut never deletes rows created after it. Absent
+        // on intents written by an older CLI or hub, which cut unbounded.
+        discardedThroughSeq: z.number().int().nonnegative().optional()
     }).optional().catch(undefined),
     // Latest Pi append-log entry observed by HAPI. Import uses it as the
     // incremental cursor so native history already streamed live is not copied twice.

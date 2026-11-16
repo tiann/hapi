@@ -71,6 +71,9 @@ const harness = vi.hoisted(() => {
         onReconnect: (handler: ((metadataRefreshed?: boolean) => void) | null) => {
             harness.reconnectHandler = handler
         },
+        onMetadataApplied: (handler: (() => void) | null) => {
+            harness.metadataAppliedHandler = handler
+        },
         keepAlive: () => {},
         sendSessionEvent: () => {},
         sendAgentMessage: () => {},
@@ -104,6 +107,7 @@ const harness = vi.hoisted(() => {
         refreshImpl: null as (() => Promise<boolean>) | null,
         refreshCalls: 0,
         reconnectHandler: null as ((metadataRefreshed?: boolean) => void) | null,
+        metadataAppliedHandler: null as (() => void) | null,
         userMessageHandler: null as ((message: any, localId?: string) => void) | null,
         cancelQueuedMessageHandler: null as ((localId: string) => boolean) | null,
         nativeTurns: null as Array<{ promptUuid: string; endUuid: string }> | null,
@@ -300,6 +304,7 @@ describe('runClaude rewind proof lifetime', () => {
         harness.refreshImpl = null
         harness.refreshCalls = 0
         harness.reconnectHandler = null
+        harness.metadataAppliedHandler = null
         harness.userMessageHandler = null
         harness.cancelQueuedMessageHandler = null
         harness.flushTimeouts = []
@@ -1045,14 +1050,17 @@ describe('runClaude rewind proof lifetime', () => {
                 claudeRewind: landedIntent
             }
 
-            // Reconnect refreshes metadata from hub and settles. The hub already
-            // owns the cut, so there is nothing left to re-arm or restart for.
+            // Reconnect refreshes metadata from hub and settles. The hub's cut
+            // is only half of the rule: the native branch is not proven, so the
+            // intent stays and the boundary is armed with a restart.
             harness.deferUnflushedMetadata = false
             harness.flushResult = true
             await simulateReconnect()
-            expect(harness.state.metadata.claudeRewind).toBeUndefined()
+            await vi.waitFor(() => {
+                expect(restartSpy).toHaveBeenCalledTimes(1)
+            })
+            expect(harness.state.metadata.claudeRewind).toEqual(landedIntent)
             expect(harness.hubMetadata.claudeRewind).toEqual(landedIntent)
-            expect(restartSpy).not.toHaveBeenCalled()
         } finally {
             harness.flushResult = null
             harness.deferUnflushedMetadata = false
@@ -1396,9 +1404,12 @@ describe('runClaude rewind proof lifetime', () => {
             harness.deferUnflushedMetadata = false
             harness.flushResult = true
             await simulateReconnect()
-            expect(harness.state.metadata.claudeRewind).toBeUndefined()
+            await new Promise((resolve) => setTimeout(resolve, 30))
+            // The hub's cut alone does not delete the intent: the native
+            // branch is not proven yet.
+            expect(harness.state.metadata.claudeRewind).toMatchObject({ truncateFromLocalId: 'local-1', hubCutApplied: true })
 
-            // Local input proves the rewind and clears claudeRewind.
+            // Local input proves the rewind: both halves hold, the intent goes.
             harness.flushResult = true
             sessionInstance.onNativeInputSubmitted?.('uuid-1')
             expect(harness.state.metadata.claudeRewind).toBeUndefined()
@@ -2341,5 +2352,166 @@ describe('runClaude rewind proof lifetime', () => {
         await waitForFreshRunner(prev)
 
         expect(harness.state.metadata.claudeRewind).toBeUndefined()
+    })
+
+    it('keeps the intent on reconnect until unknown-outcome settlement and native proof both hold', { timeout: 20_000 }, async () => {
+        // Major (finding 2): the intent write timed out (unknown outcome) but
+        // reached the hub, whose recovery cut already marked it. Reconnect then
+        // loaded hubCutApplied and deleted the intent before settlement armed
+        // the native boundary, while the native truncation was still
+        // unapplied: Claude resumed the discarded history under a shortened
+        // hub transcript.
+        const prev = snapshotRunner()
+        const runPromise = runClaude({
+            workingDirectory: '/tmp/hapi-rewind-test',
+            startedBy: 'runner',
+            startingMode: 'remote'
+        })
+        runPromise.catch((error) => { harness.runError = error })
+
+        await waitForFreshRunner(prev)
+
+        const sessionInstance = createRunnerSession()
+        sessionInstance.sessionId = 'native-a'
+        // Delayed restart teardown: the old process is still shutting down.
+        let finishTeardown!: () => void
+        const restartSpy = vi.fn(() => new Promise<void>((resolve) => { finishTeardown = resolve }))
+        sessionInstance.requestRemoteRestart = restartSpy
+        try {
+            harness.loopOpts.onSessionReady(sessionInstance)
+            harness.sessionStub.updateMetadata((metadata: any) => ({
+                ...metadata,
+                conversationHistoryEntryIds: { 'local-1': 'uuid-1', 'local-2': 'uuid-2' }
+            }))
+            // The native branch is unapplied: both turns are still on the chain.
+            harness.nativeTurns = [
+                { promptUuid: 'uuid-1', endUuid: 'as-1' },
+                { promptUuid: 'uuid-2', endUuid: 'as-2' }
+            ]
+
+            harness.deferUnflushedMetadata = true
+            harness.flushResult = false
+            const rewind = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
+            expect(await rewind({ messageLocalId: 'local-2' })).toMatchObject({ success: false, outcome: 'rejected' })
+
+            // The write landed and the hub's recovery cut marked it.
+            const landedIntent = {
+                targetLocalId: 'local-2',
+                truncateFromLocalId: 'local-2',
+                keepBoundary: 'keep-boundary-uuid',
+                droppedPrompts: ['uuid-2'],
+                hubCutApplied: true
+            }
+            harness.hubMetadata = { ...harness.state.metadata, claudeRewind: landedIntent }
+            harness.deferUnflushedMetadata = false
+            harness.flushResult = true
+
+            const refreshed = await harness.sessionStub.refreshMetadata()
+            harness.reconnectHandler?.(refreshed)
+            // Settlement has not completed: nothing may delete the intent.
+            expect(harness.state.metadata.claudeRewind).toEqual(landedIntent)
+
+            await vi.waitFor(() => {
+                expect(restartSpy).toHaveBeenCalledTimes(1)
+            })
+            // Restart teardown is still delayed: the intent survives.
+            expect(harness.state.metadata.claudeRewind).toEqual(landedIntent)
+            finishTeardown()
+            await new Promise((resolve) => setTimeout(resolve, 30))
+            expect(harness.state.metadata.claudeRewind).toEqual(landedIntent)
+
+            // Only the native proof (hub cut already confirmed) deletes it.
+            harness.nativeTurns = [{ promptUuid: 'uuid-1', endUuid: 'as-1' }, { promptUuid: 'uuid-3', endUuid: 'as-3' }]
+            sessionInstance.onNativeInputSubmitted?.('uuid-3')
+            await vi.waitFor(() => {
+                expect(harness.state.metadata.claudeRewind).toBeUndefined()
+            })
+        } finally {
+            harness.flushResult = null
+            harness.deferUnflushedMetadata = false
+            sessionInstance.stopKeepAlive()
+        }
+    })
+
+    it('clears the intent when the hub confirmation arrives after native proof without a reconnect', { timeout: 20_000 }, async () => {
+        // Minor (finding 3): proof preceded hubCutApplied, so the proof path
+        // released the live pending state and forgot the proof; a later metadata
+        // update or ack carrying the marker never reached the cleanup, and the
+        // intent kept blocking history actions until another reconnect.
+        const prev = snapshotRunner()
+        const runPromise = runClaude({
+            workingDirectory: '/tmp/hapi-rewind-test',
+            startedBy: 'runner',
+            startingMode: 'remote'
+        })
+        runPromise.catch((error) => { harness.runError = error })
+
+        await waitForFreshRunner(prev)
+
+        const sessionInstance = createRunnerSession()
+        sessionInstance.sessionId = 'native-a'
+        sessionInstance.requestRemoteRestart = async () => {}
+        try {
+            harness.loopOpts.onSessionReady(sessionInstance)
+            harness.sessionStub.updateMetadata((metadata: any) => ({
+                ...metadata,
+                conversationHistoryEntryIds: { 'local-1': 'uuid-1', 'local-2': 'uuid-2' }
+            }))
+            harness.suppressHubCutMarker = true
+            const rewind = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
+            expect(await rewind({ messageLocalId: 'local-2' })).toMatchObject({ success: true })
+            const armedIntent = harness.state.metadata.claudeRewind
+            expect(armedIntent.hubCutApplied).toBeUndefined()
+
+            // Native proof first: the intent stays (hub cut unconfirmed).
+            writeNativeATranscript(true)
+            sessionInstance.onNativeInputSubmitted?.('uuid-1')
+            expect(harness.state.metadata.claudeRewind).toEqual(armedIntent)
+
+            // The hub's confirmation arrives as a plain metadata update/ack.
+            harness.state.metadata = {
+                ...harness.state.metadata,
+                claudeRewind: { ...armedIntent, hubCutApplied: true }
+            }
+            harness.metadataAppliedHandler?.()
+            expect(harness.state.metadata.claudeRewind).toBeUndefined()
+
+            // Other history actions proceed without a reconnect or restart.
+            await expect(harness.rpcHandlers.get(RPC_METHODS.ForkConversation)!({})).resolves.toMatchObject({ forkSession: true })
+            expect(await rewind({ messageLocalId: 'local-1' })).toMatchObject({ success: true })
+        } finally {
+            harness.suppressHubCutMarker = false
+            sessionInstance.stopKeepAlive()
+        }
+    })
+
+    it('persists the dispatch-time discarded bound with the intent', { timeout: 20_000 }, async () => {
+        const prev = snapshotRunner()
+        const runPromise = runClaude({
+            workingDirectory: '/tmp/hapi-rewind-test',
+            startedBy: 'runner',
+            startingMode: 'remote'
+        })
+        runPromise.catch((error) => { harness.runError = error })
+
+        await waitForFreshRunner(prev)
+
+        const sessionInstance = createRunnerSession()
+        sessionInstance.sessionId = 'native-a'
+        sessionInstance.requestRemoteRestart = async () => {}
+        try {
+            harness.loopOpts.onSessionReady(sessionInstance)
+            harness.sessionStub.updateMetadata((metadata: any) => ({
+                ...metadata,
+                conversationHistoryEntryIds: { 'local-1': 'uuid-1', 'local-2': 'uuid-2' }
+            }))
+            harness.suppressHubCutMarker = true
+            const rewind = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
+            expect(await rewind({ messageLocalId: 'local-2', discardedThroughSeq: 7 })).toMatchObject({ success: true })
+            expect(harness.state.metadata.claudeRewind).toMatchObject({ truncateFromLocalId: 'local-2', discardedThroughSeq: 7 })
+        } finally {
+            harness.suppressHubCutMarker = false
+            sessionInstance.stopKeepAlive()
+        }
     })
 })

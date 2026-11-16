@@ -185,6 +185,9 @@ function hasSameJsonValue(left: unknown, right: unknown): boolean {
 export class ApiSessionClient extends EventEmitter {
     private reconnectHandler: ((metadataRefreshed?: boolean) => void) | null = null
     onReconnect(handler: ((metadataRefreshed?: boolean) => void) | null): void { this.reconnectHandler = handler }
+    private metadataAppliedHandler: (() => void) | null = null
+    /** Runs after every applied metadata snapshot: remote update, update ack, refresh, materialization. */
+    onMetadataApplied(handler: (() => void) | null): void { this.metadataAppliedHandler = handler }
     /** When false, socket.io must not keep the CLI immortal after hub archive (#1910). */
     private allowReconnect = true
     /**
@@ -582,6 +585,7 @@ if (isReconnect) {
                 this.agentState = materialized.agentState
                 this.agentStateVersion = materialized.agentStateVersion
                 this.state = 'active'
+                this.metadataAppliedHandler?.()
 
                 if (shouldSyncMetadata && latestMetadata) {
                     this.updateMetadata(() => latestMetadata)
@@ -911,6 +915,7 @@ if (isReconnect) {
             && parsed.data.archivedBy === 'hub') {
             this.noteHubArchived()
         }
+        this.metadataAppliedHandler?.()
     }
 
     private noteHubArchived(): void {
@@ -1531,6 +1536,7 @@ if (isReconnect) {
                     this.noteHubArchived()
                     return
                 }
+                this.metadataAppliedHandler?.()
             })
         })
     }

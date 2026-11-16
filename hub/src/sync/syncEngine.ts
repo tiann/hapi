@@ -2918,7 +2918,7 @@ export class SyncEngine {
         }
 
         try {
-            this.truncateHubTranscriptFrom(session.id, session.namespace, truncateFromLocalId)
+            this.truncateHubTranscriptFrom(session.id, session.namespace, truncateFromLocalId, intent?.discardedThroughSeq)
         } catch {
             this.markConversationHistoryDiverged(session.id, session.namespace)
         }
@@ -2929,9 +2929,16 @@ export class SyncEngine {
      * on, refresh derived state, and tell clients to refetch. Runs once, at
      * rewind-RPC success — the native re-arm is the CLI's durable intent, so
      * no later metadata-driven truncation pass can eat post-rewind turns.
+     * `discardedThroughSeq` is the newest row that existed when the rewind was
+     * dispatched: a delayed or recovery cut never deletes rows created later.
      */
-    private truncateHubTranscriptFrom(sessionId: string, namespace: string, truncateFromLocalId: string): void {
-        this.store.messages.truncateMessagesFromLocalId(sessionId, truncateFromLocalId)
+    private truncateHubTranscriptFrom(
+        sessionId: string,
+        namespace: string,
+        truncateFromLocalId: string,
+        discardedThroughSeq?: number
+    ): void {
+        this.store.messages.truncateMessagesFromLocalId(sessionId, truncateFromLocalId, [], discardedThroughSeq)
         this.scrubHistoryLocators(sessionId, namespace)
         this.sessionCache.rebuildTodosFromTranscript(sessionId)
         this.markClaudeRewindCutApplied(sessionId, namespace, truncateFromLocalId)
@@ -3054,9 +3061,12 @@ export class SyncEngine {
         if (session.metadata?.flavor === 'opencode') return await this.rewindOpenCode(session, namespace, messageLocalId)
 
         this.claudeRewindRpcsInFlight.set(sessionId, messageLocalId)
+        // The CLI persists this bound with its intent, so recovery after a
+        // lost reply or a hub restart cuts exactly what was discarded now.
+        const discardedThroughSeq = this.store.messages.getMaxSeq(sessionId)
         let rpcResult: Awaited<ReturnType<RpcGateway['rewindConversation']>>
         try {
-            rpcResult = await this.rpcGateway.rewindConversation(sessionId, { messageLocalId })
+            rpcResult = await this.rpcGateway.rewindConversation(sessionId, { messageLocalId, discardedThroughSeq })
         } catch (error) {
             // Crash window: the runner persists the durable rewind intent
             // BEFORE it starts the restart teardown, and the native branch
@@ -3070,7 +3080,7 @@ export class SyncEngine {
                 const intent = this.getSession(sessionId)?.metadata?.claudeRewind as { truncateFromLocalId?: string } | undefined
                 if (intent?.truncateFromLocalId === messageLocalId) {
                     try {
-                        this.truncateHubTranscriptFrom(sessionId, namespace, messageLocalId)
+                        this.truncateHubTranscriptFrom(sessionId, namespace, messageLocalId, discardedThroughSeq)
                         return { type: 'success' }
                     } catch {
                         // Fall through: the diverged marker below is the honest state.
@@ -3103,7 +3113,7 @@ export class SyncEngine {
                     // Nothing to truncate (already cut) or the boundary is gone:
                     // the native side already dropped those turns either way.
                     try {
-                        this.truncateHubTranscriptFrom(sessionId, namespace, committedLocalId)
+                        this.truncateHubTranscriptFrom(sessionId, namespace, committedLocalId, discardedThroughSeq)
                     } catch {
                         // Preserve the committed intent: the startup reconcile
                         // owns the cut once the transcript is repairable again.
@@ -3122,7 +3132,7 @@ export class SyncEngine {
         }
 
         try {
-            this.truncateHubTranscriptFrom(sessionId, namespace, rpcResult.truncateFromLocalId ?? messageLocalId)
+            this.truncateHubTranscriptFrom(sessionId, namespace, rpcResult.truncateFromLocalId ?? messageLocalId, discardedThroughSeq)
             return { type: 'success' }
         } catch (error) {
             // Native history already changed; refuse further history actions until repaired.

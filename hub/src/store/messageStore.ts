@@ -42,6 +42,7 @@ import {
     copyMessagesToSession as copyStoredMessagesToSession,
     getAllMessages,
     getMessagesAfterSeq,
+    getMaxSeq,
     getMinSeq,
     getMessageSeqById,
     getMessageById,
@@ -113,6 +114,10 @@ export class MessageStore {
 
     getMessagesAfterSeq(sessionId: string, afterSeq: number): StoredMessage[] {
         return getMessagesAfterSeq(this.db, sessionId, afterSeq)
+    }
+
+    getMaxSeq(sessionId: string): number {
+        return getMaxSeq(this.db, sessionId)
     }
 
     getMinSeq(sessionId: string): number | null {
@@ -293,8 +298,9 @@ export class MessageStore {
             localId?: string | null
             createdAt?: number
             invokedAt?: number | null
-        }> = []
+        }> = [],
+        upToSeq?: number
     ): { deleted: number; inserted: number; epoch: number } {
-        return truncateMessagesFromLocalId(this.db, sessionId, localId, replacement)
+        return truncateMessagesFromLocalId(this.db, sessionId, localId, replacement, upToSeq)
     }
 }

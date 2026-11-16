@@ -814,7 +814,7 @@ export class RpcGateway {
 
     async rewindConversation(
         sessionId: string,
-        params: { messageLocalId: string; opencodeRewind?: import('@hapi/protocol/schemas').OpenCodeRewindOperation }
+        params: { messageLocalId: string; discardedThroughSeq?: number; opencodeRewind?: import('@hapi/protocol/schemas').OpenCodeRewindOperation }
     ): Promise<import('@hapi/protocol/apiTypes').RewindConversationRpcResult> {
         return await this.sessionRpc(
             sessionId,
