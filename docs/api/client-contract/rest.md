@@ -8,7 +8,7 @@ does not mean the app offers that feature.
 
 ## Conventions
 
-- All paths below are relative to the hub base URL. `/api` routes require `Authorization: Bearer <JWT>` except the `/api/auth` exchange and Telegram `/api/bind` ([Auth](./auth.md)).
+- All paths below are relative to the hub base URL. `/api` routes require `Authorization: Bearer <JWT>` except the `/api/auth` exchange, Telegram `/api/bind`, and the web passkey sign-in (`/api/passkey/login/*`) ([Auth](./auth.md)).
 - Path params (`:id`, `:messageId`, …) must be URL-encoded (the web client uses `encodeURIComponent` throughout).
 - Request bodies are JSON (`content-type: application/json`) with **one exception**: `POST /api/voice/transcription` is `multipart/form-data`. Responses are JSON unless noted (generated images and scratchlist attachments return raw bytes).
 - Bodies are validated with Zod; failures return `400` (see [Errors](./errors.md)).

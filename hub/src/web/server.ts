@@ -16,6 +16,12 @@ import type { SyncEngine } from '../sync/syncEngine'
 import { createAuthMiddleware, type WebAppEnv } from './middleware/auth'
 import { createAuthRoutes } from './routes/auth'
 import { createBindRoutes } from './routes/bind'
+import {
+    createPasskeyLoginRoutes,
+    createPasskeyManagementRoutes,
+    nativePasskeyConfigFromEnv,
+    PasskeyChallengeStore
+} from './routes/passkey'
 import { createEventsRoutes } from './routes/events'
 import { createFeaturesRoutes } from './routes/features'
 import { createSessionsRoutes } from './routes/sessions'
@@ -287,9 +293,18 @@ function createWebApp(options: {
 
     app.route('/api', createAuthRoutes(options.jwtSecret, options.store))
     app.route('/api', createBindRoutes(options.jwtSecret, options.store))
+    const passkeyDeps = {
+        jwtSecret: options.jwtSecret,
+        store: options.store,
+        corsOrigins: () => corsOrigins,
+        challenges: new PasskeyChallengeStore(),
+        native: nativePasskeyConfigFromEnv()
+    }
+    app.route('/api', createPasskeyLoginRoutes(passkeyDeps))
 
     app.use('/api/*', createAuthMiddleware(options.jwtSecret))
     app.route('/api', createFeaturesRoutes())
+    app.route('/api', createPasskeyManagementRoutes(passkeyDeps))
     app.route('/api', createEventsRoutes(options.getSseManager, options.getSyncEngine, options.getVisibilityTracker))
     app.route('/api', createSessionsRoutes(options.getSyncEngine))
     app.route('/api', createMessagesRoutes(options.getSyncEngine))

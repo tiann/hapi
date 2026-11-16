@@ -99,6 +99,14 @@ Companions that cannot use Web Share Target (for example a native app on a heads
 
 See [Web Share Target](https://developer.chrome.com/docs/capabilities/web-apis/web-share-target) for the POST vs GET distinction.
 
+### Passkey sign-in
+
+After you sign in with the access token once, open **Settings → Passkeys → Add passkey** to register Face ID, Touch ID, Windows Hello, or a security key. Next time, choose **Sign in with a passkey** on the login screen. The browser then no longer keeps your access token.
+
+- Passkeys need HTTPS, or `http://localhost`. Plain-HTTP LAN addresses such as `http://192.168.x.x` cannot use them.
+- A passkey only works on the address where it was added. For example, a passkey added on your relay URL does not work on `localhost`.
+- Rotating `CLI_API_TOKEN` disables all passkeys. Sign in with the new token and add them again.
+
 ## Caching Strategy
 
 HAPI uses intelligent caching:

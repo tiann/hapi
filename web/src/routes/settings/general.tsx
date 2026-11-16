@@ -12,6 +12,7 @@ import type { ResolvedPeerSpawnDefaults } from '@hapi/protocol/peerSpawnDefaults
 import { useTranslation, type Locale } from '@/lib/use-translation'
 import { useAppContext } from '@/lib/app-context'
 import { CompanionPairing } from '@/components/settings/CompanionPairing'
+import { PasskeySettings } from '@/components/settings/PasskeySettings'
 import { PushNotificationsControl } from '@/components/settings/PushNotificationsControl'
 import { SettingsChoiceGroup, SettingsPageContent, SettingsRow, SettingsSection, SettingsSwitch } from '@/components/settings/SettingsPrimitives'
 import { useFeatures, usePatchFeatures } from '@/hooks/queries/useFeatures'
@@ -192,6 +193,11 @@ export default function SettingsGeneralPage() {
                     ) : null}
                 </SettingsSection>
             ) : null}
+            <SettingsSection title={t('settings.passkeys.title')}>
+                <div className="px-3 py-3">
+                    <PasskeySettings />
+                </div>
+            </SettingsSection>
             <SettingsSection title={t('settings.companion.title')}>
                 <div className="px-3 py-3">
                     <CompanionPairing baseUrl={baseUrl} />

@@ -19,6 +19,8 @@ const removedGeminiCommand: CommandDefinition = {
 const commandMap = new Map<string, () => Promise<CommandDefinition>>([
     ['agy', async () => (await import('./agy')).agyCommand],
     ['auth', async () => (await import('./auth')).authCommand],
+    ['attach', async () => (await import('./attach')).attachCommand],
+    ['detach', async () => (await import('./attach')).detachCommand],
     ['claude', async () => (await import('./claude')).claudeCommand],
     ['connect', async () => (await import('./connect')).connectCommand],
     ['codex', async () => (await import('./codex')).codexCommand],
