@@ -669,6 +669,8 @@ export default {
   'file.page.tab.file': '文件',
   'file.page.tab.source': '源码',
   'file.page.tab.preview': '预览',
+  'file.page.htmlFullscreen': '全屏',
+  'file.page.htmlOpenInNewWindow': '在新窗口打开',
   'file.page.missingPath': '未提供文件路径。',
   'file.page.binary': '该文件看起来是二进制文件，无法显示。',
   'file.page.imagePreviewAlt': '{name} 图片预览',

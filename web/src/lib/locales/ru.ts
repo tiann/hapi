@@ -599,6 +599,8 @@ export default {
   'file.page.tab.file': 'Файл',
   'file.page.tab.source': 'Исходник',
   'file.page.tab.preview': 'Предпросмотр',
+  'file.page.htmlFullscreen': 'Во весь экран',
+  'file.page.htmlOpenInNewWindow': 'Открыть в новом окне',
   'file.page.missingPath': 'Путь к файлу не указан.',
   'file.page.binary': 'Похоже, это бинарный файл. Его нельзя отобразить.',
   'file.page.imagePreviewAlt': 'Предпросмотр изображения {name}',
