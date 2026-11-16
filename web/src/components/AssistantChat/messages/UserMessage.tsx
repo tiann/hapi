@@ -8,6 +8,7 @@ import { CliOutputBlock } from '@/components/CliOutputBlock'
 import { getConversationMessageAnchorId } from '@/chat/outline'
 import { MessageActions } from '@/components/AssistantChat/messages/MessageActions'
 import { useTranslation } from '@/lib/use-translation'
+import { MessageTimestamp } from '@/components/AssistantChat/messages/MessageTimestamp'
 
 export function HappyUserMessage() {
     const ctx = useHappyChatContext()
@@ -43,6 +44,10 @@ export function HappyUserMessage() {
         const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
         return custom?.kind === 'cli-output'
     })
+    const isSystemNote = useAuiState((s) => {
+        const custom = s.message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
+        return custom?.kind === 'system-note'
+    })
     const steered = useAuiState(({ message }) => (
         message.metadata.custom as Partial<HappyChatMessageMetadata> | undefined
     )?.steered === true)
@@ -52,6 +57,23 @@ export function HappyUserMessage() {
         return s.message.content.find((part): part is TextMessagePart => part.type === 'text')?.text ?? ''
     })
     if (role !== 'user') return null
+    if (isSystemNote) {
+        return (
+            <MessagePrimitive.Root
+                id={elementId}
+                data-hapi-message-role="system-note"
+                className="happy-message scroll-mt-4 px-1"
+            >
+                <div className="mx-auto w-fit max-w-[92%] px-2 text-center text-xs text-[var(--app-hint)] opacity-80">
+                    <span className="inline-flex items-center gap-1">
+                        <span aria-hidden="true">•</span>
+                        <span className="whitespace-pre-wrap text-left">{text}</span>
+                        <MessageTimestamp className="text-[10px]" />
+                    </span>
+                </div>
+            </MessagePrimitive.Root>
+        )
+    }
     const canRetry = status === 'failed' && typeof localId === 'string' && Boolean(ctx.onRetryMessage)
     const onRetry = canRetry ? () => ctx.onRetryMessage!(localId) : undefined
     const showStatus = shouldShowMessageStatus(status)
