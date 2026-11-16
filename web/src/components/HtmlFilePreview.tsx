@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useAppContext } from '@/lib/app-context'
-import { inlineHtmlAssets } from '@/lib/file-html-preview'
+import { inlineHtmlAssets, withoutSymlinkedAssets } from '@/lib/file-html-preview'
 import { useTranslation } from '@/lib/use-translation'
 
 const MAX_ASSET_FILE_BYTES = 4 * 1024 * 1024
@@ -42,10 +42,17 @@ export function HtmlFilePreview(props: { sessionId: string; filePath: string; ht
     useEffect(() => {
         let cancelled = false
         setSrcDoc(null)
-        const readFile = async (path: string) => {
-            const result = await api.readSessionFile(props.sessionId, path, MAX_ASSET_FILE_BYTES)
-            return result.success && result.content ? result.content : null
-        }
+        const readFile = withoutSymlinkedAssets(
+            async (path) => {
+                const result = await api.readSessionFile(props.sessionId, path, MAX_ASSET_FILE_BYTES)
+                return result.success && result.content ? result.content : null
+            },
+            async (dir) => {
+                const result = await api.listSessionDirectory(props.sessionId, dir || undefined)
+                return result.success ? (result.entries ?? []) : null
+            },
+            props.filePath
+        )
         inlineHtmlAssets(props.html, props.filePath, readFile)
             .catch(() => props.html)
             .then((doc) => {

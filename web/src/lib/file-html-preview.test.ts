@@ -4,7 +4,8 @@ import {
     MAX_INLINED_ASSETS,
     inlineHtmlAssets,
     isHtmlFile,
-    resolveRelativeAssetPath
+    resolveRelativeAssetPath,
+    withoutSymlinkedAssets
 } from './file-html-preview'
 
 function parse(html: string): Document {
@@ -43,6 +44,8 @@ describe('resolveRelativeAssetPath', () => {
             expect(resolveRelativeAssetPath('a/index.html', ref)).toBeNull()
         }
         expect(resolveRelativeAssetPath('index.html', '../outside.css')).toBeNull()
+        expect(resolveRelativeAssetPath('site/css/main.css', '../fonts/a.woff2', 'site/index.html')).toBe('site/fonts/a.woff2')
+        expect(resolveRelativeAssetPath('site/css/main.css', '../../x.png', 'site/index.html')).toBeNull()
     })
 })
 
@@ -53,7 +56,9 @@ describe('inlineHtmlAssets', () => {
         'site/fonts/a.woff2': 'FONT',
         'site/img/bg.png': 'BG',
         'site/logo.svg': '<svg/>',
-        'site/inline.png': 'INLINE'
+        'site/inline.png': 'INLINE',
+        'site/css/main.css': '@font-face { src: url(../fonts/a.woff2) } .x { background: url("../../outside.png") }',
+        'site/defer.js': 'init()'
     }
     const readFile = vi.fn(async (path: string) => (path in files ? encodeBase64(files[path]!) : null))
 
@@ -87,8 +92,31 @@ describe('inlineHtmlAssets', () => {
         expect(doc.querySelector('div')?.getAttribute('style')).toContain('data:image/png;base64,')
 
         const script = doc.querySelector('script')
-        expect(script?.hasAttribute('src')).toBe(false)
-        expect(script?.textContent).toBe('document.body.dataset.ready = "<\\/script>"')
+        expect(script?.getAttribute('src')).toBe(`data:text/javascript;base64,${encodeBase64(files['site/app.js']!)}`)
+        expect(script?.textContent).toBe('')
+    })
+
+    it('keeps inlined scripts external so defer and async still apply', async () => {
+        const doc = parse(await inlineHtmlAssets(
+            '<head><script defer src="defer.js"></script></head><body></body>',
+            'site/index.html',
+            readFile
+        ))
+        const script = doc.querySelector('script')
+        expect(script?.hasAttribute('defer')).toBe(true)
+        expect(script?.getAttribute('src')).toBe(`data:text/javascript;base64,${encodeBase64('init()')}`)
+    })
+
+    it('resolves stylesheet url() against the stylesheet but bounds it by the HTML directory', async () => {
+        const out = await inlineHtmlAssets(
+            '<head><link rel="stylesheet" href="css/main.css"></head>',
+            'site/index.html',
+            readFile
+        )
+        const css = parse(out).querySelector('style')?.textContent ?? ''
+        expect(css).toContain(`url("data:font/woff2;base64,${encodeBase64('FONT')}")`)
+        expect(css).toContain('url("../../outside.png")')
+        expect(readFile).not.toHaveBeenCalledWith('outside.png')
     })
 
     it('only reads web asset file types for each reference kind', async () => {
@@ -111,5 +139,46 @@ describe('inlineHtmlAssets', () => {
         expect(read).toHaveBeenCalledTimes(MAX_INLINED_ASSETS)
         expect(srcs.slice(0, MAX_INLINED_ASSETS).every((src) => src?.startsWith('data:image/png'))).toBe(true)
         expect(srcs.slice(MAX_INLINED_ASSETS)).toEqual(['img/64.png', 'img/65.png', 'img/66.png', 'img/67.png', 'img/68.png'])
+    })
+})
+
+describe('withoutSymlinkedAssets', () => {
+    const tree: Record<string, Array<{ name: string; type: string }>> = {
+        site: [
+            { name: 'index.html', type: 'file' },
+            { name: 'style.css', type: 'other' },
+            { name: 'fonts', type: 'directory' },
+            { name: 'linked', type: 'other' }
+        ],
+        'site/fonts': [{ name: 'a.woff2', type: 'file' }]
+    }
+
+    function setup(htmlPath = 'site/index.html') {
+        const read = vi.fn(async (path: string) => encodeBase64(path))
+        const list = vi.fn(async (dir: string) => tree[dir] ?? null)
+        return { read, list, guarded: withoutSymlinkedAssets(read, list, htmlPath) }
+    }
+
+    it('reads assets whose every path component is a plain directory or file', async () => {
+        const { read, list, guarded } = setup()
+        expect(await guarded('site/fonts/a.woff2')).toBe(encodeBase64('site/fonts/a.woff2'))
+        expect(read).toHaveBeenCalledWith('site/fonts/a.woff2')
+        expect(list.mock.calls.map(([dir]) => dir)).toEqual(['site', 'site/fonts'])
+    })
+
+    it('refuses symlinked files and anything below a symlinked directory', async () => {
+        const { read, guarded } = setup()
+        expect(await guarded('site/style.css')).toBeNull()
+        expect(await guarded('site/linked/x.png')).toBeNull()
+        expect(await guarded('site/fonts/missing.woff2')).toBeNull()
+        expect(await guarded('other/x.png')).toBeNull()
+        expect(read).not.toHaveBeenCalled()
+    })
+
+    it('caches directory listings across assets', async () => {
+        const { list, guarded } = setup()
+        await guarded('site/fonts/a.woff2')
+        await guarded('site/fonts/a.woff2')
+        expect(list).toHaveBeenCalledTimes(2)
     })
 })

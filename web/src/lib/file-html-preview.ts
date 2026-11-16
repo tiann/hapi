@@ -43,12 +43,13 @@ function resolveMimeType(path: string): string {
 
 /**
  * Resolves a relative URL found in `fromFilePath` to a workspace path.
- * Only the directory subtree of `fromFilePath` is reachable: returns null for
+ * Only the directory subtree of `rootFilePath` (the previewed HTML file,
+ * which contains `fromFilePath`) is reachable: returns null for
  * absolute/protocol URLs, root-relative paths, fragments, paths that climb
  * above that directory, and hidden (dot) files or directories such as `.env`
  * or `.git/`.
  */
-export function resolveRelativeAssetPath(fromFilePath: string, ref: string): string | null {
+export function resolveRelativeAssetPath(fromFilePath: string, ref: string, rootFilePath = fromFilePath): string | null {
     const trimmed = ref.trim()
     if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('/') || /^[a-z][a-z0-9+.-]*:/i.test(trimmed)) {
         return null
@@ -63,7 +64,7 @@ export function resolveRelativeAssetPath(fromFilePath: string, ref: string): str
 
     const absoluteBase = fromFilePath.startsWith('/')
     const segments = fromFilePath.split('/').slice(0, -1).filter((segment) => segment !== '')
-    const baseDepth = segments.length
+    const baseDepth = rootFilePath.split('/').slice(0, -1).filter((segment) => segment !== '').length
     for (const segment of pathPart.split('/')) {
         if (segment === '' || segment === '.') continue
         if (segment === '..') {
@@ -78,18 +79,59 @@ export function resolveRelativeAssetPath(fromFilePath: string, ref: string): str
     return `${absoluteBase ? '/' : ''}${segments.join('/')}`
 }
 
-function collectCssUrlPaths(css: string, cssPath: string): string[] {
+/** Lists a workspace directory's entries, or null when it cannot be listed. */
+export type ListWorkspaceDirectory = (path: string) => Promise<Array<{ name: string; type: string }> | null>
+
+/**
+ * Wraps `readFile` so it refuses any asset whose path below the HTML file's
+ * directory goes through a symlink. The file read API only checks that the
+ * real path stays inside the workspace, so a link such as `style.css -> ../.env`
+ * would otherwise bypass the preview's directory, dot-file and type limits.
+ * Directory listings report symlinks as type `other`; every component must be
+ * a plain `directory` (or `file` for the last one).
+ */
+export function withoutSymlinkedAssets(
+    readFile: ReadWorkspaceFileBase64,
+    listDirectory: ListWorkspaceDirectory,
+    htmlPath: string
+): ReadWorkspaceFileBase64 {
+    const rootDir = htmlPath.split('/').slice(0, -1).join('/')
+    const listings = new Map<string, Promise<Array<{ name: string; type: string }> | null>>()
+    const list = (dir: string) => {
+        let pending = listings.get(dir)
+        if (!pending) {
+            pending = listDirectory(dir).catch(() => null)
+            listings.set(dir, pending)
+        }
+        return pending
+    }
+    return async (path) => {
+        const prefix = rootDir ? `${rootDir}/` : ''
+        if (!path.startsWith(prefix)) return null
+        const components = path.slice(prefix.length).split('/')
+        let dir = rootDir
+        for (const [index, name] of components.entries()) {
+            const entries = await list(dir)
+            const expectedType = index === components.length - 1 ? 'file' : 'directory'
+            if (!entries?.some((entry) => entry.name === name && entry.type === expectedType)) return null
+            dir = dir ? `${dir}/${name}` : name
+        }
+        return await readFile(path)
+    }
+}
+
+function collectCssUrlPaths(css: string, cssPath: string, htmlPath: string): string[] {
     const paths: string[] = []
     for (const match of css.matchAll(CSS_URL_PATTERN)) {
-        const resolved = resolveRelativeAssetPath(cssPath, match[2] ?? '')
+        const resolved = resolveRelativeAssetPath(cssPath, match[2] ?? '', htmlPath)
         if (resolved && isInlinableMediaAsset(resolved)) paths.push(resolved)
     }
     return paths
 }
 
-function rewriteCssUrls(css: string, cssPath: string, dataUrls: ReadonlyMap<string, string>): string {
+function rewriteCssUrls(css: string, cssPath: string, htmlPath: string, dataUrls: ReadonlyMap<string, string>): string {
     return css.replace(CSS_URL_PATTERN, (whole, _quote: string, ref: string) => {
-        const resolved = resolveRelativeAssetPath(cssPath, ref)
+        const resolved = resolveRelativeAssetPath(cssPath, ref, htmlPath)
         const dataUrl = resolved ? dataUrls.get(resolved) : undefined
         return dataUrl ? `url("${dataUrl}")` : whole
     })
@@ -97,8 +139,8 @@ function rewriteCssUrls(css: string, cssPath: string, dataUrls: ReadonlyMap<stri
 
 /**
  * Makes a workspace HTML file self-contained for an `iframe srcdoc` preview:
- * local stylesheets and scripts are inlined, and local images, fonts and
- * other `url()` assets become data URLs. Assets beyond the count/byte budget
+ * local stylesheets are inlined, and local scripts, images, fonts and other
+ * `url()` assets become data URLs. Assets beyond the count/byte budget
  * (in document order) are left untouched.
  */
 export async function inlineHtmlAssets(
@@ -166,11 +208,9 @@ export async function inlineHtmlAssets(
     }
     for (const { element, path } of scripts) {
         const base64 = textAssets.get(path)
-        const code = base64 ? decodeText(base64) : null
-        if (code === null) continue
-        element.removeAttribute('src')
-        // A literal "</script" inside the code would end the inline element early.
-        element.textContent = code.replace(/<\/script/gi, '<\\/script')
+        if (!base64) continue
+        // Stay an external script (data URL) so defer/async scheduling is preserved.
+        element.setAttribute('src', `data:text/javascript;base64,${base64}`)
     }
 
     // 2. Binary assets referenced from markup and CSS, as data URLs.
@@ -198,8 +238,8 @@ export async function inlineHtmlAssets(
 
     const binaryAssets = await readWithinBudget([
         ...mediaAttributes.map((entry) => entry.path),
-        ...styleBlocks.flatMap((entry) => collectCssUrlPaths(entry.css, entry.basePath)),
-        ...styledElements.flatMap((element) => collectCssUrlPaths(element.getAttribute('style') ?? '', htmlPath))
+        ...styleBlocks.flatMap((entry) => collectCssUrlPaths(entry.css, entry.basePath, htmlPath)),
+        ...styledElements.flatMap((element) => collectCssUrlPaths(element.getAttribute('style') ?? '', htmlPath, htmlPath))
     ])
     const dataUrls = new Map<string, string>()
     for (const [path, base64] of binaryAssets) {
@@ -214,10 +254,10 @@ export async function inlineHtmlAssets(
         if (attribute === 'src') element.removeAttribute('srcset')
     }
     for (const { element, css, basePath } of styleBlocks) {
-        element.textContent = rewriteCssUrls(css, basePath, dataUrls)
+        element.textContent = rewriteCssUrls(css, basePath, htmlPath, dataUrls)
     }
     for (const element of styledElements) {
-        element.setAttribute('style', rewriteCssUrls(element.getAttribute('style') ?? '', htmlPath, dataUrls))
+        element.setAttribute('style', rewriteCssUrls(element.getAttribute('style') ?? '', htmlPath, htmlPath, dataUrls))
     }
 
     const doctype = doc.doctype ? `<!DOCTYPE ${doc.doctype.name}>\n` : ''

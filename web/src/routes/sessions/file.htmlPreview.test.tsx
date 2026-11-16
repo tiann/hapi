@@ -20,7 +20,12 @@ vi.mock('@/lib/app-context', () => ({
     useAppContext: () => ({
         api: {
             getGitDiffFile: async () => ({ success: true, stdout: '' }),
-            readSessionFile: readSessionFileMock
+            readSessionFile: readSessionFileMock,
+            listSessionDirectory: async (_sessionId: string, path?: string) => (
+                path === 'designs'
+                    ? { success: true, entries: [{ name: 'index.html', type: 'file' }, { name: 'tokens.css', type: 'file' }] }
+                    : { success: false, error: 'not found' }
+            )
         }
     })
 }))
