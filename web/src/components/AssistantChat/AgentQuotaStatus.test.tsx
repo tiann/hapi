@@ -121,6 +121,8 @@ describe('AgentQuotaStatus', () => {
         // Narrow screens keep only the 5h window on the chip; 7d is sm+ only.
         expect(screen.getByText('5h 12%').className).toBe('')
         expect(chip.textContent).toContain('7d 40%')
+        // Too-narrow rows clip the chip instead of letting it overlap neighbouring labels.
+        expect(chip.className).toContain('overflow-x-clip')
         expect(screen.getByText(/7d 40%/, { selector: 'span.hidden' }).className).toContain('sm:inline')
     })
 

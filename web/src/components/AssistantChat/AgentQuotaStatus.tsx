@@ -123,8 +123,11 @@ export function AgentQuotaStatus(props: { machineId: string; agentFlavor: string
                 <button
                     type="button"
                     aria-label={summary}
-                    className={`min-w-0 cursor-pointer whitespace-nowrap rounded-sm bg-transparent p-0 text-[10px] leading-4 outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-link)] ${quotaToneClass(minRemaining)}`}
+                    className={`min-w-0 cursor-pointer overflow-x-clip text-ellipsis whitespace-nowrap rounded-sm bg-transparent p-0 text-[10px] leading-4 outline-none focus-visible:ring-1 focus-visible:ring-[var(--app-link)] ${quotaToneClass(minRemaining)}`}
                 >
+                    {/* overflow-x: clip (not hidden) keeps the text from spilling onto neighbouring labels
+                        when the row is too narrow, without turning the chip into a scroll container,
+                        which would move its baseline. */}
                     {/* On sm+ the context meter is an inline-flex whose baseline is its bar's bottom edge;
                         a zero-width bar of the same height gives this chip the same baseline. */}
                     <span className="sm:inline-flex sm:items-center">
