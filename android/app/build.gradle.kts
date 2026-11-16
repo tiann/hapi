@@ -188,6 +188,10 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.kotlinx.serialization.json)
 
+    // Passkey sign-in + management (Credential Manager; RP ID hapi.run).
+    implementation(libs.androidx.credentials)
+    implementation(libs.androidx.credentials.play.services.auth)
+
     // QR pairing (ScanContract activity-result API; no Play Services).
     implementation(libs.zxing.android.embedded)
 

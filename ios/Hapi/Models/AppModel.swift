@@ -115,6 +115,25 @@ final class AppModel {
     @discardableResult
     func pair(hubUrl: String, accessToken: String) async throws -> PairedHub {
         let paired = try await pairingService.pair(rawHubUrl: hubUrl, accessToken: accessToken)
+        didPair(paired)
+        return paired
+    }
+
+    /// URL-only sign-in with a native passkey (health → login options →
+    /// system sheet → verify); the hub is then authenticated by its passkey
+    /// session. Throws ``PairingFailure``, or `PasskeyError.canceled` when the
+    /// user dismissed the sheet.
+    @discardableResult
+    func signInWithPasskey(hubUrl: String) async throws -> PairedHub {
+        let paired = try await pairingService.signInWithPasskey(
+            rawHubUrl: hubUrl,
+            authenticator: PlatformPasskeyAuthenticator()
+        )
+        didPair(paired)
+        return paired
+    }
+
+    private func didPair(_ paired: PairedHub) {
         authFailureNotice = nil
         // Close whichever pairing surface was up; the state flip below swaps
         // the root to the home screen.
@@ -124,7 +143,6 @@ final class AppModel {
         // Android timing: the notification-permission prompt fires only once
         // a hub is actually paired — then this hub registers for push.
         PushCoordinator.shared.hubPaired(paired.hubUrl)
-        return paired
     }
 
     /// Selects another paired hub, rebuilding the session for it.

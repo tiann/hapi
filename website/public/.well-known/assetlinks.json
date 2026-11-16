@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.get_login_creds"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "run.hapi.companion",
+      "sha256_cert_fingerprints": [
+        "TODO_PLAY_APP_SIGNING_SHA256_FINGERPRINT"
+      ]
+    }
+  }
+]

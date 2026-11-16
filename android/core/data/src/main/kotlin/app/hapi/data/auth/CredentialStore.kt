@@ -1,5 +1,6 @@
 package app.hapi.data.auth
 
+import app.hapi.protocol.wire.AuthRequest
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.serialization.Serializable
 
@@ -7,24 +8,57 @@ import kotlinx.serialization.Serializable
  * Credentials for one paired hub, keyed by normalized hub origin
  * ([HubUrls.normalize]).
  *
- * The **access token** is the durable secret from pairing
- * (`hapicompanion://bind?...&code=`), exchanged for a 4-hour [jwt] via
- * `POST /api/auth`. It is opaque — never split client-side; the optional
- * `:namespace` suffix is interpreted by the hub only
- * (`docs/api/client-contract/auth.md`). The JWT is a cache: persisting it just
- * saves one exchange round-trip on cold start.
+ * A hub is authenticated by **one of two durable secrets**:
+ *
+ * - the **access token** from pairing (`hapicompanion://bind?...&code=`), or
+ * - the **passkey session** minted by `POST /api/passkey/login/verify`
+ *   (`docs/api/client-contract/auth.md#passkeys-native`) — signing in with a
+ *   passkey never requires the access token.
+ *
+ * Either is exchanged for a 4-hour [jwt] via `POST /api/auth`; the body
+ * carries whichever one exists ([authRequest]). An access token is opaque —
+ * never split client-side; the optional `:namespace` suffix is interpreted by
+ * the hub only. The JWT is a cache: persisting it just saves one exchange
+ * round-trip on cold start.
+ *
+ * Both fields are nullable because the two sign-in paths populate different
+ * ones; at least one is always set for a usable entry ([hasCredential]).
  */
 @Serializable
 data class HubCredentials(
     /** Normalized hub origin, e.g. `https://hub.example:8443`. */
     val hubUrl: String,
-    /** Opaque pairing secret (`CLI_API_TOKEN[:namespace]`). */
-    val accessToken: String,
+    /** Opaque pairing secret (`CLI_API_TOKEN[:namespace]`), when paired. */
+    val accessToken: String? = null,
+    /** Passkey refresh credential, when signed in with a passkey. */
+    val passkeySession: String? = null,
     /** Last JWT from `POST /api/auth`, or null before the first exchange. */
     val jwt: String? = null,
     /** Epoch ms when [jwt] was obtained, or null. */
     val jwtObtainedAtMs: Long? = null,
-)
+) {
+
+    /**
+     * The durable secret this entry authenticates with: the access token when
+     * both exist (pairing is the user's explicit, revocable choice; its 401 also
+     * tells the UI to re-pair), else the passkey session.
+     */
+    val authRequest: AuthRequest?
+        get() = when {
+            accessToken != null -> AuthRequest(accessToken = accessToken)
+            passkeySession != null -> AuthRequest(passkeySession = passkeySession)
+            else -> null
+        }
+
+    /** The secret string matched against a remembered rejected credential. */
+    val secret: String? get() = accessToken ?: passkeySession
+
+    /** True while this entry can still exchange for a JWT. */
+    val hasCredential: Boolean get() = secret != null
+
+    /** Only signed in by passkey (no access token): 401 means sign in again. */
+    val passkeyOnly: Boolean get() = accessToken == null && passkeySession != null
+}
 
 /**
  * Per-hub credential storage. Production uses [EncryptedPrefsCredentialStore]

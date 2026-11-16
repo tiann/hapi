@@ -999,8 +999,19 @@ export const PasskeyCredentialResponseSchema = z.object({
         clientDataJSON: z.string().min(1)
     }),
     clientExtensionResults: z.record(z.string(), z.unknown()).default({}),
-    authenticatorAttachment: z.string().optional()
+    // WebAuthn serializes an unknown attachment as null (e.g. Credential Manager).
+    authenticatorAttachment: z.string().nullish()
 })
+
+/**
+ * Body of `POST /api/passkey/{login,register}/options`. Web clients omit it
+ * (the RP is derived from the Origin header); official native apps send
+ * `{ "client": "native" }` to use the hub's fixed native RP ID.
+ */
+export const PasskeyOptionsRequestSchema = z.object({
+    client: z.enum(['web', 'native']).default('web')
+})
+export type PasskeyOptionsRequest = z.infer<typeof PasskeyOptionsRequestSchema>
 
 export const PasskeyRegisterVerifyRequestSchema = z.object({
     response: PasskeyCredentialResponseSchema,

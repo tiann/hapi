@@ -119,12 +119,35 @@ Implementation notes:
 
 Source of truth: `hub/src/web/routes/passkey.ts`, `hub/src/web/authTokens.ts`, `web/src/lib/passkey.ts`.
 
-The web app can sign in with a WebAuthn passkey instead of pasting the access token. Native clients keep using the access token: passkeys are bound to a web origin, and self-hosted hubs cannot rely on associated domains.
+The web app can sign in with a WebAuthn passkey instead of pasting the access token. Native apps use the same endpoints with a fixed RP ID; see [Native passkeys](#passkeys-native).
 
 - **Registration needs an existing session.** `POST /api/passkey/register/{options,verify}` require a JWT, so the first sign-in still uses the access token (or Telegram). The passkey is stored with the JWT's namespace and an HMAC fingerprint of the current `CLI_API_TOKEN`.
 - **Relying party.** The RP ID is the hostname of the request's `Origin`. The origin must use HTTPS, or HTTP on `localhost`, and must be a domain name rather than an IP address. It must also be trusted: either the same host as the request (the hub-served web app) or an entry in the hub's CORS origins (a wildcard does not count). A passkey only works on the RP ID where it was registered.
 - **Sign-in.** `POST /api/passkey/login/options` returns a one-time challenge that expires after 5 minutes. `POST /api/passkey/login/verify` with `{ "response": <AuthenticationResponseJSON> }` requires user verification and returns `{ token, user, passkeySession }`. The web stores `passkeySession` under `hapi_passkey_session::<baseUrl>` instead of an access token, then refreshes with `POST /api/auth { "passkeySession": "..." }`.
 - **Revocation.** Rotating `CLI_API_TOKEN` invalidates every passkey and passkey session registered under the old token (`GET /api/passkeys` reports `valid: false`). Deleting a passkey (`DELETE /api/passkeys/:id`) revokes its sessions immediately.
+
+## Native passkeys {#passkeys-native}
+
+Source of truth: `hub/src/web/routes/passkey.ts` (`nativePasskeyConfigFromEnv`), `website/public/.well-known/`.
+
+iOS entitlements and Android asset links are fixed at build time, so they cannot follow a self-hosted hub's domain. The official apps therefore use one shared RP ID, **`hapi.run`**:
+
+- `https://hapi.run/.well-known/apple-app-site-association` lists `webcredentials` for `XJB862F92W.run.hapi.app`. The iOS/macOS app declares `webcredentials:hapi.run` in its Associated Domains entitlement.
+- `https://hapi.run/.well-known/assetlinks.json` grants `delegate_permission/common.get_login_creds` to `run.hapi.companion` with its signing-certificate SHA-256.
+- Every hub accepts assertions for `hapi.run` only from exact app origins:
+  - iOS/macOS (AuthenticationServices): `https://hapi.run`.
+  - Android (Credential Manager): `android:apk-key-hash:<base64url SHA-256 of the signing cert>`. Official hashes live in `OFFICIAL_ANDROID_PASSKEY_ORIGINS`.
+  - `HAPI_PASSKEY_NATIVE_ORIGINS` (comma-separated) adds origins, e.g. for debug builds. `HAPI_PASSKEY_NATIVE_RP_ID` changes the RP ID for forks that ship their own apps and domain.
+
+  Pages on other `*.hapi.run` hosts can request `hapi.run` assertions, but the hub rejects their origins.
+
+Client flow (same endpoints as the web; natives send no `Origin` header):
+
+1. **Register** (needs a JWT from the normal access-token exchange): `POST /api/passkey/register/options` with `{ "client": "native" }`. The response is WebAuthn `PublicKeyCredentialCreationOptionsJSON` with `rp.id == "hapi.run"`, a base64url `user.id`, and `user.name` of the form `hapi[:<ns>]@<hub host>` so the system picker can tell hubs apart. Create the credential with the platform API, then `POST /api/passkey/register/verify` with `{ "response": <RegistrationResponseJSON>, "name": "<device name>" }`.
+2. **Sign in** (no JWT): `POST /api/passkey/login/options` with `{ "client": "native" }`. The response is `PublicKeyCredentialRequestOptionsJSON` whose `allowCredentials` lists this hub's valid native passkeys, so the sheet does not offer other hubs' passkeys. `404 {"error":"no_passkeys"}` means none are registered; fall back to the access token. Then `POST /api/passkey/login/verify` with `{ "response": <AuthenticationResponseJSON> }` returns `{ token, user, passkeySession }`.
+3. **Refresh**: store `passkeySession` in secure storage, keyed per hub like the access token. Exchange it with `POST /api/auth { "passkeySession": "..." }` in the normal silent re-auth loop. `401 passkey_session_invalid` is terminal: ask the user to sign in again.
+
+All binary fields are base64url without padding. Registration and sign-in require user verification. Clients should check `rp.id` / `rpId` against their compiled RP ID and refuse a mismatch.
 
 ## Namespaces
 

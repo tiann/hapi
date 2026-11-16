@@ -115,8 +115,9 @@ struct SettingsView: View {
 
     // MARK: - Sections
 
-    /// Every action here leaves Settings: switching or signing out replaces
-    /// the home screen (it is keyed by hub), and pairing opens from home.
+    /// Every action here except Passkeys leaves Settings: switching or signing
+    /// out replaces the home screen (it is keyed by hub), and pairing opens
+    /// from home. Passkeys manages the active hub's passkeys in place.
     private var hubsSection: some View {
         Section("Hubs") {
             ForEach(appModel.hubs, id: \.self) { hub in
@@ -138,6 +139,12 @@ struct SettingsView: View {
                 }
                 .accessibilityAddTraits(isActive ? .isSelected : [])
             }
+            NavigationLink {
+                PasskeysView(session: session)
+            } label: {
+                detailRow(title: "Passkeys", detail: "Sign in to this hub without the access token")
+            }
+            .accessibilityIdentifier("settings.passkeys")
             Button("Add Hub…") {
                 // Pairing opens from home, where an incoming bind link can
                 // close it to make room for the root confirm sheet.

@@ -10,6 +10,7 @@ import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simp
 import { decodeClientDataJSON } from '@simplewebauthn/server/helpers'
 import {
     PasskeyLoginVerifyRequestSchema,
+    PasskeyOptionsRequestSchema,
     PasskeyRegisterVerifyRequestSchema,
     type PasskeyListResponse
 } from '@hapi/protocol'
@@ -30,8 +31,47 @@ const MAX_PENDING_CHALLENGES = 256
 const RP_NAME = 'HAPI'
 
 type ChallengeEntry =
-    | { kind: 'register'; rpId: string; origin: string; namespace: string; expiresAt: number }
-    | { kind: 'login'; rpId: string; origin: string; expiresAt: number }
+    | { kind: 'register'; rpId: string; origins: string[]; namespace: string; expiresAt: number }
+    | { kind: 'login'; rpId: string; origins: string[]; expiresAt: number }
+
+/**
+ * Relying party used by the official native apps. Their entitlements / asset
+ * links are compiled in, so they cannot follow a self-hosted hub's domain;
+ * instead every hub accepts this fixed RP ID, restricted to exact app origins:
+ * `https://<rpId>` for iOS/macOS (AuthenticationServices) and
+ * `android:apk-key-hash:<base64url sha256 of the signing cert>` for Android.
+ */
+export type NativePasskeyConfig = {
+    rpId: string
+    origins: string[]
+}
+
+export const DEFAULT_NATIVE_PASSKEY_RP_ID = 'hapi.run'
+
+/**
+ * `android:apk-key-hash:` origins of official Android builds.
+ * TODO(passkey): add the Play App Signing certificate hash (base64url, no
+ * padding, of the SHA-256 shown in Play Console → App signing). Until then
+ * Android passkeys only work when HAPI_PASSKEY_NATIVE_ORIGINS lists the hash.
+ */
+export const OFFICIAL_ANDROID_PASSKEY_ORIGINS: readonly string[] = []
+
+function parseList(value: string | undefined): string[] {
+    return (value ?? '').split(',').map((item) => item.trim()).filter(Boolean)
+}
+
+/**
+ * HAPI_PASSKEY_NATIVE_RP_ID overrides the RP ID (forks shipping their own
+ * apps). HAPI_PASSKEY_NATIVE_ORIGINS adds origins, e.g. a debug build's
+ * `android:apk-key-hash:...`.
+ */
+export function nativePasskeyConfigFromEnv(env: Record<string, string | undefined> = process.env): NativePasskeyConfig {
+    const rpId = env.HAPI_PASSKEY_NATIVE_RP_ID?.trim() || DEFAULT_NATIVE_PASSKEY_RP_ID
+    const defaults = rpId === DEFAULT_NATIVE_PASSKEY_RP_ID
+        ? [`https://${rpId}`, ...OFFICIAL_ANDROID_PASSKEY_ORIGINS]
+        : [`https://${rpId}`]
+    return { rpId, origins: [...new Set([...defaults, ...parseList(env.HAPI_PASSKEY_NATIVE_ORIGINS)])] }
+}
 
 /**
  * One-time WebAuthn challenges. Entries are removed on first lookup, so a
@@ -88,7 +128,7 @@ export function resolveRelyingParty(
     originHeader: string | undefined,
     hostHeader: string | undefined,
     corsOrigins: string[]
-): { origin: string; rpId: string } | { error: string } {
+): { origins: string[]; rpId: string } | { error: string } {
     if (!originHeader) {
         return { error: 'Missing Origin header' }
     }
@@ -113,11 +153,18 @@ export function resolveRelyingParty(
     if (!sameHost && !listed) {
         return { error: 'Origin is not allowed to use passkeys' }
     }
-    return { origin, rpId: hostname }
+    return { origins: [origin], rpId: hostname }
 }
 
-function relyingPartyFor(c: Context, corsOrigins: () => string[]) {
-    return resolveRelyingParty(c.req.header('origin'), c.req.header('host'), corsOrigins())
+/** Web clients use the Origin header; native apps ask for the fixed native RP. */
+async function relyingPartyFor(c: Context, deps: PasskeyRouteDeps) {
+    const body = PasskeyOptionsRequestSchema.safeParse(await c.req.json().catch(() => ({})))
+    const client = body.success ? body.data.client : 'web'
+    if (client === 'native') {
+        return { ...deps.native, client }
+    }
+    const rp = resolveRelyingParty(c.req.header('origin'), c.req.header('host'), deps.corsOrigins())
+    return 'error' in rp ? rp : { ...rp, client }
 }
 
 function currentFingerprint(jwtSecret: Uint8Array): string {
@@ -137,6 +184,7 @@ export type PasskeyRouteDeps = {
     store: Store
     corsOrigins: () => string[]
     challenges: PasskeyChallengeStore
+    native: NativePasskeyConfig
 }
 
 /** Unauthenticated: exchange a passkey assertion for a web JWT + passkey session. */
@@ -145,18 +193,30 @@ export function createPasskeyLoginRoutes(deps: PasskeyRouteDeps): Hono<WebAppEnv
     const { jwtSecret, store, challenges } = deps
 
     app.post('/passkey/login/options', async (c) => {
-        const rp = relyingPartyFor(c, deps.corsOrigins)
+        const rp = await relyingPartyFor(c, deps)
         if ('error' in rp) {
             return c.json({ error: rp.error }, 400)
         }
+        // The native RP ID is shared by every hub, so the platform sheet would
+        // otherwise offer passkeys of other hubs; restrict it to this hub's.
+        const fingerprint = currentFingerprint(jwtSecret)
+        const allowCredentials = rp.client === 'native'
+            ? store.passkeys.listByRpId(rp.rpId)
+                .filter((p) => constantTimeEquals(p.tokenFingerprint, fingerprint))
+                .map((p) => ({ id: p.id, transports: p.transports }))
+            : undefined
+        if (allowCredentials && allowCredentials.length === 0) {
+            return c.json({ error: 'no_passkeys' }, 404)
+        }
         const options = await generateAuthenticationOptions({
             rpID: rp.rpId,
+            allowCredentials,
             userVerification: 'required'
         })
         challenges.put(options.challenge, {
             kind: 'login',
             rpId: rp.rpId,
-            origin: rp.origin,
+            origins: rp.origins,
             expiresAt: Date.now() + CHALLENGE_TTL_MS
         })
         return c.json(options)
@@ -187,7 +247,7 @@ export function createPasskeyLoginRoutes(deps: PasskeyRouteDeps): Hono<WebAppEnv
             const verification = await verifyAuthenticationResponse({
                 response,
                 expectedChallenge: challenge,
-                expectedOrigin: entry.origin,
+                expectedOrigin: entry.origins,
                 expectedRPID: entry.rpId,
                 credential: {
                     id: credential.id,
@@ -223,18 +283,24 @@ export function createPasskeyManagementRoutes(deps: PasskeyRouteDeps): Hono<WebA
     const { jwtSecret, store, challenges } = deps
 
     app.post('/passkey/register/options', async (c) => {
-        const rp = relyingPartyFor(c, deps.corsOrigins)
+        const rp = await relyingPartyFor(c, deps)
         if ('error' in rp) {
             return c.json({ error: rp.error }, 400)
         }
         const namespace = c.get('namespace')
         const existing = store.passkeys.listByNamespace(namespace).filter((p) => p.rpId === rp.rpId)
+        const account = namespace === 'default' ? 'hapi' : `hapi:${namespace}`
+        // Native passkeys share one RP ID across hubs: name them after the hub
+        // so the platform account picker can tell them apart.
+        const hubHost = c.req.header('host') ?? 'hub'
         const options = await generateRegistrationOptions({
             rpName: RP_NAME,
             rpID: rp.rpId,
             userID: passkeyUserHandle(jwtSecret, namespace),
-            userName: namespace === 'default' ? 'hapi' : `hapi:${namespace}`,
-            userDisplayName: namespace === 'default' ? 'HAPI' : `HAPI (${namespace})`,
+            userName: rp.client === 'native' ? `${account}@${hubHost}` : account,
+            userDisplayName: rp.client === 'native'
+                ? `HAPI · ${hubHost}${namespace === 'default' ? '' : ` (${namespace})`}`
+                : namespace === 'default' ? 'HAPI' : `HAPI (${namespace})`,
             attestationType: 'none',
             excludeCredentials: existing.map((p) => ({ id: p.id, transports: p.transports })),
             authenticatorSelection: {
@@ -245,7 +311,7 @@ export function createPasskeyManagementRoutes(deps: PasskeyRouteDeps): Hono<WebA
         challenges.put(options.challenge, {
             kind: 'register',
             rpId: rp.rpId,
-            origin: rp.origin,
+            origins: rp.origins,
             namespace,
             expiresAt: Date.now() + CHALLENGE_TTL_MS
         })
@@ -270,7 +336,7 @@ export function createPasskeyManagementRoutes(deps: PasskeyRouteDeps): Hono<WebA
             const verification = await verifyRegistrationResponse({
                 response,
                 expectedChallenge: challenge,
-                expectedOrigin: entry.origin,
+                expectedOrigin: entry.origins,
                 expectedRPID: entry.rpId,
                 requireUserVerification: true
             })

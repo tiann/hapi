@@ -13,6 +13,7 @@ import { createAuthRoutes } from './auth'
 import {
     createPasskeyLoginRoutes,
     createPasskeyManagementRoutes,
+    nativePasskeyConfigFromEnv,
     PasskeyChallengeStore,
     resolveRelyingParty
 } from './passkey'
@@ -20,6 +21,7 @@ import {
 const JWT_SECRET = new Uint8Array(randomBytes(32))
 const ORIGIN = 'https://hub.example.com'
 const HOST = 'hub.example.com'
+const ANDROID_ORIGIN = 'android:apk-key-hash:test-hash'
 
 const b64url = (bytes: Uint8Array | Buffer) => Buffer.from(bytes).toString('base64url')
 const sha256 = (data: Uint8Array | string) => createHash('sha256').update(data).digest()
@@ -67,7 +69,8 @@ class SoftAuthenticator {
                 attestationObject: b64url(attestationObject),
                 transports: ['internal']
             },
-            clientExtensionResults: {}
+            clientExtensionResults: {},
+            authenticatorAttachment: null
         }
     }
 
@@ -95,7 +98,13 @@ class SoftAuthenticator {
 
 function createApp(store: Store) {
     const app = new Hono<WebAppEnv>()
-    const deps = { jwtSecret: JWT_SECRET, store, corsOrigins: () => [], challenges: new PasskeyChallengeStore() }
+    const deps = {
+        jwtSecret: JWT_SECRET,
+        store,
+        corsOrigins: () => [],
+        challenges: new PasskeyChallengeStore(),
+        native: { rpId: 'hapi.run', origins: ['https://hapi.run', ANDROID_ORIGIN] }
+    }
     app.route('/api', createAuthRoutes(JWT_SECRET, store))
     app.route('/api', createPasskeyLoginRoutes(deps))
     app.use('/api/*', createAuthMiddleware(JWT_SECRET))
@@ -219,9 +228,9 @@ describe('passkey routes', () => {
 
 describe('resolveRelyingParty', () => {
     it('requires a trusted, secure, domain-name origin', () => {
-        expect(resolveRelyingParty('https://hub.example.com', 'hub.example.com', [])).toEqual({ origin: 'https://hub.example.com', rpId: 'hub.example.com' })
-        expect(resolveRelyingParty('http://localhost:3006', 'localhost:3006', [])).toEqual({ origin: 'http://localhost:3006', rpId: 'localhost' })
-        expect(resolveRelyingParty('https://app.hapi.run', 'abc.relay.hapi.run', ['https://app.hapi.run'])).toEqual({ origin: 'https://app.hapi.run', rpId: 'app.hapi.run' })
+        expect(resolveRelyingParty('https://hub.example.com', 'hub.example.com', [])).toEqual({ origins: ['https://hub.example.com'], rpId: 'hub.example.com' })
+        expect(resolveRelyingParty('http://localhost:3006', 'localhost:3006', [])).toEqual({ origins: ['http://localhost:3006'], rpId: 'localhost' })
+        expect(resolveRelyingParty('https://app.hapi.run', 'abc.relay.hapi.run', ['https://app.hapi.run'])).toEqual({ origins: ['https://app.hapi.run'], rpId: 'app.hapi.run' })
         expect(resolveRelyingParty('https://app.hapi.run', 'abc.relay.hapi.run', ['*'])).toHaveProperty('error')
         expect(resolveRelyingParty('http://hub.example.com', 'hub.example.com', [])).toHaveProperty('error')
         expect(resolveRelyingParty('http://192.168.1.2:3006', '192.168.1.2:3006', [])).toHaveProperty('error')
@@ -233,7 +242,7 @@ describe('PasskeyChallengeStore', () => {
     it('is one-time, expires, and evicts the oldest entry instead of refusing new ones', () => {
         let now = 0
         const store = new PasskeyChallengeStore(() => now)
-        const entry = (expiresAt: number) => ({ kind: 'login' as const, rpId: 'r', origin: 'o', expiresAt })
+        const entry = (expiresAt: number) => ({ kind: 'login' as const, rpId: 'r', origins: ['o'], expiresAt })
         store.put('a', entry(100))
         expect(store.take('a')).not.toBeNull()
         expect(store.take('a')).toBeNull()
@@ -245,5 +254,74 @@ describe('PasskeyChallengeStore', () => {
         for (let i = 0; i < 300; i++) store.put(`c${i}`, entry(1000))
         expect(store.take('c0')).toBeNull()
         expect(store.take('c299')).not.toBeNull()
+    })
+})
+
+/** Native clients send no Origin header and ask for the fixed native RP. */
+function postNative(app: Hono<WebAppEnv>, path: string, body: unknown, extra: Record<string, string> = {}) {
+    return app.request(path, {
+        method: 'POST',
+        headers: { host: HOST, 'content-type': 'application/json', ...extra },
+        body: JSON.stringify(body)
+    })
+}
+
+describe('native passkeys', () => {
+    async function registerNative(app: Hono<WebAppEnv>, authenticator: SoftAuthenticator) {
+        const auth = await bearer()
+        const options = await (await postNative(app, '/api/passkey/register/options', { client: 'native' }, auth)).json() as {
+            challenge: string; rp: { id: string }; user: { id: string; name: string }
+        }
+        expect(options.rp.id).toBe('hapi.run')
+        expect(options.user.name).toBe(`hapi@${HOST}`)
+        const res = await postNative(app, '/api/passkey/register/verify', { response: authenticator.create(options) }, auth)
+        expect(res.status).toBe(200)
+    }
+
+    async function loginNative(app: Hono<WebAppEnv>, authenticator: SoftAuthenticator) {
+        const optionsRes = await postNative(app, '/api/passkey/login/options', { client: 'native' })
+        if (optionsRes.status !== 200) return optionsRes
+        const options = await optionsRes.json() as { challenge: string; rpId: string; allowCredentials: Array<{ id: string }> }
+        expect(options.rpId).toBe('hapi.run')
+        expect(options.allowCredentials.map((c) => c.id)).toEqual([b64url(authenticator.credentialId)])
+        return await postNative(app, '/api/passkey/login/verify', { response: authenticator.get(options) })
+    }
+
+    it('registers and signs in from iOS and Android app origins on the shared RP ID', async () => {
+        const store = new Store(':memory:')
+        const app = createApp(store)
+        expect(await (await postNative(app, '/api/passkey/login/options', { client: 'native' })).json()).toEqual({ error: 'no_passkeys' })
+
+        for (const origin of ['https://hapi.run', ANDROID_ORIGIN]) {
+            const authenticator = new SoftAuthenticator('hapi.run', origin)
+            await registerNative(app, authenticator)
+            const res = await loginNative(app, authenticator)
+            expect(res.status).toBe(200)
+            expect(await res.json()).toHaveProperty('passkeySession')
+            store.passkeys.remove(b64url(authenticator.credentialId), 'default')
+        }
+        store.close()
+    })
+
+    it('rejects assertions for the native RP ID from any other origin', async () => {
+        const store = new Store(':memory:')
+        const app = createApp(store)
+        const authenticator = new SoftAuthenticator('hapi.run', 'https://hapi.run')
+        await registerNative(app, authenticator)
+        // e.g. a page on another hapi.run subdomain may request hapi.run passkeys.
+        for (const origin of ['https://evil.relay.hapi.run', 'android:apk-key-hash:other-app']) {
+            const forged = new SoftAuthenticator('hapi.run', origin)
+            Object.assign(forged, { credentialId: authenticator.credentialId })
+            expect((await loginNative(app, forged)).status).toBe(401)
+        }
+        store.close()
+    })
+
+    it('reads the native RP and extra origins from the environment', () => {
+        expect(nativePasskeyConfigFromEnv({})).toEqual({ rpId: 'hapi.run', origins: ['https://hapi.run'] })
+        expect(nativePasskeyConfigFromEnv({
+            HAPI_PASSKEY_NATIVE_RP_ID: 'fork.example',
+            HAPI_PASSKEY_NATIVE_ORIGINS: ' android:apk-key-hash:debug , https://fork.example'
+        })).toEqual({ rpId: 'fork.example', origins: ['https://fork.example', 'android:apk-key-hash:debug'] })
     })
 })

@@ -159,6 +159,20 @@ The app supports multiple hubs with one active selection. See the
   an already-paired hub can be selected directly.
 - **Simulator:** use manual entry because `DataScannerViewController` is
   unavailable. Camera pairing is optional on physical devices too.
+- **Passkeys:** Settings → Hubs → Passkeys lists the namespace's passkeys
+  (web ones, other RP IDs, are marked *Web* and are informational; `valid:
+  false` shows *Revoked*), adds one for the native RP `hapi.run` and deletes
+  with confirmation. *Sign in with a Passkey* on the pairing screen needs only
+  the hub URL: `/health` → `POST /api/passkey/login/options {client:
+  "native"}` (`allowCredentials` limits the sheet to this hub; `404
+  no_passkeys` is reported) → system sheet → verify. The record then stores a
+  passkey session instead of an access token, and silent re-auth exchanges
+  `{passkeySession}`; its 401 is terminal like a rejected token. The app
+  refuses options whose `rp.id`/`rpId` is not `hapi.run`. Ceremonies need a
+  signed build with the Associated Domains capability
+  (`webcredentials:hapi.run`) on the App ID and the live
+  `https://hapi.run/.well-known/apple-app-site-association`; the
+  platform-free logic is covered by `PasskeysTests` / `PasskeyAuthTests`.
 - **Hubs:** Settings → Hubs switches between paired hubs and adds another.
 - **Sign out:** Settings → Hubs → Sign Out removes that hub's credentials and
   falls back to another paired hub or pairing. A rejected access token, or a freshly

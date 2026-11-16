@@ -113,7 +113,14 @@ export class PasskeyStore {
         return rows.map(toStored)
     }
 
-    recordUse(id: string, counter: number, usedAt: number): void {
+    listByRpId(rpId: string): StoredPasskeyCredential[] {
+        const rows = this.db.prepare(
+            'SELECT * FROM passkey_credentials WHERE rp_id = ? ORDER BY created_at ASC'
+        ).all(rpId) as DbPasskeyRow[]
+        return rows.map(toStored)
+    }
+
+        recordUse(id: string, counter: number, usedAt: number): void {
         this.db.prepare(
             'UPDATE passkey_credentials SET counter = ?, last_used_at = ? WHERE id = ?'
         ).run(counter, usedAt, id)

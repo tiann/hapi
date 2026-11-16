@@ -16,7 +16,12 @@ import type { SyncEngine } from '../sync/syncEngine'
 import { createAuthMiddleware, type WebAppEnv } from './middleware/auth'
 import { createAuthRoutes } from './routes/auth'
 import { createBindRoutes } from './routes/bind'
-import { createPasskeyLoginRoutes, createPasskeyManagementRoutes, PasskeyChallengeStore } from './routes/passkey'
+import {
+    createPasskeyLoginRoutes,
+    createPasskeyManagementRoutes,
+    nativePasskeyConfigFromEnv,
+    PasskeyChallengeStore
+} from './routes/passkey'
 import { createEventsRoutes } from './routes/events'
 import { createSessionsRoutes } from './routes/sessions'
 import { createMessagesRoutes } from './routes/messages'
@@ -290,7 +295,8 @@ function createWebApp(options: {
         jwtSecret: options.jwtSecret,
         store: options.store,
         corsOrigins: () => corsOrigins,
-        challenges: new PasskeyChallengeStore()
+        challenges: new PasskeyChallengeStore(),
+        native: nativePasskeyConfigFromEnv()
     }
     app.route('/api', createPasskeyLoginRoutes(passkeyDeps))
 

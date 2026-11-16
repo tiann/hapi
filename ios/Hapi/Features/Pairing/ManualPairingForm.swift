@@ -37,6 +37,13 @@ struct ManualPairingForm {
         return Submission(hubURL: origin, accessToken: trimmed(accessToken))
     }
 
+    /// Hub origin for a URL-only passkey sign-in: the address alone must be
+    /// valid (the access token is not needed).
+    var passkeyHubURL: String? {
+        guard validationError(for: .address) == nil else { return nil }
+        return normalizedAddress(address)
+    }
+
     func text(for field: Field) -> String {
         field == .address ? address : accessToken
     }
