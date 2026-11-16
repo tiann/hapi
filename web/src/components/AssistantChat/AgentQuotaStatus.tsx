@@ -101,17 +101,20 @@ export function AgentQuotaStatus(props: { machineId: string; agentFlavor: string
         refetchInterval: QUOTA_REFRESH_INTERVAL_MS,
         retry: false
     })
-    const buckets = selectComposerQuotaBuckets(query.data, props.agentFlavor)
+    // A failed refetch keeps the previous data; hide it rather than show stale numbers.
+    const buckets = query.isError ? [] : selectComposerQuotaBuckets(query.data, props.agentFlavor)
     if (buckets.length === 0) return null
 
-    const summary = buckets
-        .map((bucket) => {
-            const head = `${WINDOW_SHORT_LABELS[bucket.window ?? '']} ${Math.round(bucket.usedPercent)}%`
-            return bucket.resetsAt && bucket.resetsAt > now
+    const parts = buckets.map((bucket) => {
+        const head = `${WINDOW_SHORT_LABELS[bucket.window ?? '']} ${Math.round(bucket.usedPercent)}%`
+        return {
+            id: bucket.id,
+            text: bucket.resetsAt && bucket.resetsAt > now
                 ? `${head} (${formatCompactCountdown(bucket.resetsAt - now)})`
                 : head
-        })
-        .join(' · ')
+        }
+    })
+    const summary = parts.map((part) => part.text).join(' · ')
     const minRemaining = Math.min(...buckets.map((bucket) => bucket.remainingPercent))
 
     return (
@@ -126,7 +129,12 @@ export function AgentQuotaStatus(props: { machineId: string; agentFlavor: string
                         a zero-width bar of the same height gives this chip the same baseline. */}
                     <span className="sm:inline-flex sm:items-center">
                         <span aria-hidden="true" className="hidden h-1 w-0 sm:block" />
-                        {summary}
+                        {/* Narrow status bars only have room for the first (5h) window; the rest stay in the popover. */}
+                        {parts.map((part, index) => (
+                            <span key={part.id} className={index === 0 ? undefined : 'hidden sm:inline'}>
+                                {index === 0 ? part.text : `\u00a0·\u00a0${part.text}`}
+                            </span>
+                        ))}
                     </span>
                 </button>
             </Popover.Trigger>

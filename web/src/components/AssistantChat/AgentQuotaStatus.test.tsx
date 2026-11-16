@@ -103,8 +103,7 @@ describe('AgentQuotaStatus', () => {
         getMachineAgentQuotasMock.mockReset()
     })
 
-    function renderStatus(agentFlavor: string) {
-        const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    function renderStatus(agentFlavor: string, queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
         return render(
             <QueryClientProvider client={queryClient}>
                 <I18nProvider>
@@ -117,8 +116,12 @@ describe('AgentQuotaStatus', () => {
     it('shows used percent for the 5h and weekly windows of the session machine', async () => {
         getMachineAgentQuotasMock.mockResolvedValue(response)
         renderStatus('claude')
-        expect(await screen.findByRole('button', { name: '5h 12% · 7d 40%' })).toBeTruthy()
+        const chip = await screen.findByRole('button', { name: '5h 12% · 7d 40%' })
         expect(getMachineAgentQuotasMock).toHaveBeenCalledWith('machine-1')
+        // Narrow screens keep only the 5h window on the chip; 7d is sm+ only.
+        expect(screen.getByText('5h 12%').className).toBe('')
+        expect(chip.textContent).toContain('7d 40%')
+        expect(screen.getByText(/7d 40%/, { selector: 'span.hidden' }).className).toContain('sm:inline')
     })
 
     it('shows used percent with a reset countdown, and a readable reset time in the popover', async () => {
@@ -144,6 +147,18 @@ describe('AgentQuotaStatus', () => {
         expect(screen.getByText(/Resets in 2 days 14 hours/)).toBeTruthy()
         expect(screen.getByText('12% used')).toBeTruthy()
         expect(screen.getByText('40% used')).toBeTruthy()
+    })
+
+    it('hides previously loaded quotas once a refetch fails', async () => {
+        const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+        getMachineAgentQuotasMock.mockResolvedValueOnce(response)
+        renderStatus('claude', queryClient)
+        expect(await screen.findByRole('button', { name: '5h 12% · 7d 40%' })).toBeTruthy()
+
+        getMachineAgentQuotasMock.mockRejectedValueOnce(new Error('Runner offline'))
+        await queryClient.refetchQueries()
+
+        await vi.waitFor(() => expect(screen.queryByRole('button')).toBeNull())
     })
 
     it('renders nothing when the runner cannot report quotas', async () => {
