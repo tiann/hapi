@@ -88,6 +88,7 @@ export function applySessionDetailPatch(session: Session, patch: SessionPatch): 
     if (patch.copilotAgentMode !== undefined) assign('copilotAgentMode', patch.copilotAgentMode)
     if (patch.backgroundTaskCount !== undefined) assign('backgroundTaskCount', patch.backgroundTaskCount)
     if (patch.backgroundTasks !== undefined) assign('backgroundTasks', patch.backgroundTasks)
+    if (patch.derivedToolWork !== undefined) assign('derivedToolWork', patch.derivedToolWork)
     // Version gates: dual SSE can deliver duplicates out of order.
     // Only mark changed when a strictly newer version lands —
     // otherwise keep previous object identity (no redundant render).
