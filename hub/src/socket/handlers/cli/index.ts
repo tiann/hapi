@@ -193,6 +193,16 @@ export function registerCliHandlers(socket: CliSocketWithData, deps: CliHandlers
         onSessionChildExited,
         onWebappEvent
     })
+
+    // A machine-scoped socket connection is itself proof of liveness: mark the
+    // machine active immediately instead of waiting for the runner's first
+    // machine-alive heartbeat (which can be delayed by a versioned state
+    // update retry loop after an unclean runner stop — the machine appeared
+    // offline for minutes even though the socket was connected). The 45s
+    // expireInactive sweep still guards against genuinely dead connections.
+    if (machineId && onMachineAlive) {
+        onMachineAlive({ machineId, time: Date.now() })
+    }
     registerTerminalHandlers(socket, {
         terminalRegistry,
         terminalNamespace,
