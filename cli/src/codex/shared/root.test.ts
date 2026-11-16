@@ -9,6 +9,8 @@ import { SharedCodexRoot, latestCompletedForkCutoff, type RootHost } from './roo
 import { codexPlanProposalId } from './plan';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { asyncQuestionsForItem } from './asyncQuestions';
+import { CodexAppServerClient } from '../codexAppServerClient';
+import { buildHapiMcpBridge } from '../utils/buildHapiMcpBridge';
 
 type NativeTurn = { id: string; status: string; items: unknown[] };
 type NativeRequest = { id: string | number; method: string; params: unknown };
@@ -50,9 +52,9 @@ vi.mock('../codexAppServerClient', () => ({
     },
     isIndeterminateError: () => false
 }));
-vi.mock('../utils/buildHapiMcpBridge', () => ({ buildHapiMcpBridge: async () => ({
+vi.mock('../utils/buildHapiMcpBridge', () => ({ buildHapiMcpBridge: vi.fn(async () => ({
     mcpServers: {}, server: { stop() {} }
-}) }));
+})) }));
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -60,10 +62,12 @@ afterEach(async () => {
     finally { vi.useRealTimers(); }
 });
 
-async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; create?: RootHost['create'] }) {
+async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; create?: RootHost['create'];
+    attached?: boolean; beforeSubscribe?: RootHost['beforeSubscribe']; validateHistory?: RootHost['validateHistory'] }) {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-shared-root-'));
     let state: AgentState = { steeringActive: true };
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex' };
+    if (opts?.attached) metadata.codexRuntime = { kind: 'attached', bindingId: '11111111-1111-4111-8111-111111111111', state: 'attached' };
     let reconnect: (() => void) | null = null;
     const updateState = vi.fn((fn: (value: AgentState) => AgentState) => { state = fn(state); });
     const rpc = new Map<string, (raw: unknown) => Promise<unknown>>();
@@ -91,11 +95,12 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     const root = new SharedCodexRoot({ session, workingDirectory: directory } as SessionBootstrapResult, {
         directory, generation: 'test', endpoint: 'mock', settingsFor: () => undefined,
         create: opts?.create ?? (async () => { throw new Error('Unexpected root creation'); }),
+        attached: opts?.attached, beforeSubscribe: opts?.beforeSubscribe, validateHistory: opts?.validateHistory,
         end
     } satisfies RootHost);
     cleanups.push(async () => { await root.close(false); await rm(directory, { recursive: true, force: true }); });
     await root.prepare();
-    await root.bind('thread', { model: 'mock', thread: { turns: [] } }, false);
+    await root.bind('thread', { model: 'mock', thread: { turns: [] } }, opts?.attached ?? false);
     const native = root.client as unknown as {
         initialized: boolean;
         thread: { id: string; turns: NativeTurn[] };
@@ -114,6 +119,66 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         end,
     };
 }
+
+describe('externally attached root', () => {
+    it('skips MCP, instructions and initial settings injection, and disables lifecycle actions', async () => {
+        const builds = vi.mocked(buildHapiMcpBridge).mock.calls.length;
+        const calls = vi.spyOn(CodexAppServerClient.prototype, 'request');
+        const beforeSubscribe = vi.fn(async () => {});
+        const end = vi.fn(async () => {});
+        try {
+            const f = await fixture({ attached: true, end, beforeSubscribe });
+            await f.root.activate({ permissionMode: 'yolo', model: 'must-not-inject' });
+            expect(vi.mocked(buildHapiMcpBridge).mock.calls).toHaveLength(builds);
+            expect(beforeSubscribe).toHaveBeenCalledWith('thread');
+            expect(calls).toHaveBeenCalledWith('thread/resume', { threadId: 'thread' });
+            expect(calls.mock.calls.some(([method]) => ['thread/start', 'thread/settings/update', 'thread/metadata/update'].includes(method))).toBe(false);
+            expect(() => f.root.config({})).toThrow('cannot inject');
+            expect(f.metadata().capabilities).toMatchObject({ terminal: false, conversationHistory: {
+                forkCurrent: false, forkAtMessage: false, forkLatestCompleted: false, rewindToMessage: false } });
+            await expect(f.rpc.get(RPC_METHODS.ClearConversation)!({})).rejects.toThrow('owning desktop');
+            await expect(f.rpc.get(RPC_METHODS.ForkConversation)!({})).rejects.toThrow('owning desktop');
+            await f.root.close(false);
+            expect(calls.mock.calls.some(([method]) => ['thread/archive', 'thread/queue/delete', 'turn/interrupt'].includes(method))).toBe(false);
+        } finally { calls.mockRestore(); }
+    });
+    it.each(['thread/reverted', 'thread/rolledBack'])('freezes immediately on native %s', async method => {
+        const end = vi.fn(async () => {}); const f = await fixture({ attached: true, end });
+        await f.root.activate();
+        f.native.notify(method, { threadId: 'thread' });
+        expect(f.metadata().conversationHistoryDiverged).toBe(true);
+        expect(f.metadata().codexRuntime?.state).toBe('history-changed');
+        expect(end).toHaveBeenCalledWith(f.root, false, 'history-changed');
+        await expect(f.rpc.get(RPC_METHODS.SetSessionConfig)!({ model: 'changed' })).rejects.toThrow('stopping');
+    });
+    it.each(['thread/deleted', 'thread/closed'])('detaches on native %s without archiving the engine', async method => {
+        const end = vi.fn(async () => {}); const f = await fixture({ attached: true, end });
+        await f.root.activate(); f.native.notify(method, { threadId: 'thread' }); await f.drain();
+        expect(end).toHaveBeenCalledWith(f.root, false, 'unavailable');
+    });
+    it('fails closed on unverifiable native history and never reconnects a lost engine', async () => {
+        const end = vi.fn(async () => {}); const f = await fixture({ attached: true, end });
+        await f.root.activate();
+        const request = vi.spyOn(f.root.client, 'request').mockRejectedValue(new Error('read unavailable'));
+        await expect(f.root.refresh()).rejects.toThrow('read unavailable');
+        expect(end).toHaveBeenCalledWith(f.root, false, 'unavailable');
+        request.mockRestore();
+        const other = await fixture({ attached: true, end }); await other.root.activate();
+        other.native.initialized = false; other.native.abandoned();
+        expect(end).toHaveBeenCalledWith(other.root, false, 'unavailable');
+        expect(other.native.initialized).toBe(false);
+    });
+    it('revalidates history before an explicit native control instead of relying only on rewrite notifications', async () => {
+        let changed = false;
+        const validateHistory = vi.fn(async () => { if (changed) throw new Error('changed history'); });
+        const end = vi.fn(async () => {}); const f = await fixture({ attached: true, end, validateHistory });
+        await f.root.activate(); changed = true;
+        const request = vi.spyOn(f.root.client, 'request');
+        await expect(f.rpc.get(RPC_METHODS.SetSessionConfig)!({ model: 'must-not-apply' })).rejects.toThrow('changed history');
+        expect(request.mock.calls.some(([method]) => method === 'thread/settings/update')).toBe(false);
+        expect(end).toHaveBeenCalledWith(f.root, false, 'unavailable');
+    });
+});
 
 describe('native readiness after Hub reconnect', () => {
     it('replays readiness only after an activated root revalidates native history', async () => {

@@ -2409,8 +2409,13 @@ export class SyncEngine {
         { type: 'success'; sessionId: string } | { type: 'error'; message: string }
     > {
         try {
-            const { machineId, codexSessionId, path } = this.assertArchivedForkEligible(source, namespace, messageLocalId)
             const metadata = source.metadata!
+            // An attached runtime is the desktop's own thread: fork it there,
+            // not through HAPI.
+            if (metadata.codexRuntime?.kind === 'attached') {
+                throw new Error('Fork external threads in the owning desktop, then use hapi attach')
+            }
+            const { machineId, codexSessionId, path } = this.assertArchivedForkEligible(source, namespace, messageLocalId)
             let attempt = metadata.codexArchivedFork
             if (attempt && attempt.boundaryLocalId !== messageLocalId) throw new Error('A previous archived fork is pending at another boundary; retry that fork first')
             const turnId = attempt ? attempt.boundaryTurnId : messageLocalId ? metadata.conversationHistoryTurns?.[messageLocalId] : undefined
@@ -4489,6 +4494,9 @@ export class SyncEngine {
 
         const session = access.session
         const metadata = session.metadata
+        if (metadata?.codexRuntime?.kind === 'attached') {
+            return { type: 'error', message: 'Externally attached Codex session: run hapi attach on its machine; owned cold resume is disabled', code: 'resume_unavailable' }
+        }
         if (!metadata || typeof metadata.path !== 'string' || metadata.path.length === 0) {
             return { type: 'error', message: 'Session metadata missing path', code: 'resume_unavailable' }
         }
@@ -4879,6 +4887,7 @@ export class SyncEngine {
     /** Inactive session with directory path but no agent thread and no prior user turn. */
     private canFreshSpawnNeverStartedSession(session: Session, sessionId: string, namespace: string): boolean {
         const metadata = session.metadata
+        if (metadata?.codexRuntime?.kind === 'attached') return false
         if (!metadata || typeof metadata.path !== 'string' || metadata.path.length === 0) {
             return false
         }

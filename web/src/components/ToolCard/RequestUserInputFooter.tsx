@@ -26,7 +26,11 @@ import { AskUserQuestionOptionRow, askUserQuestionNavButtonClassName } from '@/c
 type QuestionState = {
     selected: string[]
     userNote: string
+    noteExpanded: boolean
 }
+
+// Same shape as Submit, quieter colors.
+const addNoteButtonClassName = 'h-8 rounded-full border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-3.5 text-[var(--app-hint)] hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]'
 
 export function RequestUserInputFooter(props: {
     api: ApiClient
@@ -48,17 +52,30 @@ export function RequestUserInputFooter(props: {
     const [loading, setLoading] = useState(false)
     const [error, setError] = useState<string | null>(null)
     const noteRef = useRef<HTMLTextAreaElement>(null)
+    const shouldFocusNoteRef = useRef(false)
 
     useEffect(() => {
         setStep(0)
         const initial: Record<string, QuestionState> = {}
         for (const q of questions) {
-            initial[q.id] = { selected: [], userNote: q.prefill ?? '' }
+            const userNote = q.prefill ?? ''
+            initial[q.id] = {
+                selected: [],
+                userNote,
+                noteExpanded: userNote.trim().length > 0
+            }
         }
         setStateByQuestion(initial)
         setLoading(false)
         setError(null)
+        shouldFocusNoteRef.current = false
     }, [props.tool.id])
+
+    useEffect(() => {
+        if (!shouldFocusNoteRef.current || !noteRef.current) return
+        shouldFocusNoteRef.current = false
+        noteRef.current.focus()
+    })
 
     if (!permission || permission.status !== 'pending') return null
     if (!isRequestUserInputToolName(props.tool.name)) return null
@@ -124,6 +141,7 @@ export function RequestUserInputFooter(props: {
             return
         }
         setError(null)
+        shouldFocusNoteRef.current = false
         setStep((s) => Math.min(s + 1, questions.length - 1))
     }
 
@@ -136,34 +154,71 @@ export function RequestUserInputFooter(props: {
 
     const prev = () => {
         setError(null)
+        shouldFocusNoteRef.current = false
         setStep((s) => Math.max(s - 1, 0))
+    }
+
+    const requestNoteFocus = () => {
+        if (noteRef.current) {
+            shouldFocusNoteRef.current = false
+            noteRef.current.focus()
+        } else {
+            shouldFocusNoteRef.current = true
+        }
     }
 
     const selectOption = (question: RequestUserInputQuestion, option: RequestUserInputOption) => {
         haptic.selection()
         setError(null)
-        setStateByQuestion((prev) => ({
-            ...prev,
-            [question.id]: {
-                ...prev[question.id],
-                selected: selectRequestUserInputOption(question, prev[question.id]?.selected ?? [], option)
+        setStateByQuestion((prev) => {
+            const current = prev[question.id] ?? { selected: [], userNote: question.prefill ?? '', noteExpanded: false }
+            return {
+                ...prev,
+                [question.id]: {
+                    ...current,
+                    selected: selectRequestUserInputOption(question, current.selected, option),
+                    noteExpanded: current.noteExpanded || Boolean(option.isOther)
+                }
             }
-        }))
-        if (option.isOther) noteRef.current?.focus()
+        })
+        if (option.isOther) {
+            requestNoteFocus()
+        }
     }
 
-    const updateUserNote = (questionId: string, value: string) => {
-        setStateByQuestion((prev) => ({
-            ...prev,
-            [questionId]: {
-                ...prev[questionId],
-                userNote: value
+    const expandNote = (question: RequestUserInputQuestion) => {
+        setStateByQuestion((prev) => {
+            const current = prev[question.id] ?? { selected: [], userNote: question.prefill ?? '', noteExpanded: false }
+            return {
+                ...prev,
+                [question.id]: {
+                    ...current,
+                    noteExpanded: true
+                }
             }
-        }))
+        })
+        requestNoteFocus()
+    }
+
+    const updateUserNote = (question: RequestUserInputQuestion, value: string) => {
+        setStateByQuestion((prev) => {
+            const current = prev[question.id] ?? { selected: [], userNote: question.prefill ?? '', noteExpanded: false }
+            return {
+                ...prev,
+                [question.id]: {
+                    ...current,
+                    userNote: value
+                }
+            }
+        })
     }
 
     const currentState = currentQuestion ? stateByQuestion[currentQuestion.id] : null
     const isPureTextQuestion = currentQuestion && currentQuestion.options.length === 0
+    const hasSelection = (currentState?.selected.length ?? 0) > 0
+    const hasNoteContent = (currentState?.userNote.trim().length ?? 0) > 0
+    const isNoteExpanded = Boolean(currentState?.noteExpanded) || hasNoteContent
+    const showAddNote = !isPureTextQuestion && hasSelection && !isNoteExpanded
 
     return (
         <div className="mt-3 rounded-lg border border-[var(--app-border)] bg-[var(--app-bg)] p-3">
@@ -201,7 +256,7 @@ export function RequestUserInputFooter(props: {
                         // Pure text question - show only textarea
                         <textarea
                             value={currentState?.userNote ?? ''}
-                            onChange={(e) => updateUserNote(currentQuestion.id, e.target.value)}
+                            onChange={(e) => updateUserNote(currentQuestion, e.target.value)}
                             disabled={props.disabled || loading}
                             placeholder={currentQuestion.placeholder ?? t('tool.requestUserInput.textPlaceholder')}
                             className="mt-3 w-full min-h-[88px] resize-y rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:outline-none focus:ring-2 focus:ring-[var(--app-button)] focus:border-transparent disabled:opacity-50"
@@ -227,28 +282,44 @@ export function RequestUserInputFooter(props: {
                                 })}
                             </div>
 
-                            {/* User note input - always shown for questions with options */}
-                            <div className="mt-3">
-                                <div className="text-xs text-[var(--app-hint)] mb-1">
-                                    {t('tool.requestUserInput.noteLabel')}
+                            {isNoteExpanded ? (
+                                <div className="mt-3">
+                                    <div className="text-xs text-[var(--app-hint)] mb-1">
+                                        {t('tool.requestUserInput.noteLabel')}
+                                    </div>
+                                    <textarea
+                                        ref={noteRef}
+                                        aria-label={t('tool.requestUserInput.noteLabel')}
+                                        value={currentState?.userNote ?? ''}
+                                        onChange={(e) => updateUserNote(currentQuestion, e.target.value)}
+                                        disabled={props.disabled || loading}
+                                        placeholder={t('tool.requestUserInput.notePlaceholder')}
+                                        className="w-full min-h-[60px] resize-y rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:outline-none focus:ring-2 focus:ring-[var(--app-button)] focus:border-transparent disabled:opacity-50"
+                                    />
                                 </div>
-                                <textarea
-                                    ref={noteRef}
-                                    aria-label={t('tool.requestUserInput.noteLabel')}
-                                    value={currentState?.userNote ?? ''}
-                                    onChange={(e) => updateUserNote(currentQuestion.id, e.target.value)}
-                                    disabled={props.disabled || loading}
-                                    placeholder={t('tool.requestUserInput.notePlaceholder')}
-                                    className="w-full min-h-[60px] resize-y rounded-md border border-[var(--app-border)] bg-[var(--app-bg)] px-3 py-2 text-sm text-[var(--app-fg)] placeholder:text-[var(--app-hint)] focus:outline-none focus:ring-2 focus:ring-[var(--app-button)] focus:border-transparent disabled:opacity-50"
-                                />
-                            </div>
+                            ) : null}
                         </>
                     )}
                 </div>
             ) : null}
 
-            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-[var(--app-border)] pt-3">
-                <div className="flex items-center gap-2">
+            <div
+                data-testid="request-user-input-actions"
+                className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-[var(--app-border)] pt-3"
+            >
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                    {showAddNote && currentQuestion ? (
+                        <Button
+                            type="button"
+                            variant="secondary"
+                            size="sm"
+                            disabled={props.disabled || loading}
+                            onClick={() => expandNote(currentQuestion)}
+                            className={addNoteButtonClassName}
+                        >
+                            {t('tool.requestUserInput.addNote')}
+                        </Button>
+                    ) : null}
                     {isAsync ? (
                         <Button
                             type="button"

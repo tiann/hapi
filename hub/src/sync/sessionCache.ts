@@ -29,11 +29,14 @@ type RuntimeConfigKey = 'permissionMode' | 'model' | 'modelReasoningEffort' | 'e
  * Rows without a machine keep the id-only match. Pi and OpenCode are
  * scoped strictly by their dedupe key instead.
  */
-function isRecordedOnAnotherMachine(
+function isDistinctNativeIdentity(
     field: string,
     a: NonNullable<Session['metadata']>,
     b: NonNullable<Session['metadata']>
 ): boolean {
+    // An attached projection is not an owned engine or another post-rewrite
+    // view of the same native thread. Never merge their transcripts/queues.
+    if (field === 'codexSessionId' && a.codexRuntime?.bindingId !== b.codexRuntime?.bindingId) return true
     if (field !== 'codexSessionId' && field !== 'claudeSessionId') return false
     return typeof a.machineId === 'string'
         && typeof b.machineId === 'string'
@@ -2805,7 +2808,7 @@ export class SessionCache {
                     if (!existing.metadata) continue
                     if (existing.metadata[agentId.field] !== agentId.value) continue
                     if (machineScoped && existing.metadata.machineId !== agentId.machineId) continue
-                    if (isRecordedOnAnotherMachine(agentId.field, passMetadata, existing.metadata)) continue
+                    if (isDistinctNativeIdentity(agentId.field, passMetadata, existing.metadata)) continue
                     candidates.push({ id: existingId, session: existing })
                 }
 
