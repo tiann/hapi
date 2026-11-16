@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test'
+import { randomUUID } from 'node:crypto'
 import { Store } from '../store'
 import { RpcRegistry } from '../socket/rpcRegistry'
 import { SyncEngine } from './syncEngine'
@@ -449,6 +450,29 @@ describe('preview-capable shared runtime', () => {
         // refuse the same session instead of answering a forkable boundary.
         const result = await engine.forkPreview(source.id, 'default', 'current')
         expect(result).toMatchObject({ type: 'error', message: expect.stringContaining('Inactive fork requires a Codex session') })
+    })
+
+    it('refuses the preview of an inactive attached Codex source for current and message intents', async () => {
+        const store = new Store(':memory:')
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        engine.getOrCreateMachine('machine', { host: 'test', platform: 'win32', happyCliVersion: '1',
+            capabilities: [MACHINE_CAPABILITIES.ForkArchivedCodex] }, null, 'default')
+        engine.handleMachineAlive({ machineId: 'machine', time: Date.now() })
+        const source = engine.getOrCreateSession('source', {
+            path: '/tmp/work', host: 'test', machineId: 'machine', hostPid: 42, flavor: 'codex',
+            lifecycleState: 'archived', codexSessionId: 'native-source',
+            codexRuntime: { kind: 'attached', bindingId: randomUUID(), state: 'detached' },
+            capabilities: { conversationHistory: { forkCurrent: true, forkAtMessage: true } }
+        }, { controlledByUser: false }, 'default')
+        store.messages.addMessage(source.id, { role: 'user', content: { type: 'text', text: 'u1' } }, 'u1')
+        store.messages.markMessagesInvoked(source.id, ['u1'], Date.now())
+        // The confirm refuses an attached runtime before any other
+        // eligibility check; the preview must refuse the same source for
+        // the current intent (which a running Codex source resolves to
+        // latestCompleted) and the message intent.
+        const expected = { type: 'error' as const, message: 'Fork external threads in the owning desktop, then use hapi attach' }
+        expect(await engine.forkPreview(source.id, 'default', 'current')).toEqual(expected)
+        expect(await engine.forkPreview(source.id, 'default', 'message', 'u1')).toEqual(expected)
     })
 
     it('answers the preview for an eligible archived Codex session', async () => {

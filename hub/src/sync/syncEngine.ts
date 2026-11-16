@@ -2410,11 +2410,6 @@ export class SyncEngine {
     > {
         try {
             const metadata = source.metadata!
-            // An attached runtime is the desktop's own thread: fork it there,
-            // not through HAPI.
-            if (metadata.codexRuntime?.kind === 'attached') {
-                throw new Error('Fork external threads in the owning desktop, then use hapi attach')
-            }
             const { machineId, codexSessionId, path } = this.assertArchivedForkEligible(source, namespace, messageLocalId)
             let attempt = metadata.codexArchivedFork
             if (attempt && attempt.boundaryLocalId !== messageLocalId) throw new Error('A previous archived fork is pending at another boundary; retry that fork first')
@@ -2537,6 +2532,11 @@ export class SyncEngine {
         path: string
     } {
         const metadata = source.metadata
+        // An attached runtime is the desktop's own thread: fork it there,
+        // not through HAPI.
+        if (metadata?.codexRuntime?.kind === 'attached') {
+            throw new Error('Fork external threads in the owning desktop, then use hapi attach')
+        }
         if (metadata?.flavor !== 'codex' || !metadata.codexSessionId || !metadata.machineId || !metadata.path) {
             throw new Error('Inactive fork requires a Codex session with native history and a machine binding')
         }
