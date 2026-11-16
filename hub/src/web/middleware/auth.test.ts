@@ -50,8 +50,8 @@ async function signHapiToken(payload: Record<string, unknown>): Promise<string> 
 function createApp(options: { cloudflareAccessVerifier?: CloudflareAccessVerifier | null } = {}) {
     const app = new Hono<WebAppEnv>()
     app.use('/api/*', createAuthMiddleware(JWT_SECRET, options))
-    app.get('/api/sessions', (c) => c.json({ userId: c.get('userId'), namespace: c.get('namespace') }))
-    app.get('/api/events', (c) => c.json({ userId: c.get('userId'), namespace: c.get('namespace') }))
+    app.get('/api/sessions', (c) => c.json({ userId: c.get('userId'), namespace: c.get('namespace'), authMethod: c.get('authMethod') }))
+    app.get('/api/events', (c) => c.json({ userId: c.get('userId'), namespace: c.get('namespace'), authMethod: c.get('authMethod') }))
     app.post('/api/auth', (c) => c.json({ ok: true }))
     app.post('/api/bind', (c) => c.json({ ok: true }))
     return app
@@ -76,14 +76,14 @@ describe('createAuthMiddleware', () => {
             headers: { authorization: `Bearer ${token}` }
         })
         expect(res.status).toBe(200)
-        expect(await res.json()).toEqual({ userId: 7, namespace: 'default' })
+        expect(await res.json()).toEqual({ userId: 7, namespace: 'default', authMethod: 'token' })
     })
 
     test('accepts a legacy JWT via the SSE query parameter', async () => {
         const token = await signHapiToken({ uid: 8, ns: 'work' })
         const res = await createApp().request(`/api/events?token=${encodeURIComponent(token)}`)
         expect(res.status).toBe(200)
-        expect(await res.json()).toEqual({ userId: 8, namespace: 'work' })
+        expect(await res.json()).toEqual({ userId: 8, namespace: 'work', authMethod: 'token' })
     })
 
     test('keeps the existing auth exclusions', async () => {
@@ -171,7 +171,7 @@ describe('createAuthMiddleware', () => {
             }
         })
         expect(res.status).toBe(200)
-        expect(await res.json()).toEqual({ userId: 15, namespace: 'default' })
+        expect(await res.json()).toEqual({ userId: 15, namespace: 'default', authMethod: 'cloudflareAccess' })
     })
 
     test('a valid Cloudflare-derived HAPI JWT alone cannot authenticate', async () => {

@@ -10,8 +10,15 @@ const jwtPayloadSchema = z.object({
     cfAccessEmail: z.string().optional()
 })
 
+/**
+ * How the caller authenticated. `token` covers ordinary HAPI JWTs (issued by
+ * access-token, passkey, or Telegram sign-in); `cloudflareAccess` marks a JWT
+ * exchanged from a verified Cloudflare Access assertion.
+ */
+export type WebAuthMethod = 'token' | 'cloudflareAccess'
+
 export type WebAuthTokenVerification =
-    | { ok: true; userId: number; namespace: string }
+    | { ok: true; userId: number; namespace: string; authMethod: WebAuthMethod }
     | { ok: false; status: 401 | 403 | 503; error: string }
 
 export interface VerifyWebAuthTokenOptions {
@@ -51,7 +58,7 @@ export async function verifyWebAuthToken(
     }
 
     if (payload.authMethod === undefined) {
-        return { ok: true, userId: payload.uid, namespace: payload.ns }
+        return { ok: true, userId: payload.uid, namespace: payload.ns, authMethod: 'token' }
     }
 
     if (payload.authMethod !== 'cloudflareAccess') {
@@ -91,5 +98,5 @@ export async function verifyWebAuthToken(
         return { ok: false, status: 401, error: 'Invalid token' }
     }
 
-    return { ok: true, userId: payload.uid, namespace: payload.ns }
+    return { ok: true, userId: payload.uid, namespace: payload.ns, authMethod: 'cloudflareAccess' }
 }

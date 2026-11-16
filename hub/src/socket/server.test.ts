@@ -63,7 +63,7 @@ describe('verifyTerminalSocketAuth', () => {
     test('accepts a legacy JWT', async () => {
         const token = await signHapiToken({ uid: 7, ns: 'default' })
         const result = await verifyTerminalSocketAuth(token, undefined, JWT_SECRET)
-        expect(result).toEqual({ ok: true, userId: 7, namespace: 'default' })
+        expect(result).toEqual({ ok: true, userId: 7, namespace: 'default', authMethod: 'token' })
     })
 
     test('reads the forwarded assertion from a string header', async () => {
@@ -71,7 +71,7 @@ describe('verifyTerminalSocketAuth', () => {
         const assertion = await signAccessAssertion()
         const token = await signHapiToken({ uid: 8, ns: 'default', authMethod: 'cloudflareAccess', cfAccessSub: 'subject-1', cfAccessEmail: 'alice@example.com' })
         const result = await verifyTerminalSocketAuth(token, assertion, JWT_SECRET, { cloudflareAccessVerifier: verifier })
-        expect(result).toEqual({ ok: true, userId: 8, namespace: 'default' })
+        expect(result).toEqual({ ok: true, userId: 8, namespace: 'default', authMethod: 'cloudflareAccess' })
     })
 
     test('reads the forwarded assertion from an array header', async () => {
@@ -79,7 +79,7 @@ describe('verifyTerminalSocketAuth', () => {
         const assertion = await signAccessAssertion()
         const token = await signHapiToken({ uid: 9, ns: 'default', authMethod: 'cloudflareAccess', cfAccessSub: 'subject-1', cfAccessEmail: 'alice@example.com' })
         const result = await verifyTerminalSocketAuth(token, [assertion], JWT_SECRET, { cloudflareAccessVerifier: verifier })
-        expect(result).toEqual({ ok: true, userId: 9, namespace: 'default' })
+        expect(result).toEqual({ ok: true, userId: 9, namespace: 'default', authMethod: 'cloudflareAccess' })
     })
 
     test('treats an empty array header as a missing assertion', async () => {

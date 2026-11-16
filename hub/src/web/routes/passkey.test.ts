@@ -4,8 +4,11 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Hono } from 'hono'
+import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT } from 'jose'
 import { isoCBOR } from '@simplewebauthn/server/helpers'
 import { createConfiguration, getConfiguration } from '../../configuration'
+import type { CloudflareAccessConfig } from '../../config/cloudflareAccess'
+import { createCloudflareAccessVerifier, type CloudflareAccessVerifier } from '../cloudflareAccess'
 import { createAuthMiddleware, type WebAppEnv } from '../middleware/auth'
 import { Store } from '../../store'
 import { signWebJwt } from '../authTokens'
@@ -22,6 +25,46 @@ const JWT_SECRET = new Uint8Array(randomBytes(32))
 const ORIGIN = 'https://hub.example.com'
 const HOST = 'hub.example.com'
 const ANDROID_ORIGIN = 'android:apk-key-hash:test-hash'
+
+const CF_CONFIG: CloudflareAccessConfig = {
+    teamDomain: 'synthetic.cloudflareaccess.com',
+    audience: 'synthetic-audience',
+    users: { 'alice@example.com': 'default' }
+}
+
+const CF_ISSUER = 'https://synthetic.cloudflareaccess.com'
+
+let cfKeyPair: { publicKey: CryptoKey; privateKey: CryptoKey }
+let cfJwks: { keys: Array<Record<string, string>> }
+
+async function initCfKeys() {
+    if (cfKeyPair) return
+    cfKeyPair = await generateKeyPair('RS256')
+    cfJwks = { keys: [await exportJWK(cfKeyPair.publicKey) as unknown as Record<string, string>] }
+}
+
+async function localVerifier(): Promise<CloudflareAccessVerifier> {
+    await initCfKeys()
+    return createCloudflareAccessVerifier(CF_CONFIG, { keyResolver: createLocalJWKSet(cfJwks) })
+}
+
+async function signAccessAssertion(claims: Record<string, unknown> = {}): Promise<string> {
+    return await new SignJWT({ sub: 'subject-1', email: 'alice@example.com', ...claims })
+        .setProtectedHeader({ alg: 'RS256' })
+        .setIssuer(CF_ISSUER)
+        .setAudience(CF_CONFIG.audience)
+        .setIssuedAt()
+        .setExpirationTime('1h')
+        .sign(cfKeyPair.privateKey)
+}
+
+async function signCloudflareToken(payload: Record<string, unknown>): Promise<string> {
+    return await new SignJWT(payload)
+        .setProtectedHeader({ alg: 'HS256' })
+        .setIssuedAt()
+        .setExpirationTime('1h')
+        .sign(JWT_SECRET)
+}
 
 const b64url = (bytes: Uint8Array | Buffer) => Buffer.from(bytes).toString('base64url')
 const sha256 = (data: Uint8Array | string) => createHash('sha256').update(data).digest()
@@ -96,7 +139,7 @@ class SoftAuthenticator {
     }
 }
 
-function createApp(store: Store) {
+function createApp(store: Store, options: { cloudflareAccessVerifier?: CloudflareAccessVerifier | null } = {}) {
     const app = new Hono<WebAppEnv>()
     const deps = {
         jwtSecret: JWT_SECRET,
@@ -107,7 +150,7 @@ function createApp(store: Store) {
     }
     app.route('/api', createAuthRoutes(JWT_SECRET, store))
     app.route('/api', createPasskeyLoginRoutes(deps))
-    app.use('/api/*', createAuthMiddleware(JWT_SECRET))
+    app.use('/api/*', createAuthMiddleware(JWT_SECRET, options))
     app.route('/api', createPasskeyManagementRoutes(deps))
     return app
 }
@@ -222,6 +265,43 @@ describe('passkey routes', () => {
         const phished = new SoftAuthenticator(HOST, 'https://evil.example')
         Object.assign(phished, { credentialId: authenticator.credentialId })
         expect((await login(app, phished)).res.status).toBe(401)
+        store.close()
+    })
+})
+
+describe('Cloudflare-derived sessions', () => {
+    it('rejects passkey registration before a challenge is created or a credential stored', async () => {
+        const store = new Store(':memory:')
+        const app = createApp(store, { cloudflareAccessVerifier: await localVerifier() })
+        const assertion = await signAccessAssertion()
+        const token = await signCloudflareToken({
+            uid: 1, ns: 'default', authMethod: 'cloudflareAccess', cfAccessSub: 'subject-1', cfAccessEmail: 'alice@example.com'
+        })
+        const auth = { authorization: `Bearer ${token}`, 'Cf-Access-Jwt-Assertion': assertion }
+
+        const optionsRes = await post(app, '/api/passkey/register/options', {}, auth)
+        expect(optionsRes.status).toBe(403)
+        expect(await optionsRes.json()).toEqual({ error: 'Passkey registration requires a non-Cloudflare sign-in' })
+
+        // Even a well-formed assertion body cannot store a credential.
+        const authenticator = new SoftAuthenticator(HOST, ORIGIN)
+        const verifyRes = await post(app, '/api/passkey/register/verify', {
+            response: authenticator.create({ challenge: 'never-issued', user: { id: 'u' } })
+        }, auth)
+        expect(verifyRes.status).toBe(403)
+        expect(await verifyRes.json()).toEqual({ error: 'Passkey registration requires a non-Cloudflare sign-in' })
+
+        expect(store.passkeys.listByNamespace('default')).toHaveLength(0)
+        store.close()
+    })
+
+    it('still allows registration with an access-token-derived JWT', async () => {
+        const store = new Store(':memory:')
+        const app = createApp(store)
+        const authenticator = new SoftAuthenticator(HOST, ORIGIN)
+        await register(app, authenticator)
+        const listed = await (await app.request('/api/passkeys', { headers: await bearer() })).json() as { passkeys: unknown[] }
+        expect(listed.passkeys).toHaveLength(1)
         store.close()
     })
 })

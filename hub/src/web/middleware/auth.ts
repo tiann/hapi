@@ -1,12 +1,13 @@
 import type { MiddlewareHandler } from 'hono'
 import { z } from 'zod'
-import { verifyWebAuthToken } from '../authToken'
+import { verifyWebAuthToken, type WebAuthMethod } from '../authToken'
 import type { CloudflareAccessVerifier } from '../cloudflareAccess'
 
 export type WebAppEnv = {
     Variables: {
         userId: number
         namespace: string
+        authMethod: WebAuthMethod
     }
 }
 
@@ -54,6 +55,7 @@ export function createAuthMiddleware(
 
         c.set('userId', result.userId)
         c.set('namespace', result.namespace)
+        c.set('authMethod', result.authMethod)
         await next()
         return
     }

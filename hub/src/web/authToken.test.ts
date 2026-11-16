@@ -53,13 +53,13 @@ describe('verifyWebAuthToken', () => {
     test('accepts a legacy JWT without authMethod', async () => {
         const token = await signHapiToken({ uid: 7, ns: 'default' })
         const result = await verifyWebAuthToken(token, JWT_SECRET, undefined)
-        expect(result).toEqual({ ok: true, userId: 7, namespace: 'default' })
+        expect(result).toEqual({ ok: true, userId: 7, namespace: 'default', authMethod: 'token' })
     })
 
     test('accepts a legacy JWT carrying unrelated extra claims', async () => {
         const token = await signHapiToken({ uid: 8, ns: 'work', theme: 'dark' })
         const result = await verifyWebAuthToken(token, JWT_SECRET, undefined)
-        expect(result).toEqual({ ok: true, userId: 8, namespace: 'work' })
+        expect(result).toEqual({ ok: true, userId: 8, namespace: 'work', authMethod: 'token' })
     })
 
     test('rejects a malformed token', async () => {
@@ -188,7 +188,7 @@ describe('verifyWebAuthToken', () => {
         const assertion = await signAccessAssertion()
         const token = await signHapiToken({ uid: 22, ns: 'default', authMethod: 'cloudflareAccess', cfAccessSub: 'subject-1', cfAccessEmail: 'alice@example.com' })
         const result = await verifyWebAuthToken(token, JWT_SECRET, assertion, { cloudflareAccessVerifier: await localVerifier() })
-        expect(result).toEqual({ ok: true, userId: 22, namespace: 'default' })
+        expect(result).toEqual({ ok: true, userId: 22, namespace: 'default', authMethod: 'cloudflareAccess' })
     })
 
     test('failure results never leak the assertion or claims', async () => {

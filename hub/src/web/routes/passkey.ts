@@ -286,6 +286,14 @@ export function createPasskeyManagementRoutes(deps: PasskeyRouteDeps): Hono<WebA
     const { jwtSecret, store, challenges } = deps
 
     app.post('/passkey/register/options', async (c) => {
+        // A Cloudflare-derived session is only as valid as the edge assertion
+        // forwarding it: the operator can remove or move the email mapping at
+        // any time. Registering a long-lived passkey from such a session would
+        // keep the namespace open after the allowlist entry is gone, so refuse
+        // before creating a challenge or storing anything.
+        if (c.get('authMethod') === 'cloudflareAccess') {
+            return c.json({ error: 'Passkey registration requires a non-Cloudflare sign-in' }, 403)
+        }
         const rp = await relyingPartyFor(c, deps)
         if ('error' in rp) {
             return c.json({ error: rp.error }, 400)
@@ -322,6 +330,11 @@ export function createPasskeyManagementRoutes(deps: PasskeyRouteDeps): Hono<WebA
     })
 
     app.post('/passkey/register/verify', async (c) => {
+        // Same identity-binding rule as /passkey/register/options: a passkey
+        // must not be created from a Cloudflare-derived session.
+        if (c.get('authMethod') === 'cloudflareAccess') {
+            return c.json({ error: 'Passkey registration requires a non-Cloudflare sign-in' }, 403)
+        }
         const parsed = PasskeyRegisterVerifyRequestSchema.safeParse(await c.req.json().catch(() => null))
         if (!parsed.success) {
             return c.json({ error: 'Invalid body' }, 400)
