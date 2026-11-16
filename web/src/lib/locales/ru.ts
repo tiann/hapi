@@ -1204,6 +1204,7 @@ export default {
   'settings.passkeys.unsupported': 'Для ключей доступа нужен HTTPS (или localhost) и поддерживающий их браузер. Откройте хаб по HTTPS, чтобы добавить ключ.',
   'settings.passkeys.add': 'Добавить ключ доступа',
   'settings.passkeys.addFailed': 'Не удалось добавить ключ доступа.',
+  'settings.passkeys.cloudflareAccess': 'Нельзя добавить ключ доступа, пока вы вошли через Cloudflare Access.',
   'settings.passkeys.remove': 'Удалить',
   'settings.passkeys.removeConfirm': 'Удалить этот ключ доступа? Входить с ним больше не получится.',
   'settings.passkeys.removeFailed': 'Не удалось удалить ключ доступа.',

@@ -92,6 +92,8 @@ function AppInner() {
         setIdentityEpoch((epoch) => epoch + 1)
     }, [clearUserCaches])
     const { authSource, isLoading: isAuthSourceLoading, setAccessToken, setPasskeySession } = useAuthSource(baseUrl)
+    // The hub rejects passkey registration for Cloudflare Access sessions (HTTP 403).
+    const passkeyRegistrationAllowed = authSource?.type !== 'cloudflareAccess'
     const { token, api, isLoading: isAuthLoading, error: authError, needsBinding, bind, retry: retryAuth } = useAuth(authSource, baseUrl, {
         onIdentityChange: handleIdentityChange
     })
@@ -593,7 +595,7 @@ function AppInner() {
     }
 
     return (
-        <AppContextProvider key={identityEpoch} value={{ api, token, baseUrl, titleSuggestionAvailable }}>
+        <AppContextProvider key={identityEpoch} value={{ api, token, baseUrl, titleSuggestionAvailable, passkeyRegistrationAllowed }}>
             <VoiceProvider>
                 <PwaUpdateBannerWithStatusOffset
                     isSyncing={revealSyncing}

@@ -1298,6 +1298,7 @@ export default {
   'settings.passkeys.unsupported': 'Passkey 需要 HTTPS（或 localhost）以及支持它的浏览器。请通过 HTTPS 打开此 Hub 后再添加。',
   'settings.passkeys.add': '添加 Passkey',
   'settings.passkeys.addFailed': '无法添加 Passkey。',
+  'settings.passkeys.cloudflareAccess': '通过 Cloudflare Access 登录时无法添加 Passkey。',
   'settings.passkeys.remove': '移除',
   'settings.passkeys.removeConfirm': '确定移除这个 Passkey？移除后将无法再用它登录。',
   'settings.passkeys.removeFailed': '无法移除 Passkey。',

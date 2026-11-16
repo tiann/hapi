@@ -1300,6 +1300,7 @@ export default {
   'settings.passkeys.unsupported': 'Passkeys need HTTPS (or localhost) and a browser that supports them. Open this hub over HTTPS to add one.',
   'settings.passkeys.add': 'Add passkey',
   'settings.passkeys.addFailed': 'Could not add the passkey.',
+  'settings.passkeys.cloudflareAccess': "Passkeys can't be added while signed in through Cloudflare Access.",
   'settings.passkeys.remove': 'Remove',
   'settings.passkeys.removeConfirm': 'Remove this passkey? You will no longer be able to sign in with it.',
   'settings.passkeys.removeFailed': 'Could not remove the passkey.',

@@ -44,7 +44,7 @@ function PasskeyRow(props: { passkey: PasskeySummary; onDelete: () => void; dele
 
 export function PasskeySettings() {
     const { t } = useTranslation()
-    const { api } = useAppContext()
+    const { api, passkeyRegistrationAllowed = true } = useAppContext()
     const queryClient = useQueryClient()
     const [error, setError] = useState<string | null>(null)
     const supported = isPasskeySupported()
@@ -96,11 +96,16 @@ export function PasskeySettings() {
                 </ul>
             ) : null}
             {error && <div className="text-sm text-red-500">{error}</div>}
-            {supported && (
+            {supported && passkeyRegistrationAllowed && (
                 <Button type="button" disabled={add.isPending} onClick={() => add.mutate()}>
                     {add.isPending && <Spinner size="sm" label={null} className="text-[var(--app-button-text)]" />}
                     {t('settings.passkeys.add')}
                 </Button>
+            )}
+            {supported && !passkeyRegistrationAllowed && (
+                <p className="text-sm text-[var(--app-hint)]">
+                    {t('settings.passkeys.cloudflareAccess')}
+                </p>
             )}
         </div>
     )
