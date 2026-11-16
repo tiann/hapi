@@ -2,7 +2,7 @@ import { render } from '@testing-library/react'
 import { useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LOW_RATE_TICK_MS, subscribeLowRateTicker } from '@/lib/lowRateTicker'
-import { useLowRateAnimation, type LowRateAnimationKind } from './useLowRateAnimation'
+import { PING_TOTAL_FRAMES, useLowRateAnimation, type LowRateAnimationKind } from './useLowRateAnimation'
 
 function Indicator({ kind, enabled = true }: { kind: LowRateAnimationKind; enabled?: boolean }) {
     const ref = useRef<HTMLSpanElement | null>(null)
@@ -79,6 +79,48 @@ describe('useLowRateAnimation', () => {
         // loop boundary is seamless.
         vi.advanceTimersByTime(LOW_RATE_TICK_MS * 37)
         expect(element.style.backgroundPosition).toBe('8px 8px')
+    })
+
+    it('expands then fades from its own first frame when joining a running ticker', () => {
+        // Another indicator already drives the shared ticker, so the halo
+        // subscribes at a nonzero shared frame. It must still start at its own
+        // frame 1 and never receive a frame below 1.
+        const stopHelper = subscribeLowRateTicker(() => {})
+        // Seven ticks so the halo's first tick lands on shared frame 8: the
+        // review's example, where the offset logic sets pingFrame to -7.
+        vi.advanceTimersByTime(LOW_RATE_TICK_MS * 7)
+
+        const { getByTestId } = render(<Indicator kind="ping" />)
+        const element = getByTestId('indicator')
+
+        // One cycle is PING_TOTAL_FRAMES ticks. Scale must stay in [1, 2] and
+        // opacity in [0, 1] on every write, expanding then fading over two
+        // full cycles.
+        const scales: number[] = []
+        const opacities: number[] = []
+        for (let tick = 0; tick < PING_TOTAL_FRAMES * 2; tick += 1) {
+            vi.advanceTimersByTime(LOW_RATE_TICK_MS)
+            const scale = Number(/scale\(([\d.]+)\)/.exec(element.style.transform)?.[1])
+            const opacity = Number(element.style.opacity)
+            expect(scale).toBeGreaterThanOrEqual(1)
+            expect(scale).toBeLessThanOrEqual(2)
+            expect(opacity).toBeGreaterThanOrEqual(0)
+            expect(opacity).toBeLessThanOrEqual(1)
+            scales.push(scale)
+            opacities.push(opacity)
+        }
+
+        // First tick after subscribing is frame 1: at rest, fully opaque.
+        expect(scales[0]).toBe(1)
+        expect(opacities[0]).toBe(1)
+        // It expands monotonically to full scale and then fades across each cycle.
+        expect(scales[PING_TOTAL_FRAMES - 1]).toBeGreaterThan(scales[0])
+        expect(opacities[PING_TOTAL_FRAMES - 1]).toBeLessThan(opacities[0])
+        // And the cycle repeats (two cycles observed).
+        expect(scales[PING_TOTAL_FRAMES]).toBe(scales[0])
+        expect(opacities[PING_TOTAL_FRAMES]).toBe(opacities[0])
+
+        stopHelper()
     })
 
     it('does not subscribe while disabled, and starts when enabled flips', () => {

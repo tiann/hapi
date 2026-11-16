@@ -33,7 +33,8 @@ const STRIPES_TICKS_PER_TILE = STRIPES_PERIOD_S * TICKS_PER_SECOND
 const STRIPES_TILE_PX = 8
 /** One expanding halo per 1 s, matching the old `animate-ping` cue. */
 const PING_PERIOD_S = 1
-const PING_TOTAL_FRAMES = PING_PERIOD_S * TICKS_PER_SECOND
+/** Ticks in one ping cycle; exported so tests can step exactly one cycle. */
+export const PING_TOTAL_FRAMES = PING_PERIOD_S * TICKS_PER_SECOND
 const PING_REST_SCALE = 1
 const PING_FULL_SCALE = 2
 
@@ -114,22 +115,17 @@ export function useLowRateAnimation(
         if (!element) return
 
         writeStatic(element, kind)
-        // A ping restarts from full scale for its subscriber: the ticker's
-        // counter is shared, so joining it mid-cycle must not drop the halo
-        // into the tail of a previous cycle. A partial cycle is skipped and the
-        // next full frame is the halo's frame 1.
+        // Each ping subscription runs its own 1-based frame counter, so its
+        // first tick writes frame 1 no matter what the shared ticker's frame
+        // is at subscribe time. Deriving the halo's phase from the shared
+        // frame (an offset) can yield negative frames, which writePing would
+        // turn into scales below 1 — the halo shrinking behind its solid
+        // sibling instead of expanding and fading.
         let pingFrame = 0
         return subscribeLowRateTicker((frame) => {
             const target = ref.current
             if (!target) return
             if (kind === 'ping') {
-                if (pingFrame === 0) {
-                    const offset = (frame - 1) % PING_TOTAL_FRAMES
-                    if (offset !== 0) {
-                        pingFrame = -offset
-                        return
-                    }
-                }
                 pingFrame += 1
             }
             WRITERS[kind](target, kind === 'ping' ? pingFrame : frame)
