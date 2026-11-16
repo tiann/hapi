@@ -633,6 +633,92 @@ describe('Claude rewind hub integration', () => {
         }
     })
 
+    it('preserves queued input newer than the rewind bound during startup reconcile', () => {
+        const store = new Store(':memory:')
+        const engine1 = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        let engine2: SyncEngine | null = null
+        try {
+            const session = engine1.getOrCreateSession('claude-rewind-startup-bound-queued', {
+                path: '/tmp/project', host: 'localhost', flavor: 'claude',
+                capabilities: { conversationHistory: { rewindToMessage: true } },
+                claudeSessionId: 'native-session-1',
+            }, null, 'default')
+            seedTwoTurns(store, session)
+            const discardedThroughSeq = Math.max(...store.messages.getAllMessages(session.id).map((m) => m.seq))
+            const stored = store.sessions.getSession(session.id) as { metadataVersion?: number; metadata?: Record<string, unknown> }
+            store.sessions.updateSessionMetadata(session.id, {
+                ...(stored?.metadata ?? {}),
+                claudeRewind: {
+                    targetLocalId: 'local-t2',
+                    truncateFromLocalId: 'local-t2',
+                    keepBoundary: 'native-boundary-uuid',
+                    droppedPrompts: ['native-prompt-uuid'],
+                    discardedThroughSeq,
+                },
+            }, (stored?.metadataVersion ?? 1) as number, 'default')
+            // The hub was down while the user queued newer input: its seq is
+            // past the discarded range, so it must survive the recovery cut.
+            const queued = store.messages.addMessage(session.id, { role: 'user', content: 'queued after the bound' }, 'local-queued')
+            engine1.stop()
+
+            engine2 = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+
+            const rows = store.messages.getAllMessages(session.id)
+            expect(rows.map((m) => m.localId)).not.toContain('local-t2')
+            expect(rows.map((m) => m.localId)).toContain('local-t1')
+            expect(rows.map((m) => m.id)).toContain(queued.id)
+            const after = store.sessions.getSession(session.id) as { metadata?: Record<string, any> }
+            expect(after.metadata?.claudeRewind?.hubCutApplied).toBe(true)
+            expect(after.metadata?.conversationHistoryDiverged).not.toBe(true)
+        } finally {
+            engine1.stop()
+            engine2?.stop()
+            store.close()
+        }
+    })
+
+    it('still marks diverged when an uninvoked queued row sits inside the rewind bound', () => {
+        const store = new Store(':memory:')
+        const engine1 = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        let engine2: SyncEngine | null = null
+        try {
+            const session = engine1.getOrCreateSession('claude-rewind-startup-bound-inside', {
+                path: '/tmp/project', host: 'localhost', flavor: 'claude',
+                capabilities: { conversationHistory: { rewindToMessage: true } },
+                claudeSessionId: 'native-session-1',
+            }, null, 'default')
+            seedTwoTurns(store, session)
+            // Queued before dispatch: inside the discarded range, so the
+            // recovery cut must not run against this transcript.
+            store.messages.addMessage(session.id, { role: 'user', content: 'queued before dispatch' }, 'local-queued')
+            const discardedThroughSeq = Math.max(...store.messages.getAllMessages(session.id).map((m) => m.seq))
+            const stored = store.sessions.getSession(session.id) as { metadataVersion?: number; metadata?: Record<string, unknown> }
+            store.sessions.updateSessionMetadata(session.id, {
+                ...(stored?.metadata ?? {}),
+                claudeRewind: {
+                    targetLocalId: 'local-t2',
+                    truncateFromLocalId: 'local-t2',
+                    keepBoundary: 'native-boundary-uuid',
+                    droppedPrompts: ['native-prompt-uuid'],
+                    discardedThroughSeq,
+                },
+            }, (stored?.metadataVersion ?? 1) as number, 'default')
+            engine1.stop()
+
+            engine2 = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+
+            expect(((engine2.getSession(session.id)?.metadata ?? {}) as Record<string, unknown>).conversationHistoryDiverged).toBe(true)
+            const localIds = store.messages.getAllMessages(session.id).map((m) => m.localId)
+            expect(localIds).toContain('local-t1')
+            expect(localIds).toContain('local-t2')
+            expect(localIds).toContain('local-queued')
+        } finally {
+            engine1.stop()
+            engine2?.stop()
+            store.close()
+        }
+    })
+
     it('marks the intent when a startup reconcile finds the cut already applied and preserves post-rewind input', () => {
         const store = new Store(':memory:')
         const engine1 = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)

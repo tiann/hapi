@@ -2910,7 +2910,16 @@ export class SyncEngine {
         }
 
         const targetState = states[0]
-        const hasUninvokedMessages = this.store.messages.getUninvokedLocalMessages(session.id).length > 0
+        // The cut is bounded by the intent's discardedThroughSeq: uninvoked
+        // rows queued after that bound are newer input the recovery cut must
+        // preserve, not evidence of an unsafe transcript. Intents without a
+        // bound (written by an older CLI or hub) cut unbounded, so any
+        // uninvoked row still blocks the cut.
+        const discardedThroughSeq = intent?.discardedThroughSeq
+        const uninvokedMessages = this.store.messages.getUninvokedLocalMessages(session.id)
+        const hasUninvokedMessages = discardedThroughSeq === undefined
+            ? uninvokedMessages.length > 0
+            : uninvokedMessages.some((message) => message.seq <= discardedThroughSeq)
         const isClaudeSession = session.metadata?.flavor === undefined || session.metadata.flavor === 'claude'
         if (!isClaudeSession || targetState?.invokedAt == null || hasUninvokedMessages) {
             this.markConversationHistoryDiverged(session.id, session.namespace)
