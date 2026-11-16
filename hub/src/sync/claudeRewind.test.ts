@@ -478,6 +478,107 @@ describe('Claude rewind hub integration', () => {
         }
     })
 
+    it('marks the lost-RPC cut and preserves post-rewind input when the reply never reaches the CLI', async () => {
+        const { store, engine } = createEngine()
+        try {
+            const session = engine.getOrCreateSession('claude-rewind-lost-reply', {
+                path: '/tmp/project', host: 'localhost', flavor: 'claude',
+                capabilities: { conversationHistory: { rewindToMessage: true } },
+                claudeSessionId: 'native-session-1',
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: session.id, time: Date.now(), mode: 'remote' })
+            seedTwoTurns(store, session)
+
+            // The runner persisted the durable intent BEFORE starting its
+            // restart teardown, then the connection dropped: the RPC reply is
+            // lost but the intent is visible. The cut happens here, so this
+            // hub process must record the commitment for the CLI.
+            ;(engine as any).rpcGateway.rewindConversation = async () => {
+                const stored = store.sessions.getSession(session.id) as { metadataVersion?: number; metadata?: Record<string, unknown> }
+                store.sessions.updateSessionMetadata(session.id, {
+                    ...(stored?.metadata ?? {}),
+                    claudeRewind: {
+                        targetLocalId: 'local-t2',
+                        truncateFromLocalId: 'local-t2',
+                        keepBoundary: 'native-boundary-uuid',
+                        droppedPrompts: ['native-prompt-uuid'],
+                    },
+                }, (stored?.metadataVersion ?? 1) as number, 'default')
+                ;(engine as any).sessionCache.refreshSession(session.id)
+                throw new Error('rpc gateway timeout')
+            }
+
+            await expect(engine.rewindConversation(session.id, 'default', 'local-t2')).resolves.toEqual({ type: 'success' })
+
+            const kept = store.messages.getAllMessages(session.id).map((m) => m.localId)
+            expect(kept).toContain('local-t1')
+            expect(kept).not.toContain('local-t2')
+
+            const stored = store.sessions.getSession(session.id) as { metadata?: Record<string, any> }
+            expect(stored.metadata?.claudeRewind?.hubCutApplied).toBe(true)
+            expect(stored.metadata?.conversationHistoryDiverged).not.toBe(true)
+
+            // The user continues after the reconnect: the post-rewind input
+            // must survive both the cut and any later reconcile pass.
+            const laterPrompt = store.messages.addMessage(session.id, { role: 'user', content: 'after rewind' }, 'local-t3')
+            store.messages.markMessagesInvoked(session.id, ['local-t3'], Date.now())
+            const laterReply = store.messages.addMessage(session.id, agentText('OK, after rewind'))
+            ;(engine as any).reconcilePendingClaudeRewind(engine.getSession(session.id))
+
+            const rows = store.messages.getAllMessages(session.id)
+            const ids = new Set(rows.map((m) => m.id))
+            expect(ids.has(laterPrompt.id)).toBe(true)
+            expect(ids.has(laterReply.id)).toBe(true)
+            expect(((engine.getSession(session.id)?.metadata ?? {}) as Record<string, any>).conversationHistoryDiverged).not.toBe(true)
+        } finally {
+            engine.stop()
+        }
+    })
+
+    it('marks the intent when a startup reconcile finds the cut already applied and preserves post-rewind input', () => {
+        const store = new Store(':memory:')
+        const engine1 = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        let engine2: SyncEngine | null = null
+        try {
+            const session = engine1.getOrCreateSession('claude-rewind-reconcile-marked', {
+                path: '/tmp/project', host: 'localhost', flavor: 'claude',
+                capabilities: { conversationHistory: { rewindToMessage: true } },
+                claudeSessionId: 'native-session-1',
+            }, null, 'default')
+            seedTwoTurns(store, session)
+
+            // Crash window: the intent landed and the hub cut the transcript,
+            // then the process died before the CLI's proof could clear it. On
+            // restart the boundary is already gone - the branch this test
+            // pins - and no RPC in flight owns the cut.
+            const stored = store.sessions.getSession(session.id) as { metadataVersion?: number; metadata?: Record<string, unknown> }
+            store.sessions.updateSessionMetadata(session.id, {
+                ...(stored?.metadata ?? {}),
+                claudeRewind: {
+                    targetLocalId: 'local-t2',
+                    truncateFromLocalId: 'local-t2',
+                    keepBoundary: 'native-boundary-uuid',
+                    droppedPrompts: ['native-prompt-uuid'],
+                },
+            }, (stored?.metadataVersion ?? 1) as number, 'default')
+            store.messages.truncateMessagesFromLocalId(session.id, 'local-t2')
+            engine1.stop()
+
+            engine2 = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+
+            const after = store.sessions.getSession(session.id) as { metadata?: Record<string, any> }
+            expect(after.metadata?.claudeRewind?.hubCutApplied).toBe(true)
+            expect(after.metadata?.conversationHistoryDiverged).not.toBe(true)
+            const kept = store.messages.getAllMessages(session.id).map((m) => m.localId)
+            expect(kept).toContain('local-t1')
+            expect(kept).not.toContain('local-t2')
+        } finally {
+            engine1.stop()
+            engine2?.stop()
+            store.close()
+        }
+    })
+
     it('marks history diverged on startup when a persisted claudeRewind is paired with uninvoked queued messages', () => {
         const store = new Store(':memory:')
         const engine1 = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)

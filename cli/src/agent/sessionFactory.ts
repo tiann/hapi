@@ -207,8 +207,14 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     // and the CLI re-arms the native boundary on every start until the dropped
     // turns leave the active chain. Dropping it on reopen/resume would resume
     // the un-rewound JSONL tail while the hub transcript stays truncated.
+    // `hubCutApplied` is hub-owned state: the reopen reduce runs with an
+    // expectedVersion of 0, so syncing a hub-controlled field that this
+    // process did not author risks resurrecting a cut commitment after the
+    // hub's transcript was reset.
     if (metadata.claudeRewind !== undefined) {
-        preserved.claudeRewind = metadata.claudeRewind
+        preserved.claudeRewind = metadata.claudeRewind.hubCutApplied === true
+            ? { ...metadata.claudeRewind, hubCutApplied: undefined }
+            : metadata.claudeRewind
     }
     if (metadata.forkedFrom !== undefined) {
         preserved.forkedFrom = metadata.forkedFrom

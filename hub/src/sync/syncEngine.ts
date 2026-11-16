@@ -2902,7 +2902,10 @@ export class SyncEngine {
 
         const states = this.store.messages.getLocalMessageStates(session.id, [truncateFromLocalId])
         if (states.length === 0) {
-            // Already truncated before restart (RPC reply, catch recovery, or prior startup).
+            // Already truncated (RPC reply, catch recovery, or prior startup).
+            // Record the commitment so the CLI's native proof can clear the
+            // intent instead of holding it until the next restart.
+            this.markClaudeRewindCutApplied(session.id, session.namespace, truncateFromLocalId)
             return
         }
 
@@ -2931,6 +2934,7 @@ export class SyncEngine {
         this.store.messages.truncateMessagesFromLocalId(sessionId, truncateFromLocalId)
         this.scrubHistoryLocators(sessionId, namespace)
         this.sessionCache.rebuildTodosFromTranscript(sessionId)
+        this.markClaudeRewindCutApplied(sessionId, namespace, truncateFromLocalId)
         this.eventPublisher.emit({
             type: 'messages-invalidated',
             sessionId,
@@ -2939,6 +2943,40 @@ export class SyncEngine {
             truncateFromLocalId
         })
         this.sessionCache.refreshSession(sessionId)
+    }
+
+    /**
+     * Record on the intent that this hub has applied the transcript cut.
+     *
+     * The CLI owns the native branch and deletes the intent as soon as its
+     * proof (post-rewind input re-parented onto the kept boundary) lands. A
+     * transient disconnect can drop the rewind RPC reply, so the proof may be
+     * observed while the hub cut has not happened yet: the pending guard then
+     * skips reconciliation for this hub process, and the deletion would leave
+     * the transcript mismatched with no intent left to repair it. The marker
+     * is what lets the CLI tell the two apart - it only clears the intent once
+     * the cut is confirmed, so the timeout/reconnect reconcile still finds it.
+     */
+    private markClaudeRewindCutApplied(sessionId: string, namespace: string, truncateFromLocalId: string): void {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const session = this.sessionCache.getSessionByNamespace(sessionId, namespace)
+                ?? this.sessionCache.refreshSession(sessionId)
+            if (!session?.metadata) return
+            const intent = asRecord(session.metadata.claudeRewind)
+            if (intent === null || intent.truncateFromLocalId !== truncateFromLocalId || intent.hubCutApplied === true) return
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                { ...session.metadata, claudeRewind: { ...intent, hubCutApplied: true } },
+                session.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'success') {
+                this.sessionCache.refreshSession(sessionId)
+                return
+            }
+            if (result.result !== 'version-mismatch') return
+        }
     }
 
     /**

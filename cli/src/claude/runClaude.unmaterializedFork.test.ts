@@ -520,11 +520,15 @@ describe('runClaude unmaterialized fork child history actions', () => {
     })
 
     it('clears stale claudeRewind on unmaterialized fork startup reconciliation and on normal reopen', { timeout: 20_000 }, async () => {
+        // The hub confirms its cut with `hubCutApplied`; only then may the
+        // startup reconciliation drop the record. Without it the intent is
+        // the hub's repair record and must survive the restart.
         const pendingIntent = {
             targetLocalId: 'local-2',
             truncateFromLocalId: 'local-2',
             keepBoundary: 'as-1',
-            droppedPrompts: ['uuid-2', 'uuid-3']
+            droppedPrompts: ['uuid-2', 'uuid-3'],
+            hubCutApplied: true
         }
 
         // 1. Restart while --fork-session is still present and the child is unmaterialized.
@@ -577,6 +581,32 @@ describe('runClaude unmaterialized fork child history actions', () => {
             args: ['--resume', 'child-native-unbuilt'],
             boundary: null
         })
+    })
+
+    it('keeps an unconfirmed claudeRewind on unmaterialized fork startup reconciliation', { timeout: 20_000 }, async () => {
+        // The hub never confirmed its cut: the intent is still the repair
+        // record for the hub's reconcile, so the restart must not drop it.
+        const pendingIntent = {
+            targetLocalId: 'local-2',
+            truncateFromLocalId: 'local-2',
+            keepBoundary: 'as-1',
+            droppedPrompts: ['uuid-2', 'uuid-3']
+        }
+        const forkArgs = ['--resume', 'source-native-1', '--fork-session', '--resume-session-at', 'as-2']
+        harness.state.metadata = {
+            claudeSessionId: 'child-native-unbuilt',
+            claudeRewind: pendingIntent
+        }
+        const prevRestart = snapshotRunner()
+        const restartPromise = runClaude({
+            workingDirectory: WORK_DIR,
+            claudeArgs: forkArgs,
+            startedBy: 'runner',
+            startingMode: 'remote'
+        })
+        restartPromise.catch((error) => { harness.runError = error })
+        await waitForFreshRunner(prevRestart)
+        expect(harness.state.metadata.claudeRewind).toEqual(pendingIntent)
     })
 
     it('rejects unsupported rewind on an unmaterialized fork with a clear prompt-first message', { timeout: 20_000 }, async () => {

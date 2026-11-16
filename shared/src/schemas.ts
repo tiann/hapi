@@ -230,7 +230,13 @@ export const MetadataSchema = z.object({
         targetLocalId: z.string().min(1),
         truncateFromLocalId: z.string().min(1),
         keepBoundary: z.string().min(1),
-        droppedPrompts: z.array(z.string().min(1))
+        droppedPrompts: z.array(z.string().min(1)),
+        // Hub-owned confirmation that the transcript cut for this intent was
+        // applied. The CLI's native proof (the re-parented post-rewind input)
+        // only clears the intent once this marker is visible, so a lost RPC
+        // reply leaves the intent in place for the hub's timeout/reconnect
+        // reconcile instead of stranding the transcript mismatched.
+        hubCutApplied: z.boolean().optional()
     }).optional().catch(undefined),
     // Latest Pi append-log entry observed by HAPI. Import uses it as the
     // incremental cursor so native history already streamed live is not copied twice.

@@ -346,6 +346,15 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     // truncated at rewind-RPC success, or at RPC failure with the committed
     // intent visible, so no hub re-request exists or is needed.
     let rearmPendingIntent: ClaudeRewindIntent | null = null;
+    const clearRewindIntent = () => {
+        // The boundary flag needs no cleanup here: spawns derive it from the
+        // durable intent (deriveSpawnArgs), which this metadata deletion removes.
+        session.updateMetadata((metadata) => {
+            const { claudeRewind: _cleared, ...rest } = metadata;
+            return rest;
+        });
+        void session.flushMetadata();
+    };
     const reconcilePendingRewind = () => {
         const intent = session.getMetadata()?.claudeRewind
         if (!intent) return
@@ -367,16 +376,18 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             // leave the native chain.
             logger.debug(`[claude] rewind ${intent.truncateFromLocalId}: native branch pending; re-arming boundary ${intent.keepBoundary} on launch`)
             rearmPendingIntent = intent;
-        } else {
+        } else if (intent.hubCutApplied === true) {
             logger.debug(`[claude] rewind ${intent.truncateFromLocalId}: native branch applied; clearing intent`)
-            session.updateMetadata((metadata) => {
-                const { claudeRewind: _cleared, ...rest } = metadata;
-                return rest;
-            });
-            // Pure housekeeping, but the deletion must reach the hub: a stale
-            // intent stranded there would issue a bogus native rewind on the
-            // next start.
-            void session.flushMetadata();
+            // The deletion must reach the hub: a stale intent stranded there
+            // would issue a bogus native rewind on the next start.
+            clearRewindIntent();
+        } else {
+            // The branch applied but the hub never confirmed the cut (its RPC
+            // reply was lost across a disconnect). Deleting the intent here
+            // would leave the transcript mismatched with nothing to repair
+            // it, so the record survives: the hub reconcile cuts on reconnect
+            // and marks it, and the proof path clears it then.
+            logger.debug(`[claude] rewind ${intent.truncateFromLocalId}: native branch applied but hub cut unconfirmed; keeping intent for hub reconcile`)
         }
     };
     reconcilePendingRewind();
@@ -390,6 +401,12 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     let rewindPersistInFlight: Promise<void> | null = null;
 
     const armSettledRewind = async (intent: ClaudeRewindIntent): Promise<void> => {
+        // The hub marker only says the HUB transcript was cut. The native
+        // branch may still be unapplied, so the boundary must be re-armed
+        // exactly as for an unmarked intent: the spawn derivation
+        // (deriveSpawnArgs) decides from the native transcript whether the
+        // boundary is still needed, and the proof path clears the intent once
+        // the branch lands. Nothing hub-side remains to reconcile either way.
         const claudeSession = currentSessionRef.current;
         if (!claudeSession) {
             rearmPendingIntent = intent;
@@ -438,6 +455,11 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             stopBackgroundSettleRetry();
             const hubIntent = session.getMetadata()?.claudeRewind;
             if (hubIntent?.truncateFromLocalId === intent.truncateFromLocalId) {
+                // The hub marker only says the HUB transcript was cut. The
+                // native branch may still be unapplied, so the boundary must
+                // still be armed: deriveSpawnArgs decides from the native
+                // transcript whether it is still needed, and the proof path
+                // clears the intent once the branch lands.
                 await armSettledRewind(hubIntent);
             }
             return true;
@@ -453,9 +475,41 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     // The rewind's native branch materializes when the respawned process
     // writes its first real input re-parented onto the kept boundary. The
     // submitted prompt's uuid is that input; once the dropped turns leave the
-    // active chain, commit the hub side through the keyed metadata intent.
+    // active chain, the native branch is proven - but the hub transcript cut
+    // still has to be acknowledged before the durable intent can go.
     // The uuid itself is unused - the transcript poll is the evidence - so
     // the local UserPromptSubmit hook can trigger the same proof without one.
+    // A proven native branch no longer needs the boundary re-armed locally:
+    // drop the live pending state so prompts and history actions flow. The
+    // durable intent stays until the hub confirms the cut.
+    const releaseNativeBranch = () => {
+        pendingRewind = null;
+        rearmPendingIntent = null;
+    };
+    /** Clear the durable intent once the hub owns a cut for it; returns true when it is gone. */
+    const releaseProvenRewindIntent = (): boolean => {
+        const hubIntent = session.getMetadata()?.claudeRewind;
+        if (hubIntent === undefined) {
+            // The hub may have cut at RPC success while the reply was lost and
+            // then deleted the intent itself; with no intent left there is
+            // nothing for a reconcile to repair.
+            releaseNativeBranch();
+            return true;
+        }
+        // The native branch is proven: stop re-arming the boundary locally
+        // (deriveSpawnArgs would drop it anyway) and let ordinary prompts and
+        // history actions flow. The durable intent stays until the hub
+        // confirms its cut, so the hub can still reconcile the transcript.
+        releaseNativeBranch();
+        if (hubIntent.hubCutApplied !== true) {
+            // The cut is not confirmed yet: keep the intent so the hub's
+            // timeout/reconnect reconcile can still apply it.
+            return false;
+        }
+        clearRewindIntent();
+        logger.debug(`[claude] rewind ${hubIntent.truncateFromLocalId}: native branch proven and hub cut confirmed; intent cleared`);
+        return true;
+    };
     const handleNativeInputSubmitted = (nativePromptUuid?: string) => {
         const intent = pendingRewind;
         if (!intent) return;
@@ -467,16 +521,11 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         const poll = () => {
             if (pendingRewind !== intent) return;
             if (nativeRewindApplied(workingDirectory, nativeSessionId, intent.droppedPrompts)) {
-                pendingRewind = null;
-                // The boundary flag needs no cleanup here: spawns derive it
-                // from the durable intent (deriveSpawnArgs), which this
-                // metadata deletion removes.
-                session.updateMetadata((metadata) => {
-                    const { claudeRewind: _cleared, ...rest } = metadata;
-                    return rest;
-                });
-                void session.flushMetadata();
-                logger.debug(`[claude] rewind ${intent.truncateFromLocalId}: native branch proven; intent cleared`);
+                if (releaseProvenRewindIntent()) {
+                    logger.debug(`[claude] rewind ${intent.truncateFromLocalId}: native branch proven; intent cleared`);
+                } else {
+                    logger.debug(`[claude] rewind ${intent.truncateFromLocalId}: native branch proven; hub cut not confirmed, intent retained for reconcile`);
+                }
                 return;
             }
             if (Date.now() < deadline) {
@@ -515,6 +564,17 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     };
 
     session.onReconnect((metadataRefreshed = false) => {
+        // A proven branch leaves the durable intent in metadata waiting for the
+        // hub's cut. Reconnect is exactly when the hub's reconcile runs: once
+        // the refreshed snapshot carries the marker, the intent has done its
+        // job and must go, or fork/rewind stay blocked until a restart. The
+        // native branch must be proven too - an unproven branch still needs
+        // the boundary re-armed on the next spawn.
+        const confirmedIntent = session.getMetadata()?.claudeRewind;
+        if (confirmedIntent?.hubCutApplied === true && !pendingRewind && !rearmPendingIntent) {
+            clearRewindIntent();
+            logger.debug(`[claude] rewind ${confirmedIntent.truncateFromLocalId}: hub cut confirmed on reconnect; intent cleared`);
+        }
         if (unknownRewindIntent) {
             void settleUnknownRewind(metadataRefreshed).then((settled) => {
                 if (settled && deferredMessages.length > 0) void flushUserMessages();

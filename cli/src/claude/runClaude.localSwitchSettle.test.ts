@@ -76,6 +76,15 @@ const harness = vi.hoisted(() => {
                     const next = item.mutator(localMetadata)
                     if (next != null) localMetadata = next
                 }
+                // The hub applies its transcript cut with the rewind RPC
+                // outcome, so a successful intent flush means the hub confirmed
+                // the cut. Mirror that marker back, as the real metadata would.
+                if (localMetadata?.claudeRewind && !localMetadata.claudeRewind.hubCutApplied) {
+                    localMetadata = {
+                        ...localMetadata,
+                        claudeRewind: { ...localMetadata.claudeRewind, hubCutApplied: true }
+                    }
+                }
                 hubMetadata = structuredClone(localMetadata)
             }
             return flushResult
@@ -362,6 +371,11 @@ describe('runClaude unknown rewind outcome before local mode', () => {
         expect(harness.runError).toBeNull()
     })
 
+    /**
+     * The hub applies its transcript cut with the rewind RPC outcome, so the
+     * committed intent carries `hubCutApplied`. The native branch is still
+     * unapplied, so the boundary must still be re-armed on spawn.
+     */
     async function startRemoteSessionWithUnprovenRewind(nativeSessionId = 'native-a') {
         writeUnprovenNativeTranscript(nativeSessionId)
         const baseMeta = {
@@ -411,7 +425,8 @@ describe('runClaude unknown rewind outcome before local mode', () => {
                 targetLocalId: 'local-2',
                 truncateFromLocalId: 'local-2',
                 keepBoundary: 'as-1',
-                droppedPrompts: ['uuid-2']
+                droppedPrompts: ['uuid-2'],
+                hubCutApplied: true
             }
         }
         harness.flushResult = true

@@ -207,6 +207,15 @@ export type ClaudeRewindIntent = {
     truncateFromLocalId: string
     keepBoundary: string
     droppedPrompts: string[]
+    /**
+     * Hub-owned: the hub applied the transcript cut for this intent. Set by
+     * the hub at every truncation path. The CLI's native proof only deletes
+     * the intent once this is true - a proof that arrives first (the RPC reply
+     * was lost to a transient disconnect) must leave the intent for the hub's
+     * timeout/reconnect reconcile, otherwise the hub would keep turns the
+     * native side already dropped with nothing left to repair it.
+     */
+    hubCutApplied?: boolean
 }
 
 export type PendingRewindRestart = { action: 'rearm' } | { action: 'clear' }
