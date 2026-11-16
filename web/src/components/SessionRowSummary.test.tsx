@@ -788,6 +788,73 @@ describe('SessionRowSummary model-error + attention', () => {
         expect(screen.getByLabelText(/Model error/i)).toBeTruthy()
     })
 
+    it('pings the model-error halo from the low-rate ticker', () => {
+        const summary = makeSummary({
+            id: 's-halo',
+            backgroundTaskCount: 0,
+            metadata: {
+                path: '/tmp/proj',
+                lastModelError: {
+                    eventId: 'evt-row-halo',
+                    kind: 'model_not_found',
+                    transient: false,
+                    rawSnippet: 'Unknown model',
+                    atTs: 1,
+                    priorAssistantClaimsDone: false,
+                },
+            },
+        })
+
+        vi.useFakeTimers()
+        try {
+            act(() => {
+                renderWithI18n(
+                    <SessionRowSummary
+                        session={summary}
+                        showDetailedStatus
+                        selected={false}
+                        nestedTooltips={false}
+                    />
+                )
+            })
+
+            const halo = screen.getByTestId('session-model-error-halo')
+            // Motion comes from the ticker, never a CSS animation that would
+            // force 60 Hz frames for the whole session list.
+            expect(halo).not.toHaveClass('animate-ping')
+
+            // Static until the first tick: a full-scale, fully opaque halo.
+            expect(halo.style.transform).toBe('scale(1)')
+            expect(halo.style.opacity).toBe('1')
+
+            // The halo's first tick starts the cycle at full scale, so the ping
+            // does not depend on how far the shared frame counter has advanced.
+            act(() => { vi.advanceTimersByTime(LOW_RATE_TICK_MS) })
+            expect(halo.style.transform).toBe('scale(1)')
+            expect(halo.style.opacity).toBe('1')
+
+            // The cue expands and fades: scale grows while opacity falls.
+            act(() => { vi.advanceTimersByTime(LOW_RATE_TICK_MS) })
+            expect(halo.style.transform).toBe('scale(1.125)')
+            expect(halo.style.opacity).toBe('0.875')
+
+            act(() => { vi.advanceTimersByTime(LOW_RATE_TICK_MS * 4) })
+            expect(halo.style.transform).toBe('scale(1.625)')
+            expect(halo.style.opacity).toBe('0.375')
+
+            act(() => { vi.advanceTimersByTime(LOW_RATE_TICK_MS * 2) })
+            expect(halo.style.transform).toBe('scale(1.875)')
+            expect(halo.style.opacity).toBe('0.125')
+
+            // A full 8-tick cycle (1 s at 8 Hz) later the ping restarts.
+            act(() => { vi.advanceTimersByTime(LOW_RATE_TICK_MS) })
+            expect(halo.style.transform).toBe('scale(1)')
+            expect(halo.style.opacity).toBe('1')
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
     it('hides the model-error pulse after a successful bridge even if still thinking', () => {
         const summary = makeSummary({
             id: 's-recovered',

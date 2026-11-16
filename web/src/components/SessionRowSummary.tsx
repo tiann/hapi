@@ -232,7 +232,9 @@ export function SessionRowSummary(props: {
     // `SessionAttentionIndicator` as a tooltip target, so the badge only pulses
     // in the plain (non-background-attention, non-unread) render path.
     useLowRateAnimation(presenceRef, 'pulse', presence === 'working' && !plainUnreadTarget)
-    useLowRateAnimation(modelErrorRef, 'spin', modelErrorActive)
+    // The halo expands and fades (a ping), not a rotation: rotating a uniformly
+    // colored circle shows no motion, so the attention cue would disappear.
+    useLowRateAnimation(modelErrorRef, 'ping', modelErrorActive)
     useLowRateAnimation(activityRef, 'spin', hasForegroundWork)
     useLowRateAnimation(jobDotRef, 'pulse', attachedJob !== null && !jobStale)
     useLowRateAnimation(jobStripesRef, 'stripes', attachedJob !== null && jobFraction === null)
@@ -282,7 +284,7 @@ export function SessionRowSummary(props: {
                                 title={modelErrorLabel}
                                 aria-label={modelErrorLabel}
                             >
-                                <span ref={modelErrorRef} className="absolute inline-flex h-full w-full rounded-full bg-amber-500 opacity-75" />
+                                <span data-testid="session-model-error-halo" ref={modelErrorRef} className="absolute inline-flex h-full w-full rounded-full bg-amber-500" />
                                 <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500" />
                             </span>
                         ) : null}

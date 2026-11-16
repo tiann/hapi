@@ -6,7 +6,7 @@ import { LOW_RATE_TICK_MS, subscribeLowRateTicker } from '@/lib/lowRateTicker'
  * running CSS animation (see `@/lib/lowRateTicker`). Sizes, colors and layouts
  * are unchanged: only the property that used to animate is written here.
  */
-export type LowRateAnimationKind = 'spin' | 'pulse' | 'stripes'
+export type LowRateAnimationKind = 'spin' | 'pulse' | 'stripes' | 'ping'
 
 /** The subset of an element the writers touch; satisfied by HTML and SVG alike. */
 type AnimatableElement = Element & { style: CSSStyleDeclaration }
@@ -31,6 +31,11 @@ const STRIPES_PERIOD_S = 5
 const STRIPES_TICKS_PER_TILE = STRIPES_PERIOD_S * TICKS_PER_SECOND
 /** Must equal one background-size tile, or the loop visibly jumps. */
 const STRIPES_TILE_PX = 8
+/** One expanding halo per 1 s, matching the old `animate-ping` cue. */
+const PING_PERIOD_S = 1
+const PING_TOTAL_FRAMES = PING_PERIOD_S * TICKS_PER_SECOND
+const PING_REST_SCALE = 1
+const PING_FULL_SCALE = 2
 
 /** Static geometry for the indeterminate attached-job stripes. */
 export const LOW_RATE_STRIPES_CLASS = 'attached-job-stripes'
@@ -45,6 +50,15 @@ function writePulse(element: AnimatableElement, frame: number): void {
     element.style.opacity = high ? '1' : String(PULSE_LOW_OPACITY)
 }
 
+/** The Tailwind `ping` cue, stepped by the ticker: scale 1 -> 2 while fading out. */
+function writePing(element: AnimatableElement, frame: number): void {
+    // Frames are 1-based and each tick advances one step, so a cycle of
+    // PING_TOTAL_FRAMES ticks is one ping — 1 s at 8 Hz.
+    const progress = ((frame - 1) % PING_TOTAL_FRAMES) / PING_TOTAL_FRAMES
+    element.style.transform = `scale(${PING_REST_SCALE + (PING_FULL_SCALE - PING_REST_SCALE) * progress})`
+    element.style.opacity = String(1 - progress)
+}
+
 function writeStripes(element: AnimatableElement, frame: number): void {
     // Multiply before dividing: frame * (tile / 40) would accumulate float
     // noise (3 * 0.2 === 0.6000000000000001) and dirty the style string.
@@ -57,6 +71,7 @@ function writeStripes(element: AnimatableElement, frame: number): void {
 const WRITERS: Record<LowRateAnimationKind, (element: AnimatableElement, frame: number) => void> = {
     spin: writeSpin,
     pulse: writePulse,
+    ping: writePing,
     stripes: writeStripes,
 }
 
@@ -66,6 +81,10 @@ function writeStatic(element: AnimatableElement, kind: LowRateAnimationKind): vo
         element.style.opacity = '1'
     } else if (kind === 'spin') {
         element.style.transform = ''
+    } else if (kind === 'ping') {
+        // Unscaled and fully opaque: the halo at rest, not frozen mid-expansion.
+        element.style.transform = `scale(${PING_REST_SCALE})`
+        element.style.opacity = '1'
     } else {
         element.style.backgroundPosition = ''
     }
@@ -95,10 +114,25 @@ export function useLowRateAnimation(
         if (!element) return
 
         writeStatic(element, kind)
+        // A ping restarts from full scale for its subscriber: the ticker's
+        // counter is shared, so joining it mid-cycle must not drop the halo
+        // into the tail of a previous cycle. A partial cycle is skipped and the
+        // next full frame is the halo's frame 1.
+        let pingFrame = 0
         return subscribeLowRateTicker((frame) => {
             const target = ref.current
             if (!target) return
-            WRITERS[kind](target, frame)
+            if (kind === 'ping') {
+                if (pingFrame === 0) {
+                    const offset = (frame - 1) % PING_TOTAL_FRAMES
+                    if (offset !== 0) {
+                        pingFrame = -offset
+                        return
+                    }
+                }
+                pingFrame += 1
+            }
+            WRITERS[kind](target, kind === 'ping' ? pingFrame : frame)
         })
     }, [ref, kind, enabled])
 }
