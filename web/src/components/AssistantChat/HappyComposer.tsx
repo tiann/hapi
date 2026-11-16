@@ -317,6 +317,8 @@ export function HappyComposer(props: {
     contextModel?: string | null
     controlledByUser?: boolean
     agentFlavor?: string | null
+    /** Session machine, for the plan-quota readout in the status bar. */
+    machineId?: string | null
     availableModelOptions?: Array<{ value: string | null; label: string; group?: string }>
     /** Full Pi model data with thinkingLevelMap for provider grouping + thinking level filtering */
     piModels?: PiModelSummary[]
@@ -439,6 +441,7 @@ export function HappyComposer(props: {
         contextModel,
         controlledByUser = false,
         agentFlavor,
+        machineId,
         availableModelOptions,
         piModels,
         piSelectedModel,
@@ -2356,6 +2359,7 @@ export function HappyComposer(props: {
 
                     <StatusBar
                         active={active}
+                        machineId={machineId}
                         thinking={thinking}
                         agentState={agentState}
                         onPendingRequestClick={onPendingRequestClick}
