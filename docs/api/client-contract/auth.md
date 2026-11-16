@@ -10,6 +10,7 @@ Source of truth: `hub/src/config/cliApiToken.ts`, `hub/src/web/routes/auth.ts`.
 |------------|----------|--------------------|---------------|
 | **Access token** | Long-lived (until the operator rotates `CLI_API_TOKEN`) | Pairing QR / deeplink, or typed in manually | Exchanged for a JWT via `POST /api/auth`; the client's durable secret |
 | **JWT** | 4 hours | Response of `POST /api/auth` | `Authorization: Bearer` on every `/api/*` request |
+| **Passkey session** (web only) | 30 days, and only while its passkey is valid | Response of `POST /api/passkey/login/verify` | Exchanged for a JWT via `POST /api/auth`; never accepted as a bearer token |
 
 The hub's base token (`CLI_API_TOKEN`) is auto-generated on first run (32 random bytes, base64url, ~43 chars) and persisted in the hub's `settings.json`; an operator-provided env token overrides it. The configured base token never contains a `:` — the hub refuses to start otherwise (`validateCliApiToken`).
 
@@ -91,7 +92,7 @@ Treat the token as opaque for auth purposes, but clients may base64url-decode th
 Source of truth: `hub/src/web/middleware/auth.ts`.
 
 - Every `/api/*` request: `Authorization: Bearer <JWT>`.
-- Exceptions: `/api/auth` and `/api/bind` are unauthenticated; `GET /health` is outside `/api` and unauthenticated.
+- Exceptions: `/api/auth`, `/api/bind`, `/api/passkey/login/options` and `/api/passkey/login/verify` are unauthenticated; `GET /health` is outside `/api` and unauthenticated.
 - `GET /api/events` (SSE) **additionally** accepts `?token=<JWT>` as a query param, for HTTP stacks whose EventSource cannot set headers. The header wins when both are present. No other endpoint accepts query-param auth.
 
 ## Silent re-auth (401 handling)
@@ -113,6 +114,17 @@ Implementation notes:
 - **Single-flight** the refresh: concurrent 401s share an exchange or reuse the JWT already refreshed by another caller. Both native clients implement this.
 - Both native clients proactively refresh within 10 minutes of expiry. iOS can retain a still-valid cached JWT after a failed proactive refresh and throttles those attempts for 15 s. Android refreshes before SSE connects and leaves transient failures recoverable.
 - The web schedules proactive refresh 60 s before `exp` and on foreground when remaining TTL < 60 s. These scheduling choices are client implementation details, not additional protocol-version requirements. SSE authenticates at connection time, so reconnects need a current token.
+
+## Passkeys (web) {#passkeys-web}
+
+Source of truth: `hub/src/web/routes/passkey.ts`, `hub/src/web/authTokens.ts`, `web/src/lib/passkey.ts`.
+
+The web app can sign in with a WebAuthn passkey instead of pasting the access token. Native clients keep using the access token: passkeys are bound to a web origin, and self-hosted hubs cannot rely on associated domains.
+
+- **Registration needs an existing session.** `POST /api/passkey/register/{options,verify}` require a JWT, so the first sign-in still uses the access token (or Telegram). The passkey is stored with the JWT's namespace and an HMAC fingerprint of the current `CLI_API_TOKEN`.
+- **Relying party.** The RP ID is the hostname of the request's `Origin`. The origin must use HTTPS, or HTTP on `localhost`, and must be a domain name rather than an IP address. It must also be trusted: either the same host as the request (the hub-served web app) or an entry in the hub's CORS origins (a wildcard does not count). A passkey only works on the RP ID where it was registered.
+- **Sign-in.** `POST /api/passkey/login/options` returns a one-time challenge that expires after 5 minutes. `POST /api/passkey/login/verify` with `{ "response": <AuthenticationResponseJSON> }` requires user verification and returns `{ token, user, passkeySession }`. The web stores `passkeySession` under `hapi_passkey_session::<baseUrl>` instead of an access token, then refreshes with `POST /api/auth { "passkeySession": "..." }`.
+- **Revocation.** Rotating `CLI_API_TOKEN` invalidates every passkey and passkey session registered under the old token (`GET /api/passkeys` reports `valid: false`). Deleting a passkey (`DELETE /api/passkeys/:id`) revokes its sessions immediately.
 
 ## Namespaces
 
@@ -152,5 +164,8 @@ All are JSON with an `error` string; none carry a `code` field except Telegram's
 | Middleware, any `/api/*` | `{"error": "Invalid token payload"}` | JWT valid but payload not `{uid, ns}` (foreign/ancient token) |
 | `POST /api/auth` | `{"error": "Invalid access token"}` | Access token wrong or rotated → require re-pairing |
 | `POST /api/auth` (Telegram path) | `{"error": "not_bound"}` | Telegram-only; not reachable with `accessToken` auth |
+| `POST /api/auth` (passkey session) | `{"error": "passkey_session_invalid"}` | Passkey deleted, token rotated, or session expired → sign in again |
+| `POST /api/passkey/login/verify` | `{"error": "passkey_revoked"}` | Passkey registered under a rotated `CLI_API_TOKEN` |
+| `POST /api/passkey/login/verify` | `{"error": "Passkey challenge expired"}` / `"Unknown passkey"` / `"Passkey verification failed"` | Retry the ceremony; do not loop |
 
 The re-auth loop must distinguish the middleware 401s (recoverable via re-exchange) from the `/api/auth` 401 (terminal — do not loop).

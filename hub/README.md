@@ -106,7 +106,9 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 
 ### Authentication (`src/web/routes/auth.ts`, `src/web/routes/bind.ts`)
 
-- `POST /api/auth` - Get JWT token (Telegram initData or `CLI_API_TOKEN[:namespace]`).
+- `POST /api/auth` - Get JWT token (Telegram initData, `CLI_API_TOKEN[:namespace]`, or a `passkeySession`).
+- `POST /api/passkey/login/options`, `POST /api/passkey/login/verify` - Unauthenticated WebAuthn sign-in; returns a JWT plus a 30-day `passkeySession`.
+- `POST /api/passkey/register/options`, `POST /api/passkey/register/verify`, `GET /api/passkeys`, `DELETE /api/passkeys/:id` - Manage passkeys for the caller's namespace (JWT required). Passkeys are bound to the browser origin and to the current `CLI_API_TOKEN`; rotating the token revokes them. See the [client contract](../docs/api/client-contract/auth.md#passkeys-web).
 - `POST /api/bind` - Bind a Telegram account using initData + `CLI_API_TOKEN:<namespace>`.
 
 ### Sessions (`src/web/routes/sessions.ts`)

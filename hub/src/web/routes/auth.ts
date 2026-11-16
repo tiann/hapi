@@ -1,5 +1,4 @@
 import { Hono } from 'hono'
-import { SignJWT } from 'jose'
 import { AuthRequestSchema } from '@hapi/protocol'
 import { getConfiguration } from '../../configuration'
 import { constantTimeEquals } from '../../utils/crypto'
@@ -8,6 +7,7 @@ import { validateTelegramInitData } from '../telegramInitData'
 import { getOrCreateOwnerId } from '../../config/ownerId'
 import type { WebAppEnv } from '../middleware/auth'
 import type { Store } from '../../store'
+import { cliTokenFingerprint, signWebJwt, verifyPasskeySession } from '../authTokens'
 
 export function createAuthRoutes(jwtSecret: Uint8Array, store: Store): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
@@ -35,6 +35,23 @@ export function createAuthRoutes(jwtSecret: Uint8Array, store: Store): Hono<WebA
             userId = await getOrCreateOwnerId()
             firstName = 'Web User'
             namespace = parsedToken.namespace
+        } else if ('passkeySession' in parsed.data) {
+            // Refresh a passkey login. The backing credential must still exist
+            // and must have been registered under the current CLI token.
+            const session = await verifyPasskeySession(jwtSecret, parsed.data.passkeySession)
+            const credential = session ? store.passkeys.get(session.credentialId) : null
+            const fingerprint = cliTokenFingerprint(jwtSecret, getConfiguration().cliApiToken)
+            if (
+                !session
+                || !credential
+                || credential.namespace !== session.namespace
+                || !constantTimeEquals(credential.tokenFingerprint, fingerprint)
+            ) {
+                return c.json({ error: 'passkey_session_invalid' }, 401)
+            }
+            userId = await getOrCreateOwnerId()
+            firstName = 'Web User'
+            namespace = credential.namespace
         } else {
             const configuration = getConfiguration()
             if (!configuration.telegramEnabled || !configuration.telegramBotToken) {
@@ -60,11 +77,7 @@ export function createAuthRoutes(jwtSecret: Uint8Array, store: Store): Hono<WebA
             namespace = storedUser.namespace
         }
 
-        const token = await new SignJWT({ uid: userId, ns: namespace })
-            .setProtectedHeader({ alg: 'HS256' })
-            .setIssuedAt()
-            .setExpirationTime('4h')
-            .sign(jwtSecret)
+        const token = await signWebJwt(jwtSecret, userId, namespace)
 
         return c.json({
             token,

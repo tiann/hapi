@@ -6,6 +6,7 @@ export const queryKeys = {
     machines: ['machines'] as const,
     sqliteStorage: ['sqlite-storage'] as const,
     hubSettings: ['hub-settings'] as const,
+    passkeys: ['passkeys'] as const,
     usageSummary: (range: string, timeZone: string) => ['usage-summary', range, timeZone] as const,
     usageQuotas: ['usage-quotas'] as const,
     machineCodexModels: (machineId: string) => ['machine-codex-models', machineId] as const,
