@@ -1533,6 +1533,15 @@ export class SyncEngine {
             namespace = session.namespace
             let targetId = ownerSessionId
 
+            // A turn is running: the agent is present and can read `job list`.
+            // Injecting a message here would interrupt it, so drop the wake.
+            if (session.active && session.thinking) {
+                this.store.sessionJobs.markTerminalWakeDelivered(ownerSessionId, ownerJobKey, claimId)
+                this.clearJobTerminalWakeRetry(ownerSessionId, ownerJobKey)
+                this.clearJobTerminalWakeRetry(sessionId, job.key)
+                return
+            }
+
             if (!session.active) {
                 const resume = await this.resumeSession(ownerSessionId, namespace)
                 if (resume.type !== 'success') {
@@ -1636,7 +1645,7 @@ export class SyncEngine {
             // MessageService.sweepImmediateQueuedOnSessionEnd).
             await this.sendMessage(targetId, {
                 text,
-                sentFrom: 'webapp',
+                sentFrom: 'hapi-system',
                 localId: buildJobWakeLocalId(ownerJobKey, claimId),
             })
             this.store.sessionJobs.markTerminalWakeDelivered(ownerSessionId, ownerJobKey, claimId)
@@ -1967,7 +1976,7 @@ export class SyncEngine {
                 path: string
                 previewUrl?: string
             }>
-            sentFrom?: 'telegram-bot' | 'webapp'
+            sentFrom?: 'telegram-bot' | 'webapp' | 'hapi-system'
             scheduledAt?: number | null
             deliveryMode?: MessageDeliveryMode
         }
@@ -2408,6 +2417,9 @@ export class SyncEngine {
     > {
         try {
             const metadata = source.metadata
+            if (metadata?.codexRuntime?.kind === 'attached') {
+                throw new Error('Fork external threads in the owning desktop, then use hapi attach')
+            }
             if (metadata?.flavor !== 'codex' || !metadata.codexSessionId || !metadata.machineId || !metadata.path) {
                 throw new Error('Inactive fork requires a Codex session with native history and a machine binding')
             }
@@ -4200,6 +4212,9 @@ export class SyncEngine {
 
         const session = access.session
         const metadata = session.metadata
+        if (metadata?.codexRuntime?.kind === 'attached') {
+            return { type: 'error', message: 'Externally attached Codex session: run hapi attach on its machine; owned cold resume is disabled', code: 'resume_unavailable' }
+        }
         if (!metadata || typeof metadata.path !== 'string' || metadata.path.length === 0) {
             return { type: 'error', message: 'Session metadata missing path', code: 'resume_unavailable' }
         }
@@ -4590,6 +4605,7 @@ export class SyncEngine {
     /** Inactive session with directory path but no agent thread and no prior user turn. */
     private canFreshSpawnNeverStartedSession(session: Session, sessionId: string, namespace: string): boolean {
         const metadata = session.metadata
+        if (metadata?.codexRuntime?.kind === 'attached') return false
         if (!metadata || typeof metadata.path !== 'string' || metadata.path.length === 0) {
             return false
         }

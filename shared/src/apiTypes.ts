@@ -1002,10 +1002,64 @@ export type UsageQuotasResponse = z.infer<typeof UsageQuotasResponseSchema>
 
 export const AuthRequestSchema = z.union([
     z.object({ initData: z.string() }),
-    z.object({ accessToken: z.string() })
+    z.object({ accessToken: z.string() }),
+    // Refresh credential returned by POST /api/passkey/login/verify.
+    z.object({ passkeySession: z.string() })
 ])
 
 export type AuthRequest = z.infer<typeof AuthRequestSchema>
+
+/**
+ * WebAuthn `PublicKeyCredential` serialized with base64url fields
+ * (`RegistrationResponseJSON` / `AuthenticationResponseJSON`). Only the
+ * envelope is validated here; the hub verifies the payload cryptographically.
+ */
+export const PasskeyCredentialResponseSchema = z.object({
+    id: z.string().min(1).max(1024),
+    rawId: z.string().min(1).max(1024),
+    type: z.literal('public-key'),
+    response: z.looseObject({
+        clientDataJSON: z.string().min(1)
+    }),
+    clientExtensionResults: z.record(z.string(), z.unknown()).default({}),
+    // WebAuthn serializes an unknown attachment as null (e.g. Credential Manager).
+    authenticatorAttachment: z.string().nullish()
+})
+
+/**
+ * Body of `POST /api/passkey/{login,register}/options`. Web clients omit it
+ * (the RP is derived from the Origin header); official native apps send
+ * `{ "client": "native" }` to use the hub's fixed native RP ID.
+ */
+export const PasskeyOptionsRequestSchema = z.object({
+    client: z.enum(['web', 'native']).default('web')
+})
+export type PasskeyOptionsRequest = z.infer<typeof PasskeyOptionsRequestSchema>
+
+export const PasskeyRegisterVerifyRequestSchema = z.object({
+    response: PasskeyCredentialResponseSchema,
+    name: z.string().trim().max(64).optional()
+})
+export type PasskeyRegisterVerifyRequest = z.infer<typeof PasskeyRegisterVerifyRequestSchema>
+
+export const PasskeyLoginVerifyRequestSchema = z.object({
+    response: PasskeyCredentialResponseSchema
+})
+export type PasskeyLoginVerifyRequest = z.infer<typeof PasskeyLoginVerifyRequestSchema>
+
+export type PasskeySummary = {
+    id: string
+    name: string | null
+    rpId: string
+    createdAt: number
+    lastUsedAt: number | null
+    /** False once `CLI_API_TOKEN` has been rotated since registration. */
+    valid: boolean
+}
+
+export type PasskeyListResponse = {
+    passkeys: PasskeySummary[]
+}
 
 export type CommandResponse = {
     success: boolean

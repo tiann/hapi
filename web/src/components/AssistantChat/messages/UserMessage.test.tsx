@@ -116,3 +116,25 @@ describe('user-only completed fork boundary', () => {
         expect(onFork).not.toHaveBeenCalled()
     })
 })
+
+describe('HAPI system notes', () => {
+    beforeEach(() => {
+        localStorage.clear()
+        state.thread.isRunning = false
+        state.message = {
+            id: 'user-text:job-wake',
+            role: 'user',
+            createdAt: new Date(10),
+            content: [{ type: 'text', text: '[hapi job] Attached job "batch" reached status=completed.' }],
+            metadata: { custom: { kind: 'system-note' } }
+        } as typeof state.message
+    })
+
+    it('renders a job wake as a status line, not an operator bubble', () => {
+        mount()
+        const root = document.querySelector('[data-hapi-message-role="system-note"]')
+        expect(root).not.toBeNull()
+        expect(screen.getByText(/Attached job "batch"/)).toBeTruthy()
+        expect(document.querySelector('[data-hapi-message-role="user"]')).toBeNull()
+    })
+})

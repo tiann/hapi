@@ -94,6 +94,7 @@ struct PairingErrorView: View {
         case .invalidAccessToken: "key"
         case .hubError: "exclamationmark.triangle"
         case .storageFailure: "externaldrive.badge.xmark"
+        case .noPasskeys, .passkeyRejected, .passkeyUnavailable: "person.badge.key"
         }
     }
 
@@ -105,6 +106,9 @@ struct PairingErrorView: View {
         case .invalidAccessToken: String(localized: "Token rejected")
         case .hubError: String(localized: "Hub error")
         case .storageFailure: String(localized: "Could not save")
+        case .noPasskeys: String(localized: "No passkeys for this hub")
+        case .passkeyRejected: String(localized: "Passkey rejected")
+        case .passkeyUnavailable: String(localized: "Passkey unavailable")
         }
     }
 
@@ -129,6 +133,12 @@ struct PairingErrorView: View {
             )
         case .storageFailure:
             String(localized: "Pairing succeeded but the credentials could not be stored on this device. Try again.")
+        case .noPasskeys:
+            String(localized: "This hub has no passkeys for the app yet. Pair with the access token, then add a passkey in Settings → Passkeys.")
+        case .passkeyRejected:
+            String(localized: "The hub did not accept this passkey. It may have been deleted, or the hub's access token was rotated. Pair with the access token instead.")
+        case .passkeyUnavailable:
+            String(localized: "This device could not use a passkey for this hub. Try again, or pair with the access token.")
         }
     }
 }

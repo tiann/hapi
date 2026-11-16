@@ -27,6 +27,7 @@ struct PairingFlowView: View {
         #endif
     }
     @State private var showManualEntry = false
+    @State private var showPasskeySignIn = false
 
     private static let docsURL = URL(string: "https://hapi.run/docs/guide/quick-start")
 
@@ -70,6 +71,8 @@ struct PairingFlowView: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.large)
+
+                        passkeyButton
                         #else
                         Button {
                             showScanner = true
@@ -88,6 +91,8 @@ struct PairingFlowView: View {
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.large)
+
+                        passkeyButton
                         #endif
                     }
                     .padding(.horizontal, 24)
@@ -118,7 +123,25 @@ struct PairingFlowView: View {
                 ManualEntryView()
                     .macSheetSizing()
             }
+            .sheet(isPresented: $showPasskeySignIn) {
+                ManualEntryView(mode: .passkey)
+                    .macSheetSizing()
+            }
         }
+    }
+
+    /// URL-only sign-in for hubs where a passkey was already added
+    /// (Settings → Passkeys after a token pairing).
+    private var passkeyButton: some View {
+        Button {
+            showPasskeySignIn = true
+        } label: {
+            Label("Sign in with a Passkey", systemImage: "person.badge.key")
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.large)
+        .accessibilityIdentifier("pairing.passkeyEntry")
     }
 
     private func authFailureBanner(failedHub: String) -> some View {

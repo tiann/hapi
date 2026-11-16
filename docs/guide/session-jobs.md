@@ -23,6 +23,8 @@ Jobs enrich **Layer 0** session summaries (same layer as cite / inspect / ping).
 
 ## When to attach
 
+**Default is not to attach.** A job is worth the operator's list chrome only when a process must keep running after this agent goes idle *and* someone would reopen the chat to ask "how's it doing?". Short work — tests, builds, installs, typechecks, one-shot scripts — never belongs here, even when the command takes a while.
+
 Attach a job **before** (or immediately when) you start process-shaped work that will keep running after the agent goes idle:
 
 | Attach | Do not attach |
@@ -215,10 +217,11 @@ hapi job run "$HAPI_SESSION_ID" beets \
 When the hub accepts terminal status (and the opt-in was set on that run):
 
 1. Claims a one-shot wake for that `runId` (retries / duplicate terminal PATCH do not re-fire).
-2. Resumes the owning session if inactive (same resume path as `ping-peer`).
-3. Posts a user message naming job key, status, last detail, plus optional `--wake-prompt`.
+2. **If a turn is already running (`active && thinking`), drops the wake** — the agent is present and can read `job list`; injecting a message would interrupt it. The claim is settled so a later idle flip does not re-fire.
+3. Otherwise resumes the owning session if inactive (same resume path as `ping-peer`).
+4. Posts a message naming job key, status, last detail, plus optional `--wake-prompt`. It is tagged `sentFrom: 'hapi-system'` and renders as a quiet status line, not as operator input.
 
-This does **not** treat heartbeats as thinking. Default remains off until dogfood proves the loop.
+This does **not** treat heartbeats as thinking. Default remains off: `--wake-on-terminal` is only for batches the operator asked to be woken for, never a default on every `job run`.
 
 ## Progress honesty (tiers)
 

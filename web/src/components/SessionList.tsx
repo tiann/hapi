@@ -11,6 +11,7 @@ import {
     sortSessionsBySearchRelevance,
 } from '@/lib/sessionListSearch'
 import { useLongPress } from '@/hooks/useLongPress'
+import { useLowRateAnimation } from '@/hooks/useLowRateAnimation'
 import { usePlatform } from '@/hooks/usePlatform'
 import { sessionArchiveMutationKey, sessionPinMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useIsMutating } from '@tanstack/react-query'
@@ -54,6 +55,16 @@ function MoreHorizontalIcon(props: { className?: string }) {
             <circle cx="19" cy="12" r="1.5" fill="currentColor" stroke="none" />
         </svg>
     )
+}
+
+/**
+ * Small status dot whose pulse (when enabled) comes from the shared low-rate
+ * ticker rather than a running CSS animation. `className` carries size/color.
+ */
+function LowRatePulseDot({ pulse, className }: { pulse: boolean; className: string }) {
+    const ref = useRef<HTMLSpanElement | null>(null)
+    useLowRateAnimation(ref, 'pulse', pulse)
+    return <span ref={ref} className={className} aria-hidden="true" />
 }
 
 /** Narrow-header overflow for shed secondary actions (tiann/hapi#2039). */
@@ -2260,8 +2271,11 @@ export function SessionList(props: {
                     title={t(titleKey)}
                 >
                     <ChevronIcon className="h-3.5 w-3.5 text-[var(--app-hint)] shrink-0" collapsed={collapsed && !isFiltering} />
-                    <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center" aria-hidden="true">
-                        <span className={`h-1.5 w-1.5 rounded-full bg-[var(--app-badge-success-text)] ${pulse ? 'animate-pulse' : ''}`} />
+                    <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+                        <LowRatePulseDot
+                            pulse={pulse}
+                            className="h-1.5 w-1.5 rounded-full bg-[var(--app-badge-success-text)]"
+                        />
                     </span>
                     <span className="min-w-0 flex-1 truncate text-sm font-medium">
                         {t(titleKey)}
@@ -2281,7 +2295,10 @@ export function SessionList(props: {
                             return (
                                 <div key={bucketKey}>
                                     <div className={`flex items-center gap-1 px-1 pt-1 pb-0.5 text-[11px] font-medium ${bucket.colorClass}`}>
-                                        <span className={`h-1.5 w-1.5 shrink-0 rounded-full bg-current ${bucket.pulse ? 'animate-pulse' : ''}`} aria-hidden="true" />
+                                        <LowRatePulseDot
+                                            pulse={bucket.pulse}
+                                            className="h-1.5 w-1.5 shrink-0 rounded-full bg-current"
+                                        />
                                         {t(bucket.labelKey)} ({sessions.length})
                                     </div>
                                     {sessions.map((s) => (
