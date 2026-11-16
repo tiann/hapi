@@ -1,12 +1,15 @@
-import type { ReactNode } from 'react'
+import type { ReactNode, Ref } from 'react'
 
 type IconProps = {
     className?: string
+    /** Lets a caller hand the SVG to a direct-DOM animation (e.g. the low-rate ticker). */
+    ref?: Ref<SVGSVGElement>
 }
 
 function createIcon(paths: ReactNode, props: IconProps, strokeWidth = 1.5) {
     return (
         <svg
+            ref={props.ref}
             className={props.className ?? 'h-4 w-4'}
             viewBox="0 0 24 24"
             fill="none"

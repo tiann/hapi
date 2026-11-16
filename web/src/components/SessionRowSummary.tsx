@@ -1,4 +1,4 @@
-import { useMemo, useSyncExternalStore } from 'react'
+import { useMemo, useRef, useSyncExternalStore } from 'react'
 import type { SessionSummary } from '@/types/api'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
 import { InfoIcon, LoaderIcon, ScheduleIcon, StoppedBadgeIcon } from '@/components/icons'
@@ -10,6 +10,7 @@ import { formatRelativeTime } from '@/lib/relativeTime'
 import { formatScheduledTooltipDetail } from '@/lib/scheduledTime'
 import { getCodexImportedAt, subscribeCodexImportedSessions } from '@/lib/codexImportedSessions'
 import { useMinuteTick } from '@/hooks/useMinuteTick'
+import { LOW_RATE_STRIPES_CLASS, useLowRateAnimation } from '@/hooks/useLowRateAnimation'
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { useTranslation } from '@/lib/use-translation'
 import { getWorktreeSessionLabel } from '@/lib/sessionWorktreeLabel'
@@ -76,7 +77,7 @@ function getSessionTimeLabel(
 }
 
 const PRESENCE_BADGE_CLASS = {
-    working: 'bg-[var(--app-badge-success-text)] animate-pulse',
+    working: 'bg-[var(--app-badge-success-text)]',
     waiting: 'border-2 border-[var(--app-badge-success-text)] bg-[var(--app-bg)]',
     stopped: 'bg-[var(--app-bg)] text-[var(--app-hint)]',
 } as const
@@ -151,6 +152,9 @@ export function SessionRowSummary(props: {
         [s, selected, showDetailedStatus, lastSeenVersion]
     )
     const attentionLabel = attention ? getAttentionLabel(attention, t) : null
+    // Unread rows hand the agent icon to the attention tooltip as the "unread"
+    // symbol, so it is no longer the presence badge and must not pulse.
+    const plainUnreadTarget = attention?.kind === 'unread' && nestedTooltips && !attentionTooltipIdProp
     const urgentAttention = attention !== null
         && (attention.kind === 'permission' || attention.kind === 'input')
     const modelErrorActive = hasUrgentModelError(s.metadata)
@@ -214,10 +218,30 @@ export function SessionRowSummary(props: {
     const activityLabel = t('session.item.running')
     const pendingRequestId = s.pendingRequests?.[0]?.id
 
+    // Idle indicators are animated by the one shared low-rate ticker, not CSS.
+    // Refs are only read inside effects, so an unanimated render (presence
+    // 'waiting', no model error) simply leaves a detached ref unused.
+    const presenceRef = useRef<HTMLSpanElement | null>(null)
+    const modelErrorRef = useRef<HTMLSpanElement | null>(null)
+    const activityRef = useRef<SVGSVGElement | null>(null)
+    const jobDotRef = useRef<HTMLSpanElement | null>(null)
+    const jobStripesRef = useRef<HTMLSpanElement | null>(null)
+    // Gated on the same conditions that mount the elements (hooks stay
+    // unconditional), so a row with no idle indicator runs no ticker listener.
+    // The presence badge lives in `agentIcon`, which may be handed to
+    // `SessionAttentionIndicator` as a tooltip target, so the badge only pulses
+    // in the plain (non-background-attention, non-unread) render path.
+    useLowRateAnimation(presenceRef, 'pulse', presence === 'working' && !plainUnreadTarget)
+    useLowRateAnimation(modelErrorRef, 'spin', modelErrorActive)
+    useLowRateAnimation(activityRef, 'spin', hasForegroundWork)
+    useLowRateAnimation(jobDotRef, 'pulse', attachedJob !== null && !jobStale)
+    useLowRateAnimation(jobStripesRef, 'stripes', attachedJob !== null && jobFraction === null)
+
     const agentIcon = (
         <span className="relative inline-flex h-6 w-6 shrink-0 items-center justify-center">
             <AgentFlavorIcon flavor={s.metadata?.flavor} className="h-6 w-6" />
             <span
+                ref={presenceRef}
                 data-testid="session-presence"
                 data-presence={presence}
                 className={`absolute -bottom-0.5 -right-0.5 box-border flex h-2.5 w-2.5 items-center justify-center rounded-full ring-2 ring-[var(--app-bg)] ${PRESENCE_BADGE_CLASS[presence]}`}
@@ -258,13 +282,13 @@ export function SessionRowSummary(props: {
                                 title={modelErrorLabel}
                                 aria-label={modelErrorLabel}
                             >
-                                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-amber-500 opacity-75" />
+                                <span ref={modelErrorRef} className="absolute inline-flex h-full w-full rounded-full bg-amber-500 opacity-75" />
                                 <span className="relative inline-flex h-2 w-2 rounded-full bg-amber-500" />
                             </span>
                         ) : null}
                         {hasForegroundWork ? (
                             <span data-testid="session-activity" role="img" aria-label={activityLabel} title={activityLabel} className="inline-flex shrink-0">
-                                <LoaderIcon className={`h-3.5 w-3.5 animate-spin-slow ${isUnread ? 'text-blue-500' : 'text-[var(--app-hint)]'}`} />
+                                <LoaderIcon ref={activityRef} className={`h-3.5 w-3.5 ${isUnread ? 'text-blue-500' : 'text-[var(--app-hint)]'}`} />
                             </span>
                         ) : isBackgroundOnly ? (
                             <span data-testid="session-background" role="img" aria-label={t('session.item.background')} title={t('session.item.background')} className="h-2 w-2 shrink-0 rounded-full bg-blue-500" />
@@ -353,7 +377,8 @@ export function SessionRowSummary(props: {
                         }
                     >
                         <span
-                            className={`h-1.5 w-1.5 shrink-0 rounded-full bg-current ${jobStale ? '' : 'animate-pulse'}`}
+                            ref={jobDotRef}
+                            className="h-1.5 w-1.5 shrink-0 rounded-full bg-current"
                             aria-hidden="true"
                         />
                         {/* The label gives way first: progress, elapsed time and the stale
@@ -397,7 +422,8 @@ export function SessionRowSummary(props: {
                             >
                                 {/* No aria-valuenow: unknown amount (ARIA indeterminate). No inline width%. */}
                                 <span
-                                    className="animate-attached-job-indeterminate"
+                                    ref={jobStripesRef}
+                                    className={LOW_RATE_STRIPES_CLASS}
                                     aria-hidden="true"
                                 />
                             </span>

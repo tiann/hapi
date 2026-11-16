@@ -200,7 +200,13 @@ describe('SessionAttentionIndicator tooltip', () => {
         const tooltip = screen.getByRole('tooltip', { hidden: true })
         expect(tooltip.textContent).toContain('Background tasks running')
         expect(tooltip.textContent).toContain('3 tasks running')
-        expect(container.querySelector('svg.animate-spin-slow.text-blue-400')).not.toBeNull()
+        // Rotation comes from the shared low-rate ticker, so the class is gone
+        // but the blue spinner element is still there.
+        const spinner = container.querySelector('svg.text-blue-400') as SVGElement | null
+        expect(spinner).not.toBeNull()
+        expect(spinner).not.toHaveClass('animate-spin-slow')
+        // The old CSS class must be gone everywhere, not just renamed.
+        expect(container.querySelector('.animate-spin-slow')).toBeNull()
         expect(container.querySelector('.rounded-full')).toBeNull()
     })
 
