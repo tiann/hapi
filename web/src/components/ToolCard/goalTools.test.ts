@@ -105,3 +105,34 @@ describe('goal status messages', () => {
         expect(parseGoalStatusMessage(message)).toBeNull()
     })
 })
+
+describe('DSH goal phase payloads', () => {
+    it('accepts phase as an alias for status', () => {
+        expect(parseGoalToolResult({ goal: { objective: 'Fix the parser', phase: 'active' } }))
+            .toEqual({ kind: 'goal', goal: { objective: 'Fix the parser', status: 'active' } })
+    })
+
+    it.each(['active', 'paused', 'blocked', 'complete'] as const)
+        ('parses every DSH phase %s', (phase) => {
+            expect(parseGoalToolResult({ goal: { objective: 'ship it', phase } }))
+                .toEqual({ kind: 'goal', goal: { objective: 'ship it', status: phase } })
+        })
+
+    it('prefers an explicit status over phase', () => {
+        expect(parseGoalToolResult({ goal: { objective: 'ship it', phase: 'paused', status: 'complete' } }))
+            .toEqual({ kind: 'goal', goal: { objective: 'ship it', status: 'complete' } })
+    })
+
+    it('reads DSH round counters alongside the phase', () => {
+        expect(parseGoalToolResult({ goal: {
+            objective: 'ship it', phase: 'active', roundsStarted: 2, max_goal_rounds: 5
+        } })).toEqual({ kind: 'goal', goal: {
+            objective: 'ship it', status: 'active', roundsStarted: 2, maxGoalRounds: 5
+        } })
+    })
+
+    it('still rejects snapshots without either status or phase', () => {
+        expect(parseGoalToolResult({ goal: { objective: 'orphan' } })).toBeNull()
+        expect(parseGoalToolResult({ goal: { objective: 'orphan', phase: '  ' } })).toBeNull()
+    })
+})

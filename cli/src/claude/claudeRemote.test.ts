@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { getProjectPath } from '@/claude/utils/path';
-import type { CompactSummaryPayload } from './claudeRemote';
+import type { ClaudeGoalAgentEvent, CompactSummaryPayload } from './claudeRemote';
 
 vi.mock('@/claude/utils/compactSummaryLookup', () => ({
     findLatestCompactSummary: vi.fn(async () => null)
@@ -1840,5 +1840,167 @@ describe('claudeRemote live effort', () => {
         } finally {
             vi.useRealTimers();
         }
+    });
+});
+
+describe('claudeRemote goal frames', () => {
+    async function goalRun(opts: {
+        sessionId: string | null;
+        frames: SDKMessage[];
+        onGoalEvent: (event: ClaudeGoalAgentEvent) => void;
+        onMessageTypes: string[];
+    }): Promise<void> {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        queryMock.mockReturnValueOnce(createAsyncStream(opts.frames));
+        let nextCallCount = 0;
+        return claudeRemote({
+            sessionId: opts.sessionId,
+            path: process.cwd(),
+            mcpServers: {},
+            claudeEnvVars: {},
+            claudeArgs: [],
+            allowedTools: [],
+            hookSettingsPath: '/tmp/hook.json',
+            canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+            nextMessage: async () => nextCallCount++ === 0
+                ? { message: 'Run the goal', mode: { permissionMode: 'default' } }
+                : null,
+            onReady: () => {},
+            isAborted: () => false,
+            onSessionFound: () => {},
+            onMessage: (message) => {
+                opts.onMessageTypes.push(message.type);
+            },
+            onGoalEvent: opts.onGoalEvent
+        }).finally(() => {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        });
+    }
+
+    // CI occasionally exceeds the default 5s under load (unrelated to job work).
+    it('forwards active_goal set/block/clear and goal_status met as thread-goal events', { timeout: 15_000 }, async () => {
+        const setAt = Math.floor(Date.now() / 1000) - 30;
+        const events: ClaudeGoalAgentEvent[] = [];
+        const onMessageTypes: string[] = [];
+
+        await goalRun({
+            sessionId: 'cc-session-1',
+            frames: [
+                {
+                    type: 'active_goal',
+                    value: { condition: 'Ship the release', iterations: 1, set_at: setAt, tokens_at_start: 1234 },
+                    uuid: 'goal-1',
+                    session_id: 'cc-session-1'
+                },
+                {
+                    type: 'active_goal',
+                    value: {
+                        condition: 'Ship the release',
+                        iterations: 2,
+                        set_at: setAt,
+                        tokens_at_start: 1234,
+                        last_reason: 'waiting on user input'
+                    },
+                    uuid: 'goal-2',
+                    session_id: 'cc-session-1'
+                },
+                { type: 'active_goal', value: null, uuid: 'goal-3', session_id: 'cc-session-1' },
+                // No session_id on the frame: falls back to the known session id.
+                { type: 'goal_status', met: true },
+                { type: 'result', subtype: 'success' }
+            ] as unknown as SDKMessage[],
+            onGoalEvent: (event) => events.push(event),
+            onMessageTypes
+        });
+
+        expect(events).toHaveLength(4);
+
+        const [updated, blocked, cleared, met] = events;
+        expect(updated).toMatchObject({
+            type: 'thread_goal_updated',
+            thread_id: 'cc-session-1',
+            goal: {
+                threadId: 'cc-session-1',
+                objective: 'Ship the release',
+                status: 'active',
+                tokensUsed: 1234
+            }
+        });
+        const updatedTimeUsed = updated.type === 'thread_goal_updated' ? updated.goal.timeUsedSeconds ?? -1 : -1;
+        expect(updatedTimeUsed).toBeGreaterThanOrEqual(29);
+        expect(updatedTimeUsed).toBeLessThanOrEqual(35);
+
+        expect(blocked).toMatchObject({
+            type: 'thread_goal_updated',
+            thread_id: 'cc-session-1',
+            goal: { status: 'blocked', objective: 'Ship the release', tokensUsed: 1234 }
+        });
+
+        expect(cleared).toEqual({ type: 'thread_goal_cleared', thread_id: 'cc-session-1' });
+        expect(met).toEqual({ type: 'thread_goal_cleared', thread_id: 'cc-session-1' });
+
+        // Live-only: the frames never reach the transcript path.
+        expect(onMessageTypes).toEqual(['result']);
+    });
+
+    it('emits a null thread_id when no Claude session id is known yet', { timeout: 15_000 }, async () => {
+        const events: ClaudeGoalAgentEvent[] = [];
+        const onMessageTypes: string[] = [];
+
+        await goalRun({
+            sessionId: null,
+            frames: [
+                {
+                    type: 'active_goal',
+                    value: { condition: 'Ship the release', set_at: Math.floor(Date.now() / 1000), tokens_at_start: 10 },
+                    uuid: 'goal-1'
+                },
+                { type: 'result', subtype: 'success' }
+            ] as unknown as SDKMessage[],
+            onGoalEvent: (event) => events.push(event),
+            onMessageTypes
+        });
+
+        expect(events).toHaveLength(1);
+        const updated = events[0];
+        if (updated.type !== 'thread_goal_updated') {
+            throw new Error('expected a thread_goal_updated event');
+        }
+        expect(updated).toMatchObject({
+            type: 'thread_goal_updated',
+            thread_id: null,
+            goal: {
+                threadId: null,
+                objective: 'Ship the release',
+                status: 'active',
+                tokensUsed: 10
+            }
+        });
+        // set_at is "now"; allow a small scheduling delay before rounding.
+        const elapsed = updated.goal.timeUsedSeconds ?? -1;
+        expect(elapsed).toBeGreaterThanOrEqual(0);
+        expect(elapsed).toBeLessThanOrEqual(2);
+        expect(onMessageTypes).toEqual(['result']);
+    });
+
+    it('ignores goal_status frames that do not report success', { timeout: 15_000 }, async () => {
+        const events: ClaudeGoalAgentEvent[] = [];
+        const onMessageTypes: string[] = [];
+
+        await goalRun({
+            sessionId: 'cc-session-1',
+            frames: [
+                { type: 'goal_status', met: false, session_id: 'cc-session-1' },
+                { type: 'goal_status', session_id: 'cc-session-1' },
+                { type: 'result', subtype: 'success' }
+            ] as unknown as SDKMessage[],
+            onGoalEvent: (event) => events.push(event),
+            onMessageTypes
+        });
+
+        expect(events).toEqual([]);
+        expect(onMessageTypes).toEqual(['result']);
     });
 });

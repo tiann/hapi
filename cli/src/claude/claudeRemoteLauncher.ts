@@ -1,4 +1,5 @@
 import React from "react";
+import { randomUUID } from "node:crypto";
 import { Session } from "./session";
 import { RemoteModeDisplay } from "@/ui/ink/RemoteModeDisplay";
 import { claudeRemote, type ClaudeSteerTarget, type CompactSummaryPayload } from "./claudeRemote";
@@ -623,6 +624,20 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             session.consumeOneTimeFlags();
                         },
                         onThinkingChange: session.onThinkingChange,
+                        onGoalEvent: (event) => {
+                            // Same forwarding path the Codex goal pipeline
+                            // rides: the generic agent envelope
+                            // (AGENT_MESSAGE_PAYLOAD_TYPE inside
+                            // sendAgentMessage) with a fresh id for dedup.
+                            // thread_id is null only when no Claude session id
+                            // was known at frame time — fall back to the hapi
+                            // session id so the event stays attributable.
+                            const threadId = event.thread_id ?? session.sessionId ?? session.client.sessionId;
+                            const scoped = event.type === 'thread_goal_updated'
+                                ? { ...event, thread_id: threadId, goal: { ...event.goal, threadId } }
+                                : { ...event, thread_id: threadId };
+                            session.client.sendAgentMessage({ ...scoped, id: randomUUID() });
+                        },
                         claudeEnvVars: session.claudeEnvVars,
                         claudeArgs: session.claudeArgs,
                         onMessage,
