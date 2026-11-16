@@ -96,6 +96,17 @@ describe('inlineHtmlAssets', () => {
         expect(script?.textContent).toBe('')
     })
 
+    it('keeps URL fragments such as SVG named views on inlined assets', async () => {
+        const doc = parse(await inlineHtmlAssets(
+            '<head><style>.i { background: url("logo.svg#icon-view") }</style></head><body><img src="logo.svg#frag"></body>',
+            'site/index.html',
+            readFile
+        ))
+        const dataUrl = `data:image/svg+xml;base64,${encodeBase64('<svg/>')}`
+        expect(doc.querySelector('style')?.textContent).toContain(`url("${dataUrl}#icon-view")`)
+        expect(doc.querySelector('img')?.getAttribute('src')).toBe(`${dataUrl}#frag`)
+    })
+
     it('keeps inlined scripts external so defer and async still apply', async () => {
         const doc = parse(await inlineHtmlAssets(
             '<head><script defer src="defer.js"></script></head><body></body>',

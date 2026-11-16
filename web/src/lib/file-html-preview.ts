@@ -129,11 +129,17 @@ function collectCssUrlPaths(css: string, cssPath: string, htmlPath: string): str
     return paths
 }
 
+/** The `#fragment` of a URL reference (e.g. an SVG named view), or an empty string. */
+function fragmentOf(ref: string): string {
+    const index = ref.indexOf('#')
+    return index === -1 ? '' : ref.slice(index)
+}
+
 function rewriteCssUrls(css: string, cssPath: string, htmlPath: string, dataUrls: ReadonlyMap<string, string>): string {
     return css.replace(CSS_URL_PATTERN, (whole, _quote: string, ref: string) => {
         const resolved = resolveRelativeAssetPath(cssPath, ref, htmlPath)
         const dataUrl = resolved ? dataUrls.get(resolved) : undefined
-        return dataUrl ? `url("${dataUrl}")` : whole
+        return dataUrl ? `url("${dataUrl}${fragmentOf(ref)}")` : whole
     })
 }
 
@@ -249,7 +255,7 @@ export async function inlineHtmlAssets(
     for (const { element, attribute, path } of mediaAttributes) {
         const dataUrl = dataUrls.get(path)
         if (!dataUrl) continue
-        element.setAttribute(attribute, dataUrl)
+        element.setAttribute(attribute, `${dataUrl}${fragmentOf(element.getAttribute(attribute) ?? '')}`)
         // A relative srcset would win over the inlined src and fail to load.
         if (attribute === 'src') element.removeAttribute('srcset')
     }
