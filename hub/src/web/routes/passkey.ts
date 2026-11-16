@@ -1,13 +1,6 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
-import {
-    generateAuthenticationOptions,
-    generateRegistrationOptions,
-    verifyAuthenticationResponse,
-    verifyRegistrationResponse
-} from '@simplewebauthn/server'
 import type { AuthenticationResponseJSON, RegistrationResponseJSON } from '@simplewebauthn/server'
-import { decodeClientDataJSON } from '@simplewebauthn/server/helpers'
 import {
     PasskeyLoginVerifyRequestSchema,
     PasskeyOptionsRequestSchema,
@@ -25,6 +18,17 @@ import {
     signPasskeySession,
     signWebJwt
 } from '../authTokens'
+
+// Bun can initialize SimpleWebAuthn's transitive tsyringe before its polyfill
+// in dynamic bundles. Await the polyfill before loading either runtime entry.
+await import('reflect-metadata')
+const {
+    generateAuthenticationOptions,
+    generateRegistrationOptions,
+    verifyAuthenticationResponse,
+    verifyRegistrationResponse
+} = await import('@simplewebauthn/server')
+const { decodeClientDataJSON } = await import('@simplewebauthn/server/helpers')
 
 const CHALLENGE_TTL_MS = 5 * 60 * 1000
 const MAX_PENDING_CHALLENGES = 256
