@@ -49,12 +49,15 @@ export type NativePasskeyConfig = {
 export const DEFAULT_NATIVE_PASSKEY_RP_ID = 'hapi.run'
 
 /**
- * `android:apk-key-hash:` origins of official Android builds.
- * TODO(passkey): add the Play App Signing certificate hash (base64url, no
- * padding, of the SHA-256 shown in Play Console → App signing). Until then
- * Android passkeys only work when HAPI_PASSKEY_NATIVE_ORIGINS lists the hash.
+ * `android:apk-key-hash:` origins of official Android builds: base64url (no
+ * padding) of the Play App Signing certificate SHA-256
+ * 80:F5:B8:E3:56:8A:03:6B:F9:DE:58:68:EE:48:3C:EA:11:5E:D5:68:E2:2C:A5:CA:53:2E:08:CF:72:AF:7E:CF
+ * (Play Console → App integrity → App signing). Keep in sync with
+ * website/public/.well-known/assetlinks.json.
  */
-export const OFFICIAL_ANDROID_PASSKEY_ORIGINS: readonly string[] = []
+export const OFFICIAL_ANDROID_PASSKEY_ORIGINS: readonly string[] = [
+    'android:apk-key-hash:gPW441aKA2v53lho7kg86hFe1WjiLKXKUy4Iz3Kvfs8'
+]
 
 function parseList(value: string | undefined): string[] {
     return (value ?? '').split(',').map((item) => item.trim()).filter(Boolean)

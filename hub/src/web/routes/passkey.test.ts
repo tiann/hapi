@@ -318,7 +318,10 @@ describe('native passkeys', () => {
     })
 
     it('reads the native RP and extra origins from the environment', () => {
-        expect(nativePasskeyConfigFromEnv({})).toEqual({ rpId: 'hapi.run', origins: ['https://hapi.run'] })
+        expect(nativePasskeyConfigFromEnv({})).toEqual({
+            rpId: 'hapi.run',
+            origins: ['https://hapi.run', 'android:apk-key-hash:gPW441aKA2v53lho7kg86hFe1WjiLKXKUy4Iz3Kvfs8']
+        })
         expect(nativePasskeyConfigFromEnv({
             HAPI_PASSKEY_NATIVE_RP_ID: 'fork.example',
             HAPI_PASSKEY_NATIVE_ORIGINS: ' android:apk-key-hash:debug , https://fork.example'
