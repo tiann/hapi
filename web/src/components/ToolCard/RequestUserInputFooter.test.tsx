@@ -68,6 +68,8 @@ describe('RequestUserInputFooter', () => {
         const { props, rerender, denyPermission, approvePermission } = renderFooter({ isBlocking: false, questions: [choice] })
         let fail!: (reason: Error) => void
         denyPermission.mockImplementationOnce(() => new Promise((_, reject) => { fail = reject }))
+        fireEvent.click(screen.getByRole('radio', { name: /Alpha/ }))
+        fireEvent.click(screen.getByRole('button', { name: 'tool.requestUserInput.addNote' }))
         fireEvent.change(screen.getByRole('textbox'), { target: { value: 'keep my draft' } })
         fireEvent.click(screen.getByRole('button', { name: 'button.dismiss' }))
         expect(screen.getByRole('button', { name: 'button.dismiss' })).toBeDisabled()
@@ -108,7 +110,7 @@ describe('RequestUserInputFooter', () => {
         fireEvent.click(screen.getByRole('radio', { name: /以上都不是/ }))
         expect(screen.getByText('Choose')).toBeInTheDocument()
         fireEvent.click(screen.getByRole('button', { name: 'tool.next' }))
-        expect(screen.getByRole('textbox')).toHaveValue('')
+        expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
         fireEvent.click(screen.getByRole('radio', { name: /Beta/ }))
         fireEvent.click(screen.getByRole('button', { name: 'tool.prev' }))
         rerender(<RequestUserInputFooter {...props} tool={{ ...props.tool, input: structuredClone(props.tool.input) }} />)
@@ -122,8 +124,7 @@ describe('RequestUserInputFooter', () => {
     })
 
     it('does not interpret a note alone as None of the above', () => {
-        const { approvePermission } = renderFooter()
-        fireEvent.change(screen.getByRole('textbox'), { target: { value: 'custom' } })
+        const { approvePermission } = renderFooter({ questions: [{ ...choice, prefill: 'custom' }] })
         fireEvent.click(screen.getByRole('button', { name: 'tool.submit' }))
         expect(approvePermission).not.toHaveBeenCalled()
         expect(screen.getByText('tool.selectOption')).toBeInTheDocument()
@@ -197,5 +198,71 @@ describe('RequestUserInputFooter', () => {
         const textarea = screen.getByRole('textbox')
         expect(textarea).toHaveAttribute('placeholder', 'Describe the change')
         expect(textarea).toHaveValue('Initial draft')
+    })
+
+    it('collapses the note textarea initially for options questions', () => {
+        renderFooter()
+        expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'tool.requestUserInput.addNote' })).not.toBeInTheDocument()
+    })
+
+    it('shows the add-note control after selecting an option and expands with focus on click', async () => {
+        const { approvePermission } = renderFooter()
+        fireEvent.click(screen.getByRole('radio', { name: /Alpha/ }))
+        expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+        const addNoteButton = screen.getByRole('button', { name: 'tool.requestUserInput.addNote' })
+        const actionsRow = screen.getByTestId('request-user-input-actions')
+        const submitButton = screen.getByRole('button', { name: 'tool.submit' })
+        expect(actionsRow).toContainElement(addNoteButton)
+        expect(actionsRow).toContainElement(submitButton)
+        expect(addNoteButton.compareDocumentPosition(submitButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+        fireEvent.click(addNoteButton)
+        expect(screen.queryByRole('button', { name: 'tool.requestUserInput.addNote' })).not.toBeInTheDocument()
+        const textarea = screen.getByRole('textbox')
+        expect(textarea).toHaveFocus()
+        fireEvent.change(textarea, { target: { value: 'extra context' } })
+        fireEvent.click(screen.getByRole('button', { name: 'tool.submit' }))
+        await waitFor(() => expect(approvePermission).toHaveBeenCalledWith('session-1', 'permission-1', {
+            answers: { choice: { answers: ['Alpha', 'user_note: extra context'] } }
+        }))
+    })
+
+    it('expands and focuses the note textarea immediately when selecting the isOther option', () => {
+        renderFooter()
+        expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+        fireEvent.click(screen.getByRole('radio', { name: /以上都不是/ }))
+        const textarea = screen.getByRole('textbox')
+        expect(textarea).toBeInTheDocument()
+        expect(textarea).toHaveFocus()
+    })
+
+    it('keeps the note textarea expanded when a draft note already has content', () => {
+        renderFooter({ questions: [{ ...choice, prefill: 'Saved draft note' }] })
+        const textarea = screen.getByRole('textbox')
+        expect(textarea).toBeInTheDocument()
+        expect(textarea).toHaveValue('Saved draft note')
+        expect(screen.queryByRole('button', { name: 'tool.requestUserInput.addNote' })).not.toBeInTheDocument()
+    })
+
+    it('keeps per-question note expansion independent across step navigation', () => {
+        renderFooter({ questions: [choice, { ...choice, id: 'second', question: 'Second' }] })
+        fireEvent.click(screen.getByRole('radio', { name: /Alpha/ }))
+        fireEvent.click(screen.getByRole('button', { name: 'tool.requestUserInput.addNote' }))
+        expect(screen.getByRole('textbox')).toBeInTheDocument()
+
+        fireEvent.click(screen.getByRole('button', { name: 'tool.next' }))
+        expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+        fireEvent.click(screen.getByRole('radio', { name: /Beta/ }))
+        expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'tool.requestUserInput.addNote' })).toBeInTheDocument()
+
+        fireEvent.click(screen.getByRole('button', { name: 'tool.prev' }))
+        expect(screen.getByRole('textbox')).toBeInTheDocument()
+    })
+
+    it('renders the textarea immediately for pure-text questions', () => {
+        renderFooter({ questions: [{ id: 'free-text', question: 'Provide details', options: [] }] })
+        expect(screen.getByRole('textbox')).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'tool.requestUserInput.addNote' })).not.toBeInTheDocument()
     })
 })

@@ -10,6 +10,7 @@ Source of truth: `hub/src/config/cliApiToken.ts`, `hub/src/web/routes/auth.ts`.
 |------------|----------|--------------------|---------------|
 | **Access token** | Long-lived (until the operator rotates `CLI_API_TOKEN`) | Pairing QR / deeplink, or typed in manually | Exchanged for a JWT via `POST /api/auth`; the client's durable secret |
 | **JWT** | 4 hours | Response of `POST /api/auth` | `Authorization: Bearer` on every `/api/*` request |
+| **Passkey session** (web only) | 30 days, and only while its passkey is valid | Response of `POST /api/passkey/login/verify` | Exchanged for a JWT via `POST /api/auth`; never accepted as a bearer token |
 
 The hub's base token (`CLI_API_TOKEN`) is auto-generated on first run (32 random bytes, base64url, ~43 chars) and persisted in the hub's `settings.json`; an operator-provided env token overrides it. The configured base token never contains a `:` — the hub refuses to start otherwise (`validateCliApiToken`).
 
@@ -103,7 +104,7 @@ Treat the token as opaque for auth purposes, but clients may base64url-decode th
 Source of truth: `hub/src/web/middleware/auth.ts`.
 
 - Every `/api/*` request: `Authorization: Bearer <JWT>`.
-- Exceptions: `POST /api/auth`, `POST /api/bind`, `GET /api/auth/methods` and `GET /api/auth/cloudflare` do not require a HAPI bearer token. The Cloudflare exchange still requires a valid Access assertion. `GET /health` is outside `/api` and unauthenticated.
+- Exceptions: `POST /api/auth`, `POST /api/bind`, `GET /api/auth/methods`, `GET /api/auth/cloudflare`, `POST /api/passkey/login/options` and `POST /api/passkey/login/verify` do not require a HAPI bearer token. The Cloudflare exchange still requires a valid Access assertion. `GET /health` is outside `/api` and unauthenticated.
 - `GET /api/events` (SSE) **additionally** accepts `?token=<JWT>` as a query param, for HTTP stacks whose EventSource cannot set headers. The header wins when both are present. No other endpoint accepts query-param auth.
 
 ## Silent re-auth (401 handling)
@@ -125,6 +126,40 @@ Implementation notes:
 - **Single-flight** the refresh: concurrent 401s share an exchange or reuse the JWT already refreshed by another caller. Both native clients implement this.
 - Both native clients proactively refresh within 10 minutes of expiry. iOS can retain a still-valid cached JWT after a failed proactive refresh and throttles those attempts for 15 s. Android refreshes before SSE connects and leaves transient failures recoverable.
 - The web schedules proactive refresh 60 s before `exp` and on foreground when remaining TTL < 60 s. These scheduling choices are client implementation details, not additional protocol-version requirements. SSE authenticates at connection time, so reconnects need a current token.
+
+## Passkeys (web) {#passkeys-web}
+
+Source of truth: `hub/src/web/routes/passkey.ts`, `hub/src/web/authTokens.ts`, `web/src/lib/passkey.ts`.
+
+The web app can sign in with a WebAuthn passkey instead of pasting the access token. Native apps use the same endpoints with a fixed RP ID; see [Native passkeys](#passkeys-native).
+
+- **Registration needs an existing session.** `POST /api/passkey/register/{options,verify}` require a JWT, so the first sign-in still uses the access token (or Telegram). The passkey is stored with the JWT's namespace and an HMAC fingerprint of the current `CLI_API_TOKEN`.
+- **Relying party.** The RP ID is the hostname of the request's `Origin`. The origin must use HTTPS, or HTTP on `localhost`, and must be a domain name rather than an IP address. It must also be trusted: either the same host as the request (the hub-served web app) or an entry in the hub's CORS origins (a wildcard does not count). A passkey only works on the RP ID where it was registered.
+- **Sign-in.** `POST /api/passkey/login/options` returns a one-time challenge that expires after 5 minutes. `POST /api/passkey/login/verify` with `{ "response": <AuthenticationResponseJSON> }` requires user verification and returns `{ token, user, passkeySession }`. The web stores `passkeySession` under `hapi_passkey_session::<baseUrl>` instead of an access token, then refreshes with `POST /api/auth { "passkeySession": "..." }`.
+- **Revocation.** Rotating `CLI_API_TOKEN` invalidates every passkey and passkey session registered under the old token (`GET /api/passkeys` reports `valid: false`). Deleting a passkey (`DELETE /api/passkeys/:id`) revokes its sessions immediately.
+
+## Native passkeys {#passkeys-native}
+
+Source of truth: `hub/src/web/routes/passkey.ts` (`nativePasskeyConfigFromEnv`), `website/public/.well-known/`.
+
+iOS entitlements and Android asset links are fixed at build time, so they cannot follow a self-hosted hub's domain. The official apps therefore use one shared RP ID, **`hapi.run`**:
+
+- `https://hapi.run/.well-known/apple-app-site-association` lists `webcredentials` for `XJB862F92W.run.hapi.app`. The iOS/macOS app declares `webcredentials:hapi.run` in its Associated Domains entitlement.
+- `https://hapi.run/.well-known/assetlinks.json` grants `delegate_permission/common.get_login_creds` to `run.hapi.companion` with its signing-certificate SHA-256.
+- Every hub accepts assertions for `hapi.run` only from exact app origins:
+  - iOS/macOS (AuthenticationServices): `https://hapi.run`.
+  - Android (Credential Manager): `android:apk-key-hash:<base64url SHA-256 of the signing cert>`. Official hashes live in `OFFICIAL_ANDROID_PASSKEY_ORIGINS`.
+  - `HAPI_PASSKEY_NATIVE_ORIGINS` (comma-separated) adds origins, e.g. for debug builds. `HAPI_PASSKEY_NATIVE_RP_ID` changes the RP ID for forks that ship their own apps and domain.
+
+  Pages on other `*.hapi.run` hosts can request `hapi.run` assertions, but the hub rejects their origins.
+
+Client flow (same endpoints as the web; natives send no `Origin` header):
+
+1. **Register** (needs a JWT from the normal access-token exchange): `POST /api/passkey/register/options` with `{ "client": "native" }`. The response is WebAuthn `PublicKeyCredentialCreationOptionsJSON` with `rp.id == "hapi.run"`, a base64url `user.id`, and `user.name` of the form `hapi[:<ns>]@<hub host>` so the system picker can tell hubs apart. Create the credential with the platform API, then `POST /api/passkey/register/verify` with `{ "response": <RegistrationResponseJSON>, "name": "<device name>" }`.
+2. **Sign in** (no JWT): `POST /api/passkey/login/options` with `{ "client": "native" }`. The response is `PublicKeyCredentialRequestOptionsJSON` whose `allowCredentials` lists this hub's valid native passkeys, so the sheet does not offer other hubs' passkeys. `404 {"error":"no_passkeys"}` means none are registered; fall back to the access token. Then `POST /api/passkey/login/verify` with `{ "response": <AuthenticationResponseJSON> }` returns `{ token, user, passkeySession }`.
+3. **Refresh**: store `passkeySession` in secure storage, keyed per hub like the access token. Exchange it with `POST /api/auth { "passkeySession": "..." }` in the normal silent re-auth loop. `401 passkey_session_invalid` is terminal: ask the user to sign in again.
+
+All binary fields are base64url without padding. Registration and sign-in require user verification. Clients should check `rp.id` / `rpId` against their compiled RP ID and refuse a mismatch.
 
 ## Namespaces
 
@@ -164,6 +199,9 @@ All are JSON with an `error` string; none carry a `code` field except Telegram's
 | Middleware, any `/api/*` | `{"error": "Invalid token payload"}` | JWT valid but payload not `{uid, ns}` (foreign/ancient token) |
 | `POST /api/auth` | `{"error": "Invalid access token"}` | Access token wrong or rotated → require re-pairing |
 | `POST /api/auth` (Telegram path) | `{"error": "not_bound"}` | Telegram-only; not reachable with `accessToken` auth |
+| `POST /api/auth` (passkey session) | `{"error": "passkey_session_invalid"}` | Passkey deleted, token rotated, or session expired → sign in again |
+| `POST /api/passkey/login/verify` | `{"error": "passkey_revoked"}` | Passkey registered under a rotated `CLI_API_TOKEN` |
+| `POST /api/passkey/login/verify` | `{"error": "Passkey challenge expired"}` / `"Unknown passkey"` / `"Passkey verification failed"` | Retry the ceremony; do not loop |
 
 The re-auth loop must distinguish the middleware 401s (recoverable via re-exchange) from the `/api/auth` 401 (terminal — do not loop).
 

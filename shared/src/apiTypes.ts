@@ -357,12 +357,54 @@ export const OpencodeLocalSessionSummarySchema = z.object({
     lastUserMessage: z.string().nullable().optional(),
     cwd: z.string().nullable().optional(),
     file: z.string().min(1),
-    modifiedAt: z.number()
+    modifiedAt: z.number(),
+    /** v2 launch hint (D8): the model the session ran with. */
+    model: z.string().nullable().optional()
 })
 
 export const OpencodeLocalSessionWithMessagesSchema = OpencodeLocalSessionSummarySchema.extend({
     messages: z.array(OpencodeImportedMessageSchema)
 })
+
+/**
+ * One importable Claude transcript entry: the native uuid (stable across
+ * session-id rotation), the entry timestamp and the HAPI message content the
+ * live replay path would have sent (user text, or the raw entry as the
+ * 'output' agent payload).
+ */
+export const ClaudeImportedMessageSchema = z.object({
+    uuid: z.string().min(1),
+    createdAt: z.number().optional(),
+    content: z.union([
+        z.object({
+            role: z.literal('user'),
+            content: z.object({ type: z.literal('text'), text: z.string() }),
+            meta: z.object({ sentFrom: z.literal('cli') })
+        }),
+        z.object({
+            role: z.literal('agent'),
+            content: z.object({ type: z.literal('output'), data: z.unknown() }),
+            meta: z.object({ sentFrom: z.literal('cli') })
+        })
+    ])
+})
+
+export const ClaudeLocalSessionSummarySchema = z.object({
+    id: z.string().min(1),
+    title: z.string(),
+    lastUserMessage: z.string().nullable().optional(),
+    cwd: z.string().nullable().optional(),
+    file: z.string().min(1),
+    modifiedAt: z.number(),
+    messageCount: z.number().optional()
+})
+
+export const ClaudeLocalSessionWithMessagesSchema = ClaudeLocalSessionSummarySchema.extend({
+    messages: z.array(ClaudeImportedMessageSchema)
+})
+
+export type ClaudeLocalSessionSummary = z.infer<typeof ClaudeLocalSessionSummarySchema>
+export type ClaudeLocalSessionWithMessages = z.infer<typeof ClaudeLocalSessionWithMessagesSchema>
 
 export const MAX_OPENCODE_SESSION_IMPORTS = 200
 
@@ -937,10 +979,64 @@ export type UsageQuotasResponse = z.infer<typeof UsageQuotasResponseSchema>
 
 export const AuthRequestSchema = z.union([
     z.object({ initData: z.string() }),
-    z.object({ accessToken: z.string() })
+    z.object({ accessToken: z.string() }),
+    // Refresh credential returned by POST /api/passkey/login/verify.
+    z.object({ passkeySession: z.string() })
 ])
 
 export type AuthRequest = z.infer<typeof AuthRequestSchema>
+
+/**
+ * WebAuthn `PublicKeyCredential` serialized with base64url fields
+ * (`RegistrationResponseJSON` / `AuthenticationResponseJSON`). Only the
+ * envelope is validated here; the hub verifies the payload cryptographically.
+ */
+export const PasskeyCredentialResponseSchema = z.object({
+    id: z.string().min(1).max(1024),
+    rawId: z.string().min(1).max(1024),
+    type: z.literal('public-key'),
+    response: z.looseObject({
+        clientDataJSON: z.string().min(1)
+    }),
+    clientExtensionResults: z.record(z.string(), z.unknown()).default({}),
+    // WebAuthn serializes an unknown attachment as null (e.g. Credential Manager).
+    authenticatorAttachment: z.string().nullish()
+})
+
+/**
+ * Body of `POST /api/passkey/{login,register}/options`. Web clients omit it
+ * (the RP is derived from the Origin header); official native apps send
+ * `{ "client": "native" }` to use the hub's fixed native RP ID.
+ */
+export const PasskeyOptionsRequestSchema = z.object({
+    client: z.enum(['web', 'native']).default('web')
+})
+export type PasskeyOptionsRequest = z.infer<typeof PasskeyOptionsRequestSchema>
+
+export const PasskeyRegisterVerifyRequestSchema = z.object({
+    response: PasskeyCredentialResponseSchema,
+    name: z.string().trim().max(64).optional()
+})
+export type PasskeyRegisterVerifyRequest = z.infer<typeof PasskeyRegisterVerifyRequestSchema>
+
+export const PasskeyLoginVerifyRequestSchema = z.object({
+    response: PasskeyCredentialResponseSchema
+})
+export type PasskeyLoginVerifyRequest = z.infer<typeof PasskeyLoginVerifyRequestSchema>
+
+export type PasskeySummary = {
+    id: string
+    name: string | null
+    rpId: string
+    createdAt: number
+    lastUsedAt: number | null
+    /** False once `CLI_API_TOKEN` has been rotated since registration. */
+    valid: boolean
+}
+
+export type PasskeyListResponse = {
+    passkeys: PasskeySummary[]
+}
 
 export type CommandResponse = {
     success: boolean

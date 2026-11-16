@@ -28,9 +28,12 @@ import { planImplementationMessageId, planProposalForItem, planProposalForTurn }
 type RuntimeSettings = NonNullable<Parameters<ApiSessionClient['keepAlive']>[2]>;
 export type RootHost = {
     directory: string; generation: string; endpoint: string; token?: string;
+    attached?: boolean;
+    beforeSubscribe?(threadId: string): Promise<void>;
+    validateHistory?(threadId: string, thread: unknown): Promise<void>;
     settingsFor(threadId: string): Record<string, unknown> | undefined;
     create(method: 'thread/start' | 'thread/fork', params: Record<string, unknown>, parent?: SharedCodexRoot): Promise<SharedCodexRoot>;
-    end(root: SharedCodexRoot, nativeArchive?: boolean): Promise<void>;
+    end(root: SharedCodexRoot, nativeArchive?: boolean, reason?: 'unavailable' | 'history-changed' | 'archived'): Promise<void>;
 };
 const SettingsSchema = z.object({
     permissionMode: z.enum(['default', 'read-only', 'autoReview', 'yolo']).optional(),
@@ -85,6 +88,10 @@ export class SharedCodexRoot {
         this.session = bootstrap.session;
         this.client = new CodexAppServerClient({ endpoint: host.endpoint, token: host.token, cwd: bootstrap.workingDirectory });
         this.client.setNotificationHandler((method, params) => {
+            if (this.host.attached && ['thread/reverted', 'thread/rolledBack'].includes(method)
+                && (record(params).threadId === this.threadId || this.children.has(String(record(params).threadId)))) {
+                this.invalidateHistory(); return;
+            }
             if (method === 'serverRequest/resolved') {
                 this.permissions?.resolved(string(record(params).threadId) ?? '', record(params).requestId); return;
             }
@@ -97,7 +104,7 @@ export class SharedCodexRoot {
                 }
                 if (method === 'turn/completed' && (!this.currentTurn || record(record(params).turn).id === this.currentTurn)) {
                     this.turnRevision++; this.currentTurn = undefined; this.interrupted = record(record(params).turn).status === 'interrupted';
-                    if (record(record(params).turn).status === 'completed') this.session.updateMetadata(metadata => ({ ...metadata,
+                    if (!this.host.attached && record(record(params).turn).status === 'completed') this.session.updateMetadata(metadata => ({ ...metadata,
                         capabilities: { ...metadata.capabilities, conversationHistory: { ...metadata.capabilities?.conversationHistory,
                             forkLatestCompleted: true } } }));
                     this.publishSteering();
@@ -119,12 +126,22 @@ export class SharedCodexRoot {
             }
             const receivedAt = Date.now();
             const modelAtReceipt = record(params).threadId === this.threadId ? this.settings.model ?? undefined : undefined;
-            this.notifications = this.notifications.then(() => this.notification(method, params, modelAtReceipt, receivedAt)).catch(error => logger.debug('[Codex shared] projection', error));
+            this.notifications = this.notifications.then(() => this.notification(method, params, modelAtReceipt, receivedAt)).catch(error => {
+                logger.debug('[Codex shared] projection', error);
+                this.failAttached();
+            });
         });
-        this.client.setTransportAbandonedHandler(() => { void this.reconnect(); });
+        this.client.setTransportAbandonedHandler(() => {
+            if (this.host.attached) {
+                this.stopAccepting();
+                void this.host.end(this, false, 'unavailable').catch(error => logger.debug('[Codex attached] disconnect', error));
+            } else void this.reconnect();
+        });
         this.session.onUserMessage((message, localId) => {
             this.work = this.work.catch(() => {}).then(async () => {
                 await this.bound;
+                if (this.closed || this.stopping) return;
+                if (this.host.attached) await this.refresh();
                 if (this.closed || this.stopping) return;
                 const id = localId ?? randomUUID();
                 const text = formatMessageWithAttachments(message.content.text, message.content.attachments);
@@ -158,7 +175,7 @@ export class SharedCodexRoot {
                     // it only after native revalidation and completed activation.
                     if (wasActivated && this.heartbeat && !this.closed && !this.stopping && this.client.isInitialized()) this.session.emitSessionReady();
                 })
-                .catch(error => logger.debug('[Codex shared] hub resync', error));
+                .catch(error => { logger.debug('[Codex shared] hub resync', error); this.failAttached(); });
         });
     }
 
@@ -180,7 +197,7 @@ export class SharedCodexRoot {
     async prepare(): Promise<void> {
         // Descendants share this bridge. The projection applies successful
         // root title calls so a child cannot rename the parent session.
-        this.bridge = await buildHapiMcpBridge(this.session, { exportSessionEnv: false, emitTitleSummary: false,
+        if (!this.host.attached) this.bridge = await buildHapiMcpBridge(this.session, { exportSessionEnv: false, emitTitleSummary: false,
             skillLookup: { workingDirectory: this.bootstrap.workingDirectory, flavor: 'codex' } });
         await initializeSharedClient(this.client);
         this.asyncQuestions = new SharedCodexAsyncQuestions(this.session, (threadId, text, id) => this.submitQuestionAnswer(threadId, text, id));
@@ -191,6 +208,11 @@ export class SharedCodexRoot {
         if (this.closed || this.stopping) throw new Error('Codex execution is stopping');
         const operation = (async () => {
             const thread = threadId === this.threadId ? undefined : await this.readThread(threadId);
+            if (this.host.attached) {
+                if (thread) await this.host.validateHistory?.(threadId, thread);
+                else await this.refresh();
+                if (this.closed || this.stopping) throw new Error('Codex execution is stopping');
+            }
             const turnId = threadId === this.threadId ? this.currentTurn
                 : string((Array.isArray(thread?.turns) ? thread.turns.map(record) : []).find(turn => turn.status === 'inProgress')?.id);
             const params = { threadId, clientUserMessageId, input: buildUserInputFromMessage(text) };
@@ -200,12 +222,17 @@ export class SharedCodexRoot {
         try { await operation; } finally { this.controls.delete(operation); }
     }
     private async projectHistory(projection: SharedCodexProjection, thread: unknown): Promise<void> {
+        await this.host.validateHistory?.(projection.threadId, thread);
         this.asyncQuestions.history(projection.threadId, thread);
         await projection.history(thread);
     }
     private async receiveRequest(request: { id: string | number; method: string; params: unknown }): Promise<void> {
         await this.bound;
         if (this.closed || this.stopping) return;
+        if (this.host.attached) {
+            try { await this.refresh(); } catch { return; }
+            if (this.closed || this.stopping) return;
+        }
         const threadId = string(record(request.params).threadId);
         // App-server automatically subscribes every initialized connection to
         // newly created threads, including siblings. Never answer their calls.
@@ -228,6 +255,7 @@ export class SharedCodexRoot {
         return false;
     }
     config(params: Record<string, unknown>): Record<string, unknown> {
+        if (this.host.attached) throw new Error('An attached runtime cannot inject native configuration');
         return { ...params, cwd: params.cwd ?? this.bootstrap.workingDirectory,
             developerInstructions: params.developerInstructions ?? getCodexSystemPrompt(), config: {
             ...record(params.config), 'mcp_servers.hapi': this.bridge.mcpServers.hapi,
@@ -250,23 +278,27 @@ export class SharedCodexRoot {
             async () => record(await this.client.request('thread/read', { threadId, includeTurns: false })).thread,
             (threadId, item) => this.asyncQuestions.observeItem(threadId, item));
         this.session.updateMetadata(metadata => ({ ...metadata, codexSessionId: threadId, capabilities: {
-            ...metadata.capabilities, concurrentClients: true, terminal: true,
+            ...metadata.capabilities, concurrentClients: true, terminal: !this.host.attached,
             // In-place rewind needs a native + hub commit barrier. Do not
             // advertise a destructive operation we cannot make atomic yet.
-            conversationHistory: { forkCurrent: true, forkAtMessage: true, forkLatestCompleted: false, rewindToMessage: false }
+            conversationHistory: { forkCurrent: !this.host.attached, forkAtMessage: !this.host.attached, forkLatestCompleted: false, rewindToMessage: false }
         } }));
         this.session.updateAgentState(state => ({ ...state, controlledByUser: false, startingMode: undefined, codexPlanProposalId: null, codexCompactionPendingMessageIds: [], requests: {},
             completedRequests: { ...state.completedRequests, ...Object.fromEntries(Object.entries(state.requests ?? {}).map(([id, request]) =>
                 [id, { ...request, completedAt: Date.now(), status: 'canceled' as const }])) }
         }));
         // 空会话的首次订阅保留完整响应，以兼容原生历史源文件的初始化。
-        if (subscribe) response = record(await this.client.request('thread/resume', { threadId }));
+        if (subscribe) {
+            await this.host.beforeSubscribe?.(threadId);
+            response = record(await this.client.request('thread/resume', { threadId }));
+        }
         this.acceptSettings(response); this.acceptSettings(this.host.settingsFor(threadId) ?? {});
-        await this.projectHistory(this.projection, response.thread); await this.refresh(); await this.refreshChildren(true);
+        if (!this.host.attached) await this.projectHistory(this.projection, response.thread);
+        await this.refresh(); await this.refreshChildren(true);
     }
     async activate(options: SharedLaunchOptions = {}): Promise<void> {
         // Restored input cannot run before the cold-resume settings are applied.
-        await this.initialSettings(options);
+        if (!this.host.attached) await this.initialSettings(options);
         if (this.stopping) throw new Error('Codex execution is stopping');
         this.registerControls(); this.ready();
         this.heartbeat = setInterval(() => this.alive(), 2_000); this.alive(); this.session.emitSessionReady();
@@ -322,13 +354,17 @@ export class SharedCodexRoot {
         this.publishPlan();
     }
     private async notification(method: string, params: unknown, modelAtReceipt?: string, receivedAt = Date.now()): Promise<void> {
-        if (!this.threadId || this.closed) return;
+        // Native broadcasts can arrive while bind() is loading the local
+        // ledger, before a projection exists. bind's full read reconciles them.
+        if (!this.threadId || !this.projection || this.closed || this.host.attached && this.stopping) return;
         const p = record(params);
         if (method === 'thread/started') {
             const thread = record(p.thread); const id = string(thread.id);
             if (id) this.ancestry.set(id, string(thread.parentThreadId) ?? null);
         }
         const eventThread = string(p.threadId) ?? string(record(p.thread).id);
+        if (this.host.attached && ['thread/reverted', 'thread/rolledBack'].includes(method)
+            && eventThread && await this.ownsThread(eventThread)) { this.invalidateHistory(); return; }
         if (eventThread && eventThread !== this.threadId) {
             if (!await this.ownsThread(eventThread)) return;
             let projection = this.children.get(eventThread);
@@ -338,13 +374,19 @@ export class SharedCodexRoot {
                     (threadId, item) => this.asyncQuestions.observeItem(threadId, item));
                 this.children.set(eventThread, projection);
             }
+            if (this.host.attached && ['turn/started', 'turn/completed'].includes(method)) {
+                await this.projectHistory(projection, await this.readThread(eventThread));
+            }
             await projection.notification(method, params); return;
         }
         if (method === 'turn/completed') this.session.sendSessionEvent({ type: 'ready' });
         if (method === 'thread/name/updated' && (typeof p.threadName === 'string' || p.threadName === null)) {
             const name = p.threadName ?? undefined; this.session.updateMetadata(metadata => ({ ...metadata, name }));
         }
-        if (method === 'thread/archived') { await this.host.end(this, false); return; }
+        if (method === 'thread/archived') { await this.host.end(this, false, 'archived'); return; }
+        if (this.host.attached && ['thread/closed', 'thread/deleted'].includes(method)) {
+            this.stopAccepting(); await this.host.end(this, false, 'unavailable'); return;
+        }
         // Process these in notification order: queue removal can precede turn/started.
         // Older unknown input must not acquire a later turn's compaction status.
         if (method === 'turn/started') {
@@ -363,9 +405,25 @@ export class SharedCodexRoot {
         if (method === 'thread/queue/changed') {
             for (const id of await this.queue.reconcile()) this.dequeuedInputs.add(id);
         }
-        await this.projection.notification(method, params, modelAtReceipt, receivedAt); this.publishCompaction(); this.alive();
+        if (this.host.attached && method === 'turn/started' && !this.stopping) await this.refresh();
+        await this.projection.notification(method, params, modelAtReceipt, receivedAt);
+        if (this.host.attached && method === 'turn/completed' && !this.stopping) await this.refresh();
+        this.publishCompaction(); this.alive();
+    }
+    private invalidateHistory(): void {
+        this.stopAccepting();
+        this.session.updateMetadata(metadata => ({ ...metadata, conversationHistoryDiverged: true,
+            codexRuntime: { kind: 'attached', bindingId: metadata.codexRuntime?.bindingId ?? this.session.sessionId, state: 'history-changed' } }));
+        this.notice('Native history changed outside HAPI. This view is frozen; use hapi attach --new-view for a fresh projection.');
+        void this.host.end(this, false, 'history-changed').catch(error => logger.debug('[Codex attached] history change', error));
+    }
+    private failAttached(): void {
+        if (!this.host.attached || this.stopping) return;
+        this.stopAccepting();
+        void this.host.end(this, false, 'unavailable').catch(error => logger.debug('[Codex attached] validation failed', error));
     }
     private lazyHistory(): boolean {
+        if (this.host.attached) return false;
         return !!this.threadId && (process.env.HAPI_CODEX_LAZY_HISTORY_IDS ?? '')
             .split(',').map(id => id.trim()).includes(this.threadId);
     }
@@ -392,7 +450,8 @@ export class SharedCodexRoot {
         return thread;
     }
     refresh(): Promise<void> {
-        return this.refreshing ??= this.refreshNow().finally(() => { this.refreshing = undefined; });
+        return this.refreshing ??= this.refreshNow().catch(error => { this.failAttached(); throw error; })
+            .finally(() => { this.refreshing = undefined; });
     }
     private async refreshNow(): Promise<void> {
         if (!this.threadId || this.closed || !this.client.isInitialized()) return;
@@ -406,8 +465,8 @@ export class SharedCodexRoot {
             const id = string(last?.id);
             this.latestTurn = id && last ? { id, status: string(last.status) ?? 'unknown', planId: planProposalForTurn(this.threadId, last) } : undefined;
         }
-        const canForkLatest = turns.some(turn => turn.status === 'completed')
-            || (this.lazyHistory() && this.session.getMetadata()?.capabilities?.conversationHistory?.forkLatestCompleted === true);
+        const canForkLatest = !this.host.attached && (turns.some(turn => turn.status === 'completed')
+            || (this.lazyHistory() && this.session.getMetadata()?.capabilities?.conversationHistory?.forkLatestCompleted === true));
         // Starting a later turn does not invalidate completed-history evidence.
         // Only a stale demotion must defer to newer completion notifications.
         if ((canForkLatest || revision === this.turnRevision)
@@ -445,11 +504,17 @@ export class SharedCodexRoot {
         for (const [id, projection] of this.children) {
             // Replaying a completed/unloaded child must not start its engine.
             try {
-                if (subscribe && loaded.has(id)) await this.client.request('thread/resume', { threadId: id, excludeTurns: true });
+                if (subscribe && loaded.has(id)) {
+                    await this.host.beforeSubscribe?.(id);
+                    await this.client.request('thread/resume', { threadId: id, excludeTurns: true });
+                }
                 if (replayHistory) {
                     projection.reset(); await this.projectHistory(projection, await this.readThread(id));
                 }
-            } catch (error) { logger.debug('[Codex shared] child history unavailable', { id, error }); }
+            } catch (error) {
+                if (this.host.attached) throw error;
+                logger.debug('[Codex shared] child history unavailable', { id, error });
+            }
         }
     }
     nativeQueueDeleted(nativeId: string): Promise<void> { return this.queue.deleted(nativeId); }
@@ -565,6 +630,13 @@ export class SharedCodexRoot {
         const rpc = { registerHandler: (method: string, handler: (raw: unknown) => Promise<unknown>) => {
             this.session.rpcHandlerManager.registerHandler(method, async (raw: unknown) => {
                 if (this.stopping) throw new Error('Codex execution is stopping; resume when inactive');
+                if (this.host.attached && ([RPC_METHODS.ClearConversation, RPC_METHODS.ForkConversation, RPC_METHODS.RewindConversation] as string[]).includes(method)) {
+                    throw new Error('Create/fork/revert this external thread in its owning desktop; HAPI only attaches');
+                }
+                if (this.host.attached && method !== RPC_METHODS.KillSession) {
+                    await this.refresh();
+                    if (this.stopping) throw new Error('Codex execution is stopping');
+                }
                 const pending = handler(raw); this.controls.add(pending);
                 try { return await pending; } finally { this.controls.delete(pending); }
             });
@@ -676,6 +748,7 @@ export class SharedCodexRoot {
     }
     private notice(message: string): void { this.session.sendSessionEvent({ type: 'message', message }); }
     private async newConversation(): Promise<SharedCodexRoot> {
+        if (this.host.attached) throw new Error('Create new conversations in the owning desktop, then attach them explicitly');
         const child = await this.host.create('thread/start', this.freshParams());
         await child.initialSettings({ collaborationMode: this.settings.collaborationMode }); return child;
     }
@@ -685,7 +758,8 @@ export class SharedCodexRoot {
             const child = await this.newConversation(); this.notice(`New conversation: /sessions/${child.session.sessionId}`); return null;
         }
         if (command === '/compact') { await this.client.request('thread/compact/start', { threadId: this.threadId }); return null; }
-        if (command === '/exit') { this.notice('/exit closes a native terminal, not this Web view. Use End session to archive this conversation.'); return null; }
+        if (command === '/exit') { this.notice(this.host.attached ? 'Use hapi detach to disconnect HAPI without stopping the external thread.'
+            : '/exit closes a native terminal, not this Web view. Use End session to archive this conversation.'); return null; }
         if (!command.startsWith('/')) return text;
         const slash = resolveCodexSlashCommand(text, { commands: await listSlashCommands('codex', this.bootstrap.workingDirectory),
             permissionMode: this.settings.permissionMode === 'yolo' || this.settings.permissionMode === 'read-only' || this.settings.permissionMode === 'autoReview' ? this.settings.permissionMode : 'default',
@@ -729,7 +803,9 @@ export class SharedCodexRoot {
         return this.closing ??= (async () => {
             this.stopAccepting(); this.closed = true; clearInterval(this.heartbeat);
             this.permissions?.close(); this.asyncQuestions?.close();
-            await this.client.disconnect(); await this.notifications; await this.queue?.flush(); this.bridge?.server.stop();
+            await this.client.disconnect();
+            if (this.host.attached) { await this.work.catch(() => {}); await Promise.allSettled([...this.controls]); }
+            await this.notifications; await this.queue?.flush(); this.bridge?.server.stop();
             if (archived) this.session.updateMetadata(metadata => ({ ...metadata, lifecycleState: 'archived', lifecycleStateSince: Date.now() }));
             // Inactive is resumable; uploads referenced by pending input must survive.
             this.session.sendSessionDeath(undefined, { preserveUploads: !archived });

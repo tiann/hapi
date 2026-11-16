@@ -91,7 +91,7 @@ function AppInner() {
         clearUserCaches(nextIdentity)
         setIdentityEpoch((epoch) => epoch + 1)
     }, [clearUserCaches])
-    const { authSource, isLoading: isAuthSourceLoading, setAccessToken } = useAuthSource(baseUrl)
+    const { authSource, isLoading: isAuthSourceLoading, setAccessToken, setPasskeySession } = useAuthSource(baseUrl)
     const { token, api, isLoading: isAuthLoading, error: authError, needsBinding, bind, retry: retryAuth } = useAuth(authSource, baseUrl, {
         onIdentityChange: handleIdentityChange
     })
@@ -509,6 +509,7 @@ function AppInner() {
         return withPwaBanner(
             <LoginPrompt
                 onLogin={setAccessToken}
+                onPasskeyLogin={setPasskeySession}
                 baseUrl={baseUrl}
                 serverUrl={serverUrl}
                 setServerUrl={setServerUrl}
@@ -561,11 +562,12 @@ function AppInner() {
             )
         }
 
-        // If using access token and auth failed, show login again
-        if (authSource.type === 'accessToken') {
+        // If using an access token or passkey and auth failed, show login again
+        if (authSource.type === 'accessToken' || authSource.type === 'passkey') {
             return withPwaBanner(
                 <LoginPrompt
                     onLogin={setAccessToken}
+                    onPasskeyLogin={setPasskeySession}
                     baseUrl={baseUrl}
                     serverUrl={serverUrl}
                     setServerUrl={setServerUrl}

@@ -4248,6 +4248,81 @@ describe('session model', () => {
             store.close()
         })
 
+        for (const [flavor, field] of [['codex', 'codexSessionId'], ['claude', 'claudeSessionId']] as const) {
+            it(`does not merge the same ${flavor} session id across different machines`, async () => {
+                const store = new Store(':memory:')
+                const events: SyncEvent[] = []
+                const cache = new SessionCache(store, createPublisher(events))
+                const s1 = cache.getOrCreateSession(
+                    `${flavor}-tag-1`,
+                    { path: '/tmp/project', host: 'one', machineId: 'machine-1', flavor, [field]: 'native-id' },
+                    null,
+                    'default'
+                )
+                const s2 = cache.getOrCreateSession(
+                    `${flavor}-tag-2`,
+                    { path: '/tmp/project', host: 'two', machineId: 'machine-2', flavor, [field]: 'native-id' },
+                    null,
+                    'default'
+                )
+
+                await cache.deduplicateByAgentSessionId(s2.id)
+
+                expect(cache.getSession(s1.id)).toBeDefined()
+                expect(cache.getSession(s2.id)).toBeDefined()
+                store.close()
+            })
+
+            it(`still merges the same ${flavor} session id when one side has no machine`, async () => {
+                const store = new Store(':memory:')
+                const events: SyncEvent[] = []
+                const cache = new SessionCache(store, createPublisher(events))
+                const s1 = cache.getOrCreateSession(
+                    `${flavor}-tag-1`,
+                    { path: '/tmp/project', host: 'one', flavor, [field]: 'native-id' },
+                    null,
+                    'default'
+                )
+                const s2 = cache.getOrCreateSession(
+                    `${flavor}-tag-2`,
+                    { path: '/tmp/project', host: 'two', machineId: 'machine-2', flavor, [field]: 'native-id' },
+                    null,
+                    'default'
+                )
+
+                await cache.deduplicateByAgentSessionId(s2.id)
+
+                expect([cache.getSession(s1.id), cache.getSession(s2.id)].filter(Boolean)).toHaveLength(1)
+                store.close()
+            })
+
+            it(`runs a ${flavor} dedup triggered on another machine while one pass is in flight`, async () => {
+                const store = new Store(':memory:')
+                const events: SyncEvent[] = []
+                const cache = new SessionCache(store, createPublisher(events))
+                const create = (tag: string, machineId: string) => cache.getOrCreateSession(
+                    tag,
+                    { path: '/tmp/project', host: machineId, machineId, flavor, [field]: 'native-id' },
+                    null,
+                    'default'
+                )
+                const a1 = create(`${flavor}-a1`, 'machine-a')
+                const a2 = create(`${flavor}-a2`, 'machine-a')
+                const b1 = create(`${flavor}-b1`, 'machine-b')
+                const b2 = create(`${flavor}-b2`, 'machine-b')
+
+                // Machine A's pass is still merging when machine B's trigger
+                // arrives; the follow-up pass must cover machine B's pair.
+                const first = cache.deduplicateByAgentSessionId(a2.id)
+                const second = cache.deduplicateByAgentSessionId(b2.id)
+                await Promise.all([first, second])
+
+                expect([cache.getSession(a1.id), cache.getSession(a2.id)].filter(Boolean)).toHaveLength(1)
+                expect([cache.getSession(b1.id), cache.getSession(b2.id)].filter(Boolean)).toHaveLength(1)
+                store.close()
+            })
+        }
+
         it('does not merge across namespaces', async () => {
             const store = new Store(':memory:')
             const events: SyncEvent[] = []

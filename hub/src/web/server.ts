@@ -16,6 +16,12 @@ import type { SyncEngine } from '../sync/syncEngine'
 import { createAuthMiddleware, type WebAppEnv } from './middleware/auth'
 import { createAuthRoutes } from './routes/auth'
 import { createBindRoutes } from './routes/bind'
+import {
+    createPasskeyLoginRoutes,
+    createPasskeyManagementRoutes,
+    nativePasskeyConfigFromEnv,
+    PasskeyChallengeStore
+} from './routes/passkey'
 import { createEventsRoutes } from './routes/events'
 import { createSessionsRoutes } from './routes/sessions'
 import { createMessagesRoutes } from './routes/messages'
@@ -27,8 +33,8 @@ import { createActivityRoutes } from './routes/activity'
 import { createGitRoutes } from './routes/git'
 import { createCliRoutes } from './routes/cli'
 import { createCodexDesktopRoutes } from './routes/codexDesktop'
-import { createPiSessionRoutes } from './routes/piSessions'
-import { createOpencodeSessionRoutes } from './routes/opencodeSessions'
+import { createLocalSessionRoutes } from './routes/localSessions/createLocalSessionRoutes'
+import { PI_LOCAL_SESSION_SOURCE, OPENCODE_LOCAL_SESSION_SOURCE, CLAUDE_LOCAL_SESSION_SOURCE } from './routes/localSessions/sources'
 import { createPushRoutes } from './routes/push'
 import { createDevicesRoutes } from './routes/devices'
 import { createVoiceRoutes } from './routes/voice'
@@ -320,8 +326,17 @@ function createWebApp(options: {
 
     app.route('/api', createAuthRoutes(options.jwtSecret, options.store))
     app.route('/api', createBindRoutes(options.jwtSecret, options.store))
+    const passkeyDeps = {
+        jwtSecret: options.jwtSecret,
+        store: options.store,
+        corsOrigins: () => corsOrigins,
+        challenges: new PasskeyChallengeStore(),
+        native: nativePasskeyConfigFromEnv()
+    }
+    app.route('/api', createPasskeyLoginRoutes(passkeyDeps))
 
     app.use('/api/*', createAuthMiddleware(options.jwtSecret))
+    app.route('/api', createPasskeyManagementRoutes(passkeyDeps))
     app.route('/api', createEventsRoutes(options.getSseManager, options.getSyncEngine, options.getVisibilityTracker))
     app.route('/api', createSessionsRoutes(options.getSyncEngine))
     app.route('/api', createMessagesRoutes(options.getSyncEngine))
@@ -337,13 +352,14 @@ function createWebApp(options: {
         store: options.store,
         getSyncEngine: options.getSyncEngine
     }))
-    app.route('/api', createPiSessionRoutes({
+    // Local-session import registry: one generic route pair per mounted source
+    // (Pi, OpenCode, Claude); the generic importer owns target matching,
+    // atomic persistence and launch config. Codex stays on its desktop route
+    // to keep the sidecar capabilities and the Codex wire schema separate.
+    app.route('/api', createLocalSessionRoutes({
         store: options.store,
-        getSyncEngine: options.getSyncEngine
-    }))
-    app.route('/api', createOpencodeSessionRoutes({
-        store: options.store,
-        getSyncEngine: options.getSyncEngine
+        getSyncEngine: options.getSyncEngine,
+        sources: [PI_LOCAL_SESSION_SOURCE, OPENCODE_LOCAL_SESSION_SOURCE, CLAUDE_LOCAL_SESSION_SOURCE]
     }))
     app.route('/api', createPushRoutes(options.store, options.vapidPublicKey))
     app.route('/api', createDevicesRoutes(options.store))

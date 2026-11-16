@@ -1,7 +1,7 @@
 import { claudeLocal } from "./claudeLocal";
 import { Session } from "./session";
 import { createSessionScanner } from "./utils/sessionScanner";
-import { isClaudeChatVisibleMessage } from "./utils/chatVisibility";
+import { isImportableClaudeEntry } from "./utils/transcriptEntry";
 import { BaseLocalLauncher } from "@/modules/common/launcher/BaseLocalLauncher";
 import { applySessionTitleFallback } from './utils/sessionTitleFallback';
 import { resolveClaudeLaunchModel } from './utils/claudeSettings';
@@ -56,14 +56,10 @@ export async function claudeLocalLauncher(session: Session): Promise<'switch' | 
                 applySessionTitleFallback(session.client, message.summary)
                 return
             }
-            // Filter out internal meta messages (e.g. skill injections) and
-            // compact summaries to avoid them appearing in the web UI
-            if (message.isMeta || message.isCompactSummary) {
-                return
-            }
-            // Filter out invisible system messages (e.g. init, stop_hook_summary)
-            // to avoid them showing as raw JSON in the web UI
-            if (!isClaudeChatVisibleMessage(message)) {
+            // Filter out internal meta messages (e.g. skill injections), compact
+            // summaries, and invisible system messages (e.g. init,
+            // stop_hook_summary) to avoid them appearing in the web UI
+            if (!isImportableClaudeEntry(message)) {
                 return
             }
             stampContextWindow(message, session.localContextModel)

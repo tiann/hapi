@@ -7,10 +7,14 @@ export type AuthSource =
     | { type: 'telegram'; initData: string }
     | { type: 'accessToken'; token: string }
     | { type: 'cloudflareAccess' }
+    | { type: 'passkey'; session: string }
 
 async function authenticateWith(client: ApiClient, source: AuthSource): Promise<AuthResponse> {
     if (source.type === 'cloudflareAccess') {
         return await client.authenticateWithCloudflare()
+    }
+    if (source.type === 'passkey') {
+        return await client.authenticate({ passkeySession: source.session })
     }
     if (source.type === 'telegram') {
         return await client.authenticate({ initData: source.initData })

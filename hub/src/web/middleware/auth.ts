@@ -25,7 +25,12 @@ export function createAuthMiddleware(
 ): MiddlewareHandler<WebAppEnv> {
     return async (c, next) => {
         const path = c.req.path
-        if (path === '/api/auth' || path === '/api/bind') {
+        if (
+            path === '/api/auth'
+            || path === '/api/bind'
+            || path === '/api/passkey/login/options'
+            || path === '/api/passkey/login/verify'
+        ) {
             await next()
             return
         }
