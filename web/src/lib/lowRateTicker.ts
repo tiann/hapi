@@ -27,31 +27,30 @@ const listeners = new Set<LowRateTickListener>()
 let timer: TimerHandle | null = null
 let frame = 0
 let visibilityBound = false
+/**
+ * The one list this ticker subscribed to, held for as long as it has
+ * subscribers. `matchMedia` returns a distinct object per call, so the object
+ * we attached the `change` listener to is the only one that can notify us:
+ * re-reading `window.matchMedia(...)` and comparing identities would replace
+ * our list with an unbound one and silently drop the preference updates
+ * (reduced motion turning on or off while the page stays open).
+ */
 let mediaQuery: MediaQueryList | null = null
 let mediaQueryBound = false
 
-/**
- * The cached list is revalidated against `window.matchMedia` each call: a stale
- * list (test stubs, HMR, or a re-created window) would otherwise report the old
- * preference forever while its `change` listener still points at the old object.
- */
 function getReducedMotionQuery(): MediaQueryList | null {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
         return null
     }
-    const current = window.matchMedia(REDUCED_MOTION_QUERY)
-    if (mediaQuery !== current) {
-        if (mediaQueryBound && mediaQuery) {
-            unbindListener(mediaQuery)
-            mediaQueryBound = false
-        }
-        mediaQuery = current
+    if (!mediaQuery) {
+        mediaQuery = window.matchMedia(REDUCED_MOTION_QUERY)
     }
     return mediaQuery
 }
 
 function prefersReducedMotion(): boolean {
-    return getReducedMotionQuery()?.matches === true
+    // Read `matches` live: the cached list reflects the current preference.
+    return mediaQuery?.matches === true
 }
 
 function documentIsHidden(): boolean {
@@ -124,11 +123,21 @@ function unbindReducedMotion(): void {
     mediaQueryBound = false
 }
 
+/**
+ * Release everything the stopped ticker held. Dropping the cached list makes
+ * the next subscriber bind a fresh one — the old object may belong to a
+ * previous `window`, and its listeners must not outlive the subscription.
+ */
+function releaseReducedMotion(): void {
+    unbindReducedMotion()
+    mediaQuery = null
+}
+
 function sync(): void {
     if (listeners.size === 0) {
         stopTimer()
         unbindVisibility()
-        unbindReducedMotion()
+        releaseReducedMotion()
         return
     }
     if (prefersReducedMotion() || documentIsHidden()) {
@@ -166,6 +175,13 @@ export function lowRateTickerStatus(): LowRateTickerStatus {
  * the last one clears it, so an idle page runs no timer at all.
  */
 export function subscribeLowRateTicker(listener: LowRateTickListener): () => void {
+    // The counter is shared, so a fresh subscriber must not inherit the phase
+    // of a finished interval: without this, an indicator's first tick would
+    // depend on how many ticks subscribers before it happened to consume, and
+    // every indicator in a list would start on the same frame.
+    if (listeners.size === 0) {
+        frame = 0
+    }
     listeners.add(listener)
     bindVisibility()
     bindReducedMotion()

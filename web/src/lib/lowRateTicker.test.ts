@@ -19,11 +19,17 @@ function setVisibilityState(state: DocumentVisibilityState): void {
     })
 }
 
-/** matchMedia stub whose `matches` can be flipped and whose listeners fire. */
+/**
+ * matchMedia stub whose `matches` can be flipped and whose listeners fire.
+ *
+ * `matchMedia` hands out a fresh object per call, exactly like the browser.
+ * Real MediaQueryList objects are not identity-stable, so a stub that reuses
+ * one object hides bugs where a stale list is cached or its listener removed.
+ */
 function installMatchMedia(initialMatches: boolean) {
     const listeners = new Set<() => void>()
     let matches = initialMatches
-    const query = {
+    const createQuery = (): MediaQueryList => ({
         get matches() { return matches },
         media: '(prefers-reduced-motion: reduce)',
         onchange: null,
@@ -32,11 +38,11 @@ function installMatchMedia(initialMatches: boolean) {
         addListener: (listener: () => void) => { listeners.add(listener) },
         removeListener: (listener: () => void) => { listeners.delete(listener) },
         dispatchEvent: () => false,
-    }
+    }) as unknown as MediaQueryList
     Object.defineProperty(window, 'matchMedia', {
         configurable: true,
         writable: true,
-        value: () => query,
+        value: () => createQuery(),
     })
     return {
         setMatches(next: boolean) {
@@ -143,6 +149,39 @@ describe('lowRateTicker', () => {
         expect(lowRateTickerIsRunning()).toBe(true)
         vi.advanceTimersByTime(LOW_RATE_TICK_MS)
         expect(listener).toHaveBeenCalledTimes(1)
+
+        unsubscribe()
+        // The shared listener is bound once per subscription and released with it,
+        // even though every `matchMedia` call returns a different object.
+        expect(media.listenerCount()).toBe(0)
+    })
+
+    it('keeps its change listener attached when matchMedia returns a fresh object per call', () => {
+        const media = installMatchMedia(false)
+        const listener = vi.fn()
+        const unsubscribe = subscribeLowRateTicker(listener)
+
+        expect(media.listenerCount()).toBe(1)
+        vi.advanceTimersByTime(LOW_RATE_TICK_MS)
+        expect(listener).toHaveBeenCalledTimes(1)
+
+        // The preference turns on while subscribed and the browser notifies the
+        // list it handed to us: the ticker must stop and the indicator go static.
+        media.setMatches(true)
+        expect(lowRateTickerIsRunning()).toBe(false)
+        expect(lowRateTickerStatus()).toBe('reduced-motion')
+
+        vi.advanceTimersByTime(LOW_RATE_TICK_MS * 10)
+        expect(listener).toHaveBeenCalledTimes(1)
+
+        // ... and resume once the preference is disabled again.
+        media.setMatches(false)
+        expect(lowRateTickerIsRunning()).toBe(true)
+        vi.advanceTimersByTime(LOW_RATE_TICK_MS)
+        expect(listener).toHaveBeenCalledTimes(2)
+
+        // Exactly one listener, registered on the list we keep for our lifetime.
+        expect(media.listenerCount()).toBe(1)
 
         unsubscribe()
         expect(media.listenerCount()).toBe(0)
