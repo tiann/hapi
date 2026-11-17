@@ -707,12 +707,6 @@ describe('stripNotifySummaryFooter', () => {
         expect(stripNotifySummaryFooter('Done.\nAGENT_NOTIFY_SUMMARY not-json')).toBe('Done.')
     })
 
-    test('keeps glued prose when stripping a near-miss footer', () => {
-        expect(stripNotifySummaryFooter('Ownership session pinged.AGENT_NOTIFY_SUMMARY {"summary":')).toBe(
-            'Ownership session pinged.'
-        )
-    })
-
     test('strips a half-streamed footer as it is being written', () => {
         expect(stripNotifySummaryFooter('Working.\nAGENT_NOTIFY_SUMMARY {"ver')).toBe('Working.')
     })
@@ -760,26 +754,31 @@ describe('stripNotifySummaryFooter', () => {
         expect(stripNotifySummaryFooter(tripled)).toBe(tripled)
     })
 
-    test('still strips a genuine glued footer after an earlier inline-code span', () => {
-        expect(stripNotifySummaryFooter('Ran `bun test`.AGENT_NOTIFY_SUMMARY {"status":')).toBe('Ran `bun test`.')
-        expect(stripNotifySummaryFooter('Ran ``bun test``.AGENT_NOTIFY_SUMMARY {"status":')).toBe('Ran ``bun test``.')
+    test('keeps a near-miss footer that shares its line with prose', () => {
+        // A partial payload has no object end to measure, so the only signal
+        // left is that the line opens with prose - and prose is the thing we
+        // must not delete. The status is lost either way; this decides only
+        // whether one odd line stays on screen.
+        const quotedPartial = 'Use `AGENT_NOTIFY_SUMMARY {"summary":` to reproduce the failure.'
+        const quotedNonObject = 'Use `AGENT_NOTIFY_SUMMARY not-json` to reproduce the failure.'
+        const quotedGluedPartial = 'It wrote "Done.AGENT_NOTIFY_SUMMARY {"summary":" and stopped.'
+        const gluedTruncation = 'Ownership session pinged.AGENT_NOTIFY_SUMMARY {"summary":'
+        expect(stripNotifySummaryFooter(quotedPartial)).toBe(quotedPartial)
+        expect(stripNotifySummaryFooter(quotedNonObject)).toBe(quotedNonObject)
+        expect(stripNotifySummaryFooter(quotedGluedPartial)).toBe(quotedGluedPartial)
+        expect(stripNotifySummaryFooter(gluedTruncation)).toBe(gluedTruncation)
     })
 
-    test('treats an unclosed backtick run as literal text, not an open span', () => {
-        // Markdown renders an unmatched run literally; a stray tick in prose
-        // must not grant a truncated footer immunity.
-        expect(stripNotifySummaryFooter('Ran `bun test.AGENT_NOTIFY_SUMMARY {"status":')).toBe('Ran `bun test.')
+    test('still strips a near miss that owns its line, indented or not', () => {
+        expect(stripNotifySummaryFooter('Done.\nAGENT_NOTIFY_SUMMARY {"summary":')).toBe('Done.')
+        expect(stripNotifySummaryFooter('Done.\n    AGENT_NOTIFY_SUMMARY {"summary":')).toBe('Done.')
+        expect(stripNotifySummaryFooter('Done.\nAGENT_NOTIFY_SUMMARY not-json')).toBe('Done.')
     })
 
-    test('still strips a genuine glued footer after closed quotes and brackets', () => {
-        expect(stripNotifySummaryFooter('He said "hello".AGENT_NOTIFY_SUMMARY {"status":')).toBe('He said "hello".')
-        expect(stripNotifySummaryFooter('Ran it (twice).AGENT_NOTIFY_SUMMARY {"status":')).toBe('Ran it (twice).')
-    })
-
-    test('does not read an in-word apostrophe as an open quote', () => {
-        // Parity on every `'` would make `didn't` hide a real footer.
-        expect(stripNotifySummaryFooter(`I didn't finish.AGENT_NOTIFY_SUMMARY {"status":`)).toBe("I didn't finish.")
-        expect(stripNotifySummaryFooter(`The agent's turn.AGENT_NOTIFY_SUMMARY {"status":`)).toBe("The agent's turn.")
+    test('still strips a VALID footer glued to prose - it is its own evidence', () => {
+        expect(stripNotifySummaryFooter('Ownership session pinged.AGENT_NOTIFY_SUMMARY {"summary":"ok"}')).toBe(
+            'Ownership session pinged.'
+        )
     })
 
     test('keeps the bare token with no payload', () => {
@@ -877,6 +876,18 @@ describe('detectNotifySummaryNearMiss', () => {
         expect(detectNotifySummaryNearMiss(`I didn't finish.AGENT_NOTIFY_SUMMARY {"status":`)?.reason).toBe(
             'unterminated-json'
         )
+    })
+
+    test('marks a near miss sharing its line with prose as kept, not removed', () => {
+        const quotedPartial = detectNotifySummaryNearMiss(
+            'Use `AGENT_NOTIFY_SUMMARY {"summary":` to reproduce the failure.'
+        )
+        expect(quotedPartial?.reason).toBe('unterminated-json')
+        expect(quotedPartial?.removedFromDisplay).toBe(false)
+
+        const owned = detectNotifySummaryNearMiss('Done.\nAGENT_NOTIFY_SUMMARY {"summary":')
+        expect(owned?.reason).toBe('unterminated-json')
+        expect(owned?.removedFromDisplay).toBe(true)
     })
 
     test('returns null for a bare token with no payload', () => {

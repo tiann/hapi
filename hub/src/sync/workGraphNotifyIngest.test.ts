@@ -267,8 +267,43 @@ describe('ingestNotifySummaryFromMessage', () => {
         expect(String(warnings[0][0])).toContain('AGENT_NOTIFY_SUMMARY')
         expect(warnings[0][1]).toMatchObject({
             reason: 'unterminated-json',
+            removedFromDisplay: true,
             sessionId: session.id,
             messageId: 'msg-near'
+        })
+    })
+
+    it('reports a kept quoted example as lost status, not as a malformed footer', () => {
+        // The line is correct prose about the contract and stays on screen, so
+        // the log must not call it malformed or claim it was ignored - but the
+        // turn still recorded no status, which is the thing worth finding.
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('sess-example', {}, null, 'default')
+        const warnings: unknown[][] = []
+        const original = console.warn
+        console.warn = (...args: unknown[]) => { warnings.push(args) }
+        try {
+            const result = ingestNotify(
+                store,
+                session.id,
+                'default',
+                assistantOutput('Use `AGENT_NOTIFY_SUMMARY {"status":"done"}` at the end.'),
+                'msg-example'
+            )
+            expect(result).toBeNull()
+        } finally {
+            console.warn = original
+        }
+
+        expect(warnings).toHaveLength(1)
+        const message = String(warnings[0][0])
+        expect(message).toContain('AGENT_NOTIFY_SUMMARY')
+        expect(message).not.toContain('malformed')
+        expect(message).not.toContain('ignored')
+        expect(warnings[0][1]).toMatchObject({
+            reason: 'trailing-content',
+            removedFromDisplay: false,
+            messageId: 'msg-example'
         })
     })
 

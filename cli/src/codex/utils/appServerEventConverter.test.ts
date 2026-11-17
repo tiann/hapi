@@ -43,7 +43,11 @@ describe('AppServerEventConverter', () => {
             `The agent wrote "Done.${footer}" verbatim.`,
             `('Done.${footer}')`,
             `Use \`\`Done.${footer}\`\` at the end.`,
-            `Use \`\`a \` b.${footer}\`\` at the end.`
+            `Use \`\`a \` b.${footer}\`\` at the end.`,
+            // Partial payloads too: no object end to measure, so the line
+            // opening with prose is the only signal left.
+            'Use `AGENT_NOTIFY_SUMMARY {"summary":` to reproduce the failure.',
+            'Use `AGENT_NOTIFY_SUMMARY not-json` to reproduce the failure.'
         ]) {
             expect(converter.handleNotification('item/completed', {
                 item: { id: text, type: 'agentMessage', text, phase: 'commentary' }

@@ -889,6 +889,23 @@ export type NotifySummaryNearMiss = {
      * copying session content into a log.
      */
     payloadLength: number
+    /**
+     * Whether `stripNotifySummaryFooter` removes this line from display. The
+     * two outcomes differ - a truncated footer is deleted, a quoted example is
+     * kept - so a log can say which happened instead of implying both were
+     * discarded. See `strippableNearMissStart` for the rule.
+     */
+    removedFromDisplay: boolean
+}
+
+/**
+ * A near miss is only safe to delete when nothing on the line is prose: the
+ * token owns the line, and its payload runs to end of line. Single source of
+ * the rule, used by display and by any log describing the outcome.
+ */
+function isStrippableNearMiss(line: string, start: number, reason: NotifySummaryNearMissReason): boolean {
+    if (reason === 'trailing-content') return false
+    return line.slice(0, start).trim().length === 0
 }
 
 /** Index just past the `}` closing the JSON object at the start of `text`, or -1. */
@@ -931,7 +948,13 @@ function matchNearMissLine(line: string): NearMissMatch | null {
         const jsonPart = line.slice(start + NOTIFY_SUMMARY_PREFIX.length).trim()
         // A bare token with no payload is prose, not an attempted footer.
         if (jsonPart.length === 0) continue
-        return { start, reason: classifyNearMiss(jsonPart), payloadLength: jsonPart.length }
+        const reason = classifyNearMiss(jsonPart)
+        return {
+            start,
+            reason,
+            payloadLength: jsonPart.length,
+            removedFromDisplay: isStrippableNearMiss(line, start, reason)
+        }
     }
     return null
 }
@@ -954,7 +977,11 @@ export function detectNotifySummaryNearMiss(text: unknown): NotifySummaryNearMis
     const match = matchNearMissLine(last.line)
     if (match === null) return null
 
-    return { reason: match.reason, payloadLength: match.payloadLength }
+    return {
+        reason: match.reason,
+        payloadLength: match.payloadLength,
+        removedFromDisplay: match.removedFromDisplay
+    }
 }
 
 /**
@@ -1003,30 +1030,36 @@ export function splitNotifySummary(text: unknown): NotifySummaryDisplay | null {
 }
 
 /**
- * The near misses that are safe to delete: those whose payload region runs to
- * the end of the line.
+ * The near misses that are safe to delete: those with no prose on the line at
+ * all. Two independent conditions, neither of which names a quote character:
  *
- * Truncation terminates the line by definition - that is what truncation is -
- * so every shape this feature exists to catch lands here, as do payloads that
- * are malformed all the way to end of line (`{bogus}`, `not-json`).
+ *  1. **The payload runs to end of line.** Truncation terminates the line by
+ *     definition, so every shape this feature exists to catch qualifies, as do
+ *     payloads malformed all the way to EOL (`{bogus}`, `not-json`).
+ *     `trailing-content` is the opposite shape - a complete object with text
+ *     after it, which is what a quoted example looks like, because an example
+ *     closes its delimiter *after* the payload and truncation never does.
+ *  2. **The token owns the line.** Nothing but whitespace precedes it. A
+ *     partial payload has no object end to measure, so (1) cannot see the
+ *     quotes around ``Use `AGENT_NOTIFY_SUMMARY {"summary":` to reproduce.``;
+ *     what it can see is that the line opens with prose.
  *
- * `trailing-content` is the opposite shape: a complete JSON object with text
- * after it on the same line. That is what a quoted example looks like -
- * ``Use `AGENT_NOTIFY_SUMMARY {...}` at the end.`` - and no enumeration of
- * quoting syntax is needed to recognise it, because an example always closes
- * its delimiter *after* the payload and a truncated footer never does. Those
- * lines stay visible.
+ * A *valid* footer still tolerates glued prose (`Done.AGENT_NOTIFY_SUMMARY
+ * {…}`), because a payload that parses as an object through end of line is its
+ * own evidence that the line is a real footer. A near miss has no evidence, so
+ * it has to be sure the line is machine output before deleting it.
  *
- * The cost is one odd line on screen when an emitter genuinely does append
- * stray text after a complete object. The status is dropped either way, since
- * the strict matcher rejects that shape too, so the only change is cosmetic.
- * The alternative is deleting a reader's example and the prose around it - and
- * the Codex commentary path strips before storage rather than before display,
- * so that loss is permanent. Showing a strange line beats destroying text.
+ * The cost is one odd line on screen in two cases: an emitter that appends
+ * stray text after a complete object, and a truncated footer glued to prose.
+ * The status is dropped either way - the strict matcher rejects both shapes
+ * too - so that cost is cosmetic. The alternative is deleting a reader's
+ * example and the prose around it, which the Codex commentary path does before
+ * storage rather than before display. Showing a strange line beats destroying
+ * text.
  */
 function strippableNearMissStart(line: string): number | undefined {
     const near = matchNearMissLine(line)
-    if (near === null || near.reason === 'trailing-content') return undefined
+    if (near === null || !near.removedFromDisplay) return undefined
     return near.start
 }
 

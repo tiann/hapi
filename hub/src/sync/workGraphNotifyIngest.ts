@@ -504,6 +504,13 @@ export function buildWorkAdFromNotify(params: {
  * silently costs the turn its status. Say so once at the ingest boundary;
  * otherwise the only detector is a human noticing the status never arrived.
  *
+ * The wording has to hold for every reason. A `trailing-content` line is often
+ * correct prose quoting the contract, which is kept on screen rather than
+ * stripped - calling that "malformed" or "ignored" would read as a dropped
+ * status to anyone grepping for one. What is true in every case is that the
+ * final line recorded no status, so that is what the message says, and
+ * `removedFromDisplay` distinguishes the two outcomes.
+ *
  * Mid-stream snapshots are skipped: a footer that is still being written is
  * incomplete by construction, not malformed.
  */
@@ -513,8 +520,9 @@ function warnOnNotifySummaryNearMiss(input: NotifyIngestInput, plainText: string
     const nearMiss = detectNotifySummaryNearMiss(plainText)
     if (!nearMiss) return
 
-    console.warn('[work-graph] ignored a malformed AGENT_NOTIFY_SUMMARY footer', {
+    console.warn('[work-graph] no AGENT_NOTIFY_SUMMARY status recorded from the final line', {
         reason: nearMiss.reason,
+        removedFromDisplay: nearMiss.removedFromDisplay,
         payloadLength: nearMiss.payloadLength,
         sessionId: input.sessionId,
         messageId: input.messageId
