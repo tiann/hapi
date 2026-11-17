@@ -61,7 +61,10 @@ describe('AcpSdkBackend', () => {
         const transport = {
             onNotification: () => {},
             onStderrError: () => {},
-            onUnexpectedExit: (handler: (error: Error) => void) => handler(new Error('ACP process exited (signal=SIGKILL)')),
+            onUnexpectedExit: (handler: (error: Error, details: { childProcessExited: boolean }) => void) => handler(
+                new Error('ACP process exited (signal=SIGKILL)'),
+                { childProcessExited: true }
+            ),
             registerRequestHandler: () => {}
         };
 

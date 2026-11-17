@@ -146,6 +146,29 @@ describe('AcpStdioTransport agent CLI guard', () => {
         expect(exits[0]?.message).toContain('SIGKILL');
     });
 
+    test('does not confirm a child exit when close reports its guarded PID alive', async () => {
+        guard.describeState.mockReturnValue({
+            lockDir: '/tmp/test-hapi/locks/agent-acp-active',
+            inProcessCount: 1,
+            childPid: 424242,
+            childAlive: true,
+            guardActive: true
+        });
+        const transport = await AcpStdioTransport.create({ command: 'agent', args: ['acp'] });
+        const exits: Array<{ error: Error; childProcessExited: boolean }> = [];
+        transport.onUnexpectedExit((error, details) => exits.push({ error, ...details }));
+
+        for (const handler of spawnState.closeHandlers) {
+            handler(null, 'SIGKILL');
+        }
+
+        expect(exits).toHaveLength(1);
+        expect(exits[0]).toMatchObject({
+            childProcessExited: false,
+            error: expect.objectContaining({ message: expect.stringContaining('OS PID 424242 is still alive') })
+        });
+    });
+
     test('does not report an unexpected exit when HAPI closes the transport', async () => {
         const transport = await AcpStdioTransport.create({ command: 'opencode', args: ['acp'] });
         const exits: Error[] = [];

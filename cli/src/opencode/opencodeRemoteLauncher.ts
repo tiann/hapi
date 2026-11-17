@@ -85,7 +85,7 @@ type OpencodeRemoteLauncherOptions = {
     onClearCleanupComplete?: () => Promise<void>;
     onClearCleanupFailed?: () => Promise<void>;
     /** Internal wrapper hooks that keep Stop/Switch meaningful while a dead ACP child is replaced. */
-    onRecoveryStart?: () => void;
+    onRecoveryStart?: (confirmedChildProcessExit: boolean) => void;
     onRecoveryHandlersCleared?: () => void;
     onRecoveryReady?: () => void;
     onRecoverySwitchRequested?: () => void;
@@ -100,6 +100,8 @@ type OpencodeRemoteLauncherOptions = {
     /** Test seam. Prevent periodic ready-then-die children from resetting forever. */
     recoveryWindowMs?: number;
     recoveryMaxAttemptsPerWindow?: number;
+    /** Test seam. A known-dead child may not keep recovery Switch blocked in teardown. */
+    recoveryCleanupTimeoutMs?: number;
 };
 
 export type AbortStatusDecision = {
@@ -203,6 +205,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private readonly session: OpencodeSession;
     private backend: ReturnType<typeof createOpencodeBackend> | null = null;
     private unexpectedChildExit: Error | null = null;
+    /** True only when this launcher's ChildProcess emitted exit/close, not merely when its transport closed. */
+    private confirmedChildProcessExit = false;
     private startupChildExit: Error | null = null;
     private completedPrompt = false;
     private cleanupFailed = false;
@@ -441,6 +445,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         return this.cleanupFailed;
     }
 
+    public get hasConfirmedChildProcessExit(): boolean {
+        return this.confirmedChildProcessExit;
+    }
+
     protected createDisplay(context: RemoteLauncherDisplayContext): React.ReactElement {
         return React.createElement(OpencodeDisplay, context);
     }
@@ -478,7 +486,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         this.happyServer = server;
     }
 
-    private async awaitRecoveryStartup<T>(operation: () => Promise<T>, disposeLate?: (value: T) => void): Promise<T> {
+    private async awaitRecoveryStartup<T>(operation: () => Promise<T>, disposeLate?: (value?: T) => void): Promise<T> {
         const signal = this.options.isRecoveryAttempt ? this.options.recoverySignal : undefined;
         if (!signal) return await operation();
         if (signal.aborted) this.throwIfRecoverySwitched();
@@ -508,12 +516,43 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     resolve(value);
                 },
                 error => {
-                    if (aborted) return;
+                    if (aborted) {
+                        try {
+                            disposeLate?.();
+                        } catch (disposeError) {
+                            logger.warn('[opencode-remote] late recovery startup resource cleanup failed', disposeError);
+                        }
+                        return;
+                    }
                     finish();
                     reject(error);
                 }
             );
         });
+    }
+
+    private async awaitRecoveryCleanup(operation: Promise<void>, name: string): Promise<void> {
+        const hasConfirmedDeadChild = this.hasConfirmedChildProcessExit;
+        if (!hasConfirmedDeadChild) {
+            await operation;
+            return;
+        }
+        const timeoutMs = this.options.recoveryCleanupTimeoutMs ?? 2_000;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+            await Promise.race([
+                operation,
+                new Promise<void>(resolve => {
+                    timer = setTimeout(() => {
+                        logger.warn(`[opencode-remote] recovery cleanup timed out: ${name}`);
+                        resolve();
+                    }, timeoutMs);
+                    timer.unref?.();
+                })
+            ]);
+        } finally {
+            if (timer) clearTimeout(timer);
+        }
     }
 
     protected async runMainLoop(): Promise<void> {
@@ -528,7 +567,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         const { server: happyServer, mcpServers } = await this.awaitRecoveryStartup(() => buildHapiMcpBridge(session.client, {
             onChangeTitle: () => titleSync.markManualTitle(),
             skillLookup: { workingDirectory: session.path, flavor: 'opencode' }
-        }), bridge => bridge.server.stop());
+        }), bridge => bridge?.server.stop());
         this.ownRecoveryHappyServer(happyServer);
         this.throwIfRecoverySwitched();
 
@@ -580,9 +619,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         backend.onStderrError((error) => {
             this.handleAcpStderrError(error);
         });
-        backend.setUnexpectedExitListener((error) => this.handleUnexpectedChildExit(error));
+        backend.setUnexpectedExitListener((error, details) => this.handleUnexpectedChildExit(error, details));
 
-        await this.awaitRecoveryStartup(() => backend.initialize());
+        await this.awaitRecoveryStartup(() => backend.initialize(), () => { void backend.disconnect().catch(error => logger.warn('[opencode-remote] late recovery backend cleanup failed', error)); });
         this.throwIfRecoverySwitched();
 
         // Read the REST value itself before using cached metadata to select a
@@ -682,7 +721,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // its identity. A first-launch newSession remains a startup failure
         // until ready, so an exit cannot turn a just-created session into an
         // accidental recovery attempt.
-        if (resumeSessionId) this.recoveryEligible = true;
+        if (resumeSessionId && !startedFreshAfterResumeFailure) this.recoveryEligible = true;
 
         // v2: the internal HTTP API port is bound randomly after spawn and
         // exposed nowhere, so discover it now that the ACP session is up
@@ -2613,7 +2652,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         const failures: unknown[] = [];
         if (this.permissionHandler) {
             try {
-                await this.permissionHandler.cancelAll('Session ended');
+                await this.awaitRecoveryCleanup(this.permissionHandler.cancelAll('Session ended'), 'permission cancellation');
             } catch (error) {
                 failures.push(error);
             } finally {
@@ -2622,7 +2661,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         }
         if (this.backend) {
             try {
-                await this.backend.disconnect();
+                await this.awaitRecoveryCleanup(this.backend.disconnect(), 'backend disconnect');
             } catch (error) {
                 failures.push(error);
             } finally {
@@ -2668,9 +2707,11 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
-    private handleUnexpectedChildExit(error: Error): void {
+    private handleUnexpectedChildExit(error: Error, details?: { childProcessExited: boolean }): void {
         if (this.shouldExit || this.exitReason || this.unexpectedChildExit) return;
         this.unexpectedChildExit = error;
+        // Only the transport's own child process event can confirm its exit.
+        this.confirmedChildProcessExit = details?.childProcessExited === true;
         if (!this.activeAcpSessionId || !this.recoveryEligible) {
             // A child that dies before it established a native session is a
             // startup failure, not a resumable interruption. Retrying here
@@ -2681,7 +2722,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             this.exitReason = 'exit';
             return;
         }
-        this.options.onRecoveryStart?.();
+        this.options.onRecoveryStart?.(this.hasConfirmedChildProcessExit);
         logger.warn('[opencode-remote] ACP child exited unexpectedly; scheduling recovery', error);
         this.messageBuffer.addMessage('Agent process stopped unexpectedly. Recovering the session…', 'status');
         // Wake an idle queue read immediately. The queue itself remains intact
@@ -3548,7 +3589,10 @@ export async function opencodeRemoteLauncher(
             result = await launcher.launch();
         } catch (error) {
             launchError = error;
-            if (launcher.hasCleanupFailure) throw error;
+            if (launcher.hasCleanupFailure) {
+                clearRecoveryStabilityTimer();
+                throw error;
+            }
             result = 'exit';
         }
         const needsRecovery = launcher.shouldRecoverUnexpectedChildExit

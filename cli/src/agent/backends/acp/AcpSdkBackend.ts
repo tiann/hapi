@@ -118,7 +118,7 @@ export class AcpSdkBackend implements AgentBackend {
     private transport: AcpStdioTransport | null = null;
     private permissionHandler: ((request: PermissionRequest) => void) | null = null;
     private stderrErrorHandler: ((error: AcpStderrError) => void) | null = null;
-    private unexpectedExitListener: ((error: Error) => void) | null = null;
+    private unexpectedExitListener: ((error: Error, details: { childProcessExited: boolean }) => void) | null = null;
     private readonly pendingPermissions = new Map<string, PendingPermission>();
     private formElicitationHandler: ((request: FormElicitationRequest) => Promise<FormElicitationResponse>) | null = null;
     private readonly pendingElicitations = new Set<PendingElicitation>();
@@ -707,7 +707,7 @@ export class AcpSdkBackend implements AgentBackend {
     }
 
     /** Lets remote launchers recreate a dead native ACP child before another prompt arrives. */
-    setUnexpectedExitListener(listener: ((error: Error) => void) | null): void {
+    setUnexpectedExitListener(listener: ((error: Error, details: { childProcessExited: boolean }) => void) | null): void {
         this.unexpectedExitListener = listener;
     }
 
@@ -718,8 +718,8 @@ export class AcpSdkBackend implements AgentBackend {
         transport.onStderrError((error) => {
             this.stderrErrorHandler?.(error);
         });
-        transport.onUnexpectedExit((error) => {
-            this.unexpectedExitListener?.(error);
+        transport.onUnexpectedExit((error, details) => {
+            this.unexpectedExitListener?.(error, details);
         });
         transport.registerRequestHandler('session/request_permission', async (params, requestId) => {
             return await this.handlePermissionRequest(params, requestId);

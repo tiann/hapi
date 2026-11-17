@@ -611,9 +611,8 @@ export async function runOpencode(opts: {
                 compactSupported = available;
                 if (!available) {
                     // onCompactAvailabilityChange(false) only ever fires
-                    // from OpencodeRemoteLauncher's onLeavingRemote() (the
-                    // old reset-on-next-local-entry was removed — see its
-                    // declaration comment) — so reaching here always means
+                    // from OpencodeRemoteLauncher's onLeavingRemote(), so
+                    // reaching here always means
                     // "leaving remote", never "not ready yet".
                     compactTeardownInProgress = true;
                 }
