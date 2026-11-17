@@ -3,7 +3,11 @@ import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const sourceRoot = join(import.meta.dirname, '..');
-const policySource = 'agent/readyPolicy.ts';
+// Platform separators on both sides: relative() returns backslashes on Windows.
+const policySource = join('agent', 'readyPolicy.ts');
+// Regression tripwire: catches the literal sendSessionEvent({ type: 'ready' })
+// form outside the policy. Novel indirections (prebuilt event objects, helper
+// wrappers) stay review concerns rather than covered shapes.
 const directReadyEvent = /sendSessionEvent\s*\(\s*\{\s*type\s*:\s*['"]ready['"]/;
 
 async function sourceFiles(directory: string): Promise<string[]> {
@@ -17,7 +21,7 @@ async function sourceFiles(directory: string): Promise<string[]> {
 }
 
 describe('ready event policy boundary', () => {
-    it('allows direct ready events only in the shared policy', async () => {
+    it('regression tripwire: no literal ready emits outside the shared policy', async () => {
         const offenders: string[] = [];
         for (const file of await sourceFiles(sourceRoot)) {
             const path = relative(sourceRoot, file);
