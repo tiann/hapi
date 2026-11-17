@@ -187,4 +187,57 @@ describe('RealtimeVoiceSession lazy bridge lifecycle', () => {
         expect(endSessionMock).not.toHaveBeenCalled()
         expect(sendContextualUpdateMock).toHaveBeenCalled()
     })
+
+    it('closes only the originating conversation when a stale connection finishes after a replacement call connects', async () => {
+        const endA = vi.fn().mockResolvedValue(undefined)
+        const startB = vi.fn().mockResolvedValue('conv-B')
+        const endB = vi.fn().mockResolvedValue(undefined)
+        const sendContextB = vi.fn()
+
+        const connectADeferred = deferred<string>()
+        startSessionMock.mockImplementationOnce(() => connectADeferred.promise)
+        endSessionMock.mockImplementation(endA)
+        fetchVoiceTokenMock.mockResolvedValue({ allowed: true, token: 'tok-multi' })
+
+        render(<RealtimeVoiceSession api={api} micMuted={false} />)
+
+        const startAPromise = registeredSession!.startSession({
+            sessionId: 'sess-A',
+            initialContext: 'context-A',
+        })
+
+        await act(async () => {
+            await Promise.resolve()
+            await Promise.resolve()
+            await Promise.resolve()
+        })
+        expect(startSessionMock).toHaveBeenCalledTimes(1)
+
+        // Switch bridge to handle B and start replacement call while A's connect promise is still pending.
+        latestConversationCallback?.({
+            startSession: startB,
+            endSession: endB,
+            sendContextualUpdate: sendContextB,
+            sendUserMessage: vi.fn(),
+        })
+
+        const startBPromise = registeredSession!.startSession({
+            sessionId: 'sess-B',
+            initialContext: 'context-B',
+        })
+
+        await act(async () => {
+            await startBPromise
+        })
+
+        // Now stale connection A finishes: A must clean up ONLY handle A, never closing handle B.
+        await act(async () => {
+            connectADeferred.resolve('conv-A')
+            await expect(startAPromise).rejects.toThrow('cancelled')
+        })
+
+        expect(endA).toHaveBeenCalledTimes(1)
+        expect(endB).not.toHaveBeenCalled()
+        expect(sendContextB).toHaveBeenCalledWith('context-B')
+    })
 })

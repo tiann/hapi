@@ -27,8 +27,6 @@ let statusCallback: StatusCallback | null = null
 
 function assertActiveGeneration(generation: number): void {
     if (generation !== voiceSessionGeneration) {
-        statusCallback?.('disconnected')
-        resetRealtimeSessionState()
         throw new Error('Realtime voice session cancelled')
     }
 }
@@ -137,13 +135,11 @@ class RealtimeVoiceSessionImpl implements VoiceSession {
             const conversation = await conversationPromise
             assertActiveGeneration(generation)
             if (!conversationInstance) {
-                statusCallback?.('disconnected')
-                resetRealtimeSessionState()
                 throw new Error('Realtime voice session cancelled')
             }
             const conversationId = await conversation.startSession(baseSessionConfig)
-            if (generation !== voiceSessionGeneration || !conversationInstance) {
-                await (conversationInstance ?? conversation).endSession().catch(() => {})
+            if (generation !== voiceSessionGeneration) {
+                await conversation.endSession().catch(() => {})
                 assertActiveGeneration(generation)
             }
 
@@ -154,7 +150,10 @@ class RealtimeVoiceSessionImpl implements VoiceSession {
             await deliverVoiceSessionContextAfterConnect({
                 streamContextChunks: config.streamContextChunks,
                 initialContext: config.initialContext,
-                sendChunk: (chunk) => (conversationInstance ?? conversation).sendContextualUpdate(chunk)
+                sendChunk: (chunk) => {
+                    assertActiveGeneration(generation)
+                    return (conversationInstance ?? conversation).sendContextualUpdate(chunk)
+                }
             })
             assertActiveGeneration(generation)
 
