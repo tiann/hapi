@@ -47,7 +47,11 @@ function getVendorChunkName(id: string): string | undefined {
     const grammar = id.match(/\/node_modules\/@shikijs\/(?:langs|themes)\/dist\/([^/]+)\.mjs$/)
     if (grammar) return `shiki-${grammar[1]}`
 
-    if (id.includes('/node_modules/@xterm/')) {
+    if (
+        id.includes('/node_modules/@xterm/')
+        || id.includes('/node_modules/socket.io-client/')
+        || id.includes('/node_modules/engine.io-client/')
+    ) {
         return 'vendor-terminal'
     }
 
@@ -59,7 +63,10 @@ function getVendorChunkName(id: string): string | undefined {
         return 'vendor-assistant'
     }
 
-    if (id.includes('/node_modules/@elevenlabs/react/')) {
+    if (
+        id.includes('/node_modules/@elevenlabs/')
+        || id.includes('/node_modules/livekit-client/')
+    ) {
         return 'vendor-voice'
     }
 
@@ -73,7 +80,7 @@ function copyKaTeXFonts(): Plugin {
         generateBundle() {
             const fontsDir = resolve(__dirname, 'node_modules/katex/dist/fonts')
             for (const fileName of readdirSync(fontsDir)) {
-                if (!/\.(?:ttf|woff|woff2)$/i.test(fileName)) continue
+                if (!/\.woff2$/i.test(fileName)) continue
                 this.emitFile({
                     type: 'asset',
                     fileName: `assets/fonts/${fileName}`,
@@ -222,9 +229,17 @@ export default defineConfig({
                 }
             },
             injectManifest: {
-                globPatterns: ['**/*.{js,css,html,ico,png,svg,woff,woff2}'],
-                // Optional syntax grammars are cached after use, not during PWA installation.
-                globIgnores: ['**/shiki-*.js'],
+                // Only precache the core app shell at install time. Lazy route,
+                // diagram, terminal, voice, syntax, and KaTeX font assets are
+                // cached on first use by runtime CacheFirst routes in sw.ts.
+                globPatterns: [
+                    'index.html',
+                    '404.html',
+                    '*.{ico,png,svg,webmanifest}',
+                    'assets/index-*.{js,css}',
+                    'assets/vendor-assistant-*.{js,css}',
+                    'assets/workbox-window*.js',
+                ],
                 // The SPA entry contains the complete multi-agent control surface.
                 // Keep it available offline after adding Pi history import instead
                 // of silently dropping the entry chunk from the PWA precache.

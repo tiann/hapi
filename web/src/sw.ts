@@ -9,7 +9,7 @@ import {
     putShareTransfer,
 } from './lib/shareTransfer'
 import { shareTargetPathname } from './lib/sharePath'
-import { cacheOkResponsesOnly, cacheJavaScriptOnly } from './lib/swCachePolicy'
+import { cacheOkResponsesOnly, cacheJavaScriptOnly, cacheCssOnly, cacheFontOnly } from './lib/swCachePolicy'
 import { focusOrOpenNotificationClient, resolveNotificationTarget } from './lib/notificationClick'
 
 const sharePath = shareTargetPathname()
@@ -40,6 +40,39 @@ registerRoute(
         plugins: [
             cacheJavaScriptOnly,
             new ExpirationPlugin({ maxEntries: 64, maxAgeSeconds: 60 * 60 * 24 * 30 }),
+        ],
+    }),
+)
+
+registerRoute(
+    ({ url }) => url.origin === self.location.origin && /\/assets\/[^/]+\.js$/.test(url.pathname),
+    new CacheFirst({
+        cacheName: 'lazy-scripts',
+        plugins: [
+            cacheJavaScriptOnly,
+            new ExpirationPlugin({ maxEntries: 128, maxAgeSeconds: 60 * 60 * 24 * 30 }),
+        ],
+    }),
+)
+
+registerRoute(
+    ({ url }) => url.origin === self.location.origin && /\/assets\/[^/]+\.css$/.test(url.pathname),
+    new CacheFirst({
+        cacheName: 'lazy-styles',
+        plugins: [
+            cacheCssOnly,
+            new ExpirationPlugin({ maxEntries: 32, maxAgeSeconds: 60 * 60 * 24 * 30 }),
+        ],
+    }),
+)
+
+registerRoute(
+    ({ url }) => url.origin === self.location.origin && /\/assets\/fonts\/[^/]+\.woff2$/i.test(url.pathname),
+    new CacheFirst({
+        cacheName: 'katex-fonts',
+        plugins: [
+            cacheFontOnly,
+            new ExpirationPlugin({ maxEntries: 32, maxAgeSeconds: 60 * 60 * 24 * 30 }),
         ],
     }),
 )

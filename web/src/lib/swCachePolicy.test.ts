@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { cacheOkResponsesOnly, cacheJavaScriptOnly } from './swCachePolicy'
+import { cacheOkResponsesOnly, cacheJavaScriptOnly, cacheCssOnly, cacheFontOnly } from './swCachePolicy'
 
 function redirectedResponse(body: string): Response {
     // Response objects built in tests cannot set `redirected`; model one that came through a redirect.
@@ -27,6 +27,26 @@ describe('optional syntax module cache', () => {
         ]) {
             expect(await cacheJavaScriptOnly.cacheWillUpdate({ response })).toBeNull()
         }
+    })
+    it('stores CSS and WOFF2 fonts while rejecting HTML fallbacks, redirects and failures', async () => {
+        const css = new Response('body{}', { headers: { 'content-type': 'text/css; charset=utf-8' } })
+        expect(await cacheCssOnly.cacheWillUpdate({ response: css })).toBe(css)
+        expect(await cacheCssOnly.cacheWillUpdate({
+            response: new Response('<html>Login</html>', { headers: { 'content-type': 'text/html' } }),
+        })).toBeNull()
+        expect(await cacheCssOnly.cacheWillUpdate({ response: redirectedResponse('body{}') })).toBeNull()
+
+        for (const type of ['font/woff2', 'application/font-woff2', 'application/octet-stream']) {
+            const font = new Response('wOF2', { headers: { 'content-type': type } })
+            expect(await cacheFontOnly.cacheWillUpdate({ response: font })).toBe(font)
+        }
+        expect(await cacheFontOnly.cacheWillUpdate({
+            response: new Response('<html>Login</html>', { headers: { 'content-type': 'text/html' } }),
+        })).toBeNull()
+        expect(await cacheFontOnly.cacheWillUpdate({
+            response: new Response('missing', { status: 404, headers: { 'content-type': 'font/woff2' } }),
+        })).toBeNull()
+        expect(await cacheFontOnly.cacheWillUpdate({ response: redirectedResponse('wOF2') })).toBeNull()
     })
 })
 
