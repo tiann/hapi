@@ -33,7 +33,7 @@ export function buildAgyHeadlessArgs(opts: {
     conversationId?: string;
     model?: string;
     permissionMode: PermissionMode;
-    mode?: 'accept-edits' | 'plan';
+    mode?: 'accept-edits' | 'auto' | 'plan';
     effort?: AgyEffortLevel;
 }): string[] {
     const selection = splitAgyModelSelection(opts.model);
@@ -388,6 +388,7 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
                 permissionMode: mode.permissionMode,
                 // A change restarts the process, like other launch settings.
                 mode: mode.permissionMode === 'acceptEdits' ? 'accept-edits'
+                    : mode.permissionMode === 'auto' ? 'auto'
                     : mode.permissionMode === 'plan' ? 'plan' : undefined,
                 effort: (AGY_EFFORT_LEVELS as readonly unknown[]).includes(sessionEffort)
                     ? sessionEffort as AgyEffortLevel : undefined,
