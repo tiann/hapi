@@ -12,6 +12,7 @@ import { useSSE } from '@/hooks/useSSE'
 import { useDelayedFlag } from '@/hooks/useDelayedFlag'
 import { useSessions } from '@/hooks/queries/useSessions'
 import { useReconnectingState } from '@/hooks/useReconnectingState'
+import { reportSseConnected, reportSseDisconnected } from '@/lib/sseHealth'
 import { useSyncingState } from '@/hooks/useSyncingState'
 import { pushNotificationsDisabled, usePushNotifications } from '@/hooks/usePushNotifications'
 import { useViewportHeight } from '@/hooks/useViewportHeight'
@@ -21,6 +22,7 @@ import { refreshAllAgyCatalogs } from '@/lib/agyCatalogAnnouncement'
 import { AppContextProvider } from '@/lib/app-context'
 import { clearMessageWindow, recoverWindowAfterGapResume, rewindMessageWindow, syncTailMessages } from '@/lib/message-window-store'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
+import { useSessionTailFallback } from '@/hooks/useSessionTailFallback'
 import { useTranslation } from '@/lib/use-translation'
 import { translateInputRequestTitle } from '@/lib/input-request-toast'
 import { VoiceProvider } from '@/lib/voice-context'
@@ -269,6 +271,7 @@ function AppInner() {
     const handleSseConnect = useCallback((info: { resumed: boolean }) => {
         // Clear disconnected state on successful connection
         reportSseConnect()
+        reportSseConnected()
 
         // The hub replayed every event missed during the gap, so the caches
         // are already consistent - the full refetch below would only re-download
@@ -316,6 +319,7 @@ function AppInner() {
     }, [api, queryClient, selectedSessionId, startSync, endSync, reportSseConnect])
 
     const handleSseDisconnect = useCallback((reason: string) => {
+        reportSseDisconnected()
         // Only show reconnecting banner if we've already connected once
         if (!isFirstConnectRef.current) {
             reportSseDisconnect(reason)
@@ -421,6 +425,10 @@ function AppInner() {
         () => getAppSessionSseSubscription(selectedSessionId),
         [selectedSessionId]
     )
+    // Ingest the selected session's messages from the global stream and keep
+    // its tail converging while the session-scoped EventSource is down
+    // (reconnect backoff, hidden tab, mobile backgrounding).
+    const handleGlobalSessionEvent = useSessionTailFallback({ api, sessionId: selectedSessionId, queryClient })
     const sseEnabled = Boolean(api && token)
     const showReconnectingBanner = sseDisconnected && !isSyncing
     // Transient states wait before showing; quick reconnects never flash.
@@ -435,7 +443,7 @@ function AppInner() {
         scope: 'global',
         onConnect: handleSseConnect,
         onDisconnect: handleSseDisconnect,
-        onEvent: () => {},
+        onEvent: handleGlobalSessionEvent,
         onToast: handleToast
     })
 
