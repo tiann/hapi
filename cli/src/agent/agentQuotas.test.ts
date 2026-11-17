@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -26,6 +26,318 @@ describe('agentQuotas parsers and probes', () => {
     beforeEach(() => {
         _resetAgentQuotasCacheForTests()
         vi.restoreAllMocks()
+    })
+
+    function createFakeAgy(): { directory: string; eventLog: string; usageDone: string; env: NodeJS.ProcessEnv } {
+        const directory = mkdtempSync(join(tmpdir(), 'hapi-agy-fake-'))
+        const eventLog = join(directory, 'events.log')
+        const usageDone = join(directory, 'usage-done')
+        const executable = join(directory, 'agy')
+        writeFileSync(executable, `#!/bin/sh
+printf '%s\\n' "$*" >> "$AGY_EVENT_LOG"
+if [ "$1" = "models" ]; then
+    if [ -n "$AGY_FAKE_MODELS_DELAY" ]; then
+        sleep "$AGY_FAKE_MODELS_DELAY"
+    fi
+    if [ "$AGY_FAKE_MODELS_FAIL" = "hang" ]; then
+        sleep 6
+        echo 'gemini-3-pro'
+        exit 0
+    fi
+    if [ "$AGY_FAKE_AUTH" = "unauthenticated" ]; then
+        echo 'Error: Please sign in to view available models. Launch the CLI without arguments to sign in.' >&2
+        exit 1
+    fi
+    if [ "$AGY_FAKE_MODELS_FAIL" = "exit1-other" ]; then
+        echo 'Error: configuration file is invalid' >&2
+        exit 1
+    fi
+    if [ "$AGY_FAKE_MODELS_FAIL" = "exit2" ]; then
+        echo 'unexpected failure' >&2
+        exit 2
+    fi
+    echo 'gemini-3-pro'
+    exit 0
+fi
+if [ "$1" = "-p" ] && [ "$2" = "/usage" ]; then
+    echo usage-start >> "$AGY_EVENT_LOG"
+    if [ "$AGY_FAKE_USAGE_FAIL" = "hang" ]; then
+        sleep 6
+    fi
+    sleep 0.1
+    : > "$AGY_USAGE_DONE"
+    echo usage-complete >> "$AGY_EVENT_LOG"
+    echo '{"command":{"name":"usage","data":{"groups":[]}}}'
+    if [ -n "$AGY_FAKE_USAGE_EXIT" ]; then
+        exit "$AGY_FAKE_USAGE_EXIT"
+    fi
+    exit 0
+fi
+if [ "$1" = "-p" ] && [ "$2" = "/credits" ]; then
+    if [ ! -f "$AGY_USAGE_DONE" ]; then
+        echo credits-before-usage-complete >> "$AGY_EVENT_LOG"
+    fi
+    echo credits-start >> "$AGY_EVENT_LOG"
+    echo '{"command":{"name":"credits","data":{"remaining_credits":10}}}'
+    exit 0
+fi
+exit 2
+`, 'utf8')
+        chmodSync(executable, 0o755)
+        return {
+            directory,
+            eventLog,
+            usageDone,
+            env: {
+                ...process.env,
+                PATH: `${directory}:${process.env.PATH ?? ''}`,
+                AGY_EVENT_LOG: eventLog,
+                AGY_USAGE_DONE: usageDone
+            }
+        }
+    }
+
+    it('does not run agy print commands after the non-interactive models check reports unauthenticated', async () => {
+        const fakeAgy = createFakeAgy()
+        try {
+            const env = { ...fakeAgy.env, AGY_FAKE_AUTH: 'unauthenticated' }
+            const first = await probeAgyQuota(env)
+            const second = await probeAgyQuota(env)
+            const events = readFileSync(fakeAgy.eventLog, 'utf8').trim().split('\n')
+
+            expect(first.status).toBe('unauthenticated')
+            expect(second.status).toBe('unauthenticated')
+            expect(events).toEqual(['models'])
+        } finally {
+            rmSync(fakeAgy.directory, { recursive: true, force: true })
+        }
+    })
+
+    it('rechecks agy auth immediately when an explicit refresh bypasses the unauthenticated cache', async () => {
+        const fakeAgy = createFakeAgy()
+        try {
+            const env = { ...fakeAgy.env, AGY_FAKE_AUTH: 'unauthenticated' }
+            expect((await probeAgyQuota(env)).status).toBe('unauthenticated')
+            // a normal poll within the negative-cache window short-circuits without spawning
+            expect((await probeAgyQuota(env)).status).toBe('unauthenticated')
+            expect(readFileSync(fakeAgy.eventLog, 'utf8').trim().split('\n')).toEqual(['models'])
+
+            // explicit refresh bypasses the negative cache and re-runs the safe models check
+            expect((await probeAgyQuota(env, { refresh: true })).status).toBe('unauthenticated')
+            expect(readFileSync(fakeAgy.eventLog, 'utf8').trim().split('\n')).toEqual(['models', 'models'])
+
+            // the user signs in; refresh recovers to ok without waiting out the cache
+            const recovered = await probeAgyQuota(fakeAgy.env, { refresh: true })
+            expect(recovered.status).toBe('ok')
+            expect(readFileSync(fakeAgy.eventLog, 'utf8').trim().split('\n')).toEqual([
+                'models',
+                'models',
+                'models',
+                '-p /usage --output-format json',
+                'usage-start',
+                'usage-complete',
+                '-p /credits --output-format json',
+                'credits-start'
+            ])
+        } finally {
+            rmSync(fakeAgy.directory, { recursive: true, force: true })
+        }
+    })
+
+    it('single-flights the agy probe across concurrent callers including refresh', async () => {
+        const fakeAgy = createFakeAgy()
+        try {
+            const env = { ...fakeAgy.env, AGY_FAKE_MODELS_DELAY: '0.3' }
+            const [first, second, third] = await Promise.all([
+                probeAgyQuota(env),
+                probeAgyQuota(env, { refresh: true }),
+                probeAgyQuota(env)
+            ])
+
+            expect(first.status).toBe('ok')
+            expect(second.status).toBe('ok')
+            expect(third.status).toBe('ok')
+            const events = readFileSync(fakeAgy.eventLog, 'utf8').trim().split('\n')
+            expect(events.filter((event) => event === 'models')).toHaveLength(1)
+            expect(events.filter((event) => event.startsWith('-p /usage'))).toHaveLength(1)
+            expect(events.filter((event) => event.startsWith('-p /credits'))).toHaveLength(1)
+
+            // the inflight guard clears after completion so later probes run fresh
+            await probeAgyQuota(env)
+            const eventsAfter = readFileSync(fakeAgy.eventLog, 'utf8').trim().split('\n')
+            expect(eventsAfter.filter((event) => event === 'models')).toHaveLength(2)
+        } finally {
+            rmSync(fakeAgy.directory, { recursive: true, force: true })
+        }
+    })
+
+    it('reports an error status without print commands when the models check fails for reasons other than the sign-in message', async () => {
+        const fakeAgy = createFakeAgy()
+        try {
+            const env = { ...fakeAgy.env, AGY_FAKE_MODELS_FAIL: 'exit2' }
+            const first = await probeAgyQuota(env)
+            expect(first.status).toBe('error')
+            expect(first.note).toBeTruthy()
+            expect(readFileSync(fakeAgy.eventLog, 'utf8').trim().split('\n')).toEqual(['models'])
+
+            // a short error cache keeps immediate polls from re-spawning the check
+            expect((await probeAgyQuota(env)).status).toBe('error')
+            expect(readFileSync(fakeAgy.eventLog, 'utf8').trim().split('\n')).toEqual(['models'])
+
+            // refresh bypasses the short error cache and re-runs the safe check
+            expect((await probeAgyQuota(env, { refresh: true })).status).toBe('error')
+            expect(readFileSync(fakeAgy.eventLog, 'utf8').trim().split('\n')).toEqual(['models', 'models'])
+        } finally {
+            rmSync(fakeAgy.directory, { recursive: true, force: true })
+        }
+    })
+
+    it('keeps exit 1 without the sign-in message out of the unauthenticated status', async () => {
+        const fakeAgy = createFakeAgy()
+        try {
+            const env = { ...fakeAgy.env, AGY_FAKE_MODELS_FAIL: 'exit1-other' }
+            const result = await probeAgyQuota(env)
+
+            expect(result.status).toBe('error')
+            expect(result.note).toBeTruthy()
+            expect(readFileSync(fakeAgy.eventLog, 'utf8').trim().split('\n')).toEqual(['models'])
+        } finally {
+            rmSync(fakeAgy.directory, { recursive: true, force: true })
+        }
+    })
+
+    it('returns an error status when the models check times out and never runs print commands', async () => {
+        const fakeAgy = createFakeAgy()
+        try {
+            const env = { ...fakeAgy.env, AGY_FAKE_MODELS_FAIL: 'hang' }
+            const startedAt = Date.now()
+            const result = await probeAgyQuota(env)
+
+            expect(result.status).toBe('error')
+            expect(Date.now() - startedAt).toBeLessThan(9_000)
+            expect(readFileSync(fakeAgy.eventLog, 'utf8').trim().split('\n')).toEqual(['models'])
+        } finally {
+            rmSync(fakeAgy.directory, { recursive: true, force: true })
+        }
+    }, 15_000)
+
+    it('treats a non-zero usage exit as an error even when the usage JSON parses', async () => {
+        const fakeAgy = createFakeAgy()
+        try {
+            const env = { ...fakeAgy.env, AGY_FAKE_USAGE_EXIT: '7' }
+            const result = await probeAgyQuota(env)
+
+            expect(result.status).toBe('error')
+            expect(result.buckets).toEqual([])
+        } finally {
+            rmSync(fakeAgy.directory, { recursive: true, force: true })
+        }
+    })
+
+    it('clears the auth caches after a successful probe so the next normal poll recovers', async () => {
+        const fakeAgy = createFakeAgy()
+        try {
+            const unauthEnv = { ...fakeAgy.env, AGY_FAKE_AUTH: 'unauthenticated' }
+            expect((await probeAgyQuota(unauthEnv)).status).toBe('unauthenticated')
+
+            // the user signs in; an explicit refresh recovers
+            expect((await probeAgyQuota(fakeAgy.env, { refresh: true })).status).toBe('ok')
+
+            // a normal poll right after must also recover, not short-circuit back to
+            // the stale unauthenticated cache
+            const next = await probeAgyQuota(fakeAgy.env)
+            expect(next.status).toBe('ok')
+            const events = readFileSync(fakeAgy.eventLog, 'utf8').trim().split('\n')
+            expect(events.filter((event) => event === 'models')).toHaveLength(3)
+        } finally {
+            rmSync(fakeAgy.directory, { recursive: true, force: true })
+        }
+    })
+
+    it('caches the error after a failed usage command so immediate polls do not re-spawn', async () => {
+        const fakeAgy = createFakeAgy()
+        try {
+            const env = { ...fakeAgy.env, AGY_FAKE_USAGE_EXIT: '7' }
+            expect((await probeAgyQuota(env)).status).toBe('error')
+
+            const next = await probeAgyQuota(env)
+            expect(next.status).toBe('error')
+            const events = readFileSync(fakeAgy.eventLog, 'utf8').trim().split('\n')
+            expect(events.filter((event) => event === 'models')).toHaveLength(1)
+        } finally {
+            rmSync(fakeAgy.directory, { recursive: true, force: true })
+        }
+    })
+
+    it('caches the error after a usage timeout so immediate polls do not re-spawn', async () => {
+        const fakeAgy = createFakeAgy()
+        try {
+            const env = { ...fakeAgy.env, AGY_FAKE_USAGE_FAIL: 'hang' }
+            const timedOut = await probeAgyQuota(env)
+            expect(timedOut.status).toBe('error')
+            expect(timedOut.note).toContain('timed out')
+
+            const next = await probeAgyQuota(env)
+            expect(next.status).toBe('error')
+            const events = readFileSync(fakeAgy.eventLog, 'utf8').trim().split('\n')
+            expect(events.filter((event) => event === 'models')).toHaveLength(1)
+        } finally {
+            rmSync(fakeAgy.directory, { recursive: true, force: true })
+        }
+    }, 15_000)
+
+    it('clears the single-flight guard on every failure path so the next call can run', async () => {
+        const fakeAgy = createFakeAgy()
+        try {
+            const modelEvents = () =>
+                readFileSync(fakeAgy.eventLog, 'utf8').trim().split('\n').filter((event) => event === 'models').length
+
+            // preflight error (models exit 2)
+            const preflightEnv = { ...fakeAgy.env, AGY_FAKE_MODELS_FAIL: 'exit2' }
+            expect((await probeAgyQuota(preflightEnv)).status).toBe('error')
+            expect((await probeAgyQuota(preflightEnv, { refresh: true })).status).toBe('error')
+            expect(modelEvents()).toBe(2)
+
+            // usage timeout
+            const usageEnv = { ...fakeAgy.env, AGY_FAKE_USAGE_FAIL: 'hang' }
+            expect((await probeAgyQuota(usageEnv, { refresh: true })).status).toBe('error')
+            expect((await probeAgyQuota(usageEnv, { refresh: true })).status).toBe('error')
+            expect(modelEvents()).toBe(4)
+
+            // preflight timeout
+            const hangEnv = { ...fakeAgy.env, AGY_FAKE_MODELS_FAIL: 'hang' }
+            expect((await probeAgyQuota(hangEnv, { refresh: true })).status).toBe('error')
+            expect((await probeAgyQuota(hangEnv, { refresh: true })).status).toBe('error')
+            expect(modelEvents()).toBe(6)
+
+            // non-zero usage exit
+            const exitEnv = { ...fakeAgy.env, AGY_FAKE_USAGE_EXIT: '7' }
+            expect((await probeAgyQuota(exitEnv, { refresh: true })).status).toBe('error')
+            expect((await probeAgyQuota(exitEnv, { refresh: true })).status).toBe('error')
+            expect(modelEvents()).toBe(8)
+        } finally {
+            rmSync(fakeAgy.directory, { recursive: true, force: true })
+        }
+    }, 30_000)
+
+    it('runs agy credits only after the usage command completes', async () => {
+        const fakeAgy = createFakeAgy()
+        try {
+            const result = await probeAgyQuota(fakeAgy.env)
+            const events = readFileSync(fakeAgy.eventLog, 'utf8').trim().split('\n')
+
+            expect(result.status).toBe('ok')
+            expect(events).toEqual([
+                'models',
+                '-p /usage --output-format json',
+                'usage-start',
+                'usage-complete',
+                '-p /credits --output-format json',
+                'credits-start'
+            ])
+        } finally {
+            rmSync(fakeAgy.directory, { recursive: true, force: true })
+        }
     })
 
     it('extracts Codex rate limit buckets across primary, secondary, and rateLimitsByLimitId', () => {
