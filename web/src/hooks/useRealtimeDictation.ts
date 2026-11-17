@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { CommitStrategy, RealtimeEvents, Scribe, type RealtimeConnection } from '@elevenlabs/client'
+import type { RealtimeConnection } from '@elevenlabs/client'
 import {
     ELEVENLABS_REALTIME_TRANSCRIPTION_MODEL,
     type TranscriptionMode,
@@ -191,7 +191,10 @@ export function useRealtimeDictation(config: {
 
         try {
             if (provider === 'elevenlabs') {
-                const { token } = await config.api.fetchRealtimeTranscriptionToken('elevenlabs', language, controller.signal)
+                const [{ token }, { CommitStrategy, RealtimeEvents, Scribe }] = await Promise.all([
+                    config.api.fetchRealtimeTranscriptionToken('elevenlabs', language, controller.signal),
+                    import('@elevenlabs/client'),
+                ])
                 if (operationRef.current !== operation) return
                 elevenLabsActiveRef.current = true
                 elevenLabsFinalizedRef.current = false

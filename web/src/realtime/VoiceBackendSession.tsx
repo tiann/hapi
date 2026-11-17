@@ -1,12 +1,15 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
-import { RealtimeVoiceSession } from './RealtimeVoiceSession'
 import type { RealtimeVoiceSessionProps } from './RealtimeVoiceSession'
 import { fetchVoiceBackend } from '@/api/voice'
 import { resolveSelectedVoiceBackend } from '@/lib/voicePickerPreferences'
 import type { ApiClient } from '@/api/client'
 import type { VoiceBackendType } from '@hapi/protocol/voice'
 
-// Lazy-load alternative backends to avoid bundling when using ElevenLabs
+// Lazy-load voice backends so users who never start a voice session do not
+// download or parse the ElevenLabs/LiveKit, Gemini, or Qwen SDK chunks upfront.
+const RealtimeVoiceSession = lazy(() =>
+    import('./RealtimeVoiceSession').then((m) => ({ default: m.RealtimeVoiceSession }))
+)
 const GeminiLiveVoiceSession = lazy(() =>
     import('./GeminiLiveVoiceSession').then((m) => ({ default: m.GeminiLiveVoiceSession }))
 )
@@ -79,5 +82,9 @@ export function VoiceBackendSession(props: VoiceBackendSessionProps) {
         )
     }
 
-    return <RealtimeVoiceSession {...props} onRegistered={handleRegistered} />
+    return (
+        <Suspense fallback={null}>
+            <RealtimeVoiceSession {...props} onRegistered={handleRegistered} />
+        </Suspense>
+    )
 }
