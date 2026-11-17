@@ -586,7 +586,7 @@ export class SessionCache {
             || (wasThinking !== session.thinking)
             || turnBoundaryChanged
             || modeChanged
-            || (now - lastBroadcastAt > 10_000)
+            || (now - lastBroadcastAt > 60_000)
 
         if (shouldBroadcast) {
             this.lastBroadcastAtBySessionId.set(session.id, now)
