@@ -361,7 +361,10 @@ describe('AcpSdkBackend', () => {
                             }]
                         },
                         _meta: {
-                            availableCommands: [{ name: 'auto' }],
+                            availableCommands: [
+                                { name: 'auto', description: 'Auto-approve safe tool calls' },
+                                { name: '/swarm', description: 'Run a native swarm' }
+                            ],
                             'x.ai/sessionConfig': {
                                 options: [
                                     { id: 'high', category: 'mode', label: 'High Effort', selected: false },
@@ -398,6 +401,11 @@ describe('AcpSdkBackend', () => {
             ]
         });
         expect(backend.hasAvailableCommand(sessionId, 'auto')).toBe(true);
+        expect(backend.hasAvailableCommand(sessionId, 'swarm')).toBe(true);
+        expect(backend.getAvailableCommands(sessionId)).toEqual([
+            { name: 'auto', description: 'Auto-approve safe tool calls' },
+            { name: 'swarm', description: 'Run a native swarm' }
+        ]);
 
         await backend.setMode(sessionId, 'high');
 

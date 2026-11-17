@@ -75,6 +75,21 @@ export const BUILTIN_SLASH_COMMANDS = {
         { name: 'usage', description: 'Show session usage metrics', source: 'builtin' },
     ],
     kimi: [],
+    // Antigravity (`agy acp`) advertises its full command + skill catalog over
+    // ACP `available_commands_update`; keep its core built-ins here as the
+    // offline fallback before the session's first ACP update arrives.
+    agy: [
+        { name: 'goal', description: 'Run until the specified goal is completely finished.', source: 'builtin' },
+        { name: 'compact', description: 'Compact the conversation now (summarize history to free up the context window).', source: 'builtin' },
+        { name: 'schedule', description: 'Run an instruction on a recurring schedule or as a one-time timer.', source: 'builtin' },
+        { name: 'browser', description: 'Invoke a browser agent for web tasks.', source: 'builtin' },
+        { name: 'plan', description: 'Plan carefully before executing a task.', source: 'builtin' },
+        { name: 'grill-me', description: 'Interview me to align on a plan.', source: 'builtin' },
+        { name: 'teamwork', description: 'Invoke a team of agents to autonomously tackle large projects.', source: 'builtin' },
+        { name: 'learn', description: 'Reflect on recent successes or corrections to capture reusable skills or rules.', source: 'builtin' },
+        { name: 'boost', description: 'Invoke the Boost multi-agent orchestrator for complex tasks.', source: 'builtin' },
+        { name: 'swarm', description: '(Preview & Quota Heavy) Run a swarm: several agents working in parallel on one task, each in its own conversation, collaborating through a shared message board.', source: 'builtin' },
+    ],
     // Pi runs `pi --mode rpc` over stdio; only commands HAPI can translate
     // to Pi RPC calls are listed. Terminal-only Pi builtins (e.g. /tree,
     // /export, /reload) are intercepted with an explicit "not supported"

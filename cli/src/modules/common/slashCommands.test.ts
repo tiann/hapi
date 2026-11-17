@@ -307,4 +307,24 @@ describe('listSlashCommands', () => {
         expect(commands.find((command) => command.name === 'rubber-duck')?.source).toBe('builtin')
         expect(commands.find((command) => command.name === 'plan')?.source).toBe('builtin')
     })
+
+    it('exposes Antigravity (agy) builtins including /swarm instead of falling back to Claude builtins', async () => {
+        const commands = await listSlashCommands('agy', projectDir)
+        const names = commands.map((command) => command.name)
+
+        expect(names).toEqual(expect.arrayContaining([
+            'goal',
+            'compact',
+            'schedule',
+            'browser',
+            'plan',
+            'grill-me',
+            'teamwork',
+            'learn',
+            'boost',
+            'swarm',
+        ]))
+        expect(names).not.toContain('doctor')
+        expect(names).not.toContain('cost')
+    })
 })
