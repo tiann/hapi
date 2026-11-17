@@ -773,13 +773,18 @@ function runAgyHeadlessCommand(command: string, promptCommand: string, env: Node
     return runAgyCommand(command, ['-p', promptCommand, '--output-format', 'json'], promptCommand, env)
 }
 
+// Only one negative verdict stays live: the freshest recording replaces the
+// older one, so a normal poll reports the latest known state.
 function cacheAgyUnauthenticated(): void {
     agyUnauthenticatedUntil = Date.now() + AGY_UNAUTHENTICATED_CACHE_TTL_MS
+    agyErrorUntil = 0
+    agyErrorNote = null
 }
 
 function cacheAgyError(note: string): void {
     agyErrorUntil = Date.now() + AGY_ERROR_CACHE_TTL_MS
     agyErrorNote = note
+    agyUnauthenticatedUntil = 0
 }
 
 function clearAgyAuthCaches(): void {

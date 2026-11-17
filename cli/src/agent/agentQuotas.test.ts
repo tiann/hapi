@@ -320,6 +320,27 @@ exit 2
         }
     }, 30_000)
 
+    it('keeps a single live negative verdict when a refresh-time models failure follows an unauthenticated probe', async () => {
+        const fakeAgy = createFakeAgy()
+        try {
+            const unauthEnv = { ...fakeAgy.env, AGY_FAKE_AUTH: 'unauthenticated' }
+            expect((await probeAgyQuota(unauthEnv)).status).toBe('unauthenticated')
+
+            // signed in, but the check itself fails operationally during a refresh
+            const failingEnv = { ...fakeAgy.env, AGY_FAKE_MODELS_FAIL: 'hang' }
+            expect((await probeAgyQuota(failingEnv, { refresh: true })).status).toBe('error')
+
+            // only the latest verdict stays live: the next normal poll reports the
+            // recorded error (short cache), not the stale "Not signed in"
+            expect((await probeAgyQuota(fakeAgy.env)).status).toBe('error')
+
+            // refresh recovers once the operational failure clears
+            expect((await probeAgyQuota(fakeAgy.env, { refresh: true })).status).toBe('ok')
+        } finally {
+            rmSync(fakeAgy.directory, { recursive: true, force: true })
+        }
+    }, 15_000)
+
     it('runs agy credits only after the usage command completes', async () => {
         const fakeAgy = createFakeAgy()
         try {
