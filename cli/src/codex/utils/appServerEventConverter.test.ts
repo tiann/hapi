@@ -40,9 +40,10 @@ describe('AppServerEventConverter', () => {
             `${footer}\nMore explanation.`,
             `Use \`${footer}\` at the end.`,
             `It said "${footer}" verbatim.`,
-            // Quoting is a span: the character before the token here is prose.
             `The agent wrote "Done.${footer}" verbatim.`,
-            `('Done.${footer}')`
+            `('Done.${footer}')`,
+            `Use \`\`Done.${footer}\`\` at the end.`,
+            `Use \`\`a \` b.${footer}\`\` at the end.`
         ]) {
             expect(converter.handleNotification('item/completed', {
                 item: { id: text, type: 'agentMessage', text, phase: 'commentary' }

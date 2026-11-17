@@ -749,8 +749,26 @@ describe('stripNotifySummaryFooter', () => {
         expect(stripNotifySummaryFooter(bracketed)).toBe(bracketed)
     })
 
+    test('keeps an example in a multi-backtick code span', () => {
+        // Markdown closes a span with a run of the same length, so a literal
+        // backtick inside a ``...`` span is content, not a delimiter.
+        const doubled = 'Use ``Done.AGENT_NOTIFY_SUMMARY {"status":"done"}`` at the end.'
+        const withLiteralTick = 'Use ``a ` b.AGENT_NOTIFY_SUMMARY {"status":"done"}`` at the end.'
+        const tripled = 'Use ```Done.AGENT_NOTIFY_SUMMARY {"status":"done"}``` at the end.'
+        expect(stripNotifySummaryFooter(doubled)).toBe(doubled)
+        expect(stripNotifySummaryFooter(withLiteralTick)).toBe(withLiteralTick)
+        expect(stripNotifySummaryFooter(tripled)).toBe(tripled)
+    })
+
     test('still strips a genuine glued footer after an earlier inline-code span', () => {
         expect(stripNotifySummaryFooter('Ran `bun test`.AGENT_NOTIFY_SUMMARY {"status":')).toBe('Ran `bun test`.')
+        expect(stripNotifySummaryFooter('Ran ``bun test``.AGENT_NOTIFY_SUMMARY {"status":')).toBe('Ran ``bun test``.')
+    })
+
+    test('treats an unclosed backtick run as literal text, not an open span', () => {
+        // Markdown renders an unmatched run literally; a stray tick in prose
+        // must not grant a truncated footer immunity.
+        expect(stripNotifySummaryFooter('Ran `bun test.AGENT_NOTIFY_SUMMARY {"status":')).toBe('Ran `bun test.')
     })
 
     test('still strips a genuine glued footer after closed quotes and brackets', () => {
@@ -829,17 +847,24 @@ describe('detectNotifySummaryNearMiss', () => {
         expect(detectNotifySummaryNearMiss('Example: AGENT_NOTIFY_SUMMARY {"summary":')).toBeNull()
     })
 
-    test('returns null for a token quoted as an example', () => {
-        expect(detectNotifySummaryNearMiss('Use `AGENT_NOTIFY_SUMMARY {"status":"done"}` at the end.')).toBeNull()
-        expect(detectNotifySummaryNearMiss('It said "AGENT_NOTIFY_SUMMARY {"status":"done"}" verbatim.')).toBeNull()
-        expect(detectNotifySummaryNearMiss('The shape is `Done.AGENT_NOTIFY_SUMMARY {"status":"done"}`')).toBeNull()
-    })
-
-    test('returns null for a quoted example with glued prose inside the quotes', () => {
-        expect(
-            detectNotifySummaryNearMiss('The agent wrote "Done.AGENT_NOTIFY_SUMMARY {"status":"done"}" verbatim.')
-        ).toBeNull()
-        expect(detectNotifySummaryNearMiss(`('Done.AGENT_NOTIFY_SUMMARY {"status":"done"}')`)).toBeNull()
+    test('classifies every quoting style of example as trailing content', () => {
+        // Not null: a stray-text emitter is worth logging. Not stripped
+        // either - see the stripNotifySummaryFooter suite. One rule covers
+        // every quoting style because an example closes its delimiter *after*
+        // the payload, which is exactly what trailing content means.
+        for (const example of [
+            'Use `AGENT_NOTIFY_SUMMARY {"status":"done"}` at the end.',
+            'It said "AGENT_NOTIFY_SUMMARY {"status":"done"}" verbatim.',
+            'The shape is `Done.AGENT_NOTIFY_SUMMARY {"status":"done"}`',
+            'The agent wrote "Done.AGENT_NOTIFY_SUMMARY {"status":"done"}" verbatim.',
+            `('Done.AGENT_NOTIFY_SUMMARY {"status":"done"}')`,
+            'See [Done.AGENT_NOTIFY_SUMMARY {"status":"done"}] above.',
+            'Use ``Done.AGENT_NOTIFY_SUMMARY {"status":"done"}`` at the end.',
+            'Use ``a ` b.AGENT_NOTIFY_SUMMARY {"status":"done"}`` at the end.'
+        ]) {
+            expect(detectNotifySummaryNearMiss(example)?.reason).toBe('trailing-content')
+            expect(stripNotifySummaryFooter(example)).toBe(example)
+        }
     })
 
     test('still reports a genuine glued footer after an earlier inline-code span', () => {

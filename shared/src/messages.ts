@@ -922,62 +922,12 @@ function classifyNearMiss(jsonPart: string): NotifySummaryNearMissReason {
     return 'invalid-json'
 }
 
-/** An apostrophe inside a word (`didn't`) is punctuation, not a quote. */
-function isApostropheInsideWord(line: string, idx: number): boolean {
-    return /[\p{L}\p{N}]/u.test(line[idx - 1] ?? '') && /[\p{L}\p{N}]/u.test(line[idx + 1] ?? '')
-}
-
-/**
- * Whether `idx` sits inside an open quoting or code span on this line.
- *
- * Quoting is a property of the *span*, not of the single character before the
- * token: `The agent wrote "Done.AGENT_NOTIFY_SUMMARY {...}" verbatim.` has
- * ordinary prose punctuation immediately before the token and is still an
- * example rather than an attempt at a footer. Symmetric delimiters are counted
- * by parity so a *closed* pair earlier on the line (`He said "hello".`) does
- * not grant immunity; bracketing delimiters are counted by depth.
- *
- * The strict matcher deliberately does not consult this: a payload that parses
- * as an object through end of line is its own evidence that the line is a real
- * footer, so a quote-glued valid footer is almost certainly an agent that
- * forgot the newline. A near miss has no such evidence, so it has to be
- * conservative about what it will delete - and the Codex commentary path
- * strips before storage rather than before display, so text lost here is gone
- * rather than merely hidden.
- *
- * Angle brackets are deliberately absent: `a < b` is far more common in agent
- * prose than an angle-bracketed footer example, and treating `<` as an opener
- * would hide real footers.
- */
-function isInsideQuotedSpan(line: string, idx: number): boolean {
-    let backticks = 0
-    let doubleQuotes = 0
-    let singleQuotes = 0
-    let depth = 0
-    for (let i = 0; i < idx; i += 1) {
-        const char = line[i]
-        if (char === '`') backticks += 1
-        else if (char === '"' || char === '“' || char === '”') doubleQuotes += 1
-        else if (char === "'" || char === '‘' || char === '’') {
-            if (!isApostropheInsideWord(line, i)) singleQuotes += 1
-        } else if (char === '(' || char === '[') depth += 1
-        else if (char === ')' || char === ']') depth = Math.max(0, depth - 1)
-    }
-    return backticks % 2 === 1
-        || doubleQuotes % 2 === 1
-        || singleQuotes % 2 === 1
-        || depth > 0
-}
-
 type NearMissMatch = NotifySummaryNearMiss & { start: number }
 
 function matchNearMissLine(line: string): NearMissMatch | null {
     if (matchNotifySummaryLine(line) !== null) return null
 
     for (const start of eligibleTokenStarts(line)) {
-        // Quoted and fenced examples are prose *about* the contract, not
-        // attempts at it; stripping one deletes the explanation around it too.
-        if (isInsideQuotedSpan(line, start)) continue
         const jsonPart = line.slice(start + NOTIFY_SUMMARY_PREFIX.length).trim()
         // A bare token with no payload is prose, not an attempted footer.
         if (jsonPart.length === 0) continue
@@ -1053,17 +1003,46 @@ export function splitNotifySummary(text: unknown): NotifySummaryDisplay | null {
 }
 
 /**
+ * The near misses that are safe to delete: those whose payload region runs to
+ * the end of the line.
+ *
+ * Truncation terminates the line by definition - that is what truncation is -
+ * so every shape this feature exists to catch lands here, as do payloads that
+ * are malformed all the way to end of line (`{bogus}`, `not-json`).
+ *
+ * `trailing-content` is the opposite shape: a complete JSON object with text
+ * after it on the same line. That is what a quoted example looks like -
+ * ``Use `AGENT_NOTIFY_SUMMARY {...}` at the end.`` - and no enumeration of
+ * quoting syntax is needed to recognise it, because an example always closes
+ * its delimiter *after* the payload and a truncated footer never does. Those
+ * lines stay visible.
+ *
+ * The cost is one odd line on screen when an emitter genuinely does append
+ * stray text after a complete object. The status is dropped either way, since
+ * the strict matcher rejects that shape too, so the only change is cosmetic.
+ * The alternative is deleting a reader's example and the prose around it - and
+ * the Codex commentary path strips before storage rather than before display,
+ * so that loss is permanent. Showing a strange line beats destroying text.
+ */
+function strippableNearMissStart(line: string): number | undefined {
+    const near = matchNearMissLine(line)
+    if (near === null || near.reason === 'trailing-content') return undefined
+    return near.start
+}
+
+/**
  * Render/copy helper: remove a trailing AGENT_NOTIFY_SUMMARY footer.
  *
- * Also removes a *near miss* - a final line that attempts the footer but does
- * not parse (see `detectNotifySummaryNearMiss`). The machine line is addressed
- * to the harness, not the reader, and a truncated one is no more readable than
- * a valid one; dropping the status is bad enough without also leaking the raw
- * token into the transcript.
+ * Also removes a *near miss* whose payload runs to end of line - a truncated
+ * or malformed final line that attempts the footer (see
+ * `detectNotifySummaryNearMiss` and `strippableNearMissStart`). The machine
+ * line is addressed to the harness, not the reader, and a truncated one is no
+ * more readable than a valid one; dropping the status is bad enough without
+ * also leaking the raw token into the transcript.
  *
- * Mid-body mentions, non-final footers, and whitespace-delimited prose examples
- * are still left untouched. Store and parse/FCM paths must keep using the raw
- * text.
+ * Mid-body mentions, non-final footers, whitespace-delimited prose examples,
+ * and quoted examples are still left untouched. Store and parse/FCM paths must
+ * keep using the raw text.
  */
 export function stripNotifySummaryFooter(text: string): string {
     if (typeof text !== 'string' || text.length === 0) return text
@@ -1071,7 +1050,7 @@ export function stripNotifySummaryFooter(text: string): string {
     const last = lastNonEmptyLine(text)
     if (last === null) return text
 
-    const start = matchNotifySummaryLine(last.line)?.start ?? matchNearMissLine(last.line)?.start
+    const start = matchNotifySummaryLine(last.line)?.start ?? strippableNearMissStart(last.line)
     if (start === undefined) return text
 
     return visibleTextBefore(last, start)
