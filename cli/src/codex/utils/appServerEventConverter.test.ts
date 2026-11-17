@@ -31,13 +31,24 @@ describe('AppServerEventConverter', () => {
         })).toEqual([{ type: 'agent_message', message: footer }]);
     });
 
-    it('leaves literal examples and malformed footers in commentary unchanged', () => {
+    it('leaves literal examples and non-final footers in commentary unchanged', () => {
         const converter = new AppServerEventConverter();
-        for (const text of [`Example: ${footer}`, `${footer}\nMore explanation.`, 'AGENT_NOTIFY_SUMMARY {invalid}']) {
+        for (const text of [`Example: ${footer}`, `${footer}\nMore explanation.`]) {
             expect(converter.handleNotification('item/completed', {
                 item: { id: text, type: 'agentMessage', text, phase: 'commentary' }
             })).toEqual([{ type: 'agent_message', message: text }]);
         }
+    });
+
+    it('suppresses footer-only commentary even when the footer is malformed', () => {
+        // A near-miss footer is still addressed to the harness, not the reader.
+        const converter = new AppServerEventConverter();
+        expect(converter.handleNotification('item/completed', {
+            item: { id: 'broken', type: 'agentMessage', text: 'AGENT_NOTIFY_SUMMARY {invalid}', phase: 'commentary' }
+        })).toEqual([]);
+        expect(converter.handleNotification('item/completed', {
+            item: { id: 'truncated', type: 'agentMessage', text: 'Working.\nAGENT_NOTIFY_SUMMARY {"status":"done', phase: 'commentary' }
+        })).toEqual([{ type: 'agent_message', message: 'Working.' }]);
     });
 
     it('maps thread/started', () => {

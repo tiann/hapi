@@ -2,8 +2,10 @@ import {
     WORK_GRAPH_MAX_STRING,
     WORK_GRAPH_MAX_SUMMARY,
     WORK_GRAPH_MAX_TAGS,
+    detectNotifySummaryNearMiss,
     extractAssistantPlainText,
     extractNotifySummary,
+    isLiveStreamSnapshot,
     unwrapRoleWrappedRecordEnvelope,
     type NotifySummary,
     type WorkGraphEvent,
@@ -498,6 +500,28 @@ export function buildWorkAdFromNotify(params: {
 }
 
 /**
+ * A near miss - a final line that attempts the footer but does not parse -
+ * silently costs the turn its status. Say so once at the ingest boundary;
+ * otherwise the only detector is a human noticing the status never arrived.
+ *
+ * Mid-stream snapshots are skipped: a footer that is still being written is
+ * incomplete by construction, not malformed.
+ */
+function warnOnNotifySummaryNearMiss(input: NotifyIngestInput, plainText: string): void {
+    if (isLiveStreamSnapshot(input.content)) return
+
+    const nearMiss = detectNotifySummaryNearMiss(plainText)
+    if (!nearMiss) return
+
+    console.warn('[work-graph] ignored a malformed AGENT_NOTIFY_SUMMARY footer', {
+        reason: nearMiss.reason,
+        payloadLength: nearMiss.payloadLength,
+        sessionId: input.sessionId,
+        messageId: input.messageId
+    })
+}
+
+/**
  * On assistant message ingest: well-formed trailing AGENT_NOTIFY_SUMMARY →
  * idempotent work_ad row. Invalid/missing footer → no-op (null).
  *
@@ -518,6 +542,7 @@ export function ingestNotifySummaryFromMessage(input: NotifyIngestInput): Notify
 
     const notify = extractNotifySummary(plainText)
     if (!notify) {
+        warnOnNotifySummaryNearMiss(input, plainText)
         return null
     }
 

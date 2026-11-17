@@ -14,6 +14,7 @@ import {
     getReasoningStreamId,
     getToolCallId,
     isRedundantGoalStatusEventContent,
+    detectNotifySummaryNearMiss,
     splitNotifySummary,
     stripAgyEchoedTaskResult,
     stripNotifySummaryFooter,
@@ -699,11 +700,31 @@ describe('stripNotifySummaryFooter', () => {
         expect(stripNotifySummaryFooter(`Done.\n${FOOTER}\n\n`)).toBe('Done.')
     })
 
-    test('leaves malformed or truncated footers untouched', () => {
-        const truncated = 'Done.\nAGENT_NOTIFY_SUMMARY {"summary":'
-        const bogus = 'Done.\nAGENT_NOTIFY_SUMMARY {bogus}'
-        expect(stripNotifySummaryFooter(truncated)).toBe(truncated)
-        expect(stripNotifySummaryFooter(bogus)).toBe(bogus)
+    test('strips a truncated footer so the raw machine line never reaches the reader', () => {
+        // Observed in the wild: the closing brace is missing after truncation.
+        expect(stripNotifySummaryFooter('Done.\nAGENT_NOTIFY_SUMMARY {"status":"done","summary":"ok')).toBe('Done.')
+        expect(stripNotifySummaryFooter('Done.\nAGENT_NOTIFY_SUMMARY {bogus}')).toBe('Done.')
+        expect(stripNotifySummaryFooter('Done.\nAGENT_NOTIFY_SUMMARY not-json')).toBe('Done.')
+    })
+
+    test('keeps glued prose when stripping a near-miss footer', () => {
+        expect(stripNotifySummaryFooter('Ownership session pinged.AGENT_NOTIFY_SUMMARY {"summary":')).toBe(
+            'Ownership session pinged.'
+        )
+    })
+
+    test('strips a half-streamed footer as it is being written', () => {
+        expect(stripNotifySummaryFooter('Working.\nAGENT_NOTIFY_SUMMARY {"ver')).toBe('Working.')
+    })
+
+    test('keeps a whitespace-delimited mention of the token even when its JSON is broken', () => {
+        const mention = 'The contract looks like Example: AGENT_NOTIFY_SUMMARY {"summary":'
+        expect(stripNotifySummaryFooter(mention)).toBe(mention)
+    })
+
+    test('keeps the bare token with no payload', () => {
+        const bare = 'Done.\nAGENT_NOTIFY_SUMMARY'
+        expect(stripNotifySummaryFooter(bare)).toBe(bare)
     })
 
     test('leaves mid-body mentions and non-final footers untouched', () => {
@@ -715,6 +736,74 @@ describe('stripNotifySummaryFooter', () => {
 
     test('returns empty string when the message is only a footer', () => {
         expect(stripNotifySummaryFooter(FOOTER)).toBe('')
+    })
+})
+
+describe('detectNotifySummaryNearMiss', () => {
+    test('returns null for non-string and empty input', () => {
+        expect(detectNotifySummaryNearMiss(null)).toBeNull()
+        expect(detectNotifySummaryNearMiss(undefined)).toBeNull()
+        expect(detectNotifySummaryNearMiss(42)).toBeNull()
+        expect(detectNotifySummaryNearMiss('')).toBeNull()
+        expect(detectNotifySummaryNearMiss('   \n\n  ')).toBeNull()
+    })
+
+    test('reports a truncated footer as unterminated JSON', () => {
+        const near = detectNotifySummaryNearMiss('Done.\nAGENT_NOTIFY_SUMMARY {"status":"done","summary":"ok')
+        expect(near?.reason).toBe('unterminated-json')
+        expect(near?.payloadLength).toBe('{"status":"done","summary":"ok'.length)
+    })
+
+    test('reports a complete object followed by prose on the same line', () => {
+        const near = detectNotifySummaryNearMiss('AGENT_NOTIFY_SUMMARY {"status":"done"} and one more thing')
+        expect(near?.reason).toBe('trailing-content')
+    })
+
+    test('reports balanced braces that do not parse', () => {
+        expect(detectNotifySummaryNearMiss('AGENT_NOTIFY_SUMMARY {bogus}')?.reason).toBe('invalid-json')
+        expect(detectNotifySummaryNearMiss('AGENT_NOTIFY_SUMMARY {"a":1,}')?.reason).toBe('invalid-json')
+    })
+
+    test('reports a payload that is not an object', () => {
+        expect(detectNotifySummaryNearMiss('AGENT_NOTIFY_SUMMARY [1,2]')?.reason).toBe('not-an-object')
+        expect(detectNotifySummaryNearMiss('AGENT_NOTIFY_SUMMARY not-json')?.reason).toBe('not-an-object')
+    })
+
+    test('does not confuse a brace inside a string value for the end of the object', () => {
+        expect(
+            detectNotifySummaryNearMiss('AGENT_NOTIFY_SUMMARY {"summary":"a } brace","status":"done"')?.reason
+        ).toBe('unterminated-json')
+    })
+
+    test('returns null for a well-formed footer', () => {
+        expect(detectNotifySummaryNearMiss('Done.\nAGENT_NOTIFY_SUMMARY {"status":"done","summary":"ok"}')).toBeNull()
+        expect(
+            detectNotifySummaryNearMiss('Done.AGENT_NOTIFY_SUMMARY {"summary":"mentions AGENT_NOTIFY_SUMMARY here"}')
+        ).toBeNull()
+    })
+
+    test('returns null for a whitespace-delimited prose mention, however broken', () => {
+        expect(detectNotifySummaryNearMiss('The shape is AGENT_NOTIFY_SUMMARY {...}')).toBeNull()
+        expect(detectNotifySummaryNearMiss('Example: AGENT_NOTIFY_SUMMARY {"summary":')).toBeNull()
+    })
+
+    test('returns null for a bare token with no payload', () => {
+        expect(detectNotifySummaryNearMiss('Done.\nAGENT_NOTIFY_SUMMARY')).toBeNull()
+        expect(detectNotifySummaryNearMiss('Done.\nAGENT_NOTIFY_SUMMARY   ')).toBeNull()
+    })
+
+    test('returns null when the broken footer is not the last non-empty line', () => {
+        expect(detectNotifySummaryNearMiss('AGENT_NOTIFY_SUMMARY {"summary":\nOh, one more thing.')).toBeNull()
+    })
+
+    test('returns null for ordinary prose', () => {
+        expect(detectNotifySummaryNearMiss('Plain assistant prose.')).toBeNull()
+    })
+
+    test('a near miss still yields no summary and no split', () => {
+        const truncated = 'Done.\nAGENT_NOTIFY_SUMMARY {"status":"done","summary":"ok'
+        expect(extractNotifySummary(truncated)).toBeNull()
+        expect(splitNotifySummary(truncated)).toBeNull()
     })
 })
 
