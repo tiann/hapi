@@ -3979,6 +3979,47 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         statusMessage.mockRestore();
     });
 
+    it('requeues a v2 compact when its child exits during the pre-POST identity snapshot', async () => {
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'fixture-password';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        let snapshotCalls = 0;
+        let firstSnapshotSignal: AbortSignal | null = null;
+        compactHarness.snapshotV2Impl = (signal) => {
+            snapshotCalls++;
+            if (snapshotCalls > 1) return Promise.resolve([]);
+            firstSnapshotSignal = signal;
+            return new Promise(resolve => signal?.addEventListener('abort', () => resolve(null)));
+        };
+        const statusMessage = vi.spyOn(MessageBuffer.prototype, 'addMessage');
+        const { session, rpcHandlers, sessionEvents } = createSessionStub([
+            { message: '', mode: createCompactMode('ollama/x') }
+        ], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        const launcherPromise = opencodeRemoteLauncher(session as never, { recoveryBackoffsMs: [0, 0, 0] } as never);
+
+        try {
+            await vi.waitFor(() => expect(firstSnapshotSignal).not.toBeNull());
+            await vi.waitFor(() => expect(harness.unexpectedExitHandler).toBeTypeOf('function'));
+            harness.unexpectedExitHandler!(new Error('ACP process exited (signal=SIGKILL)'), { childProcessExited: true });
+            await vi.waitFor(() => expect(firstSnapshotSignal?.aborted).toBe(true));
+            const { createOpencodeBackend } = await import('./utils/opencodeBackend');
+            await vi.waitFor(() => expect(createOpencodeBackend).toHaveBeenCalledTimes(2));
+            await vi.waitFor(() => expect(compactHarness.v2Calls).toHaveLength(1));
+            expect(sessionEvents.filter((event) => event.type === 'message' && event.message === '📦 Compaction started'))
+                .toHaveLength(1);
+            expect(statusMessage.mock.calls.filter(([message, kind]) =>
+                message === 'Compaction was interrupted because the agent process restarted. Run /compact again if needed.'
+                    && kind === 'status'
+            )).toHaveLength(0);
+            await expect(rpcHandlers.get(RPC_METHODS.Switch)!({})).resolves.toBeUndefined();
+            await expect(launcherPromise).resolves.toBe('switch');
+        } finally {
+            statusMessage.mockRestore();
+        }
+    });
+
     it('reports an admitted v2 compact as interrupted when child exit follows poll completion but precedes history reconciliation', async () => {
         harness.detectedVersion = 'v2';
         harness.discoveredPort = 41234;
@@ -4250,7 +4291,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         expect(compactHarness.calls).toEqual([]);
         expect(session.thinking).toBe(false);
         expect(sessionEvents.filter((event) => event.type === 'message').map((event) => event.message))
-            .toEqual(['📦 Compaction started']);
+            .toEqual([]);
         session.queue.close();
         await Promise.race([
             launcherPromise,
@@ -4834,7 +4875,6 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         expect(compactHarness.calls).toEqual([]);
         const messages = sessionEvents.filter((event) => event.type === 'message').map((event) => event.message);
         expect(messages).toEqual([
-            '📦 Compaction started',
             '📦 Compaction failed: OpenCode model metadata is not available; cannot determine provider/model for compaction.'
         ]);
     });

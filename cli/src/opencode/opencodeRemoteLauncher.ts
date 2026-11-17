@@ -1691,19 +1691,11 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         continue;
                     }
 
-                    // Model/effort setup completed and the compact operation
-                    // is about to own the request. Keep its established
-                    // dequeue-time ACK semantics from this dispatch point on.
-                    batchSettled = true;
-                    session.queue.commitBatch(batch);
-                    // Compact exits at its own continue points below, before
-                    // the regular dispatch echo. Record it only once it owns
-                    // the request, so a pre-dispatch recovery requeue cannot
-                    // duplicate the user-visible command on retry.
-                    messageBuffer.addMessage(batch.message, 'user');
-
-                    this.nextRoundSnapshot = null;
-                    session.onThinkingChange(true);
+                    // The v2 identity snapshot is read-only. Do not commit
+                    // this batch until the actual POST boundary: a child exit
+                    // during that snapshot must requeue rather than silently
+                    // consuming a compact command that never reached OpenCode.
+                    let compactOwned = false;
                     let nativeHistoryMayHaveChanged = false;
                     try {
                         await this.runCompactOperation(
@@ -1711,12 +1703,30 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                             compactAbortController,
                             compactLocalId,
                             () => {
+                                if (!compactOwned) {
+                                    compactOwned = true;
+                                    batchSettled = true;
+                                    session.queue.commitBatch(batch);
+                                    messageBuffer.addMessage(batch.message, 'user');
+                                    this.nextRoundSnapshot = null;
+                                    session.onThinkingChange(true);
+                                }
                                 nativeHistoryMayHaveChanged = true;
                                 this.nativeHistoryUnverified = true;
                                 this.compactMutationMayBeInFlight = true;
                             }
                         );
-                        if (!nativeHistoryMayHaveChanged) continue;
+                        if (!nativeHistoryMayHaveChanged) {
+                            // Preserve existing plain Stop and ordinary
+                            // snapshot-failure cancellation semantics. A child
+                            // exit leaves the unowned batch for the common
+                            // recovery requeue finalizer below.
+                            if (!this.unexpectedChildExit) {
+                                batchSettled = true;
+                                session.queue.commitBatch(batch);
+                            }
+                            continue;
+                        }
                         // Compaction starts a new identity epoch. Discard old
                         // positions, then persist the new baseline before any
                         // fork or handoff can trust the compacted history.
@@ -2799,13 +2809,13 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private handleUnexpectedChildExit(error: Error, details?: { childProcessExited: boolean }): void {
         if (this.shouldExit || this.exitReason || this.unexpectedChildExit) return;
         this.unexpectedChildExit = error;
-        const compactWasOwned = (this.compactAbortController !== null
-            && this.compactOperationPhase !== 'idle')
-            || this.compactMutationMayBeInFlight;
-        // Unlike a plain Stop, an unexpected child exit makes an owned compact
-        // unable to settle: its HTTP request targets the process that just died.
-        // Abandon it so the dequeue loop can reach cleanup and recovery; the
-        // already-committed compact is intentionally not replayed.
+        // The controller also covers read-only v2 identity snapshots. Only
+        // the mutation boundary owns a compact interruption status; a child
+        // exit before that boundary leaves the batch requeueable.
+        const compactWasOwned = this.compactMutationMayBeInFlight;
+        // Abort every compact phase so a read-only snapshot cannot hold the
+        // dequeue loop after its child is gone. Only an owned compact has an
+        // uncertain HTTP mutation and is intentionally not replayed.
         this.compactResultSuppressed = true;
         this.compactAbortController?.abort();
         // Only the transport's own child process event can confirm its exit.
@@ -2977,8 +2987,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
      * for the real — and narrow — race window that covers) — checked at each
      * point below right before a result would be shown, same as the
      * pre-redesign behavior where this was a single `wasCancelled()` check
-     * after one combined async trigger(). "Compaction started" itself is
-     * never suppressed (it wasn't before either).
+     * after one combined async trigger(). "Compaction started" is emitted at
+     * the mutation boundary, rather than for a read-only pre-POST snapshot.
      *
      * Separately, `compactAbortController`/`compactResultSuppressed` cover a
      * different case: Stop/switch-to-local firing *while the REST call is
@@ -3003,7 +3013,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         onMutationIssued?: () => void
     ): Promise<void> {
         const session = this.session;
-        session.sendSessionEvent({ type: 'message', message: '📦 Compaction started' });
+        const markMutationIssued = (): void => {
+            onMutationIssued?.();
+            session.sendSessionEvent({ type: 'message', message: '📦 Compaction started' });
+        };
 
         try {
             const isCancelled = (): boolean =>
@@ -3101,7 +3114,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         | { ok: false; error: string }
                         | { ok: true; cancelled: false; result: CompactionResult }
                     > => {
-                        onMutationIssued?.();
+                        markMutationIssued();
                         const admitted = await triggerOpencodeCompactV2({
                             baseUrl,
                             sessionId: acpSessionId,
@@ -3206,7 +3219,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             // client abort, so a plain Stop deliberately waits only in this
             // phase. It has no deadline because real compaction can take minutes.
             this.compactOperationPhase = 'summarize';
-            onMutationIssued?.();
+            markMutationIssued();
             const requestResult = await backend.suppressUpdatesDuring(async () => {
                 try {
                     return await triggerOpencodeCompact({
