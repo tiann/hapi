@@ -134,6 +134,61 @@ Temporary authentication refresh failures (network/5xx) keep paired
 credentials. A rejected access token or a second 401 after a successful
 refresh requires re-pairing. See the [auth contract](../docs/api/client-contract/auth.md#silent-re-auth-401-handling).
 
+### Passkeys
+
+After pairing with the access token, **Settings → Passkeys** registers a
+passkey for the active hub through Credential Manager
+(`androidx.credentials` + `credentials-play-services-auth`). On another
+device, **Sign in with a passkey** on the pairing screen takes one system
+passkey sheet and no Hub address (see [single-ceremony sign-in](#single-ceremony-passkey-sign-in)):
+the hub returns a JWT plus a `passkeySession`, which is stored in
+`EncryptedSharedPreferences` instead of an access token and exchanged by the
+normal silent re-auth loop (`POST /api/auth {"passkeySession": …}`; a 401
+there signs the device out with a "sign in again" notice). App passkeys use
+the fixed RP ID `auth.hapi.run`; the app refuses registration options for any
+other RP ID, and passkeys created through the web authentication page also sign
+in to the app. Registration validates the connected Hub, operation/channel and
+user handle before opening Credential Manager. Set the Hub’s `HAPI_PUBLIC_URL`
+to its canonical HTTPS origin.
+See the [native passkey contract](../docs/api/client-contract/auth.md#passkeys-native).
+
+Ceremonies only work when two things match the APK's **signing
+certificate**:
+
+1. `https://auth.hapi.run/.well-known/assetlinks.json`
+   (`web/passkey-site/.well-known/assetlinks.json`) lists package
+   `run.hapi.companion` with the certificate's SHA-256 fingerprint
+   (colon-separated hex). Otherwise Credential Manager rejects the `auth.hapi.run`
+   request before the hub is involved.
+2. The hub accepts the origin `android:apk-key-hash:<hash>`, where `<hash>` is
+   the same SHA-256 digest as **base64url without padding**. Official hashes
+   live in `OFFICIAL_ANDROID_PASSKEY_ORIGINS` (`hub/src/web/routes/passkey.ts`);
+   other builds need `HAPI_PASSKEY_NATIVE_ORIGINS=android:apk-key-hash:<hash>`
+   on the hub.
+
+To compute both values for a keystore (debug: `~/.android/debug.keystore`,
+alias `androiddebugkey`, password `android`; `./gradlew :app:signingReport`
+prints the same SHA-256):
+
+```sh
+keytool -list -v -keystore ~/.android/debug.keystore -alias androiddebugkey \
+  -storepass android | grep 'SHA256:'
+# SHA256: AB:CD:…  → assetlinks.json sha256_cert_fingerprints
+echo 'AB:CD:…' | tr -d ':' | xxd -r -p | base64 | tr '+/' '-_' | tr -d '='
+# → android:apk-key-hash:<output>
+```
+
+Play-distributed builds are re-signed by **Play App Signing**: use the *app
+signing key* certificate SHA-256 from Play Console → Test and release → App
+integrity, not the upload key. That fingerprint goes into `assetlinks.json`
+and its base64url form into `OFFICIAL_ANDROID_PASSKEY_ORIGINS`. Debug builds
+and self-signed release builds each have their own certificate, so a passkey
+ceremony from a debug build only works if its fingerprint is also published
+in an `assetlinks.json` served from the RP ID — for local testing, that means
+a fork with its own shared RP constant, static authentication site, and matching
+app build. Only the auth.hapi.run maintainers can change the official file;
+per-Hub RP overrides are not supported.
+
 ## Firebase / push
 
 **Official Firebase builds:** pair an updated hub and allow
@@ -475,3 +530,27 @@ frame-time, memory, or predictive-back measurements are claimed by these checks.
 Unread state uses the hub’s [revision read-state contract](../docs/api/client-contract/read-state.md).
 List selection and metadata updates never acknowledge reading. The resumed chat
 acknowledges only its rendered tail, with a durable outbox scoped by hub and namespace.
+
+### Single-ceremony Passkey sign-in
+
+Sign-in runs exactly one Credential Manager ceremony. The app builds its own
+challenge, base64url (no padding) of the UTF-8 JSON
+`{"v":2,"operation":"login","channel":"native","iat":<epoch ms>,"nonce":<43-char base64url of 32 random bytes>}`,
+and requests `{challenge, rpId: "auth.hapi.run", userVerification: "required", timeout: 120000}`
+with no `allowCredentials` or extensions (`NativePasskeys.nativeLoginOptions`).
+`NativePasskeys.loginHub` reads the Hub from the selected credential's v2 user
+handle; the app then probes `GET /health` there and posts the assertion to
+`POST /api/passkey/login/verify`. The Hub accepts a native challenge only
+within [now − 5 min, now + 1 min] and only once; there is no login options
+endpoint. The user handle only locates the Hub; the Hub's signature check is
+the authentication.
+
+**Enter Hub address manually** passes an expected Hub: the app probes it before
+opening the sheet, and the credential must belong to it (equal origin, or the
+SHA-256 origin hash for long addresses). A passkey for another Hub fails before
+its assertion is posted anywhere. The handle fits 46 ASCII authority bytes; longer
+addresses produce an opaque handle, so sign-in without an address reports
+"Hub address required" and opens manual entry (a second ceremony in that rare
+case). Credentials registered before v2 handles need re-registration. No
+central server is involved; the credential must be available through the
+local/synced provider.

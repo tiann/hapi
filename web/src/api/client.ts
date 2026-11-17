@@ -1,3 +1,4 @@
+import type { BranchConversationRequest, BranchConversationResponse } from '@hapi/protocol/apiTypes'
 import type {
     AttachmentMetadata,
     AbortChunkedUploadResponse,
@@ -80,6 +81,8 @@ import type {
 import { fetchThroughAuthProxy } from '@/api/authProxy'
 import { FOLLOW_SESSION_REDIRECTS_HEADER } from '@hapi/protocol'
 import type { SessionReadState, SessionReadStateRequest, AgentFlavor, MessageDeliveryMode } from '@hapi/protocol'
+import type { PasskeyListResponse, PasskeyBrowserStartRequest, PasskeyBrowserStartResponse, PasskeyBrowserExchangeResponse } from '@hapi/protocol'
+
 import type { CancelMessageResponse, SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { TranscriptionMode, TranscriptionProvider, TranscriptionProviderInfo } from '@hapi/protocol/voice'
 
@@ -323,7 +326,9 @@ export class ApiClient {
         return await res.json() as T
     }
 
-    async authenticate(auth: { initData: string } | { accessToken: string }): Promise<AuthResponse> {
+    async authenticate(
+        auth: { initData: string } | { accessToken: string } | { passkeySession: string }
+    ): Promise<AuthResponse> {
         const res = await fetchThroughAuthProxy(this.buildUrl('/api/auth'), {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -338,6 +343,41 @@ export class ApiClient {
         }
 
         return await res.json() as AuthResponse
+    }
+
+    /** Unauthenticated JSON POST used by the passkey login ceremony. */
+    private async postPublic<T>(path: string, body: unknown, label: string): Promise<T> {
+        const res = await fetchThroughAuthProxy(this.buildUrl(path), {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body)
+        })
+        if (!res.ok) {
+            const text = await res.text().catch(() => '')
+            const code = parseErrorCode(text)
+            const detail = text ? `: ${text}` : ''
+            throw new ApiError(`${label}: HTTP ${res.status} ${res.statusText}${detail}`, res.status, code, text || undefined)
+        }
+        return await res.json() as T
+    }
+
+    async startPasskeyBrowser(operation: 'login' | 'register', body: PasskeyBrowserStartRequest): Promise<PasskeyBrowserStartResponse> {
+        const path = `/api/passkey/browser/${operation}/start`
+        return operation === 'register'
+            ? await this.request(path, { method: 'POST', body: JSON.stringify(body) })
+            : await this.postPublic(path, body, 'Passkey sign-in failed')
+    }
+
+    async exchangePasskeyCode(code: string, verifier: string): Promise<PasskeyBrowserExchangeResponse> {
+        return await this.postPublic('/api/passkey/browser/exchange', { code, verifier }, 'Passkey sign-in failed')
+    }
+
+    async listPasskeys(): Promise<PasskeyListResponse> {
+        return await this.request<PasskeyListResponse>('/api/passkeys')
+    }
+
+    async deletePasskey(id: string): Promise<void> {
+        await this.request(`/api/passkeys/${encodeURIComponent(id)}`, { method: 'DELETE' })
     }
 
     async bind(auth: { initData: string; accessToken: string }): Promise<AuthResponse> {
@@ -855,6 +895,12 @@ export class ApiClient {
     async implementCodexPlan(sessionId: string, planId: string): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/codex/plan/implement`, {
             method: 'POST', body: JSON.stringify({ planId })
+        })
+    }
+
+    async branchConversation(sessionId: string, options: BranchConversationRequest): Promise<BranchConversationResponse> {
+        return await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/branch`, {
+            method: 'POST', body: JSON.stringify(options)
         })
     }
 

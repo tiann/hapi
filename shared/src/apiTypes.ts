@@ -760,6 +760,24 @@ export const SendMessageRequestSchema = z.object({
 
 export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>
 
+/** Portable visible-history branch; native fork remains a separate operation. */
+export const BranchConversationRequestSchema = z.object({
+    requestId: z.uuid(),
+    messageLocalId: z.string().min(1).optional(),
+    messageId: z.string().min(1).optional(),
+    boundary: z.enum(['before', 'after']).default('before'),
+    agent: z.enum(['claude', 'codex']),
+    model: z.string().trim().min(1).max(256).optional(),
+    workspace: z.enum(['current', 'worktree']).default('current'),
+    worktreeName: z.string().trim().min(1).max(100).optional(),
+    instruction: z.string().trim().min(1).max(16_000)
+}).strict().refine(data => !(data.messageLocalId && data.messageId), {
+    message: 'Specify only one branch boundary identifier', path: ['messageId']
+})
+
+export type BranchConversationRequest = z.infer<typeof BranchConversationRequestSchema>
+export type BranchConversationResponse = { sessionId: string; warning?: string }
+
 export const ForkConversationRequestSchema = z.object({
     messageLocalId: z.string().min(1).optional(),
     latestCompleted: z.boolean().optional()
@@ -981,10 +999,74 @@ export type UsageQuotasResponse = z.infer<typeof UsageQuotasResponseSchema>
 
 export const AuthRequestSchema = z.union([
     z.object({ initData: z.string() }),
-    z.object({ accessToken: z.string() })
+    z.object({ accessToken: z.string() }),
+    // Refresh credential returned by POST /api/passkey/login/verify.
+    z.object({ passkeySession: z.string() })
 ])
 
 export type AuthRequest = z.infer<typeof AuthRequestSchema>
+
+/**
+ * WebAuthn `PublicKeyCredential` serialized with base64url fields
+ * (`RegistrationResponseJSON` / `AuthenticationResponseJSON`). Only the
+ * envelope is validated here; the hub verifies the payload cryptographically.
+ */
+export const PasskeyCredentialResponseSchema = z.object({
+    id: z.string().min(1).max(1024),
+    rawId: z.string().min(1).max(1024),
+    type: z.literal('public-key'),
+    response: z.looseObject({
+        clientDataJSON: z.string().min(1)
+    }),
+    clientExtensionResults: z.record(z.string(), z.unknown()).default({}),
+    // WebAuthn serializes an unknown attachment as null (e.g. Credential Manager).
+    authenticatorAttachment: z.string().nullish()
+})
+
+/** Direct options/verify ceremonies are native-only. Browsers use the bridge. */
+export const PasskeyOptionsRequestSchema = z.object({ client: z.literal('native') })
+export type PasskeyOptionsRequest = z.infer<typeof PasskeyOptionsRequestSchema>
+
+export const PasskeyBrowserStartRequestSchema = z.object({
+    codeChallenge: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+    state: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+    callbackOrigin: z.string().url().max(2048),
+    name: z.string().trim().max(64).optional()
+}).strict()
+export type PasskeyBrowserStartRequest = z.infer<typeof PasskeyBrowserStartRequestSchema>
+export type PasskeyBrowserStartResponse = { url: string }
+export const PasskeyBrowserExchangeRequestSchema = z.object({
+    code: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+    verifier: z.string().regex(/^[A-Za-z0-9_-]{43}$/)
+}).strict()
+export type PasskeyBrowserExchangeResponse =
+    | { operation: 'register' }
+    | { operation: 'login'; token: string; passkeySession: string }
+
+export const PasskeyRegisterVerifyRequestSchema = z.object({
+    response: PasskeyCredentialResponseSchema,
+    name: z.string().trim().max(64).optional()
+})
+export type PasskeyRegisterVerifyRequest = z.infer<typeof PasskeyRegisterVerifyRequestSchema>
+
+export const PasskeyLoginVerifyRequestSchema = z.object({
+    response: PasskeyCredentialResponseSchema
+})
+export type PasskeyLoginVerifyRequest = z.infer<typeof PasskeyLoginVerifyRequestSchema>
+
+export type PasskeySummary = {
+    id: string
+    name: string | null
+    rpId: string
+    createdAt: number
+    lastUsedAt: number | null
+    /** False once `CLI_API_TOKEN` has been rotated since registration. */
+    valid: boolean
+}
+
+export type PasskeyListResponse = {
+    passkeys: PasskeySummary[]
+}
 
 export type CommandResponse = {
     success: boolean

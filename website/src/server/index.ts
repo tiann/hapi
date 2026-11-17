@@ -16,6 +16,14 @@ async function startServer() {
       ? path.resolve(__dirname, "public")
       : path.resolve(__dirname, "..", "dist", "public");
 
+  // Passkey association files for the native apps (RP ID hapi.run).
+  // express.static ignores dot-directories by default.
+  app.use(
+    "/.well-known",
+    express.static(path.join(staticPath, ".well-known"), {
+      setHeaders: (res) => res.setHeader("Content-Type", "application/json"),
+    })
+  );
   app.use(express.static(staticPath));
 
   // Handle client-side routing - serve index.html for all routes

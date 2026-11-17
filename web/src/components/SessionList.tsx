@@ -11,6 +11,7 @@ import {
     sortSessionsBySearchRelevance,
 } from '@/lib/sessionListSearch'
 import { useLongPress } from '@/hooks/useLongPress'
+import { useLowRateAnimation } from '@/hooks/useLowRateAnimation'
 import { usePlatform } from '@/hooks/usePlatform'
 import { sessionArchiveMutationKey, sessionPinMutationKey, useSessionActions } from '@/hooks/mutations/useSessionActions'
 import { useIsMutating } from '@tanstack/react-query'
@@ -53,6 +54,16 @@ function MoreHorizontalIcon(props: { className?: string }) {
             <circle cx="19" cy="12" r="1.5" fill="currentColor" stroke="none" />
         </svg>
     )
+}
+
+/**
+ * Small status dot whose pulse (when enabled) comes from the shared low-rate
+ * ticker rather than a running CSS animation. `className` carries size/color.
+ */
+function LowRatePulseDot({ pulse, className }: { pulse: boolean; className: string }) {
+    const ref = useRef<HTMLSpanElement | null>(null)
+    useLowRateAnimation(ref, 'pulse', pulse)
+    return <span ref={ref} className={className} aria-hidden="true" />
 }
 
 /** Narrow-header overflow for shed secondary actions (tiann/hapi#2039). */
@@ -2192,8 +2203,11 @@ export function SessionList(props: {
                     title={t(titleKey)}
                 >
                     <ChevronIcon className="h-3.5 w-3.5 text-[var(--app-hint)] shrink-0" collapsed={collapsed && !isFiltering} />
-                    <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center" aria-hidden="true">
-                        <span className={`h-1.5 w-1.5 rounded-full bg-[var(--app-badge-success-text)] ${pulse ? 'animate-pulse' : ''}`} />
+                    <span className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+                        <LowRatePulseDot
+                            pulse={pulse}
+                            className="h-1.5 w-1.5 rounded-full bg-[var(--app-badge-success-text)]"
+                        />
                     </span>
                     <span className="min-w-0 flex-1 truncate text-sm font-medium">
                         {t(titleKey)}
@@ -2213,7 +2227,10 @@ export function SessionList(props: {
                             return (
                                 <div key={bucketKey}>
                                     <div className={`flex items-center gap-1 px-1 pt-1 pb-0.5 text-[11px] font-medium ${bucket.colorClass}`}>
-                                        <span className={`h-1.5 w-1.5 shrink-0 rounded-full bg-current ${bucket.pulse ? 'animate-pulse' : ''}`} aria-hidden="true" />
+                                        <LowRatePulseDot
+                                            pulse={bucket.pulse}
+                                            className="h-1.5 w-1.5 shrink-0 rounded-full bg-current"
+                                        />
                                         {t(bucket.labelKey)} ({sessions.length})
                                     </div>
                                     {sessions.map((s) => (
@@ -2316,10 +2333,13 @@ export function SessionList(props: {
 
     const renderDirectoryGroup = (group: SessionGroup) => {
         const isCollapsed = isGroupCollapsed(group)
-        // A collapsed group still shows its unread rows, so new output in a
-        // quiet project is never folded out of sight.
-        const collapsedUnreadSessions = isCollapsed && keepUnreadSessionsVisible ? group.sessions.filter(isSessionUnread) : []
         const visibleGroupSessions = getVisibleGroupSessions(group)
+        // A collapsed group still shows its unread rows, so new output in a
+        // quiet project is never folded out of sight. Each row folds on its
+        // own instead of moving to a separate list, so toggling the group
+        // never remounts (and re-animates) the rows that stay visible.
+        const isRowOpen = (s: SessionSummary) => !isCollapsed || (keepUnreadSessionsVisible && isSessionUnread(s))
+        const anyRowOpen = visibleGroupSessions.some(isRowOpen)
         const hiddenSessionCount = group.sessions.length - visibleGroupSessions.length
         const currentLimit = Math.min(
             getGroupVisibleCount(group),
@@ -2362,33 +2382,30 @@ export function SessionList(props: {
                     </span>
                 </ProjectGroupRow>
 
-                {collapsedUnreadSessions.length > 0 ? (
-                    <div data-testid="session-group-unread-peek" className="flex flex-col gap-0.5 ml-3 pl-1 py-1">
-                        {collapsedUnreadSessions.map((s) => (
-                            <div key={s.id} className="contents">
-                                {renderGroupSessionItem(s)}
-                            </div>
-                        ))}
-                    </div>
-                ) : null}
-
-                {/* Sessions */}
-                <CollapsiblePanel open={!isCollapsed}>
-                    <div className="flex flex-col gap-0.5 ml-3 pl-1 py-1">
-                        {visibleGroupSessions.map((s, index) => (
-                            <div key={s.id} className="contents">
-                                {shouldShowPinnedDivider(visibleGroupSessions, index) ? (
+                {/* Sessions. Spacing lives inside the panels so folded rows take no room. */}
+                <div className="flex flex-col ml-3 pl-1" data-open={!isCollapsed || undefined}>
+                    <CollapsiblePanel open={anyRowOpen}>
+                        <div className="h-1" />
+                    </CollapsiblePanel>
+                    {visibleGroupSessions.map((s, index) => (
+                        <CollapsiblePanel key={s.id} open={isRowOpen(s)}>
+                            {shouldShowPinnedDivider(visibleGroupSessions, index) ? (
+                                <CollapsiblePanel open={!isCollapsed}>
                                     <div
                                         data-testid="session-pin-divider"
-                                        className="ml-2.5 mr-2 my-1 border-t border-[var(--app-border)]"
+                                        className="ml-2.5 mr-2 mb-1.5 mt-1 border-t border-[var(--app-border)]"
                                         aria-hidden="true"
                                     />
-                                ) : null}
+                                </CollapsiblePanel>
+                            ) : null}
+                            <div className="pb-0.5">
                                 {renderGroupSessionItem(s)}
                             </div>
-                        ))}
-                        {group.sessions.length > sessionPreviewLimit && (hiddenSessionCount > 0 || canShowFewerSessions) ? (
-                            <div className="ml-2.5 mr-2 my-1 flex gap-1.5">
+                        </CollapsiblePanel>
+                    ))}
+                    {group.sessions.length > sessionPreviewLimit && (hiddenSessionCount > 0 || canShowFewerSessions) ? (
+                        <CollapsiblePanel open={!isCollapsed}>
+                            <div className="ml-2.5 mr-2 mt-1 mb-1.5 flex gap-1.5">
                                 {canShowFewerSessions ? (
                                     <button
                                         type="button"
@@ -2410,9 +2427,12 @@ export function SessionList(props: {
                                     </button>
                                 ) : null}
                             </div>
-                        ) : null}
-                    </div>
-                </CollapsiblePanel>
+                        </CollapsiblePanel>
+                    ) : null}
+                    <CollapsiblePanel open={anyRowOpen}>
+                        <div className="h-0.5" />
+                    </CollapsiblePanel>
+                </div>
             </div>
         )
     }

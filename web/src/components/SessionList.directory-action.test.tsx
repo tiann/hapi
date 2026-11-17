@@ -1432,12 +1432,13 @@ describe('SessionList collapse behavior', () => {
 
         const header = screen.getByTitle('/work/hapi')
         fireEvent.click(header)
-        fireEvent.contextMenu(screen.getByRole('button', { name: /Closed task/ }))
+        const row = screen.getByRole('button', { name: /Closed task/ })
+        fireEvent.contextMenu(row)
         fireEvent.click(screen.getByRole('menuitem', { name: 'Rename' }))
         expect(screen.getByRole('dialog', { name: 'Rename Session' })).toBeInTheDocument()
 
         fireEvent.click(header)
-        const panel = document.querySelector('.collapsible-panel')!
+        const panel = row.closest('.collapsible-panel')!
         fireEvent.transitionEnd(panel)
         expect(screen.getByRole('dialog', { name: 'Rename Session' })).toBeInTheDocument()
 
@@ -1982,8 +1983,8 @@ describe('SessionList search toggle', () => {
         expect(screen.queryByRole('button', { name: 'Clear search' })).toBeNull()
         expect(screen.queryByPlaceholderText(SEARCH_PLACEHOLDER)).toBeNull()
         expect(screen.getByRole('button', { name: SEARCH_LABEL })).toHaveFocus()
-        expect(screen.getByRole('button', { name: /Matching task/ })).toBeInTheDocument()
-        expect(screen.getByRole('button', { name: /Other task/ })).toBeInTheDocument()
+        // The filter no longer narrows the (collapsed again) project group.
+        expect(within(screen.getByTitle('/work/hapi')).getByText('(2)')).toBeInTheDocument()
     })
 
     it('keeps collapsed search chrome from sharing a shrink row with header actions (tiann/hapi#2039)', () => {

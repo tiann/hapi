@@ -3,15 +3,21 @@ import { randomUUID } from 'node:crypto';
 import type { RawJSONLines } from '@/claude/types';
 import { watch, type FSWatcher } from 'node:fs';
 import { RPC_METHODS, splitAgyModelSelection } from '@hapi/protocol';
+import { getBuiltinSlashCommands, mergeSlashCommands } from '@hapi/protocol/slashCommands';
 import { logger } from '@/ui/logger';
 import { RemoteModeDisplay } from '@/ui/ink/RemoteModeDisplay';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import { GenerationClock } from '@/agent/generationClock';
 import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
 import type { AgentMessage, FormElicitationRequest, FormElicitationResponse, PermissionRequest, PromptContent } from '@/agent/types';
-import type { AcpSdkBackend } from '@/agent/backends/acp';
+import type { AcpAvailableCommand, AcpSdkBackend } from '@/agent/backends/acp';
 import { isAcpIndeterminateError } from '@/agent/backends/acp/AcpStdioTransport';
 import { AcpPermissionHandler } from '@/modules/common/permission/AcpPermissionHandler';
+import {
+    listSlashCommands,
+    type ListSlashCommandsResponse,
+    type SlashCommand
+} from '@/modules/common/slashCommands';
 import {
     RemoteLauncherBase,
     type RemoteLauncherDisplayContext,
@@ -20,6 +26,7 @@ import {
 import type { SessionEffort, SessionModel } from '@/api/types';
 import type { AgySession } from './session';
 import { AGY_BACKGROUND_COMMAND_RESULT, mapAgyToolCall, mapAgyToolResult } from './agyToolCards';
+import { formatAgySwarmBoard, parseAgySwarmBoardCommand } from './agySwarmBoard';
 import {
     AGY_WAKEUP_CONTINUE_PROMPT,
     addAgyUsage,
@@ -294,6 +301,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private turnPermissionMode: PermissionMode | undefined = undefined;
     private turn: AgyTurn | null = null;
     private backendLost = false;
+    private startBackendPromise: Promise<void> | null = null;
+    private hasReceivedAvailableCommands = false;
+    private cachedAvailableCommands: AcpAvailableCommand[] = [];
+    private readonly availableCommandsWaiters: Array<() => void> = [];
 
     constructor(session: AgySession, opts: {
         createBackend?: () => AcpSdkBackend;
@@ -349,6 +360,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         session.client.rpcHandlerManager.registerHandler(
             RPC_METHODS.SteerQueuedMessage,
             async (payload: unknown) => await this.handleSteer(payload)
+        );
+        session.client.rpcHandlerManager.registerHandler(
+            RPC_METHODS.ListSlashCommands,
+            async () => await this.handleListSlashCommands()
         );
         try {
             await this.startBackend(session.sessionId);
@@ -751,7 +766,68 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
+    private recordAvailableCommands(commands: AcpAvailableCommand[]): void {
+        this.hasReceivedAvailableCommands = true;
+        this.cachedAvailableCommands = commands.map((command) => ({ ...command }));
+        this.session.client.updateMetadata((metadata) => ({
+            ...metadata,
+            slashCommands: commands.map((command) => command.name)
+        }));
+        for (const resolve of this.availableCommandsWaiters.splice(0)) {
+            resolve();
+        }
+    }
+
+    private async handleListSlashCommands(): Promise<ListSlashCommandsResponse> {
+        if (this.startBackendPromise) {
+            await this.startBackendPromise.catch(() => {});
+        }
+        if (!this.hasReceivedAvailableCommands && this.backend && !this.backendLost) {
+            const existing = this.backend.getAvailableCommands?.(this.acpSessionId) ?? [];
+            if (existing.length > 0) {
+                this.recordAvailableCommands(existing);
+            } else {
+                await new Promise<void>((resolve) => {
+                    const waiter = () => {
+                        clearTimeout(timer);
+                        resolve();
+                    };
+                    const timer = setTimeout(() => {
+                        const idx = this.availableCommandsWaiters.indexOf(waiter);
+                        if (idx >= 0) this.availableCommandsWaiters.splice(idx, 1);
+                        resolve();
+                    }, 250);
+                    timer.unref?.();
+                    this.availableCommandsWaiters.push(waiter);
+                });
+            }
+        }
+        const baseCommands = await listSlashCommands('agy', this.session.path)
+            .catch(() => getBuiltinSlashCommands('agy'));
+        const negotiated: SlashCommand[] = this.cachedAvailableCommands.map((command) => ({
+            name: command.name,
+            description: command.description,
+            source: 'builtin'
+        }));
+        return {
+            success: true,
+            commands: mergeSlashCommands([...baseCommands, ...negotiated])
+        };
+    }
+
     private async startBackend(resumeSessionId: string | null): Promise<void> {
+        const run = this.startBackendInner(resumeSessionId);
+        this.startBackendPromise = run;
+        try {
+            await run;
+        } finally {
+            if (this.startBackendPromise === run) {
+                this.startBackendPromise = null;
+            }
+        }
+    }
+
+    private async startBackendInner(resumeSessionId: string | null): Promise<void> {
         const session = this.session;
         const backend = this.createBackend();
         this.backend = backend;
@@ -759,6 +835,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         try {
             const titleSync = createAcpSessionTitleSync(session.client);
             registerAcpSessionTitleSync(backend, session.client, titleSync);
+            backend.setAvailableCommandsUpdateListener?.((_sessionId, commands) => {
+                this.recordAvailableCommands(commands);
+            });
             backend.setUserMessageChunkListener((text) => this.handleUserEcho(text));
             backend.onStderrError((error) => {
                 logger.debug('[agy-acp] stderr error', error);
@@ -800,6 +879,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 this.lastTurnTranscriptState = null;
             }
             this.acpSessionId = acpSessionId;
+            const reportedCommands = backend.getAvailableCommands?.(acpSessionId) ?? [];
+            if (reportedCommands.length > 0) {
+                this.recordAvailableCommands(reportedCommands);
+            }
             this.syncTranscriptCursor();
             session.onSessionFound(acpSessionId);
             session.client.emitSessionReady();
@@ -853,6 +936,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
     /** Stops a backend for good: late permission requests are cancelled, not approved. */
     private async retireBackend(backend: AcpSdkBackend): Promise<void> {
+        backend.setAvailableCommandsUpdateListener?.(null);
         backend.onPermissionRequest((request) => {
             void backend.respondToPermission(request.sessionId, request, { outcome: 'cancelled' });
         });
@@ -902,9 +986,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         opts: { internalWakeup?: boolean; replayAfterStepIndex?: number } = {}
     ): Promise<void> {
         const internalWakeup = opts.internalWakeup === true;
+        const swarmBoardCommand = !internalWakeup ? parseAgySwarmBoardCommand(message) : null;
         const session = this.session;
         if (!internalWakeup) {
-            applyAgySessionTitleFallback(session.client, message);
+            if (!swarmBoardCommand) {
+                applyAgySessionTitleFallback(session.client, message);
+            }
             this.lastTurnMode = mode;
             this.lastSessionModeSnapshot = {
                 permissionMode: session.getPermissionMode() as PermissionMode | undefined,
@@ -966,6 +1053,28 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // restarts or switches settings.
         this.turn = turn;
         try {
+            if (swarmBoardCommand) {
+                if (!this.acpSessionId && (this.backendLost || !this.backend || !this.backend.isTransportAlive())) {
+                    try {
+                        await this.relaunchBackend();
+                    } catch {
+                        // Best-effort session discovery; formatAgySwarmBoard handles null acpSessionId.
+                    }
+                }
+                if (turn.aborted) {
+                    restoreIfUserTurn();
+                    return;
+                }
+                turn.acknowledge();
+                this.messageBuffer.addMessage(message, 'user');
+                const boardMarkdown = formatAgySwarmBoard(
+                    this.brainDir,
+                    this.acpSessionId ?? session.sessionId,
+                    swarmBoardCommand
+                );
+                this.forwardAgentMessage({ type: 'text', text: boardMarkdown });
+                return;
+            }
             let relaunched = false;
             if (this.backendLost || !this.backend || !this.backend.isTransportAlive()) {
                 try {

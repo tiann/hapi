@@ -1,36 +1,38 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { PropsWithChildren } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { HappyChatContextValue } from '@/components/AssistantChat/context'
 import { I18nProvider } from '@/lib/i18n-context'
 import { findLatestCompletedBoundaryId } from '@/lib/assistant-runtime'
 import { HappyUserMessage } from './UserMessage'
 
+const onBranch = vi.fn()
 const onFork = vi.fn(async (_localId?: string) => {})
 const state = {
     message: { id: 'user-text:interrupted', role: 'user', createdAt: new Date(10),
         content: [{ type: 'text', text: 'Interrupted prompt' }],
-        metadata: { custom: { kind: 'user', localId: 'local-interrupted' } } },
+        metadata: { custom: { kind: 'user', localId: 'local-interrupted' as string | null, sourceMessageId: 'stored-message', invokedAt: 10 as number | null, isTranscriptEcho: false } } },
     thread: { isRunning: true, messages: [] }
 }
-const ctx: {
-    metadata: {
-        flavor: string
-        capabilities: { conversationHistory: { forkCurrent: boolean; forkAtMessage: boolean; rewindToMessage: boolean } }
-        conversationHistoryPoints: Record<string, true>
-        conversationHistoryDiverged?: boolean
-        claudeRewind?: { targetLocalId: string; truncateFromLocalId: string; keepBoundary: string; droppedPrompts: string[] }
+type ContextMetadata = NonNullable<HappyChatContextValue['metadata']>
+type UserMessageTestContext = Pick<HappyChatContextValue,
+    'disabled' | 'historyActionPending' | 'allowInactiveFork' | 'isLatestCompletedBoundary'
+    | 'onBranchConversation' | 'onForkConversation' | 'onRewindConversation'
+> & {
+    metadata: Pick<ContextMetadata,
+        'flavor' | 'conversationHistoryPoints' | 'conversationHistoryDiverged' | 'claudeRewind'
+    > & {
+        capabilities: {
+            conversationHistory: Required<NonNullable<NonNullable<ContextMetadata['capabilities']>['conversationHistory']>>
+        }
     }
-    disabled: boolean
-    historyActionPending: boolean
-    allowInactiveFork: boolean
-    isLatestCompletedBoundary: (_id: string) => boolean
-    onForkConversation: typeof onFork
-    onRewindConversation: () => Promise<void>
-} = {
+}
+const ctx: UserMessageTestContext = {
     metadata: { flavor: 'codex', capabilities: { conversationHistory: { forkCurrent: true, forkAtMessage: true, rewindToMessage: true } },
         conversationHistoryPoints: { 'local-interrupted': true } as Record<string, true> },
     disabled: false, historyActionPending: false, allowInactiveFork: false,
     isLatestCompletedBoundary: (_id: string) => true,
+    onBranchConversation: onBranch,
     onForkConversation: onFork, onRewindConversation: async () => {}
 }
 
@@ -63,6 +65,10 @@ describe('user-only completed fork boundary', () => {
     beforeEach(() => {
         localStorage.clear()
         onFork.mockClear()
+        onBranch.mockClear()
+        state.message.metadata.custom.invokedAt = 10
+        state.message.metadata.custom.localId = 'local-interrupted'
+        state.message.metadata.custom.isTranscriptEcho = false
         state.thread.isRunning = true
         ctx.metadata.flavor = 'codex'
         ctx.metadata.capabilities.conversationHistory.forkAtMessage = true
@@ -86,6 +92,41 @@ describe('user-only completed fork boundary', () => {
         expect(screen.queryByRole('button', { name: 'Rewind' })).toBeNull()
         await confirmFork()
         expect(onFork).toHaveBeenCalledWith('local-interrupted')
+    })
+
+    it('offers a portable historical branch without native points, including inactive sources', () => {
+        state.thread.isRunning = false
+        ctx.disabled = true
+        ctx.metadata.flavor = 'claude'
+        ctx.metadata.conversationHistoryPoints = {}
+        mount()
+        fireEvent.click(screen.getByRole('button', { name: 'Branch with options' }))
+        expect(onBranch).toHaveBeenCalledWith('local-interrupted')
+    })
+
+    it('never offers a queued user message as a branch boundary', () => {
+        state.thread.isRunning = false
+        state.message.metadata.custom.invokedAt = null
+        mount()
+        expect(screen.queryByRole('button', { name: 'Branch with options' })).toBeNull()
+    })
+
+    it('offers a portable branch for an invoked terminal message without a local id', () => {
+        state.message.metadata.custom.localId = null
+        state.thread.isRunning = false
+        ctx.metadata.flavor = 'claude'
+        mount()
+        fireEvent.click(screen.getByRole('button', { name: 'Branch with options' }))
+        expect(onBranch).toHaveBeenCalledWith(undefined, 'stored-message')
+    })
+
+    it('does not offer a branch on a transcript echo', () => {
+        state.message.metadata.custom.localId = null
+        state.message.metadata.custom.isTranscriptEcho = true
+        state.thread.isRunning = false
+        ctx.metadata.flavor = 'claude'
+        mount()
+        expect(screen.queryByRole('button', { name: 'Branch with options' })).toBeNull()
     })
 
     it('retains current-fork semantics for the same card when idle', async () => {
@@ -161,5 +202,27 @@ describe('user-only completed fork boundary', () => {
         ctx.metadata.conversationHistoryDiverged = true
         mount()
         expect(screen.queryByRole('button', { name: 'Fork' })).toBeNull()
+    })
+})
+
+describe('HAPI system notes', () => {
+    beforeEach(() => {
+        localStorage.clear()
+        state.thread.isRunning = false
+        state.message = {
+            id: 'user-text:job-wake',
+            role: 'user',
+            createdAt: new Date(10),
+            content: [{ type: 'text', text: '[hapi job] Attached job "batch" reached status=completed.' }],
+            metadata: { custom: { kind: 'system-note' } }
+        } as typeof state.message
+    })
+
+    it('renders a job wake as a status line, not an operator bubble', () => {
+        mount()
+        const root = document.querySelector('[data-hapi-message-role="system-note"]')
+        expect(root).not.toBeNull()
+        expect(screen.getByText(/Attached job "batch"/)).toBeTruthy()
+        expect(document.querySelector('[data-hapi-message-role="user"]')).toBeNull()
     })
 })

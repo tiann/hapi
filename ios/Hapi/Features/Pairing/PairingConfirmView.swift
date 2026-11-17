@@ -94,6 +94,7 @@ struct PairingErrorView: View {
         case .invalidAccessToken: "key"
         case .hubError: "exclamationmark.triangle"
         case .storageFailure: "externaldrive.badge.xmark"
+        case .passkeyRejected, .passkeyUnavailable, .passkeyHubAddressRequired, .passkeyWrongHub: "person.badge.key"
         }
     }
 
@@ -105,6 +106,10 @@ struct PairingErrorView: View {
         case .invalidAccessToken: String(localized: "Token rejected")
         case .hubError: String(localized: "Hub error")
         case .storageFailure: String(localized: "Could not save")
+        case .passkeyRejected: String(localized: "Passkey rejected")
+        case .passkeyUnavailable: String(localized: "Passkey unavailable")
+        case .passkeyHubAddressRequired: String(localized: "Hub address needed")
+        case .passkeyWrongHub: String(localized: "Passkey for another hub")
         }
     }
 
@@ -129,6 +134,14 @@ struct PairingErrorView: View {
             )
         case .storageFailure:
             String(localized: "Pairing succeeded but the credentials could not be stored on this device. Try again.")
+        case .passkeyRejected:
+            String(localized: "The hub did not accept this passkey. It may have been deleted, or the hub's access token was rotated. Pair with the access token instead.")
+        case .passkeyUnavailable:
+            String(localized: "This device could not use a passkey for this hub. Try again, or pair with the access token.")
+        case .passkeyHubAddressRequired:
+            String(localized: "This passkey does not include its hub address. Enter the hub URL, then sign in with the same passkey.")
+        case .passkeyWrongHub:
+            String(localized: "This passkey belongs to a different hub. Choose a passkey for this hub, or check the hub address.")
         }
     }
 }

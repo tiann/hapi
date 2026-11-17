@@ -48,3 +48,5 @@ export type {
     AttachedJobStatus
 } from './schemas'
 export type * from './types'
+
+export * from './passkey'
