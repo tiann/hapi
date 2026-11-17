@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { SessionBootstrapResult } from '@/agent/sessionFactory';
 import type { ApiSessionClient } from '@/api/apiSession';
+import { emitReadyIfIdle } from '@/agent/readyPolicy';
 import { logger } from '@/ui/logger';
 import { listSlashCommands } from '@/modules/common/slashCommands';
 import { normalizeCodexModel } from '@/modules/common/codexModels';
@@ -59,6 +60,9 @@ export class SharedCodexRoot {
     private work: Promise<unknown> = Promise.resolve();
     private notifications = Promise.resolve();
     private currentTurn: string | undefined;
+    // Recently completed root turn ids, bounded: a duplicate or late completion
+    // notification must not announce ready twice.
+    private readonly completedTurns = new Set<string>();
     // Ephemeral observations only: dequeue/compaction never prove acceptance.
     private readonly dequeuedInputs = new Set<string>();
     private deliveryTurn?: string;
@@ -393,7 +397,23 @@ export class SharedCodexRoot {
             }
             await projection.notification(method, params); return;
         }
-        if (method === 'turn/completed') this.session.sendSessionEvent({ type: 'ready' });
+        // Decide once per completed turn: hold ready only when this turn completed
+        // successfully while the native queue still holds an entry about to run.
+        // Failed and interrupted turns tell the user now, whether or not the
+        // engine pauses its queue, and a duplicate or late completion never
+        // announces twice.
+        if (method === 'turn/completed') {
+            const turnId = string(record(p.turn).id);
+            // An id-less completion cannot be deduplicated and announces as before.
+            if (!turnId || !this.completedTurns.has(turnId)) {
+                if (turnId) {
+                    this.completedTurns.add(turnId);
+                    if (this.completedTurns.size > 64) this.completedTurns.delete(this.completedTurns.keys().next().value!);
+                }
+                const completed = string(record(p.turn).status) === 'completed';
+                emitReadyIfIdle(this.session, () => completed && this.queue.hasPendingInput());
+            }
+        }
         if (method === 'thread/name/updated' && (typeof p.threadName === 'string' || p.threadName === null)) {
             const name = p.threadName ?? undefined; this.session.updateMetadata(metadata => ({ ...metadata, name }));
         }

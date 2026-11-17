@@ -16,17 +16,7 @@ import { PermissionModeSchema } from '@hapi/protocol/schemas';
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import type { SessionEndReason } from '@hapi/protocol';
-function emitReadyIfIdle(props: {
-    queueSize: () => number;
-    shouldExit: boolean;
-    thinking: boolean;
-    sendReady: () => void;
-}): void {
-    if (props.shouldExit) return;
-    if (props.thinking) return;
-    if (props.queueSize() > 0) return;
-    props.sendReady();
-}
+import { emitReadyIfIdle } from '@/agent/readyPolicy';
 
 export async function runAgentSession(opts: {
     agentType: string;
@@ -135,9 +125,7 @@ export async function runAgentSession(opts: {
         syncKeepAlive();
     }, 2000);
 
-    const sendReady = () => {
-        session.sendSessionEvent({ type: 'ready' });
-    };
+    const sendReady = () => emitReadyIfIdle(session, () => shouldExit || thinking || messageQueue.size() > 0);
 
     const handleAbort = async () => {
         logger.debug('[ACP] Abort requested');
@@ -207,12 +195,7 @@ export async function runAgentSession(opts: {
                 thinking = false;
                 syncKeepAlive();
                 await permissionAdapter.cancelAll('Prompt finished');
-                emitReadyIfIdle({
-                    queueSize: () => messageQueue.size(),
-                    shouldExit,
-                    thinking,
-                    sendReady
-                });
+                emitReadyIfIdle(session, () => shouldExit || thinking || messageQueue.size() > 0);
             }
         }
         if (shouldExit) {

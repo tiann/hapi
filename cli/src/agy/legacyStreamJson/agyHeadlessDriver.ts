@@ -1,6 +1,7 @@
 import React from 'react';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { logger } from '@/ui/logger';
+import { emitReadyIfIdle } from '@/agent/readyPolicy';
 import { RemoteModeDisplay } from '@/ui/ink/RemoteModeDisplay';
 import { AgyPlannerAccumulator, parseAgyNdjsonLine } from './agyNdjsonParser';
 import type { AgySession } from '../session';
@@ -863,9 +864,7 @@ export class AgyHeadlessDriver extends RemoteLauncherBase {
                         // Turn completed: the user-facing ready signal (waiting
                         // for input) fires once thinking has stopped and the queue
                         // is empty — NOT at conversation-id discovery.
-                        if (accepted && session.queue.size() === 0 && !turnController.signal.aborted) {
-                            session.client.sendSessionEvent({ type: 'ready' });
-                        }
+                        emitReadyIfIdle(session.client, () => !accepted || session.queue.size() > 0 || turnController.signal.aborted);
                     }
                 } finally {
                     this.loopAbortController.signal.removeEventListener('abort', onLoopAbort);

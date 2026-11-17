@@ -12,13 +12,16 @@ const harness = vi.hoisted(() => ({
     startHappyServerOptions: null as unknown,
     bridgeArgs: [] as string[],
     newSessionOptions: null as unknown,
-    killHandler: null as null | (() => Promise<void>)
+    killHandler: null as null | (() => Promise<void>),
+    rpcHandlers: {} as Record<string, (payload?: unknown) => Promise<unknown>>,
+    lastSession: null as null | { sendSessionEvent: ReturnType<typeof vi.fn> },
+    promptGate: null as Promise<void> | null,
+    promptGateRelease: null as null | (() => void)
 }))
 
 vi.mock('@/agent/sessionFactory', () => ({
-    bootstrapSession: vi.fn(async () => ({
-        // bootstrapSession returns ApiSessionClient as `session` (not a wrapper).
-        session: {
+    bootstrapSession: vi.fn(async () => {
+        const session = {
             sessionId: 'hub-session-acp-1',
             updateAgentState: vi.fn(),
             onUserMessage: vi.fn((handler) => {
@@ -32,13 +35,19 @@ vi.mock('@/agent/sessionFactory', () => ({
             flush: vi.fn(async () => {}),
             close: vi.fn(),
             rpcHandlerManager: {
-                registerHandler: vi.fn()
+                registerHandler: vi.fn((method: string, handler: (payload?: unknown) => Promise<unknown>) => {
+                    harness.rpcHandlers[method] = handler
+                })
             }
-        },
-        sessionInfo: {
-            permissionMode: 'default'
         }
-    }))
+        harness.lastSession = session
+        return {
+            session,
+            sessionInfo: {
+                permissionMode: 'default'
+            }
+        }
+    })
 }))
 
 vi.mock('@/agent/AgentRegistry', () => ({
@@ -51,6 +60,9 @@ vi.mock('@/agent/AgentRegistry', () => ({
             }),
             prompt: vi.fn(async (_sessionId: string, content: unknown[]) => {
                 harness.prompts.push(content)
+                if (harness.promptGate) {
+                    await harness.promptGate
+                }
                 if (harness.promptError) {
                     throw harness.promptError
                 }
@@ -111,6 +123,7 @@ vi.mock('@/utils/attachmentFormatter', () => ({
 }))
 
 import { runAgentSession } from './runAgentSession'
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 
 describe('runAgentSession', () => {
     beforeEach(() => {
@@ -126,6 +139,10 @@ describe('runAgentSession', () => {
         harness.bridgeArgs = []
         harness.newSessionOptions = null
         harness.killHandler = null
+        harness.rpcHandlers = {}
+        harness.lastSession = null
+        harness.promptGate = null
+        harness.promptGateRelease = null
     })
 
     it('reports unhandled ACP runner failures as error, not completed', async () => {
@@ -189,5 +206,29 @@ describe('runAgentSession', () => {
         expect(firstPrompt).not.toContain('$name')
         expect(secondPrompt).toContain('second')
         expect(secondPrompt).not.toContain('skill_lookup')
+    })
+
+    it('holds the abort ready while input is queued and emits it once when the queue drains', async () => {
+        const running = runAgentSession({ agentType: 'acp' })
+        await vi.waitFor(() => expect(harness.userMessageHandler).not.toBeNull())
+
+        // Keep the first turn in flight so the second message can only queue.
+        harness.promptGate = new Promise<void>(resolve => { harness.promptGateRelease = resolve })
+        harness.userMessageHandler?.({ content: { text: 'first', attachments: [] } }, 'local-1')
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(1))
+        harness.userMessageHandler?.({ content: { text: 'second', attachments: [] } }, 'local-2')
+
+        await harness.rpcHandlers[RPC_METHODS.Abort]()
+        const sendSessionEvent = harness.lastSession!.sendSessionEvent
+        expect(sendSessionEvent).not.toHaveBeenCalledWith({ type: 'ready' })
+
+        // The queued turn still runs; its completion is the single ready.
+        harness.promptGateRelease?.()
+        await vi.waitFor(() => expect(harness.prompts).toHaveLength(2))
+        await vi.waitFor(() => expect(sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' }))
+        expect(sendSessionEvent).toHaveBeenCalledTimes(1)
+
+        await harness.killHandler?.()
+        await running
     })
 })

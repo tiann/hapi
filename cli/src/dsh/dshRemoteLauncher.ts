@@ -1,6 +1,7 @@
 import React from 'react'
 import { RPC_METHODS } from '@hapi/protocol'
 import { logger } from '@/ui/logger'
+import { emitReadyIfIdle } from '@/agent/readyPolicy'
 import { convertAgentMessage } from '@/agent/messageConverter'
 import type { AgentMessage, McpServerStdio, PromptContent } from '@/agent/types'
 import {
@@ -249,7 +250,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                         this.messageBuffer.addMessage('Aborted while reconnecting the DSH session; the queued message will run after the stop settles', 'status')
                     }
                     if (this.session.queue.size() === 0 && !this.shouldExit) {
-                        this.session.sendSessionEvent({ type: 'ready' })
+                        emitReadyIfIdle(this.session, () => this.session.queue.size() > 0 || this.shouldExit)
                     }
                     continue
                 }
@@ -268,7 +269,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                         this.messageBuffer.addMessage('Aborted while reconnecting the DSH session; dropping the queued message', 'status')
                     }
                     if (this.session.queue.size() === 0 && !this.shouldExit) {
-                        this.session.sendSessionEvent({ type: 'ready' })
+                        emitReadyIfIdle(this.session, () => this.session.queue.size() > 0 || this.shouldExit)
                     }
                     continue
                 }
@@ -351,7 +352,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                         this.messageBuffer.addMessage('Aborted while restarting the DSH session; the queued message will run after the stop settles', 'status')
                     }
                     if (this.session.queue.size() === 0 && !this.shouldExit) {
-                        this.session.sendSessionEvent({ type: 'ready' })
+                        emitReadyIfIdle(this.session, () => this.session.queue.size() > 0 || this.shouldExit)
                     }
                     continue
                 }
@@ -406,7 +407,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                     // kill() drops are sibling drop branches too: an empty
                     // queue still owes the idle 'ready' signal.
                     if (this.session.queue.size() === 0 && !this.shouldExit) {
-                        this.session.sendSessionEvent({ type: 'ready' })
+                        emitReadyIfIdle(this.session, () => this.session.queue.size() > 0 || this.shouldExit)
                     }
                     continue
                 }
@@ -438,7 +439,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                             this.messageBuffer.addMessage('Aborted while switching the DSH model; dropping the queued message', 'status')
                         }
                         if (this.session.queue.size() === 0 && !this.shouldExit) {
-                            this.session.sendSessionEvent({ type: 'ready' })
+                            emitReadyIfIdle(this.session, () => this.session.queue.size() > 0 || this.shouldExit)
                         }
                         continue
                     }
@@ -471,7 +472,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                         this.messageBuffer.addMessage('Aborted while switching the DSH model; dropping the queued message', 'status')
                     }
                     if (this.session.queue.size() === 0 && !this.shouldExit) {
-                        this.session.sendSessionEvent({ type: 'ready' })
+                        emitReadyIfIdle(this.session, () => this.session.queue.size() > 0 || this.shouldExit)
                     }
                     continue
                 }
@@ -499,7 +500,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                         this.messageBuffer.addMessage('Aborted while switching the DSH reasoning effort; dropping the queued message', 'status')
                     }
                     if (this.session.queue.size() === 0 && !this.shouldExit) {
-                        this.session.sendSessionEvent({ type: 'ready' })
+                        emitReadyIfIdle(this.session, () => this.session.queue.size() > 0 || this.shouldExit)
                     }
                     continue
                 }
@@ -542,7 +543,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 this.session.onThinkingChange(false)
                 await this.permissionHandler?.cancelAll('Prompt finished')
                 if (this.session.queue.size() === 0 && !this.shouldExit) {
-                    this.session.sendSessionEvent({ type: 'ready' })
+                    emitReadyIfIdle(this.session, () => this.session.queue.size() > 0 || this.shouldExit)
                 }
                 continue
             }
@@ -627,7 +628,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             this.session.onThinkingChange(false)
             await this.permissionHandler?.cancelAll('Prompt finished')
             if (this.session.queue.size() === 0 && !this.shouldExit) {
-                this.session.sendSessionEvent({ type: 'ready' })
+                emitReadyIfIdle(this.session, () => this.session.queue.size() > 0 || this.shouldExit)
             }
             } finally {
                 if (!batchSettled) {

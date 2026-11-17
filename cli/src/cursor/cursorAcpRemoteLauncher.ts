@@ -2,6 +2,7 @@ import React from 'react';
 import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
 import { logger } from '@/ui/logger';
+import { emitReadyIfIdle } from '@/agent/readyPolicy';
 import { AsyncLock } from '@/utils/lock';
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
 import { convertAgentMessage } from '@/agent/messageConverter';
@@ -765,7 +766,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                 // Don't clear the error state with a 'ready' — banner stays visible.
                 return;
             }
-            session.sendSessionEvent({ type: 'ready' });
+            emitReadyIfIdle(session, () => session.queue.size() > 0 || this.shouldExit || this.turnHasModelError);
         };
 
         try {
