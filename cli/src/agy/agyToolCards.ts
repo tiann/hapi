@@ -104,6 +104,80 @@ export function mapAgyToolCall(message: ToolCall): ToolCall {
             name = 'Task';
             input = compact({ description: args.Role, prompt: args.Prompt, subagent_type: args.TypeName });
             break;
+        case 'swarm': {
+            const action = asText(args.action);
+            if (action === 'add') {
+                const workerName = asText(args.name);
+                name = 'Task';
+                input = compact({
+                    description: workerName ? `Swarm worker: @${workerName}` : 'Swarm worker',
+                    prompt: args.brief,
+                    subagent_type: args.model
+                });
+                break;
+            }
+            if (action === 'title') {
+                name = 'TeamCreate';
+                input = compact({ team_name: args.title });
+                break;
+            }
+            if (action === 'kill') {
+                name = 'close_agent';
+                input = compact({ target: args.name });
+                break;
+            }
+            if (action === 'status' || action === 'models') {
+                name = 'list_agents';
+                input = compact({ path_prefix: action });
+                break;
+            }
+            if (action === 'model') {
+                const target = asText(args.name) ?? 'coordinator';
+                return {
+                    ...message,
+                    name: 'swarm',
+                    title: `Switch @${target} model`,
+                    input: compact({ name: asText(args.model) })
+                };
+            }
+            return message;
+        }
+        case 'post_message': {
+            const channel = asText(args.channel);
+            name = 'SendMessage';
+            input = compact({
+                recipient: channel ? `#${channel}` : 'swarm board',
+                summary: args.text
+            });
+            break;
+        }
+        case 'send_message':
+            name = 'SendMessage';
+            input = compact({
+                recipient: args.Recipient,
+                summary: args.Message
+            });
+            break;
+        case 'swarm_wait': {
+            const target = typeof args.since === 'number' && Number.isFinite(args.since)
+                ? `board > #${args.since}`
+                : 'swarm board';
+            name = 'wait_agent';
+            input = compact({ target });
+            break;
+        }
+        case 'read_board': {
+            const channel = asText(args.channel);
+            const since = typeof args.since === 'number' && Number.isFinite(args.since)
+                ? `since #${args.since}`
+                : undefined;
+            return {
+                ...message,
+                name: 'read_board',
+                title: channel ? `Read swarm board (#${channel})` : 'Read swarm board',
+                input: compact({ name: since ?? channel })
+            };
+        }
         case 'call_mcp_tool': {
             const server = asText(args.ServerName);
             const tool = asText(args.ToolName);

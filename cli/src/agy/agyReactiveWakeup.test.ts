@@ -336,6 +336,55 @@ describe('agyReactiveWakeup pure helpers', () => {
             .toEqual({ state: 'running', latestStepIndex: 6 });
         expect(inspectAgyReactiveSteps(mixedBatch, '/srv/work/projects', 310, 100, TIMINGS))
             .toEqual({ state: 'parked_on_tool', latestStepIndex: 6 });
+
+        // Non-gated internal tools (read_board, post_message, run_workflow, etc.)
+        // never park on tool permission even past slowToolParkMs, and a wakeup
+        // ending with a completed swarm_wait step settles as completed without
+        // waiting for a follow-up PLANNER_RESPONSE.
+        const internalRunning: AgyTranscriptStep[] = [
+            systemStep,
+            {
+                step_index: 5,
+                source: 'MODEL',
+                type: 'PLANNER_RESPONSE',
+                status: 'DONE',
+                tool_calls: [{ name: 'read_board', args: { since: '1' } }]
+            }
+        ];
+        expect(inspectAgyReactiveSteps(internalRunning, '/srv/work/projects', 2_000, 100, TIMINGS))
+            .toEqual({ state: 'running', latestStepIndex: 5 });
+
+        const swarmWaitWakeup: AgyTranscriptStep[] = [
+            systemStep,
+            {
+                step_index: 5,
+                source: 'MODEL',
+                type: 'PLANNER_RESPONSE',
+                status: 'DONE',
+                tool_calls: [
+                    { name: 'post_message', args: { text: '"@worker1 next step"' } },
+                    { name: 'swarm_wait', args: { since: '2' } }
+                ]
+            },
+            {
+                step_index: 6,
+                source: 'MODEL',
+                type: 'GENERIC',
+                status: 'DONE',
+                content: '{"status":"posted","seq":3}'
+            },
+            {
+                step_index: 7,
+                source: 'MODEL',
+                type: 'GENERIC',
+                status: 'DONE',
+                content: 'Waiting for a message that calls on you by name, or on @all posted after #2.'
+            }
+        ];
+        expect(inspectAgyReactiveSteps(swarmWaitWakeup, '/srv/work/projects', 120, 100, TIMINGS))
+            .toEqual({ state: 'running', latestStepIndex: 7 });
+        expect(inspectAgyReactiveSteps(swarmWaitWakeup, '/srv/work/projects', 160, 100, TIMINGS))
+            .toMatchObject({ state: 'completed', latestStepIndex: 7 });
     });
 
     it('converts background task completion, allowed tool calls, reasoning, text, and usage', () => {
