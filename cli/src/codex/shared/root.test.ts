@@ -134,6 +134,27 @@ session, root, native, rpc, send, events, consumed, uncertain, sessionReady,
     };
 }
 
+describe('ready events', () => {
+    it('waits for pending native input before announcing the final completed turn', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        f.submit('next turn', 'next-turn');
+        await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+
+        f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 'first', status: 'completed' } });
+        await f.drain();
+        expect(f.events).not.toHaveBeenCalledWith({ type: 'ready' });
+
+        const queued = f.native.queue.pop()!;
+        f.native.notify('item/completed', { threadId: 'thread', turnId: 'second', item: {
+            id: 'input', type: 'userMessage', clientId: queued.clientUserMessageId, content: queued.input
+        } });
+        f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 'second', status: 'completed' } });
+        await f.drain();
+        expect(f.events).toHaveBeenCalledExactlyOnceWith({ type: 'ready' });
+    });
+});
+
 describe('externally attached root', () => {
     it('skips MCP, instructions and initial settings injection, and disables lifecycle actions', async () => {
         const builds = vi.mocked(buildHapiMcpBridge).mock.calls.length;

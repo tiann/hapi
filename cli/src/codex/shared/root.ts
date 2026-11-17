@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { SessionBootstrapResult } from '@/agent/sessionFactory';
 import type { ApiSessionClient } from '@/api/apiSession';
+import { emitReadyIfIdle } from '@/agent/readyPolicy';
 import { logger } from '@/ui/logger';
 import { listSlashCommands } from '@/modules/common/slashCommands';
 import { normalizeCodexModel } from '@/modules/common/codexModels';
@@ -57,6 +58,7 @@ export class SharedCodexRoot {
     private readonly ancestry = new Map<string, string | null>();
     private heartbeat?: ReturnType<typeof setInterval>;
     private work: Promise<unknown> = Promise.resolve();
+    private pendingInputWork = 0;
     private notifications = Promise.resolve();
     private currentTurn: string | undefined;
     // Ephemeral observations only: dequeue/compaction never prove acceptance.
@@ -138,6 +140,7 @@ export class SharedCodexRoot {
             } else void this.reconnect();
         });
         this.session.onUserMessage((message, localId) => {
+            this.pendingInputWork++;
             this.work = this.work.catch(() => {}).then(async () => {
                 await this.bound;
                 if (this.closed || this.stopping) return;
@@ -162,7 +165,8 @@ export class SharedCodexRoot {
                 });
                 await this.queue.enqueue(id, buildUserInputFromMessage(resolved), this.interrupted,
                     text.trim().startsWith('/') || message.meta?.isNativeQueuedMessage ? undefined : batchKey);
-            }).catch(error => this.notice(`Message not confirmed: ${error instanceof Error ? error.message : error}. Inspect the queue before retrying.`));
+            }).catch(error => this.notice(`Message not confirmed: ${error instanceof Error ? error.message : error}. Inspect the queue before retrying.`))
+                .finally(() => { this.pendingInputWork--; });
         });
         this.session.onCancelQueuedMessage(async id => { await this.bound; return this.stopping ? 'indeterminate' : this.queue.cancel(id); });
         // Absence from history is NOT proof an uncertain mutation failed.
@@ -393,7 +397,7 @@ export class SharedCodexRoot {
             }
             await projection.notification(method, params); return;
         }
-        if (method === 'turn/completed') this.session.sendSessionEvent({ type: 'ready' });
+        if (method === 'turn/completed') emitReadyIfIdle(this.session, () => this.hasPendingInput());
         if (method === 'thread/name/updated' && (typeof p.threadName === 'string' || p.threadName === null)) {
             const name = p.threadName ?? undefined; this.session.updateMetadata(metadata => ({ ...metadata, name }));
         }
@@ -423,6 +427,9 @@ export class SharedCodexRoot {
         await this.projection.notification(method, params, modelAtReceipt, receivedAt);
         if (this.host.attached && method === 'turn/completed' && !this.stopping) await this.refresh();
         this.publishCompaction(); this.alive();
+    }
+    private hasPendingInput(): boolean {
+        return this.pendingInputWork > 0 || this.queue.hasPendingInput();
     }
     private invalidateHistory(): void {
         this.stopAccepting();

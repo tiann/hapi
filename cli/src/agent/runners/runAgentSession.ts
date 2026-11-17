@@ -125,8 +125,7 @@ export async function runAgentSession(opts: {
         syncKeepAlive();
     }, 2000);
 
-    // Aborts always announce ready, even when input is queued.
-    const sendReady = () => emitReadyIfIdle(session, () => false);
+    const sendReady = () => emitReadyIfIdle(session, () => shouldExit || thinking || messageQueue.size() > 0);
 
     const handleAbort = async () => {
         logger.debug('[ACP] Abort requested');
