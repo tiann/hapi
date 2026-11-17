@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ComponentType } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
     Navigate,
@@ -21,11 +21,8 @@ import {
     shouldShowSessionSidebar,
 } from '@/lib/sessionNavigation'
 import { App } from '@/App'
-import { SessionChat } from '@/components/SessionChat'
 import { SessionList } from '@/components/SessionList'
 import { SidebarShowButton } from '@/components/SidebarToggle'
-import { NewSession } from '@/components/NewSession'
-import { WorkspaceBrowser } from '@/components/WorkspaceBrowser'
 import { LoadingState } from '@/components/LoadingState'
 import { useAppContext } from '@/lib/app-context'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
@@ -65,24 +62,44 @@ import { migrateSuppressedSendError } from '@/lib/suppressed-send-error'
 import { useConsumedMessageTarget } from '@/lib/useConsumedMessageTarget'
 import { normalizeMessageSearchTarget } from '@/lib/messageSearchTarget'
 import { buildFileMentionSearchQuery } from '@/lib/file-search-query'
-import FilesPage from '@/routes/sessions/files'
-import FilePage from '@/routes/sessions/file'
-import TerminalPage from '@/routes/sessions/terminal'
-import SettingsLayout from '@/routes/settings/layout'
-import SettingsHubPage from '@/routes/settings'
-import SettingsGeneralPage from '@/routes/settings/general'
-import SettingsDisplayPage from '@/routes/settings/display'
-import SettingsChatPage from '@/routes/settings/chat'
-import SettingsVoicePage from '@/routes/settings/voice'
-import SettingsVoiceVoicesPage from '@/routes/settings/voice-voices'
-import SettingsVoiceAdvancedPage from '@/routes/settings/voice-advanced'
-import SettingsMachinesPage from '@/routes/settings/machines'
-import SettingsAboutPage from '@/routes/settings/about'
-import SettingsStoragePage from '@/routes/settings/storage'
-import SettingsUsagePage from '@/routes/settings/usage'
-import SharePage from '@/routes/share'
 import { retargetSharePendingTransfer, setSharePendingTransfer } from '@/lib/sharePendingState'
 import { deleteShareTransfer, parseShareSearch } from '@/lib/shareTransfer'
+
+function lazyRoutePage(loader: () => Promise<{ default: ComponentType }>) {
+    const LazyPage = lazy(loader)
+    return function LazyRoutePage() {
+        return (
+            <Suspense fallback={null}>
+                <LazyPage />
+            </Suspense>
+        )
+    }
+}
+
+const loadSessionChat = () => import('@/components/SessionChat').then((m) => ({ default: m.SessionChat }))
+const SessionChat = lazy(loadSessionChat)
+const NewSession = lazy(() =>
+    import('@/components/NewSession').then((m) => ({ default: m.NewSession }))
+)
+const WorkspaceBrowser = lazy(() =>
+    import('@/components/WorkspaceBrowser').then((m) => ({ default: m.WorkspaceBrowser }))
+)
+const FilesPage = lazyRoutePage(() => import('@/routes/sessions/files'))
+const FilePage = lazyRoutePage(() => import('@/routes/sessions/file'))
+const TerminalPage = lazyRoutePage(() => import('@/routes/sessions/terminal'))
+const SettingsLayout = lazyRoutePage(() => import('@/routes/settings/layout'))
+const SettingsHubPage = lazyRoutePage(() => import('@/routes/settings'))
+const SettingsGeneralPage = lazyRoutePage(() => import('@/routes/settings/general'))
+const SettingsDisplayPage = lazyRoutePage(() => import('@/routes/settings/display'))
+const SettingsChatPage = lazyRoutePage(() => import('@/routes/settings/chat'))
+const SettingsVoicePage = lazyRoutePage(() => import('@/routes/settings/voice'))
+const SettingsVoiceVoicesPage = lazyRoutePage(() => import('@/routes/settings/voice-voices'))
+const SettingsVoiceAdvancedPage = lazyRoutePage(() => import('@/routes/settings/voice-advanced'))
+const SettingsMachinesPage = lazyRoutePage(() => import('@/routes/settings/machines'))
+const SettingsAboutPage = lazyRoutePage(() => import('@/routes/settings/about'))
+const SettingsStoragePage = lazyRoutePage(() => import('@/routes/settings/storage'))
+const SettingsUsagePage = lazyRoutePage(() => import('@/routes/settings/usage'))
+const SharePage = lazyRoutePage(() => import('@/routes/share'))
 
 
 function BackIcon(props: { className?: string }) {
@@ -302,6 +319,7 @@ function SessionsPage() {
                 // tight budget (#2039 desktop overflow past the split).
                 className={`${shouldShowSidebar ? (isSessionsIndex ? 'flex' : 'hidden split:flex') : 'hidden'} min-w-0 w-full shrink-0 flex-col bg-[var(--app-bg)]`}
                 style={{ '--sidebar-w': `${sidebar.width}px` } as React.CSSProperties}
+                onPointerEnter={() => { void loadSessionChat() }}
             >
                 <div className="flex min-h-0 flex-1 flex-col pt-[env(safe-area-inset-top)]">
                     {error ? (
@@ -946,70 +964,78 @@ function SessionPage() {
     }
 
     return (
-        <SessionChat
-            readThroughRevision={readThroughRevision}
-            api={api}
-            titleSuggestionAvailable={titleSuggestionAvailable}
-            session={session}
-            cursorChatOnDisk={cursorChatStoreStatus?.onDisk}
-            reopenDisabledReason={cursorReopenDisabledReason}
-            reopenHint={cursorReopenUnverifiedHint}
-            messages={messages}
-            messagesWarning={messagesWarning}
-            hasMoreMessages={messagesHasMore}
-            hasMoreNewerMessages={messagesHasMoreNewer}
-            isSyncingTail={messagesSyncingTail}
-            isLoadingMoreMessages={messagesLoadingMore}
-            isSending={isSending}
-            viewMode={messagesViewMode}
-            messagesVersion={messagesVersion}
-            historyVersion={historyVersion}
-            tailRevision={tailRevision}
-            onBack={goBack}
-            onRefresh={refreshSelectedSession}
-            onLoadMore={loadMoreMessages}
-            onLoadNewer={handleLoadNewerMessages}
-            onCancelLoadMore={cancelLoadMoreMessages}
-            onSend={sendMessage}
-            resolveSessionIdForUpload={async (id) => (await resolveSessionId(id)).sessionId}
-            onUploadSessionResolved={handleSessionResolved}
-            resolveSessionIdForVoice={resolveVoiceSessionId}
-            onVoiceSessionResolved={handleVoiceSessionResolved}
-            onViewModeChange={setViewMode}
-            onJumpToTail={jumpToTail}
-            onRetryMessage={retryMessage}
-            autocompleteSuggestions={getAutocompleteSuggestions}
-            availableSlashCommands={slashCommands}
-            sendError={sendError}
-            onClearSendError={clearSendError}
-            onSuppressSendErrorRestore={suppressSendErrorRestore}
-            initialOutlineOpen={outline}
-            onInitialOutlineConsumed={handleInitialOutlineConsumed}
-            initialTargetMessageId={hasCompleteInitialMessageTarget ? effectiveInitialMessageId : undefined}
-            initialTargetMessageQuery={hasCompleteInitialMessageTarget ? effectiveInitialMessageQuery : undefined}
-            searchRequestId={searchRequestId}
-            initialPendingRequestId={pendingRequestId}
-            onInitialPendingRequestConsumed={handleInitialPendingRequestConsumed}
-            onLoadMessageContext={loadMessageContextForSession}
-            onInitialTargetConsumed={handleInitialMessageConsumed}
-            onSearchTargetDismissed={handleSearchTargetDismissed}
-            onAbortRestore={(text) => {
-                sendErrorIdRef.current += 1
-                setSendErrors((prev) => ({
-                    ...prev,
-                    [sessionId]: {
-                        id: sendErrorIdRef.current,
-                        text,
-                        message: t('chat.sendError.aborted'),
-                        code: 'abort',
-                        scheduledAt: null,
-                        deliveryMode: 'queue',
-                        mutationStarted: true,
-                        restoreSuppressed: false
-                    }
-                }))
-            }}
-        />
+        <Suspense
+            fallback={(
+                <div className="flex-1 flex items-center justify-center p-4">
+                    <LoadingState label="Loading session…" className="text-sm" />
+                </div>
+            )}
+        >
+            <SessionChat
+                readThroughRevision={readThroughRevision}
+                api={api}
+                titleSuggestionAvailable={titleSuggestionAvailable}
+                session={session}
+                cursorChatOnDisk={cursorChatStoreStatus?.onDisk}
+                reopenDisabledReason={cursorReopenDisabledReason}
+                reopenHint={cursorReopenUnverifiedHint}
+                messages={messages}
+                messagesWarning={messagesWarning}
+                hasMoreMessages={messagesHasMore}
+                hasMoreNewerMessages={messagesHasMoreNewer}
+                isSyncingTail={messagesSyncingTail}
+                isLoadingMoreMessages={messagesLoadingMore}
+                isSending={isSending}
+                viewMode={messagesViewMode}
+                messagesVersion={messagesVersion}
+                historyVersion={historyVersion}
+                tailRevision={tailRevision}
+                onBack={goBack}
+                onRefresh={refreshSelectedSession}
+                onLoadMore={loadMoreMessages}
+                onLoadNewer={handleLoadNewerMessages}
+                onCancelLoadMore={cancelLoadMoreMessages}
+                onSend={sendMessage}
+                resolveSessionIdForUpload={async (id) => (await resolveSessionId(id)).sessionId}
+                onUploadSessionResolved={handleSessionResolved}
+                resolveSessionIdForVoice={resolveVoiceSessionId}
+                onVoiceSessionResolved={handleVoiceSessionResolved}
+                onViewModeChange={setViewMode}
+                onJumpToTail={jumpToTail}
+                onRetryMessage={retryMessage}
+                autocompleteSuggestions={getAutocompleteSuggestions}
+                availableSlashCommands={slashCommands}
+                sendError={sendError}
+                onClearSendError={clearSendError}
+                onSuppressSendErrorRestore={suppressSendErrorRestore}
+                initialOutlineOpen={outline}
+                onInitialOutlineConsumed={handleInitialOutlineConsumed}
+                initialTargetMessageId={hasCompleteInitialMessageTarget ? effectiveInitialMessageId : undefined}
+                initialTargetMessageQuery={hasCompleteInitialMessageTarget ? effectiveInitialMessageQuery : undefined}
+                searchRequestId={searchRequestId}
+                initialPendingRequestId={pendingRequestId}
+                onInitialPendingRequestConsumed={handleInitialPendingRequestConsumed}
+                onLoadMessageContext={loadMessageContextForSession}
+                onInitialTargetConsumed={handleInitialMessageConsumed}
+                onSearchTargetDismissed={handleSearchTargetDismissed}
+                onAbortRestore={(text) => {
+                    sendErrorIdRef.current += 1
+                    setSendErrors((prev) => ({
+                        ...prev,
+                        [sessionId]: {
+                            id: sendErrorIdRef.current,
+                            text,
+                            message: t('chat.sendError.aborted'),
+                            code: 'abort',
+                            scheduledAt: null,
+                            deliveryMode: 'queue',
+                            mutationStarted: true,
+                            restoreSuppressed: false
+                        }
+                    }))
+                }}
+            />
+        </Suspense>
     )
 }
 
@@ -1169,16 +1195,18 @@ function NewSessionPage() {
                     </div>
                 ) : null}
 
-                <NewSession
-                    api={api}
-                    machines={machines}
-                    isLoading={machinesLoading}
-                    onCancel={handleCancel}
-                    onSuccess={handleSuccess}
-                    onChooseFolder={handleChooseFolder}
-                    initialDirectory={initialDirectory}
-                    initialMachineId={initialMachineId}
-                />
+                <Suspense fallback={null}>
+                    <NewSession
+                        api={api}
+                        machines={machines}
+                        isLoading={machinesLoading}
+                        onCancel={handleCancel}
+                        onSuccess={handleSuccess}
+                        onChooseFolder={handleChooseFolder}
+                        initialDirectory={initialDirectory}
+                        initialMachineId={initialMachineId}
+                    />
+                </Suspense>
             </div>
         </div>
     )
@@ -1217,13 +1245,15 @@ function BrowsePage() {
             </div>
 
             <div className="flex-1 min-h-0">
-                <WorkspaceBrowser
-                    api={api}
-                    machines={machines}
-                    machinesLoading={machinesLoading}
-                    onStartSession={handleStartSession}
-                    initialMachineId={initialMachineId}
-                />
+                <Suspense fallback={null}>
+                    <WorkspaceBrowser
+                        api={api}
+                        machines={machines}
+                        machinesLoading={machinesLoading}
+                        onStartSession={handleStartSession}
+                        initialMachineId={initialMachineId}
+                    />
+                </Suspense>
             </div>
         </div>
     )

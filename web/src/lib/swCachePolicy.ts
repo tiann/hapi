@@ -25,10 +25,38 @@ export const cacheOkResponsesOnly = {
         cachedResponse ? await withoutRedirectHistory(cachedResponse) : null,
 }
 
-/** Never cache an SSO login page or redirect in place of a syntax module. */
+function hasExpectedContentType(response: Response, pattern: RegExp): boolean {
+    if (response.status !== 200 || response.redirected) {
+        return false
+    }
+    return pattern.test(response.headers.get('content-type') ?? '')
+}
+
+/** Never cache an SSO login page or redirect in place of a syntax or lazy JS module. */
 export const cacheJavaScriptOnly = {
     cacheWillUpdate: async ({ response }: { response: Response }): Promise<Response | null> =>
-        response.status === 200 && !response.redirected
-        && /^(?:text|application)\/(?:javascript|ecmascript)(?:;|$)/i.test(response.headers.get('content-type') ?? '')
-            ? response : null,
+        hasExpectedContentType(response, /^(?:text|application)\/(?:javascript|ecmascript)(?:;|$)/i)
+            ? response
+            : null,
+}
+
+/** Never cache an SSO login page or redirect in place of a stylesheet asset. */
+export const cacheCssOnly = {
+    cacheWillUpdate: async ({ response }: { response: Response }): Promise<Response | null> =>
+        hasExpectedContentType(response, /^text\/css(?:;|$)/i)
+            ? response
+            : null,
+}
+
+/** Matches both static KaTeX fonts and Vite-hashed WOFF2 font assets emitted in dist/assets/. */
+export function isRuntimeCachedFontPath(pathname: string): boolean {
+    return /\/assets\/(?:fonts\/)?[^/]+\.woff2$/i.test(pathname)
+}
+
+/** Never cache an SSO login page or redirect in place of a webfont asset. */
+export const cacheFontOnly = {
+    cacheWillUpdate: async ({ response }: { response: Response }): Promise<Response | null> =>
+        hasExpectedContentType(response, /^(?:font\/woff2?|application\/(?:font-woff2?|x-font-woff2?|octet-stream))(?:;|$)/i)
+            ? response
+            : null,
 }

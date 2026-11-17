@@ -1,5 +1,5 @@
 import { BranchConversationDialog } from '@/components/BranchConversationDialog'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
@@ -138,10 +138,13 @@ import { usePiModels } from '@/hooks/queries/usePiModels'
 import { useOpencodeReasoningEffortOptions } from '@/hooks/queries/useOpencodeReasoningEffortOptions'
 import { queryKeys } from '@/lib/query-keys'
 import { useVoiceOptional } from '@/lib/voice-context'
-import { AgentTerminalView } from '@/components/AgentTerminal/AgentTerminalView'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { VoiceBackendSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
 import { isRemoteTerminalSupported } from '@/utils/terminalSupport'
+
+const AgentTerminalView = lazy(() =>
+    import('@/components/AgentTerminal/AgentTerminalView').then((m) => ({ default: m.AgentTerminalView }))
+)
 
 type SessionModelSelection = { provider: string; modelId: string } | string | null
 
@@ -830,6 +833,7 @@ function SessionChatInner(props: SessionChatProps) {
     })
     const [outlineOpen, setOutlineOpen] = useState(props.initialOutlineOpen ?? false)
     const [terminalVisible, setTerminalVisible] = useState(false)
+    const [terminalEverOpened, setTerminalEverOpened] = useState(false)
     const pendingRequestSequenceRef = useRef(0)
     const [pendingRequestNavigation, setPendingRequestNavigation] = useState<PendingRequestNavigation | null>(() =>
         props.initialPendingRequestId
@@ -846,6 +850,16 @@ function SessionChatInner(props: SessionChatProps) {
         setOutlineOpen(true)
         props.onInitialOutlineConsumed?.()
     }, [props.initialOutlineOpen, props.onInitialOutlineConsumed])
+
+    useEffect(() => {
+        if (!canViewAgentTerminal) {
+            setTerminalEverOpened(false)
+            return
+        }
+        if (terminalVisible) {
+            setTerminalEverOpened(true)
+        }
+    }, [canViewAgentTerminal, terminalVisible])
 
     useEffect(() => {
         if (!props.initialPendingRequestId) return
@@ -2363,13 +2377,15 @@ function SessionChatInner(props: SessionChatProps) {
                 <AbortRestoreConsumer messages={normalizedMessages} onAbortRestore={props.onAbortRestore ?? (() => {})} />
                 <DragDropZone disabled={(!props.session.active && !inactiveCanResume) || props.isSending || pendingSchedule != null || isScratchlistParking}>
                     <div className="relative flex min-h-0 flex-1 flex-col">
-                        {canViewAgentTerminal && (
+                        {canViewAgentTerminal && (terminalVisible || terminalEverOpened) && (
                             // SessionChatInner is keyed by session.id, so switching sessions remounts this subtree.
-                            <AgentTerminalView
-                                sessionId={props.session.id}
-                                visible={terminalVisible}
-                                className={terminalVisible ? 'flex-1 min-h-0' : 'hidden'}
-                            />
+                            <Suspense fallback={null}>
+                                <AgentTerminalView
+                                    sessionId={props.session.id}
+                                    visible={terminalVisible}
+                                    className={terminalVisible ? 'flex-1 min-h-0' : 'hidden'}
+                                />
+                            </Suspense>
                         )}
                         <div className={(terminalVisible && canViewAgentTerminal) ? 'hidden' : 'flex min-h-0 flex-1 flex-col'}>
 

@@ -4,6 +4,7 @@ import type { ElevenLabsLanguage } from '@/lib/languages'
 let voiceSession: VoiceSession | null = null
 let voiceSessionStarted = false
 let currentSessionId: string | null = null
+let startAttemptSeq = 0
 
 export interface VoiceStartContext {
     bootstrap: string
@@ -26,8 +27,10 @@ export async function startRealtimeSession(
         return
     }
 
+    const attemptSeq = ++startAttemptSeq
     try {
         currentSessionId = sessionId
+        voiceSessionStarted = false
         await voiceSession.startSession({
             sessionId,
             initialContext: normalized.bootstrap,
@@ -37,29 +40,39 @@ export async function startRealtimeSession(
             voiceId,
             voiceName
         })
-        voiceSessionStarted = true
+        if (attemptSeq === startAttemptSeq) {
+            voiceSessionStarted = true
+        }
     } catch (error) {
         console.error('[Voice] Failed to start realtime session:', error)
-        currentSessionId = null
-        voiceSessionStarted = false
+        if (attemptSeq === startAttemptSeq) {
+            currentSessionId = null
+            voiceSessionStarted = false
+        }
     }
 }
 
 export async function stopRealtimeSession() {
+    const stopSeq = ++startAttemptSeq
     if (!voiceSession) {
+        currentSessionId = null
+        voiceSessionStarted = false
         return
     }
 
     try {
         await voiceSession.endSession()
-        currentSessionId = null
-        voiceSessionStarted = false
+        if (stopSeq === startAttemptSeq) {
+            currentSessionId = null
+            voiceSessionStarted = false
+        }
     } catch (error) {
         console.error('[Voice] Failed to stop realtime session:', error)
     }
 }
 
 export function resetRealtimeSessionState() {
+    startAttemptSeq += 1
     currentSessionId = null
     voiceSessionStarted = false
 }

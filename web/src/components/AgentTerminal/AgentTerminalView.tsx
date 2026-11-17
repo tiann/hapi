@@ -152,6 +152,20 @@ export function AgentTerminalView(props: AgentTerminalViewProps) {
         return () => unsubscribe()
     }, [visible, resubscribe, unsubscribe])
 
+    useEffect(() => {
+        // When AgentTerminalView mounts lazily on first open, visible is already
+        // true before the socket finishes connecting; send size once connected.
+        if (!visible || state.status !== 'connected') return
+        const rafId = requestAnimationFrame(() => {
+            fitAddonRef.current?.fit()
+            const terminal = terminalRef.current
+            if (terminal) {
+                resizeRef.current(terminal.cols, terminal.rows)
+            }
+        })
+        return () => cancelAnimationFrame(rafId)
+    }, [visible, state.status])
+
     const statusColor = state.status === 'connected'
         ? 'bg-emerald-500'
         : state.status === 'connecting'
