@@ -1,6 +1,6 @@
 import type { PropsWithChildren } from 'react'
 import { useMemo, useRef } from 'react'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import {
     AssistantRuntimeProvider,
@@ -31,6 +31,7 @@ vi.mock('@radix-ui/react-popover', () => ({
 }))
 
 const BASE_AT = 1_700_000_000_000
+const onBranchConversation = vi.fn()
 
 function buildMessages(): NormalizedMessage[] {
     return [1, 2, 3].flatMap((turn) => {
@@ -145,6 +146,7 @@ function Harness({
                     showSessionSummaryInChat: false,
                     disabled: false,
                     onRefresh: () => {},
+                    onBranchConversation,
                     onForkConversation: async () => {},
                     onRewindConversation: async () => {},
                     isLatestCompletedBoundary: (id: string) => id === boundaryId,
@@ -221,5 +223,42 @@ describe('UserMessage historical fork affordance', () => {
         await screen.findAllByText(/Fixture user message \d/)
         expect(document.querySelectorAll('[data-testid="message-fork"]')).toHaveLength(0)
         expect(screen.queryByRole('button', { name: 'Rewind' })).toBeNull()
+    })
+
+    it.each([
+        ['pending Claude rewind', {
+            flavor: 'claude',
+            claudeRewind: { targetLocalId: 'u-local-1', truncateFromLocalId: 'u-local-2', keepBoundary: 'a-uuid-1', droppedPrompts: ['drop'] },
+        }],
+        ['diverged conversation history', {
+            flavor: 'claude',
+            conversationHistoryDiverged: true,
+        }],
+    ])('hides Branch on both user and assistant cards during %s', async (_label, overrides) => {
+        const boundaryProbe: { id: string | null } = { id: null }
+        render(
+            <I18nProvider>
+                <Harness boundaryProbe={boundaryProbe} metadataOverrides={overrides} />
+            </I18nProvider>,
+        )
+        await screen.findAllByText(/Fixture user message \d/)
+        expect(screen.queryByRole('button', { name: 'Branch with options' })).toBeNull()
+    })
+
+    it('keeps Branch enabled on the latest user and assistant cards when history is unblocked', async () => {
+        const boundaryProbe: { id: string | null } = { id: null }
+        render(
+            <I18nProvider>
+                <Harness boundaryProbe={boundaryProbe} />
+            </I18nProvider>,
+        )
+        const user = await screen.findByText('Fixture user message 3')
+        const assistant = await screen.findByText('Fixture assistant reply 3')
+        const userCard = user.closest<HTMLElement>('[data-hapi-message-role="user"]')
+        const assistantCard = assistant.closest<HTMLElement>('[data-hapi-message-role="assistant"]')
+        expect(userCard).not.toBeNull()
+        expect(assistantCard).not.toBeNull()
+        expect(within(userCard!).getByRole('button', { name: 'Branch with options' })).toBeEnabled()
+        expect(within(assistantCard!).getByRole('button', { name: 'Branch with options' })).toBeEnabled()
     })
 })

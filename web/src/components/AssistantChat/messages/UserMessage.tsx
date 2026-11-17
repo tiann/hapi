@@ -183,7 +183,7 @@ export function HappyUserMessage() {
                 align="end"
                 copyText={hasText ? text : undefined}
                 messageElementId={elementId}
-                onBranch={ctx.onBranchConversation && !isTranscriptEcho && (localId || sourceMessageId) && invokedAt != null
+                onBranch={!historyLocked && ctx.onBranchConversation && !isTranscriptEcho && (localId || sourceMessageId) && invokedAt != null
                     ? () => localId ? ctx.onBranchConversation?.(localId) : ctx.onBranchConversation?.(undefined, sourceMessageId) : undefined}
                 showFork={showFork}
                 allowForkWhileRunning={showHistoricalFork && ctx.metadata?.flavor === 'codex'}
