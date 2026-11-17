@@ -711,6 +711,47 @@ it('fetches one older context page before first paint when the cold page is tool
         expect(getMessageWindowState(id).preferLatestOnActivation).toBe(false)
     })
 
+    it('keeps the catch-up flag across a failed re-entry sync and clears it once a retry lands', async () => {
+        const id = sessionId('reentry-failure')
+        const cached = makeAgentMessage({ id: 'cached', seq: 40, at: 40_000 })
+        sessionStorage.setItem(`hapi:message-window:v2:${id}`, JSON.stringify({
+            messages: [cached],
+            hasMore: true,
+            oldestPositionAt: 40_000,
+            oldestPositionSeq: 40,
+            newestPositionAt: 40_000,
+            newestPositionSeq: 40,
+            epoch: 3,
+            requiresLatestReset: false
+        }))
+        setMessageViewMode(id, 'history')
+        activateMessageWindow(id)
+        expect(getMessageWindowState(id).preferLatestOnActivation).toBe(true)
+
+        await syncTailMessages(createApi(vi.fn(async () => {
+            throw new Error('offline')
+        })), id)
+        // The failed tail sync settles (no endless spinner state), surfaces a
+        // warning, and deliberately retains the catch-up flag so the next
+        // sync still prefers the authoritative latest page over the stale
+        // cache.
+        expect(getMessageWindowState(id).isSyncingTail).toBe(false)
+        expect(getMessageWindowState(id).preferLatestOnActivation).toBe(true)
+        expect(getMessageWindowState(id).warning).toBeTruthy()
+
+        const latest = makeAgentMessage({ id: 'latest', seq: 2_040, at: 2_040_000 })
+        await syncTailMessages(createApi(vi.fn(async () => await latestResponse([latest], {
+            limit: 20,
+            epoch: 3,
+            hasMore: true,
+            nextBeforeAt: 1_841_000,
+            nextBeforeSeq: 1_841
+        }))), id)
+        expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual(['latest'])
+        expect(getMessageWindowState(id).preferLatestOnActivation).toBe(false)
+        expect(getMessageWindowState(id).isSyncingTail).toBe(false)
+    })
+
     it('retains Codex round duration through persisted re-entry and a user-free latest tail', async () => {
         const id = sessionId('codex-round-duration')
         const tail: DecryptedMessage[] = [
