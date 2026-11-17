@@ -28,6 +28,8 @@ vi.mock('@/api/voice', () => ({
     fetchVoiceToken: (...args: unknown[]) => fetchVoiceTokenMock(...args),
 }))
 
+let latestConversationCallback: ((conversation: unknown | null) => void) | null = null
+
 vi.mock('@/realtime/ElevenLabsConversationBridge', () => {
     bridgeLoadCount += 1
     return {
@@ -37,13 +39,17 @@ vi.mock('@/realtime/ElevenLabsConversationBridge', () => {
             onConversationChange: (conversation: unknown | null) => void
         }) => {
             useEffect(() => {
+                latestConversationCallback = onConversationChange
                 onConversationChange({
                     startSession: startSessionMock,
                     endSession: endSessionMock,
                     sendContextualUpdate: sendContextualUpdateMock,
                     sendUserMessage: sendUserMessageMock,
                 })
-                return () => onConversationChange(null)
+                return () => {
+                    latestConversationCallback = null
+                    onConversationChange(null)
+                }
             }, [onConversationChange])
             return null
         },
@@ -144,5 +150,41 @@ describe('RealtimeVoiceSession lazy bridge lifecycle', () => {
         })
 
         expect(startSessionMock).not.toHaveBeenCalled()
+    })
+
+    it('keeps a starting session alive when ElevenLabs rerenders with a fresh wrapper object', async () => {
+        fetchVoiceTokenMock.mockResolvedValue({ allowed: true, token: 'tok-live' })
+        const connectDeferred = deferred<string>()
+        startSessionMock.mockImplementationOnce(() => connectDeferred.promise)
+
+        render(<RealtimeVoiceSession api={api} micMuted={false} />)
+
+        const startPromise = registeredSession!.startSession({
+            sessionId: 'sess-3',
+            initialContext: 'hello context',
+        })
+
+        await act(async () => {
+            await Promise.resolve()
+            await Promise.resolve()
+            await Promise.resolve()
+        })
+
+        expect(startSessionMock).toHaveBeenCalledTimes(1)
+
+        // Simulate @elevenlabs/react useConversation returning a brand-new wrapper instance on rerender.
+        await act(async () => {
+            latestConversationCallback?.({
+                startSession: startSessionMock,
+                endSession: endSessionMock,
+                sendContextualUpdate: sendContextualUpdateMock,
+                sendUserMessage: sendUserMessageMock,
+            })
+            connectDeferred.resolve('conv-live')
+            await startPromise
+        })
+
+        expect(endSessionMock).not.toHaveBeenCalled()
+        expect(sendContextualUpdateMock).toHaveBeenCalled()
     })
 })

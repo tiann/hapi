@@ -25,11 +25,8 @@ let voiceSessionGeneration = 0
 // Store reference for status updates
 let statusCallback: StatusCallback | null = null
 
-function assertActiveGeneration(
-    generation: number,
-    expectedConversation?: ReturnType<typeof useConversation>
-): void {
-    if (generation !== voiceSessionGeneration || (expectedConversation && conversationInstance !== expectedConversation)) {
+function assertActiveGeneration(generation: number): void {
+    if (generation !== voiceSessionGeneration) {
         statusCallback?.('disconnected')
         resetRealtimeSessionState()
         throw new Error('Realtime voice session cancelled')
@@ -138,11 +135,16 @@ class RealtimeVoiceSessionImpl implements VoiceSession {
         // Use conversation token from server (private agent flow)
         try {
             const conversation = await conversationPromise
-            assertActiveGeneration(generation, conversation)
+            assertActiveGeneration(generation)
+            if (!conversationInstance) {
+                statusCallback?.('disconnected')
+                resetRealtimeSessionState()
+                throw new Error('Realtime voice session cancelled')
+            }
             const conversationId = await conversation.startSession(baseSessionConfig)
-            if (generation !== voiceSessionGeneration || conversationInstance !== conversation) {
-                await conversation.endSession().catch(() => {})
-                assertActiveGeneration(generation, conversation)
+            if (generation !== voiceSessionGeneration || !conversationInstance) {
+                await (conversationInstance ?? conversation).endSession().catch(() => {})
+                assertActiveGeneration(generation)
             }
 
             if (DEBUG) {
@@ -152,9 +154,9 @@ class RealtimeVoiceSessionImpl implements VoiceSession {
             await deliverVoiceSessionContextAfterConnect({
                 streamContextChunks: config.streamContextChunks,
                 initialContext: config.initialContext,
-                sendChunk: (chunk) => conversation.sendContextualUpdate(chunk)
+                sendChunk: (chunk) => (conversationInstance ?? conversation).sendContextualUpdate(chunk)
             })
-            assertActiveGeneration(generation, conversation)
+            assertActiveGeneration(generation)
 
             if (isVoiceProactiveSummaryEnabled()) {
                 this.sendTextMessage(
