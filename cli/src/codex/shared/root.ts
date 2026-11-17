@@ -58,7 +58,6 @@ export class SharedCodexRoot {
     private readonly ancestry = new Map<string, string | null>();
     private heartbeat?: ReturnType<typeof setInterval>;
     private work: Promise<unknown> = Promise.resolve();
-    private pendingInputWork = 0;
     private notifications = Promise.resolve();
     private currentTurn: string | undefined;
     // Ephemeral observations only: dequeue/compaction never prove acceptance.
@@ -140,7 +139,6 @@ export class SharedCodexRoot {
             } else void this.reconnect();
         });
         this.session.onUserMessage((message, localId) => {
-            this.pendingInputWork++;
             this.work = this.work.catch(() => {}).then(async () => {
                 await this.bound;
                 if (this.closed || this.stopping) return;
@@ -165,8 +163,7 @@ export class SharedCodexRoot {
                 });
                 await this.queue.enqueue(id, buildUserInputFromMessage(resolved), this.interrupted,
                     text.trim().startsWith('/') || message.meta?.isNativeQueuedMessage ? undefined : batchKey);
-            }).catch(error => this.notice(`Message not confirmed: ${error instanceof Error ? error.message : error}. Inspect the queue before retrying.`))
-                .finally(() => { this.pendingInputWork--; });
+            }).catch(error => this.notice(`Message not confirmed: ${error instanceof Error ? error.message : error}. Inspect the queue before retrying.`));
         });
         this.session.onCancelQueuedMessage(async id => { await this.bound; return this.stopping ? 'indeterminate' : this.queue.cancel(id); });
         // Absence from history is NOT proof an uncertain mutation failed.
@@ -397,7 +394,12 @@ export class SharedCodexRoot {
             }
             await projection.notification(method, params); return;
         }
-        if (method === 'turn/completed') emitReadyIfIdle(this.session, () => this.hasPendingInput());
+        // Decide once, when this completing turn is still the latest root turn: ready
+        // unless the native queue holds an entry about to run. After an interrupt
+        // the queue is paused, so its entries wait for the user instead.
+        if (method === 'turn/completed' && (!this.currentTurn || record(p.turn).id === this.currentTurn)) {
+            emitReadyIfIdle(this.session, () => this.hasPendingInput());
+        }
         if (method === 'thread/name/updated' && (typeof p.threadName === 'string' || p.threadName === null)) {
             const name = p.threadName ?? undefined; this.session.updateMetadata(metadata => ({ ...metadata, name }));
         }
@@ -429,7 +431,10 @@ export class SharedCodexRoot {
         this.publishCompaction(); this.alive();
     }
     private hasPendingInput(): boolean {
-        return this.pendingInputWork > 0 || this.queue.hasPendingInput();
+        // After an interrupt the native queue is paused: its entries wait for the
+        // user, so they are not input about to run.
+        if (this.interrupted) return false;
+        return this.queue.hasPendingInput();
     }
     private invalidateHistory(): void {
         this.stopAccepting();

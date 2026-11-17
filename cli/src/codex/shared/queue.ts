@@ -118,7 +118,7 @@ export class SharedCodexQueue {
     owns(id: string): boolean { return id in this.entries; }
     state(id: string): Entry['state'] | undefined { return this.entries[id]?.state; }
     hasPendingInput(): boolean {
-        return Object.values(this.entries).some(entry => entry.state === 'queued' || entry.state === 'unknown');
+        return Object.values(this.entries).some(entry => entry.state === 'queued');
     }
 
     private nativeIdFor(entry: Entry): string | undefined {
