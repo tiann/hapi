@@ -12,6 +12,7 @@ vi.mock('cross-spawn', () => ({
 
 import { getHapiRunnerProcessIdentity, killProcess, killProcessTreeByPid } from './process'
 import { monotonicTimeMs } from './time'
+import { stopTrackedAcpProcesses } from '@/opencode/opencodeRemoteLauncher'
 
 vi.mock('@/utils/time', async (original) => ({
     ...await original<typeof import('@/utils/time')>(), monotonicTimeMs: () => Date.now()
@@ -67,6 +68,48 @@ describe('preparation signal deadline on POSIX', () => {
         await vi.advanceTimersByTimeAsync(2500)
         expect(await stopped).toBe(false)
         expect(vi.mocked(process.kill).mock.calls.filter(([, signal]) => signal !== 0)).toEqual([[5544, 'SIGTERM']])
+    })
+    it('keeps the original two-second SIGTERM grace without an external deadline', async () => {
+        spawnSyncMock.mockImplementation((command: string) => command === 'pgrep'
+            ? { status: 1, stdout: '', stderr: '' }
+            : completed('S'))
+        const stopped = killProcessTreeByPid(5544, false)
+        await vi.advanceTimersByTimeAsync(1_999)
+        expect(vi.mocked(process.kill).mock.calls.filter(([, signal]) => signal !== 0)).toEqual([[5544, 'SIGTERM']])
+        await vi.advanceTimersByTimeAsync(1)
+        expect(vi.mocked(process.kill).mock.calls.filter(([, signal]) => signal !== 0)).toEqual([
+            [5544, 'SIGTERM'], [5544, 'SIGKILL']
+        ])
+        await vi.advanceTimersByTimeAsync(1_000)
+        await expect(stopped).resolves.toBe(false)
+    })
+    it('fails a tracked-tree fence closed when its bounded pgrep probe times out', async () => {
+        const timedOut = Object.assign(new Error('pgrep timed out'), { code: 'ETIMEDOUT' })
+        spawnSyncMock.mockImplementation((command: string) => {
+            if (command === 'ps') return completed('S')
+            if (command === 'pgrep') return { status: null, stdout: '', stderr: '', error: timedOut }
+            return completed('')
+        })
+        const startedAt = Date.now()
+        const stopped = stopTrackedAcpProcesses([{ pid: 5544, startMarker: 'S' }], 50)
+        await vi.advanceTimersByTimeAsync(100)
+        await expect(stopped).resolves.toBe(false)
+        expect(Date.now() - startedAt).toBeLessThan(300)
+        const pgrepCall = spawnSyncMock.mock.calls.find(([command]) => command === 'pgrep')
+        expect(pgrepCall?.[2]).toMatchObject({ timeout: 100 })
+    })
+    it('signals every tracked tree before waiting for any one tree', async () => {
+        spawnSyncMock.mockImplementation((command: string) => command === 'pgrep'
+            ? { status: 1, stdout: '', stderr: '' }
+            : completed('S'))
+        const stopped = stopTrackedAcpProcesses([
+            { pid: 5544, startMarker: 'S' },
+            { pid: 5545, startMarker: 'S' }
+        ], 50)
+        expect(vi.mocked(process.kill).mock.calls.filter(([, signal]) => signal === 'SIGKILL').map(([pid]) => pid))
+            .toEqual([5544, 5545])
+        await vi.advanceTimersByTimeAsync(100)
+        await expect(stopped).resolves.toBe(false)
     })
 })
 

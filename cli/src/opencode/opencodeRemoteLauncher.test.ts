@@ -3979,6 +3979,246 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         statusMessage.mockRestore();
     });
 
+    it('reports an admitted v2 compact as interrupted when child exit follows poll completion but precedes history reconciliation', async () => {
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'fixture-password';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        compactHarness.preExistingCompactionIds = [];
+        compactHarness.triggerV2Impl = async () => ({ kind: 'admitted' as const, compactionId: 'compaction-1' });
+        let releasePoll!: (result: { status: 'unverified'; reason: string }) => void;
+        compactHarness.pollImpl = async () => await new Promise(resolve => { releasePoll = resolve; });
+        let releaseReconcile!: () => void;
+        const reconcileHold = new Promise<void>(resolve => { releaseReconcile = resolve; });
+        const statusMessage = vi.spyOn(MessageBuffer.prototype, 'addMessage');
+        let restoreReconcile: (() => void) | undefined;
+        const { session, rpcHandlers } = createSessionStub([
+            { message: '', mode: createCompactMode('ollama/x') }
+        ], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        const launcherPromise = opencodeRemoteLauncher(session as never, { recoveryBackoffsMs: [0, 0, 0] } as never);
+
+        try {
+            await vi.waitFor(() => expect(compactHarness.v2Calls).toHaveLength(1));
+            await vi.waitFor(() => expect(compactHarness.v2VerifyCalls).toHaveLength(1));
+            const reconcile = vi.spyOn(OpencodeConversationHistory.prototype, 'reconcileHistory').mockImplementation(async () => {
+                await reconcileHold;
+                return 0;
+            });
+            restoreReconcile = () => reconcile.mockRestore();
+            releasePoll({ status: 'unverified', reason: 'server stopped responding' });
+            await vi.waitFor(() => expect(reconcile).toHaveBeenCalled());
+            await vi.waitFor(() => expect(harness.unexpectedExitHandler).toBeTypeOf('function'));
+            harness.unexpectedExitHandler!(new Error('ACP process exited (signal=SIGKILL)'), { childProcessExited: true });
+            expect(statusMessage.mock.calls.filter(([message, kind]) =>
+                message === 'Compaction was interrupted because the agent process restarted. Run /compact again if needed.'
+                    && kind === 'status'
+            )).toHaveLength(1);
+            releaseReconcile();
+            const { createOpencodeBackend } = await import('./utils/opencodeBackend');
+            await vi.waitFor(() => expect(createOpencodeBackend).toHaveBeenCalledTimes(2));
+            expect(compactHarness.v2Calls).toHaveLength(1);
+            await expect(rpcHandlers.get(RPC_METHODS.Switch)!({})).resolves.toBeUndefined();
+            await expect(launcherPromise).resolves.toBe('switch');
+        } finally {
+            releaseReconcile();
+            restoreReconcile?.();
+            statusMessage.mockRestore();
+        }
+    });
+
+    it('waits for the tracked v2 serve descendant before resuming after its ACP child exits', async () => {
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'fixture-password';
+        harness.backendPid = process.pid;
+        harness.servePid = process.pid;
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        compactHarness.preExistingCompactionIds = [];
+        compactHarness.triggerV2Impl = async () => ({ kind: 'admitted' as const, compactionId: 'compaction-1' });
+        compactHarness.pollImpl = (opts) => new Promise((resolve) => {
+            opts.signal?.addEventListener('abort', () => {
+                resolve({ status: 'unverified', reason: 'client disconnected' });
+            });
+        });
+        let releaseOldTree!: (stopped: boolean) => void;
+        const oldTreeStopped = new Promise<boolean>(resolve => { releaseOldTree = resolve; });
+        const stopOldTree = vi.fn(async () => await oldTreeStopped);
+        const { session, rpcHandlers } = createSessionStub([
+            { message: '', mode: createCompactMode('ollama/x') }
+        ], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        const launcherPromise = opencodeRemoteLauncher(session as never, {
+            recoveryBackoffsMs: [0, 0, 0], trackedAcpProcessStopper: stopOldTree
+        } as never);
+
+        await vi.waitFor(() => expect(compactHarness.v2Calls).toHaveLength(1));
+        await vi.waitFor(() => expect(harness.unexpectedExitHandler).toBeTypeOf('function'));
+        harness.unexpectedExitHandler!(new Error('ACP process exited (signal=SIGKILL)'), { childProcessExited: true });
+        await vi.waitFor(() => expect(stopOldTree).toHaveBeenCalledWith(
+            [expect.objectContaining({ pid: process.pid, startMarker: expect.any(String) })],
+            2_000
+        ));
+
+        const { createOpencodeBackend } = await import('./utils/opencodeBackend');
+        await new Promise<void>(resolve => setTimeout(resolve, 30));
+        expect(createOpencodeBackend).toHaveBeenCalledTimes(1);
+        releaseOldTree(true);
+        await vi.waitFor(() => expect(createOpencodeBackend).toHaveBeenCalledTimes(2));
+
+        await expect(rpcHandlers.get(RPC_METHODS.Switch)!({})).resolves.toBeUndefined();
+        await expect(launcherPromise).resolves.toBe('switch');
+    });
+
+    it('fails recovery instead of resuming when the tracked v2 serve descendant cannot be confirmed stopped', async () => {
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'fixture-password';
+        harness.backendPid = process.pid;
+        harness.servePid = process.pid;
+        const { session } = createSessionStub([], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        const launcherPromise = opencodeRemoteLauncher(session as never, {
+            recoveryBackoffsMs: [0, 0, 0],
+            trackedAcpProcessStopper: vi.fn(async () => false)
+        } as never);
+
+        await vi.waitFor(() => expect(harness.unexpectedExitHandler).toBeTypeOf('function'));
+        harness.unexpectedExitHandler!(new Error('ACP process exited (signal=SIGKILL)'), { childProcessExited: true });
+
+        await expect(launcherPromise).rejects.toThrow('OpenCode v2 ACP process tree did not exit before recovery');
+        const { createOpencodeBackend } = await import('./utils/opencodeBackend');
+        expect(createOpencodeBackend).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not fence a v2 tree after a transport-only close, preserving unbounded live-child disconnect', async () => {
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'fixture-password';
+        harness.backendPid = process.pid;
+        harness.servePid = process.pid;
+        let releaseDisconnect!: () => void;
+        harness.disconnectImpl = async () => await new Promise<void>(resolve => { releaseDisconnect = resolve; });
+        const stopOldTree = vi.fn(async () => false);
+        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        const launcherPromise = opencodeRemoteLauncher(session as never, {
+            recoveryBackoffsMs: [0, 0, 0], recoveryCleanupTimeoutMs: 10, trackedAcpProcessStopper: stopOldTree
+        } as never);
+
+        await vi.waitFor(() => expect(harness.unexpectedExitHandler).toBeTypeOf('function'));
+        harness.unexpectedExitHandler!(new Error('ACP transport closed'), { childProcessExited: false });
+        await vi.waitFor(() => expect(harness.cleanupEvents).toContain('cleanup:disconnect'));
+        expect(stopOldTree).not.toHaveBeenCalled();
+        await expect(rpcHandlers.get(RPC_METHODS.Switch)!({})).resolves.toBeUndefined();
+        expect(await Promise.race([
+            launcherPromise.then(() => 'settled'),
+            new Promise<'still-pending'>(resolve => setTimeout(() => resolve('still-pending'), 30))
+        ])).toBe('still-pending');
+
+        releaseDisconnect();
+        await expect(launcherPromise).resolves.toBe('switch');
+    });
+
+    it.skipIf(process.platform !== 'linux')('uses one deadline for zombie old-tree members before recovery', async () => {
+        const zombieParent = spawn('python3', ['-c', "import os, time\nfor _ in range(2):\n child = os.fork()\n if child == 0: os._exit(0)\n print(child, flush=True)\ntime.sleep(60)"], { stdio: ['ignore', 'pipe', 'ignore'] });
+        try {
+            const zombiePids = await new Promise<number[]>((resolve, reject) => {
+                let output = '';
+                zombieParent.stdout!.on('data', chunk => {
+                    output += chunk.toString();
+                    const pids = output.trim().split(/\s+/).filter(Boolean).map(Number);
+                    if (pids.length === 2) resolve(pids);
+                });
+                zombieParent.once('error', reject);
+            });
+            await vi.waitFor(() => zombiePids.forEach(pid => expect(readFileSync(`/proc/${pid}/stat`, 'utf8').split(' ')[2]).toBe('Z')));
+            harness.detectedVersion = 'v2';
+            harness.discoveredPort = 41234;
+            harness.discoveredPassword = 'fixture-password';
+            harness.backendPid = zombiePids[0]!;
+            harness.servePid = zombiePids[1]!;
+            const { session, rpcHandlers } = createSessionStub([], { keepOpen: true });
+            session.sessionId = 'acp-session-1';
+            const launcherPromise = opencodeRemoteLauncher(session as never, { recoveryBackoffsMs: [0, 0, 0] } as never);
+
+            await vi.waitFor(() => expect(harness.unexpectedExitHandler).toBeTypeOf('function'));
+            harness.unexpectedExitHandler!(new Error('ACP process exited (signal=SIGKILL)'), { childProcessExited: true });
+            const { createOpencodeBackend } = await import('./utils/opencodeBackend');
+            await vi.waitFor(() => expect(createOpencodeBackend).toHaveBeenCalledTimes(2), { timeout: 1_800 });
+            await expect(rpcHandlers.get(RPC_METHODS.Switch)!({})).resolves.toBeUndefined();
+            await expect(launcherPromise).resolves.toBe('switch');
+        } finally {
+            zombieParent.kill('SIGKILL');
+            await new Promise<void>(resolve => zombieParent.once('exit', () => resolve()));
+        }
+    }, 10_000);
+
+    it('bounds real tracked-tree stopping to one monotonic deadline', async () => {
+        const module = await import('./opencodeRemoteLauncher') as unknown as Record<string, unknown>;
+        const stopper = module.stopTrackedAcpProcesses as undefined | ((processes: Array<{ pid: number; startMarker: string }>, timeoutMs: number) => Promise<boolean>);
+        expect(stopper).toBeTypeOf('function');
+        const marker = getProcessStartMarker(process.pid);
+        expect(marker).toBeTruthy();
+        const kill = vi.spyOn(process, 'kill').mockImplementation(() => true as never);
+        try {
+            const startedAt = Date.now();
+            expect(await stopper!([
+                { pid: process.pid, startMarker: marker! },
+                { pid: process.pid, startMarker: marker! }
+            ], 100)).toBe(false);
+            expect(Date.now() - startedAt).toBeLessThan(1_800);
+        } finally {
+            kill.mockRestore();
+        }
+    }, 10_000);
+
+    it.skipIf(process.platform === 'win32')('stops a matching real child, preserves a mismatched generation, and treats a zombie as stopped', async () => {
+        const module = await import('./opencodeRemoteLauncher') as unknown as Record<string, unknown>;
+        const stopper = module.stopTrackedAcpProcesses as undefined | ((processes: Array<{ pid: number; startMarker: string }>, timeoutMs: number) => Promise<boolean>);
+        expect(stopper).toBeTypeOf('function');
+        const child = spawn('sleep', ['60'], { stdio: 'ignore' });
+        const childPid = child.pid!;
+        const childExited = new Promise<void>(resolve => child.once('exit', () => resolve()));
+        const marker = await vi.waitFor(() => {
+            const value = getProcessStartMarker(childPid);
+            expect(value).toBeTruthy();
+            return value!;
+        });
+        expect(await stopper!([{ pid: childPid, startMarker: marker }], 2_000)).toBe(true);
+        await childExited;
+
+        const reused = spawn('sleep', ['60'], { stdio: 'ignore' });
+        const reusedPid = reused.pid!;
+        try {
+            const reusedMarker = await vi.waitFor(() => {
+                const value = getProcessStartMarker(reusedPid);
+                expect(value).toBeTruthy();
+                return value!;
+            });
+            expect(await stopper!([{ pid: reusedPid, startMarker: `${reusedMarker}-stale` }], 2_000)).toBe(true);
+            expect(reused.exitCode).toBeNull();
+        } finally {
+            reused.kill('SIGKILL');
+            await new Promise<void>(resolve => reused.once('exit', () => resolve()));
+        }
+
+        const zombieParent = spawn('python3', ['-c', "import os, time; child = os.fork();\nif child == 0: os._exit(0)\nprint(child, flush=True)\ntime.sleep(60)"], { stdio: ['ignore', 'pipe', 'ignore'] });
+        try {
+            const zombiePid = await new Promise<number>((resolve, reject) => {
+                zombieParent.stdout!.once('data', chunk => resolve(Number.parseInt(chunk.toString(), 10)));
+                zombieParent.once('error', reject);
+            });
+            await vi.waitFor(() => expect(readFileSync(`/proc/${zombiePid}/stat`, 'utf8').split(' ')[2]).toBe('Z'));
+            const zombieMarker = getProcessStartMarker(zombiePid);
+            expect(zombieMarker).toBeTruthy();
+            expect(await stopper!([{ pid: zombiePid, startMarker: zombieMarker! }], 100)).toBe(true);
+        } finally {
+            zombieParent.kill('SIGKILL');
+            await new Promise<void>(resolve => zombieParent.once('exit', () => resolve()));
+        }
+    }, 10_000);
+
     it('a plain Stop aborts the pre-POST marker snapshot GET and skips summarize because no server-side compaction has started', async () => {
         harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
         let capturedSignal: AbortSignal | undefined;

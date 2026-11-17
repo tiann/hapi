@@ -78,7 +78,7 @@ export function windowsGenerationMayBeAlive(table: WindowsProcessTable | null, p
 
 export type WindowsStopReport = { confirmed: boolean; phase: string; elapsedMs: number; snapshots: number }
 export async function stopWindowsProcessTree(rootPid: number, force: boolean, report?: (result: WindowsStopReport) => void,
-    callerDeadlineMs?: number): Promise<boolean> {
+    callerDeadlineMs?: number, callerNow: () => number = monotonicTimeMs): Promise<boolean> {
     // Includes command startup, queries, signalling and verification, independent
     // of tree size. Each async child is killed when its remaining budget expires.
     const started = performance.now()
@@ -91,7 +91,7 @@ export async function stopWindowsProcessTree(rootPid: number, force: boolean, re
     // The cross-process preparation lease uses the OS-wide clock, not this
     // process's performance origin. Cap budgets without comparing origins.
     const remaining = () => Math.max(0, Math.min(deadline - performance.now(),
-        callerDeadlineMs === undefined ? Infinity : callerDeadlineMs - monotonicTimeMs()))
+        callerDeadlineMs === undefined ? Infinity : callerDeadlineMs - callerNow()))
     const signal = async (pid: number, hard: boolean, tree: boolean) => {
         phase = 'signal'
         return execute('taskkill', [

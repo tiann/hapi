@@ -8,8 +8,17 @@ export const isWindows = (): boolean => process.platform === 'win32';
 
 /** Bound hung WMI/tasklist/ps so a wedged spawn cannot darken the runner (#1911 Overseer B3). */
 const SPAWN_SYNC_TIMEOUT_MS = 10_000;
+const MIN_BOUNDED_PROBE_TIMEOUT_MS = 100;
+export type ProcessDeadlineClock = () => number;
 
-export function isProcessAlive(pid: number): boolean {
+/** Default callers retain the long probe timeout; a recovery fence supplies one shared deadline. */
+function probeTimeoutMs(deadlineMs?: number, now: ProcessDeadlineClock = monotonicTimeMs): number | null {
+  if (deadlineMs === undefined) return SPAWN_SYNC_TIMEOUT_MS;
+  const remaining = deadlineMs - now();
+  return remaining > 0 ? Math.ceil(Math.max(remaining, MIN_BOUNDED_PROBE_TIMEOUT_MS)) : null;
+}
+
+export function isProcessAlive(pid: number, deadlineMs?: number, now?: ProcessDeadlineClock): boolean {
   if (!Number.isFinite(pid) || pid <= 0) {
     return false;
   }
@@ -18,10 +27,12 @@ export function isProcessAlive(pid: number): boolean {
   // liveness probe on win32 and can disagree with the console tree taskkill sees.
   if (isWindows()) {
     try {
+      const timeout = probeTimeoutMs(deadlineMs, now);
+      if (timeout === null) return false;
       const result = spawn.sync(
         'tasklist',
         ['/FI', `PID eq ${pid}`, '/NH'],
-        { stdio: 'pipe', windowsHide: true, encoding: 'utf8', timeout: SPAWN_SYNC_TIMEOUT_MS }
+        { stdio: 'pipe', windowsHide: true, encoding: 'utf8', timeout }
       );
       if (!result.error && result.status === 0) {
         const out = (result.stdout?.toString() ?? '').trim();
@@ -39,6 +50,22 @@ export function isProcessAlive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+/** A POSIX zombie has exited and cannot execute or retain a native session. */
+export function isProcessStopped(pid: number, deadlineMs?: number, now?: ProcessDeadlineClock): boolean {
+  if (deadlineMs !== undefined && probeTimeoutMs(deadlineMs, now) === null) return false;
+  if (!isProcessAlive(pid, deadlineMs, now)) return true;
+  if (isWindows()) return false;
+  const timeout = probeTimeoutMs(deadlineMs, now);
+  if (timeout === null) return false;
+  const result = spawn.sync('ps', ['-p', String(pid), '-o', 'stat='], {
+    stdio: 'pipe',
+    env: { ...process.env, LC_ALL: 'C' },
+    timeout,
+  });
+  if (result.error || result.status !== 0) return false;
+  return result.stdout?.toString().trim().startsWith('Z') ?? false;
 }
 
 /**
@@ -103,8 +130,10 @@ export function getProcessThreadGroupId(pid: number): number | null {
 }
 
 /** Stable marker for one OS PID generation; null means the platform probe failed. */
-export function getProcessStartMarker(pid: number): string | null {
+export function getProcessStartMarker(pid: number, deadlineMs?: number, now?: ProcessDeadlineClock): string | null {
   if (!Number.isInteger(pid) || pid <= 0) return null;
+  const timeout = probeTimeoutMs(deadlineMs, now);
+  if (timeout === null) return null;
   if (isWindows()) {
     // CIM already answers whether this PID has a readable generation. A
     // preceding tasklist adds a process launch without strengthening identity.
@@ -113,18 +142,18 @@ export function getProcessStartMarker(pid: number): string | null {
     const powershell = spawn.sync('powershell', [
       '-NoProfile', '-NonInteractive', '-Command',
       windowsProcessMarkerCimCommand(pid),
-    ], { stdio: 'pipe', windowsHide: true, timeout: SPAWN_SYNC_TIMEOUT_MS });
+    ], { stdio: 'pipe', windowsHide: true, timeout });
     if (!powershell.error && powershell.status === 0) {
       const marker = powershell.stdout?.toString().trim();
       if (marker) return marker;
     }
     return null;
   }
-  if (!isProcessAlive(pid)) return null;
+  if (!isProcessAlive(pid, deadlineMs, now)) return null;
   const result = spawn.sync('ps', ['-p', String(pid), '-o', 'lstart='], {
     stdio: 'pipe',
     env: { ...process.env, LC_ALL: 'C', TZ: 'UTC' },
-    timeout: SPAWN_SYNC_TIMEOUT_MS,
+    timeout,
   });
   if (result.error || result.status !== 0) return null;
   return result.stdout?.toString().trim() || null;
@@ -345,8 +374,8 @@ export function collectWindowsProcessTree(pid: number): number[] | 'scan_failed'
   return parseWindowsProcessTreeStdout((result.stdout ?? '').toString(), n)
 }
 
-function signalAllowed(deadlineMs?: number): boolean {
-  return deadlineMs === undefined || monotonicTimeMs() < deadlineMs;
+function signalAllowed(deadlineMs?: number, now: ProcessDeadlineClock = monotonicTimeMs): boolean {
+  return deadlineMs === undefined || now() < deadlineMs;
 }
 
 async function signalAndWaitWindowsRoot(pid: number, force: boolean, deadlineMs?: number): Promise<void> {
@@ -398,12 +427,14 @@ export async function killProcess(pid: number, force: boolean = false, deadlineM
  * `'scan_failed'` when pgrep could not be run (so callers fail closed
  * instead of verifying root-only — #1911 Opus / Overseer).
  */
-function collectProcessTree(pid: number): number[] | 'scan_failed' {
+function collectProcessTree(pid: number, deadlineMs?: number, now?: ProcessDeadlineClock): number[] | 'scan_failed' {
   const pids: number[] = [];
+  const timeout = probeTimeoutMs(deadlineMs, now);
+  if (timeout === null) return 'scan_failed';
 
   const result = spawn.sync('pgrep', ['-P', pid.toString()], {
     encoding: 'utf8',
-    timeout: SPAWN_SYNC_TIMEOUT_MS,
+    timeout,
   });
   // spawn.sync returns {error} rather than throwing when the binary is missing.
   if (result.error) {
@@ -418,7 +449,7 @@ function collectProcessTree(pid: number): number[] | 'scan_failed' {
     const childPids = result.stdout.trim().split('\n').filter(Boolean).map(Number);
     for (const childPid of childPids) {
       if (!Number.isFinite(childPid) || childPid <= 0) continue;
-      const nested = collectProcessTree(childPid);
+      const nested = collectProcessTree(childPid, deadlineMs, now);
       if (nested === 'scan_failed') return 'scan_failed';
       pids.push(...nested);
     }
@@ -434,20 +465,20 @@ function collectProcessTree(pid: number): number[] | 'scan_failed' {
  * then waits asynchronously for processes to die.
  */
 async function killProcessTree(pid: number, force: boolean, deadlineMs?: number,
-  signal: NodeJS.Signals = 'SIGTERM'): Promise<boolean> {
+  signal: NodeJS.Signals = 'SIGTERM', now?: ProcessDeadlineClock): Promise<boolean> {
   // Collect all PIDs first (sync) - returns in child-first order
-  const pids = collectProcessTree(pid);
+  const pids = collectProcessTree(pid, deadlineMs, now);
   if (pids === 'scan_failed') {
     // Signal the known root anyway (partial kill > zero kill), but never claim
     // stopped without a full-tree verify (#1911 Opus Major / debian-slim no pgrep).
     const killSignal = force ? 'SIGKILL' : signal;
     try {
-      if (!signalAllowed(deadlineMs)) return false;
+      if (!signalAllowed(deadlineMs, now)) return false;
       process.kill(pid, killSignal);
     } catch {
       // already gone
     }
-    await waitForProcessToDie(pid, force, deadlineMs);
+    await waitForProcessToDie(pid, force, deadlineMs, now);
     return false;
   }
 
@@ -457,7 +488,7 @@ async function killProcessTree(pid: number, force: boolean, deadlineMs?: number,
   const killSignal = force ? 'SIGKILL' : signal;
   for (const p of pids) {
     try {
-      if (!signalAllowed(deadlineMs)) return false;
+      if (!signalAllowed(deadlineMs, now)) return false;
       process.kill(p, killSignal);
     } catch {
       // Process may have already exited
@@ -466,10 +497,10 @@ async function killProcessTree(pid: number, force: boolean, deadlineMs?: number,
 
   // Wait for processes to die (async) - wait for root last
   for (const p of pids) {
-    await waitForProcessToDie(p, force, deadlineMs);
+    await waitForProcessToDie(p, force, deadlineMs, now);
   }
 
-  return pids.every((candidate) => !isProcessAlive(candidate));
+  return pids.every((candidate) => isProcessStopped(candidate, deadlineMs, now));
 }
 
 /** Kill a PID and all descendants, verifying the complete tree is gone. */
@@ -481,7 +512,8 @@ export async function killProcessTreeByPid(
   // 4th arg: stop deadline (signal-lease budget) when numeric, else the Windows
   // report fallback used when the 3rd arg is a signal (#1911).
   deadlineOrFallbackReport?: number | ((report: WindowsStopReport) => void),
-  fallbackReport?: (report: WindowsStopReport) => void
+  fallbackReport?: (report: WindowsStopReport) => void,
+  now?: ProcessDeadlineClock
 ): Promise<boolean> {
   const deadlineMs = typeof deadlineOrFallbackReport === 'number' ? deadlineOrFallbackReport : undefined;
   const onReport = typeof signalOrReport === 'function' ? signalOrReport
@@ -491,33 +523,44 @@ export async function killProcessTreeByPid(
   const n = typeof pid === 'number' ? pid : Number(pid)
   if (!Number.isFinite(n) || n <= 0) return false;
   if (isWindows()) {
-    return stopWindowsProcessTree(n, force, onReport, deadlineMs);
+    return stopWindowsProcessTree(n, force, onReport, deadlineMs, now);
   }
-  return killProcessTree(n, force, deadlineMs, signal);
+  return killProcessTree(n, force, deadlineMs, signal, now);
 }
 
 /**
  * Waits for a process to die, escalating if the graceful signal didn't work.
  * POSIX: SIGTERM → SIGKILL. Windows: taskkill /T → taskkill /F /T.
  */
-async function waitForProcessToDie(pid: number, force: boolean, deadlineMs?: number): Promise<void> {
+async function waitForProcessToDie(pid: number, force: boolean, deadlineMs?: number, deadlineClock?: ProcessDeadlineClock): Promise<void> {
   const maxWait = 2000;
   // Windows isProcessAlive shells out to tasklist; keep the poll coarse so a
   // stop cannot burn the runner event loop for seconds (#1911 Overseer).
   const pollInterval = isWindows() ? 100 : 20;
-  let deadline = Date.now() + maxWait;
+  // Callers without an external lease retain the original wall-clock grace.
+  // A recovery fence supplies a cross-process monotonic deadline instead.
+  const usesExternalDeadline = deadlineMs !== undefined;
+  const externalNow = deadlineClock ?? monotonicTimeMs;
+  let deadline = usesExternalDeadline
+    ? Math.min(externalNow() + maxWait, deadlineMs)
+    : Date.now() + maxWait;
+  const now = () => usesExternalDeadline ? externalNow() : Date.now();
 
   // OS probes are synchronous on Windows. Count their time against the
   // grace period too, otherwise twenty slow tasklist calls can turn two
   // seconds of graceful shutdown into a much longer archive request.
-  while (Date.now() < deadline && isProcessAlive(pid)) {
-    const remaining = deadline - Date.now();
+  while (now() < deadline && isProcessAlive(pid, deadlineMs, externalNow)) {
+    const remaining = deadline - now();
     if (remaining <= 0) break;
     await new Promise(r => setTimeout(r, Math.min(pollInterval, remaining)));
   }
 
+  // signal 0 alone counts an unreaped zombie as alive. Probe its state once
+  // after the grace loop, not on every 20 ms poll.
+  if (isProcessStopped(pid, deadlineMs, externalNow)) return;
+
   // Graceful kill didn't finish — escalate (same structure on both platforms).
-  if (!force && isProcessAlive(pid) && signalAllowed(deadlineMs)) {
+  if (!force && signalAllowed(deadlineMs, externalNow)) {
     try {
       if (isWindows()) {
         killProcessWindows(pid, true, deadlineMs);
@@ -527,9 +570,11 @@ async function waitForProcessToDie(pid: number, force: boolean, deadlineMs?: num
     } catch {
       return;
     }
-    deadline = Date.now() + 1000;
-    while (Date.now() < deadline && isProcessAlive(pid)) {
-      const remaining = deadline - Date.now();
+    deadline = usesExternalDeadline
+      ? Math.min(externalNow() + 1000, deadlineMs!)
+      : Date.now() + 1000;
+    while (now() < deadline && isProcessAlive(pid, deadlineMs, externalNow)) {
+      const remaining = deadline - now();
       if (remaining <= 0) break;
       await new Promise(r => setTimeout(r, Math.min(pollInterval, remaining)));
     }

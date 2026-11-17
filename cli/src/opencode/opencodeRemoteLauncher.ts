@@ -57,7 +57,7 @@ import { OpenCodeRewind, OpenCodeRewindSupersededError, OpenCodeRuntimeBlockedEr
 import { OpenCodeRewindSchema } from '@hapi/protocol/schemas';
 import { configuration } from '@/configuration';
 import { join } from 'node:path';
-import { getProcessStartMarker } from '@/utils/process';
+import { getProcessStartMarker, isProcessAlive, isProcessStopped, killProcessTreeByPid, type ProcessDeadlineClock } from '@/utils/process';
 import { fetchOpencodeUserMessages } from './utils/opencodeInputReceipt';
 
 type OpencodeRemoteLauncherOptions = {
@@ -102,7 +102,40 @@ type OpencodeRemoteLauncherOptions = {
     recoveryMaxAttemptsPerWindow?: number;
     /** Test seam. A known-dead child may not keep recovery Switch blocked in teardown. */
     recoveryCleanupTimeoutMs?: number;
+    /** Test seam for the old v2 ACP tree fence after an unexpected child exit. */
+    trackedAcpProcessStopper?: (processes: readonly TrackedAcpProcess[], timeoutMs: number) => Promise<boolean>;
 };
+
+type TrackedAcpProcess = { pid: number; startMarker: string };
+
+const ACP_TREE_EXIT_TIMEOUT_MS = 2_000;
+
+/** Stops exactly the process generations recorded while the ACP root was alive. */
+export async function stopTrackedAcpProcesses(
+    processes: readonly TrackedAcpProcess[],
+    timeoutMs = ACP_TREE_EXIT_TIMEOUT_MS,
+    now: ProcessDeadlineClock = performance.now.bind(performance)
+): Promise<boolean> {
+    // killProcessTreeByPid accepts the shared monotonic deadline, so every
+    // saved PID consumes one bounded cleanup budget rather than 2 s each.
+    const deadline = now() + timeoutMs;
+    const toStop: TrackedAcpProcess[] = [];
+    for (const process of processes) {
+        if (isProcessStopped(process.pid, deadline, now)) continue;
+        const marker = getProcessStartMarker(process.pid, deadline, now);
+        if (marker === process.startMarker) toStop.push(process);
+    }
+    // Start each tree kill before awaiting any one tree's verification. A
+    // stuck root must not leave a later recorded `serve` process unsignalled.
+    await Promise.all(toStop.map(async (process) =>
+        await killProcessTreeByPid(process.pid, true, 'SIGKILL', deadline, undefined, now)
+    ));
+    return processes.every((process) => {
+        if (isProcessStopped(process.pid, deadline, now)) return true;
+        const marker = getProcessStartMarker(process.pid, deadline, now);
+        return marker !== null && marker !== process.startMarker;
+    });
+}
 
 export type AbortStatusDecision = {
     message: string;
@@ -227,6 +260,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     // Null when no compact batch is in flight. Unlike abortController, which
     // interrupts queue waiting, this controller interrupts compact HTTP work.
     private compactAbortController: AbortController | null = null;
+    // Survives the REST controller's finally while history reconciliation
+    // finishes, so a child exit that races a v2 poll still reports the
+    // admitted server-side compact as interrupted.
+    private compactMutationMayBeInFlight = false;
     private roundSummaryAbortController: AbortController | null = null;
     /** Distinguishes an active prompt from read-only post-prompt work for Stop semantics. */
     private roundSummaryPhase: RoundSummaryPhase = 'idle';
@@ -317,6 +354,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private readonly workerId: string;
     private readonly runtimeGate: OpenCodeRuntimeGate;
     private nativeProcess: { pid: number; startMarker: string } | undefined;
+    /** v2 ACP root and descendants captured before a close can reparent them. */
+    private trackedAcpProcesses: TrackedAcpProcess[] = [];
+    private acpTreeTrackingFailed = false;
     private rewind: OpenCodeRewind | null = null;
     private rewindInFlight = false;
     private rewindReconnect: (() => void) | null = null;
@@ -555,6 +595,39 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
+    private captureAcpProcessTree(pids: readonly number[]): void {
+        const tracked = new Map<number, TrackedAcpProcess>();
+        this.acpTreeTrackingFailed = false;
+        for (const pid of pids) {
+            if (!Number.isSafeInteger(pid) || pid <= 0 || tracked.has(pid)) continue;
+            // A PID which is already gone needs no fence.  A live PID whose
+            // identity cannot be recorded, however, cannot safely be killed
+            // after its parent has exited and may have been reparented.
+            if (!isProcessAlive(pid)) continue;
+            const startMarker = getProcessStartMarker(pid);
+            if (!startMarker) {
+                this.acpTreeTrackingFailed = true;
+                continue;
+            }
+            tracked.set(pid, { pid, startMarker });
+        }
+        this.trackedAcpProcesses = [...tracked.values()];
+    }
+
+    private async ensureTrackedAcpProcessesStopped(): Promise<void> {
+        if (!this.trackedAcpProcesses.length && !this.acpTreeTrackingFailed) return;
+        if (this.acpTreeTrackingFailed) {
+            throw new Error('OpenCode v2 ACP process tree could not be identified before child exit');
+        }
+        const stopped = await (this.options.trackedAcpProcessStopper?.(
+            this.trackedAcpProcesses,
+            ACP_TREE_EXIT_TIMEOUT_MS
+        ) ?? stopTrackedAcpProcesses(this.trackedAcpProcesses, ACP_TREE_EXIT_TIMEOUT_MS));
+        if (!stopped) {
+            throw new Error('OpenCode v2 ACP process tree did not exit before recovery');
+        }
+    }
+
     protected async runMainLoop(): Promise<void> {
         const session = this.session;
         const messageBuffer = this.messageBuffer;
@@ -755,6 +828,13 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             }));
             const password = acpPid !== null ? await this.awaitRecoveryStartup(() => readOpencodeV2ServerPassword(acpPid)) : null;
             if (discoveredPort !== null && password) {
+                // Once /compact is available, retain identities for every
+                // currently known member of its ACP tree.  The ACP root can
+                // die before cleanup; its reparented `serve --stdio` child
+                // remains addressable by this saved PID/start-marker pair.
+                if (acpPid !== null) {
+                    this.captureAcpProcessTree([acpPid, ...descendants, ...(servePid !== null ? [servePid] : [])]);
+                }
                 this.v2RestInfo = { baseUrl: `http://127.0.0.1:${discoveredPort}`, password };
             } else {
                 logger.warn('[opencode-remote] opencode v2 internal HTTP API discovery failed; /compact disabled for this session');
@@ -1633,6 +1713,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                             () => {
                                 nativeHistoryMayHaveChanged = true;
                                 this.nativeHistoryUnverified = true;
+                                this.compactMutationMayBeInFlight = true;
                             }
                         );
                         if (!nativeHistoryMayHaveChanged) continue;
@@ -1650,6 +1731,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                             }
                         }
                     } finally {
+                        this.compactMutationMayBeInFlight = false;
                         this.nativeHistoryUnverified = false;
                         session.onThinkingChange(false);
                         if (session.queue.size() === 0 && !this.shouldExit) {
@@ -2650,6 +2732,13 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // ownership before any awaited teardown can open a blind window.
         if (this.unexpectedChildExit || this.options.isRecoveryAttempt) this.options.onRecoveryHandlersCleared?.();
         const failures: unknown[] = [];
+        if (this.unexpectedChildExit && this.confirmedChildProcessExit) {
+            try {
+                await this.ensureTrackedAcpProcessesStopped();
+            } catch (error) {
+                failures.push(error);
+            }
+        }
         if (this.permissionHandler) {
             try {
                 await this.awaitRecoveryCleanup(this.permissionHandler.cancelAll('Session ended'), 'permission cancellation');
@@ -2710,8 +2799,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private handleUnexpectedChildExit(error: Error, details?: { childProcessExited: boolean }): void {
         if (this.shouldExit || this.exitReason || this.unexpectedChildExit) return;
         this.unexpectedChildExit = error;
-        const compactWasOwned = this.compactAbortController !== null
-            && this.compactOperationPhase !== 'idle';
+        const compactWasOwned = (this.compactAbortController !== null
+            && this.compactOperationPhase !== 'idle')
+            || this.compactMutationMayBeInFlight;
         // Unlike a plain Stop, an unexpected child exit makes an owned compact
         // unable to settle: its HTTP request targets the process that just died.
         // Abandon it so the dequeue loop can reach cleanup and recovery; the
