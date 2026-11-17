@@ -3,6 +3,11 @@
 
 package app.hapi.companion.feature.pairing
 
+import app.hapi.protocol.wire.NativePasskeys
+import app.hapi.companion.feature.passkey.boundPasskeyOptions
+import app.hapi.companion.feature.passkey.FakePasskeyPlatform
+import app.hapi.companion.feature.passkey.PasskeyCeremonyException
+import app.hapi.companion.feature.passkey.PasskeyIssue
 import app.hapi.data.api.ApiError
 import app.hapi.data.auth.HubRegistry
 import app.hapi.data.auth.InMemoryCredentialStore
@@ -11,6 +16,7 @@ import app.hapi.protocol.pairing.BindLink
 import app.hapi.protocol.wire.AuthResponse
 import app.hapi.protocol.wire.AuthUser
 import app.hapi.protocol.wire.HubHealthResponse
+import app.hapi.protocol.wire.PasskeyLoginResponse
 import app.hapi.protocol.wire.SUPPORTED_PROTOCOL_VERSION
 import java.io.IOException
 import kotlin.test.Test
@@ -25,6 +31,8 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.After
 import org.junit.Before
 
@@ -44,6 +52,19 @@ private class FakePairingClient : PairingClient {
     override suspend fun authenticate(accessToken: String): AuthResponse {
         authCalls += accessToken
         return authResult(accessToken)
+    }
+
+    var loginOptionsResult: () -> String = { boundPasskeyOptions(HUB, "login") }
+    var loginVerifyResult: (JsonObject) -> PasskeyLoginResponse = {
+        PasskeyLoginResponse(token = "jwt-passkey", user = AuthUser(id = 1), passkeySession = "ps-1")
+    }
+    val verifyBodies = mutableListOf<JsonObject>()
+
+    override suspend fun passkeyLoginOptions(): String = loginOptionsResult()
+
+    override suspend fun passkeyLoginVerify(response: JsonObject): PasskeyLoginResponse {
+        verifyBodies += response
+        return loginVerifyResult(response)
     }
 }
 
@@ -223,5 +244,125 @@ class PairingViewModelTest {
         assertEquals("new-token", credentials?.accessToken)
         assertEquals("jwt-2", credentials?.jwt)
         assertEquals(listOf(HUB), registry.state.value.hubs)
+    }
+
+    // ------------------------------------------------------------ passkeys --
+
+    @Test
+    fun `passkey sign-in stores only the passkey session and activates the hub`() = runVmTest {
+        val platform = FakePasskeyPlatform()
+        val vm = viewModel()
+
+        vm.signInWithPasskey("https://LocalHost:3006/", platform)
+        assertEquals(PairingUiState.Validating, vm.state.value)
+        advanceUntilIdle()
+
+        assertEquals(PairingUiState.Success(HUB), vm.state.value)
+        assertEquals(1, platform.getRequests.size, "validated options are handed to the platform")
+        assertEquals(NativePasskeys.ceremonyOptions(client.loginOptionsResult(), HUB, "login"), platform.getRequests.single())
+        assertTrue(client.authCalls.isEmpty(), "no access-token exchange on the passkey path")
+
+        val verified = client.verifyBodies.single()
+        assertEquals("Y3JlZA", verified["rawId"]?.jsonPrimitive?.content)
+
+        val credentials = credentialStore.get(HUB)
+        assertNull(credentials?.accessToken)
+        assertEquals("ps-1", credentials?.passkeySession)
+        assertEquals("jwt-passkey", credentials?.jwt)
+        assertEquals(1_234L, credentials?.jwtObtainedAtMs)
+        assertEquals(HUB, registry.activeHubUrl)
+    }
+
+    @Test
+    fun `passkey sign-in replaces an earlier access-token pairing`() = runVmTest {
+        val vm = viewModel()
+        vm.pair(HUB, "tok")
+        advanceUntilIdle()
+
+        vm.signInWithPasskey(HUB, FakePasskeyPlatform())
+        advanceUntilIdle()
+
+        val credentials = credentialStore.get(HUB)
+        assertNull(credentials?.accessToken)
+        assertEquals("ps-1", credentials?.passkeySession)
+    }
+
+    @Test
+    fun `foreign relying party is refused before the platform ceremony`() = runVmTest {
+        client.loginOptionsResult = { """{"challenge":"Y2g","rpId":"evil.example"}""" }
+        val platform = FakePasskeyPlatform()
+        val vm = viewModel()
+
+        vm.signInWithPasskey(HUB, platform)
+        advanceUntilIdle()
+
+        assertEquals(
+            PairingUiState.Error(PairingError.Passkey(PasskeyIssue.RpMismatch("evil.example"))),
+            vm.state.value,
+        )
+        assertTrue(platform.getRequests.isEmpty())
+        assertNull(credentialStore.get(HUB))
+    }
+
+    @Test
+    fun `hub without passkeys reports NoneRegistered`() = runVmTest {
+        client.loginOptionsResult = { throw ApiError.from(404, """{"error":"no_passkeys"}""") }
+        val vm = viewModel()
+
+        vm.signInWithPasskey(HUB, FakePasskeyPlatform())
+        advanceUntilIdle()
+
+        assertEquals(PairingUiState.Error(PairingError.Passkey(PasskeyIssue.NoneRegistered)), vm.state.value)
+        assertTrue(registry.state.value.hubs.isEmpty())
+    }
+
+    @Test
+    fun `dismissed system sheet returns to idle silently`() = runVmTest {
+        val platform = FakePasskeyPlatform().apply {
+            getResult = { throw PasskeyCeremonyException.Cancelled() }
+        }
+        val vm = viewModel()
+
+        vm.signInWithPasskey(HUB, platform)
+        advanceUntilIdle()
+
+        assertEquals(PairingUiState.Idle, vm.state.value)
+        assertTrue(client.verifyBodies.isEmpty())
+        assertNull(credentialStore.get(HUB))
+    }
+
+    @Test
+    fun `no matching passkey on the device gets a friendly error`() = runVmTest {
+        val platform = FakePasskeyPlatform().apply {
+            getResult = { throw PasskeyCeremonyException.NoCredential() }
+        }
+        val vm = viewModel()
+
+        vm.signInWithPasskey(HUB, platform)
+        advanceUntilIdle()
+
+        assertEquals(
+            PairingUiState.Error(PairingError.Passkey(PasskeyIssue.NoCredentialOnDevice)),
+            vm.state.value,
+        )
+    }
+
+    @Test
+    fun `revoked passkey is distinguished from a failed verification`() = runVmTest {
+        client.loginVerifyResult = { throw ApiError.from(401, """{"error":"passkey_revoked"}""") }
+        val vm = viewModel()
+        vm.signInWithPasskey(HUB, FakePasskeyPlatform())
+        advanceUntilIdle()
+        assertEquals(PairingUiState.Error(PairingError.Passkey(PasskeyIssue.Revoked)), vm.state.value)
+
+        client.loginVerifyResult = { throw ApiError.from(401, """{"error":"Passkey challenge expired"}""") }
+        vm.dismissError()
+        vm.signInWithPasskey(HUB, FakePasskeyPlatform())
+        advanceUntilIdle()
+        assertEquals(
+            PairingUiState.Error(PairingError.Passkey(PasskeyIssue.VerificationFailed)),
+            vm.state.value,
+        )
+        assertNull(credentialStore.get(HUB))
     }
 }

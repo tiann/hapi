@@ -11,6 +11,7 @@ import { exportSettings, importSettings, SETTINGS_STORAGE_KEYS } from './setting
 const NOT_SETTINGS_KEYS = new Set([
     // Credentials, hub, device-bound state
     'hapi_access_token::',
+    'hapi_passkey_session::',
     'hapi_hub_url',
     'hapi.push.disabled',
     'hapi.push.vapidKey',
@@ -93,6 +94,7 @@ describe('settings export/import', () => {
         localStorage.setItem('hapi-appearance', 'dark')
         localStorage.setItem('hapi-machine-labels', '{"m1":"Laptop"}')
         localStorage.setItem('hapi_access_token::https://hub', 'secret')
+        localStorage.setItem('hapi_passkey_session::https://hub', 'secret')
         const file = exportSettings()
         expect(file.settings).toEqual({ 'hapi-appearance': 'dark', 'hapi-machine-labels': '{"m1":"Laptop"}' })
 

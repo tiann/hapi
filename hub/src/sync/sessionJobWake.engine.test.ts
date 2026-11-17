@@ -107,6 +107,40 @@ describe('SyncEngine job terminal wake scheduling (#1489)', () => {
         store.close()
     })
 
+    it('drops the wake while a turn is running and never posts', async () => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('wake-busy', { path: '/tmp', flavor: 'cursor' }, null, 'default')
+
+        const engine = stubEngine(store)
+        const sessions = (engine as unknown as { _sessions: Map<string, { id: string; namespace: string; active: boolean; thinking?: boolean }> })._sessions
+        sessions.set(session.id, { id: session.id, namespace: 'default', active: true, thinking: true })
+
+        const sendCalls: string[] = []
+        ;(engine as unknown as {
+            sendMessage: (id: string, payload: { text: string }) => Promise<void>
+        }).sendMessage = async (_id, payload) => {
+            sendCalls.push(payload.text)
+        }
+
+        engine.upsertSessionJob(session.id, 'batch', {
+            label: 'batch',
+            status: 'running',
+            runId: 'run-busy',
+            wakeOnTerminal: true,
+        } satisfies AttachedJobUpsert)
+        engine.patchSessionJob(session.id, 'batch', {
+            status: 'completed',
+            expectedRunId: 'run-busy',
+        })
+
+        await new Promise((r) => setTimeout(r, 100))
+        expect(sendCalls).toEqual([])
+        // The claim is settled, so an idle flip later cannot re-fire it.
+        expect(store.sessionJobs.get(session.id, 'batch')?.wakeEmittedRunId).toBe('run-busy')
+
+        store.close()
+    })
+
     it('releases claim on no_machine_online and retries after recovery', async () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('wake-retry', { path: '/tmp', flavor: 'cursor' }, null, 'default')

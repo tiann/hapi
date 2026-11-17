@@ -656,6 +656,11 @@
     <string name="pairing_notice_token_revoked">Сопряжение этого устройства отозвано — токен доступа хаба изменился. Сопрягите заново, чтобы продолжить.</string>
     <string name="pairing_notice_retry_exhausted">Хаб продолжал отклонять сессию этого устройства. Сопрягите заново, чтобы продолжить.</string>
     <string name="pairing_notice_missing_credentials">Сохранённые учётные данные для этого хаба пропали. Сопрягите заново, чтобы продолжить.</string>
+    <string name="pairing_passkey_entry">Войти с ключом доступа</string>
+    <string name="pairing_passkey_title">Вход с ключом доступа</string>
+    <string name="pairing_passkey_hint">Введите адрес хаба и выберите ключ доступа, сохранённый для него этим приложением (Настройки → Ключи доступа на сопряжённом устройстве). Ключи, созданные в веб-приложении, работают только там.</string>
+    <string name="pairing_passkey_button">Продолжить с ключом доступа</string>
+    <string name="pairing_notice_passkey_session_invalid">Вход по ключу доступа завершён — ключ удалён, токен доступа хаба изменился или сессия истекла. Войдите снова, чтобы продолжить.</string>
 
     <!-- New session form notices (B-M3d) -->
     <string name="new_session_error_worktree_missing">Для сессий worktree нужен существующий каталог репозитория.</string>
@@ -794,4 +799,34 @@
     <string name="runner_skew_binary_updated_hint">(на диске уже более новая версия CLI — раннер скоро перезапустится сам)</string>
     <string name="runner_skew_upgrade_cli_first">(на диске ещё нет более новой версии CLI — установите/обновите на этом хосте)</string>
     <string name="runner_skew_restart_failed">Не удалось перезапустить раннер</string>
+
+    <!-- Passkeys: sign-in errors + Settings → Passkeys -->
+    <string name="passkey_error_none_registered">У этого хаба ещё нет ключей доступа приложения. Сначала выполните сопряжение по токену доступа, затем добавьте ключ в разделе Настройки → Ключи доступа.</string>
+    <string name="passkey_error_no_credential">На этом устройстве нет ключа доступа для этого хаба.</string>
+    <string name="passkey_error_unavailable">Ключи доступа недоступны на этом устройстве. Убедитесь, что настроен менеджер паролей, например Google Password Manager.</string>
+    <string name="passkey_error_rp_mismatch">Хаб запросил ключ доступа для %1$s, а приложение использует только %2$s. Обновите хаб и попробуйте снова.</string>
+    <string name="passkey_error_revoked">Этот ключ доступа перестал работать, так как токен доступа хаба изменился. Выполните сопряжение с новым токеном и добавьте новый ключ.</string>
+    <string name="passkey_error_verification_failed">Хаб не смог проверить ключ доступа. Попробуйте снова.</string>
+    <string name="passkey_error_already_registered">Этот ключ доступа уже зарегистрирован в хабе.</string>
+    <string name="passkey_error_unreachable">Не удалось связаться с хабом. Проверьте сеть и попробуйте снова.</string>
+    <string name="passkey_error_http">Запрос ключа доступа не удался (HTTP %1$d). Попробуйте снова через мгновение.</string>
+    <string name="passkey_error_failed">Запрос ключа доступа не удался.</string>
+    <string name="passkey_error_failed_detail">Запрос ключа доступа не удался: %1$s</string>
+    <string name="settings_passkeys">Ключи доступа</string>
+    <string name="settings_passkeys_summary">Вход в этот хаб без токена доступа</string>
+    <string name="settings_passkeys_description">Ключи доступа позволяют приложению входить в этот хаб без токена доступа. Они привязаны к текущему токену доступа хаба: после его смены ключи становятся неактивными.</string>
+    <string name="settings_passkeys_add">Добавить ключ доступа</string>
+    <string name="settings_passkeys_add_message">Назовите ключ, чтобы потом его узнать.</string>
+    <string name="settings_passkeys_name_label">Название</string>
+    <string name="settings_passkeys_add_confirm">Продолжить</string>
+    <string name="settings_passkeys_empty">Ключей доступа пока нет.</string>
+    <string name="settings_passkeys_dates">Создан %1$s · Использован %2$s</string>
+    <string name="settings_passkeys_dates_unused">Создан %1$s · Не использовался</string>
+    <string name="settings_passkeys_tag_inactive">Неактивен</string>
+    <string name="settings_passkeys_unnamed">Ключ без названия</string>
+    <string name="settings_passkeys_delete_title">Удалить ключ доступа</string>
+    <string name="settings_passkeys_delete_message">Удалить «%1$s»? Всем, кто вошёл с ним, придётся войти снова. Ключ может остаться в менеджере паролей — удалите его там отдельно.</string>
+    <string name="settings_passkeys_delete_confirm">Удалить</string>
+    <string name="settings_passkeys_added">Ключ доступа добавлен.</string>
+    <string name="settings_passkeys_deleted">Ключ доступа удалён.</string>
 </resources>

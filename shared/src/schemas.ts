@@ -98,6 +98,19 @@ export const MetadataSchema = z.object({
     // (`claude --resume <id> --fork-session`). Lets the web list mark the new
     // session as a branch of `<id>` instead of an unrelated duplicate.
     forkedFrom: z.string().optional(),
+    // Portable branches carry visible reference context, never native session ids.
+    conversationBranch: z.object({
+        sourceSessionId: z.string(),
+        messageLocalId: z.string().optional(),
+        messageId: z.string().optional(),
+        boundary: z.enum(['before', 'after']),
+        mode: z.literal('visible-text'),
+        requestFingerprint: z.string(),
+        state: z.enum(['launching', 'started', 'uncertain']),
+        createdAt: z.number(),
+        messageCount: z.number().int().nonnegative(),
+        workspace: z.enum(['current', 'worktree'])
+    }).optional(),
     codexSessionId: z.string().optional(),
     // A bridge to an externally owned app-server, never an owned cold-resume target.
     codexRuntime: z.object({
