@@ -8,6 +8,10 @@ final class PairingAttempt {
     private(set) var isPairing = false
     var failure: PairingFailure?
 
+    init(failure: PairingFailure? = nil) {
+        self.failure = failure
+    }
+
     func pair(_ model: AppModel, hubUrl: String, accessToken: String) {
         guard !isPairing else { return }
         isPairing = true
@@ -26,9 +30,11 @@ final class PairingAttempt {
         }
     }
 
-    /// URL-only passkey sign-in. Dismissing the system sheet is not an
-    /// error: the form simply returns to its idle state.
-    func signInWithPasskey(_ model: AppModel, hubUrl: String) {
+    /// Single-ceremony passkey sign-in. Without `hubUrl` the hub comes from
+    /// the selected passkey (``PairingFailure/passkeyHubAddressRequired`` when
+    /// it cannot); with one, the passkey must belong to that hub. Dismissing
+    /// the system sheet is not an error: the form returns to its idle state.
+    func signInWithPasskey(_ model: AppModel, hubUrl: String? = nil) {
         guard !isPairing else { return }
         isPairing = true
         failure = nil

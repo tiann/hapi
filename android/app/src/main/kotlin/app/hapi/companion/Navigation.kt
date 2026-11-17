@@ -15,6 +15,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -61,6 +62,7 @@ import app.hapi.companion.feature.pairing.PairingScreen
 import app.hapi.companion.feature.pairing.PasskeySignInScreen
 import app.hapi.companion.feature.passkey.CredentialManagerPasskeyPlatform
 import app.hapi.companion.feature.passkey.findActivity
+import app.hapi.companion.feature.pairing.PairingError
 import app.hapi.companion.feature.pairing.PairingUiState
 import app.hapi.companion.feature.pairing.PairingViewModel
 import app.hapi.companion.feature.pairing.QrScanScreen
@@ -711,6 +713,19 @@ fun HapiNavigation() {
                     }
                 }
                 NavigateHomeOnSuccess(navController, state)
+                val context = LocalContext.current
+                // Passkey sign-in starts the single system sheet right here.
+                // A passkey failure (incl. "enter the Hub address") continues
+                // on the passkey screen, which shares this ViewModel's state.
+                // Plain remember: returning to this screen must not re-navigate.
+                var passkeyStarted by remember { mutableStateOf(false) }
+                LaunchedEffect(state, passkeyStarted) {
+                    if (!passkeyStarted || state == PairingUiState.Validating) return@LaunchedEffect
+                    passkeyStarted = false
+                    if ((state as? PairingUiState.Error)?.error is PairingError.Passkey) {
+                        navController.navigate(Routes.PAIRING_PASSKEY)
+                    }
+                }
 
                 PairingScreen(
                     state = state,
@@ -722,7 +737,12 @@ fun HapiNavigation() {
                     },
                     onScanQr = { navController.navigate(Routes.PAIRING_SCAN) },
                     onManualEntry = { navController.navigate(Routes.PAIRING_MANUAL) },
-                    onPasskeySignIn = { navController.navigate(Routes.PAIRING_PASSKEY) },
+                    onPasskeySignIn = {
+                        context.findActivity()?.let { activity ->
+                            passkeyStarted = true
+                            viewModel.signInWithPasskey(null, CredentialManagerPasskeyPlatform(activity))
+                        }
+                    },
                     onPairPrefill = viewModel::pairFromPrefill,
                     onSwitchToPrefilledHub = viewModel::switchToPrefilledHub,
                     onDismissPrefill = viewModel::dismissPrefill,

@@ -1,6 +1,6 @@
 import { webcrypto } from 'node:crypto'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
-import { encodePasskeyChallenge, passkeyBase64url, PASSKEY_RP_ID } from '@hapi/protocol/passkey'
+import { encodePasskeyChallenge, encodePasskeyUserHandle, passkeyBase64url, PASSKEY_RP_ID } from '@hapi/protocol/passkey'
 import { parseCeremonyRequest } from './request'
 
 beforeAll(() => { vi.stubGlobal('crypto', webcrypto) })
@@ -29,8 +29,7 @@ describe('static passkey bridge', () => {
         }
     })
     it('validates registration account binding and strips RP/attestation/extension choices', async () => {
-        const prefix = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(hub)))
-        const bytes = new Uint8Array(64); bytes.set(prefix)
+        const bytes = await encodePasskeyUserHandle(hub, new Uint8Array(16))
         const input = {
             ...request('register'), options: {
                 challenge: request('register').options.challenge, rp: { id: PASSKEY_RP_ID, name: 'untrusted' },
@@ -47,3 +46,4 @@ describe('static passkey bridge', () => {
         }
     })
 })
+

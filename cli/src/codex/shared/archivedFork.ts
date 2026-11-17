@@ -6,7 +6,8 @@ import type { ForkArchivedCodexRequest, ForkArchivedCodexResponse } from '@hapi/
 import { ApiClient } from '@/api/api'
 import { CodexAppServerClient } from '../codexAppServerClient'
 import { initializeSharedClient } from './launch'
-import { codexHome, withThreadOwnership } from './registry'
+import { codexHome, runtimeDirectory, withThreadOwnership } from './registry'
+import { SharedCodexQueue } from './queue'
 import { record, string } from './gateway'
 
 const JournalSchema = z.object({
@@ -36,7 +37,8 @@ async function readHistory(client: NativeClient, threadId: string): Promise<Reco
 /** Separated from transport/locks so failure and recovery paths are testable. */
 export async function performArchivedFork(
     client: NativeClient, request: ForkArchivedCodexRequest, journal: ArchivedForkJournal,
-    save: () => Promise<void>, assertSourceInactive: () => Promise<void>
+    save: () => Promise<void>, assertSourceInactive: () => Promise<void>,
+    resolveBoundary?: (nativeId: string, content: unknown) => Promise<string | undefined>
 ): Promise<string> {
     if (JSON.stringify(journal.request) !== JSON.stringify(request)) throw new Error('Archived fork reservation does not match this request')
     if (journal.done && journal.nativeSessionId) return journal.nativeSessionId
@@ -70,7 +72,8 @@ export async function performArchivedFork(
             const user = (Array.isArray(selected?.items) ? selected.items.map(record) : []).find(item => item.type === 'userMessage')
             const localId = string(user?.clientId ?? user?.clientUserMessageId)
                 ?? (user?.id ? `codex:${request.sourceThreadId}:user:${user.id}` : undefined)
-            if (index < 0 || localId !== request.boundary.localId
+            const boundaryId = localId && resolveBoundary ? await resolveBoundary(localId, user?.content) : localId
+            if (index < 0 || boundaryId !== request.boundary.localId
                 || turns.slice(0, index + 1).some(turn => !['completed', 'interrupted', 'failed'].includes(string(turn.status) ?? ''))) {
                 throw new Error('Historical fork boundary is missing, unfinished, or inside a steered native turn')
             }
@@ -152,7 +155,17 @@ export async function forkArchivedCodex(request: ForkArchivedCodexRequest, allow
             // attempt is safe to release, but interrupted native work is not.
             if (!await allowsDirectory()) throw new Error('Directory is outside workspace roots')
             await initializeSharedClient(client)
-            return { nativeSessionId: await performArchivedFork(client, request, journal, save, assertSourceInactive) }
+            return { nativeSessionId: await performArchivedFork(client, request, journal, save, assertSourceInactive, async (id, content) => {
+                // The source session owns this ledger. Read accepted aliases only;
+                // do not reconcile, save, or acknowledge an archived source.
+                if (request.sourceSessionId.includes('/') || request.sourceSessionId.includes('\\')) {
+                    throw new Error('Invalid source session id for archived history')
+                }
+                const queue = new SharedCodexQueue(client, request.sourceThreadId,
+                    join(runtimeDirectory(), 'queues', `${request.sourceSessionId}.queue.json`), () => {}, () => {})
+                await queue.load()
+                return queue.originalBoundaryId(id, content)
+            }) }
         } catch (error) {
             return failure(error, journal)
         } finally { await client.disconnect({ gracefulTimeoutMs: 2_000 }) }

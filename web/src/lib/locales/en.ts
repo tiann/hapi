@@ -1169,6 +1169,8 @@ export default {
   'settings.display.description': 'Appearance, typography, and session list preferences.',
   'settings.display.typography': 'Typography',
   'settings.display.sessions': 'Session list',
+  'settings.display.smoothIndicators': 'Smooth list animations',
+  'settings.display.smoothIndicators.desc': 'Fill in frames between the low-rate ticker steps for the activity spinner and breathing dots (GPU-composited; off gives the strictest power saving)',
   'settings.display.appearance': 'Appearance',
   'settings.display.appearanceMode': 'Appearance mode',
   'settings.display.appearance.system': 'Follow System',

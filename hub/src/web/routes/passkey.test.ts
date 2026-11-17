@@ -3,7 +3,10 @@ import { createHash, randomBytes } from 'node:crypto'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { PASSKEY_ORIGIN, PASSKEY_RP_ID } from '@hapi/protocol/passkey'
+import {
+    createPasskeyNativeLoginChallenge, encodePasskeyChallenge, PASSKEY_NATIVE_LOGIN_MAX_AGE_MS, PASSKEY_NATIVE_LOGIN_MAX_SKEW_MS,
+    PASSKEY_ORIGIN, PASSKEY_RP_ID, passkeyBase64url, passkeyUserHandleHub, validatePasskeyUserHandle
+} from '@hapi/protocol/passkey'
 import { Hono } from 'hono'
 import { SoftAuthenticator } from '../testHelpers/passkeyAuthenticator'
 import { createConfiguration, getConfiguration } from '../../configuration'
@@ -60,23 +63,23 @@ function post(app: Hono<WebAppEnv>, path: string, body: unknown, extra: Record<s
 async function bearer(namespace = 'default') {
     return { authorization: `Bearer ${await signWebJwt(JWT_SECRET, 1, namespace)}` }
 }
-async function nativeOptions(app: Hono<WebAppEnv>, kind: 'register' | 'login', namespace = 'default') {
-    return post(app, `/api/passkey/${kind}/options`, { client: 'native' }, kind === 'register' ? await bearer(namespace) : {})
+async function nativeOptions(app: Hono<WebAppEnv>, kind: 'register', namespace = 'default') {
+    return post(app, `/api/passkey/${kind}/options`, { client: 'native' }, await bearer(namespace))
 }
 async function registerNative(app: Hono<WebAppEnv>, authenticator: SoftAuthenticator, namespace = 'default') {
     const res = await nativeOptions(app, 'register', namespace)
     expect(res.status).toBe(200)
     const options = await res.json() as Options
     expect(options.rp.id).toBe(PASSKEY_RP_ID)
-    expect(Buffer.from(options.user.id, 'base64url')).toHaveLength(64)
+    expect(passkeyUserHandleHub(Buffer.from(options.user.id, 'base64url'))).toBe(ORIGIN)
     expect(options.user.name).toBe(`${namespace === 'default' ? 'hapi' : `hapi:${namespace}`}@${HOST}`)
     const verify = await post(app, '/api/passkey/register/verify', { response: authenticator.create(options), name: 'Laptop' }, await bearer(namespace))
     expect([verify.status, await verify.clone().text()]).toEqual([200, expect.any(String)])
     return options
 }
-async function nativeLogin(app: Hono<WebAppEnv>, authenticator: SoftAuthenticator) {
-    const options = await (await nativeOptions(app, 'login')).json() as Options
-    const assertion = authenticator.get(options)
+/** The app signs its own fresh challenge; no Hub request precedes the ceremony. */
+async function nativeLogin(app: Hono<WebAppEnv>, authenticator: SoftAuthenticator, challenge = createPasskeyNativeLoginChallenge()) {
+    const assertion = authenticator.get({ challenge })
     const res = await post(app, '/api/passkey/login/verify', { response: assertion })
     return { res, assertion }
 }
@@ -90,6 +93,9 @@ async function browserStart(app: Hono<WebAppEnv>, operation: 'register' | 'login
     const url = new URL(body.url)
     expect(url.origin).toBe(PASSKEY_ORIGIN)
     return { request: JSON.parse(decodeURIComponent(url.hash.slice(1))) as { options: Options }, input }
+}
+function browserStartRaw(app: Hono<WebAppEnv>) {
+    return post(app, '/api/passkey/browser/login/start', startBody())
 }
 async function complete(app: Hono<WebAppEnv>, challenge: string, response?: unknown, origin = PASSKEY_ORIGIN) {
     return app.request('/api/passkey/browser/complete', {
@@ -112,6 +118,70 @@ beforeAll(async () => {
 beforeEach(() => { getConfiguration()._setCliApiToken('token-one', 'env', false) })
 
 describe('unified passkeys', () => {
+    it('encodes stable, namespace-isolated Hub locators and hash-binds long addresses', async () => {
+        const { app } = createApp(newStore())
+        const first = await (await nativeOptions(app, 'register')).json() as Options
+        const repeat = await (await nativeOptions(app, 'register')).json() as Options
+        const team = await (await nativeOptions(app, 'register', 'team')).json() as Options
+        expect(first.user.id).toBe(repeat.user.id)
+        expect(team.user.id).not.toBe(first.user.id)
+        for (const options of [first, team]) {
+            expect(passkeyUserHandleHub(Buffer.from(options.user.id, 'base64url'))).toBe(ORIGIN)
+            await validatePasskeyUserHandle(options.user.id, ORIGIN)
+        }
+        const long = `https://${'a'.repeat(43)}.com`
+        const other = createApp(newStore(), { hub: long }).app
+        const opaque = await (await nativeOptions(other, 'register')).json() as Options
+        expect(Buffer.from(opaque.user.id, 'base64url')).toHaveLength(50)
+        expect(passkeyUserHandleHub(Buffer.from(opaque.user.id, 'base64url'))).toBeNull()
+        await validatePasskeyUserHandle(opaque.user.id, long)
+        await expect(validatePasskeyUserHandle(opaque.user.id, ORIGIN)).rejects.toThrow()
+    })
+    it('signs into the App in one ceremony with a self-issued challenge, once and only while fresh', async () => {
+        let now = Date.now()
+        const { app } = createApp(newStore(), { now: () => now })
+        const a = new SoftAuthenticator(PASSKEY_RP_ID, PASSKEY_ORIGIN)
+        await registerNative(app, a)
+        const { res, assertion } = await nativeLogin(app, a, createPasskeyNativeLoginChallenge(now))
+        expect(res.status).toBe(200)
+        expect(passkeyUserHandleHub(Buffer.from(assertion.response.userHandle!, 'base64url'))).toBe(ORIGIN)
+        // Replays are rejected even with a fresh signature counter.
+        expect((await post(app, '/api/passkey/login/verify', { response: assertion })).status).toBe(401)
+        const replay = a.get({ challenge: JSON.parse(Buffer.from(assertion.response.clientDataJSON, 'base64url').toString()).challenge })
+        expect(await (await post(app, '/api/passkey/login/verify', { response: replay })).json()).toEqual({ error: 'Passkey challenge expired' })
+        // Stale or future-dated challenges.
+        expect((await nativeLogin(app, a, createPasskeyNativeLoginChallenge(now - PASSKEY_NATIVE_LOGIN_MAX_AGE_MS - 1))).res.status).toBe(401)
+        expect((await nativeLogin(app, a, createPasskeyNativeLoginChallenge(now + PASSKEY_NATIVE_LOGIN_MAX_SKEW_MS + 1))).res.status).toBe(401)
+        // Malformed / browser-channel / Hub-issued-shape challenges are not accepted here.
+        const encode = (value: unknown) => passkeyBase64url(new TextEncoder().encode(JSON.stringify(value)))
+        const nonce = randomBytes(32).toString('base64url')
+        for (const challenge of [
+            encode({ v: 2, operation: 'login', channel: 'browser', iat: now, nonce }),
+            encode({ v: 1, operation: 'discover', channel: 'native', nonce }),
+            encodePasskeyChallenge({ v: 1, hub: ORIGIN, id: nonce, operation: 'login', channel: 'native', nonce })
+        ]) expect((await nativeLogin(app, a, challenge)).res.status).toBe(401)
+        // A replay is remembered for the whole acceptance window, then forgotten with it.
+        now += PASSKEY_NATIVE_LOGIN_MAX_AGE_MS + PASSKEY_NATIVE_LOGIN_MAX_SKEW_MS + 1
+        expect((await post(app, '/api/passkey/login/verify', { response: a.get({ challenge: createPasskeyNativeLoginChallenge(now) }) })).status).toBe(200)
+        // There is no pre-ceremony native login endpoint.
+        expect([401, 404]).toContain((await post(app, '/api/passkey/login/options', { client: 'native' })).status)
+    })
+    it('rejects concurrent submissions of one native assertion', async () => {
+        const { app } = createApp(newStore())
+        const a = new SoftAuthenticator(PASSKEY_RP_ID, ANDROID_ORIGIN)
+        await registerNative(app, a)
+        const assertion = a.get({ challenge: createPasskeyNativeLoginChallenge() })
+        const results = await Promise.all([1, 2, 3].map(() => post(app, '/api/passkey/login/verify', { response: assertion })))
+        expect(results.map((r) => r.status).sort()).toEqual([200, 401, 401])
+    })
+    it('rejects native login with an unknown passkey or a non-native origin', async () => {
+        const { app } = createApp(newStore())
+        const a = new SoftAuthenticator(PASSKEY_RP_ID, PASSKEY_ORIGIN)
+        expect(await (await nativeLogin(app, a)).res.json()).toEqual({ error: 'Unknown passkey' })
+        await registerNative(app, a)
+        a.origin = 'https://hub.example.com'
+        expect((await nativeLogin(app, a)).res.status).toBe(401)
+    })
     it('logs into web with an App-created passkey; the bridge never gets tokens', async () => {
         const store = newStore()
         const { app } = createApp(store)
@@ -220,7 +290,7 @@ describe('unified passkeys', () => {
         expect((await complete(app, request.options.challenge, a.get(request.options), 'https://evil.example')).status).toBe(400)
         // Wrong origin did not consume the challenge.
         expect((await exchange(app, await complete(app, request.options.challenge, a.get(request.options)))).status).toBe(200)
-        const native = await (await nativeOptions(app, 'login')).json() as Options
+        const native = { challenge: createPasskeyNativeLoginChallenge() }
         expect((await complete(app, native.challenge, a.get(native))).status).toBe(401)
         const browser = await browserStart(app, 'login')
         expect((await post(app, '/api/passkey/login/verify', { response: a.get(browser.request.options) })).status).toBe(401)
@@ -250,8 +320,8 @@ describe('unified passkeys', () => {
         getConfiguration()._setCliApiToken('token-two', 'env', false)
         expect((await exchange(app, redirect)).status).toBe(401)
         expect((await post(app, '/api/auth', { passkeySession: login.passkeySession })).status).toBe(401)
-        expect((await nativeOptions(app, 'login')).status).toBe(404)
-        expect((await post(app, '/api/passkey/login/options', {})).status).toBe(400)
+        expect(await (await nativeLogin(app, a)).res.json()).toEqual({ error: 'passkey_revoked' })
+        expect((await browserStartRaw(app)).status).toBe(404)
         const listed = await (await app.request('/api/passkeys', { headers: await bearer() })).json() as Listed
         expect(listed.passkeys[0].valid).toBe(false)
     })
@@ -278,7 +348,7 @@ describe('unified passkeys', () => {
     it('limits ceremony request bodies', async () => {
         const store = newStore()
         const { app } = createApp(store)
-        expect((await post(app, '/api/passkey/login/options', { padding: 'x'.repeat(128 * 1024) })).status).toBe(413)
+        expect((await post(app, '/api/passkey/login/verify', { padding: 'x'.repeat(128 * 1024) })).status).toBe(413)
     })
 })
 

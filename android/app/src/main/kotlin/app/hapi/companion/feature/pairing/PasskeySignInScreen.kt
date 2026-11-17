@@ -18,6 +18,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -28,22 +29,28 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
+import app.hapi.companion.feature.passkey.PasskeyIssue
 
 /**
- * Passkey sign-in: only the hub URL is needed — the system sheet offers this
- * hub's passkeys (`allowCredentials`), and the hub returns a JWT plus a
- * passkey session that replaces the access token for this hub.
+ * One system passkey sheet signs in: the selected credential names its Hub.
+ * Manual entry stays available for an explicit Hub, and opens by itself when
+ * the chosen passkey cannot name its Hub (long address).
  */
 @Composable
 fun PasskeySignInScreen(
     state: PairingUiState,
     initialHubUrl: String,
-    onSignIn: (hubUrl: String) -> Unit,
+    /** null = let the selected passkey name its Hub. */
+    onSignIn: (hubUrl: String?) -> Unit,
     onBack: () -> Unit,
     onDismissError: () -> Unit,
 ) {
     var hubUrl by rememberSaveable { mutableStateOf(initialHubUrl) }
+    var manual by rememberSaveable { mutableStateOf(false) }
     val validating = state is PairingUiState.Validating
+    val addressRequired =
+        ((state as? PairingUiState.Error)?.error as? PairingError.Passkey)?.issue == PasskeyIssue.HubAddressRequired
+    LaunchedEffect(addressRequired) { if (addressRequired) manual = true }
 
     Surface(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -67,7 +74,7 @@ fun PasskeySignInScreen(
             )
             Spacer(modifier = Modifier.height(24.dp))
 
-            OutlinedTextField(
+            if (manual) OutlinedTextField(
                 value = hubUrl,
                 onValueChange = { hubUrl = it },
                 label = { Text(stringResource(R.string.pairing_hub_url_label)) },
@@ -86,11 +93,14 @@ fun PasskeySignInScreen(
             PairingStatus(state = state, onDismissError = onDismissError)
 
             Button(
-                onClick = { onSignIn(hubUrl) },
-                enabled = !validating && hubUrl.isNotBlank(),
+                onClick = { onSignIn(if (manual) hubUrl else null) },
+                enabled = !validating && (!manual || hubUrl.isNotBlank()),
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(stringResource(R.string.pairing_passkey_button))
+            }
+            TextButton(onClick = { manual = !manual; onDismissError() }, enabled = !validating, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(if (manual) R.string.passkey_find_hub else R.string.passkey_enter_hub))
             }
             Spacer(modifier = Modifier.height(8.dp))
             TextButton(onClick = onBack, enabled = !validating, modifier = Modifier.fillMaxWidth()) {

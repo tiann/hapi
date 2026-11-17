@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import type { ReactElement } from 'react'
 import { RemoteLauncherBase, type LaunchOutcome } from './RemoteLauncherBase'
 
@@ -144,5 +147,139 @@ describe('RemoteLauncherBase.runRespawnLoop', () => {
         })
 
         expect(consumedBy).toEqual([2])
+    })
+})
+
+class TerminalExitLauncher extends TestLauncher {
+    public readonly teardownRejected = vi.fn()
+    protected override onTerminalTeardownRejected(): void { this.teardownRejected() }
+    public async exit(handler: () => Promise<void>): Promise<void> { return this.requestExit('switch', handler) }
+}
+
+class AbortBarrierLauncher extends TestLauncher {
+    public wire(
+        rpc: { registerHandler: (method: string, handler: (params: unknown) => unknown) => void },
+        onAbort: () => Promise<void>,
+        onEntry?: () => void,
+        onRejected?: () => void
+    ): void {
+        this.setupAbortHandlers(rpc as never, { onAbort, onSwitch: async () => {} }, onEntry, onRejected)
+    }
+    public barrier(): Promise<void> {
+        return this.waitForAbortBarrier()
+    }
+}
+
+describe('RemoteLauncherBase terminal teardown rejection hook', () => {
+    it('runs the rejection cleanup when the requestExit handler rejects, and not on success', async () => {
+        const launcher = new TerminalExitLauncher()
+        await expect(launcher.exit(async () => { throw new Error('cancel boom') })).rejects.toThrow('cancel boom')
+        expect(launcher.teardownRejected).toHaveBeenCalledTimes(1)
+        // The rejection still propagates to the caller, and a successful
+        // teardown performs its own cleanup without the hook.
+        await expect(launcher.exit(async () => {})).resolves.toBeUndefined()
+        expect(launcher.teardownRejected).toHaveBeenCalledTimes(1)
+    })
+})
+
+describe('RemoteLauncherBase abort barrier', () => {
+    function wired(onAbort: () => Promise<void>) {
+        const launcher = new AbortBarrierLauncher()
+        const handlers = new Map<string, (params: unknown) => unknown>()
+        let controller = new AbortController()
+        const restore = vi.fn(() => { if (controller.signal.aborted) controller = new AbortController() })
+        launcher.wire({ registerHandler: (method, handler) => { handlers.set(method, handler) } },
+            onAbort, () => controller.abort(), restore)
+        return { launcher, handlers, restore, signal: () => controller.signal }
+    }
+
+    it('restores the dequeue signal and rethrows to the Abort caller when the teardown rejects', async () => {
+        const { launcher, handlers, restore, signal } = wired(async () => { throw new Error('cancel failed') })
+
+        await expect(handlers.get(RPC_METHODS.Abort)!({})).rejects.toThrow('cancel failed')
+
+        expect(restore).toHaveBeenCalledTimes(1)
+        expect(signal().aborted).toBe(false)
+        // The failure is not boxed: the next dequeue is not made to throw.
+        await expect(launcher.barrier()).resolves.toBeUndefined()
+        // A later Stop still works and is serialized normally.
+        await expect(handlers.get(RPC_METHODS.Abort)!({})).rejects.toThrow('cancel failed')
+        expect(restore).toHaveBeenCalledTimes(2)
+    })
+
+    it('does not restore anything when the teardown succeeds', async () => {
+        const { launcher, handlers, restore } = wired(async () => {})
+
+        await handlers.get(RPC_METHODS.Abort)!({})
+
+        expect(restore).not.toHaveBeenCalled()
+        await expect(launcher.barrier()).resolves.toBeUndefined()
+    })
+
+    it('holds the barrier until the rejected teardown has restored the signal', async () => {
+        let rejectTeardown!: () => void
+        const { launcher, handlers, signal } = wired(() => new Promise<void>((_resolve, reject) => {
+            rejectTeardown = () => reject(new Error('cancel failed'))
+        }))
+
+        const stopping = handlers.get(RPC_METHODS.Abort)!({}) as Promise<void>
+        const rejection = expect(stopping).rejects.toThrow('cancel failed')
+        expect(signal().aborted).toBe(true)
+        let passed = false
+        const waiting = launcher.barrier().then(() => { passed = true })
+        await new Promise<void>(resolve => setImmediate(resolve))
+        expect(passed).toBe(false)
+
+        rejectTeardown()
+        await rejection
+        await waiting
+        expect(passed).toBe(true)
+        expect(signal().aborted).toBe(false)
+    })
+
+    it.each([
+        'copilot/copilotRemoteLauncher.ts',
+        'cursor/cursorAcpRemoteLauncher.ts',
+        'cursor/cursorLegacyRemoteLauncher.ts',
+        'grok/grokRemoteLauncher.ts',
+        'dsh/dshRemoteLauncher.ts',
+        'kimi/kimiRemoteLauncher.ts',
+    ])('wires the rejected-cancel restore callback in %s', (file) => {
+        const source = readFileSync(join(__dirname, '../../..', file), 'utf8')
+        const call = source.slice(source.indexOf('this.setupAbortHandlers('))
+        const args = call.slice(0, call.indexOf('this.abortController = new AbortController()') + 60)
+        expect(args).toContain('() => this.abortController.abort()')
+        expect(args).toContain('if (this.abortController.signal.aborted) this.abortController = new AbortController()')
+    })
+
+    it('holds the barrier until an overlapping non-terminal teardown chained behind a terminal one also settles', async () => {
+        const launcher = new AbortBarrierLauncher()
+        const handlers = new Map<string, (params: unknown) => unknown>()
+        let controller = new AbortController()
+        launcher.wire({ registerHandler: (method, handler) => { handlers.set(method, handler) } },
+            () => new Promise<void>((resolve) => { resolveStopTeardown = resolve }),
+            () => controller.abort())
+        let resolveStopTeardown!: () => void
+        let releaseKill!: () => void
+        const killGate = new Promise<void>(resolve => { releaseKill = resolve })
+        const stopped = handlers.get(RPC_METHODS.Abort)!({}) as Promise<void>
+        // kill() chains onto the in-flight Stop barrier instead of overwriting it.
+        const killBarrier = (launcher as unknown as {
+            runAbortUnderBarrier(run: () => Promise<void>): Promise<void>;
+        }).runAbortUnderBarrier(() => killGate)
+        let barrierPassed = false
+        const waiting = launcher.barrier().then(() => { barrierPassed = true })
+        await new Promise<void>(resolve => setImmediate(resolve))
+        expect(barrierPassed).toBe(false)
+        // The kill teardown settling first must NOT unblock the barrier while
+        // the earlier Stop teardown is still running.
+        releaseKill()
+        await killBarrier
+        await new Promise<void>(resolve => setImmediate(resolve))
+        expect(barrierPassed).toBe(false)
+        resolveStopTeardown()
+        await stopped
+        await waiting
+        expect(barrierPassed).toBe(true)
     })
 })

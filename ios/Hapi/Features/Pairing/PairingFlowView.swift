@@ -27,7 +27,10 @@ struct PairingFlowView: View {
         #endif
     }
     @State private var showManualEntry = false
-    @State private var showPasskeySignIn = false
+    @State private var passkeyAttempt = PairingAttempt()
+    @State private var showPasskeyManualEntry = false
+    /// Why the manual passkey form opened, shown at its top.
+    @State private var passkeyManualReason: PairingFailure?
 
     private static let docsURL = URL(string: "https://hapi.run/docs/guide/quick-start")
 
@@ -123,25 +126,61 @@ struct PairingFlowView: View {
                 ManualEntryView()
                     .macSheetSizing()
             }
-            .sheet(isPresented: $showPasskeySignIn) {
-                ManualEntryView(mode: .passkey)
+            .sheet(isPresented: $showPasskeyManualEntry) {
+                ManualEntryView(mode: .passkey, initialFailure: passkeyManualReason)
                     .macSheetSizing()
+            }
+            .onChange(of: passkeyAttempt.failure) { _, failure in
+                // The passkey does not name its hub: ask for the address, then
+                // sign in with a passkey bound to it.
+                guard failure == .passkeyHubAddressRequired else { return }
+                passkeyAttempt.failure = nil
+                openPasskeyManualEntry(reason: failure)
             }
         }
     }
 
-    /// URL-only sign-in for hubs where a passkey was already added
-    /// (Settings → Passkeys after a token pairing).
+    /// One system sheet: the selected passkey (added in Settings → Passkeys
+    /// or the web app) names its hub, so no URL is typed.
+    @ViewBuilder
     private var passkeyButton: some View {
         Button {
-            showPasskeySignIn = true
+            passkeyAttempt.signInWithPasskey(model)
         } label: {
-            Label("Sign in with a Passkey", systemImage: "person.badge.key")
-                .frame(maxWidth: .infinity)
+            Group {
+                if passkeyAttempt.isPairing {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .progressViewStyle(.circular)
+                        Text("Signing in…")
+                    }
+                } else {
+                    Label("Sign in with a Passkey", systemImage: "person.badge.key")
+                }
+            }
+            .frame(maxWidth: .infinity)
         }
         .buttonStyle(.bordered)
         .controlSize(.large)
+        .disabled(passkeyAttempt.isPairing)
         .accessibilityIdentifier("pairing.passkeyEntry")
+
+        if let failure = passkeyAttempt.failure {
+            PairingErrorView(failure: failure)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("pairing.passkeyError")
+            Button("Enter Hub address manually") {
+                passkeyAttempt.failure = nil
+                openPasskeyManualEntry(reason: nil)
+            }
+            .font(.subheadline)
+            .accessibilityIdentifier("pairing.passkeyManual")
+        }
+    }
+
+    private func openPasskeyManualEntry(reason: PairingFailure?) {
+        passkeyManualReason = reason
+        showPasskeyManualEntry = true
     }
 
     private func authFailureBanner(failedHub: String) -> some View {

@@ -696,9 +696,10 @@ describe('SessionRowSummary combined activity and unread indicator', () => {
             act(() => { vi.advanceTimersByTime(LOW_RATE_TICK_MS) })
             expect(spinner.style.transform).toBe('rotate(45deg)')
 
-            // Two ticks so far; six more keep the badge high through frame 8.
+            // Eight ticks total: the badge has breathed most of the way down
+            // (frame 8, phase 7/16 -> triangle 0.125 -> opacity 0.563).
             act(() => { vi.advanceTimersByTime(LOW_RATE_TICK_MS * 6) })
-            expect(badge.style.opacity).toBe('1')
+            expect(badge.style.opacity).toBe('0.563')
             // Frame 9 drops to 0.5.
             act(() => { vi.advanceTimersByTime(LOW_RATE_TICK_MS) })
             expect(badge.style.opacity).toBe('0.5')

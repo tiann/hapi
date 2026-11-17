@@ -1,6 +1,8 @@
 package app.hapi.companion.feature.passkey
 
 import app.hapi.data.api.ApiError
+import app.hapi.protocol.wire.PasskeyHubAddressRequiredException
+import app.hapi.protocol.wire.PasskeyHubMismatchException
 import app.hapi.protocol.wire.PasskeyRpMismatchException
 import java.io.IOException
 
@@ -23,7 +25,7 @@ sealed class PasskeyCeremonyException(message: String?) : Exception(message) {
     /** The user dismissed the sheet — silent, not an error. */
     class Cancelled : PasskeyCeremonyException("cancelled")
 
-    /** No passkey on this device matches the hub's `allowCredentials`. */
+    /** No passkey on this device for the requested relying party. */
     class NoCredential : PasskeyCeremonyException("no credential")
 
     /** No passkey provider / unsupported device configuration. */
@@ -39,16 +41,22 @@ sealed class PasskeyCeremonyException(message: String?) : Exception(message) {
  * localize via `passkeyIssueText`.
  */
 sealed interface PasskeyIssue {
-    /** `404 no_passkeys` — the hub has no app passkeys yet. */
-    data object NoneRegistered : PasskeyIssue
+    /**
+     * The selected passkey does not name its Hub (long address, or an older
+     * handle): sign-in needs the address entered manually.
+     */
+    data object HubAddressRequired : PasskeyIssue
 
-    /** The device has no passkey for this hub. */
+    /** The selected passkey belongs to a Hub other than the one entered. */
+    data object WrongHub : PasskeyIssue
+
+    /** The device has no HAPI passkey. */
     data object NoCredentialOnDevice : PasskeyIssue
 
     /** No passkey provider is available on this device. */
     data object Unavailable : PasskeyIssue
 
-    /** The hub's options target another relying party; ceremony refused. */
+    /** The hub's registration options target another relying party; ceremony refused. */
     data class RpMismatch(val actual: String?) : PasskeyIssue
 
     /** `401 passkey_revoked` — registered under a rotated `CLI_API_TOKEN`. */
@@ -75,13 +83,14 @@ sealed interface PasskeyIssue {
  * [PasskeyIssue]; null for a user cancellation, which must stay silent.
  */
 fun passkeyIssueOf(error: Throwable): PasskeyIssue? = when (error) {
+    is PasskeyHubAddressRequiredException -> PasskeyIssue.HubAddressRequired
+    is PasskeyHubMismatchException -> PasskeyIssue.WrongHub
     is PasskeyCeremonyException.Cancelled -> null
     is PasskeyCeremonyException.NoCredential -> PasskeyIssue.NoCredentialOnDevice
     is PasskeyCeremonyException.Unavailable -> PasskeyIssue.Unavailable
     is PasskeyCeremonyException.Failed -> PasskeyIssue.Failed(error.message)
     is PasskeyRpMismatchException -> PasskeyIssue.RpMismatch(error.actual)
     is ApiError -> when {
-        error.status == 404 && error.code == NO_PASSKEYS -> PasskeyIssue.NoneRegistered
         error.status == 401 && error.code == PASSKEY_REVOKED -> PasskeyIssue.Revoked
         error.status == 401 || error.status == 400 -> PasskeyIssue.VerificationFailed
         error.status == 409 -> PasskeyIssue.AlreadyRegistered
@@ -91,5 +100,4 @@ fun passkeyIssueOf(error: Throwable): PasskeyIssue? = when (error) {
     else -> PasskeyIssue.Failed(error.message)
 }
 
-private const val NO_PASSKEYS = "no_passkeys"
 private const val PASSKEY_REVOKED = "passkey_revoked"

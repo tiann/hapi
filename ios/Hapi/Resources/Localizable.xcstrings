@@ -222,23 +222,6 @@
         }
       }
     },
-    "No passkeys for this hub" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Для этого хаба нет ключей доступа"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "此 Hub 没有通行密钥"
-          }
-        }
-      }
-    },
     "No passkeys yet." : {
       "extractionState" : "manual",
       "localizations" : {
@@ -392,19 +375,19 @@
         }
       }
     },
-    "Sign in to %@ from another device with “Sign in with a Passkey” — only the hub URL is needed. Passkeys work in both the web app and this app." : {
+    "Sign in to %@ from another device with “Sign in with a Passkey” — no access token needed. Passkeys work in both the web app and this app." : {
       "extractionState" : "manual",
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Войдите в %@ с другого устройства через «Войти с ключом доступа» — нужен только URL хаба. Ключи работают и в браузере, и в этом приложении."
+            "value" : "Войдите в %@ с другого устройства через «Войти с ключом доступа» — токен доступа не нужен. Ключи работают и в браузере, и в этом приложении."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在其他设备上通过“使用通行密钥登录”登录 %@，只需 Hub 地址。通行密钥可同时用于网页版和本应用。"
+            "value" : "在其他设备上通过“使用通行密钥登录”登录 %@，无需访问令牌。通行密钥可同时用于网页版和本应用。"
           }
         }
       }
@@ -558,23 +541,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "此 Hub 不支持通行密钥。请更新 Hub 后使用。"
-          }
-        }
-      }
-    },
-    "This hub has no passkeys for the app yet. Pair with the access token, then add a passkey in Settings → Passkeys." : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "ru" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "У этого хаба ещё нет ключей доступа для приложения. Подключитесь с токеном доступа, затем добавьте ключ в Настройки → Ключи доступа."
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "此 Hub 还没有可供本应用使用的通行密钥。请先用访问令牌配对，然后在“设置 → 通行密钥”中添加。"
           }
         }
       }
@@ -12561,6 +12527,91 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "输入内容已发生变化，请检查后重试"
+          }
+        }
+      }
+    },
+    "Enter Hub address manually": {
+      "extractionState": "manual",
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ввести адрес хаба вручную"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "手动输入 Hub 地址"
+          }
+        }
+      }
+    },
+    "Hub address needed" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Нужен адрес хаба"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "需要 Hub 地址"
+          }
+        }
+      }
+    },
+    "Passkey for another hub" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ключ доступа другого хаба"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "属于其他 Hub 的通行密钥"
+          }
+        }
+      }
+    },
+    "This passkey does not include its hub address. Enter the hub URL, then sign in with the same passkey." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Этот ключ доступа не содержит адрес своего хаба. Введите URL хаба и войдите с тем же ключом."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此通行密钥未包含其 Hub 地址。请输入 Hub URL，然后使用同一通行密钥登录。"
+          }
+        }
+      }
+    },
+    "This passkey belongs to a different hub. Choose a passkey for this hub, or check the hub address." : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "ru" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Этот ключ доступа принадлежит другому хабу. Выберите ключ для этого хаба или проверьте адрес."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此通行密钥属于其他 Hub。请选择此 Hub 的通行密钥，或检查 Hub 地址。"
           }
         }
       }

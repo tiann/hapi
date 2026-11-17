@@ -46,6 +46,14 @@ export type CollectedQueueItem = {
     internal?: QueueItemInternal
 };
 
+export type CollectedQueueBatch<T> = {
+    message: string;
+    mode: T;
+    isolate: boolean;
+    hash: string;
+    items: CollectedQueueItem[];
+};
+
 /**
  * A mode-aware message queue that stores messages with their modes.
  * Returns consistent batches of messages with the same mode.
@@ -61,6 +69,9 @@ export class MessageQueue2<T> {
     modeHasher: (mode: T) => string;
     private readonly reservations = new Map<string, QueueReservation<T>>();
     private readonly consumedReservations = new Set<string>();
+    /** localIds dequeued in a deferred-ACK window and not yet settled. */
+    private readonly inFlightLocalIds = new Set<string>();
+    private deferredAckDepth = 0;
     private nextEnqueueOrder = 0;
     private previousEnqueueOrder = -1;
 
@@ -247,7 +258,7 @@ export class MessageQueue2<T> {
     /**
      * Push a message to the beginning of the queue with a mode.
      */
-    unshift(message: string, mode: T, localId?: string): void {
+    unshift(message: string, mode: T, localId?: string, options?: QueueItemOptions): void {
         if (this.closed) {
             throw new Error('Cannot unshift to closed queue');
         }
@@ -261,10 +272,14 @@ export class MessageQueue2<T> {
             modeHash,
             localId,
             isolate: false,
+            internal: options?.internal,
             enqueueOrder: this.previousEnqueueOrder--
         };
         Object.defineProperty(item, 'enqueueOrder', { value: item.enqueueOrder, enumerable: false, writable: true });
         this.queue.unshift(item);
+        if (localId) {
+            this.inFlightLocalIds.delete(localId);
+        }
 
         // Trigger message handler if set
         if (this.onMessageHandler) {
@@ -308,6 +323,9 @@ export class MessageQueue2<T> {
         };
         Object.defineProperty(item, 'enqueueOrder', { value: item.enqueueOrder, enumerable: false, writable: true });
         this.queue.unshift(item);
+        if (localId) {
+            this.inFlightLocalIds.delete(localId);
+        }
 
         if (this.onMessageHandler) {
             this.onMessageHandler(message, mode);
@@ -320,6 +338,25 @@ export class MessageQueue2<T> {
         }
 
         logger.debug(`[MessageQueue2] unshiftIsolated() completed. Queue size: ${this.queue.length}`);
+    }
+
+    /**
+     * Put a batch previously returned by
+     * {@link waitForMessagesAndGetAsString} back at the queue head, in its
+     * original order, with each item's localId and internal flag intact, so a
+     * retry stays connected to its hub row (collectBatch joins same-mode items
+     * into one string but still returns the per-item breakdown). Fires no
+     * consumed ACK: the re-collected batch is ACKed exactly like a fresh one.
+     */
+    unshiftBatch(batch: { mode: T; isolate: boolean; items: CollectedQueueItem[] }): void {
+        for (let i = batch.items.length - 1; i >= 0; i -= 1) {
+            const item = batch.items[i]!;
+            if (batch.isolate) {
+                this.unshiftIsolated(item.message, batch.mode, item.localId, { internal: item.internal });
+            } else {
+                this.unshift(item.message, batch.mode, item.localId, { internal: item.internal });
+            }
+        }
     }
 
     /**
@@ -367,6 +404,14 @@ export class MessageQueue2<T> {
         if (idx !== -1) {
             this.queue.splice(idx, 1);
             return true;
+        }
+        if (this.inFlightLocalIds.has(localId)) {
+            // Dequeued but not yet committed: the launcher owns the row inside
+            // the deferred-ACK window and may still commit it. A cancel can
+            // neither un-send it nor stamp it consumed — the hub keeps the row
+            // in-flight instead of deleting it (which would let a retry
+            // re-emit a message that is about to be delivered anyway).
+            return 'in-flight';
         }
         const reservation = this.reservations.get(localId);
         if (!reservation) {
@@ -564,6 +609,7 @@ export class MessageQueue2<T> {
     reset(options?: { preserveDispatchingReservations?: boolean }): void {
         logger.debug(`[MessageQueue2] reset() called. Clearing ${this.queue.length} messages`);
         this.queue = [];
+        this.inFlightLocalIds.clear();
         this.cancelReservations(options?.preserveDispatchingReservations === true);
         this.closed = false;
 
@@ -619,6 +665,7 @@ export class MessageQueue2<T> {
     close(): void {
         logger.debug(`[MessageQueue2] close() called`);
         this.closed = true;
+        this.inFlightLocalIds.clear();
         this.cancelReservations();
 
         // Notify any waiting caller
@@ -644,12 +691,69 @@ export class MessageQueue2<T> {
     }
 
     /**
+     * Wait for and collect a batch without invoking {@link onBatchConsumed}
+     * immediately. Collected localIds stay marked in-flight until settled via
+     * {@link commitBatch}, {@link releaseBatch}, {@link unshiftBatch},
+     * {@link reset}, or {@link close}.
+     */
+    async waitForDeferredBatch(abortSignal?: AbortSignal): Promise<CollectedQueueBatch<T> | null> {
+        this.deferredAckDepth += 1;
+        try {
+            const batch = await this.waitForMessagesAndGetAsString(abortSignal);
+            if (batch) {
+                this.beginBatch(batch);
+            }
+            return batch;
+        } finally {
+            this.deferredAckDepth -= 1;
+        }
+    }
+
+    /** Mark a dequeued batch's localIds as in-flight for cancel tracking. */
+    beginBatch(batch: Pick<CollectedQueueBatch<T>, 'items'>): void {
+        for (const item of batch.items) {
+            if (item.localId) {
+                this.inFlightLocalIds.add(item.localId);
+            }
+        }
+    }
+
+    /** Clear in-flight marks for a deferred batch and emit its hub ACK. */
+    commitBatch(batch: Pick<CollectedQueueBatch<T>, 'items'>): void {
+        const consumedLocalIds = this.clearInFlightBatch(batch);
+        if (consumedLocalIds.length > 0) {
+            this.onBatchConsumed?.(consumedLocalIds);
+        }
+    }
+
+    /** Clear in-flight marks for a deferred batch that is dropped without ACK. */
+    releaseBatch(batch: Pick<CollectedQueueBatch<T>, 'items'>): void {
+        this.clearInFlightBatch(batch);
+    }
+
+    private clearInFlightBatch(batch: Pick<CollectedQueueBatch<T>, 'items'>): string[] {
+        const localIds: string[] = [];
+        for (const item of batch.items) {
+            if (item.localId) {
+                this.inFlightLocalIds.delete(item.localId);
+                localIds.push(item.localId);
+            }
+        }
+        return localIds;
+    }
+
+    /**
      * Wait for messages and return all messages with the same mode as a single string
      * Returns { message: string, mode: T } or null if aborted/closed
      */
-    async waitForMessagesAndGetAsString(abortSignal?: AbortSignal): Promise<{ message: string, mode: T, isolate: boolean, hash: string, items: CollectedQueueItem[] } | null> {
-        // If we have messages, return them immediately
+    async waitForMessagesAndGetAsString(abortSignal?: AbortSignal): Promise<CollectedQueueBatch<T> | null> {
+        // If we have messages, return them immediately — but never collect for
+        // an aborted signal: collectBatch fires onBatchConsumed, so an aborted
+        // caller must neither ACK nor replay a pending batch.
         if (this.queue.length > 0) {
+            if (abortSignal?.aborted) {
+                return null;
+            }
             return this.collectBatch();
         }
 
@@ -665,13 +769,20 @@ export class MessageQueue2<T> {
             return null;
         }
 
+        // Abort may have landed while we waited; do not collect (and ACK) a
+        // batch in that case — the caller re-loops and drains after the abort
+        // teardown settles.
+        if (abortSignal?.aborted) {
+            return null;
+        }
+
         return this.collectBatch();
     }
 
     /**
      * Collect a batch of messages with the same mode, respecting isolation requirements
      */
-    private collectBatch(): { message: string, mode: T, hash: string, isolate: boolean, items: CollectedQueueItem[] } | null {
+    private collectBatch(): CollectedQueueBatch<T> | null {
         if (this.queue.length === 0) {
             return null;
         }
@@ -713,7 +824,13 @@ export class MessageQueue2<T> {
         // Join all messages with newlines
         const combinedMessage = sameModeMessages.join('\n');
 
-        if (consumedLocalIds.length > 0) {
+        if (this.deferredAckDepth > 0) {
+            // Dequeued inside a deferred-ACK window: cancelByLocalId answers
+            // 'in-flight' until commitBatch/releaseBatch/unshiftBatch/reset/close.
+            for (const id of consumedLocalIds) {
+                this.inFlightLocalIds.add(id);
+            }
+        } else if (consumedLocalIds.length > 0) {
             this.onBatchConsumed?.(consumedLocalIds);
         }
 

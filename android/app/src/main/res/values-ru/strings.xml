@@ -658,7 +658,7 @@
     <string name="pairing_notice_missing_credentials">Сохранённые учётные данные для этого хаба пропали. Сопрягите заново, чтобы продолжить.</string>
     <string name="pairing_passkey_entry">Войти с ключом доступа</string>
     <string name="pairing_passkey_title">Вход с ключом доступа</string>
-    <string name="pairing_passkey_hint">Введите адрес хаба и выберите ключ доступа, сохранённый для него этим приложением (Настройки → Ключи доступа на сопряжённом устройстве). Ключи, созданные в веб-приложении, работают только там.</string>
+    <string name="pairing_passkey_hint">Выберите ключ доступа, чтобы войти в его хаб. Ключи работают и в браузере, и в приложении.</string>
     <string name="pairing_passkey_button">Продолжить с ключом доступа</string>
     <string name="pairing_notice_passkey_session_invalid">Вход по ключу доступа завершён — ключ удалён, токен доступа хаба изменился или сессия истекла. Войдите снова, чтобы продолжить.</string>
 
@@ -801,8 +801,7 @@
     <string name="runner_skew_restart_failed">Не удалось перезапустить раннер</string>
 
     <!-- Passkeys: sign-in errors + Settings → Passkeys -->
-    <string name="passkey_error_none_registered">У этого хаба ещё нет ключей доступа приложения. Сначала выполните сопряжение по токену доступа, затем добавьте ключ в разделе Настройки → Ключи доступа.</string>
-    <string name="passkey_error_no_credential">На этом устройстве нет ключа доступа для этого хаба.</string>
+    <string name="passkey_error_no_credential">На этом устройстве нет ключа доступа HAPI.</string>
     <string name="passkey_error_unavailable">Ключи доступа недоступны на этом устройстве. Убедитесь, что настроен менеджер паролей, например Google Password Manager.</string>
     <string name="passkey_error_rp_mismatch">Хаб запросил ключ доступа для %1$s, а приложение использует только %2$s. Обновите хаб и попробуйте снова.</string>
     <string name="passkey_error_revoked">Этот ключ доступа перестал работать, так как токен доступа хаба изменился. Выполните сопряжение с новым токеном и добавьте новый ключ.</string>
@@ -829,4 +828,8 @@
     <string name="settings_passkeys_delete_confirm">Удалить</string>
     <string name="settings_passkeys_added">Ключ доступа добавлен.</string>
     <string name="settings_passkeys_deleted">Ключ доступа удалён.</string>
+    <string name="passkey_find_hub">Найти хаб с ключом доступа</string>
+    <string name="passkey_enter_hub">Ввести адрес хаба вручную</string>
+    <string name="passkey_hub_address_required">В этом ключе доступа нет адреса хаба. Введите адрес и продолжите с ключом доступа.</string>
+    <string name="passkey_error_wrong_hub">Этот ключ доступа принадлежит другому хабу. Выберите ключ для этого хаба или проверьте адрес.</string>
 </resources>
