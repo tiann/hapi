@@ -383,6 +383,10 @@ export async function claudeRemote(opts: {
         additionalDirectories: [getHapiBlobsDir()],
         // Steering acks a mid-turn message by its echo.
         replayUserMessages: true,
+        // Stream assistant text/thinking deltas ahead of each complete message
+        // so the remote launcher can forward throttled live snapshots to the
+        // hub (DSH-parity streaming for Claude sessions).
+        includePartialMessages: true,
     }
 
     if (!awaitingForkInit) {

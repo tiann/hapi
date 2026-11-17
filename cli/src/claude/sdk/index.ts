@@ -11,6 +11,7 @@ export type {
     SDKMessage,
     SDKUserMessage,
     SDKAssistantMessage,
+    SDKStreamEventMessage,
     SDKSystemMessage,
     SDKResultMessage,
     SDKControlResponse,

@@ -73,6 +73,11 @@ export const RawJSONLinesSchema = z.discriminatedUnion("type", [
     // Set on Claude Code's synthetic API error messages (e.g. "Prompt is too long").
     isApiErrorMessage: z.boolean().optional(),
     error: z.unknown().optional(),
+    // Live-stream markers (utils/streamSnapshots.ts): ids of the live text /
+    // reasoning snapshots this settled line supersedes. Hub sweeps them, web
+    // swaps the streaming bubble for this final text in place.
+    streamId: z.string().optional(),
+    reasoningStreamId: z.string().optional(),
   }),
 
   // Summary message - validates summary and leafUuid

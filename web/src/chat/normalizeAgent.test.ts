@@ -318,3 +318,75 @@ it('does not invent content or a zero before count for a native completion bound
     expect(normalized).toMatchObject({ role: 'event', content: { type: 'compact-summary', summary: '', compactionId: 'native-compact' } })
     expect(normalized?.role === 'event' && normalized.content).not.toHaveProperty('tokensBefore', 0)
 })
+
+describe('normalizeAgentRecord — Claude settled-line stream markers', () => {
+    it('attaches stream markers to the first text and reasoning block', () => {
+        const normalized = normalizeAgentRecord('settled-row-1', null, 1, {
+            type: 'output',
+            data: {
+                type: 'assistant',
+                streamId: 'claude-msg_1-text',
+                reasoningStreamId: 'claude-msg_1-reasoning',
+                message: {
+                    role: 'assistant',
+                    content: [
+                        { type: 'thinking', thinking: 'pondering' },
+                        { type: 'text', text: 'part one' },
+                        { type: 'text', text: 'part two' },
+                        { type: 'thinking', thinking: 'more' }
+                    ]
+                }
+            }
+        })
+
+        expect(normalized).toMatchObject({
+            role: 'agent',
+            content: [
+                { type: 'reasoning', text: 'pondering', streamId: 'claude-msg_1-reasoning' },
+                { type: 'text', text: 'part one', streamId: 'claude-msg_1-text' },
+                { type: 'text', text: 'part two' },
+                { type: 'reasoning', text: 'more' }
+            ]
+        })
+    })
+
+    it('leaves marker-less settled lines without stream ids (pre-streaming rows)', () => {
+        const normalized = normalizeAgentRecord('settled-row-2', null, 1, {
+            type: 'output',
+            data: {
+                type: 'assistant',
+                message: {
+                    role: 'assistant',
+                    content: [{ type: 'text', text: 'plain' }]
+                }
+            }
+        })
+
+        expect(normalized).toMatchObject({
+            role: 'agent',
+            content: [{ type: 'text', text: 'plain' }]
+        })
+        const blocks = normalized?.role === 'agent' ? normalized.content : []
+        expect(blocks.every((block) => !('streamId' in block && block.streamId !== undefined))).toBe(true)
+    })
+
+    it('collapses a live snapshot and its settled line through the same stream id', () => {
+        const snapshot = normalizeAgentRecord('snap-row', null, 1, {
+            type: 'codex',
+            data: { type: 'message', message: 'parti', id: 'claude-msg_2-text', live: true, streamSnapshot: true }
+        })
+        const settled = normalizeAgentRecord('settled-row-3', null, 2, {
+            type: 'output',
+            data: {
+                type: 'assistant',
+                streamId: 'claude-msg_2-text',
+                message: { role: 'assistant', content: [{ type: 'text', text: 'partial, now complete' }] }
+            }
+        })
+
+        const snapshotBlock = snapshot?.role === 'agent' ? snapshot.content[0] : null
+        const settledBlock = settled?.role === 'agent' ? settled.content[0] : null
+        expect(snapshotBlock).toMatchObject({ type: 'text', streamId: 'claude-msg_2-text' })
+        expect(settledBlock).toMatchObject({ type: 'text', streamId: 'claude-msg_2-text' })
+    })
+})
