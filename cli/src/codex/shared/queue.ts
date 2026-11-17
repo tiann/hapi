@@ -359,8 +359,13 @@ export class SharedCodexQueue {
             for (const [id, entry] of Object.entries(this.entries)) {
                 if (!['queued', 'unknown'].includes(entry.state)) continue;
                 // Persist uncertainty before deletion; a lost ACK cannot authorize replay.
-                entry.state = 'unknown'; await this.save();
+                entry.state = 'unknown';
                 const nativeId = this.nativeIdFor(entry);
+                // The whole-submission delete also changes the batch; journal it with the members.
+                for (const batch of Object.values(this.batches)) {
+                    if (nativeId && batch.nativeId === nativeId && batch.state === 'queued') batch.state = 'unknown';
+                }
+                await this.save();
                 if (nativeId && !attempted.has(nativeId)) {
                     attempted.add(nativeId);
                     try {
@@ -445,6 +450,9 @@ export class SharedCodexQueue {
                 .map(member => ({ id: member.id, input: member.input, intent: 'replace' as const }))];
         const proposal = this.version(input, first ? [{ id: first.id, input }] : [], replaced);
         batch.versions.push(proposal); batch.current = batch.versions.length - 1;
+        // Write ahead: the batch outcome is unknown until a confirmed response or a definite rejection.
+        const previousState = batch.state;
+        if (batch.state === 'queued') batch.state = 'unknown';
         await this.save();
         try {
             const response = await this.client.request('thread/queue/update', values);
@@ -465,7 +473,11 @@ export class SharedCodexQueue {
             return response;
         } catch (error) {
             if (indeterminate(error)) { proposal.status = 'eligible'; batch.state = 'unknown'; }
-            else { proposal.status = 'superseded'; batch.current = previousCurrent; }
+            else {
+                // Definite rejection: nothing was applied, so the pre-RPC state is accurate again.
+                proposal.status = 'superseded'; batch.current = previousCurrent;
+                if (batch.state === 'unknown') batch.state = previousState;
+            }
             await this.save();
             throw error;
         }
@@ -537,6 +549,9 @@ export class SharedCodexQueue {
         const proposal = this.version([...version.input, ...input], [...version.members, { id, input }]);
         const previousCurrent = batch.current;
         batch.versions.push(proposal); batch.current = batch.versions.length - 1;
+        // Write ahead: the batch outcome is unknown until a confirmed response or a definite rejection.
+        const previousState = batch.state;
+        if (batch.state === 'queued') batch.state = 'unknown';
         await this.save();
         try {
             const response = await this.client.request('thread/queue/update', {
@@ -559,7 +574,11 @@ export class SharedCodexQueue {
                 return;
             }
             if (indeterminate(error)) { entry.state = 'unknown'; batch.state = 'unknown'; this.uncertain([id]); }
-            else { entry.state = 'rejected'; proposal.status = 'superseded'; batch.current = previousCurrent; }
+            else {
+                // Definite rejection: the append was not applied, so the pre-RPC state is accurate again.
+                entry.state = 'rejected'; proposal.status = 'superseded'; batch.current = previousCurrent;
+                if (batch.state === 'unknown') batch.state = previousState;
+            }
             await this.save();
             throw error;
         }
@@ -764,6 +783,8 @@ export class SharedCodexQueue {
             if (proposal) {
                 const restoration = this.version(version.input, version.members);
                 batch.versions.push(restoration); batch.current = batch.versions.length - 1;
+                // Write ahead: the batch outcome is unknown until the restoration is confirmed.
+                if (batch.state === 'queued') batch.state = 'unknown';
                 await this.save();
                 try {
                     const response = await this.client.request('thread/queue/update', { threadId: this.threadId, queuedSubmissionId: batch.nativeId, input: version.input });
@@ -771,6 +792,7 @@ export class SharedCodexQueue {
                     // The proven restored group is authoritative again; keep its aliases ACKable.
                     proposal.status = 'superseded';
                     this.supersedeOlder(batch, restoration);
+                    if (batch.state === 'unknown') batch.state = 'queued';
                     if (this.state(id) !== 'consumed') entry.state = 'queued';
                     delete entry.detachedSteer;
                 } catch (restoreError) {

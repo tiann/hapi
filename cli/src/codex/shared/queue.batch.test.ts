@@ -1018,3 +1018,113 @@ it.each(['cancel', 'steer'] as const)('restores the batch to queued when the shr
     expect(f.native).toHaveLength(1);
     expect(f.native[0].input).toEqual(combined('A', 'B'));
 });
+
+/** Crash between the pre-RPC save and any later save: persist what the ledger holds when the RPC is dispatched. */
+function captureAtDispatch(f: Awaited<ReturnType<typeof fixture>>, method: string, reply: () => unknown): string {
+    const crashFile = join(f.directory, `crash-${method.replaceAll('/', '-')}.json`);
+    f.overrides.set(method, async () => {
+        await writeFile(crashFile, await readFile(join(f.directory, 'ledger.json'), 'utf8'));
+        return reply();
+    });
+    return crashFile;
+}
+const crashReply = () => { throw lost('process crashed before the reply'); };
+const mutationCalls = (f: Awaited<ReturnType<typeof fixture>>, method: string) => f.calls.filter(call => call.method === method);
+
+it('journals batch uncertainty before a whole native edit so a crash cannot delete a sibling (nativeUpdate)', async () => {
+    const f = await fixture();
+    await f.queue.enqueue('original-A', text('A'), false, 'same');
+    await f.queue.enqueue('original-B', text('B'), false, 'same');
+    const batchId = f.native[0].clientUserMessageId;
+    const crashFile = captureAtDispatch(f, 'thread/queue/update', crashReply);
+    await expect(f.queue.nativeMutation('thread/queue/update', { threadId: 'thread', queuedSubmissionId: f.native[0].id, input: text('EDITED') })).rejects.toThrow();
+    const restarted = new SharedCodexQueue(f.client, 'thread', crashFile, f.consumed, f.uncertain, f.mirror);
+    await restarted.load();
+    expect(JSON.parse(await readFile(crashFile, 'utf8')).batches[batchId].state).toBe('unknown');
+    f.overrides.delete('thread/queue/update');
+    // The edit never applied natively: canceling A must not delete native [A, B] and lose B.
+    expect(await restarted.cancel('original-A')).toBe('indeterminate');
+    expect(mutationCalls(f, 'thread/queue/delete')).toHaveLength(0);
+    expect(f.native).toHaveLength(1);
+    expect(f.native[0].input).toEqual(combined('A', 'B'));
+});
+
+it('journals batch uncertainty before an append edit so a crash cannot rewrite siblings (extendBatch)', async () => {
+    const f = await fixture();
+    await f.queue.enqueue('original-A', text('A'), false, 'same');
+    await f.queue.enqueue('original-B', text('B'), false, 'same');
+    const batchId = f.native[0].clientUserMessageId;
+    const crashFile = captureAtDispatch(f, 'thread/queue/update', crashReply);
+    await expect(f.queue.enqueue('original-C', text('C'), false, 'same')).rejects.toThrow();
+    const restarted = new SharedCodexQueue(f.client, 'thread', crashFile, f.consumed, f.uncertain, f.mirror);
+    await restarted.load();
+    expect(JSON.parse(await readFile(crashFile, 'utf8')).batches[batchId].state).toBe('unknown');
+    f.overrides.delete('thread/queue/update');
+    const updatesBefore = mutationCalls(f, 'thread/queue/update').length;
+    expect(await restarted.cancel('original-A')).toBe('indeterminate');
+    expect(mutationCalls(f, 'thread/queue/update')).toHaveLength(updatesBefore);
+    expect(mutationCalls(f, 'thread/queue/delete')).toHaveLength(0);
+    expect(f.native[0].input).toEqual(combined('A', 'B'));
+});
+
+it('journals batch uncertainty before restoring a rejected steer so a crash cannot swap sibling input (steerBatchMember restoration)', async () => {
+    const f = await fixture();
+    await f.queue.enqueue('original-A', text('A'), false, 'same');
+    await f.queue.enqueue('original-B', text('B'), false, 'same');
+    const batchId = f.native[0].clientUserMessageId;
+    const crashFile = join(f.directory, 'crash-restore.json');
+    let updates = 0;
+    f.overrides.set('turn/steer', () => { throw new Error('steer definitely rejected'); });
+    f.overrides.set('thread/queue/update', async params => {
+        updates += 1;
+        if (updates === 1) {
+            // The confirmed shrink applies natively: [B].
+            f.native[0].input = structuredClone(params.input as QueueInput);
+            return { queuedSubmission: structuredClone(f.native[0]) };
+        }
+        await writeFile(crashFile, await readFile(join(f.directory, 'ledger.json'), 'utf8'));
+        throw lost('process crashed before the restoration reply');
+    });
+    expect((await f.queue.steer('original-A', 'turn-1')).steered).toBe(false);
+    expect(updates).toBe(2);
+    const restarted = new SharedCodexQueue(f.client, 'thread', crashFile, f.consumed, f.uncertain, f.mirror);
+    await restarted.load();
+    expect(JSON.parse(await readFile(crashFile, 'utf8')).batches[batchId].state).toBe('unknown');
+    f.overrides.delete('thread/queue/update');
+    // Native still holds the shrunk [B]: canceling B must not overwrite it with the unconfirmed restoration.
+    const updatesBefore = mutationCalls(f, 'thread/queue/update').length;
+    expect(await restarted.cancel('original-B')).toBe('indeterminate');
+    expect(mutationCalls(f, 'thread/queue/update')).toHaveLength(updatesBefore);
+    expect(mutationCalls(f, 'thread/queue/delete')).toHaveLength(0);
+    expect(f.native).toHaveLength(1);
+    expect(f.native[0].input).toEqual(text('B'));
+});
+
+it('journals batch uncertainty before suspend deletes a whole native submission', async () => {
+    const f = await fixture();
+    await f.queue.enqueue('original-A', text('A'), false, 'same');
+    await f.queue.enqueue('original-B', text('B'), false, 'same');
+    const batchId = f.native[0].clientUserMessageId;
+    const crashFile = captureAtDispatch(f, 'thread/queue/delete', crashReply);
+    await f.queue.suspend();
+    const snapshot = JSON.parse(await readFile(crashFile, 'utf8'));
+    expect(snapshot.batches[batchId].state).toBe('unknown');
+    expect(snapshot.entries['original-A'].state).toBe('unknown');
+});
+
+it('settles the batch back to queued after a confirmed whole edit or append, and after a definite rejection', async () => {
+    const f = await fixture();
+    await f.queue.enqueue('original-A', text('A'), false, 'same');
+    const batchId = f.native[0].clientUserMessageId;
+    const state = async () => JSON.parse(await readFile(join(f.directory, 'ledger.json'), 'utf8')).batches[batchId].state;
+    await f.queue.enqueue('original-B', text('B'), false, 'same');
+    expect(await state()).toBe('queued');
+    await f.queue.nativeMutation('thread/queue/update', { threadId: 'thread', queuedSubmissionId: f.native[0].id, input: text('EDITED') });
+    expect(await state()).toBe('queued');
+    f.overrides.set('thread/queue/update', () => { throw new Error('definite rejection'); });
+    await expect(f.queue.nativeMutation('thread/queue/update', { threadId: 'thread', queuedSubmissionId: f.native[0].id, input: text('EDITED-2') })).rejects.toThrow('definite rejection');
+    expect(await state()).toBe('queued');
+    await expect(f.queue.enqueue('original-C', text('C'), false, 'same')).rejects.toThrow('definite rejection');
+    expect(await state()).toBe('queued');
+    expect(f.native[0].input).toEqual(text('EDITED'));
+});
