@@ -53,20 +53,8 @@ try {
             const response = await app.request(request.url(), {
                 method: request.method(), headers: request.headers(), body: request.postDataBuffer() ?? undefined
             })
-            const location = response.headers.get('location')
-            requests.push(`→ ${response.status}${location ? ` ${location}` : ''}`)
-            // Playwright route.fulfill drops Location fragments on 3xx navigations, so the
-            // passkey callback never sees #state/#code and the opener hangs. Apply the
-            // fragment client-side the way a real document navigation would.
-            if (response.status >= 300 && response.status < 400 && location?.includes('#')) {
-                await route.fulfill({
-                    status: 200,
-                    contentType: 'text/html',
-                    body: `<!doctype html><script>location.replace(${JSON.stringify(location)})</script>`
-                })
-            } else {
-                await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body: Buffer.from(await response.arrayBuffer()) })
-            }
+            requests.push(`→ ${response.status}`)
+            await route.fulfill({ status: response.status, headers: Object.fromEntries(response.headers), body: Buffer.from(await response.arrayBuffer()) })
         } else if (url.origin === hub && url.pathname === '/fixture.js') {
             await route.fulfill({ contentType: 'text/javascript', body: bundleJS })
         } else if (url.origin === hub && url.pathname === '/passkey/callback') {

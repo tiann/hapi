@@ -300,9 +300,8 @@ export function createPasskeyLoginRoutes(deps: PasskeyRouteDeps): Hono<WebAppEnv
         // A native challenge can never be exchanged through the browser bridge.
         let entry: ChallengeEntry
         let challenge: string
-        let form: Record<string, string>
         try {
-            form = Object.fromEntries(new URLSearchParams(await c.req.text()))
+            const form = Object.fromEntries(new URLSearchParams(await c.req.text()))
             if (typeof form.challenge !== 'string') throw new Error('Invalid body')
             challenge = form.challenge
             const found = deps.challenges.take(challenge)
@@ -313,6 +312,7 @@ export function createPasskeyLoginRoutes(deps: PasskeyRouteDeps): Hono<WebAppEnv
         const fragment = new URLSearchParams({ state: entry.browser!.state })
         try {
             assertCurrent(deps, entry)
+            const form = Object.fromEntries(new URLSearchParams(await c.req.text()))
             if (form.error === 'cancelled') throw new Error('cancelled')
             const parsed = PasskeyLoginVerifyRequestSchema.safeParse({ response: typeof form.response === 'string' ? JSON.parse(form.response) : null })
             if (!parsed.success) throw new Error('Invalid body')
