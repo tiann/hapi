@@ -1884,6 +1884,40 @@ export function clearMessageWindow(sessionId: string): void {
     }, true)
 }
 
+/**
+ * Clear all in-memory and sessionStorage-persisted message windows across every
+ * session (e.g. on authenticated identity or hub switch).
+ */
+export function clearAllMessageWindows(): void {
+    if (persistTimerId !== null) {
+        clearTimeout(persistTimerId)
+        persistTimerId = null
+    }
+    pendingPersistSessionIds.clear()
+
+    if (isSessionStorageAvailable()) {
+        try {
+            const keysToRemove: string[] = []
+            for (let i = 0; i < sessionStorage.length; i += 1) {
+                const key = sessionStorage.key(i)
+                if (key && key.startsWith(STORAGE_KEY_PREFIX)) {
+                    keysToRemove.push(key)
+                }
+            }
+            for (const key of keysToRemove) {
+                sessionStorage.removeItem(key)
+            }
+        } catch {
+        }
+    }
+
+    for (const sessionId of [...states.keys()]) {
+        clearMessageWindow(sessionId)
+    }
+    tailSyncControllers.clear()
+    appliedRewindLocalIds.clear()
+}
+
 function markMessageWindowForLatestReset(sessionId: string, messages: DecryptedMessage[]): void {
     const previous = states.get(sessionId)
     if (!previous) return

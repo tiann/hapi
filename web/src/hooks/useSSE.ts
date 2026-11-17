@@ -255,6 +255,7 @@ export function useSSE(options: {
     enabled: boolean
     token: string
     baseUrl: string
+    sessionEpoch?: number
     subscription?: SSESubscription
     scope?: SSEScope
     onEvent: (event: SyncEvent) => void
@@ -319,10 +320,11 @@ export function useSSE(options: {
 
     const subscription = options.subscription ?? {}
     const scope = options.scope ?? 'full'
+    const sessionEpoch = options.sessionEpoch ?? 0
 
     const subscriptionKey = useMemo(() => {
-        return `${scope}|${subscription.all ? '1' : '0'}|${subscription.sessionId ?? ''}|${subscription.machineId ?? ''}`
-    }, [scope, subscription.all, subscription.sessionId, subscription.machineId])
+        return `${sessionEpoch}|${scope}|${subscription.all ? '1' : '0'}|${subscription.sessionId ?? ''}|${subscription.machineId ?? ''}`
+    }, [sessionEpoch, scope, subscription.all, subscription.sessionId, subscription.machineId])
 
     useEffect(() => {
         if (!options.enabled) {
