@@ -30,20 +30,22 @@ import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
 
 /**
- * Passkey sign-in: only the hub URL is needed — the system sheet offers this
- * hub's passkeys (`allowCredentials`), and the hub returns a JWT plus a
- * passkey session that replaces the access token for this hub.
+ * Discover the Hub without typing, confirm its address, then perform a fresh
+ * Hub-bound login. Manual entry remains available for opaque/long addresses.
  */
 @Composable
 fun PasskeySignInScreen(
     state: PairingUiState,
     initialHubUrl: String,
     onSignIn: (hubUrl: String) -> Unit,
+    onDiscover: () -> Unit,
     onBack: () -> Unit,
     onDismissError: () -> Unit,
 ) {
     var hubUrl by rememberSaveable { mutableStateOf(initialHubUrl) }
+    var manual by rememberSaveable { mutableStateOf(false) }
     val validating = state is PairingUiState.Validating
+    val discovered = (state as? PairingUiState.PasskeyHubFound)?.hubUrl
 
     Surface(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -67,7 +69,7 @@ fun PasskeySignInScreen(
             )
             Spacer(modifier = Modifier.height(24.dp))
 
-            OutlinedTextField(
+            if (manual) OutlinedTextField(
                 value = hubUrl,
                 onValueChange = { hubUrl = it },
                 label = { Text(stringResource(R.string.pairing_hub_url_label)) },
@@ -85,12 +87,27 @@ fun PasskeySignInScreen(
 
             PairingStatus(state = state, onDismissError = onDismissError)
 
+            if (!manual && discovered != null) {
+                Text(discovered, style = MaterialTheme.typography.titleMedium)
+                Text(stringResource(R.string.passkey_discovery_confirm))
+                Spacer(modifier = Modifier.height(16.dp))
+            }
+
             Button(
-                onClick = { onSignIn(hubUrl) },
-                enabled = !validating && hubUrl.isNotBlank(),
+                onClick = {
+                    when {
+                        manual -> onSignIn(hubUrl)
+                        discovered != null -> onSignIn(discovered)
+                        else -> onDiscover()
+                    }
+                },
+                enabled = !validating && (!manual || hubUrl.isNotBlank()),
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(stringResource(R.string.pairing_passkey_button))
+            }
+            TextButton(onClick = { manual = !manual; onDismissError() }, enabled = !validating, modifier = Modifier.fillMaxWidth()) {
+                Text(stringResource(if (manual) R.string.passkey_find_hub else R.string.passkey_enter_hub))
             }
             Spacer(modifier = Modifier.height(8.dp))
             TextButton(onClick = onBack, enabled = !validating, modifier = Modifier.fillMaxWidth()) {

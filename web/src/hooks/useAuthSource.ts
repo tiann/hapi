@@ -65,10 +65,14 @@ export function useAuthSource(baseUrl: string): {
     isLoading: boolean
     isTelegram: boolean
     setAccessToken: (token: string) => void
-    setPasskeySession: (session: string) => void
+    setPasskeySession: (session: string, hubUrl?: string) => void
     clearAuth: () => void
 } {
-    const [authSource, setAuthSource] = useState<AuthSource | null>(null)
+    const [sourceState, setSourceState] = useState<{ hub: string; source: AuthSource | null }>({ hub: baseUrl, source: null })
+    // Hide the previous Hub's credentials synchronously, before effects run.
+    const authSource = sourceState.hub === baseUrl ? sourceState.source : null
+    const setAuthSource = useCallback((source: AuthSource | null) => setSourceState({ hub: baseUrl, source }), [baseUrl])
+    const urlCredential = useRef({ hub: baseUrl, token: getTokenFromUrlParams() })
     const [isLoading, setIsLoading] = useState(true)
     const [isTelegram, setIsTelegram] = useState(false)
     const retryCountRef = useRef(0)
@@ -93,7 +97,7 @@ export function useAuthSource(baseUrl: string): {
         }
 
         // Check for URL token parameter (for direct access links)
-        const urlToken = getTokenFromUrlParams()
+        const urlToken = urlCredential.current.hub === baseUrl ? urlCredential.current.token : null
         if (urlToken) {
             storeAccessToken(accessTokenKey, urlToken) // Save to localStorage for refresh
             setAuthSource({ type: 'accessToken', token: urlToken })
@@ -148,27 +152,34 @@ export function useAuthSource(baseUrl: string): {
         return () => {
             clearInterval(interval)
         }
-    }, [accessTokenKey, passkeySessionKey])
+    }, [accessTokenKey, passkeySessionKey, baseUrl, setAuthSource])
 
     const setAccessToken = useCallback((token: string) => {
         storeAccessToken(accessTokenKey, token)
         clearStoredAccessToken(passkeySessionKey)
         setAuthSource({ type: 'accessToken', token })
-    }, [accessTokenKey, passkeySessionKey])
+    }, [accessTokenKey, passkeySessionKey, setAuthSource])
 
-    const setPasskeySession = useCallback((session: string) => {
+    const setPasskeySession = useCallback((session: string, hubUrl = baseUrl) => {
+        // A previous pairing link must not reselect its Hub or replay its token
+        // after discovery switches Hubs (including on the next page reload).
+        urlCredential.current.token = null
+        const url = new URL(window.location.href)
+        url.searchParams.delete('hub')
+        url.searchParams.delete('token')
+        window.history.replaceState(null, '', url.pathname + url.search + url.hash)
         // A stored access token would take precedence on the next load; drop it
         // so a stale/rotated token cannot shadow the passkey session.
-        clearStoredAccessToken(accessTokenKey)
-        storeAccessToken(passkeySessionKey, session)
-        setAuthSource({ type: 'passkey', session })
-    }, [accessTokenKey, passkeySessionKey])
+        clearStoredAccessToken(getAccessTokenKey(hubUrl))
+        storeAccessToken(getPasskeySessionKey(hubUrl), session)
+        if (hubUrl === baseUrl) setAuthSource({ type: 'passkey', session })
+    }, [baseUrl, setAuthSource])
 
     const clearAuth = useCallback(() => {
         clearStoredAccessToken(accessTokenKey)
         clearStoredAccessToken(passkeySessionKey)
         setAuthSource(null)
-    }, [accessTokenKey, passkeySessionKey])
+    }, [accessTokenKey, passkeySessionKey, setAuthSource])
 
     return {
         authSource,

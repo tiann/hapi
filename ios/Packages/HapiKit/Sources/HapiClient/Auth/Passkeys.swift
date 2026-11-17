@@ -12,6 +12,17 @@ public enum NativePasskeys {
     public static let nativeRelyingPartyID = "auth.hapi.run"
     /// Transports reported for a platform (iCloud Keychain) credential.
     public static let registrationTransports = ["internal", "hybrid"]
+
+    /// Select a resident credential solely to locate its Hub. No assertion or
+    /// credential ID leaves the app. Confirm the URL, then run a separate,
+    /// Hub-bound login; this result is not proof of authentication.
+    public static func discoverHub(authenticator: any PasskeyAuthenticating) async throws -> String {
+        let result = try await authenticator.authenticate(.discovery())
+        guard let user = result.userID, let hub = try? PasskeyHubBinding.userHub(user) else {
+            throw PasskeyError.hubDiscoveryUnavailable
+        }
+        return hub
+    }
 }
 
 // MARK: - Errors
@@ -25,6 +36,8 @@ public enum PasskeyError: Error, Equatable, Sendable {
     case malformedOptions
     /// `POST /api/passkey/login/options` answered `404 {"error":"no_passkeys"}`.
     case noPasskeys
+    /// No recoverable Hub in the selected credential; offer manual entry.
+    case hubDiscoveryUnavailable
     /// The platform returned a registration without an attestation object.
     case missingAttestation
     /// The user dismissed the system sheet. Callers treat this as silent.
@@ -155,8 +168,23 @@ public struct PasskeyRegistrationRequest: Equatable, Sendable {
 public struct PasskeyAssertionRequest: Equatable, Sendable {
     public let relyingPartyID: String
     public let challenge: Data
-    /// This hub's passkeys; the system sheet offers only these.
+    /// This Hub's passkeys. Empty only for the explicit local discovery ceremony.
     public let allowedCredentialIDs: [Data]
+
+    /// A dedicated local ceremony, never constructed from untrusted Hub options.
+    public static func discovery() -> Self {
+        let nonce = Data((0..<32).map { _ in UInt8.random(in: .min ... .max) })
+        let challenge = try! JSONSerialization.data(withJSONObject: [
+            "v": 1, "operation": "discover", "channel": "native", "nonce": Base64URL.encode(nonce)
+        ], options: [.sortedKeys])
+        return Self(discoveryChallenge: challenge)
+    }
+
+    private init(discoveryChallenge: Data) {
+        relyingPartyID = NativePasskeys.nativeRelyingPartyID
+        challenge = discoveryChallenge
+        allowedCredentialIDs = []
+    }
 
     public init(
         options: PasskeyAssertionOptions,

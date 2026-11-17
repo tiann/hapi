@@ -49,7 +49,7 @@ struct PasskeysTests {
 
     // MARK: - Options decoding
 
-    @Test(.enabled(if: passkeyRegistrationAvailable)) func registrationRequestDecodesBase64URLFields() throws {
+    @Test func registrationRequestDecodesBase64URLFields() throws {
         let options = try HapiJSON.decoder.decode(
             PasskeyRegistrationOptions.self,
             from: Data(registrationOptionsJSON(exclude: ["Y3JlZDE"]).utf8)
@@ -271,7 +271,7 @@ struct PasskeysTests {
         #expect(requests[1].url?.absoluteString == "\(testHubURLString)/api/passkeys/a%2Fb")
     }
 
-    @Test(.enabled(if: passkeyRegistrationAvailable)) func registerPasskeyRunsCeremonyAndVerifies() async throws {
+    @Test func registerPasskeyRunsCeremonyAndVerifies() async throws {
         let harness = try makeHarness(paired: true, jwt: freshJWT())
         let authenticator = ScriptedAuthenticator(
             registration: PasskeyRegistrationResult(
@@ -293,7 +293,7 @@ struct PasskeysTests {
         #expect(object["name"] as? String == "iPad")
     }
 
-    @Test(.enabled(if: passkeyRegistrationAvailable)) func registerPasskeyDoesNotVerifyWhenCanceled() async throws {
+    @Test func registerPasskeyDoesNotVerifyWhenCanceled() async throws {
         let harness = try makeHarness(paired: true, jwt: freshJWT())
         let authenticator = ScriptedAuthenticator(registrationError: PasskeyError.canceled)
         await harness.performer.enqueue(json: registrationOptionsJSON())

@@ -290,3 +290,15 @@ authenticator against the production Hub and built static site, with all page
 requests intercepted locally. It checks both web-created → native and
 native-created → web authentication. Install the normal Playwright Chromium
 build, or use an existing Chrome with `PLAYWRIGHT_CHANNEL=chrome`.
+
+The login screen’s Passkey button first discovers the Hub without an address:
+the static page selects a resident credential, shows the recovered Hub and asks
+for confirmation before the opener connects. A separate Hub-bound authentication
+then creates the session. Discovery sends only the Hub origin to the opener,
+never a signed assertion, credential ID, or user handle. Both phases reuse one
+popup. The Hub dialog retains manual Passkey sign-in for long addresses or
+credentials without discoverable handles. The v2 format can store at most 46
+ASCII authority bytes (including a non-default port); longer addresses use a
+hash-bound handle and require manual entry. Re-register credentials to enable
+address-free discovery. Deploy the updated static authentication site as well
+as Hub/Web/Apps; no additional backend or Cloudflare configuration is needed.

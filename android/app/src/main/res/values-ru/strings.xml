@@ -658,7 +658,7 @@
     <string name="pairing_notice_missing_credentials">Сохранённые учётные данные для этого хаба пропали. Сопрягите заново, чтобы продолжить.</string>
     <string name="pairing_passkey_entry">Войти с ключом доступа</string>
     <string name="pairing_passkey_title">Вход с ключом доступа</string>
-    <string name="pairing_passkey_hint">Введите адрес хаба и выберите ключ доступа, сохранённый для него этим приложением (Настройки → Ключи доступа на сопряжённом устройстве). Ключи, созданные в веб-приложении, работают только там.</string>
+    <string name="pairing_passkey_hint">Выберите ключ доступа, чтобы найти хаб. Ключи работают и в браузере, и в приложении.</string>
     <string name="pairing_passkey_button">Продолжить с ключом доступа</string>
     <string name="pairing_notice_passkey_session_invalid">Вход по ключу доступа завершён — ключ удалён, токен доступа хаба изменился или сессия истекла. Войдите снова, чтобы продолжить.</string>
 
@@ -829,4 +829,8 @@
     <string name="settings_passkeys_delete_confirm">Удалить</string>
     <string name="settings_passkeys_added">Ключ доступа добавлен.</string>
     <string name="settings_passkeys_deleted">Ключ доступа удалён.</string>
+    <string name="passkey_find_hub">Найти хаб с ключом доступа</string>
+    <string name="passkey_enter_hub">Ввести адрес хаба вручную</string>
+    <string name="passkey_discovery_confirm">Подтвердите хаб перед подключением. Для входа потребуется отдельная проверка ключа.</string>
+    <string name="passkey_discovery_unavailable">Не удалось определить хаб по ключу. Введите адрес вручную.</string>
 </resources>

@@ -188,11 +188,15 @@ describe('LoginPrompt passkey sign-in', () => {
         vi.doUnmock('@/lib/passkey')
     })
 
-    async function renderWithPasskey(signIn: () => Promise<string>) {
+    async function renderWithPasskey(signIn: () => Promise<{ hubUrl: string; passkeySession: string }>) {
+        const discover = vi.fn(signIn)
+        const manual = vi.fn(async () => 'manual-session')
+        const setServerUrl = vi.fn((value: string) => ({ ok: true as const, value }))
         vi.doMock('@/lib/passkey', () => ({
             isPasskeySupported: () => true,
             isPasskeyCancelled: (e: unknown) => e instanceof Error && e.name === 'NotAllowedError',
-            signInWithPasskey: signIn
+            discoverAndSignInWithPasskey: discover,
+            signInWithPasskey: manual
         }))
         const { LoginPrompt: Prompt } = await import('./LoginPrompt')
         const { I18nProvider: Provider } = await import('@/lib/i18n-context')
@@ -202,20 +206,33 @@ describe('LoginPrompt passkey sign-in', () => {
                 <Prompt
                     baseUrl="https://hub.example.com"
                     serverUrl={null}
-                    setServerUrl={vi.fn((value: string) => ({ ok: true as const, value }))}
+                    setServerUrl={setServerUrl}
                     clearServerUrl={vi.fn()}
                     onLogin={vi.fn()}
                     onPasskeyLogin={onPasskeyLogin}
+                    requireServerUrl={true}
                 />
             </Provider>
         )
-        return { onPasskeyLogin }
+        return { onPasskeyLogin, discover, manual, setServerUrl }
     }
 
     it('hands the passkey session to the app on success', async () => {
-        const { onPasskeyLogin } = await renderWithPasskey(async () => 'pk-session')
+        const { onPasskeyLogin, setServerUrl, manual } = await renderWithPasskey(async () => ({ hubUrl: 'https://discovered.example', passkeySession: 'pk-session' }))
         fireEvent.click(screen.getByRole('button', { name: 'Sign in with a passkey' }))
-        await vi.waitFor(() => expect(onPasskeyLogin).toHaveBeenCalledWith('pk-session'))
+        await vi.waitFor(() => expect(onPasskeyLogin).toHaveBeenCalledWith('pk-session', 'https://discovered.example'))
+        expect(setServerUrl).toHaveBeenCalledWith('https://discovered.example')
+        expect(manual).not.toHaveBeenCalled()
+    })
+
+    it('keeps explicit Hub passkey sign-in available without discovery', async () => {
+        const { onPasskeyLogin, discover, manual } = await renderWithPasskey(async () => ({ hubUrl: 'https://other.example', passkeySession: 'unused' }))
+        fireEvent.click(screen.getByRole('button', { name: /^Hub/ }))
+        fireEvent.change(await screen.findByPlaceholderText('https://hapi.example.com'), { target: { value: 'https://manual.example' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Sign in with a passkey for this Hub' }))
+        await vi.waitFor(() => expect(onPasskeyLogin).toHaveBeenCalledWith('manual-session', 'https://manual.example'))
+        expect(manual).toHaveBeenCalledWith('https://manual.example')
+        expect(discover).not.toHaveBeenCalled()
     })
 
     it('explains a passkey revoked by token rotation and stays quiet on cancel', async () => {

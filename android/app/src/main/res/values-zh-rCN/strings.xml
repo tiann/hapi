@@ -644,7 +644,7 @@
     <string name="pairing_notice_missing_credentials">此 hub 的存储凭据已丢失。请重新配对以继续。</string>
     <string name="pairing_passkey_entry">使用通行密钥登录</string>
     <string name="pairing_passkey_title">使用通行密钥登录</string>
-    <string name="pairing_passkey_hint">输入 hub 地址，然后选择本应用为其保存的通行密钥（在已配对设备的 设置 → 通行密钥 中添加）。在网页应用中创建的通行密钥只能在网页中使用。</string>
+    <string name="pairing_passkey_hint">选择通行密钥以查找 Hub。网页和 App 创建的通行密钥可互相使用。</string>
     <string name="pairing_passkey_button">使用通行密钥继续</string>
     <string name="pairing_notice_passkey_session_invalid">通行密钥登录已失效 — 通行密钥已被删除、hub 的访问令牌已更改或会话已过期。请重新登录以继续。</string>
 
@@ -815,4 +815,8 @@
     <string name="settings_passkeys_delete_confirm">删除</string>
     <string name="settings_passkeys_added">已添加通行密钥。</string>
     <string name="settings_passkeys_deleted">已删除通行密钥。</string>
+    <string name="passkey_find_hub">使用通行密钥查找 Hub</string>
+    <string name="passkey_enter_hub">手动输入 Hub 地址</string>
+    <string name="passkey_discovery_confirm">连接前请确认此 Hub，然后通过另一次通行密钥验证完成登录。</string>
+    <string name="passkey_discovery_unavailable">此通行密钥无法定位 Hub，请手动输入地址。</string>
 </resources>

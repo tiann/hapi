@@ -27,6 +27,8 @@ import kotlinx.coroutines.withContext
 sealed interface PairingUiState {
     data object Idle : PairingUiState
     data object Validating : PairingUiState
+    /** Locator only. Explicit user confirmation is required before network I/O. */
+    data class PasskeyHubFound(val hubUrl: String) : PairingUiState
     data class Error(val error: PairingError) : PairingUiState
 
     /** Credentials stored, hub registered + active — navigate home. */
@@ -172,6 +174,22 @@ class PairingViewModel(
         mutableState.value = PairingUiState.Validating
         viewModelScope.launch {
             mutableState.value = runPasskeySignIn(normalized, platform)
+        }
+    }
+
+    /** No HTTP request, credential persistence or pairing during discovery. */
+    fun discoverPasskeyHub(platform: PasskeyPlatform) {
+        if (mutableState.value == PairingUiState.Validating) return
+        mutableState.value = PairingUiState.Validating
+        viewModelScope.launch {
+            mutableState.value = try {
+                val response = platform.getPasskey(NativePasskeys.discoveryOptions())
+                PairingUiState.PasskeyHubFound(NativePasskeys.discoveredHub(response))
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                passkeyIssueOf(error)?.let { PairingUiState.Error(PairingError.Passkey(it)) } ?: PairingUiState.Idle
+            }
         }
     }
 

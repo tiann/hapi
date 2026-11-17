@@ -43,17 +43,35 @@ enum PasskeyHubBinding {
     }
 
     static func validateUser(_ user: Data, hub: URL) throws {
-        guard user.count == 64, user.prefix(32) == (try digest(Data(origin(hub).utf8))) else {
-            throw PasskeyError.malformedOptions
+        let expected = try origin(hub)
+        if let discovered = try userHub(user) {
+            guard discovered == expected else { throw PasskeyError.malformedOptions }
+        } else {
+            guard user.subdata(in: 2..<34) == digest(Data(expected.utf8)) else { throw PasskeyError.malformedOptions }
         }
+    }
+
+    /// v2 locator: HTTPS is implicit; tag is an opaque 16-byte account ID.
+    /// nil denotes a hash-bound, non-discoverable long Hub address.
+    static func userHub(_ user: Data) throws -> String? {
+        let bytes = [UInt8](user)
+        guard bytes.count >= 2, bytes.count <= 64, bytes[0] == 2 else { throw PasskeyError.malformedOptions }
+        let length = Int(bytes[1])
+        if length == 0 && bytes.count == 50 { return nil }
+        guard (1...46).contains(length), bytes.count == length + 18,
+              bytes[2..<(2 + length)].allSatisfy({ (33...126).contains($0) }),
+              let authority = String(bytes: bytes[2..<(2 + length)], encoding: .utf8),
+              let url = URL(string: "https://\(authority)"),
+              try origin(url) == "https://\(authority)" else { throw PasskeyError.malformedOptions }
+        return "https://\(authority)"
     }
 
     static func digest(_ data: Data) -> Data {
         #if canImport(CryptoKit)
         return Data(SHA256.hash(data: data))
         #else
-        // Linux package tests have no CryptoKit. Fail closed rather than silently
-        // skip an account-binding check; native passkeys run on Apple platforms.
+        // Linux package tests have no CryptoKit. Opaque handles fail closed;
+        // discoverable handles validate their literal origin without hashing.
         return Data()
         #endif
     }
