@@ -655,7 +655,7 @@ export class SharedCodexQueue {
         } catch (error) {
             if (this.state(id) === 'consumed') return 'consumed';
             if (indeterminate(error) || queuedSubmissionNotFound(error)) {
-                batch.state = 'unknown'; this.uncertain([id]); return 'indeterminate';
+                batch.state = 'unknown'; this.uncertain([id]); await this.save(); return 'indeterminate';
             }
             // Definite rejection: the proposal was not applied, so do not ACK it.
             proposal.status = 'superseded'; batch.current = previousCurrent;
@@ -738,7 +738,7 @@ export class SharedCodexQueue {
             } catch (error) {
                 if (this.state(id) === 'consumed') return { steered: true };
                 if (indeterminate(error) || queuedSubmissionNotFound(error)) {
-                    batch.state = 'unknown'; this.uncertain([id]); return { steered: false, indeterminate: true };
+                    batch.state = 'unknown'; this.uncertain([id]); await this.save(); return { steered: false, indeterminate: true };
                 }
                 proposal.status = 'superseded'; batch.current = previousCurrent;
                 entry.state = 'queued'; await this.save();
@@ -752,7 +752,7 @@ export class SharedCodexQueue {
             entry.state = 'consumed'; await this.save(); this.consumed([id], true); return { steered: true };
         } catch (error) {
             if (this.state(id) === 'consumed') return { steered: true };
-            if (isIndeterminateError(error)) { batch.state = 'unknown'; this.uncertain([id]); return { steered: false, indeterminate: true }; }
+            if (isIndeterminateError(error)) { batch.state = 'unknown'; this.uncertain([id]); await this.save(); return { steered: false, indeterminate: true }; }
             // Definite rejection: restore the removed input safely, keeping siblings.
             if (proposal) {
                 const restoration = this.version(version.input, version.members);

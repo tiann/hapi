@@ -925,3 +925,39 @@ it('restores the applied baseline when consecutive native edits are rejected', a
     expect(update?.params.input).toEqual(text('MARKER-A'));
     expect(native[0].input).toEqual(text('MARKER-A'));
 });
+
+it.each(['indeterminate', 'missing-submission'] as const)('persists batch uncertainty across a reload after an unconfirmed member cancel (%s)', async failure => {
+    const f = await fixture();
+    await f.queue.enqueue('original-A', text('A'), false, 'same');
+    await f.queue.enqueue('original-B', text('B'), false, 'same');
+    const batchId = f.native[0].clientUserMessageId;
+    f.overrides.set('thread/queue/update', () => {
+        throw failure === 'indeterminate' ? lost('cancel reply lost') : new Error(`queued submission not found: ${f.native[0].id}`);
+    });
+    expect(await f.queue.cancel('original-A')).toBe('indeterminate');
+    expect(f.uncertain).toHaveBeenCalledWith(['original-A']);
+    const restarted = new SharedCodexQueue(f.client, 'thread', join(f.directory, 'ledger.json'), f.consumed, f.uncertain);
+    await restarted.load();
+    const ledger = JSON.parse(await readFile(join(f.directory, 'ledger.json'), 'utf8'));
+    expect(ledger.batches[batchId].state).toBe('unknown');
+    expect(restarted.state('original-A')).toBe('unknown');
+    expect(restarted.state('original-B')).toBe('queued');
+});
+
+it.each(['indeterminate', 'missing-submission'] as const)('persists batch uncertainty across a reload after an unconfirmed member steer (%s)', async failure => {
+    const f = await fixture();
+    await f.queue.enqueue('original-A', text('A'), false, 'same');
+    await f.queue.enqueue('original-B', text('B'), false, 'same');
+    const batchId = f.native[0].clientUserMessageId;
+    f.overrides.set('thread/queue/update', () => {
+        throw failure === 'indeterminate' ? lost('steer shrink reply lost') : new Error(`queued submission not found: ${f.native[0].id}`);
+    });
+    expect(await f.queue.steer('original-A', 'turn-1')).toEqual({ steered: false, indeterminate: true });
+    expect(f.uncertain).toHaveBeenCalledWith(['original-A']);
+    const restarted = new SharedCodexQueue(f.client, 'thread', join(f.directory, 'ledger.json'), f.consumed, f.uncertain);
+    await restarted.load();
+    const ledger = JSON.parse(await readFile(join(f.directory, 'ledger.json'), 'utf8'));
+    expect(ledger.batches[batchId].state).toBe('unknown');
+    expect(restarted.state('original-A')).toBe('unknown');
+    expect(restarted.state('original-B')).toBe('queued');
+});
