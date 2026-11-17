@@ -151,4 +151,35 @@ describe('liveTailCache & cursor pagination', () => {
         store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'actual prompt' } })
         expect(store.messages.hasConversationContent(session.id)).toBe(true)
     })
+
+    it('replenishes the 200-row tool-call lookback window after deleting reasoning snapshots', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'tail-replenish-lookback')
+
+        const boundaryCall = store.messages.upsertToolCallMessage(
+            session.id,
+            makeToolCall('call-boundary', 'in_progress'),
+            'call-boundary'
+        )
+        for (let i = 0; i < 198; i += 1) {
+            store.messages.addMessage(session.id, {
+                role: 'agent',
+                content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'event', payload: { idx: i } } }
+            })
+        }
+        // Row 200 is a live reasoning snapshot; cache currently holds 200 rows.
+        store.messages.addMessage(session.id, makeReasoning('stream-edge', 'partial', true))
+
+        // Appending replacement shifts boundaryCall outside 200 rows until deletion restores it into range.
+        const settled = store.messages.addMessage(session.id, makeReasoning('stream-edge', 'final', false))
+        expect(store.messages.deleteLiveReasoningSnapshots(session.id, 'stream-edge', settled.id)).toBe(1)
+
+        const completed = store.messages.upsertToolCallMessage(
+            session.id,
+            makeToolCall('call-boundary', 'completed'),
+            'call-boundary'
+        )
+        expect(completed.updated).toBe(true)
+        expect(completed.message.id).toBe(boundaryCall.message.id)
+    })
 })

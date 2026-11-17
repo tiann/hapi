@@ -298,6 +298,8 @@ type TailRowMeta = {
     seq: number
     reasoningStreamId: string | null
     toolCallId: string | null
+    toolResultCallId: string | null
+    isUser: boolean
 }
 
 type SessionLiveTail = {
@@ -321,6 +323,45 @@ function invalidateLiveTail(db: Database, sessionId: string): void {
     liveTailByDb.get(db)?.delete(sessionId)
 }
 
+function classifyTailRow(id: string, seq: number, decoded: unknown): TailRowMeta {
+    const reasoningStreamId = getLiveReasoningStreamId(decoded)
+    const callId = getToolCallId(decoded)
+    const resultCallId = callId ? null : toolCallResultCallId(decoded)
+    const isUser = !callId && !resultCallId && isUserMessageRow(decoded)
+    return { id, seq, reasoningStreamId, toolCallId: callId, toolResultCallId: resultCallId, isUser }
+}
+
+function rebuildTailIndexes(entry: SessionLiveTail): void {
+    entry.liveToolCalls.clear()
+    entry.reasoningSnapshots.clear()
+    const closedCallIds = new Set<string>()
+    let toolCallScanStopped = false
+    const total = entry.tailRows.length
+    for (let i = total - 1; i >= 0; i -= 1) {
+        const row = entry.tailRows[i]!
+        const distFromHead = total - 1 - i
+        if (distFromHead < REASONING_SNAPSHOT_LOOKBACK && row.reasoningStreamId) {
+            let ids = entry.reasoningSnapshots.get(row.reasoningStreamId)
+            if (!ids) {
+                ids = new Set()
+                entry.reasoningSnapshots.set(row.reasoningStreamId, ids)
+            }
+            ids.add(row.id)
+        }
+        if (!toolCallScanStopped && distFromHead < TOOL_CALL_UPSERT_LOOKBACK) {
+            if (row.toolCallId) {
+                if (!closedCallIds.has(row.toolCallId) && !entry.liveToolCalls.has(row.toolCallId)) {
+                    entry.liveToolCalls.set(row.toolCallId, row.id)
+                }
+            } else if (row.toolResultCallId) {
+                closedCallIds.add(row.toolResultCallId)
+            } else if (row.isUser) {
+                toolCallScanStopped = true
+            }
+        }
+    }
+}
+
 function warmLiveTail(db: Database, sessionId: string, head: { id: string | null; seq: number }): SessionLiveTail {
     let sessions = liveTailByDb.get(db)
     if (!sessions) {
@@ -336,50 +377,20 @@ function warmLiveTail(db: Database, sessionId: string, head: { id: string | null
         LIMIT ?
     `).all(sessionId, lookback) as Array<Pick<DbMessageRow, 'id' | 'seq' | 'content'>>
 
-    const liveToolCalls = new Map<string, string>()
-    const closedCallIds = new Set<string>()
-    let toolCallScanStopped = false
-    const reasoningSnapshots = new Map<string, Set<string>>()
-    const tailRowsDesc: TailRowMeta[] = []
-
-    for (let i = 0; i < rows.length; i += 1) {
+    const tailRowsAsc: TailRowMeta[] = []
+    for (let i = rows.length - 1; i >= 0; i -= 1) {
         const row = rows[i]!
-        const decoded = decodeMessageContent(row.content)
-        const reasoningStreamId = i < REASONING_SNAPSHOT_LOOKBACK ? getLiveReasoningStreamId(decoded) : null
-        if (reasoningStreamId) {
-            let ids = reasoningSnapshots.get(reasoningStreamId)
-            if (!ids) {
-                ids = new Set()
-                reasoningSnapshots.set(reasoningStreamId, ids)
-            }
-            ids.add(row.id)
-        }
-        let recordedToolCallId: string | null = null
-        if (!toolCallScanStopped && i < TOOL_CALL_UPSERT_LOOKBACK) {
-            const callId = getToolCallId(decoded)
-            if (callId && !closedCallIds.has(callId) && !liveToolCalls.has(callId)) {
-                liveToolCalls.set(callId, row.id)
-                recordedToolCallId = callId
-            } else {
-                const resultCallId = toolCallResultCallId(decoded)
-                if (resultCallId) {
-                    closedCallIds.add(resultCallId)
-                } else if (isUserMessageRow(decoded)) {
-                    toolCallScanStopped = true
-                }
-            }
-        }
-        tailRowsDesc.push({ id: row.id, seq: row.seq, reasoningStreamId, toolCallId: recordedToolCallId })
+        tailRowsAsc.push(classifyTailRow(row.id, row.seq, decodeMessageContent(row.content)))
     }
 
-    tailRowsDesc.reverse()
     const entry: SessionLiveTail = {
         headId: head.id,
         headSeq: head.seq,
-        tailRows: tailRowsDesc,
-        liveToolCalls,
-        reasoningSnapshots
+        tailRows: tailRowsAsc,
+        liveToolCalls: new Map(),
+        reasoningSnapshots: new Map()
     }
+    rebuildTailIndexes(entry)
     sessions.set(sessionId, entry)
     return entry
 }
@@ -409,31 +420,25 @@ function updateLiveTailAfterAppend(
     entry.headId = id
     entry.headSeq = seq
 
-    const reasoningStreamId = getLiveReasoningStreamId(content)
-    if (reasoningStreamId) {
-        let ids = entry.reasoningSnapshots.get(reasoningStreamId)
+    const meta = classifyTailRow(id, seq, content)
+    if (meta.reasoningStreamId) {
+        let ids = entry.reasoningSnapshots.get(meta.reasoningStreamId)
         if (!ids) {
             ids = new Set()
-            entry.reasoningSnapshots.set(reasoningStreamId, ids)
+            entry.reasoningSnapshots.set(meta.reasoningStreamId, ids)
         }
         ids.add(id)
     }
 
-    let recordedToolCallId: string | null = null
-    const callId = getToolCallId(content)
-    if (callId) {
-        entry.liveToolCalls.set(callId, id)
-        recordedToolCallId = callId
-    } else {
-        const resultCallId = toolCallResultCallId(content)
-        if (resultCallId) {
-            entry.liveToolCalls.delete(resultCallId)
-        } else if (isUserMessageRow(content)) {
-            entry.liveToolCalls.clear()
-        }
+    if (meta.toolCallId) {
+        entry.liveToolCalls.set(meta.toolCallId, id)
+    } else if (meta.toolResultCallId) {
+        entry.liveToolCalls.delete(meta.toolResultCallId)
+    } else if (meta.isUser) {
+        entry.liveToolCalls.clear()
     }
 
-    entry.tailRows.push({ id, seq, reasoningStreamId, toolCallId: recordedToolCallId })
+    entry.tailRows.push(meta)
     if (entry.tailRows.length > REASONING_SNAPSHOT_LOOKBACK) {
         const exitedReasoning = entry.tailRows[entry.tailRows.length - 1 - REASONING_SNAPSHOT_LOOKBACK]
         if (exitedReasoning?.reasoningStreamId) {
@@ -446,7 +451,8 @@ function updateLiveTailAfterAppend(
             }
         }
     }
-    if (entry.tailRows.length > TOOL_CALL_UPSERT_LOOKBACK) {
+    const maxLookback = Math.max(TOOL_CALL_UPSERT_LOOKBACK, REASONING_SNAPSHOT_LOOKBACK)
+    if (entry.tailRows.length > maxLookback) {
         const evicted = entry.tailRows.shift()
         if (evicted?.toolCallId && entry.liveToolCalls.get(evicted.toolCallId) === evicted.id) {
             entry.liveToolCalls.delete(evicted.toolCallId)
@@ -850,13 +856,29 @@ export function deleteLiveReasoningSnapshots(
         `DELETE FROM messages WHERE session_id = ? AND id IN (${placeholders})`
     ).run(sessionId, ...staleIds)
 
-    if (keepMessageId && streamIds.has(keepMessageId)) {
-        tail.reasoningSnapshots.set(streamId, new Set([keepMessageId]))
-    } else {
-        tail.reasoningSnapshots.delete(streamId)
-    }
     const staleSet = new Set(staleIds)
     tail.tailRows = tail.tailRows.filter((row) => !staleSet.has(row.id))
+    const lookback = Math.max(TOOL_CALL_UPSERT_LOOKBACK, REASONING_SNAPSHOT_LOOKBACK)
+    if (tail.tailRows.length < lookback) {
+        const oldestSeq = tail.tailRows[0]?.seq ?? (tail.headSeq + 1)
+        if (oldestSeq > 1) {
+            const olderRows = prepareCached(db, `
+                SELECT id, seq, content FROM messages
+                WHERE session_id = ? AND seq < ?
+                ORDER BY seq DESC
+                LIMIT ?
+            `).all(sessionId, oldestSeq, lookback - tail.tailRows.length) as Array<Pick<DbMessageRow, 'id' | 'seq' | 'content'>>
+            if (olderRows.length > 0) {
+                const prefix: TailRowMeta[] = []
+                for (let i = olderRows.length - 1; i >= 0; i -= 1) {
+                    const row = olderRows[i]!
+                    prefix.push(classifyTailRow(row.id, row.seq, decodeMessageContent(row.content)))
+                }
+                tail.tailRows = [...prefix, ...tail.tailRows]
+            }
+        }
+    }
+    rebuildTailIndexes(tail)
     if (tail.headId && staleSet.has(tail.headId)) {
         invalidateLiveTail(db, sessionId)
     }
