@@ -1,5 +1,6 @@
 import { CodexRoundDuration } from './utils/roundDuration';
 import { logger } from '@/ui/logger';
+import { emitReadyIfIdle } from '@/agent/readyPolicy';
 import { resolve } from 'node:path';
 import { startHookServer } from '@/claude/utils/startHookServer';
 import { codexLocal } from './codexLocal';
@@ -356,9 +357,7 @@ export async function codexLocalLauncher(session: CodexSession): Promise<'switch
                         // the same batch cancels the alert; replay and shutdown never alert.
                         readyTimer = setTimeout(() => {
                             readyTimer = null;
-                            if (!shuttingDown && session.queue.size() === 0) {
-                                session.sendSessionEvent({ type: 'ready' });
-                            }
+                            emitReadyIfIdle(session, () => shuttingDown || session.queue.size() > 0);
                         }, 0);
                     }
                 }

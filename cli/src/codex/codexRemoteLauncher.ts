@@ -10,7 +10,7 @@ import { logger } from '@/ui/logger';
 import { CodexDisplay } from '@/ui/ink/CodexDisplay';
 import { buildHapiMcpBridge } from './utils/buildHapiMcpBridge';
 import { applySessionDisplayRename } from '@/agent/sessionDisplayRename';
-import { emitReadyIfIdle } from './utils/emitReadyIfIdle';
+import { emitReadyIfIdle } from '@/agent/readyPolicy';
 import type { CodexSession } from './session';
 import type { EnhancedMode } from './loop';
 import type { QueueReservation } from '@/utils/MessageQueue2';
@@ -3147,12 +3147,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
 
             if (isTerminalEvent && !turnInFlight && !suppressReadyForThisTerminalEvent) {
                 if (msg.deferred_thread_status === true) {
-                    emitReadyIfIdle({
-                        pending: pending ?? (recoveryInFlight ? activeMessage : null),
-                        queueSize: () => session.queue.size(),
-                        shouldExit: this.shouldExit,
-                        sendReady
-                    });
+                    emitReadyIfIdle(session, () => Boolean(pending ?? (recoveryInFlight ? activeMessage : null))
+                        || session.queue.size() > 0 || this.shouldExit);
                 } else {
                     scheduleReadyAfterTurn?.();
                 }
@@ -3619,10 +3615,6 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
             } catch {}
         }
 
-        const sendReady = () => {
-            session.sendSessionEvent({ type: 'ready' });
-        };
-
         await appServerClient.connect();
         await appServerClient.initialize({
             clientInfo: {
@@ -3760,12 +3752,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                 if (suppressReadyForAdminCommand) {
                     return;
                 }
-                emitReadyIfIdle({
-                    pending: pending ?? (recoveryInFlight ? activeMessage : null),
-                    queueSize: () => session.queue.size(),
-                    shouldExit: this.shouldExit,
-                    sendReady
-                });
+                emitReadyIfIdle(session, () => Boolean(pending ?? (recoveryInFlight ? activeMessage : null))
+                    || session.queue.size() > 0 || this.shouldExit);
             }, 120);
             readyAfterTurnTimer.unref?.();
         };
@@ -4366,12 +4354,8 @@ class CodexRemoteLauncher extends RemoteLauncherBase {
                     session.onThinkingChange(false);
                     clearReadyAfterTurnTimer?.();
                     if (!suppressReadyAfterMessage) {
-                        emitReadyIfIdle({
-                            pending: pending ?? (recoveryInFlight ? activeMessage : null),
-                            queueSize: () => session.queue.size(),
-                            shouldExit: this.shouldExit,
-                            sendReady
-                        });
+                        emitReadyIfIdle(session, () => Boolean(pending ?? (recoveryInFlight ? activeMessage : null))
+                            || session.queue.size() > 0 || this.shouldExit);
                     }
                 }
                 if (suppressReadyAfterMessage) {
