@@ -392,19 +392,19 @@
         }
       }
     },
-    "Sign in to %@ from another device with “Sign in with a Passkey” — only the hub URL is needed. Passkeys marked Web belong to the browser and are listed here for management only." : {
+    "Sign in to %@ from another device with “Sign in with a Passkey” — only the hub URL is needed. Passkeys work in both the web app and this app." : {
       "extractionState" : "manual",
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Войдите в %@ с другого устройства через «Войти с ключом доступа» — нужен только URL хаба. Ключи с пометкой «Веб» относятся к браузеру и показаны здесь только для управления."
+            "value" : "Войдите в %@ с другого устройства через «Войти с ключом доступа» — нужен только URL хаба. Ключи работают и в браузере, и в этом приложении."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "在其他设备上通过“使用通行密钥登录”登录 %@，只需 Hub 地址。标记为“网页”的通行密钥属于浏览器，此处仅供管理。"
+            "value" : "在其他设备上通过“使用通行密钥登录”登录 %@，只需 Hub 地址。通行密钥可同时用于网页版和本应用。"
           }
         }
       }
@@ -494,19 +494,19 @@
         }
       }
     },
-    "The hub requested a passkey for “%@”, but this app only supports hapi.run. Update the hub." : {
+    "The hub requested a passkey for “%@”, but this app only supports auth.hapi.run. Update the hub." : {
       "extractionState" : "manual",
       "localizations" : {
         "ru" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Хаб запросил ключ доступа для «%@», но приложение поддерживает только hapi.run. Обновите хаб."
+            "value" : "Хаб запросил ключ доступа для «%@», но приложение поддерживает только auth.hapi.run. Обновите хаб."
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Hub 请求的是“%@”的通行密钥，但本应用仅支持 hapi.run。请更新 Hub。"
+            "value" : "Hub 请求的是“%@”的通行密钥，但本应用仅支持 auth.hapi.run。请更新 Hub。"
           }
         }
       }

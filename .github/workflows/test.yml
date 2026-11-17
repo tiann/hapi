@@ -15,6 +15,8 @@ jobs:
             - run: bun install --frozen-lockfile
             - run: bun typecheck
             - run: bunx playwright install --with-deps chromium
+            - name: Shared Web/App Passkey browser regression
+              run: bun run test:passkey:browser
             # Required by cli/src/utils/windowsProcessTree.pwsh.test.ts — image
             # inspect alone does not pull; silent skip was fake B1 coverage (#1911).
             - run: docker pull mcr.microsoft.com/powershell:latest

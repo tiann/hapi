@@ -70,7 +70,7 @@ without a usable scanner.
 
 After you pair a device with the access token, you can add a passkey for that hub in **Settings → Passkeys**. iOS syncs it through iCloud Keychain, and Android 9+ through Google Password Manager. On another device, choose **Sign in with a passkey** on the pairing screen and enter only the hub URL.
 
-- App passkeys use the shared `hapi.run` relying party. Passkeys created in the web app cannot sign in to the apps; the list shows them so you can manage them.
+- Web and App passkeys use the shared `auth.hapi.run` relying party. Register once in either client to sign in to that same Hub from both. Configure the Hub’s `HAPI_PUBLIC_URL` as its canonical HTTPS origin; no association files are needed on your own domain.
 - Rotating the hub's access token, or deleting the passkey, signs out every device that signed in with it.
 
 ## Sessions and everyday use

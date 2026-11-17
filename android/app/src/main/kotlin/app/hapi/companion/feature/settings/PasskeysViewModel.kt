@@ -16,6 +16,8 @@ import kotlinx.serialization.json.JsonObject
 
 /** Transport seam over the authed `HapiApi` passkey endpoints (JVM-testable). */
 interface PasskeysGateway {
+    val hubUrl: String
+
     /** `GET /api/passkeys`. */
     suspend fun list(): List<PasskeySummary>
 
@@ -53,12 +55,12 @@ val PasskeySummary.isAppPasskey: Boolean get() = rpId == NativePasskeys.RP_ID
 
 /**
  * Settings → Passkeys: list this namespace's passkeys, register one for the
- * native RP ID (`hapi.run`), and delete with the screen's confirmation.
+ * shared Web/App RP ID (`auth.hapi.run`), and delete with the screen's confirmation.
  *
  * Register: options (`{"client":"native"}`) → refuse unless `rp.id` is the
  * compiled RP ID → platform ceremony → verify with the chosen name → reload.
- * A dismissed sheet is silent. Web passkeys (any other `rpId`) are listed for
- * completeness but cannot sign in to the app.
+ * A dismissed sheet is silent. Web and native registration create the same
+ * kind of Hub-scoped credential.
  */
 class PasskeysViewModel(
     private val gateway: PasskeysGateway,
@@ -97,8 +99,8 @@ class PasskeysViewModel(
         scope.launch {
             try {
                 val options = gateway.registerOptions()
-                NativePasskeys.requireCreationRpId(options)
-                val registration = platform.createPasskey(options)
+                val checkedOptions = NativePasskeys.ceremonyOptions(options, gateway.hubUrl, "register")
+                val registration = platform.createPasskey(checkedOptions)
                 gateway.registerVerify(
                     NativePasskeys.credentialResponse(registration),
                     NativePasskeys.normalizeName(name),

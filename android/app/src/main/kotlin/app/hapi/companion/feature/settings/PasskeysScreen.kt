@@ -54,8 +54,8 @@ import app.hapi.protocol.wire.PasskeySummary
 /**
  * Settings → Passkeys (hub-scoped): this namespace's passkeys with
  * created/last-used dates, an "inactive" tag for passkeys invalidated by a
- * `CLI_API_TOKEN` rotation, and a "web" tag for passkeys of another RP ID
- * (usable in the web app only). Add registers a `hapi.run` passkey through
+ * `CLI_API_TOKEN` rotation or an unsupported RP ID.
+ * Add registers an `auth.hapi.run` passkey for both Web and App through
  * Credential Manager; delete asks for confirmation first.
  */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -245,7 +245,6 @@ private fun PasskeyRow(
                 modifier = Modifier.padding(top = 2.dp),
             )
             val tags = buildList {
-                if (!passkey.isAppPasskey) add(stringResource(R.string.settings_passkeys_tag_web))
                 if (!passkey.valid) add(stringResource(R.string.settings_passkeys_tag_inactive))
             }
             if (tags.isNotEmpty()) {
@@ -254,14 +253,6 @@ private fun PasskeyRow(
                     style = MaterialTheme.typography.labelMedium,
                     color = if (!passkey.valid) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.tertiary,
                     modifier = Modifier.padding(top = 4.dp),
-                )
-            }
-            if (!passkey.isAppPasskey) {
-                Text(
-                    text = stringResource(R.string.settings_passkeys_web_note),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 2.dp),
                 )
             }
         }

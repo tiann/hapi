@@ -7,6 +7,7 @@
     "types": "./src/index.ts",
     "exports": {
         ".": "./src/index.ts",
+        "./passkey": "./src/passkey.ts",
         "./apiTypes": "./src/apiTypes.ts",
         "./localTranscript": "./src/localTranscript.ts",
         "./messages": "./src/messages.ts",

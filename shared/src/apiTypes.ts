@@ -1026,15 +1026,25 @@ export const PasskeyCredentialResponseSchema = z.object({
     authenticatorAttachment: z.string().nullish()
 })
 
-/**
- * Body of `POST /api/passkey/{login,register}/options`. Web clients omit it
- * (the RP is derived from the Origin header); official native apps send
- * `{ "client": "native" }` to use the hub's fixed native RP ID.
- */
-export const PasskeyOptionsRequestSchema = z.object({
-    client: z.enum(['web', 'native']).default('web')
-})
+/** Direct options/verify ceremonies are native-only. Browsers use the bridge. */
+export const PasskeyOptionsRequestSchema = z.object({ client: z.literal('native') })
 export type PasskeyOptionsRequest = z.infer<typeof PasskeyOptionsRequestSchema>
+
+export const PasskeyBrowserStartRequestSchema = z.object({
+    codeChallenge: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+    state: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+    callbackOrigin: z.string().url().max(2048),
+    name: z.string().trim().max(64).optional()
+}).strict()
+export type PasskeyBrowserStartRequest = z.infer<typeof PasskeyBrowserStartRequestSchema>
+export type PasskeyBrowserStartResponse = { url: string }
+export const PasskeyBrowserExchangeRequestSchema = z.object({
+    code: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+    verifier: z.string().regex(/^[A-Za-z0-9_-]{43}$/)
+}).strict()
+export type PasskeyBrowserExchangeResponse =
+    | { operation: 'register' }
+    | { operation: 'login'; token: string; passkeySession: string }
 
 export const PasskeyRegisterVerifyRequestSchema = z.object({
     response: PasskeyCredentialResponseSchema,

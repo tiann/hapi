@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { PASSKEY_RP_ID } from '@hapi/protocol/passkey'
 import { AuthRequestSchema } from '@hapi/protocol'
 import { getConfiguration } from '../../configuration'
 import { constantTimeEquals } from '../../utils/crypto'
@@ -44,6 +45,7 @@ export function createAuthRoutes(jwtSecret: Uint8Array, store: Store): Hono<WebA
             if (
                 !session
                 || !credential
+                || credential.rpId !== PASSKEY_RP_ID
                 || credential.namespace !== session.namespace
                 || !constantTimeEquals(credential.tokenFingerprint, fingerprint)
             ) {

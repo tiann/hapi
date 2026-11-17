@@ -296,6 +296,7 @@ function createWebApp(options: {
         jwtSecret: options.jwtSecret,
         store: options.store,
         corsOrigins: () => corsOrigins,
+        hubUrl: () => configuration.publicUrl,
         challenges: new PasskeyChallengeStore(),
         native: nativePasskeyConfigFromEnv()
     }
