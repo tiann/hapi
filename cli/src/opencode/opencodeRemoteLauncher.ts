@@ -2710,6 +2710,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private handleUnexpectedChildExit(error: Error, details?: { childProcessExited: boolean }): void {
         if (this.shouldExit || this.exitReason || this.unexpectedChildExit) return;
         this.unexpectedChildExit = error;
+        const compactWasOwned = this.compactAbortController !== null
+            && this.compactOperationPhase !== 'idle';
+        // Unlike a plain Stop, an unexpected child exit makes an owned compact
+        // unable to settle: its HTTP request targets the process that just died.
+        // Abandon it so the dequeue loop can reach cleanup and recovery; the
+        // already-committed compact is intentionally not replayed.
+        this.compactResultSuppressed = true;
+        this.compactAbortController?.abort();
         // Only the transport's own child process event can confirm its exit.
         this.confirmedChildProcessExit = details?.childProcessExited === true;
         if (!this.activeAcpSessionId || !this.recoveryEligible) {
@@ -2725,6 +2733,12 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         this.options.onRecoveryStart?.(this.hasConfirmedChildProcessExit);
         logger.warn('[opencode-remote] ACP child exited unexpectedly; scheduling recovery', error);
         this.messageBuffer.addMessage('Agent process stopped unexpectedly. Recovering the session…', 'status');
+        if (compactWasOwned) {
+            this.messageBuffer.addMessage(
+                'Compaction was interrupted because the agent process restarted. Run /compact again if needed.',
+                'status'
+            );
+        }
         // Wake an idle queue read immediately. The queue itself remains intact
         // and the outer launcher recreates the backend with session.sessionId.
         this.abortController.abort();

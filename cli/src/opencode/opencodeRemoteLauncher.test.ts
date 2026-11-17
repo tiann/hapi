@@ -3938,6 +3938,47 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         ]);
     });
 
+    it('abandons an owned compact when its ACP child exits so recovery and Switch can proceed', async () => {
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        const statusMessage = vi.spyOn(MessageBuffer.prototype, 'addMessage');
+        let capturedSignal: AbortSignal | undefined;
+        compactHarness.triggerImpl = (opts) => new Promise((resolve) => {
+            capturedSignal = opts.signal;
+            opts.signal?.addEventListener('abort', () => {
+                resolve({ ok: false, error: 'The operation was aborted.' });
+            });
+        });
+        const { session, sessionEvents, rpcHandlers } = createSessionStub([
+            { message: '', mode: createCompactMode('ollama/x') }
+        ], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        const launcherPromise = opencodeRemoteLauncher(session as never, {
+            recoveryBackoffsMs: [0, 0, 0]
+        } as never);
+
+        await vi.waitFor(() => expect(compactHarness.calls).toHaveLength(1));
+        await vi.waitFor(() => expect(harness.unexpectedExitHandler).toBeTypeOf('function'));
+        harness.unexpectedExitHandler!(new Error('ACP process exited (signal=SIGKILL)'), { childProcessExited: true });
+        expect(statusMessage).toHaveBeenCalledWith('Agent process stopped unexpectedly. Recovering the session…', 'status');
+        expect(statusMessage.mock.calls.filter(([message, kind]) =>
+            message === 'Compaction was interrupted because the agent process restarted. Run /compact again if needed.'
+                && kind === 'status'
+        )).toHaveLength(1);
+
+        // Recovery Abort is an acknowledgement that must not cancel recovery.
+        await expect(rpcHandlers.get(RPC_METHODS.Abort)!({})).resolves.toBeUndefined();
+        await vi.waitFor(() => expect(capturedSignal?.aborted).toBe(true));
+        const { createOpencodeBackend } = await import('./utils/opencodeBackend');
+        await vi.waitFor(() => expect(createOpencodeBackend).toHaveBeenCalledTimes(2));
+        expect(harness.compactBackendCreates).toEqual([1]);
+        expect(sessionEvents.filter(event => event.type === 'message').map(event => event.message))
+            .toContain('📦 Compaction started');
+
+        await expect(rpcHandlers.get(RPC_METHODS.Switch)!({})).resolves.toBeUndefined();
+        await expect(launcherPromise).resolves.toBe('switch');
+        statusMessage.mockRestore();
+    });
+
     it('a plain Stop aborts the pre-POST marker snapshot GET and skips summarize because no server-side compaction has started', async () => {
         harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
         let capturedSignal: AbortSignal | undefined;
