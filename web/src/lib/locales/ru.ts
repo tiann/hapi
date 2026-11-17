@@ -67,8 +67,6 @@ export default {
   'login.footer': 'Создано с',
   'login.footer.for': 'для Vibe Coding',
   'login.footer.copyright': '©',
-  'login.passkey.manualRequired': 'Не удалось определить хаб по ключу. Откройте настройки хаба и введите адрес вручную.',
-  'login.passkey.useEnteredHub': 'Войти в этот хаб с ключом доступа',
   'login.passkey.or': 'или',
   'login.passkey.submit': 'Войти с ключом доступа',
   'login.passkey.popupBlocked': 'Разрешите всплывающие окна для этого сайта, чтобы использовать ключ доступа.',

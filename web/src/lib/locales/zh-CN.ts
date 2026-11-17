@@ -86,8 +86,6 @@ export default {
   'login.footer': '用',
   'login.footer.for': '设计，Vibe Coding',
   'login.footer.copyright': '©',
-  'login.passkey.manualRequired': '此通行密钥无法定位 Hub。请打开 Hub 设置，手动输入地址。',
-  'login.passkey.useEnteredHub': '使用通行密钥登录此 Hub',
   'login.passkey.or': '或',
   'login.passkey.submit': '使用 Passkey 登录',
   'login.passkey.popupBlocked': '请允许此网站打开弹窗，以使用 Passkey。',

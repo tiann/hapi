@@ -92,7 +92,7 @@ Treat the token as opaque for auth purposes, but clients may base64url-decode th
 Source of truth: `hub/src/web/middleware/auth.ts`.
 
 - Every `/api/*` request: `Authorization: Bearer <JWT>`.
-- Exceptions: `/api/auth`, `/api/bind`, `/api/passkey/login/options`, `/api/passkey/login/verify`, `/api/passkey/browser/login/start`, `/api/passkey/browser/complete` and `/api/passkey/browser/exchange` are unauthenticated; `GET /health` is outside `/api` and unauthenticated.
+- Exceptions: `/api/auth`, `/api/bind`, `/api/passkey/login/verify`, `/api/passkey/browser/login/start`, `/api/passkey/browser/complete` and `/api/passkey/browser/exchange` are unauthenticated; `GET /health` is outside `/api` and unauthenticated.
 - `GET /api/events` (SSE) **additionally** accepts `?token=<JWT>` as a query param, for HTTP stacks whose EventSource cannot set headers. The header wins when both are present. No other endpoint accepts query-param auth.
 
 ## Silent re-auth (401 handling)
@@ -194,42 +194,8 @@ The v2 user handle is self-describing, at most 64 bytes:
 
 Registration clients validate the canonical origin encoded in the handle, or
 its hash for long addresses, **before system UI**. A malicious Hub cannot use
-another Hub's account handle to overwrite its passkey. Login options restrict
-`allowCredentials` to this Hub's currently valid shared-RP credentials.
-
-### Hub discovery (no address input)
-
-Discovery is a separate, **locator-only** ceremony, not a login endpoint or an
-authentication proof. The trusted authentication page/native app generates its
-own random challenge `{v:1, operation:"discover", channel, nonce}` and requests a
-resident credential for `auth.hapi.run` with UV required, no allowlist and no
-extensions. Callers cannot supply a challenge or WebAuthn options for this step.
-No Hub request has been made yet, and Hubs reject these unissued challenges.
-
-The returned `userHandle` supplies the canonical HTTPS Hub origin. The UI shows
-that origin and requires confirmation **before connecting**. Then it obtains a
-fresh Hub-bound login challenge and performs the ordinary authentication flow;
-the discovery assertion is discarded and never posted to a Hub or opener.
-Two system authenticator interactions may be required. Missing/malformed handles
-and long addresses offer manual Hub entry; access-token/QR pairing remains.
-
-For Web, the opener opens `auth.hapi.run/#<encoded JSON>` with exactly
-`{operation:"discover", callbackOrigin, state}`. The page displays the requesting
-HTTPS origin and, after user selection and confirmation, posts only
-`{type:"hapi-passkey-discovery", state, hub}` (or `error`) to the exact-origin
-opener. It never sends the credential ID, user handle, or signed assertion.
-The opener validates the authentication origin, popup identity, state and Hub
-URL before reusing the popup for the ordinary PKCE ceremony. The bridge reloads
-on the next fragment navigation, clearing discovery state. A valid discovery
-result alone never creates a session; callback CORS authorization still applies.
-
-Web persists the verified session under the discovered Hub, then selects that
-Hub. Old pairing URL parameters are cleared, and previous Hub credentials/JWTs
-are masked synchronously on a Hub switch, including pending refreshes. Native
-clients similarly do not register/persist a Hub until real login succeeds.
-Credentials must be available in the local/synced provider; no central discovery
-registry or backend is introduced. Re-register existing credentials to obtain
-the v2 discoverable handle.
+another Hub's account handle to overwrite its passkey. Browser login options
+restrict `allowCredentials` to this Hub's currently valid shared-RP credentials.
 
 The authentication origin is part of the security boundary. It must contain no
 marketing app, third-party scripts, analytics, or service worker. Compromising
@@ -243,10 +209,8 @@ Native clients use the same RP/credentials, without a browser redirect:
 1. `POST /api/passkey/register/options {client:"native"}` (JWT required),
    validate RP, connected Hub, operation/channel and user-handle origin, invoke
    the platform API, then `POST /api/passkey/register/verify {response, name}`.
-2. `POST /api/passkey/login/options {client:"native"}` (unauthenticated),
-   validate RP and challenge binding, invoke the platform API, then
-   `POST /api/passkey/login/verify {response}`. `404 no_passkeys` means none of
-   this Hub's shared-RP credentials are valid; fall back to the access token.
+2. Login is **one system interaction** and needs no Hub address in advance
+   (see [native sign-in](#passkeys-native-login)).
 3. Store `{token, passkeySession}` in secure per-Hub storage and use the normal
    silent re-auth exchange. `401 passkey_session_invalid` is terminal.
 
@@ -259,6 +223,45 @@ provider, a synced password manager, or an accessible authenticator.
 Direct options/verify routes are native-only; browser-channel challenges cannot
 be used there, and native-channel challenges cannot use the browser bridge.
 All binary fields are base64url without padding; user verification is required.
+
+### Native sign-in (single ceremony) {#passkeys-native-login}
+
+Source of truth: `shared/src/passkey.ts` (`parsePasskeyNativeLoginChallenge`),
+`hub/src/web/routes/passkey.ts`.
+
+The Hub is unknown until a credential is chosen, so the app issues its own
+challenge instead of asking a Hub first:
+
+1. Build the challenge bytes as UTF-8 JSON with exactly
+   `{v:2, operation:"login", channel:"native", iat, nonce}`: `iat` is the
+   current Unix time in integer milliseconds, `nonce` is base64url of 32 random
+   bytes (43 chars). Request a resident credential for `auth.hapi.run` with UV
+   required, **no allowlist and no extensions**. Never build this request from
+   Hub-supplied options.
+2. Read the Hub from the assertion's `userHandle` (v2 locator above). The system
+   sheet shows `account@hub-host`, so selecting the credential is the Hub
+   choice; there is no separate confirmation. If the user entered a Hub
+   explicitly, require the handle to match it before any request. A missing or
+   hash-bound (long address) handle needs manual Hub entry.
+   **Never post the assertion to any other Hub.** The challenge is not
+   Hub-bound, so a Hub receiving another Hub's assertion could replay it there
+   within the window. Pre-v2 handles cannot pass this check; re-register them.
+3. `GET /health` on that Hub, then `POST /api/passkey/login/verify {response}`.
+
+The Hub checks origin/RP/UV/signature/counter and that the credential belongs to
+it and the current `CLI_API_TOKEN`, as for any assertion. In place of a
+Hub-issued challenge it accepts `iat` only within `[now − 5 min, now + 1 min]`
+and each challenge only once (remembered for the full window; concurrent
+submissions cannot both succeed). Clients therefore need a roughly correct
+clock; an out-of-window or reused challenge answers
+`401 {"error":"Passkey challenge expired"}` — run a new ceremony. Browser
+ceremonies cannot produce this challenge format (the static page only signs
+Hub-issued challenges), and these challenges are refused by the browser bridge.
+
+Trade-off: freshness relies on the client clock plus Hub-side replay tracking
+rather than a Hub nonce. An attacker able to run code as the `auth.hapi.run`
+origin or the official apps could pre-sign assertions valid for at most a few
+minutes; that same position already compromises the shared RP.
 
 - iOS/macOS declares `webcredentials:auth.hapi.run`. The RP's static
   `/.well-known/apple-app-site-association` lists `XJB862F92W.run.hapi.app`.

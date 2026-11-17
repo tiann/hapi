@@ -139,16 +139,17 @@ refresh requires re-pairing. See the [auth contract](../docs/api/client-contract
 After pairing with the access token, **Settings → Passkeys** registers a
 passkey for the active hub through Credential Manager
 (`androidx.credentials` + `credentials-play-services-auth`). On another
-device, **Sign in with a passkey** on the pairing screen needs only the hub
-URL: the hub returns a JWT plus a `passkeySession`, which is stored in
+device, **Sign in with a passkey** on the pairing screen takes one system
+passkey sheet and no Hub address (see [single-ceremony sign-in](#single-ceremony-passkey-sign-in)):
+the hub returns a JWT plus a `passkeySession`, which is stored in
 `EncryptedSharedPreferences` instead of an access token and exchanged by the
 normal silent re-auth loop (`POST /api/auth {"passkeySession": …}`; a 401
 there signs the device out with a "sign in again" notice). App passkeys use
-the fixed RP ID `auth.hapi.run`; the app refuses options for any other RP ID, and
-passkeys created through the web authentication page also sign in to the app.
-The app validates the connected Hub, operation/channel and registration user
-handle before opening Credential Manager. Set the Hub’s `HAPI_PUBLIC_URL` to
-its canonical HTTPS origin.
+the fixed RP ID `auth.hapi.run`; the app refuses registration options for any
+other RP ID, and passkeys created through the web authentication page also sign
+in to the app. Registration validates the connected Hub, operation/channel and
+user handle before opening Credential Manager. Set the Hub’s `HAPI_PUBLIC_URL`
+to its canonical HTTPS origin.
 See the [native passkey contract](../docs/api/client-contract/auth.md#passkeys-native).
 
 Ceremonies only work when two things match the APK's **signing
@@ -530,14 +531,26 @@ Unread state uses the hub’s [revision read-state contract](../docs/api/client-
 List selection and metadata updates never acknowledge reading. The resumed chat
 acknowledges only its rendered tail, with a durable outbox scoped by hub and namespace.
 
-### Address-free Passkey sign-in
+### Single-ceremony Passkey sign-in
 
-The pairing Passkey entry first runs a local resident-credential selection to
-recover the Hub from its v2 user handle, without HTTP requests. Confirm the
-recovered HTTPS origin, then run the existing health/options/Hub-bound assertion
-flow. The discovery assertion is never sent to the Hub and never authorizes a
-session. Registration validates the handle's Hub origin (or hash for long
-addresses) before opening system UI. The handle reserves 16 bytes for a stable
-account tag and fits 46 ASCII authority bytes; longer addresses retain manual
-sign-in. Re-register credentials to enable discovery. No central server is
-required; the credential must be available through the local/synced provider.
+Sign-in runs exactly one Credential Manager ceremony. The app builds its own
+challenge, base64url (no padding) of the UTF-8 JSON
+`{"v":2,"operation":"login","channel":"native","iat":<epoch ms>,"nonce":<43-char base64url of 32 random bytes>}`,
+and requests `{challenge, rpId: "auth.hapi.run", userVerification: "required", timeout: 120000}`
+with no `allowCredentials` or extensions (`NativePasskeys.nativeLoginOptions`).
+`NativePasskeys.loginHub` reads the Hub from the selected credential's v2 user
+handle; the app then probes `GET /health` there and posts the assertion to
+`POST /api/passkey/login/verify`. The Hub accepts a native challenge only
+within [now − 5 min, now + 1 min] and only once; there is no login options
+endpoint. The user handle only locates the Hub; the Hub's signature check is
+the authentication.
+
+**Enter Hub address manually** passes an expected Hub: the app probes it before
+opening the sheet, and the credential must belong to it (equal origin, or the
+SHA-256 origin hash for long addresses). A passkey for another Hub fails before
+its assertion is posted anywhere. The handle fits 46 ASCII authority bytes; longer
+addresses produce an opaque handle, so sign-in without an address reports
+"Hub address required" and opens manual entry (a second ceremony in that rare
+case). Credentials registered before v2 handles need re-registration. No
+central server is involved; the credential must be available through the
+local/synced provider.

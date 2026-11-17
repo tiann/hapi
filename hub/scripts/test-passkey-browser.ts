@@ -8,7 +8,7 @@ import { join, resolve } from 'node:path'
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { FOLLOW_SESSION_REDIRECTS_HEADER } from '@hapi/protocol'
-import { PASSKEY_ORIGIN, PASSKEY_RP_ID, passkeyUserHandleHub } from '@hapi/protocol/passkey'
+import { createPasskeyNativeLoginChallenge, PASSKEY_ORIGIN, PASSKEY_RP_ID, passkeyUserHandleHub } from '@hapi/protocol/passkey'
 import { createConfiguration } from '../src/configuration'
 import { Store } from '../src/store'
 import { signWebJwt } from '../src/web/authTokens'
@@ -110,9 +110,10 @@ try {
     if (!credential.userHandle || passkeyUserHandleHub(Buffer.from(credential.userHandle, 'base64')) !== hub) throw new Error('Browser-created passkey did not store its Hub')
     if (store.passkeys.listByNamespace('team').length !== 1) throw new Error('Browser registration did not reach Hub')
 
-    // A synced browser-created key signs an Android-origin assertion to the real Hub.
-    const optionsResponse = await app.request('/api/passkey/login/options', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{"client":"native"}' })
-    const options = await optionsResponse.json() as { challenge: string }
+    // A synced browser-created key signs an Android-origin assertion to the real
+    // Hub in one ceremony: the app's own fresh challenge, Hub from the handle.
+    const options = { challenge: createPasskeyNativeLoginChallenge() }
+    if (passkeyUserHandleHub(Buffer.from(credential.userHandle, 'base64')) !== hub) throw new Error('Native sign-in could not locate the Hub')
     const hash = (value: string | Buffer) => createHash('sha256').update(value).digest()
     const data = Buffer.from(JSON.stringify({ type: 'webauthn.get', challenge: options.challenge, origin: androidOrigin, crossOrigin: false }))
     const counter = Buffer.alloc(4); counter.writeUInt32BE(credential.signCount + 1)
@@ -137,16 +138,9 @@ try {
     })
     if (registered.status !== 200) throw new Error(await registered.text())
     const second = await virtualPopup('#login', soft.virtualCredential())
-    const beforeDiscovery = requests.length
-    await second.popup.click('#continue')
-    await second.popup.getByRole('button', { name: 'Use this Hub' }).waitFor()
-    if (requests.length !== beforeDiscovery) throw new Error('Discovery contacted a Hub before confirmation')
-    if (await second.popup.locator('#hub').textContent() !== hub) throw new Error('Discovery recovered the wrong Hub')
-    await second.popup.getByRole('button', { name: 'Use this Hub' }).click()
-    await second.popup.getByRole('heading', { name: 'Sign in to HAPI', exact: true }).waitFor()
     await second.popup.click('#continue')
     await page.waitForFunction(() => document.querySelector('#result')?.textContent?.startsWith('session:'))
-    console.log('PASS: native-created Passkey discovers its Hub without input, then signs into web with a fresh challenge, callback, and PKCE')
+    console.log('PASS: native-created Passkey signs into web via static bridge, callback, and PKCE')
 } catch (error) {
     console.error(requests.join("\n"))
     throw error

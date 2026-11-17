@@ -33,33 +33,4 @@ describe('useAuthSource passkey sessions', () => {
         expect(result.current.authSource).toBeNull()
         expect(localStorage.getItem(TOKEN_KEY)).toBeNull()
     })
-
-    it('persists a discovered session under its own Hub, never exposes the previous credential to the new Hub', () => {
-        const other = 'https://discovered.example'
-        localStorage.setItem(TOKEN_KEY, 'old-hub-token')
-        const snapshots: Array<{ hub: string; source: unknown }> = []
-        const { result, rerender } = renderHook(({ hub }) => {
-            const value = useAuthSource(hub)
-            snapshots.push({ hub, source: value.authSource })
-            return value
-        }, { initialProps: { hub: BASE } })
-        act(() => result.current.setPasskeySession('new-session', other))
-        expect(result.current.authSource).toEqual({ type: 'accessToken', token: 'old-hub-token' })
-        expect(localStorage.getItem(`hapi_passkey_session::${other}`)).toBe('new-session')
-        rerender({ hub: other })
-        expect(result.current.authSource).toEqual({ type: 'passkey', session: 'new-session' })
-        expect(snapshots.filter((s) => s.hub === other).some((s) => JSON.stringify(s.source).includes('old-hub-token'))).toBe(false)
-        expect(localStorage.getItem(PASSKEY_KEY)).toBeNull()
-    })
-
-    it('removes old pairing URL credentials when discovery selects another Hub', () => {
-        window.history.replaceState(null, '', '/?hub=https://hub.example.com&token=link-token')
-        const { result, rerender } = renderHook(({ hub }) => useAuthSource(hub), { initialProps: { hub: BASE } })
-        expect(result.current.authSource).toEqual({ type: 'accessToken', token: 'link-token' })
-        act(() => result.current.setPasskeySession('new-session', 'https://new.example'))
-        expect(window.location.search).toBe('')
-        rerender({ hub: 'https://new.example' })
-        expect(result.current.authSource).toEqual({ type: 'passkey', session: 'new-session' })
-        expect(localStorage.getItem('hapi_access_token::https://new.example')).toBeNull()
-    })
 })

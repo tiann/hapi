@@ -86,8 +86,6 @@ export default {
   'login.footer': 'Designed with',
   'login.footer.for': 'for Vibe Coding',
   'login.footer.copyright': '©',
-  'login.passkey.manualRequired': 'This passkey cannot locate its Hub. Open Hub settings and enter the address manually.',
-  'login.passkey.useEnteredHub': 'Sign in with a passkey for this Hub',
   'login.passkey.or': 'or',
   'login.passkey.submit': 'Sign in with a passkey',
   'login.passkey.popupBlocked': 'Allow popups for this site to sign in with a passkey.',

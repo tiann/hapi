@@ -67,11 +67,6 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
     const [isLoading, setIsLoading] = useState<boolean>(false)
     const [error, setError] = useState<string | null>(null)
     const [needsBinding, setNeedsBinding] = useState<boolean>(false)
-    const activeHubRef = useRef(baseUrl)
-    activeHubRef.current = baseUrl
-    const tokenHubRef = useRef(baseUrl)
-    const tokenSourceRef = useRef(authSource)
-    const scopedToken = tokenHubRef.current === baseUrl && tokenSourceRef.current === authSource ? token : null
     const refreshPromiseRef = useRef<Promise<string | null> | null>(null)
     const tokenRef = useRef<string | null>(null)
     const lastRefreshAttemptRef = useRef<number>(0)
@@ -79,14 +74,13 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
     // Stable reference for auth source to use in effects
     const authSourceRef = useRef(authSource)
     authSourceRef.current = authSource
-    tokenRef.current = scopedToken
+    tokenRef.current = token
 
     const refreshAuth = useCallback(async (options?: {
         minTtlMs?: number
         hardFail?: boolean
         force?: boolean
     }): Promise<string | null> => {
-        if (activeHubRef.current !== baseUrl) return null
         const currentSource = authSourceRef.current
         const currentToken = tokenRef.current
         if (!currentSource) {
@@ -114,9 +108,6 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
             try {
                 const client = new ApiClient('', { baseUrl })
                 const auth = await client.authenticate(getAuthPayload(currentSource))
-                if (activeHubRef.current !== baseUrl || authSourceRef.current !== currentSource) return null
-                tokenHubRef.current = baseUrl
-                tokenSourceRef.current = currentSource
                 tokenRef.current = auth.token
                 setToken(auth.token)
                 setUser(auth.user)
@@ -124,7 +115,6 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
                 setNeedsBinding(false)
                 return auth.token
             } catch (error) {
-                if (activeHubRef.current !== baseUrl || authSourceRef.current !== currentSource) return null
                 if (currentSource.type === 'telegram' && isNotBoundError(error)) {
                     tokenRef.current = null
                     setToken(null)
@@ -160,7 +150,6 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
     }, [baseUrl])
 
     const bind = useCallback(async (accessToken: string) => {
-        if (activeHubRef.current !== baseUrl) return
         const currentSource = authSourceRef.current
         if (!currentSource || currentSource.type !== 'telegram') {
             setError('Binding is only supported in Telegram.')
@@ -172,9 +161,6 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
         try {
             const client = new ApiClient('', { baseUrl })
             const auth = await client.bind({ initData: currentSource.initData, accessToken })
-            if (activeHubRef.current !== baseUrl || authSourceRef.current !== currentSource) return
-            tokenHubRef.current = baseUrl
-            tokenSourceRef.current = currentSource
             tokenRef.current = auth.token
             setToken(auth.token)
             setUser(auth.user)
@@ -196,22 +182,19 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
     // changes — only when auth presence toggles (login/logout). Rebuilding on every refresh churns
     // `api`'s identity, which remounts everything keyed on it (VoiceBackendSession `[props.api]`,
     // GeneratedImageCard `[ctx.api, ...]`) and drives the remount/refetch storm. Issue #927.
-    const hasToken = scopedToken !== null
+    const hasToken = token !== null
     const api = useMemo(() => (
         hasToken
             ? new ApiClient(tokenRef.current ?? '', {
                 baseUrl,
-                getToken: () => activeHubRef.current === baseUrl && authSourceRef.current === authSource ? tokenRef.current : null,
-                onUnauthorized: () => activeHubRef.current === baseUrl && authSourceRef.current === authSource
-                    ? refreshAuth({ force: true }) : Promise.resolve(null)
+                getToken: () => tokenRef.current,
+                onUnauthorized: () => refreshAuth({ force: true })
             })
             : null
-    ), [baseUrl, refreshAuth, hasToken, authSource])
+    ), [baseUrl, refreshAuth, hasToken])
 
     useEffect(() => {
         let isCancelled = false
-        refreshPromiseRef.current = null
-        lastRefreshAttemptRef.current = 0
 
         async function run() {
             if (!authSource) {
@@ -226,14 +209,12 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
             try {
                 const client = new ApiClient('', { baseUrl }) // temporary for auth call
                 const auth = await client.authenticate(getAuthPayload(authSource))
-                if (isCancelled || activeHubRef.current !== baseUrl || authSourceRef.current !== authSource) return
-                tokenHubRef.current = baseUrl
-                tokenSourceRef.current = authSource
+                if (isCancelled) return
                 setToken(auth.token)
                 setUser(auth.user)
                 setNeedsBinding(false)
             } catch (e) {
-                if (isCancelled || activeHubRef.current !== baseUrl || authSourceRef.current !== authSource) return
+                if (isCancelled) return
                 if (authSource.type === 'telegram' && isNotBoundError(e)) {
                     setToken(null)
                     setUser(null)
@@ -258,8 +239,6 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
     }, [authSource, baseUrl])
 
     useEffect(() => {
-        tokenHubRef.current = baseUrl
-        tokenSourceRef.current = authSourceRef.current
         tokenRef.current = null
         refreshPromiseRef.current = null
         lastRefreshAttemptRef.current = 0
@@ -332,5 +311,5 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
         }
     }, [authSource, refreshAuth])
 
-    return { token: scopedToken, user: scopedToken ? user : null, api, isLoading, error, needsBinding, bind }
+    return { token, user, api, isLoading, error, needsBinding, bind }
 }

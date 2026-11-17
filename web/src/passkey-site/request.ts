@@ -5,7 +5,6 @@ import {
 } from '@hapi/protocol/passkey'
 
 type Request =
-    | { operation: 'discover'; callbackOrigin: string; state: string }
     | { hub: string; operation: 'login'; options: PublicKeyCredentialRequestOptionsJSON }
     | { hub: string; operation: 'register'; options: PublicKeyCredentialCreationOptionsJSON }
 
@@ -16,12 +15,6 @@ export async function parseCeremonyRequest(fragment: string): Promise<Request> {
     const json = decodeURIComponent(fragment.replace(/^#/, ''))
     if (json.length > PASSKEY_MAX_REQUEST_LENGTH) throw new Error('Request is too large')
     const value = JSON.parse(json) as Request
-    if (value?.operation === 'discover') {
-        if (Object.keys(value).some((key) => !['operation', 'callbackOrigin', 'state'].includes(key))
-            || !/^[A-Za-z0-9_-]{43}$/.test(value.state)
-            || canonicalPasskeyHub(value.callbackOrigin) !== value.callbackOrigin) throw new Error('Invalid discovery request')
-        return value
-    }
     if (!value || !value.options || (value.operation !== 'login' && value.operation !== 'register')) throw new Error('Invalid request')
     const hub = canonicalPasskeyHub(value.hub)
     if (hub !== value.hub) throw new Error('Invalid Hub address')
