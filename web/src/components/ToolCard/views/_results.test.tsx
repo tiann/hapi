@@ -835,4 +835,16 @@ describe('PeerToolResultView', () => {
         expect(screen.getByRole('link', { name: /Codex Reviewer/ }).getAttribute('href')).toBe('/sessions/linked-wrapper-hapi-1')
         expect(screen.getAllByText(/Approved/).length).toBeGreaterThanOrEqual(1)
     })
+
+    it('detects shell-wrapped argv command arrays for codeagent-wrapper cards', () => {
+        const block = makeResultBlock({
+            name: 'exec_command',
+            input: {
+                command: ['bash', '-lc', 'codeagent-wrapper --backend codex - "/work/repo"'],
+            },
+            result: ['Done', '---', 'SESSION_ID: 019a0000-1111-7222-8333-444455556666'].join('\n'),
+        })
+        const CompactView = getToolViewComponent(block.tool.name, block.tool)
+        expect(CompactView).not.toBeNull()
+    })
 })

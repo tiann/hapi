@@ -244,7 +244,8 @@ export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
     // delivery succeeded, sparse/full CLI updates must not regress its outcome.
     if (isPlainObject(prior.conversationBranch) && isPlainObject(next.conversationBranch)
         && prior.conversationBranch.requestFingerprint === next.conversationBranch.requestFingerprint
-        && prior.conversationBranch.state === 'started') {
+        && prior.conversationBranch.state === 'started'
+        && next.conversationBranch.state !== 'started') {
         merged = { ...(merged ?? next), conversationBranch: prior.conversationBranch }
     }
     merged = preserveCursorProtocolPair(prior, next, merged)

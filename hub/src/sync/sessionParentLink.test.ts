@@ -315,4 +315,92 @@ describe('session parent link recording and persistence', () => {
             store.close()
         }
     })
+
+    it('preserves argv boundaries for shell-wrapped Codex arrays and retargets children on parent merge', async () => {
+        const { store, events, engine, receive } = setup()
+        try {
+            const oldParent = engine.getOrCreateSession('old-parent', { path: '/tmp/repo', host: 'mac' }, null, 'default')
+            const newParent = engine.getOrCreateSession('new-parent', { path: '/tmp/repo', host: 'mac' }, null, 'default')
+            const codexWorker = engine.getOrCreateSession(
+                'codex-arr-child',
+                { path: '/tmp/repo', host: 'mac', flavor: 'codex', codexSessionId: '019b1111-1111-7222-8333-444455556666' },
+                null,
+                'default'
+            )
+
+            receive(oldParent.id, {
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: {
+                        type: 'tool-call',
+                        callId: 'call-arr-1',
+                        name: 'exec_command',
+                        input: { command: ['bash', '-lc', 'codeagent-wrapper --backend codex - "/tmp/repo"'] },
+                    }
+                }
+            }, 'codex-arr-call')
+
+            receive(oldParent.id, {
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: {
+                        type: 'tool-call-result',
+                        callId: 'call-arr-1',
+                        output: 'Finished\n---\nSESSION_ID: 019b1111-1111-7222-8333-444455556666',
+                    }
+                }
+            }, 'codex-arr-result')
+
+            expect(engine.getSession(codexWorker.id)?.metadata?.parentSessionId).toBe(oldParent.id)
+
+            const forkedChild = engine.getOrCreateSession(
+                'forked-child',
+                { path: '/tmp/repo', host: 'mac', forkedFrom: oldParent.id },
+                null,
+                'default'
+            )
+            const branchedChild = engine.getOrCreateSession(
+                'branched-child',
+                {
+                    path: '/tmp/repo',
+                    host: 'mac',
+                    conversationBranch: {
+                        sourceSessionId: oldParent.id,
+                        boundary: 'after',
+                        mode: 'visible-text',
+                        requestFingerprint: 'fp-merge-1',
+                        state: 'started',
+                        createdAt: 100,
+                        messageCount: 1,
+                        workspace: 'current',
+                    }
+                },
+                null,
+                'default'
+            )
+
+            const cache = (engine as unknown as {
+                sessionCache: { mergeSessions: (a: string, b: string, ns: string) => Promise<void> }
+            }).sessionCache
+            await cache.mergeSessions(oldParent.id, newParent.id, 'default')
+
+            expect(engine.getSession(codexWorker.id)?.metadata?.parentSessionId).toBe(newParent.id)
+            expect(engine.getSession(forkedChild.id)?.metadata?.forkedFrom).toBe(newParent.id)
+            expect(engine.getSession(branchedChild.id)?.metadata?.conversationBranch?.sourceSessionId).toBe(newParent.id)
+
+            const lateChild = engine.getOrCreateSession(
+                'late-child',
+                { path: '/tmp/repo', host: 'mac', parentSessionId: oldParent.id },
+                null,
+                'default'
+            )
+            expect(engine.getSession(lateChild.id)?.metadata?.parentSessionId).toBe(newParent.id)
+            expect(events.some((e) => e.type === 'session-updated' && e.sessionId === codexWorker.id)).toBe(true)
+        } finally {
+            engine.stop()
+            store.close()
+        }
+    })
 })

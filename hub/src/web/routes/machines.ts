@@ -319,9 +319,14 @@ export function createMachinesRoutes(
                 : undefined
 
         const rawParentId = parsed.data.parentSessionId?.trim()
-        const verifiedParentId = rawParentId && engine.getSessionByNamespace(rawParentId, namespace)
-            ? rawParentId
-            : undefined
+        const parentAccess = rawParentId
+            ? (typeof engine.resolveSessionAccess === 'function'
+                ? engine.resolveSessionAccess(rawParentId, namespace, { followRedirects: true })
+                : engine.getSessionByNamespace?.(rawParentId, namespace)
+                    ? { ok: true as const, sessionId: rawParentId }
+                    : null)
+            : null
+        const verifiedParentId = parentAccess?.ok ? parentAccess.sessionId : undefined
 
         const result = await engine.spawnSession(
             machineId,

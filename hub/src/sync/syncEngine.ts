@@ -240,12 +240,12 @@ function flattenToolResultText(value: unknown, depth: number = 0): string {
     return ''
 }
 
-function extractCommandFromToolInput(input: unknown): string | null {
+function extractCommandFromToolInput(input: unknown): string | string[] | null {
     if (!isObject(input)) return null
     if (typeof input.command === 'string') return input.command
     if (Array.isArray(input.command)) {
         const parts = input.command.filter((part): part is string => typeof part === 'string')
-        if (parts.length > 0) return parts.join(' ')
+        if (parts.length > 0) return parts
     }
     if (typeof input.cmd === 'string') return input.cmd
     if (typeof input.CommandLine === 'string') return input.CommandLine
@@ -453,8 +453,11 @@ export class SyncEngine {
         this.sessionCache = new SessionCache(store, this.eventPublisher, {
             // mergeSessionData is the single choke point that deletes rows for
             // merges — resume-id rotation here and sessionCache's internal
-            // dedup alike — so enumeration cleanup rides on one hook.
-            onSessionMergedAway: (oldSessionId) => this.releaseSessionEnumerations(oldSessionId)
+            // dedup alike — so enumeration and wrapper-parent cleanup ride on one hook.
+            onSessionMergedAway: (oldSessionId, newSessionId) => {
+                this.releaseSessionEnumerations(oldSessionId)
+                this.retargetCachedWrapperParent(oldSessionId, newSessionId)
+            }
         })
         this.eventPublisher.subscribe((event) => {
             if (event.type === 'message-received') {
@@ -6047,11 +6050,23 @@ export class SyncEngine {
         if (!text) return
         const candidateId = extractExplicitParentSessionIdFromRemit(text)
         if (!candidateId || candidateId === sessionId) return
-        if (!this.sessionCache.getSessionByNamespace(candidateId, session.namespace)) return
+        const parentAccess = this.resolveSessionAccess(candidateId, session.namespace, { followRedirects: true })
+        if (!parentAccess.ok || parentAccess.sessionId === sessionId) return
         try {
-            this.sessionCache.updateParentSessionId(sessionId, candidateId)
+            this.sessionCache.updateParentSessionId(sessionId, parentAccess.sessionId)
         } catch {
             // Best-effort lineage link must never interrupt message delivery.
+        }
+    }
+
+    private retargetCachedWrapperParent(oldParentId: string, newParentId: string): void {
+        for (const [key, entry] of this.wrapperParentByNativeId.entries()) {
+            if (entry.parentSessionId === oldParentId) {
+                this.wrapperParentByNativeId.set(key, {
+                    parentSessionId: newParentId,
+                    recordedAt: entry.recordedAt,
+                })
+            }
         }
     }
 
@@ -6078,12 +6093,11 @@ export class SyncEngine {
     }
 
     private linkWrapperChildIfEligible(child: Session, parentId: string): void {
-        if (child.id === parentId) return
         if (resolveSessionParentLink(child.metadata, child.id) !== null) return
-        const parent = this.sessionCache.getSessionByNamespace(parentId, child.namespace)
-        if (!parent) return
+        const parentAccess = this.resolveSessionAccess(parentId, child.namespace, { followRedirects: true })
+        if (!parentAccess.ok || parentAccess.sessionId === child.id) return
         try {
-            this.sessionCache.updateParentSessionId(child.id, parent.id)
+            this.sessionCache.updateParentSessionId(child.id, parentAccess.sessionId)
         } catch {
             // Best-effort lineage link must never interrupt message delivery or sync.
         }

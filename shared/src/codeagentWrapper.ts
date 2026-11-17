@@ -338,6 +338,30 @@ function parseWrapperTokens(
     }
 }
 
+function evaluateCommandTokens(
+    tokens: readonly ShellToken[],
+    fullCommand: string,
+    depth: number
+): ParsedCodeagentWrapperCommand | null {
+    const headIdx = findCommandHeadIndex(tokens)
+    if (headIdx < 0 || headIdx >= tokens.length) return null
+    const head = tokens[headIdx]!
+
+    if (isWrapperBinaryToken(head)) {
+        return parseWrapperTokens(tokens, headIdx, fullCommand)
+    }
+
+    if (SHELL_WRAPPER_COMMANDS.has(commandBasename(head.value))) {
+        for (let i = headIdx + 1; i + 1 < tokens.length; i += 1) {
+            const flag = tokens[i]!
+            if (!flag.quoted && SHELL_C_FLAG_RE.test(flag.value)) {
+                return parseShellCommandSegments(tokens[i + 1]!.value, fullCommand, depth + 1)
+            }
+        }
+    }
+    return null
+}
+
 function parseShellCommandSegments(
     input: string,
     fullCommand: string,
@@ -346,26 +370,8 @@ function parseShellCommandSegments(
     if (depth > MAX_SHELL_UNWRAP_DEPTH) return null
     const segments = tokenizeShellCommands(input)
     for (const tokens of segments) {
-        const headIdx = findCommandHeadIndex(tokens)
-        if (headIdx < 0 || headIdx >= tokens.length) continue
-        const head = tokens[headIdx]!
-
-        if (isWrapperBinaryToken(head)) {
-            const parsed = parseWrapperTokens(tokens, headIdx, fullCommand)
-            if (parsed) return parsed
-            continue
-        }
-
-        if (SHELL_WRAPPER_COMMANDS.has(commandBasename(head.value))) {
-            for (let i = headIdx + 1; i + 1 < tokens.length; i += 1) {
-                const flag = tokens[i]!
-                if (!flag.quoted && SHELL_C_FLAG_RE.test(flag.value)) {
-                    const nested = parseShellCommandSegments(tokens[i + 1]!.value, fullCommand, depth + 1)
-                    if (nested) return nested
-                    break
-                }
-            }
-        }
+        const parsed = evaluateCommandTokens(tokens, fullCommand, depth)
+        if (parsed) return parsed
     }
     return null
 }
@@ -395,15 +401,23 @@ export function mapWrapperBackendToHapiFlavor(backend: string): string {
 }
 
 /**
- * Parses a shell command that invokes `codeagent-wrapper` (used by CCG and OpenSlime).
+ * Parses a shell command string or argv array that invokes `codeagent-wrapper` (used by CCG and OpenSlime).
  * Requires `codeagent-wrapper` at an executable command position with a wrapper flag or
  * `resume` subcommand so search patterns, quoted arguments, or heredocs do not false-match.
  */
 export function parseCodeagentWrapperCommand(
-    command: string | null | undefined
+    command: string | readonly string[] | null | undefined
 ): ParsedCodeagentWrapperCommand | null {
     if (!command) return null
-    if (!command.includes('codeagent-wrapper')) return null
+    if (Array.isArray(command)) {
+        const parts = command.filter((part): part is string => typeof part === 'string')
+        if (parts.length === 0 || !parts.some((part) => part.includes('codeagent-wrapper'))) {
+            return null
+        }
+        const tokens: ShellToken[] = parts.map((value) => ({ value, quoted: false }))
+        return evaluateCommandTokens(tokens, parts.join('\n'), 0)
+    }
+    if (typeof command !== 'string' || !command.includes('codeagent-wrapper')) return null
     return parseShellCommandSegments(command, command, 0)
 }
 

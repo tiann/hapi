@@ -31,12 +31,39 @@ describe('codeagentWrapper helpers', () => {
             resumedSessionId: 'thread-abc123',
             isParallel: false,
         })
+
+        expect(parseCodeagentWrapperCommand([
+            'bash',
+            '-lc',
+            'codeagent-wrapper --backend codex - "/work/repo"',
+        ])).toEqual({
+            backend: 'codex',
+            flavor: 'codex',
+            role: null,
+            resumedSessionId: null,
+            isParallel: false,
+        })
+
+        expect(parseCodeagentWrapperCommand([
+            '/home/ubuntu/.claude/bin/codeagent-wrapper',
+            '--backend',
+            'antigravity',
+            '-',
+            '/work/repo',
+        ])).toEqual({
+            backend: 'antigravity',
+            flavor: 'agy',
+            role: null,
+            resumedSessionId: null,
+            isParallel: false,
+        })
     })
 
     it('ignores plain shell commands, quoted search patterns, and heredocs mentioning codeagent-wrapper', () => {
         expect(parseCodeagentWrapperCommand('ls -la /home/ubuntu/.claude/bin/codeagent-wrapper')).toBeNull()
         expect(parseCodeagentWrapperCommand('cat codeagent-wrapper/main.go')).toBeNull()
         expect(parseCodeagentWrapperCommand(`rg -A 2 -- 'codeagent-wrapper --backend codex' wrapper.log`)).toBeNull()
+        expect(parseCodeagentWrapperCommand(['rg', '-A', '2', '--', 'codeagent-wrapper --backend codex', 'wrapper.log'])).toBeNull()
         expect(parseCodeagentWrapperCommand(`cat <<'EOF'\ncodeagent-wrapper --backend codex - /tmp\nEOF`)).toBeNull()
     })
 

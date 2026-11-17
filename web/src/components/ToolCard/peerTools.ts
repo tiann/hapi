@@ -96,12 +96,12 @@ export type ParsedWrapperToolInvocation = ParsedCodeagentWrapperCommand & {
     description: string | null
 }
 
-function getWrapperShellCommand(input: unknown): string | null {
+function getWrapperShellCommand(input: unknown): string | string[] | null {
     const command = getInputStringAny(input, ['command', 'cmd'])
     if (command) return command
     if (!isObject(input) || !Array.isArray(input.command)) return null
     const parts = input.command.filter((part): part is string => typeof part === 'string')
-    return parts.length > 0 ? parts.join(' ') : null
+    return parts.length > 0 ? parts : null
 }
 
 export function parseWrapperToolInvocation(
@@ -117,7 +117,7 @@ export function parseWrapperToolInvocation(
 
     const isShellTool = SHELL_TOOL_NAMES.has(normalized)
         || nativeKind === 'execute'
-        || command === toolName.trim()
+        || (typeof command === 'string' && command === toolName.trim())
         || normalized.startsWith('codeagent-wrapper')
     if (!isShellTool) return null
 
