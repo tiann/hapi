@@ -822,9 +822,7 @@
     <string name="settings_passkeys_empty">Ключей доступа пока нет.</string>
     <string name="settings_passkeys_dates">Создан %1$s · Использован %2$s</string>
     <string name="settings_passkeys_dates_unused">Создан %1$s · Не использовался</string>
-    <string name="settings_passkeys_tag_web">Веб</string>
     <string name="settings_passkeys_tag_inactive">Неактивен</string>
-    <string name="settings_passkeys_web_note">Создан в веб-приложении; для входа в это приложение не подходит.</string>
     <string name="settings_passkeys_unnamed">Ключ без названия</string>
     <string name="settings_passkeys_delete_title">Удалить ключ доступа</string>
     <string name="settings_passkeys_delete_message">Удалить «%1$s»? Всем, кто вошёл с ним, придётся войти снова. Ключ может остаться в менеджере паролей — удалите его там отдельно.</string>

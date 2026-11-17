@@ -49,9 +49,11 @@ export function LoginPrompt(props: LoginPromptProps) {
         } catch (e) {
             if (isPasskeyCancelled(e)) return
             const code = e instanceof ApiError ? e.code : undefined
-            setError(code === 'passkey_revoked'
-                ? t('login.passkey.revoked')
-                : t('login.passkey.failed'))
+            setError(code === 'passkey_popup_blocked'
+                ? t('login.passkey.popupBlocked')
+                : code === 'passkey_revoked'
+                    ? t('login.passkey.revoked')
+                    : t('login.passkey.failed'))
         } finally {
             setIsPasskeyLoading(false)
         }

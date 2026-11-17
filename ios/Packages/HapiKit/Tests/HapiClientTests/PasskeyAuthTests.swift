@@ -136,8 +136,8 @@ struct PasskeyAuthTests {
 
     private let healthJSON = "{\"status\":\"ok\",\"protocolVersion\":\(ProtocolVersion.supported)}"
 
-    private func loginOptionsJSON(rpId: String = "hapi.run") -> String {
-        "{\"challenge\":\"\(Base64URL.encode(Data("c".utf8)))\",\"rpId\":\"\(rpId)\",\"allowCredentials\":[{\"id\":\"aWQ\"}]}"
+    private func loginOptionsJSON(rpId: String = "auth.hapi.run") -> String {
+        "{\"challenge\":\"\(Base64URL.encode(boundPasskeyChallenge()))\",\"rpId\":\"\(rpId)\",\"allowCredentials\":[{\"id\":\"aWQ\"}]}"
     }
 
     @Test func signInStoresPasskeySessionAndActivatesHub() async throws {

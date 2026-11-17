@@ -181,8 +181,8 @@ class PairingViewModel(
 
         val login = try {
             val options = client.passkeyLoginOptions()
-            NativePasskeys.requireRequestRpId(options)
-            val assertion = platform.getPasskey(options)
+            val checkedOptions = NativePasskeys.ceremonyOptions(options, hubUrl, "login")
+            val assertion = platform.getPasskey(checkedOptions)
             client.passkeyLoginVerify(NativePasskeys.credentialResponse(assertion))
         } catch (cancellation: CancellationException) {
             throw cancellation

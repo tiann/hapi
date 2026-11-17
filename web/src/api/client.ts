@@ -80,13 +80,8 @@ import type {
 import { fetchThroughAuthProxy } from '@/api/authProxy'
 import { FOLLOW_SESSION_REDIRECTS_HEADER } from '@hapi/protocol'
 import type { SessionReadState, SessionReadStateRequest, AgentFlavor, MessageDeliveryMode } from '@hapi/protocol'
-import type { PasskeyListResponse } from '@hapi/protocol'
-import type {
-    AuthenticationResponseJSON,
-    PublicKeyCredentialCreationOptionsJSON,
-    PublicKeyCredentialRequestOptionsJSON,
-    RegistrationResponseJSON
-} from '@simplewebauthn/browser'
+import type { PasskeyListResponse, PasskeyBrowserStartRequest, PasskeyBrowserStartResponse, PasskeyBrowserExchangeResponse } from '@hapi/protocol'
+
 import type { CancelMessageResponse, SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
 import type { TranscriptionMode, TranscriptionProvider, TranscriptionProviderInfo } from '@hapi/protocol/voice'
 
@@ -365,23 +360,15 @@ export class ApiClient {
         return await res.json() as T
     }
 
-    async getPasskeyLoginOptions(): Promise<PublicKeyCredentialRequestOptionsJSON> {
-        return await this.postPublic('/api/passkey/login/options', {}, 'Passkey sign-in failed')
+    async startPasskeyBrowser(operation: 'login' | 'register', body: PasskeyBrowserStartRequest): Promise<PasskeyBrowserStartResponse> {
+        const path = `/api/passkey/browser/${operation}/start`
+        return operation === 'register'
+            ? await this.request(path, { method: 'POST', body: JSON.stringify(body) })
+            : await this.postPublic(path, body, 'Passkey sign-in failed')
     }
 
-    async verifyPasskeyLogin(response: AuthenticationResponseJSON): Promise<AuthResponse & { passkeySession: string }> {
-        return await this.postPublic('/api/passkey/login/verify', { response }, 'Passkey sign-in failed')
-    }
-
-    async getPasskeyRegistrationOptions(): Promise<PublicKeyCredentialCreationOptionsJSON> {
-        return await this.request('/api/passkey/register/options', { method: 'POST', body: '{}' })
-    }
-
-    async verifyPasskeyRegistration(response: RegistrationResponseJSON, name?: string): Promise<void> {
-        await this.request('/api/passkey/register/verify', {
-            method: 'POST',
-            body: JSON.stringify({ response, name })
-        })
+    async exchangePasskeyCode(code: string, verifier: string): Promise<PasskeyBrowserExchangeResponse> {
+        return await this.postPublic('/api/passkey/browser/exchange', { code, verifier }, 'Passkey sign-in failed')
     }
 
     async listPasskeys(): Promise<PasskeyListResponse> {

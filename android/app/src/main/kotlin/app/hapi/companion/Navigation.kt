@@ -1000,6 +1000,7 @@ private class PasskeysViewModelHolder(hubGraph: HubGraph) : ViewModel() {
 
     val viewModel = PasskeysViewModel(
         gateway = object : PasskeysGateway {
+            override val hubUrl: String = hubGraph.hubUrl
             private val api = hubGraph.session.api
             override suspend fun list(): List<PasskeySummary> = api.getPasskeys().passkeys
             override suspend fun registerOptions(): String = api.passkeyRegisterOptions()

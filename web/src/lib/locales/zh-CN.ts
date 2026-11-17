@@ -69,6 +69,7 @@ export default {
   'login.footer.copyright': '©',
   'login.passkey.or': '或',
   'login.passkey.submit': '使用 Passkey 登录',
+  'login.passkey.popupBlocked': '请允许此网站打开弹窗，以使用 Passkey。',
   'login.passkey.failed': 'Passkey 登录失败，这个 Passkey 可能没有在此 Hub 上注册。',
   'login.passkey.revoked': '访问令牌已轮换，这个 Passkey 已失效。请用访问令牌登录后重新添加。',
 
@@ -1294,7 +1295,7 @@ export default {
   'settings.voice.proactive': '以摘要开始语音会话',
   'settings.voice.proactive.description': '开启后，启动语音会话时将朗读当前代理活动的摘要。关闭后，助手向您打招呼并等待您先开口。',
   'settings.passkeys.title': 'Passkey',
-  'settings.passkeys.description': '用面容 ID、触控 ID、Windows Hello 或安全密钥登录此 Hub，无需粘贴访问令牌。Passkey 只能在添加时的地址上使用；访问令牌（CLI_API_TOKEN）轮换后会失效。',
+  'settings.passkeys.description': '用面容 ID、触控 ID、Windows Hello 或安全密钥在网页和 App 中登录此 Hub。添加时会打开 auth.hapi.run。访问令牌（CLI_API_TOKEN）轮换后会失效。',
   'settings.passkeys.unsupported': 'Passkey 需要 HTTPS（或 localhost）以及支持它的浏览器。请通过 HTTPS 打开此 Hub 后再添加。',
   'settings.passkeys.add': '添加 Passkey',
   'settings.passkeys.addFailed': '无法添加 Passkey。',

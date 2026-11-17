@@ -22,7 +22,7 @@ See `src/configuration.ts` for all options.
 ### Optional (Telegram)
 
 - `TELEGRAM_BOT_TOKEN` - Token from @BotFather.
-- `HAPI_PUBLIC_URL` - Public HTTPS URL for Telegram Mini App access. Also used to derive default CORS origins for the web app.
+- `HAPI_PUBLIC_URL` - Canonical public HTTPS origin for shared Passkeys and Telegram Mini App access. Also used to derive default CORS origins for the web app.
 
 ### Optional (Voice)
 
@@ -108,7 +108,7 @@ for request/response shapes and error semantics, and `src/web/routes/` for all e
 
 - `POST /api/auth` - Get JWT token (Telegram initData, `CLI_API_TOKEN[:namespace]`, or a `passkeySession`).
 - `POST /api/passkey/login/options`, `POST /api/passkey/login/verify` - Unauthenticated WebAuthn sign-in; returns a JWT plus a 30-day `passkeySession`.
-- `POST /api/passkey/register/options`, `POST /api/passkey/register/verify`, `GET /api/passkeys`, `DELETE /api/passkeys/:id` - Manage passkeys for the caller's namespace (JWT required). Passkeys are bound to the browser origin and to the current `CLI_API_TOKEN`; rotating the token revokes them. See the [client contract](../docs/api/client-contract/auth.md#passkeys-web).
+- `POST /api/passkey/register/options`, `POST /api/passkey/register/verify`, `GET /api/passkeys`, `DELETE /api/passkeys/:id` - Manage passkeys for the caller's namespace (JWT required). Web and App passkeys share RP ID `auth.hapi.run` and are scoped to this Hub/namespace and the current `CLI_API_TOKEN`; rotating the token revokes them. Browser ceremonies use `/api/passkey/browser/{login,register}/start`, `/complete`, and `/exchange`. Set `HAPI_PUBLIC_URL` to the canonical HTTPS Hub origin. See the [client contract](../docs/api/client-contract/auth.md#passkeys-web).
 - `POST /api/bind` - Bind a Telegram account using initData + `CLI_API_TOKEN:<namespace>`.
 
 ### Sessions (`src/web/routes/sessions.ts`)

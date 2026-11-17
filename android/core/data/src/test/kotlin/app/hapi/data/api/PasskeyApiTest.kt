@@ -29,7 +29,7 @@ class PasskeyApiTest {
     private val jwt = fakeJwt(expSeconds = 4_000_000_000)
 
     private val creationOptions =
-        """{"rp":{"id":"hapi.run","name":"HAPI"},"user":{"id":"dXNlcg","name":"hapi@hub"},"challenge":"Y2g"}"""
+        """{"rp":{"id":"auth.hapi.run","name":"HAPI"},"user":{"id":"dXNlcg","name":"hapi@hub"},"challenge":"Y2g"}"""
     private val assertion =
         """{"id":"Y3JlZA","rawId":"Y3JlZA","type":"public-key","response":{"clientDataJSON":"e30"}}"""
 
@@ -84,7 +84,7 @@ class PasskeyApiTest {
 
     @Test
     fun `login options and verify go out without a bearer header`() {
-        server.enqueue(ok("""{"challenge":"Y2g","rpId":"hapi.run","allowCredentials":[]}"""))
+        server.enqueue(ok("""{"challenge":"Y2g","rpId":"auth.hapi.run","allowCredentials":[]}"""))
         server.enqueue(
             ok("""{"token":"jwt-2","user":{"id":1,"firstName":"Web User"},"passkeySession":"ps-1"}"""),
         )
@@ -92,7 +92,7 @@ class PasskeyApiTest {
         val options = runBlocking { session.api.passkeyLoginOptions() }
         val login = runBlocking { session.api.passkeyLoginVerify(NativePasskeys.credentialResponse(assertion)) }
 
-        assertEquals("hapi.run", NativePasskeys.requestRpId(options))
+        assertEquals("auth.hapi.run", NativePasskeys.requestRpId(options))
         assertEquals("ps-1", login.passkeySession)
         assertEquals("jwt-2", login.token)
 
@@ -122,7 +122,7 @@ class PasskeyApiTest {
     fun `list and delete hit the management endpoints`() {
         server.enqueue(
             ok(
-                """{"passkeys":[{"id":"a/b","name":null,"rpId":"hapi.run","createdAt":1,"lastUsedAt":null,"valid":true}]}""",
+                """{"passkeys":[{"id":"a/b","name":null,"rpId":"auth.hapi.run","createdAt":1,"lastUsedAt":null,"valid":true}]}""",
             ),
         )
         server.enqueue(ok("""{"ok":true}"""))

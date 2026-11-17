@@ -69,6 +69,7 @@ export default {
   'login.footer.copyright': '©',
   'login.passkey.or': 'or',
   'login.passkey.submit': 'Sign in with a passkey',
+  'login.passkey.popupBlocked': 'Allow popups for this site to sign in with a passkey.',
   'login.passkey.failed': 'Passkey sign-in failed. The passkey may not be registered on this hub.',
   'login.passkey.revoked': 'This passkey stopped working because the access token was rotated. Sign in with the access token and add the passkey again.',
 
@@ -1296,7 +1297,7 @@ export default {
   'settings.voice.proactive': 'Start voice session with summary',
   'settings.voice.proactive.description': 'When on, starting a voice session opens with a spoken summary of current agent activity. When off, the assistant greets you and waits for you to speak.',
   'settings.passkeys.title': 'Passkeys',
-  'settings.passkeys.description': 'Sign in to this hub with Face ID, Touch ID, Windows Hello, or a security key instead of pasting the access token. Passkeys only work on the address where they were added, and stop working when the access token (CLI_API_TOKEN) is rotated.',
+  'settings.passkeys.description': 'Sign in to this hub on the web or in the app with Face ID, Touch ID, Windows Hello, or a security key. Registration opens auth.hapi.run. Rotating the access token (CLI_API_TOKEN) disables these passkeys.',
   'settings.passkeys.unsupported': 'Passkeys need HTTPS (or localhost) and a browser that supports them. Open this hub over HTTPS to add one.',
   'settings.passkeys.add': 'Add passkey',
   'settings.passkeys.addFailed': 'Could not add the passkey.',

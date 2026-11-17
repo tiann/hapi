@@ -6,7 +6,7 @@
 	<string>development</string>
 	<key>com.apple.developer.associated-domains</key>
 	<array>
-		<string>webcredentials:hapi.run</string>
+		<string>webcredentials:auth.hapi.run</string>
 	</array>
 	<key>com.apple.security.app-sandbox</key>
 	<true/>

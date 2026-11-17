@@ -1,3 +1,4 @@
+import { ApiError } from '@/api/client'
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { PasskeySummary } from '@hapi/protocol'
@@ -59,7 +60,8 @@ export function PasskeySettings() {
         onMutate: () => setError(null),
         onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.passkeys }),
         onError: (e) => {
-            if (!isPasskeyCancelled(e)) setError(t('settings.passkeys.addFailed'))
+            if (!isPasskeyCancelled(e)) setError(e instanceof ApiError && e.code === 'passkey_popup_blocked'
+                ? t('login.passkey.popupBlocked') : t('settings.passkeys.addFailed'))
         }
     })
 
