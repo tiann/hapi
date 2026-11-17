@@ -961,3 +961,60 @@ it.each(['indeterminate', 'missing-submission'] as const)('persists batch uncert
     expect(restarted.state('original-A')).toBe('unknown');
     expect(restarted.state('original-B')).toBe('queued');
 });
+
+it.each(['cancel', 'steer'] as const)('journals batch uncertainty before the shrink RPC so a crash cannot drop sibling input (%s)', async action => {
+    const f = await fixture();
+    await f.queue.enqueue('original-A', text('A'), false, 'same');
+    await f.queue.enqueue('original-B', text('B'), false, 'same');
+    const batchId = f.native[0].clientUserMessageId;
+    const crashFile = join(f.directory, 'crash-ledger.json');
+    f.overrides.set('thread/queue/update', async () => {
+        // Crash between the pre-RPC save and any later save: capture what is persisted at dispatch time.
+        await writeFile(crashFile, await readFile(join(f.directory, 'ledger.json'), 'utf8'));
+        throw lost('process crashed before the shrink reply');
+    });
+    if (action === 'cancel') expect(await f.queue.cancel('original-A')).toBe('indeterminate');
+    else expect(await f.queue.steer('original-A', 'turn-1')).toEqual({ steered: false, indeterminate: true });
+    const restarted = new SharedCodexQueue(f.client, 'thread', crashFile, f.consumed, f.uncertain, f.mirror);
+    await restarted.load();
+    const snapshot = JSON.parse(await readFile(crashFile, 'utf8'));
+    // The reloaded ledger must already say the batch outcome is unknown, with the unconfirmed proposal current.
+    expect(snapshot.batches[batchId].state).toBe('unknown');
+    expect(snapshot.batches[batchId].current).toBe(snapshot.batches[batchId].versions.length - 1);
+    f.overrides.delete('thread/queue/update');
+    // The shrink was never proven natively: canceling the sibling must not delete the whole native submission.
+    expect(await restarted.cancel('original-B')).toBe('indeterminate');
+    expect(f.calls.filter(call => call.method === 'thread/queue/delete')).toHaveLength(0);
+    expect(f.native).toHaveLength(1);
+    expect(f.native[0].input).toEqual(combined('A', 'B'));
+    expect(restarted.state('original-A')).toBe('queued');
+    expect(restarted.state('original-B')).toBe('queued');
+});
+
+it.each(['cancel', 'steer'] as const)('settles the batch back to queued after a confirmed shrink (%s)', async action => {
+    const f = await fixture();
+    await f.queue.enqueue('original-A', text('A'), false, 'same');
+    await f.queue.enqueue('original-B', text('B'), false, 'same');
+    const batchId = f.native[0].clientUserMessageId;
+    if (action === 'cancel') expect(await f.queue.cancel('original-A')).toBe(true);
+    else expect(await f.queue.steer('original-A', 'turn-1')).toEqual({ steered: true });
+    const ledger = JSON.parse(await readFile(join(f.directory, 'ledger.json'), 'utf8'));
+    expect(ledger.batches[batchId].state).toBe('queued');
+    expect(f.native).toHaveLength(1);
+    expect(f.native[0].input).toEqual(text('B'));
+});
+
+it.each(['cancel', 'steer'] as const)('restores the batch to queued when the shrink RPC is definitely rejected (%s)', async action => {
+    const f = await fixture();
+    await f.queue.enqueue('original-A', text('A'), false, 'same');
+    await f.queue.enqueue('original-B', text('B'), false, 'same');
+    const batchId = f.native[0].clientUserMessageId;
+    f.overrides.set('thread/queue/update', () => { throw new Error('definite shrink rejection'); });
+    if (action === 'cancel') expect(await f.queue.cancel('original-A')).toBe('indeterminate');
+    else expect((await f.queue.steer('original-A', 'turn-1')).steered).toBe(false);
+    const ledger = JSON.parse(await readFile(join(f.directory, 'ledger.json'), 'utf8'));
+    expect(ledger.batches[batchId].state).toBe('queued');
+    expect(ledger.entries['original-A'].state).toBe('queued');
+    expect(f.native).toHaveLength(1);
+    expect(f.native[0].input).toEqual(combined('A', 'B'));
+});

@@ -644,13 +644,17 @@ export class SharedCodexQueue {
         const proposal = this.version(this.memberInput(survivors), survivors,
             [...(version.removed ?? []), { id, input: member.input, intent: 'cancel' }]);
         batch.versions.push(proposal); batch.current = batch.versions.length - 1;
-        entry.state = 'unknown'; await this.save();
+        // Write ahead: the batch outcome is unknown until a confirmed response.
+        entry.state = 'unknown'; batch.state = 'unknown'; await this.save();
         try {
             const response = await this.client.request('thread/queue/update', { threadId: this.threadId, queuedSubmissionId: batch.nativeId, input: proposal.input });
             this.validateUpdate(response, batch, proposal.input);
             this.supersedeOlder(batch, proposal);
             if (this.state(id) === 'consumed') return 'consumed';
-            entry.state = 'canceled'; await this.save(); this.mirror?.(id, null);
+            entry.state = 'canceled';
+            // Only this confirmed response may settle the batch back; an event may have consumed it meanwhile.
+            if (batch.state === 'unknown') batch.state = 'queued';
+            await this.save(); this.mirror?.(id, null);
             return true;
         } catch (error) {
             if (this.state(id) === 'consumed') return 'consumed';
@@ -659,7 +663,7 @@ export class SharedCodexQueue {
             }
             // Definite rejection: the proposal was not applied, so do not ACK it.
             proposal.status = 'superseded'; batch.current = previousCurrent;
-            entry.state = 'queued'; await this.save();
+            entry.state = 'queued'; batch.state = 'queued'; await this.save();
             this.uncertain([id]); return 'indeterminate';
         }
     }
@@ -730,18 +734,21 @@ export class SharedCodexQueue {
             proposal = this.version(this.memberInput(survivors), survivors,
                 [...(version.removed ?? []), { id, input, intent: 'steer' }]);
             batch.versions.push(proposal); batch.current = batch.versions.length - 1;
-            entry.state = 'unknown'; await this.save();
+            // Write ahead: the batch outcome is unknown until a confirmed response.
+            entry.state = 'unknown'; batch.state = 'unknown'; await this.save();
             try {
                 const response = await this.client.request('thread/queue/update', { threadId: this.threadId, queuedSubmissionId: batch.nativeId, input: proposal.input });
                 this.validateUpdate(response, batch, proposal.input);
                 this.supersedeOlder(batch, proposal);
+                // Only this confirmed response may settle the batch back; an event may have consumed it meanwhile.
+                if (batch.state === 'unknown') batch.state = 'queued';
             } catch (error) {
                 if (this.state(id) === 'consumed') return { steered: true };
                 if (indeterminate(error) || queuedSubmissionNotFound(error)) {
                     batch.state = 'unknown'; this.uncertain([id]); await this.save(); return { steered: false, indeterminate: true };
                 }
                 proposal.status = 'superseded'; batch.current = previousCurrent;
-                entry.state = 'queued'; await this.save();
+                entry.state = 'queued'; batch.state = 'queued'; await this.save();
                 return { steered: false, error: error instanceof Error ? error.message : String(error) };
             }
         }
