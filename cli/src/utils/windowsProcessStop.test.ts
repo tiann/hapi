@@ -15,6 +15,23 @@ const row = (pid: number, parent = 0, marker: string | null = `gen-${pid}`): Row
 })
 
 describe('Windows asynchronous tree stop', () => {
+    it('applies binding guards inside the asynchronous stop helper', async () => {
+        let scans = 0
+        execFileMock.mockImplementation((file, _args, _options, callback) => {
+            queueMicrotask(() => {
+                if (file !== 'powershell') return callback(null, '', '')
+                scans += 1
+                if (scans === 1) callback(new Error('CIM unavailable'), '', '')
+                else callback(null, JSON.stringify({ complete: true, processes: [row(100)] }), '')
+            })
+            return { kill: vi.fn() }
+        })
+        const canSignal = vi.fn(() => false)
+
+        await expect(killProcessTreeByPid(100, true, undefined, canSignal)).resolves.toBe(false)
+        expect(canSignal).toHaveBeenCalledWith('root')
+        expect(kills).toEqual([])
+    })
     let rows: Row[]
     let kills: Array<{ pid: number; force: boolean; tree: boolean }>
     let onKill: (pid: number, force: boolean) => void

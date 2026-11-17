@@ -28,7 +28,8 @@ vi.mock('@/utils/process', () => ({
     isProcessAlive: () => false,
     isWindows: () => false,
     killProcess: async () => true,
-    killProcessByChildProcess: killProcessMock
+    killProcessByChildProcess: killProcessMock,
+    killProcessByChildProcessSync: vi.fn()
 }))
 
 vi.mock('@/utils/bunRuntime', () => ({
