@@ -209,7 +209,7 @@ function findWebappDistDir(): { distDir: string; indexHtmlPath: string } {
     return { distDir, indexHtmlPath: join(distDir, 'index.html') }
 }
 
-function serveEmbeddedAsset(asset: EmbeddedWebAsset): Response {
+export function serveEmbeddedAsset(asset: EmbeddedWebAsset): Response {
     const headers: Record<string, string> = {
         'Content-Type': asset.mimeType
     }
@@ -218,6 +218,18 @@ function serveEmbeddedAsset(asset: EmbeddedWebAsset): Response {
         headers['Cache-Control'] = 'no-store, no-cache, must-revalidate'
         headers['CDN-Cache-Control'] = 'no-store'
         headers['Cloudflare-CDN-Cache-Control'] = 'no-store'
+    } else if (asset.path.startsWith('/assets/')) {
+        // Vite emits content-hashed filenames under /assets/: the bytes behind
+        // a given name never change across releases, so clients may cache them
+        // immutably and only fetch the names a fresh index.html points at.
+        // Without this, every navigation re-downloads the full (multi-MB)
+        // chunk set because the response carries no validator at all.
+        headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+    } else if (asset.mimeType.startsWith('text/html')) {
+        // The HTML shell must always be revalidated: it is the only pointer
+        // to the current hashed asset set, and a stale copy would pin a
+        // client to a retired bundle (including an old service worker URL).
+        headers['Cache-Control'] = 'no-cache'
     }
 
     return new Response(Bun.file(asset.sourcePath), {
