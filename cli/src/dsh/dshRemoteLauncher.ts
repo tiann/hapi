@@ -46,6 +46,8 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
     private backend: ReturnType<typeof createDshBackend> | null = null
     private permissionHandler: AcpPermissionHandler | null = null
     private abortController = new AbortController()
+    private transportFailure: Error | null = null
+    private cleanupStarted = false
     /** Set when a terminal session-gone prompt rejection after a cancel is
      * detected as an implicit session end (see the prompt catch in
      * runMainLoop): the next message restarts the session instead of
@@ -182,9 +184,12 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             const signal = this.abortController.signal
             const batch = await this.session.queue.waitForMessagesAndGetAsString(signal)
             if (!batch) {
+                this.throwIfTransportFailed()
                 if (signal.aborted && !this.shouldExit) continue
                 break
             }
+
+            this.throwIfTransportFailed()
 
             // Snapshot before any await in this iteration: a user stop that
             // lands while the dequeued batch waits for the respawn resets
@@ -381,6 +386,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                     this.opts.onModelRollback?.(this.currentBackendModel)
                 }
             }
+            this.throwIfTransportFailed()
 
             // DSH surfaces reasoning effort as the 'reasoning_effort' config
             // option (category thought_level; '' = Provider default). The web
@@ -418,6 +424,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                     }
                 )
             } catch (error) {
+                this.throwIfTransportFailed()
                 const message = error instanceof Error ? error.message : String(error)
                 logger.warn('[dsh-acp] prompt preparation failed', { message })
                 prompt = [{ type: 'text', text: batch.message }]
@@ -431,7 +438,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
                 this.messageBuffer.addMessage('Aborted while preparing the DSH prompt; dropping the queued message', 'status')
                 this.session.onThinkingChange(false)
                 await this.permissionHandler?.cancelAll('Prompt finished')
-                if (this.session.queue.size() === 0 && !this.shouldExit) {
+                if (this.session.queue.size() === 0 && !this.shouldExit && !this.transportFailure) {
                     this.session.sendSessionEvent({ type: 'ready' })
                 }
                 continue
@@ -440,6 +447,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             try {
                 await backend.prompt(acpSessionId, prompt, (message) => this.handleAgentMessage(message))
             } catch (error) {
+                this.throwIfTransportFailed()
                 const message = error instanceof Error ? error.message : String(error)
                 logger.warn('[dsh-acp] prompt failed', { message })
                 // isAcpIndeterminateError is the transport's own typed marker
@@ -507,7 +515,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
             }
             this.session.onThinkingChange(false)
             await this.permissionHandler?.cancelAll('Prompt finished')
-            if (this.session.queue.size() === 0 && !this.shouldExit) {
+            if (this.session.queue.size() === 0 && !this.shouldExit && !this.transportFailure) {
                 this.session.sendSessionEvent({ type: 'ready' })
             }
         }
@@ -528,6 +536,7 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         const backend = createDshBackend(process.env, { permissionMode: this.opts.permissionMode })
         this.backend = backend
         this.acpSessionId = null
+        backend.onTransportClosed((error) => this.handleTransportClosed(error))
         backend.onStderrError((error) => {
             logger.debug('[dsh-acp] stderr error', error)
             this.session.sendSessionEvent({ type: 'message', message: error.message })
@@ -771,9 +780,12 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         } finally {
             this.respawnInProgress = false
         }
+
+        this.throwIfTransportFailed()
     }
 
     protected async cleanup(): Promise<void> {
+        this.cleanupStarted = true
         this.clearAbortHandlers(this.session.client.rpcHandlerManager)
         await this.permissionHandler?.cancelAll('Session ended')
         this.permissionHandler = null
@@ -940,6 +952,13 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleAbort(): Promise<void> {
+        if (this.transportFailure) {
+            await this.permissionHandler?.cancelAll('Session ended')
+            this.abortController.abort()
+            this.session.onThinkingChange(false)
+            return
+        }
+
         // Bump first, synchronously: the respawn branch compares generations
         // around its resume/new-session `await`s to detect aborts that land
         // inside that window.
@@ -969,6 +988,25 @@ export class DshRemoteLauncher extends RemoteLauncherBase {
         this.session.sendSessionEvent({ type: 'message', message: 'Session aborted' })
         this.session.onThinkingChange(false)
         this.messageBuffer.addMessage('Turn aborted', 'status')
+    }
+
+    private handleTransportClosed(error: Error): void {
+        if (this.cleanupStarted || this.shouldExit || this.transportFailure) return
+
+        this.transportFailure = error
+        logger.warn('[dsh-acp] transport closed unexpectedly', { message: error.message })
+        this.session.sendSessionEvent({
+            type: 'message',
+            message: `DSH ACP process stopped: ${error.message}`
+        })
+        this.messageBuffer.addMessage(`DSH ACP process stopped: ${error.message}`, 'status')
+        this.abortController.abort()
+    }
+
+    private throwIfTransportFailed(): void {
+        if (this.transportFailure) {
+            throw this.transportFailure
+        }
     }
 
     private handleExitFromUi(): Promise<void> {

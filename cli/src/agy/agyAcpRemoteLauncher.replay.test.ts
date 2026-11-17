@@ -45,6 +45,7 @@ class ReplayTransport {
         this.notify = handler;
     }
     onStderrError(): void {}
+    onClose(): void {}
     registerRequestHandler(): void {}
     isAlive(): boolean {
         return true;

@@ -16,6 +16,8 @@ const harness = vi.hoisted(() => ({
     newSessionCalls: [] as unknown[],
     promptSessionIds: [] as string[],
     prompts: [] as unknown[][],
+    transportClosedHandler: null as ((error: Error) => void) | null,
+    promptFailure: null as Error | null,
     // Per-attempt prompt failures (shifted off the front); a null slot parks
     // the queue without failing, letting tests stage N failures + success.
     promptErrorQueue: [] as Array<Error | null>,
@@ -23,8 +25,7 @@ const harness = vi.hoisted(() => ({
     // When set, prompt() finishes by emitting turn_complete with this reason.
     promptStopReason: null as string | null,
     supportsResume: false,
-    resumeCalls: [] as unknown[],
-    resumeError: null as Error | null,
+    resumeCalls: [] as unknown[],    resumeError: null as Error | null,
     // When set, newSession() rejects with this — lets tests kill the backend
     // inside every recovery/reconnect window.
     newSessionError: null as Error | null,
@@ -89,10 +90,13 @@ vi.mock('./utils/dshBackend', () => ({
                 if (harness.promptBlocker) {
                     await harness.promptBlocker
                 }
+                if (harness.promptFailure) {
+                    harness.transportClosedHandler?.(harness.promptFailure)
+                    throw harness.promptFailure
+                }
                 if (harness.promptErrorQueue.length > 0) {
                     const error = harness.promptErrorQueue.shift()
-                    if (error) throw error
-                }
+                    if (error) throw error                }
                 onUpdate({ type: 'text', text: 'answer' })
                 if (harness.promptStopReason !== null) {
                     onUpdate({ type: 'turn_complete', stopReason: harness.promptStopReason })
@@ -122,6 +126,9 @@ vi.mock('./utils/dshBackend', () => ({
                 return {}
             }),
             onStderrError: vi.fn(),
+            onTransportClosed: vi.fn((handler: (error: Error) => void) => {
+                harness.transportClosedHandler = handler
+            }),
             onPermissionRequest: vi.fn(),
             disconnect: vi.fn(async () => {
                 if (harness.disconnectBlocker) {
@@ -210,7 +217,7 @@ function createQueue() {
     return queue
 }
 
-function createSession(queue = createQueue(), sessionId: string | null = null) {
+function createSessionFromQueue(queue = createQueue(), sessionId: string | null = null) {
     const session = {
         path: '/tmp/dsh-test',
         logPath: '/tmp/dsh-test/hapi.log',
@@ -243,11 +250,21 @@ function createSessionWithBatches(batches: Array<[string, DshMode]>, sessionId: 
         queue.push(message, mode)
     }
     queue.close()
-    return createSession(queue, sessionId)
+    return createSessionFromQueue(queue, sessionId)
 }
 
 function createSessionWithMode(mode?: DshMode) {
     return createSessionWithBatches([['first', mode ?? {}]])
+}
+
+function createSession(
+    arg?: boolean | DshMode | MessageQueue2<DshMode>,
+    sessionId: string | null = null
+) {
+    if (arg instanceof MessageQueue2) return createSessionFromQueue(arg, sessionId)
+    if (arg === false) return createSessionFromQueue(createQueue(), sessionId)
+    if (arg === true || arg === undefined) return createSessionWithBatches([['first', {}]], sessionId)
+    return createSessionWithBatches([['first', arg]], sessionId)
 }
 
 describe('DshRemoteLauncher', () => {
@@ -259,6 +276,8 @@ describe('DshRemoteLauncher', () => {
         harness.newSessionCalls = []
         harness.promptSessionIds = []
         harness.prompts = []
+        harness.transportClosedHandler = null
+        harness.promptFailure = null
         harness.promptErrorQueue = []
         harness.initializeErrorQueue = []
         harness.promptStopReason = null
@@ -300,6 +319,48 @@ describe('DshRemoteLauncher', () => {
         expect(session.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' })
         expect(harness.backend?.disconnect).toHaveBeenCalled()
     })
+
+    it('ends the DSH launcher when the ACP transport closes while idle', async () => {
+        const session = createSession(false)
+        const waitForMessages = vi.spyOn(session.queue, 'waitForMessagesAndGetAsString')
+        const launcher = new DshRemoteLauncher(session as never)
+        const launchPromise = launcher.launch()
+        void launchPromise.catch(() => undefined)
+        const launchResult = launchPromise.then(
+            () => ({ error: null as unknown }),
+            (error: unknown) => ({ error })
+        )
+
+        await vi.waitFor(() => expect(harness.transportClosedHandler).not.toBeNull())
+        await vi.waitFor(() => expect(waitForMessages).toHaveBeenCalled())
+        harness.transportClosedHandler!(new Error('ACP process exited (code=1, signal=null)'))
+
+        const result = await launchResult
+        expect(result.error).toBeInstanceOf(Error)
+        expect((result.error as Error).message).toContain('ACP process exited')
+        expect(harness.backend?.disconnect).toHaveBeenCalled()
+        expect(session.sendSessionEvent).toHaveBeenCalledWith({
+            type: 'message',
+            message: 'DSH ACP process stopped: ACP process exited (code=1, signal=null)'
+        })
+        expect(session.sendSessionEvent).not.toHaveBeenCalledWith({ type: 'ready' })
+        expect(harness.prompts).toEqual([])
+    })
+
+    it('does not swallow a prompt failure caused by an ACP transport close', async () => {
+        const session = createSession()
+        harness.promptFailure = deadTransportError('ACP transport closed')
+        const launcher = new DshRemoteLauncher(session as never)
+
+        await expect(launcher.launch()).rejects.toThrow('ACP transport closed')
+        expect(harness.backends).toHaveLength(1)
+        expect(harness.backend?.disconnect).toHaveBeenCalled()
+        expect(harness.backend?.resumeSession).not.toHaveBeenCalled()
+        expect(harness.backend?.newSession).toHaveBeenCalledTimes(1)
+        expect(session.sendSessionEvent).not.toHaveBeenCalledWith({ type: 'ready' })
+    })
+
+
 
     it('wires the session permission mode into the ACP permission bridge', async () => {
         // The bridge must consult the live session mode on every permission

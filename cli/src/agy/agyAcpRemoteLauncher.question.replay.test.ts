@@ -32,6 +32,7 @@ class ReplayTransport {
         this.notify = handler;
     }
     onStderrError(): void {}
+    onClose(): void {}
     registerRequestHandler(method: string, handler: (params: unknown, id: string | number | null) => Promise<unknown>): void {
         this.requestHandlers.set(method, handler);
     }
