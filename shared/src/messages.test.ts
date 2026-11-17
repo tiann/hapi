@@ -763,10 +763,16 @@ describe('stripNotifySummaryFooter', () => {
         const quotedNonObject = 'Use `AGENT_NOTIFY_SUMMARY not-json` to reproduce the failure.'
         const quotedGluedPartial = 'It wrote "Done.AGENT_NOTIFY_SUMMARY {"summary":" and stopped.'
         const gluedTruncation = 'Ownership session pinged.AGENT_NOTIFY_SUMMARY {"summary":'
+        // The reason this is decided by the line and not by the payload: an
+        // open string swallows whatever follows it, so the payload of this
+        // example is byte-for-byte the shape of a real truncation
+        // (`"summary":"ok`). No payload-shape test can separate the two.
+        const quotedOpenString = 'Use `AGENT_NOTIFY_SUMMARY {"summary":"` to reproduce the failure.'
         expect(stripNotifySummaryFooter(quotedPartial)).toBe(quotedPartial)
         expect(stripNotifySummaryFooter(quotedNonObject)).toBe(quotedNonObject)
         expect(stripNotifySummaryFooter(quotedGluedPartial)).toBe(quotedGluedPartial)
         expect(stripNotifySummaryFooter(gluedTruncation)).toBe(gluedTruncation)
+        expect(stripNotifySummaryFooter(quotedOpenString)).toBe(quotedOpenString)
     })
 
     test('still strips a near miss that owns its line, indented or not', () => {
