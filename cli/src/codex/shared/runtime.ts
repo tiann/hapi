@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { configuration } from '@/configuration';
+import { buildForkSessionSummary } from '@hapi/protocol';
 import { bootstrapSession, bootstrapExistingSession } from '@/agent/sessionFactory';
 import { notifyRunnerSessionStarted } from '@/runner/controlClient';
 import { getProcessStartMarker, killProcessByChildProcess } from '@/utils/process';
@@ -14,7 +15,6 @@ import { codexHome, saveRuntime, runtimeDirectory, runtimeAuthHash, findColdBind
 import { startCodexGateway, record, string, type Envelope } from './gateway';
 import { resolveSharedCodex, sharedLaunchConfig, initializeSharedClient, checkSharedCapabilities, takeReservedSessionId, type SharedLaunchOptions } from './launch';
 import { SharedCodexRoot } from './root';
-import { buildForkSessionSummary } from '@hapi/protocol';
 
 export type RuntimeReady = { sessionId: string; runtime: CodexRuntimeRecord };
 type Reservation = { root: SharedCodexRoot; resumeId?: string };
@@ -175,7 +175,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         const forkSummary = parent ? buildForkSessionSummary(parent.session.getMetadata()) : undefined;
         const shared = { flavor: 'codex', startedBy: options.startedBy ?? 'terminal', workingDirectory: cwd,
             exportSessionEnv: false, reportStarted: false, metadataOverrides: {
-                ...(forkSummary ? { summary: forkSummary } : {}),
+                ...(forkSummary ? { summary: forkSummary, forkTitleSeed: forkSummary } : {}),
                 capabilities: {
                     terminal: true,
                     concurrentClients: true,
@@ -237,7 +237,9 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         // new-thread subscription. Subscribe once without changing settings.
         await control.request('thread/resume', { threadId, excludeTurns: true });
         await root.activate(initialOptions);
-        await root.session.flush();
+        // Notify only after fork metadata and replayed transcript are durable.
+        // Native terminal /fork does not pass through the Hub's REST fork path.
+        if (await root.session.flush()) root.session.emitSessionReady();
         await persist();
         // The hub's view of the metadata is what the hub kept of it: a hub
         // without the field strips hostStartMarker, and the runner ignores an

@@ -534,6 +534,8 @@ it.each([
         ['jobsAcceptedFromSessionIds', ['foreign-session']],
         ['jobsTransferredToSessionId', 'foreign-session'],
         ['jobKeyRedirects', { 'foreign-session/beets': 'beets.foreign' }],
+        ['forkTitleSeed', { text: 'Fork: forged', updatedAt: 1 }],
+        ['forkTitleGenerationAttemptedAt', 1234],
     ] as const)(
         'ignores a forged hub-owned %s addition from CLI metadata',
         (field, forged) => {
@@ -603,6 +605,8 @@ it.each([
             path: '/tmp/project',
             titleSuggestionAutoAttemptedAt: 1234,
             titleSuggestionTurn: { first: true, completed: false },
+            forkTitleSeed: { text: 'Fork: Parent', updatedAt: 1234 },
+            forkTitleGenerationAttemptedAt: 5678,
             promptTitle: 'Fix the login bug'
         }, null, 'default')
         const socket = new FakeSocket()
@@ -615,12 +619,15 @@ it.each([
         socket.trigger('update-metadata', {
             sid: session.id,
             expectedVersion: session.metadataVersion,
-            metadata: { path: '/tmp/project', titleSuggestionAutoAttemptedAt: 9999, titleSuggestionTurn: { first: false, completed: true } }
+            metadata: { path: '/tmp/project', titleSuggestionAutoAttemptedAt: 9999, titleSuggestionTurn: { first: false, completed: true },
+                forkTitleSeed: { text: 'Fork: forged', updatedAt: 9999 }, forkTitleGenerationAttemptedAt: 9999 }
         }, () => {})
 
         expect(store.sessions.getSessionByNamespace(session.id, 'default')?.metadata).toMatchObject({
             titleSuggestionAutoAttemptedAt: 1234,
             titleSuggestionTurn: { first: true, completed: false },
+            forkTitleSeed: { text: 'Fork: Parent', updatedAt: 1234 },
+            forkTitleGenerationAttemptedAt: 5678,
             promptTitle: 'Fix the login bug'
         })
     })

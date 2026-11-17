@@ -39,6 +39,31 @@ describe('shared Codex titles', () => {
         expect(f.metadata()).toMatchObject({ name: 'Manual name', titleLocked: true })
     })
 
+    it('never restores inherited title tools onto a fork, while a new live rename still works', async () => {
+        const f = fixture();
+        f.update(metadata => ({ ...metadata, name: undefined, forkedFrom: 'parent' }));
+        await f.projection.history(history(titleItem('inherited', 'Old parent title')));
+        expect(f.metadata().name).toBeUndefined();
+        await f.projection.notification('item/completed', params(titleItem('new', 'New child title'), 'new-turn'));
+        expect(f.metadata().name).toBe('New child title');
+    });
+
+    it('protects a fork title lock from a new live rename', async () => {
+        const f = fixture();
+        f.update(metadata => ({ ...metadata, name: undefined, forkedFrom: 'parent', titleLocked: true,
+            summary: { text: 'Fork: Current title', updatedAt: 1 } }));
+        await f.projection.notification('item/completed', params(titleItem('new', 'Unexpected')));
+        expect(f.metadata().name).toBeUndefined();
+        expect(f.metadata().summary?.text).toBe('Fork: Current title');
+    });
+
+    it('rechecks fork ownership when a cold replay metadata write was queued', async () => {
+        const f = fixture(undefined, true);
+        f.update(metadata => ({ ...metadata, name: undefined })); f.flush();
+        await f.projection.history(history(titleItem('old', 'Old parent title')));
+        const rename = f.update.mock.calls.at(-1)![0];
+        expect(rename({ path: '/repo', host: 'test', forkedFrom: 'parent' }).name).toBeUndefined();
+    });
     it('renames via metadata.name so a spawn name does not hide change_title', async () => {
         const f = fixture();
         const item = titleItem('title', ' Remote title ');
