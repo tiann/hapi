@@ -2412,7 +2412,27 @@ export function HappyThread(props: {
     startHistoryLoadAttemptRef.current = startHistoryLoadAttempt
 
     const requestOlder = useCallback((source: HistoryLoadSource): Promise<OlderHistoryLoadResult> => {
+        const viewport = viewportRef.current
+        const movedAwayFromBottom = viewport != null
+            && viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight > AUTO_SCROLL_RESUME_THRESHOLD_PX
+        const disableTailFollowingForUser = () => {
+            initialScrollDeadlineRef.current = 0
+            clearInitialScrollTimers()
+            userCancelledInitialTailRef.current = true
+            autoScrollEnabledRef.current = false
+            if (pendingScrollRef.current && historyLoaderRef.current.runId === pendingScrollRef.current.runId) {
+                pendingScrollRef.current.preserveTail = false
+            }
+        }
+
+        if (source === 'user' && movedAwayFromBottom) {
+            disableTailFollowingForUser()
+        }
+
         if (pendingLoadPromiseRef.current) {
+            if (source === 'user') {
+                disableTailFollowingForUser()
+            }
             return pendingLoadPromiseRef.current
         }
 
@@ -2429,20 +2449,12 @@ export function HappyThread(props: {
                 return Promise.resolve('transient-stop')
             }
         } else {
-            // Explicit consumers must not be swallowed by the initial
-            // scroll-to-bottom settling window.
-            initialScrollDeadlineRef.current = 0
-            clearInitialScrollTimers()
-            if (source === 'user') {
-                userCancelledInitialTailRef.current = true
-                autoScrollEnabledRef.current = false
-                if (pendingScrollRef.current && historyLoaderRef.current.runId === pendingScrollRef.current.runId) {
-                    pendingScrollRef.current.preserveTail = false
-                }
-                if (state.autoPaused) {
-                    state = { ...state, autoPaused: false }
-                    historyLoaderRef.current = state
-                }
+            if (!hasMoreMessagesRef.current) {
+                return Promise.resolve('terminal-stop')
+            }
+            if (source === 'user' && state.autoPaused) {
+                state = { ...state, autoPaused: false }
+                historyLoaderRef.current = state
             }
         }
 
@@ -2450,12 +2462,23 @@ export function HappyThread(props: {
             state.phase !== 'idle'
             || isSyncingTailRef.current
             || isLoadingMoreRef.current
-            || !viewportRef.current
+            || !viewport
         ) {
             return Promise.resolve('transient-stop')
         }
         if (!hasMoreMessagesRef.current) {
             return Promise.resolve('terminal-stop')
+        }
+
+        if (source !== 'coverage') {
+            // Explicit consumers must not be swallowed by the initial
+            // scroll-to-bottom settling window once a load actually starts.
+            if (source === 'user') {
+                disableTailFollowingForUser()
+            } else {
+                initialScrollDeadlineRef.current = 0
+                clearInitialScrollTimers()
+            }
         }
 
         clearCoverageCheckTimer()

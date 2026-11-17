@@ -1500,4 +1500,59 @@ describe('session switch tail anchoring', () => {
         expect(viewport.scrollTop).toBe(120)
         expect(onLoadMore).not.toHaveBeenCalled()
     })
+
+    it('preserves tail following after an upward wheel on a short exhausted conversation when streaming grows content', () => {
+        const onLoadMore = vi.fn().mockResolvedValue({ kind: 'stopped', reason: 'exhausted' } satisfies OlderLoadOutcome)
+        const onViewModeChange = vi.fn()
+        searchTargetTestState.extras = { messagesVersion: 1, historyVersion: 0 }
+
+        const initialProps: SwitchThreadProps = {
+            sessionId: 'session-short-exhausted-wheel',
+            isSyncingTail: false,
+            hasMoreMessages: false,
+            rawMessagesCount: 2,
+            messagesVersion: 1,
+            historyVersion: 0,
+            onLoadMore,
+            onViewModeChange,
+            keyBySession: true
+        }
+        const { viewport, sentinel, rerenderWith, queryByRole } = createSwitchThreadRenderer(initialProps)
+        let scrollHeight = 300
+        const clientHeight = 530
+        Object.defineProperties(viewport, {
+            scrollHeight: { configurable: true, get: () => scrollHeight },
+            clientHeight: { configurable: true, value: clientHeight }
+        })
+        vi.spyOn(viewport, 'getBoundingClientRect').mockReturnValue({ top: 0, bottom: clientHeight } as DOMRect)
+        vi.spyOn(sentinel, 'getBoundingClientRect').mockImplementation(() => ({
+            top: -viewport.scrollTop,
+            bottom: 1 - viewport.scrollTop
+        } as DOMRect))
+
+        act(() => {
+            vi.advanceTimersByTime(2_000)
+        })
+
+        // Upward wheel on a short, exhausted conversation cannot scroll or load
+        // older history; it must not silently break tail-following.
+        fireEvent.wheel(viewport, { deltaY: -120 })
+        expect(onLoadMore).not.toHaveBeenCalled()
+        expect(onViewModeChange).not.toHaveBeenCalledWith('history')
+
+        // Subsequent streaming output grows beyond the viewport; HappyThread must
+        // stay pinned to the bottom without rendering a jump-to-bottom button.
+        scrollHeight = 1_200
+        searchTargetTestState.extras = { messagesVersion: 2, historyVersion: 0 }
+        act(() => {
+            rerenderWith({
+                ...initialProps,
+                messagesVersion: 2
+            })
+            resizeCallbacks.at(-1)?.()
+        })
+
+        expect(viewport.scrollTop).toBe(670)
+        expect(queryByRole('button', { name: /scroll to bottom/i })).toBeNull()
+    })
 })
