@@ -232,4 +232,13 @@ describe('claudeRemoteLauncher steer', () => {
             await stop()
         }
     })
+
+    it('never marks a non-deferred claude dequeue as in-flight', async () => {
+        const { queue, stop } = await startTurn()
+        try {
+            expect(queue.cancelByLocalId('first')).toBe(false)
+        } finally {
+            await stop()
+        }
+    })
 })
