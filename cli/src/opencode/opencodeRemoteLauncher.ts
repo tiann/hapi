@@ -186,6 +186,7 @@ export function selectAbortStatusMessage(opts: {
 class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private readonly session: OpencodeSession;
     private backend: ReturnType<typeof createOpencodeBackend> | null = null;
+    private unexpectedChildExit: Error | null = null;
     /** Loopback base URL of the OpenCode ACP subprocess's internal HTTP API, set once the backend is spawned with an explicit --port/--hostname. */
     private baseUrl: string | null = null;
     private permissionHandler: OpencodePermissionHandler | null = null;
@@ -404,6 +405,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         });
     }
 
+    public get shouldRecoverUnexpectedChildExit(): boolean {
+        return this.unexpectedChildExit !== null;
+    }
+
     protected createDisplay(context: RemoteLauncherDisplayContext): React.ReactElement {
         return React.createElement(OpencodeDisplay, context);
     }
@@ -469,6 +474,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         backend.onStderrError((error) => {
             this.handleAcpStderrError(error);
         });
+        backend.setUnexpectedExitListener((error) => this.handleUnexpectedChildExit(error));
 
         await backend.initialize();
 
@@ -1644,8 +1650,15 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         await this.conversationHistory.invalidateHistory().catch((writeError) => logger.warn('[opencode-remote] History divergence persistence deferred', writeError));
                     }
                     this.invalidateNativeReceiptCorrelation();
-                    logger.warn('[opencode-remote] prompt failed', error);
-                    this.reportPromptFailure(error);
+                    if (this.unexpectedChildExit) {
+                        session.sendSessionEvent({
+                            type: 'message',
+                            message: 'OpenCode turn interrupted because its agent process exited. Recovering the session.'
+                        });
+                    } else {
+                        logger.warn('[opencode-remote] prompt failed', error);
+                        this.reportPromptFailure(error);
+                    }
                 } finally {
                     this.promptInFlight = false;
                     this.activePromptModeHash = null;
@@ -2501,6 +2514,18 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
+    private handleUnexpectedChildExit(error: Error): void {
+        if (this.shouldExit || this.exitReason || this.unexpectedChildExit) return;
+        this.unexpectedChildExit = error;
+        logger.warn('[opencode-remote] ACP child exited unexpectedly; scheduling recovery', error);
+        this.messageBuffer.addMessage('Agent process stopped unexpectedly. Recovering the session…', 'status');
+        // Wake an idle queue read immediately. The queue itself remains intact
+        // and the outer launcher recreates the backend with session.sessionId.
+        this.abortController.abort();
+        this.shouldExit = true;
+        this.exitReason = 'exit';
+    }
+
     /**
      * Reports an upstream retry as progress, not as a failure: the agent is
      * still working and will try again on its own.
@@ -3260,6 +3285,23 @@ export async function opencodeRemoteLauncher(
     session: OpencodeSession,
     options: OpencodeRemoteLauncherOptions = {}
 ): Promise<'switch' | 'exit'> {
-    const launcher = new OpencodeRemoteLauncher(session, options);
-    return launcher.launch();
+    const recoveryBackoffsMs = [1_000, 5_000, 15_000];
+    for (let attempt = 0; ; attempt += 1) {
+        const launcher = new OpencodeRemoteLauncher(session, options);
+        let result: RemoteLauncherExitReason;
+        try {
+            result = await launcher.launch();
+        } catch (error) {
+            if (!launcher.shouldRecoverUnexpectedChildExit) throw error;
+            result = 'exit';
+        }
+        if (!launcher.shouldRecoverUnexpectedChildExit) return result;
+        if (attempt >= recoveryBackoffsMs.length - 1) {
+            logger.warn('[opencode-remote] ACP child recovery exhausted; ending wrapper session');
+            return 'exit';
+        }
+        const delayMs = recoveryBackoffsMs[attempt]!;
+        logger.warn(`[opencode-remote] retrying ACP child recovery in ${delayMs}ms (attempt ${attempt + 2}/${recoveryBackoffsMs.length})`);
+        await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+    }
 }

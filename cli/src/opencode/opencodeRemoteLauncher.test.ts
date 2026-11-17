@@ -41,6 +41,7 @@ const harness = vi.hoisted(() => ({
     // polluting the events list other assertions compare exactly.
     thoughtLevelLookups: [] as number[],
     stderrHandler: null as null | ((error: { type: string; message: string; raw: string }) => void),
+    unexpectedExitHandler: null as null | ((error: Error) => void),
     hangPrompt: false,
     resolvePrompt: null as null | (() => void),
     // The message callback backend.prompt() receives, so tests can emit
@@ -214,6 +215,9 @@ vi.mock('./utils/opencodeBackend', () => ({
         respondToPermission: vi.fn(async () => {}),
         onStderrError: vi.fn((handler: (error: { type: string; message: string; raw: string }) => void) => {
             harness.stderrHandler = handler;
+        }),
+        setUnexpectedExitListener: vi.fn((handler: (error: Error) => void) => {
+            harness.unexpectedExitHandler = handler;
         }),
         setSessionInfoUpdateListener: vi.fn(),
         refreshSessionInfo: vi.fn(async (sessionId: string, cwd: string) => {
@@ -732,6 +736,7 @@ afterEach(async () => {
     harness.thoughtLevelOption = null;
     harness.thoughtLevelLookups = [];
     harness.stderrHandler = null;
+    harness.unexpectedExitHandler = null;
     harness.servePid = null;
     harness.servePidCalls = [];
     harness.hangPrompt = false;
@@ -806,6 +811,49 @@ afterEach(async () => {
 
 
 describe('opencodeRemoteLauncher inline model switch', () => {
+
+    it('recreates a killed ACP child and delivers a queued message through the resumed native session', async () => {
+        const { session } = createSessionStub([], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        const launcher = opencodeRemoteLauncher(session as never);
+
+        await vi.waitFor(() => expect(harness.unexpectedExitHandler).toBeTypeOf('function'));
+        harness.unexpectedExitHandler!(new Error('ACP process exited (signal=SIGKILL)'));
+        session.queue.push('queued after SIGKILL', createMode(), 'after-kill');
+
+        await vi.waitFor(() => expect(harness.promptCount).toBe(1), { timeout: 3_000 });
+        const { createOpencodeBackend } = await import('./utils/opencodeBackend');
+        expect(createOpencodeBackend).toHaveBeenCalledTimes(2);
+        expect(harness.promptContents[0]?.some((part) =>
+            part.type === 'text' && part.text.includes('queued after SIGKILL')
+        )).toBe(true);
+
+        session.queue.close();
+        await launcher;
+    });
+
+    it('ends the wrapper session after the bounded recovery attempts when the child keeps dying', { timeout: 20_000 }, async () => {
+        const { session } = createSessionStub([], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        const launcher = opencodeRemoteLauncher(session as never);
+
+        await vi.waitFor(() => expect(harness.unexpectedExitHandler).toBeTypeOf('function'));
+        harness.unexpectedExitHandler!(new Error('ACP process exited (signal=SIGKILL)'));
+
+        const backendModule = await import('./utils/opencodeBackend');
+        // Recovery attempt 1: a fresh launcher recreates the backend.
+        await vi.waitFor(() => expect(backendModule.createOpencodeBackend).toHaveBeenCalledTimes(2), { timeout: 10_000 });
+        harness.unexpectedExitHandler!(new Error('ACP process exited (signal=SIGKILL)'));
+
+        // Recovery attempt 2 dies too.
+        await vi.waitFor(() => expect(backendModule.createOpencodeBackend).toHaveBeenCalledTimes(3), { timeout: 10_000 });
+        harness.unexpectedExitHandler!(new Error('ACP process exited (signal=SIGKILL)'));
+
+        // After the third death the bounded attempts are exhausted: the
+        // wrapper ends the session ('exit') instead of relaunching again.
+        await expect(launcher).resolves.toBe('exit');
+        expect(backendModule.createOpencodeBackend).toHaveBeenCalledTimes(3);
+    });
 
     it('holds the fork busy guard across an in-flight batch', async () => {
         let resolvePrompt: (() => void) | null = null;
@@ -3018,6 +3066,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             cancelPrompt: vi.fn(async () => {}),
             respondToPermission: vi.fn(async () => {}),
             onStderrError: vi.fn(),
+            setUnexpectedExitListener: vi.fn(),
             setSessionInfoUpdateListener: vi.fn(),
             refreshSessionInfo: vi.fn(async () => {}),
             onPermissionRequest: vi.fn(),
@@ -4391,6 +4440,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             cancelPrompt: vi.fn(async () => {}),
             respondToPermission: vi.fn(async () => {}),
             onStderrError: vi.fn(),
+            setUnexpectedExitListener: vi.fn(),
             setSessionInfoUpdateListener: vi.fn(),
             refreshSessionInfo: vi.fn(async () => {}),
             onPermissionRequest: vi.fn(),

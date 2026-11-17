@@ -222,6 +222,8 @@ function extractClaudeUserMessageTextFromAgentOutput(content: unknown): string |
 }
 
 export class SyncEngine {
+    /** A runner can acknowledge a resume before its socket becomes active. */
+    private static readonly RESUME_FAILED_RETRY_DELAYS_MS = [1_000, 5_000] as const
     private readonly archiveRequests = new Map<string, Promise<void>>()
     // KillSession's beforeKill drain completes before the CLI's async cleanup
     // closes the session socket, so a runner prepare-stop that loses that race
@@ -4756,7 +4758,20 @@ export class SyncEngine {
         this.historyActionsInFlight.add(sessionId)
         const promise = (async () => {
             try {
-                return await this.resumeSessionUnlocked(sessionId, namespace, opts)
+                for (let attempt = 0; ; attempt += 1) {
+                    const result = await this.resumeSessionUnlocked(sessionId, namespace, opts)
+                    if (
+                        result.type !== 'error'
+                        || result.code !== 'resume_failed'
+                        || result.message !== 'Session failed to become active'
+                        || attempt >= SyncEngine.RESUME_FAILED_RETRY_DELAYS_MS.length
+                    ) {
+                        return result
+                    }
+                    const delayMs = SyncEngine.RESUME_FAILED_RETRY_DELAYS_MS[attempt]!;
+                    console.warn(`[resume] ${result.message}; retrying in ${delayMs}ms (${attempt + 2}/3)`, { sessionId })
+                    await new Promise<void>((resolve) => setTimeout(resolve, delayMs))
+                }
             } finally {
                 this.historyActionsInFlight.delete(sessionId)
                 this.resumeTails.delete(sessionId)
