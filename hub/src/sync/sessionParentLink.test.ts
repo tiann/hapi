@@ -268,6 +268,48 @@ describe('session parent link recording and persistence', () => {
             }, 'non-wrapper-result')
 
             expect(engine.getSession(unrelated.id)?.metadata?.parentSessionId).toBeUndefined()
+
+            receive(reader.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: {
+                        type: 'assistant',
+                        message: {
+                            role: 'assistant',
+                            content: [{
+                                type: 'tool_use',
+                                id: 'toolu_rg_log',
+                                name: 'Bash',
+                                input: { command: `rg -A 2 -- 'codeagent-wrapper --backend codex' wrapper.log` },
+                            }]
+                        }
+                    }
+                }
+            }, 'search-pattern-use')
+
+            receive(reader.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: {
+                        type: 'user',
+                        message: {
+                            content: [{
+                                type: 'tool_result',
+                                tool_use_id: 'toolu_rg_log',
+                                content: [
+                                    'wrapper.log:12:codeagent-wrapper --backend codex',
+                                    '---',
+                                    'SESSION_ID: 019a9999-1111-7222-8333-444455556666',
+                                ].join('\n')
+                            }]
+                        }
+                    }
+                }
+            }, 'search-pattern-result')
+
+            expect(engine.getSession(unrelated.id)?.metadata?.parentSessionId).toBeUndefined()
         } finally {
             engine.stop()
             store.close()

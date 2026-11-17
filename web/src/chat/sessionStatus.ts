@@ -3,6 +3,7 @@ import type { BackgroundTask, SessionSummary, ThreadGoal, TodoItem } from '@/typ
 import type { ChatBlock, ToolCallBlock } from '@/chat/types'
 import { isSubagentToolName } from '@/chat/subagentTool'
 import { hasUrgentModelError } from '@/components/ModelErrorBanner'
+import { hasAgentForegroundWork, hasRunningAttachedJob } from '@/lib/sessionInProgress'
 import { getCodexAgentActivity, getCodexAgentSummary } from '@/components/ToolCard/codexAgents'
 import { extractSpawnedSessionId, parsePeerToolName, parseWrapperToolInvocation } from '@/components/ToolCard/peerTools'
 import { getSessionTitle } from '@/lib/sessionTitle'
@@ -161,7 +162,7 @@ function subagentFromBlock(
 function classifyLinkedSessionState(session: SessionSummary): SessionStatusSubagent['state'] {
     if (hasUrgentModelError(session.metadata)) return 'error'
     if (session.active && (session.pendingRequestsCount ?? 0) > 0) return 'waiting'
-    if ((session.active && session.thinking) || session.attachedJob?.status === 'running') return 'running'
+    if (hasAgentForegroundWork(session) || hasRunningAttachedJob(session)) return 'running'
     return 'idle'
 }
 

@@ -13,7 +13,7 @@ describe('codeagentWrapper helpers', () => {
         expect(mapWrapperBackendToHapiFlavor('opencode')).toBe('opencode')
     })
 
-    it('parses single and resumed codeagent-wrapper invocations', () => {
+    it('parses single, chained, shell-wrapped, and resumed codeagent-wrapper invocations', () => {
         const cmd = `/home/ubuntu/.claude/bin/codeagent-wrapper --progress --backend codex - "/work/repo" <<'EOF'\nROLE_FILE: ~/.claude/.ccg/prompts/codex/reviewer.md\nReview\nEOF`
         expect(parseCodeagentWrapperCommand(cmd)).toEqual({
             backend: 'codex',
@@ -23,8 +23,8 @@ describe('codeagentWrapper helpers', () => {
             isParallel: false,
         })
 
-        const resumed = `codeagent-wrapper --backend antigravity resume thread-abc123 - "/work/repo"`
-        expect(parseCodeagentWrapperCommand(resumed)).toEqual({
+        const shellWrapped = `/bin/bash -lc 'cd /work/repo && ~/.claude/bin/codeagent-wrapper --backend antigravity resume thread-abc123 - "/work/repo"'`
+        expect(parseCodeagentWrapperCommand(shellWrapped)).toEqual({
             backend: 'antigravity',
             flavor: 'agy',
             role: null,
@@ -33,9 +33,11 @@ describe('codeagentWrapper helpers', () => {
         })
     })
 
-    it('ignores plain shell commands that merely list or inspect codeagent-wrapper', () => {
+    it('ignores plain shell commands, quoted search patterns, and heredocs mentioning codeagent-wrapper', () => {
         expect(parseCodeagentWrapperCommand('ls -la /home/ubuntu/.claude/bin/codeagent-wrapper')).toBeNull()
         expect(parseCodeagentWrapperCommand('cat codeagent-wrapper/main.go')).toBeNull()
+        expect(parseCodeagentWrapperCommand(`rg -A 2 -- 'codeagent-wrapper --backend codex' wrapper.log`)).toBeNull()
+        expect(parseCodeagentWrapperCommand(`cat <<'EOF'\ncodeagent-wrapper --backend codex - /tmp\nEOF`)).toBeNull()
     })
 
     it('extracts deduplicated SESSION_ID values only after the canonical footer', () => {

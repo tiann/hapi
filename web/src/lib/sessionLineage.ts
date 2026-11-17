@@ -1,5 +1,6 @@
 import type { SessionSummary } from '@/types/api'
 import { hasUrgentModelError } from '@/components/ModelErrorBanner'
+import { hasAgentForegroundWork, hasRunningAttachedJob } from '@/lib/sessionInProgress'
 
 const MAX_ANCESTOR_HOPS = 16
 
@@ -23,7 +24,7 @@ export type ChildAttentionContext = {
 }
 
 export function childIsWorking(session: SessionSummary): boolean {
-    return (session.active && session.thinking) || session.attachedJob?.status === 'running'
+    return hasAgentForegroundWork(session) || hasRunningAttachedJob(session)
 }
 
 export function childDemandsAttention(

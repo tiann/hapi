@@ -98,10 +98,12 @@ describe('attention auto-folding predicates', () => {
     it('folds idle read settled children by default and expands when working or demanding attention', () => {
         const idleChild = makeSession({ id: 'c1', active: false })
         const workingChild = makeSession({ id: 'c2', active: true, thinking: true })
+        const backgroundWorkingChild = makeSession({ id: 'c5', active: true, thinking: false, backgroundTaskCount: 1 })
         const pendingChild = makeSession({ id: 'c3', active: true, pendingRequestsCount: 1 })
         const unreadChild = makeSession({ id: 'c4', active: true, thinking: false })
 
         expect(childIsWorking(workingChild)).toBe(true)
+        expect(childIsWorking(backgroundWorkingChild)).toBe(true)
         expect(childDemandsAttention(pendingChild, {})).toBe(true)
         expect(childDemandsAttention(unreadChild, {
             keepUnreadSessionsVisible: true,
@@ -110,6 +112,7 @@ describe('attention auto-folding predicates', () => {
 
         expect(isChildLineageExpandedByDefault([idleChild], {})).toBe(false)
         expect(isChildLineageExpandedByDefault([idleChild, workingChild], {})).toBe(true)
+        expect(isChildLineageExpandedByDefault([idleChild, backgroundWorkingChild], {})).toBe(true)
         expect(isChildLineageExpandedByDefault([idleChild, pendingChild], {})).toBe(true)
         expect(isChildLineageExpandedByDefault([idleChild], { selectedSessionId: 'c1' })).toBe(true)
     })
