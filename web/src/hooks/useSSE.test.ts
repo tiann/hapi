@@ -25,6 +25,14 @@ describe('session summary metadata equality', () => {
             { ...base, conversationHistory: { forkCurrent: true } },
             { ...base, conversationHistory: { forkCurrent: true } },
         )).toBe(true)
+        expect(sameSessionSummaryMetadata(
+            base,
+            { ...base, parentLink: { parentSessionId: 'parent-1', kind: 'peer' } },
+        )).toBe(false)
+        expect(sameSessionSummaryMetadata(
+            { ...base, parentLink: { parentSessionId: 'parent-1', kind: 'peer' } },
+            { ...base, parentLink: { parentSessionId: 'parent-1', kind: 'peer' } },
+        )).toBe(true)
     })
 })
 

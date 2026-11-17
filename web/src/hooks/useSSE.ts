@@ -146,6 +146,8 @@ export function sameSessionSummaryMetadata(
         && current.worktree?.name === next.worktree?.name
         && current.worktree?.worktreePath === next.worktree?.worktreePath
         && current.worktree?.createdAt === next.worktree?.createdAt
+        && current.parentLink?.parentSessionId === next.parentLink?.parentSessionId
+        && current.parentLink?.kind === next.parentLink?.kind
 }
 
 export function isRenderIrrelevantPatch(current: SessionSummary, next: SessionSummary): boolean {
