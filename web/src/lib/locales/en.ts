@@ -1492,7 +1492,7 @@ export default {
   'sessions.lineage.kind.branch': 'branch',
   'sessions.lineage.parentPrefix': 'Parent',
   'sessions.lineage.childrenLabel': 'Linked',
-  'sessions.lineage.showMoreChildren': '+{count} more',
+  'sessions.lineage.showMoreChildren': '+{count}',
   'sessions.lineage.openSession': 'Open session',
   'session.status.inspectSubagent': 'Inspect subagent',
 } as const

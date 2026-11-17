@@ -7,7 +7,7 @@
  * - No E2E encryption; data is stored as JSON in SQLite
  */
 
-import { AGENT_MESSAGE_PAYLOAD_TYPE, type SessionReadStateRequest, extractCodeagentWrapperSessionIds, extractExplicitParentSessionIdFromRemit, getNativeAgentSessionIds, isKnownFlavor, isObject, matchesClaudeSessionId, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, resolveSessionParentLink, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
+import { AGENT_MESSAGE_PAYLOAD_TYPE, type SessionReadStateRequest, extractCodeagentWrapperSessionIds, extractExplicitParentSessionIdFromRemit, getNativeAgentSessionIds, isKnownFlavor, isObject, matchesClaudeSessionId, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, parseCodeagentWrapperCommand, resolveSessionParentLink, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
 import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
@@ -222,6 +222,7 @@ function extractClaudeUserMessageTextFromAgentOutput(content: unknown): string |
 }
 
 const WRAPPER_PARENT_CACHE_MAX = 512
+const WRAPPER_CALL_CACHE_MAX = 1024
 const WRAPPER_PARENT_TTL_MS = 24 * 60 * 60_000
 
 function flattenToolResultText(value: unknown, depth: number = 0): string {
@@ -239,7 +240,56 @@ function flattenToolResultText(value: unknown, depth: number = 0): string {
     return ''
 }
 
-function extractWrapperSessionIdsFromMessage(messageContent: unknown): string[] {
+function extractCommandFromToolInput(input: unknown): string | null {
+    if (!isObject(input)) return null
+    if (typeof input.command === 'string') return input.command
+    if (Array.isArray(input.command)) {
+        const parts = input.command.filter((part): part is string => typeof part === 'string')
+        if (parts.length > 0) return parts.join(' ')
+    }
+    if (typeof input.cmd === 'string') return input.cmd
+    if (typeof input.CommandLine === 'string') return input.CommandLine
+    return null
+}
+
+function collectVerifiedWrapperCallIdsFromMessage(messageContent: unknown): string[] {
+    const record = unwrapRoleWrappedRecordEnvelope(messageContent)
+    if (!record || (record.role !== 'agent' && record.role !== 'assistant')) return []
+    if (!isObject(record.content) || typeof record.content.type !== 'string') return []
+
+    const callIds: string[] = []
+    const data = isObject(record.content.data) ? record.content.data : null
+    if (!data) return callIds
+
+    if (record.content.type === 'output' && data.type === 'assistant') {
+        const message = isObject(data.message) ? data.message : null
+        const blocks = message && Array.isArray(message.content) ? message.content : null
+        if (blocks) {
+            for (const block of blocks) {
+                if (!isObject(block) || block.type !== 'tool_use' || typeof block.id !== 'string') continue
+                if (parseCodeagentWrapperCommand(extractCommandFromToolInput(block.input))) {
+                    callIds.push(block.id)
+                }
+            }
+        }
+    } else if (record.content.type === AGENT_MESSAGE_PAYLOAD_TYPE && data.type === 'tool-call') {
+        const callId = typeof data.callId === 'string'
+            ? data.callId
+            : typeof data.id === 'string'
+                ? data.id
+                : null
+        if (callId && parseCodeagentWrapperCommand(extractCommandFromToolInput(data.input))) {
+            callIds.push(callId)
+        }
+    }
+
+    return callIds
+}
+
+function extractWrapperSessionIdsFromMessage(
+    messageContent: unknown,
+    isVerifiedCallId: (callId: string) => boolean
+): string[] {
     const record = unwrapRoleWrappedRecordEnvelope(messageContent)
     if (!record || (record.role !== 'agent' && record.role !== 'assistant')) return []
     if (!isObject(record.content) || typeof record.content.type !== 'string') return []
@@ -247,18 +297,30 @@ function extractWrapperSessionIdsFromMessage(messageContent: unknown): string[] 
     const chunks: string[] = []
     if (record.content.type === 'output') {
         const data = isObject(record.content.data) ? record.content.data : null
-        const message = data && data.type === 'user' && isObject(data.message) ? data.message : null
-        const blocks = message && Array.isArray(message.content) ? message.content : null
-        if (blocks) {
-            for (const block of blocks) {
-                if (!isObject(block) || block.type !== 'tool_result') continue
-                const text = flattenToolResultText(block.content)
+        if (data?.type === 'agy_tool_action') {
+            if (parseCodeagentWrapperCommand(extractCommandFromToolInput(data.input))) {
+                const text = flattenToolResultText(data.content)
                 if (text) chunks.push(text)
+            }
+        } else {
+            const message = data && data.type === 'user' && isObject(data.message) ? data.message : null
+            const blocks = message && Array.isArray(message.content) ? message.content : null
+            if (blocks) {
+                for (const block of blocks) {
+                    if (!isObject(block) || block.type !== 'tool_result') continue
+                    if (typeof block.tool_use_id !== 'string' || !isVerifiedCallId(block.tool_use_id)) continue
+                    const text = flattenToolResultText(block.content)
+                    if (text) chunks.push(text)
+                }
             }
         }
     } else if (record.content.type === AGENT_MESSAGE_PAYLOAD_TYPE) {
         const data = isObject(record.content.data) ? record.content.data : null
-        if (data?.type === 'tool-call-result') {
+        if (
+            data?.type === 'tool-call-result'
+            && typeof data.callId === 'string'
+            && isVerifiedCallId(data.callId)
+        ) {
             const text = flattenToolResultText(data.output)
             if (text) chunks.push(text)
         }
@@ -379,6 +441,7 @@ export class SyncEngine {
      */
     private readonly pendingAutoBridgeReconcile = new Set<string>()
     private readonly wrapperParentByNativeId = new Map<string, { parentSessionId: string; recordedAt: number }>()
+    private readonly verifiedWrapperCallIds = new Map<string, number>()
 
     constructor(
         private readonly store: Store,
@@ -6026,13 +6089,49 @@ export class SyncEngine {
         }
     }
 
+    private wrapperCallKey(sessionId: string, callId: string): string {
+        return `${sessionId}\0${callId}`
+    }
+
+    private rememberVerifiedWrapperCall(sessionId: string, callId: string, now: number): void {
+        const key = this.wrapperCallKey(sessionId, callId)
+        if (this.verifiedWrapperCallIds.has(key)) {
+            this.verifiedWrapperCallIds.delete(key)
+        }
+        this.verifiedWrapperCallIds.set(key, now)
+        while (this.verifiedWrapperCallIds.size > WRAPPER_CALL_CACHE_MAX) {
+            const oldestKey = this.verifiedWrapperCallIds.keys().next().value
+            if (!oldestKey) break
+            this.verifiedWrapperCallIds.delete(oldestKey)
+        }
+    }
+
+    private isVerifiedWrapperCall(sessionId: string, callId: string, now: number): boolean {
+        const key = this.wrapperCallKey(sessionId, callId)
+        const recordedAt = this.verifiedWrapperCallIds.get(key)
+        if (recordedAt === undefined) return false
+        if (now - recordedAt > WRAPPER_PARENT_TTL_MS) {
+            this.verifiedWrapperCallIds.delete(key)
+            return false
+        }
+        return true
+    }
+
     private recordWrapperSpawnedChildren(sessionId: string, content: unknown): void {
         const parent = this.sessionCache.getSession(sessionId)
         if (!parent) return
-        const nativeIds = extractWrapperSessionIdsFromMessage(content)
-        if (nativeIds.length === 0) return
 
         const now = Date.now()
+        for (const callId of collectVerifiedWrapperCallIdsFromMessage(content)) {
+            this.rememberVerifiedWrapperCall(sessionId, callId, now)
+        }
+
+        const nativeIds = extractWrapperSessionIdsFromMessage(
+            content,
+            (callId) => this.isVerifiedWrapperCall(sessionId, callId, now)
+        )
+        if (nativeIds.length === 0) return
+
         const nativeSet = new Set(nativeIds)
         for (const nativeId of nativeIds) {
             this.rememberWrapperSpawnedNativeId(parent.namespace, nativeId, parent.id, now)

@@ -2481,7 +2481,7 @@ export function SessionList(props: {
                                     </div>
                                 </CollapsiblePanel>
                                 {descendants.length > 0 ? (
-                                    <div className="ml-4 border-l border-[var(--app-border)] pl-2">
+                                    <div className="ml-2.5 border-l border-[var(--app-border)] pl-1.5 sm:ml-4 sm:pl-2">
                                         {!isCollapsed ? (
                                             <button
                                                 type="button"
@@ -2489,7 +2489,7 @@ export function SessionList(props: {
                                                 aria-expanded={parentExpanded || isFiltering}
                                                 title={parentExpanded ? t('sessions.lineage.collapseChildren') : t('sessions.lineage.expandChildren')}
                                                 onClick={() => toggleLineageParent(s.id, parentExpanded)}
-                                                className="mb-0.5 flex items-center gap-1.5 rounded px-1.5 py-0.5 text-[11px] text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]"
+                                                className="mb-0.5 flex min-h-7 items-center gap-1.5 rounded px-1.5 py-1 text-[11px] text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] touch-manipulation sm:min-h-0 sm:py-0.5"
                                             >
                                                 <ChevronIcon className="h-3 w-3 shrink-0" collapsed={!parentExpanded && !isFiltering} />
                                                 <span className="tabular-nums">
@@ -2504,7 +2504,7 @@ export function SessionList(props: {
                                         ) : null}
                                         {descendants.map(({ session: child, parentId, depth }) => {
                                             const linkKind = child.metadata?.parentLink?.kind
-                                            const kindLabel = linkKind ? t(`sessions.lineage.kind.${linkKind}`) : undefined
+                                            const kindLabel = linkKind && linkKind !== 'peer' ? t(`sessions.lineage.kind.${linkKind}`) : undefined
                                             const nestedParentLabel = depth >= 2 ? resolveParentLabelById(parentId) : undefined
                                             return (
                                                 <CollapsiblePanel key={child.id} open={isDescendantRowOpen(child, parentExpanded)}>

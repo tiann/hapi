@@ -1120,17 +1120,21 @@ const PeerToolResultView: ToolViewComponent = (props) => {
         props.block.tool.input,
         props.block.tool.result
     )
+    const targetName = getInputStringAny(props.block.tool.input, ['name'])
+    const label = targetSessionId ? (targetName ?? targetSessionId.slice(0, 8)) : null
     return (
         <div className="flex flex-col gap-2">
-            {targetSessionId ? (
+            {targetSessionId && label ? (
                 <div className="flex items-center gap-2">
                     <SessionLinkAnchor
                         sessionId={targetSessionId}
-                        className="inline-flex items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-2.5 py-1 text-xs font-medium text-[var(--app-link)] transition-colors hover:border-[var(--app-link)]"
+                        aria-label={`${t('sessions.lineage.openSession')}: ${label}`}
+                        title={label}
+                        className="inline-flex min-h-7 max-w-full items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-2.5 py-1 text-xs font-medium text-[var(--app-link)] transition-colors hover:border-[var(--app-link)] touch-manipulation sm:min-h-0"
                     >
                         <span aria-hidden="true">↳</span>
-                        <span>{t('sessions.lineage.openSession')}</span>
-                        <span className="font-mono opacity-80">{targetSessionId.slice(0, 8)}</span>
+                        <span className="max-w-48 truncate sm:max-w-64">{label}</span>
+                        <span aria-hidden="true" className="shrink-0 opacity-70">›</span>
                     </SessionLinkAnchor>
                 </div>
             ) : null}

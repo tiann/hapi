@@ -126,7 +126,7 @@ describe('SessionList lineage grouping and attention folding', () => {
 
         expect(screen.getByRole('button', { name: /Worker Alpha/ })).toBeInTheDocument()
         expect(screen.getByRole('button', { name: /Branch Beta/ })).toBeInTheDocument()
-        expect(screen.getAllByTestId('session-lineage-kind').map((el) => el.textContent)).toEqual(['peer', 'branch'])
+        expect(screen.getAllByTestId('session-lineage-kind').map((el) => el.textContent)).toEqual(['branch'])
     })
 
     it('auto-expands the child group when a child session is actively running', () => {

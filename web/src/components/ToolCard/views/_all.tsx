@@ -136,16 +136,19 @@ const PeerCompactView: ToolViewComponent = ({ block }: ToolViewProps) => {
     const targetSessionId = extractPeerTargetSessionId(block.tool.name, block.tool.input, block.tool.result)
     if (!targetSessionId) return null
     const targetName = getInputStringAny(block.tool.input, ['name'])
+    const label = targetName ?? targetSessionId.slice(0, 8)
 
     return (
         <div className="flex flex-wrap items-center gap-2 text-xs">
             <SessionLinkAnchor
                 sessionId={targetSessionId}
-                className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1 font-medium text-[var(--app-link)] transition-colors hover:border-[var(--app-link)]"
+                aria-label={`${t('sessions.lineage.openSession')}: ${label}`}
+                title={label}
+                className="inline-flex min-h-7 max-w-full items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1 font-medium text-[var(--app-link)] transition-colors hover:border-[var(--app-link)] touch-manipulation sm:min-h-0"
             >
                 <span aria-hidden="true">↳</span>
-                <span className="truncate">{targetName ?? targetSessionId.slice(0, 8)}</span>
-                <span className="shrink-0 opacity-80">{t('sessions.lineage.openSession')} →</span>
+                <span className="max-w-48 truncate sm:max-w-64">{label}</span>
+                <span aria-hidden="true" className="shrink-0 opacity-70">›</span>
             </SessionLinkAnchor>
         </div>
     )
@@ -164,7 +167,7 @@ const WrapperCompactView: ToolViewComponent = ({ block }: ToolViewProps) => {
             <LinkedNativeSessionChip
                 nativeSessionId={wrapper.nativeSessionId}
                 fallbackLabel={wrapper.label}
-                className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1 font-medium text-[var(--app-link)] transition-colors hover:border-[var(--app-link)]"
+                className="inline-flex min-h-7 max-w-full items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1 font-medium text-[var(--app-link)] transition-colors hover:border-[var(--app-link)] touch-manipulation sm:min-h-0"
             />
         </div>
     )

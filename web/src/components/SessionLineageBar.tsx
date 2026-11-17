@@ -5,7 +5,7 @@ import { SessionLinkAnchor } from '@/components/SessionLinkAnchor'
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { useTranslation } from '@/lib/use-translation'
 
-const INITIAL_CHILD_PILL_LIMIT = 4
+const INITIAL_CHILD_PILL_LIMIT = 3
 
 type LinkStatusTone = 'working' | 'pending' | 'active' | 'inactive'
 
@@ -90,14 +90,52 @@ export function SessionLineageBar(props: {
 
     const visibleChildren = showAllChildren ? children : children.slice(0, INITIAL_CHILD_PILL_LIMIT)
     const hiddenChildCount = Math.max(0, children.length - visibleChildren.length)
+    const stripClass = 'flex min-w-0 items-center gap-1.5 max-sm:flex-nowrap max-sm:overflow-x-auto max-sm:[scrollbar-width:none] max-sm:[&::-webkit-scrollbar]:hidden sm:flex-wrap'
+    const pillClass = 'inline-flex min-h-7 shrink-0 items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2 py-0.5 text-xs text-[var(--app-fg)] transition-colors hover:border-[var(--app-link)] hover:text-[var(--app-link)] touch-manipulation sm:min-h-0'
+
+    const childPills = children.length > 0 ? (
+        <>
+            {visibleChildren.map((child) => {
+                const childTone = classifySummaryTone(child)
+                const childKind = child.metadata?.parentLink?.kind ?? 'peer'
+                const childTitle = getSessionTitle(child)
+                return (
+                    <SessionLinkAnchor
+                        key={child.id}
+                        sessionId={child.id}
+                        title={childTitle}
+                        className={pillClass}
+                    >
+                        <StatusDot tone={childTone} />
+                        <span aria-hidden="true">↳</span>
+                        <span className="max-w-32 truncate sm:max-w-44">{childTitle}</span>
+                        {childKind !== 'peer' ? <KindTag kind={childKind} /> : null}
+                    </SessionLinkAnchor>
+                )
+            })}
+            {hiddenChildCount > 0 ? (
+                <button
+                    type="button"
+                    onClick={() => setShowAllChildren(true)}
+                    title={t('sessions.lineage.expandChildren')}
+                    aria-label={`${t('sessions.lineage.expandChildren')} (+${hiddenChildCount})`}
+                    className="inline-flex min-h-7 shrink-0 items-center rounded-full border border-dashed border-[var(--app-border)] px-2 py-0.5 text-[11px] tabular-nums text-[var(--app-hint)] transition-colors hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)] touch-manipulation sm:min-h-0"
+                >
+                    {t('sessions.lineage.showMoreChildren', { count: hiddenChildCount })}
+                </button>
+            ) : null}
+        </>
+    ) : null
+
+    const isBranchParent = parentLink?.kind === 'branch'
 
     return (
         <div
             data-testid="session-lineage-bar"
-            className="border-b border-[var(--app-divider)] bg-[var(--app-subtle-bg)]/40 px-3 py-2 text-xs text-[var(--app-hint)]"
+            className="border-b border-[var(--app-divider)] bg-[var(--app-subtle-bg)]/40 px-3 py-1.5 text-xs text-[var(--app-hint)]"
         >
             <div className="mx-auto flex w-full max-w-content flex-col gap-1.5">
-                {parentLink?.kind === 'branch' ? (
+                {isBranchParent ? (
                     <div>
                         <div className="flex flex-wrap items-center gap-1.5">
                             <StatusDot tone={parentTone} />
@@ -116,53 +154,27 @@ export function SessionLineageBar(props: {
                             <p role="status" className="mt-1">{t('branch.uncertain')}</p>
                         ) : null}
                     </div>
-                ) : parentLink ? (
-                    <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="text-[11px] font-medium uppercase tracking-wide text-[var(--app-hint)]">
-                            {t('sessions.lineage.parentPrefix')}
-                        </span>
-                        <SessionLinkAnchor
-                            sessionId={parentLink.parentSessionId}
-                            className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-0.5 text-xs font-medium text-[var(--app-fg)] transition-colors hover:border-[var(--app-link)] hover:text-[var(--app-link)]"
-                        >
-                            <StatusDot tone={parentTone} />
-                            <span aria-hidden="true">↑</span>
-                            <span className="truncate max-w-56">{parentTitle}</span>
-                            <KindTag kind={parentLink.kind} />
-                        </SessionLinkAnchor>
-                    </div>
                 ) : null}
 
-                {children.length > 0 ? (
-                    <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="text-[11px] font-medium uppercase tracking-wide text-[var(--app-hint)]">
-                            {t('sessions.lineage.childrenLabel')} ({children.length})
-                        </span>
-                        {visibleChildren.map((child) => {
-                            const childTone = classifySummaryTone(child)
-                            const childKind = child.metadata?.parentLink?.kind ?? 'peer'
-                            return (
-                                <SessionLinkAnchor
-                                    key={child.id}
-                                    sessionId={child.id}
-                                    className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-0.5 text-xs text-[var(--app-fg)] transition-colors hover:border-[var(--app-link)] hover:text-[var(--app-link)]"
-                                >
-                                    <StatusDot tone={childTone} />
-                                    <span aria-hidden="true">↳</span>
-                                    <span className="truncate max-w-44">{getSessionTitle(child)}</span>
-                                    <KindTag kind={childKind} />
-                                </SessionLinkAnchor>
-                            )
-                        })}
-                        {hiddenChildCount > 0 ? (
-                            <button
-                                type="button"
-                                onClick={() => setShowAllChildren(true)}
-                                className="rounded-full border border-dashed border-[var(--app-border)] px-2 py-0.5 text-[11px] text-[var(--app-hint)] transition-colors hover:bg-[var(--app-bg)] hover:text-[var(--app-fg)]"
+                {((!isBranchParent && parentLink) || childPills) ? (
+                    <div className={stripClass}>
+                        {!isBranchParent && parentLink ? (
+                            <SessionLinkAnchor
+                                sessionId={parentLink.parentSessionId}
+                                aria-label={`${t('sessions.lineage.parentPrefix')}: ${parentTitle}`}
+                                title={`${t('sessions.lineage.parentPrefix')}: ${parentTitle}`}
+                                className={`${pillClass} font-medium`}
                             >
-                                {t('sessions.lineage.showMoreChildren', { count: hiddenChildCount })}
-                            </button>
+                                <StatusDot tone={parentTone} />
+                                <span aria-hidden="true">↑</span>
+                                <span className="max-w-36 truncate sm:max-w-56">{parentTitle}</span>
+                                {parentLink.kind !== 'peer' ? <KindTag kind={parentLink.kind} /> : null}
+                            </SessionLinkAnchor>
                         ) : null}
+                        {!isBranchParent && parentLink && childPills ? (
+                            <span className="h-3.5 w-px shrink-0 bg-[var(--app-divider)]" aria-hidden="true" />
+                        ) : null}
+                        {childPills}
                     </div>
                 ) : null}
             </div>

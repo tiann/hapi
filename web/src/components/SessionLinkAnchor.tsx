@@ -69,11 +69,13 @@ export function LinkedNativeSessionChip(props: {
     return (
         <SessionLinkAnchor
             sessionId={matched.id}
-            className={props.className ?? 'inline-flex max-w-full items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-2.5 py-1 text-xs font-medium text-[var(--app-link)] transition-colors hover:border-[var(--app-link)]'}
+            aria-label={`${t('sessions.lineage.openSession')}: ${title}`}
+            title={title}
+            className={props.className ?? 'inline-flex min-h-7 max-w-full items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-2.5 py-1 text-xs font-medium text-[var(--app-link)] transition-colors hover:border-[var(--app-link)] touch-manipulation sm:min-h-0'}
         >
             <span aria-hidden="true">↳</span>
-            <span className="truncate">{title}</span>
-            <span className="shrink-0 opacity-80">{t('sessions.lineage.openSession')} →</span>
+            <span className="max-w-48 truncate sm:max-w-64">{title}</span>
+            <span aria-hidden="true" className="shrink-0 opacity-70">›</span>
         </SessionLinkAnchor>
     )
 }

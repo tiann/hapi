@@ -70,6 +70,15 @@ function isWrapperToolBlock(block: ToolCallBlock): boolean {
     ) !== null
 }
 
+function findBackgroundLaunchBlock(
+    tools: readonly ToolCallBlock[],
+    task: BackgroundTask
+): ToolCallBlock | undefined {
+    if (task.type !== 'local_bash' || !task.id) return undefined
+    const launch = backgroundLaunchPattern(task.id)
+    return tools.find((tool) => tool.tool.name === 'Bash' && matchesText(tool.tool.result, launch))
+}
+
 function buildBackgroundTerminals(
     tools: readonly ToolCallBlock[],
     tasks: readonly BackgroundTask[]
@@ -78,10 +87,7 @@ function buildBackgroundTerminals(
     for (const task of tasks) {
         // Claude's snapshot carries the Bash description, not the command;
         // the tool result that started the task names its exact ID.
-        const launch = task.type === 'local_bash' && task.id ? backgroundLaunchPattern(task.id) : null
-        const block = launch
-            ? tools.find((tool) => tool.tool.name === 'Bash' && matchesText(tool.tool.result, launch))
-            : undefined
+        const block = findBackgroundLaunchBlock(tools, task)
         if (block && isWrapperToolBlock(block)) continue
         terminals.push({
             id: task.id,
@@ -104,13 +110,17 @@ function subagentTitle(block: ToolCallBlock): string {
     return getInputStringAny(block.tool.input, ['subagent_type', 'agent_type']) ?? 'Agent'
 }
 
-function subagentFromBlock(block: ToolCallBlock): SessionStatusSubagent | null {
+function subagentFromBlock(
+    block: ToolCallBlock,
+    activeBackgroundWrapperBlockIds: ReadonlySet<string>
+): SessionStatusSubagent | null {
     const isPeerSpawn = parsePeerToolName(block.tool.name) === 'spawn_peer'
     const wrapper = isPeerSpawn
         ? null
         : parseWrapperToolInvocation(block.tool.name, block.tool.input, block.tool.result, block.tool.nativeKind)
     if (block.tool.name !== 'CodexAgent' && !isSubagentToolName(block.tool.name) && !isPeerSpawn && !wrapper) return null
-    if (block.tool.state === 'completed') return null
+    const isActiveBackgroundWrapper = Boolean(wrapper) && activeBackgroundWrapperBlockIds.has(block.id)
+    if (block.tool.state === 'completed' && !isActiveBackgroundWrapper) return null
 
     const latestChild = block.children.at(-1)
     const activity = isPeerSpawn
@@ -123,7 +133,7 @@ function subagentFromBlock(block: ToolCallBlock): SessionStatusSubagent | null {
                     ? latestChild.tool.nativeTitle ?? latestChild.tool.name
                     : null
     const waiting = block.tool.state === 'pending'
-        || (activity?.toLowerCase().startsWith('waiting') ?? false)
+        || (!isActiveBackgroundWrapper && (activity?.toLowerCase().startsWith('waiting') ?? false))
     const resolvedTitle = isPeerSpawn
         ? getInputStringAny(block.tool.input, ['name']) ?? subagentTitle(block)
         : wrapper
@@ -137,7 +147,7 @@ function subagentFromBlock(block: ToolCallBlock): SessionStatusSubagent | null {
         detail: activity,
         state: block.tool.state === 'error' ? 'error' : waiting ? 'waiting' : 'running',
         startedAt: block.tool.startedAt ?? (block.tool.state === 'pending' ? null : block.createdAt),
-        endedAt: block.tool.state === 'error'
+        endedAt: block.tool.state === 'error' && !isActiveBackgroundWrapper
             ? block.tool.completedAt ?? block.tool.startedAt ?? block.createdAt
             : null,
         ...(isPeerSpawn ? { linkedSessionId: extractSpawnedSessionId(block.tool.result) } : {}),
@@ -152,13 +162,21 @@ export function buildSessionStatusData(args: {
     backgroundTasks?: readonly BackgroundTask[]
 }): SessionStatusData | null {
     const tools = collectToolBlocks(args.blocks)
+    const backgroundTasks = args.backgroundTasks ?? []
+    const activeBackgroundWrapperBlockIds = new Set<string>()
+    for (const task of backgroundTasks) {
+        const launchBlock = findBackgroundLaunchBlock(tools, task)
+        if (launchBlock && isWrapperToolBlock(launchBlock)) {
+            activeBackgroundWrapperBlockIds.add(launchBlock.id)
+        }
+    }
     const data: SessionStatusData = {
         goal: args.goal ?? null,
         tasks: args.tasks ? [...args.tasks] : [],
         subagents: tools
-            .map(subagentFromBlock)
+            .map((block) => subagentFromBlock(block, activeBackgroundWrapperBlockIds))
             .filter((subagent): subagent is SessionStatusSubagent => subagent !== null),
-        terminals: buildBackgroundTerminals(tools, args.backgroundTasks ?? [])
+        terminals: buildBackgroundTerminals(tools, backgroundTasks)
     }
 
     return data.goal

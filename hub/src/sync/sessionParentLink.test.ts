@@ -163,10 +163,30 @@ describe('session parent link recording and persistence', () => {
                 content: {
                     type: 'output',
                     data: {
+                        type: 'assistant',
+                        message: {
+                            role: 'assistant',
+                            content: [{
+                                type: 'tool_use',
+                                id: 'toolu_wrap_1',
+                                name: 'Bash',
+                                input: { command: 'codeagent-wrapper --backend codex - "/tmp/repo"' },
+                            }]
+                        }
+                    }
+                }
+            }, 'wrapper-tool-use-1')
+
+            receive(parent.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: {
                         type: 'user',
                         message: {
                             content: [{
                                 type: 'tool_result',
+                                tool_use_id: 'toolu_wrap_1',
                                 content: [
                                     'Backend check finished',
                                     '---',
@@ -190,6 +210,64 @@ describe('session parent link recording and persistence', () => {
                 'default'
             )
             expect(engine.getSession(laterImportedAgy.id)?.metadata?.parentSessionId).toBe(parent.id)
+        } finally {
+            engine.stop()
+            store.close()
+        }
+    })
+
+    it('ignores SESSION_ID footers from non-wrapper tools such as reading logs', () => {
+        const { store, engine, receive } = setup()
+        try {
+            const reader = engine.getOrCreateSession('reader', { path: '/tmp/repo', host: 'mac' }, null, 'default')
+            const unrelated = engine.getOrCreateSession(
+                'unrelated-codex',
+                { path: '/tmp/repo', host: 'mac', flavor: 'codex', codexSessionId: '019a9999-1111-7222-8333-444455556666' },
+                null,
+                'default'
+            )
+
+            receive(reader.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: {
+                        type: 'assistant',
+                        message: {
+                            role: 'assistant',
+                            content: [{
+                                type: 'tool_use',
+                                id: 'toolu_cat_log',
+                                name: 'Bash',
+                                input: { command: 'cat /tmp/saved-wrapper.log' },
+                            }]
+                        }
+                    }
+                }
+            }, 'non-wrapper-use')
+
+            receive(reader.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: {
+                        type: 'user',
+                        message: {
+                            content: [{
+                                type: 'tool_result',
+                                tool_use_id: 'toolu_cat_log',
+                                content: [
+                                    'Saved log line',
+                                    '---',
+                                    'SESSION_ID: 019a9999-1111-7222-8333-444455556666',
+                                ].join('\n')
+                            }]
+                        }
+                    }
+                }
+            }, 'non-wrapper-result')
+
+            expect(engine.getSession(unrelated.id)?.metadata?.parentSessionId).toBeUndefined()
         } finally {
             engine.stop()
             store.close()

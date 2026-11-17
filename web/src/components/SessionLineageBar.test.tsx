@@ -89,10 +89,14 @@ describe('SessionLineageBar', () => {
         const parentLink = screen.getByRole('link', { name: /Root Orchestrator/ })
         expect(parentLink.getAttribute('href')).toBe('/sessions/parent-0')
         expect(screen.getByRole('link', { name: /Running Worker/ })).toBeInTheDocument()
+        expect(screen.getByText('fork')).toBeInTheDocument()
+        expect(screen.queryByText('peer')).toBeNull()
         expect(screen.queryByRole('link', { name: /Worker 1/ })).toBeNull()
+        expect(screen.queryByRole('link', { name: /Worker 2/ })).toBeNull()
 
-        fireEvent.click(screen.getByRole('button', { name: '+1 more' }))
+        fireEvent.click(screen.getByRole('button', { name: /\+2/ }))
         expect(screen.getByRole('link', { name: /Worker 1/ }).getAttribute('href')).toBe('/sessions/c1')
+        expect(screen.getByRole('link', { name: /Worker 2/ }).getAttribute('href')).toBe('/sessions/c2')
     })
 
     it('preserves conversationBranch notice and uncertain status when branched', () => {

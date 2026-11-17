@@ -1424,7 +1424,7 @@ export default {
   'sessions.lineage.kind.branch': 'ветка',
   'sessions.lineage.parentPrefix': 'Родитель',
   'sessions.lineage.childrenLabel': 'Связанные',
-  'sessions.lineage.showMoreChildren': 'ещё +{count}',
+  'sessions.lineage.showMoreChildren': '+{count}',
   'sessions.lineage.openSession': 'Открыть сессию',
   'session.status.inspectSubagent': 'Открыть подагента',
 } as const
