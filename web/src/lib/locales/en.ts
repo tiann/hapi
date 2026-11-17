@@ -1389,6 +1389,7 @@ export default {
   'misc.scrollToBottom': 'Scroll to bottom',
   'misc.loadingMessages': 'Loading messages…',
   'misc.locatingMessage': 'Locating message…',
+  'misc.syncingLatest': 'Fetching latest messages…',
   'misc.searchMatchNavigation': 'Search match navigation',
   'misc.searchMatches': '{current}/{total}',
   'misc.previousSearchMatch': 'Previous match',

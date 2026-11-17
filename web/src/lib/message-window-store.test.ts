@@ -689,6 +689,10 @@ it('fetches one older context page before first paint when the cold page is tool
         expect(getMessages).toHaveBeenCalledWith(id, { limit: INITIAL_PAGE_SIZE })
         expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual(['cached'])
         expect(getMessageWindowState(id).isSyncingTail).toBe(true)
+        // Cached re-entry exposes the in-flight catch-up window so the view
+        // can render a "fetching latest messages" affordance over the stale
+        // rows instead of silently swapping them for fresh ones.
+        expect(getMessageWindowState(id).preferLatestOnActivation).toBe(true)
 
         const latest = makeAgentMessage({ id: 'latest', seq: 2_040, at: 2_040_000 })
         response.resolve(latestResponse([latest], {
@@ -703,6 +707,8 @@ it('fetches one older context page before first paint when the cold page is tool
         expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual(['latest'])
         expect(getMessageWindowState(id).hasMore).toBe(true)
         expect('pending' in getMessageWindowState(id)).toBe(false)
+        // The catch-up window closes once the authoritative tail lands.
+        expect(getMessageWindowState(id).preferLatestOnActivation).toBe(false)
     })
 
     it('retains Codex round duration through persisted re-entry and a user-free latest tail', async () => {

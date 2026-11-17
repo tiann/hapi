@@ -1270,6 +1270,7 @@ export default {
   'misc.newMessage': 'Новых сообщений: {n}',
   'misc.scrollToBottom': 'Прокрутить вниз',
   'misc.loadingMessages': 'Загрузка сообщений…',
+  'misc.syncingLatest': 'Получение последних сообщений…',
   'misc.pullToLoadOlder': 'Тяните, чтобы загрузить более ранние сообщения',
   'misc.releaseToLoadOlder': 'Отпустите, чтобы загрузить более ранние сообщения',
   'misc.typeMessage': "Введите 'continue', чтобы продолжить...",
