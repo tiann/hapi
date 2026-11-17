@@ -591,6 +591,72 @@ describe('agyReactiveWakeup pure helpers', () => {
             -1,
             new Map()
         )).toBe(1);
+
+        // Mixed batch with a confirmed backgrounded run_command + completed swarm_wait marks the
+        // turn end so a subsequent tool-only autonomous wakeup ending in swarm_wait is preserved.
+        const mixedBackgroundSwarmTurnFollowedByWakeup: AgyTranscriptStep[] = [
+            { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: '/swarm start' },
+            {
+                step_index: 1,
+                source: 'MODEL',
+                type: 'PLANNER_RESPONSE',
+                status: 'DONE',
+                tool_calls: [
+                    { name: 'run_command', args: { CommandLine: '"sleep 10"' } },
+                    { name: 'swarm_wait', args: { since: '1' } }
+                ]
+            },
+            {
+                step_index: 2,
+                source: 'MODEL',
+                type: 'RUN_COMMAND',
+                status: 'RUNNING',
+                content: 'Tool is running as a background task with task id: conv-1/task-1'
+            },
+            {
+                step_index: 3,
+                source: 'MODEL',
+                type: 'GENERIC',
+                status: 'DONE',
+                content: 'Waiting for a message that calls on you by name, or on @all posted after #1.'
+            },
+            {
+                step_index: 4,
+                source: 'SYSTEM',
+                type: 'SYSTEM_MESSAGE',
+                status: 'DONE',
+                content: '<SYSTEM_MESSAGE>Board message #2</SYSTEM_MESSAGE>'
+            },
+            {
+                step_index: 5,
+                source: 'MODEL',
+                type: 'PLANNER_RESPONSE',
+                status: 'DONE',
+                tool_calls: [
+                    { name: 'post_message', args: { text: '"@worker ack"' } },
+                    { name: 'swarm_wait', args: { since: '2' } }
+                ]
+            },
+            {
+                step_index: 6,
+                source: 'MODEL',
+                type: 'GENERIC',
+                status: 'DONE',
+                content: '{"status":"posted","seq":3}'
+            },
+            {
+                step_index: 7,
+                source: 'MODEL',
+                type: 'GENERIC',
+                status: 'DONE',
+                content: 'Waiting for a message that calls on you by name, or on @all posted after #2.'
+            }
+        ];
+        expect(advanceAgyTurnTranscriptCursor(
+            mixedBackgroundSwarmTurnFollowedByWakeup,
+            -1,
+            new Map()
+        )).toBe(3);
     });
 });
 

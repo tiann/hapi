@@ -432,6 +432,7 @@ export function inspectAgyReactiveSteps(
                 } else if (
                     toolCalls.some((call) => AGY_TURN_TERMINATING_TOOLS.has(call.name))
                     && trailingActions.length === toolCalls.length
+                    && toolCalls.every((call, idx) => isCompletedOrBackgroundedBatchAction(call, trailingActions[idx]))
                     && last === trailingActions[toolCalls.length - 1]
                 ) {
                     if (idleForMs >= timings.settleMs) {
@@ -458,6 +459,23 @@ export function extractAgyBackgroundTaskId(content: string | undefined): string 
     if (!content) return undefined;
     const match = content.match(/Tool is running as a background task with task id:\s*([^\s"'<>]+\/task-\d+)/);
     return match?.[1];
+}
+
+function isCompletedOrBackgroundedBatchAction(
+    call: AgyTranscriptToolCall,
+    action: AgyTranscriptStep | undefined
+): boolean {
+    if (!action || action.source !== 'MODEL' || action.type === 'PLANNER_RESPONSE') {
+        return false;
+    }
+    if (action.status === 'DONE' || action.status === 'ERROR') {
+        return true;
+    }
+    return (
+        call.name === 'run_command'
+        && action.status === 'RUNNING'
+        && Boolean(extractAgyBackgroundTaskId(action.content))
+    );
 }
 
 /**
@@ -572,9 +590,9 @@ export function advanceAgyTurnTranscriptCursor(
         const endIdx = plannerIdx + toolCalls.length;
         if (endIdx >= stepsAfterStart.length) return null;
         for (let k = plannerIdx + 1; k <= endIdx; k += 1) {
+            const call = toolCalls[k - plannerIdx - 1]!;
             const action = stepsAfterStart[k]!;
-            if (action.source !== 'MODEL' || action.type === 'PLANNER_RESPONSE') return null;
-            if (action.status !== 'DONE' && action.status !== 'ERROR') return null;
+            if (!isCompletedOrBackgroundedBatchAction(call, action)) return null;
         }
         return endIdx;
     };
