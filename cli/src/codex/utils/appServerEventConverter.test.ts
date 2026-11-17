@@ -32,8 +32,15 @@ describe('AppServerEventConverter', () => {
     });
 
     it('leaves literal examples and non-final footers in commentary unchanged', () => {
+        // This path strips before storage, not just before display, so a
+        // quoted example lost here is gone rather than merely hidden.
         const converter = new AppServerEventConverter();
-        for (const text of [`Example: ${footer}`, `${footer}\nMore explanation.`]) {
+        for (const text of [
+            `Example: ${footer}`,
+            `${footer}\nMore explanation.`,
+            `Use \`${footer}\` at the end.`,
+            `It said "${footer}" verbatim.`
+        ]) {
             expect(converter.handleNotification('item/completed', {
                 item: { id: text, type: 'agentMessage', text, phase: 'commentary' }
             })).toEqual([{ type: 'agent_message', message: text }]);

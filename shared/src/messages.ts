@@ -922,12 +922,37 @@ function classifyNearMiss(jsonPart: string): NotifySummaryNearMissReason {
     return 'invalid-json'
 }
 
+/**
+ * Delimiters that mark the token as *quoted* rather than glued to prose.
+ *
+ * The strict matcher can afford to ignore these: a payload that parses as an
+ * object through end of line is its own evidence that the line is a real
+ * footer. A near miss has no such evidence, so it must not delete text that
+ * merely looks like an example - ``Use `AGENT_NOTIFY_SUMMARY {...}` here.``
+ */
+const NEAR_MISS_QUOTE_PREFIXES = new Set(['`', '"', "'", '“', '‘', '(', '[', '<'])
+
+/** True when `idx` falls inside an inline-code span on this line. */
+function isInsideInlineCodeSpan(line: string, idx: number): boolean {
+    let ticks = 0
+    for (let i = 0; i < idx; i += 1) {
+        if (line[i] === '`') ticks += 1
+    }
+    return ticks % 2 === 1
+}
+
 type NearMissMatch = NotifySummaryNearMiss & { start: number }
 
 function matchNearMissLine(line: string): NearMissMatch | null {
     if (matchNotifySummaryLine(line) !== null) return null
 
     for (const start of eligibleTokenStarts(line)) {
+        // Quoted or fenced examples are prose about the contract, not attempts
+        // at it. Dropping them would delete the explanation around them too -
+        // and the Codex commentary path strips before storage, not just before
+        // display, so the text would be gone rather than merely hidden.
+        if (start > 0 && NEAR_MISS_QUOTE_PREFIXES.has(line[start - 1]!)) continue
+        if (isInsideInlineCodeSpan(line, start)) continue
         const jsonPart = line.slice(start + NOTIFY_SUMMARY_PREFIX.length).trim()
         // A bare token with no payload is prose, not an attempted footer.
         if (jsonPart.length === 0) continue

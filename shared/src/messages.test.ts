@@ -722,6 +722,26 @@ describe('stripNotifySummaryFooter', () => {
         expect(stripNotifySummaryFooter(mention)).toBe(mention)
     })
 
+    test('keeps a footer example written in an inline-code span', () => {
+        const inlineCode = 'Use `AGENT_NOTIFY_SUMMARY {"status":"done"}` at the end.'
+        const bareSpan = 'Use `AGENT_NOTIFY_SUMMARY {"status":"done"}`'
+        const gluedInsideSpan = 'The shape is `Done.AGENT_NOTIFY_SUMMARY {"status":"done"}`'
+        expect(stripNotifySummaryFooter(inlineCode)).toBe(inlineCode)
+        expect(stripNotifySummaryFooter(bareSpan)).toBe(bareSpan)
+        expect(stripNotifySummaryFooter(gluedInsideSpan)).toBe(gluedInsideSpan)
+    })
+
+    test('keeps a footer example in quoted prose', () => {
+        const quoted = 'It said "AGENT_NOTIFY_SUMMARY {"status":"done"}" verbatim.'
+        const parenthesised = 'The footer (AGENT_NOTIFY_SUMMARY {"status":"done"}) goes last.'
+        expect(stripNotifySummaryFooter(quoted)).toBe(quoted)
+        expect(stripNotifySummaryFooter(parenthesised)).toBe(parenthesised)
+    })
+
+    test('still strips a genuine glued footer after an earlier inline-code span', () => {
+        expect(stripNotifySummaryFooter('Ran `bun test`.AGENT_NOTIFY_SUMMARY {"status":')).toBe('Ran `bun test`.')
+    })
+
     test('keeps the bare token with no payload', () => {
         const bare = 'Done.\nAGENT_NOTIFY_SUMMARY'
         expect(stripNotifySummaryFooter(bare)).toBe(bare)
@@ -785,6 +805,18 @@ describe('detectNotifySummaryNearMiss', () => {
     test('returns null for a whitespace-delimited prose mention, however broken', () => {
         expect(detectNotifySummaryNearMiss('The shape is AGENT_NOTIFY_SUMMARY {...}')).toBeNull()
         expect(detectNotifySummaryNearMiss('Example: AGENT_NOTIFY_SUMMARY {"summary":')).toBeNull()
+    })
+
+    test('returns null for a token quoted as an example', () => {
+        expect(detectNotifySummaryNearMiss('Use `AGENT_NOTIFY_SUMMARY {"status":"done"}` at the end.')).toBeNull()
+        expect(detectNotifySummaryNearMiss('It said "AGENT_NOTIFY_SUMMARY {"status":"done"}" verbatim.')).toBeNull()
+        expect(detectNotifySummaryNearMiss('The shape is `Done.AGENT_NOTIFY_SUMMARY {"status":"done"}`')).toBeNull()
+    })
+
+    test('still reports a genuine glued footer after an earlier inline-code span', () => {
+        expect(detectNotifySummaryNearMiss('Ran `bun test`.AGENT_NOTIFY_SUMMARY {"status":')?.reason).toBe(
+            'unterminated-json'
+        )
     })
 
     test('returns null for a bare token with no payload', () => {
