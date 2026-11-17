@@ -2350,4 +2350,69 @@ describe('MessageService deliverQueuedMessageNow', () => {
         expect(await first).toEqual({ status: 'delivered', localId: 'race-q' })
         store.close()
     })
+
+    it('returns unavailable without emitting when the CLI reports the row is mid-dispatch (in-flight)', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-inflight')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'busy row' } }, 'inflight-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, [{ removed: false, inFlight: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'inflight-q'))
+            .toEqual({ status: 'unavailable', localId: 'inflight-q' })
+        expect(calls).toBe(1)
+        expect(store.messages.lookupQueuedMessage(session.id, 'inflight-q').status).toBe('queued')
+        store.close()
+    })
+
+    it('returns unavailable when the cancel-ack round-trip times out', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-timeout')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'timeout row' } }, 'timeout-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(new Error('socket timeout'), [])
+        }), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'timeout-q'))
+            .toEqual({ status: 'unavailable', localId: 'timeout-q' })
+        expect(calls).toBe(1)
+        expect(store.messages.lookupQueuedMessage(session.id, 'timeout-q').status).toBe('queued')
+        store.close()
+    })
+
+    it('refuses shared concurrent-client sessions whose worker did not hold the row', async () => {
+        const store = makeStore()
+        const session = store.sessions.getOrCreateSession('deliver-shared', { capabilities: { concurrentClients: true } }, null, 'default')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'shared row' } }, 'shared-deliver-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, [{ removed: false }])
+        }), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'shared-deliver-q'))
+            .toEqual({ status: 'unavailable', localId: 'shared-deliver-q' })
+        expect(calls).toBe(1)
+        expect(store.messages.lookupQueuedMessage(session.id, 'shared-deliver-q').status).toBe('queued')
+        store.close()
+    })
+
+    it('returns unavailable for indeterminate rows — the retry affordance owns those', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-indeterminate')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'unknown row' } }, 'unknown-q')
+        store.messages.setMessagesDeliveryState(session.id, ['unknown-q'], 'indeterminate')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'unknown-q'))
+            .toEqual({ status: 'unavailable', localId: 'unknown-q' })
+        expect(calls).toBe(0)
+        expect(store.messages.lookupQueuedMessage(session.id, 'unknown-q').status).toBe('indeterminate')
+        store.close()
+    })
 })
