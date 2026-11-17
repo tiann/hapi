@@ -1554,6 +1554,9 @@ describe('session switch tail anchoring', () => {
 
         expect(viewport.scrollTop).toBe(670)
         expect(queryByRole('button', { name: /scroll to bottom/i })).toBeNull()
+    })
+})
+
 describe('cached re-entry tail-sync indicator', () => {
     function renderCatchUpThread(options: { isCatchingUpFromCache: boolean; rawMessagesCount: number }) {
         const queryClient = new QueryClient({
