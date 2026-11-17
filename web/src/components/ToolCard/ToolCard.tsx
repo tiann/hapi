@@ -24,6 +24,7 @@ import type { TerminalToolDisplayMode } from '@/hooks/useToolCardDisplayMode'
 import { usePointerFocusRing } from '@/hooks/usePointerFocusRing'
 import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
 import { resolveToolNameAlias } from '@/components/ToolCard/toolNameAliases'
+import { parsePeerToolName } from '@/components/ToolCard/peerTools'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/use-translation'
 import { TraceSection } from '@/components/ToolCard/trace'
@@ -478,7 +479,7 @@ function ToolCardInner(props: ToolCardProps) {
     const useCompactTerminalCard = shouldUseCompactTerminalToolCard(toolName, props.terminalToolDisplayMode, isTerminalTool)
     const showInline = shouldShowInlineToolCardBody(toolName, presentation.minimal, props.terminalToolDisplayMode, isTerminalTool)
     const CompactToolView = showInline ? getToolViewComponent(toolName, props.block.tool) : null
-    const compactViewOwnsInteractions = toolName === 'CodexDiff'
+    const compactViewOwnsInteractions = toolName === 'CodexDiff' || parsePeerToolName(toolName) !== null
     const ResultToolView = getToolResultViewComponent(toolName, props.block)
     const permission = props.block.tool.permission
     const isAskUserQuestion = isAskUserQuestionToolName(toolName)

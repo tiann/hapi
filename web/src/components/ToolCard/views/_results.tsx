@@ -11,6 +11,9 @@ import { isGoalToolName, parseGoalToolResult } from '@/components/ToolCard/goalT
 import { isAskUserQuestionToolName } from '@/components/ToolCard/askUserQuestion'
 import { isRequestUserInputToolName } from '@/components/ToolCard/requestUserInput'
 import { resolveToolNameAlias } from '@/components/ToolCard/toolNameAliases'
+import { extractPeerTargetSessionId, parsePeerToolName } from '@/components/ToolCard/peerTools'
+import { SessionLinkAnchor } from '@/components/SessionLinkAnchor'
+import { useTranslation } from '@/lib/use-translation'
 import { isTerminalToolBlock } from '@/chat/toolGroups'
 import { GoalView } from '@/components/ToolCard/views/GoalView'
 import {
@@ -1110,10 +1113,37 @@ const GoalResultView: ToolViewComponent = (props) => {
         : <GenericResultView {...props} />
 }
 
+const PeerToolResultView: ToolViewComponent = (props) => {
+    const { t } = useTranslation()
+    const targetSessionId = extractPeerTargetSessionId(
+        props.block.tool.name,
+        props.block.tool.input,
+        props.block.tool.result
+    )
+    return (
+        <div className="flex flex-col gap-2">
+            {targetSessionId ? (
+                <div className="flex items-center gap-2">
+                    <SessionLinkAnchor
+                        sessionId={targetSessionId}
+                        className="inline-flex items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-2.5 py-1 text-xs font-medium text-[var(--app-link)] transition-colors hover:border-[var(--app-link)]"
+                    >
+                        <span aria-hidden="true">↳</span>
+                        <span>{t('sessions.lineage.openSession')}</span>
+                        <span className="font-mono opacity-80">{targetSessionId.slice(0, 8)}</span>
+                    </SessionLinkAnchor>
+                </div>
+            ) : null}
+            <GenericResultView {...props} />
+        </div>
+    )
+}
+
 // Skill, todowrite, patch and question deliberately stay unaliased: their
 // dedicated views read Claude-shaped input or result fields.
 export function getToolResultViewComponent(toolName: string, block?: ToolCallBlock): ToolViewComponent {
     if (isGoalToolName(toolName)) return GoalResultView
+    if (parsePeerToolName(toolName)) return PeerToolResultView
     if (toolName.startsWith('mcp__')) {
         return GenericResultView
     }

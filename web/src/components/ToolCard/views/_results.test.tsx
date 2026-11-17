@@ -727,3 +727,22 @@ function makeShellBlock(): ToolCallBlock {
 function makeReadBlock(): ToolCallBlock {
     return makeResultBlock({ name: 'SomeUnknownTool', input: { file_path: 'src/a.ts' } })
 }
+
+describe('PeerToolResultView', () => {
+    it('renders a clickable session link when spawn_peer or ping_peer resolves a target UUID', () => {
+        const block = makeResultBlock({
+            name: 'mcp__hapi__spawn_peer',
+            input: { directory: '/work/repo', name: 'Worker' },
+            result: [{ type: 'text', text: 'Spawned 33333333-3333-4333-8333-333333333333 (Worker)' }],
+        })
+        const ResultView = getToolResultViewComponent(block.tool.name, block)
+        render(
+            <I18nProvider>
+                <ResultView block={block} metadata={null} surface="dialog" />
+            </I18nProvider>
+        )
+
+        const link = screen.getByRole('link', { name: /Open session/ })
+        expect(link.getAttribute('href')).toBe('/sessions/33333333-3333-4333-8333-333333333333')
+    })
+})

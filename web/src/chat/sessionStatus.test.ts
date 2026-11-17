@@ -69,10 +69,44 @@ describe('buildSessionStatusData', () => {
         ]
 
         expect(buildSessionStatusData({ goal: null, tasks: [], blocks })?.subagents).toEqual([
-            expect.objectContaining({ id: 'agent-1', title: 'Inspect API', detail: 'Reading files', state: 'running', endedAt: null }),
-            expect.objectContaining({ id: 'agent-2', title: 'Review changes', state: 'error', endedAt: 100 }),
-            expect.objectContaining({ id: 'agent-pending', state: 'waiting', startedAt: null }),
-            expect.objectContaining({ id: 'agent-4', title: 'Nested work', state: 'running' })
+            expect.objectContaining({ id: 'agent-1', blockId: 'block-CodexAgent', title: 'Inspect API', detail: 'Reading files', state: 'running', endedAt: null }),
+            expect.objectContaining({ id: 'agent-2', blockId: 'block-Agent', title: 'Review changes', state: 'error', endedAt: 100 }),
+            expect.objectContaining({ id: 'agent-pending', blockId: 'block-Agent', state: 'waiting', startedAt: null }),
+            expect.objectContaining({ id: 'agent-4', blockId: 'block-Agent', title: 'Nested work', state: 'running' })
+        ])
+    })
+
+    it('tracks running or failed spawn_peer calls with linkedSessionId when available', () => {
+        const blocks: ChatBlock[] = [
+            toolBlock({
+                id: 'block-peer-running',
+                name: 'mcp__hapi__spawn_peer',
+                tool: {
+                    id: 'call-peer-1',
+                    state: 'running',
+                    input: { name: 'Build peer', directory: '/work/app' },
+                }
+            }),
+            toolBlock({
+                id: 'block-peer-done',
+                name: 'mcp__hapi__spawn_peer',
+                tool: {
+                    id: 'call-peer-2',
+                    state: 'completed',
+                    input: { name: 'Done peer', directory: '/work/app' },
+                    result: 'Spawned 44444444-4444-4444-8444-444444444444 (Done peer)'
+                }
+            })
+        ]
+
+        expect(buildSessionStatusData({ goal: null, tasks: [], blocks })?.subagents).toEqual([
+            expect.objectContaining({
+                id: 'call-peer-1',
+                blockId: 'block-peer-running',
+                title: 'Build peer',
+                detail: '/work/app',
+                state: 'running'
+            })
         ])
     })
 

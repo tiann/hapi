@@ -3,15 +3,18 @@ import type { BackgroundTask, ThreadGoal, TodoItem } from '@/types/api'
 import type { ChatBlock, ToolCallBlock } from '@/chat/types'
 import { isSubagentToolName } from '@/chat/subagentTool'
 import { getCodexAgentActivity, getCodexAgentSummary } from '@/components/ToolCard/codexAgents'
+import { extractSpawnedSessionId, parsePeerToolName } from '@/components/ToolCard/peerTools'
 import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
 
 export type SessionStatusSubagent = {
     id: string
+    blockId: string
     title: string
     detail: string | null
     state: 'running' | 'waiting' | 'error'
     startedAt: number | null
     endedAt: number | null
+    linkedSessionId?: string | null
 }
 
 export type SessionStatusTerminal = {
@@ -89,27 +92,35 @@ function subagentTitle(block: ToolCallBlock): string {
 }
 
 function subagentFromBlock(block: ToolCallBlock): SessionStatusSubagent | null {
-    if (block.tool.name !== 'CodexAgent' && !isSubagentToolName(block.tool.name)) return null
+    const isPeerSpawn = parsePeerToolName(block.tool.name) === 'spawn_peer'
+    if (block.tool.name !== 'CodexAgent' && !isSubagentToolName(block.tool.name) && !isPeerSpawn) return null
     if (block.tool.state === 'completed') return null
 
     const latestChild = block.children.at(-1)
-    const activity = block.tool.name === 'CodexAgent'
-        ? getCodexAgentActivity(block.tool.input)
-        : latestChild?.kind === 'tool-call'
-            ? latestChild.tool.nativeTitle ?? latestChild.tool.name
-            : null
+    const activity = isPeerSpawn
+        ? getInputStringAny(block.tool.input, ['directory'])
+        : block.tool.name === 'CodexAgent'
+            ? getCodexAgentActivity(block.tool.input)
+            : latestChild?.kind === 'tool-call'
+                ? latestChild.tool.nativeTitle ?? latestChild.tool.name
+                : null
     const waiting = block.tool.state === 'pending'
         || (activity?.toLowerCase().startsWith('waiting') ?? false)
+    const peerTitle = isPeerSpawn
+        ? getInputStringAny(block.tool.input, ['name']) ?? subagentTitle(block)
+        : subagentTitle(block)
 
     return {
         id: block.tool.id,
-        title: subagentTitle(block),
+        blockId: block.id,
+        title: peerTitle,
         detail: activity,
         state: block.tool.state === 'error' ? 'error' : waiting ? 'waiting' : 'running',
         startedAt: block.tool.startedAt ?? (block.tool.state === 'pending' ? null : block.createdAt),
         endedAt: block.tool.state === 'error'
             ? block.tool.completedAt ?? block.tool.startedAt ?? block.createdAt
-            : null
+            : null,
+        ...(isPeerSpawn ? { linkedSessionId: extractSpawnedSessionId(block.tool.result) } : {})
     }
 }
 

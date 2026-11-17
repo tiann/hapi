@@ -26,9 +26,14 @@ function elapsedSince(startedAt: number | null, now: number): string | null {
     return formatDuration(Math.max(0, now - startedAt))
 }
 
-export function SessionStatusPanel({ data }: { data: SessionStatusData }) {
+export function SessionStatusPanel({ data, onInspectSubagent }: {
+    data: SessionStatusData
+    onInspectSubagent?: (subagent: SessionStatusSubagent) => void
+}) {
     const { t } = useTranslation()
     const completedTasks = data.tasks.filter((task) => task.status === 'completed').length
+    const runningSubagents = data.subagents.filter((subagent) => subagent.state === 'running').length
+    const errorSubagents = data.subagents.filter((subagent) => subagent.state === 'error').length
     const hasLiveElapsed = data.terminals.length > 0
         || data.subagents.some((subagent) => subagent.endedAt === null && subagent.startedAt !== null)
     const [now, setNow] = useState(() => Date.now())
@@ -42,8 +47,20 @@ export function SessionStatusPanel({ data }: { data: SessionStatusData }) {
     return (
         <details className="group mx-3 mt-3 rounded-md border border-[var(--app-border)] bg-[var(--app-subtle-bg)]">
             <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-xs font-semibold text-[var(--app-fg)] [&::-webkit-details-marker]:hidden">
-                {t('session.status.title')}
-                <span className="ml-auto text-[10px] text-[var(--app-hint)] transition-transform group-open:rotate-180" aria-hidden="true">▼</span>
+                <span>{t('session.status.title')}</span>
+                <span className="ml-auto flex items-center gap-2 text-[11px] font-normal text-[var(--app-hint)]">
+                    {data.subagents.length > 0 ? (
+                        <span className={errorSubagents > 0 ? 'text-red-600' : runningSubagents > 0 ? 'text-emerald-600' : ''}>
+                            {t('session.status.subagents')} {data.subagents.length}
+                        </span>
+                    ) : null}
+                    {data.tasks.length > 0 ? (
+                        <span className="tabular-nums">
+                            {t('session.status.tasks')} {completedTasks}/{data.tasks.length}
+                        </span>
+                    ) : null}
+                    <span className="text-[10px] text-[var(--app-hint)] transition-transform group-open:rotate-180" aria-hidden="true">▼</span>
+                </span>
             </summary>
             <div className="grid max-h-[min(50dvh,24rem)] gap-3 overflow-y-auto border-t border-[var(--app-border)] px-3 py-2.5 sm:grid-cols-2">
                 {data.goal ? (
@@ -71,8 +88,8 @@ export function SessionStatusPanel({ data }: { data: SessionStatusData }) {
                         <div className="flex flex-col gap-1.5">
                             {data.subagents.map((subagent) => {
                                 const elapsed = elapsedSince(subagent.startedAt, subagent.endedAt ?? now)
-                                return (
-                                    <div key={subagent.id} className="min-w-0 text-sm">
+                                const body = (
+                                    <>
                                         <div className="flex min-w-0 items-baseline gap-1.5">
                                             <span className={`shrink-0 text-xs ${subagentTone(subagent.state)}`}>●</span>
                                             <span className="min-w-0 break-words text-[var(--app-fg)]">{subagent.title}</span>
@@ -80,10 +97,28 @@ export function SessionStatusPanel({ data }: { data: SessionStatusData }) {
                                                 {t(`session.status.subagent.${subagent.state}`)}
                                                 {elapsed ? ` · ${elapsed}` : ''}
                                             </span>
+                                            {onInspectSubagent ? (
+                                                <span className="shrink-0 text-xs text-[var(--app-hint)]" aria-hidden="true">›</span>
+                                            ) : null}
                                         </div>
                                         {subagent.detail ? (
                                             <div className="ml-3.5 break-words text-xs text-[var(--app-hint)]">{subagent.detail}</div>
                                         ) : null}
+                                    </>
+                                )
+                                return onInspectSubagent ? (
+                                    <button
+                                        key={subagent.id}
+                                        type="button"
+                                        onClick={() => onInspectSubagent(subagent)}
+                                        aria-label={`${t('session.status.inspectSubagent')}: ${subagent.title}`}
+                                        className="min-w-0 rounded px-1.5 py-1 text-left text-sm transition-colors hover:bg-[var(--app-bg)]"
+                                    >
+                                        {body}
+                                    </button>
+                                ) : (
+                                    <div key={subagent.id} className="min-w-0 text-sm">
+                                        {body}
                                     </div>
                                 )
                             })}

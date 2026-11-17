@@ -9,6 +9,7 @@ import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
 import { getGoalToolName } from '@/components/ToolCard/goalTools'
 import { parseCursorAskQuestionInput } from '@/components/ToolCard/cursorAskQuestion'
 import { resolveToolNameAlias } from '@/components/ToolCard/toolNameAliases'
+import { extractPeerTargetSessionId, parsePeerToolName } from '@/components/ToolCard/peerTools'
 import {
     getCodexAgentActivity,
     getCodexAgentPrompt,
@@ -605,6 +606,34 @@ export const knownTools: Record<string, {
             ?? getInputStringAny(opts.input, ['path_prefix']),
         minimal: true
     },
+    spawn_peer: {
+        icon: () => <UsersIcon className={DEFAULT_ICON_CLASS} />,
+        title: () => 'Spawn peer',
+        subtitle: (opts) => {
+            const name = getInputStringAny(opts.input, ['name'])
+            const dir = getInputStringAny(opts.input, ['directory'])
+            return name && dir ? `${name} · ${basename(dir)}` : name ?? dir
+        },
+        minimal: (opts) => extractPeerTargetSessionId(opts.toolName, opts.input, opts.result) === null
+    },
+    ping_peer: {
+        icon: () => <MessageSquareIcon className={DEFAULT_ICON_CLASS} />,
+        title: () => 'Ping peer',
+        subtitle: (opts) => getInputStringAny(opts.input, ['sessionIdPrefix', 'sessionId']),
+        minimal: (opts) => extractPeerTargetSessionId(opts.toolName, opts.input, opts.result) === null
+    },
+    inspect_peer: {
+        icon: () => <EyeIcon className={DEFAULT_ICON_CLASS} />,
+        title: () => 'Inspect peer',
+        subtitle: (opts) => getInputStringAny(opts.input, ['sessionIdPrefix', 'sessionId']),
+        minimal: (opts) => extractPeerTargetSessionId(opts.toolName, opts.input, opts.result) === null
+    },
+    list_peers: {
+        icon: () => <UsersIcon className={DEFAULT_ICON_CLASS} />,
+        title: () => 'List peers',
+        subtitle: () => null,
+        minimal: true
+    },
     CodexReasoning: {
         icon: () => <BulbIcon className={DEFAULT_ICON_CLASS} />,
         title: (opts) => getInputStringAny(opts.input, ['title']) ?? 'Reasoning',
@@ -713,6 +742,17 @@ export function getToolPresentation(
     opts: Omit<ToolOpts, 'metadata'> & { metadata: SessionMetadataSummary | null },
     t?: Translator
 ): ToolPresentation {
+    const peerTool = parsePeerToolName(opts.toolName)
+    if (peerTool) {
+        const knownPeer = knownTools[peerTool]!
+        return {
+            icon: knownPeer.icon(opts),
+            title: knownPeer.title({ ...opts, t }),
+            subtitle: knownPeer.subtitle ? knownPeer.subtitle(opts) : null,
+            minimal: typeof knownPeer.minimal === 'function' ? knownPeer.minimal(opts) : (knownPeer.minimal ?? true)
+        }
+    }
+
     if (opts.toolName.startsWith('mcp__')) {
         return {
             icon: <PuzzleIcon className={DEFAULT_ICON_CLASS} />,

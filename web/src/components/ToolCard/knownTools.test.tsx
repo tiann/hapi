@@ -818,3 +818,30 @@ describe('getToolPresentation — AskUserQuestion pending header', () => {
         expect(presentation.subtitle).toBe('Which database?')
     })
 })
+
+describe('getToolPresentation — HAPI peer tools', () => {
+    it('renders readable titles and expands completed peer cards with session links', () => {
+        const spawn = getToolPresentation({
+            toolName: 'mcp__hapi__spawn_peer',
+            input: { directory: '/work/repo', name: 'Verifier' },
+            result: [{ type: 'text', text: 'Spawned 11111111-1111-4111-8111-111111111111 (Verifier)' }],
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+        expect(spawn.title).toBe('Spawn peer')
+        expect(spawn.subtitle).toBe('Verifier · repo')
+        expect(spawn.minimal).toBe(false)
+
+        const ping = getToolPresentation({
+            toolName: 'functions.hapi__ping_peer',
+            input: { sessionIdPrefix: '22222222-2222-4222-8222-222222222222', message: 'Check status' },
+            result: null,
+            childrenCount: 0,
+            description: null,
+            metadata: null,
+        })
+        expect(ping.title).toBe('Ping peer')
+        expect(ping.minimal).toBe(false)
+    })
+})

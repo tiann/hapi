@@ -14,7 +14,10 @@ import { UpdatePlanView } from '@/components/ToolCard/views/UpdatePlanView'
 import { WriteView } from '@/components/ToolCard/views/WriteView'
 import { GoalView } from '@/components/ToolCard/views/GoalView'
 import { canShowGoalPreview, isGoalToolName } from '@/components/ToolCard/goalTools'
+import { extractPeerTargetSessionId, parsePeerToolName } from '@/components/ToolCard/peerTools'
+import { SessionLinkAnchor } from '@/components/SessionLinkAnchor'
 import { getInputStringAny } from '@/lib/toolInputUtils'
+import { useTranslation } from '@/lib/use-translation'
 import {
     getCodexAgentFieldRows,
     getCodexAgentPrompt,
@@ -128,8 +131,31 @@ export const toolFullViewRegistry: Record<string, ToolViewComponent> = {
     request_user_input: RequestUserInputView
 }
 
+const PeerCompactView: ToolViewComponent = ({ block }: ToolViewProps) => {
+    const { t } = useTranslation()
+    const targetSessionId = extractPeerTargetSessionId(block.tool.name, block.tool.input, block.tool.result)
+    if (!targetSessionId) return null
+    const targetName = getInputStringAny(block.tool.input, ['name'])
+
+    return (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+            <SessionLinkAnchor
+                sessionId={targetSessionId}
+                className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1 font-medium text-[var(--app-link)] transition-colors hover:border-[var(--app-link)]"
+            >
+                <span aria-hidden="true">↳</span>
+                <span className="truncate">{targetName ?? targetSessionId.slice(0, 8)}</span>
+                <span className="shrink-0 opacity-80">{t('sessions.lineage.openSession')} →</span>
+            </SessionLinkAnchor>
+        </div>
+    )
+}
+
 export function getToolViewComponent(toolName: string, tool?: Pick<ChatToolCall, 'input' | 'result' | 'state'>): ToolViewComponent | null {
     if (isGoalToolName(toolName)) return tool && canShowGoalPreview(tool) ? GoalView : null
+    if (parsePeerToolName(toolName) && tool && extractPeerTargetSessionId(toolName, tool.input, tool.result)) {
+        return PeerCompactView
+    }
     return toolViewRegistry[toolName] ?? null
 }
 

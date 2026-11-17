@@ -1,7 +1,7 @@
 import { BranchConversationDialog } from '@/components/BranchConversationDialog'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
-import { Link, useNavigate } from '@tanstack/react-router'
+import { useNavigate } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { PRESERVE_SESSION_SIDEBAR_SCROLL } from '@/lib/sessionNavigation'
 import { AssistantRuntimeProvider, useAui, useAuiState } from '@assistant-ui/react'
@@ -101,7 +101,9 @@ import { CursorMigrationBanner } from '@/components/CursorMigrationBanner'
 import { ModelErrorBanner, hasActiveModelError, isBridgeSettling, shouldKeepPendingBridge, visibleBridgeFailureReason } from '@/components/ModelErrorBanner'
 import { TeamPanel } from '@/components/TeamPanel'
 import { SessionStatusPanel } from '@/components/SessionStatusPanel'
-import { buildSessionStatusData } from '@/chat/sessionStatus'
+import { SessionLineageBar } from '@/components/SessionLineageBar'
+import { SubagentInspectorDialog } from '@/components/SubagentInspectorDialog'
+import { buildSessionStatusData, type SessionStatusSubagent } from '@/chat/sessionStatus'
 import { usePlatform } from '@/hooks/usePlatform'
 import { getToolCardDisplayPresentation, useToolCardDisplayMode } from '@/hooks/useToolCardDisplayMode'
 import { useConciseChatMode } from '@/hooks/useConciseChatMode'
@@ -761,6 +763,7 @@ function SessionChatInner(props: SessionChatProps) {
     const [historyActionPending, setHistoryActionPending] = useState(false)
     const [branchPoint, setBranchPoint] = useState<{ messageLocalId?: string; messageId?: string } | null>(null)
     const [rewindForkFallback, setRewindForkFallback] = useState<string | null>(null)
+    const [inspectedSubagentBlockId, setInspectedSubagentBlockId] = useState<string | null>(null)
 
     const onForkConversation = useCallback(async (messageLocalId?: string) => {
         setHistoryActionPending(true)
@@ -1830,6 +1833,22 @@ function SessionChatInner(props: SessionChatProps) {
         () => hasAbortableAgentRun(reduced.blocks),
         [reduced.blocks]
     )
+    const inspectedSubagentBlock = useMemo(() => {
+        if (!inspectedSubagentBlockId) return null
+        const block = reconciled.byId.get(inspectedSubagentBlockId)
+        return block?.kind === 'tool-call' ? block : null
+    }, [inspectedSubagentBlockId, reconciled.byId])
+    const handleInspectSubagent = useCallback((subagent: SessionStatusSubagent) => {
+        if (subagent.linkedSessionId) {
+            void navigate({
+                to: '/sessions/$sessionId',
+                params: { sessionId: subagent.linkedSessionId },
+                ...PRESERVE_SESSION_SIDEBAR_SCROLL,
+            })
+            return
+        }
+        setInspectedSubagentBlockId(subagent.blockId)
+    }, [navigate])
 
     useEffect(() => {
         blocksByIdRef.current = reconciled.byId
@@ -2333,7 +2352,17 @@ function SessionChatInner(props: SessionChatProps) {
 
             <CursorMigrationBanner metadata={props.session.metadata} />
 
-            {sessionStatus ? <SessionStatusPanel data={sessionStatus} /> : null}
+            {sessionStatus ? (
+                <SessionStatusPanel
+                    data={sessionStatus}
+                    onInspectSubagent={handleInspectSubagent}
+                />
+            ) : null}
+            <SubagentInspectorDialog
+                block={inspectedSubagentBlock}
+                metadata={props.session.metadata}
+                onClose={() => setInspectedSubagentBlockId(null)}
+            />
 
             <ModelErrorBanner
                 metadata={props.session.metadata}
@@ -2373,15 +2402,7 @@ function SessionChatInner(props: SessionChatProps) {
                         )}
                         <div className={(terminalVisible && canViewAgentTerminal) ? 'hidden' : 'flex min-h-0 flex-1 flex-col'}>
 
-                    {props.session.metadata?.conversationBranch ? (
-                        <div className="border-b border-[var(--app-divider)] p-3 text-xs text-[var(--app-hint)]">
-                            <Link to="/sessions/$sessionId" params={{ sessionId: props.session.metadata.conversationBranch.sourceSessionId }} className="underline">
-                                {t('branch.source')}
-                            </Link>{' · '}{t('branch.filesNotice')}
-                            {props.session.metadata.conversationBranch.state !== 'started'
-                                ? <p role="status">{t('branch.uncertain')}</p> : null}
-                        </div>
-                    ) : null}
+                    <SessionLineageBar session={props.session} sessions={allSessions} />
                     {branchPoint && props.session.metadata?.machineId ? <BranchConversationDialog
                         api={props.api}
                         machineId={props.session.metadata.machineId}
