@@ -817,7 +817,14 @@ export class SharedCodexRoot {
             // resolve a boundary row that does not exist.
             if (!first || !userMessageDisplayText(first)) continue;
             const id = string(first.clientId ?? first.clientUserMessageId) ?? (first.id ? `codex:${this.threadId}:user:${string(first.id)}` : undefined);
-            if (id) return { cutBeforeLocalId: id };
+            // A batch submission's native client id is a synthetic
+            // hapi-batch-* alias while the hub rows are keyed by the original
+            // member ids, so resolve the same accepted boundary assertBoundary
+            // does. An unproven batch version cannot name a hub row: fall back
+            // to the caller's missing-cut behavior instead of the alias.
+            const boundaryId = id ? this.queue.originalBoundaryId(id, first.content) : undefined;
+            if (boundaryId) return { cutBeforeLocalId: boundaryId };
+            return {};
         }
         return {};
     }

@@ -1160,6 +1160,49 @@ describe('fork preview boundary answers', () => {
         // 'Fork boundary message not found'.
         await expect(preview(f, { mode: 'latestCompleted' })).resolves.toEqual({ nativeTurnId: 'two' });
     });
+
+    it('names the original member id when the first excluded turn was queued as a batch', async () => {
+        const create = vi.fn().mockResolvedValue({
+            threadId: 'child-thread', session: { sessionId: 'child-session' }, initialSettings: vi.fn()
+        });
+        const f = await fixture({ create });
+        await f.root.activate();
+        f.submit('A', 'original-A');
+        await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+        vi.spyOn(f.root.client, 'request').mockImplementation(async (method, raw) => {
+            const params = raw as Record<string, unknown>;
+            if (method === 'thread/queue/list') return { data: f.native.queue } as never;
+            if (method === 'thread/queue/update') {
+                f.native.queue[0].input = params.input;
+                return { queuedSubmission: f.native.queue[0] } as never;
+            }
+            if (method === 'thread/read') return { thread: structuredClone(f.native.thread) } as never;
+            throw new Error(`Unexpected ${method}`);
+        });
+        f.submit('B', 'original-B');
+        await vi.waitFor(() => expect(f.native.queue[0].input).toEqual([{ type: 'text', text: 'A' }, { type: 'text', text: 'B' }]));
+        const batchItem = { id: 'user-batch', type: 'userMessage',
+            clientUserMessageId: f.native.queue[0].clientUserMessageId, content: f.native.queue[0].input };
+        // The native client id of a queued batch is synthetic; the hub rows are
+        // keyed by the original member ids.
+        expect(f.native.queue[0].clientUserMessageId).toMatch(/^hapi-batch-/);
+        f.native.thread.turns = [
+            { id: 'one', status: 'completed', items: [{ id: 'u1', type: 'userMessage', clientId: 'first', content: [{ type: 'text', text: 'first prompt' }] }] },
+            { id: 'two', status: 'inProgress', items: [batchItem] }
+        ];
+        f.native.notify('item/completed', { threadId: 'thread', turnId: 'two', item: batchItem });
+        await vi.waitFor(() => expect(f.metadata().conversationHistoryPoints?.['original-A']).toBe(true));
+        await expect(preview(f, { mode: 'latestCompleted' })).resolves.toEqual({
+            nativeTurnId: 'one', cutBeforeLocalId: 'original-A'
+        });
+        // The confirm must accept the same hub row once the batch turn completes.
+        f.native.thread.turns[1].status = 'completed';
+        const fork = f.rpc.get(RPC_METHODS.ForkConversation)!;
+        await expect(fork({ messageLocalId: 'original-A' })).resolves.toEqual({
+            nativeSessionId: 'child-thread', sessionId: 'child-session'
+        });
+        expect(create).toHaveBeenCalledWith('thread/fork', expect.objectContaining({ threadId: 'thread', beforeTurnId: 'two' }), f.root);
+    });
 });
 
 describe('pinned fork confirm', () => {
