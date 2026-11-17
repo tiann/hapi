@@ -144,17 +144,20 @@ URL: the hub returns a JWT plus a `passkeySession`, which is stored in
 `EncryptedSharedPreferences` instead of an access token and exchanged by the
 normal silent re-auth loop (`POST /api/auth {"passkeySession": …}`; a 401
 there signs the device out with a "sign in again" notice). App passkeys use
-the fixed RP ID `hapi.run`; the app refuses options for any other RP ID, and
-passkeys created in the web app are listed but cannot sign in to the app.
+the fixed RP ID `auth.hapi.run`; the app refuses options for any other RP ID, and
+passkeys created through the web authentication page also sign in to the app.
+The app validates the connected Hub, operation/channel and registration user
+handle before opening Credential Manager. Set the Hub’s `HAPI_PUBLIC_URL` to
+its canonical HTTPS origin.
 See the [native passkey contract](../docs/api/client-contract/auth.md#passkeys-native).
 
 Ceremonies only work when two things match the APK's **signing
 certificate**:
 
-1. `https://hapi.run/.well-known/assetlinks.json`
-   (`website/public/.well-known/assetlinks.json`) lists package
+1. `https://auth.hapi.run/.well-known/assetlinks.json`
+   (`web/passkey-site/.well-known/assetlinks.json`) lists package
    `run.hapi.companion` with the certificate's SHA-256 fingerprint
-   (colon-separated hex). Otherwise Credential Manager rejects the `hapi.run`
+   (colon-separated hex). Otherwise Credential Manager rejects the `auth.hapi.run`
    request before the hub is involved.
 2. The hub accepts the origin `android:apk-key-hash:<hash>`, where `<hash>` is
    the same SHA-256 digest as **base64url without padding**. Official hashes
@@ -181,8 +184,9 @@ and its base64url form into `OFFICIAL_ANDROID_PASSKEY_ORIGINS`. Debug builds
 and self-signed release builds each have their own certificate, so a passkey
 ceremony from a debug build only works if its fingerprint is also published
 in an `assetlinks.json` served from the RP ID — for local testing, that means
-a fork with its own domain (`HAPI_PASSKEY_NATIVE_RP_ID`) and a matching app
-build, since only the hapi.run maintainers can change the official file.
+a fork with its own shared RP constant, static authentication site, and matching
+app build. Only the auth.hapi.run maintainers can change the official file;
+per-Hub RP overrides are not supported.
 
 ## Firebase / push
 

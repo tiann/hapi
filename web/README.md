@@ -261,3 +261,36 @@ bun run build:web -- --base /<repo>/
 4. Open the static site, click the top-right Hub button on the login screen, and enter the hapi hub origin.
 
 Clear the hub override in the same dialog to return to same-origin behavior.
+
+## Shared Passkeys
+
+Web and native apps use RP ID `auth.hapi.run`. Web registration/sign-in opens
+a popup on the isolated static authentication origin; the Hub performs all
+verification. The opener keeps the PKCE verifier and exchanges only a short-lived
+authorization code. Configure `HAPI_PUBLIC_URL` as the canonical HTTPS Hub origin.
+Separately hosted web apps need an explicit Hub `CORS_ORIGINS` entry for their
+callback origin. Wildcards do not authorize authentication callbacks. Popups
+and the opener relationship must be allowed; do not set COOP headers that sever
+the cross-origin popup/opener relationship on either site.
+
+Build the independent authentication site with `bun run build:passkey-site`.
+Deploy **only `website/dist/auth/`** to `auth.hapi.run`, not the marketing app.
+Serve the supplied `_headers` policies (or equivalent host configuration),
+including CSP, frame restrictions, origin-only referrers and no-store, and preserve the
+`.well-known` files. No third-party scripts, analytics, or service worker belong
+on this origin. The Hub callback path `/passkey/callback` must serve the web
+app shell (including on separately hosted static deployments).
+
+See the [authentication contract](../docs/api/client-contract/auth.md#passkeys-web)
+for transaction, challenge/account binding, and code-exchange details.
+
+The bridge uses `Referrer-Policy: strict-origin`: only the authentication origin
+is disclosed, never its fragment or path. Do not replace it with `no-referrer`:
+Chromium otherwise serializes a cross-origin form POST's `Origin` as `null`,
+which the Hub correctly rejects. Hub ceremony responses remain `no-referrer`.
+
+Browser regression: `bun run test:passkey:browser` uses Chromium's virtual
+authenticator against the production Hub and built static site, with all page
+requests intercepted locally. It checks both web-created → native and
+native-created → web authentication. Install the normal Playwright Chromium
+build, or use an existing Chrome with `PLAYWRIGHT_CHANNEL=chrome`.

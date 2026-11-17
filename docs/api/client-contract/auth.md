@@ -10,7 +10,7 @@ Source of truth: `hub/src/config/cliApiToken.ts`, `hub/src/web/routes/auth.ts`.
 |------------|----------|--------------------|---------------|
 | **Access token** | Long-lived (until the operator rotates `CLI_API_TOKEN`) | Pairing QR / deeplink, or typed in manually | Exchanged for a JWT via `POST /api/auth`; the client's durable secret |
 | **JWT** | 4 hours | Response of `POST /api/auth` | `Authorization: Bearer` on every `/api/*` request |
-| **Passkey session** (web only) | 30 days, and only while its passkey is valid | Response of `POST /api/passkey/login/verify` | Exchanged for a JWT via `POST /api/auth`; never accepted as a bearer token |
+| **Passkey session** (web and native) | 30 days, and only while its passkey is valid | Native login verification or browser code exchange | Exchanged for a JWT via `POST /api/auth`; never accepted as a bearer token |
 
 The hub's base token (`CLI_API_TOKEN`) is auto-generated on first run (32 random bytes, base64url, ~43 chars) and persisted in the hub's `settings.json`; an operator-provided env token overrides it. The configured base token never contains a `:` — the hub refuses to start otherwise (`validateCliApiToken`).
 
@@ -104,7 +104,7 @@ Treat the token as opaque for auth purposes, but clients may base64url-decode th
 Source of truth: `hub/src/web/middleware/auth.ts`.
 
 - Every `/api/*` request: `Authorization: Bearer <JWT>`.
-- Exceptions: `POST /api/auth`, `POST /api/bind`, `GET /api/auth/methods`, `GET /api/auth/cloudflare`, `POST /api/passkey/login/options` and `POST /api/passkey/login/verify` do not require a HAPI bearer token. The Cloudflare exchange still requires a valid Access assertion. `GET /health` is outside `/api` and unauthenticated.
+- Exceptions: `POST /api/auth`, `POST /api/bind`, `GET /api/auth/methods`, `GET /api/auth/cloudflare`, `POST /api/passkey/login/options`, `POST /api/passkey/login/verify`, `POST /api/passkey/browser/login/start`, `POST /api/passkey/browser/complete` and `POST /api/passkey/browser/exchange` do not require a HAPI bearer token. The Cloudflare exchange still requires a valid Access assertion. `GET /health` is outside `/api` and unauthenticated.
 - `GET /api/events` (SSE) **additionally** accepts `?token=<JWT>` as a query param, for HTTP stacks whose EventSource cannot set headers. The header wins when both are present. No other endpoint accepts query-param auth.
 
 ## Silent re-auth (401 handling)
@@ -129,37 +129,122 @@ Implementation notes:
 
 ## Passkeys (web) {#passkeys-web}
 
-Source of truth: `hub/src/web/routes/passkey.ts`, `hub/src/web/authTokens.ts`, `web/src/lib/passkey.ts`.
+Source of truth: `shared/src/passkey.ts`, `hub/src/web/routes/passkey.ts`,
+`web/src/lib/passkey.ts`, `web/src/passkey-site/`.
 
-The web app can sign in with a WebAuthn passkey instead of pasting the access token. Native apps use the same endpoints with a fixed RP ID; see [Native passkeys](#passkeys-native).
+Web and native clients use **one RP ID: `auth.hapi.run`**. A credential registered
+from either client can sign in to the other, for the **same Hub and namespace**.
+The public key and credential-to-namespace mapping stay in that Hub's database;
+the official authentication site is static, not an account server.
 
-- **Registration needs an existing session.** `POST /api/passkey/register/{options,verify}` require a JWT, so the first sign-in still uses the access token (or Telegram). The passkey is stored with the JWT's namespace and an HMAC fingerprint of the current `CLI_API_TOKEN`.
-- **Relying party.** The RP ID is the hostname of the request's `Origin`. The origin must use HTTPS, or HTTP on `localhost`, and must be a domain name rather than an IP address. It must also be trusted: either the same host as the request (the hub-served web app) or an entry in the hub's CORS origins (a wildcard does not count). A passkey only works on the RP ID where it was registered.
-- **Sign-in.** `POST /api/passkey/login/options` returns a one-time challenge that expires after 5 minutes. `POST /api/passkey/login/verify` with `{ "response": <AuthenticationResponseJSON> }` requires user verification and returns `{ token, user, passkeySession }`. The web stores `passkeySession` under `hapi_passkey_session::<baseUrl>` instead of an access token, then refreshes with `POST /api/auth { "passkeySession": "..." }`.
-- **Revocation.** Rotating `CLI_API_TOKEN` invalidates every passkey and passkey session registered under the old token (`GET /api/passkeys` reports `valid: false`). Deleting a passkey (`DELETE /api/passkeys/:id`) revokes its sessions immediately.
+Set `HAPI_PUBLIC_URL` to the Hub's canonical **HTTPS origin** (no path, query,
+credentials, or fragment). The configured origin, never an untrusted proxy Host
+header, identifies the Hub. The client must connect through that same origin.
+The web app must also use HTTPS and allow the authentication popup. Separately
+hosted web apps must have their exact origin in `CORS_ORIGINS`; `*` does not grant
+permission to receive authentication callbacks.
+
+### Browser ceremony
+
+1. The initiating tab generates a random state and PKCE verifier; it keeps the
+   verifier in memory. Call `POST /api/passkey/browser/login/start` with
+   `{codeChallenge, state, callbackOrigin}`. Use
+   `POST /api/passkey/browser/register/start` with a JWT for registration; it
+   additionally accepts `name`. PKCE is SHA-256/base64url, without padding.
+2. The Hub creates a one-time, five-minute transaction and returns `{url}`.
+   Open that URL on `https://auth.hapi.run/` in the popup. Its fragment contains
+   `{hub, operation, options}` only, never an access token/JWT/verifier.
+3. The static page checks the challenge/account's Hub binding, shows the Hub
+   address, and calls WebAuthn after user confirmation. It enforces user
+   verification and the fixed RP, ignoring untrusted extension choices.
+4. The page submits an `application/x-www-form-urlencoded` top-level form to
+   the challenge-bound Hub's fixed `POST /api/passkey/browser/complete`, with
+   `challenge` and JSON `response` (or `error=cancelled`). No cross-origin API
+   fetch or general CORS access from the authentication site is required.
+5. The Hub verifies the stored challenge, exact expected origin, signature,
+   namespace and token fingerprint. It redirects with 303 to the transaction's
+   fixed `<callbackOrigin>/passkey/callback#state=...&code=...` (or `error`).
+   Only the canonical Hub origin or an explicitly configured web origin may
+   receive this callback; arbitrary return URLs are not supported.
+6. The callback clears the fragment and sends the code/state to its opener at
+   its own exact origin. The opener checks origin, popup identity and state,
+   then calls `POST /api/passkey/browser/exchange {code, verifier}`. Codes expire
+   in 60 seconds and are atomically consumed after PKCE validation. Login
+   returns `{operation:"login", token, user, passkeySession}`; registration
+   returns `{operation:"register"}`. No long-lived token reaches the static site.
+
+Registration authorization is scoped to the JWT namespace and the current
+`CLI_API_TOKEN` fingerprint at transaction creation. Rotation during registration
+aborts it. Code exchange re-checks credential existence, namespace and token
+fingerprint; deletion/rotation cannot revive a pending authorization.
+
+The web stores `passkeySession` under `hapi_passkey_session::<baseUrl>` instead of
+an access token. Refresh remains `POST /api/auth {passkeySession}`. Sessions last
+30 days while the credential is valid. Deletion revokes them immediately;
+rotating `CLI_API_TOKEN` revokes all passkeys and their refresh sessions.
+
+### Shared-RP isolation
+
+The decoded challenge is `{v:1, hub, id, operation, channel, nonce}` with
+cryptographically random 32-byte `id` and `nonce` (base64url). `hub` is the
+canonical HTTPS Hub origin, `operation` is `login|register`, and `channel` is
+`browser|native`. Clients validate these fields **before opening the system
+sheet**; the Hub verifies its exact saved challenge and consumes it once.
+A malicious Hub cannot proxy another Hub's challenge through the shared RP.
+
+The 64-byte user handle is `SHA-256(hub) || HMAC-SHA256(secret, namespace)` (the
+HMAC uses a domain-separated input). Clients validate the Hub prefix before
+registration so a malicious Hub cannot overwrite another Hub's account. It is
+not a Hub URL discovery mechanism. Login options restrict `allowCredentials` to
+this Hub's currently valid shared-RP credentials.
+
+The authentication origin is part of the security boundary. It must contain no
+marketing app, third-party scripts, analytics, or service worker. Compromising
+that origin compromises the shared browser authentication surface. Existing
+credentials using other RP IDs are not supported; register new credentials.
 
 ## Native passkeys {#passkeys-native}
 
-Source of truth: `hub/src/web/routes/passkey.ts` (`nativePasskeyConfigFromEnv`), `website/public/.well-known/`.
+Native clients use the same RP/credentials, without a browser redirect:
 
-iOS entitlements and Android asset links are fixed at build time, so they cannot follow a self-hosted hub's domain. The official apps therefore use one shared RP ID, **`hapi.run`**:
+1. `POST /api/passkey/register/options {client:"native"}` (JWT required),
+   validate RP, connected Hub, operation/channel and user-handle prefix, invoke
+   the platform API, then `POST /api/passkey/register/verify {response, name}`.
+2. `POST /api/passkey/login/options {client:"native"}` (unauthenticated),
+   validate RP and challenge binding, invoke the platform API, then
+   `POST /api/passkey/login/verify {response}`. `404 no_passkeys` means none of
+   this Hub's shared-RP credentials are valid; fall back to the access token.
+3. Store `{token, passkeySession}` in secure per-Hub storage and use the normal
+   silent re-auth exchange. `401 passkey_session_invalid` is terminal.
 
-- `https://hapi.run/.well-known/apple-app-site-association` lists `webcredentials` for `XJB862F92W.run.hapi.app`. The iOS/macOS app declares `webcredentials:hapi.run` in its Associated Domains entitlement.
-- `https://hapi.run/.well-known/assetlinks.json` grants `delegate_permission/common.get_login_creds` to `run.hapi.companion` with its signing-certificate SHA-256.
-- Every hub accepts assertions for `hapi.run` only from exact app origins:
-  - iOS/macOS (AuthenticationServices): `https://hapi.run`.
-  - Android (Credential Manager): `android:apk-key-hash:<base64url SHA-256 of the signing cert>`. Official hashes live in `OFFICIAL_ANDROID_PASSKEY_ORIGINS`.
-  - `HAPI_PASSKEY_NATIVE_ORIGINS` (comma-separated) adds origins, e.g. for debug builds. `HAPI_PASSKEY_NATIVE_RP_ID` changes the RP ID for forks that ship their own apps and domain.
+Native clients ignore unsupported WebAuthn extensions and enforce user
+verification before invoking the platform. iOS offers both platform and roaming
+security-key assertion providers, so web-created security-key passkeys are not
+restricted to the browser. A credential must be available through the device’s
+provider, a synced password manager, or an accessible authenticator.
 
-  Pages on other `*.hapi.run` hosts can request `hapi.run` assertions, but the hub rejects their origins.
+Direct options/verify routes are native-only; browser-channel challenges cannot
+be used there, and native-channel challenges cannot use the browser bridge.
+All binary fields are base64url without padding; user verification is required.
 
-Client flow (same endpoints as the web; natives send no `Origin` header):
+- iOS/macOS declares `webcredentials:auth.hapi.run`. The RP's static
+  `/.well-known/apple-app-site-association` lists `XJB862F92W.run.hapi.app`.
+  Expected client-data origin: `https://auth.hapi.run`.
+- Android uses Credential Manager. The RP's static `/.well-known/assetlinks.json`
+  grants `delegate_permission/common.get_login_creds` to `run.hapi.companion`
+  with the official signing-certificate fingerprint. Expected origin:
+  `android:apk-key-hash:<base64url SHA-256 certificate digest>`.
+- `HAPI_PASSKEY_NATIVE_ORIGINS` adds explicitly trusted Android signing-certificate
+  origins for debug builds. Arbitrary HTTPS origins and per-Hub RP overrides
+  are not accepted. Forks change the shared constant, static site and app
+  associations together.
 
-1. **Register** (needs a JWT from the normal access-token exchange): `POST /api/passkey/register/options` with `{ "client": "native" }`. The response is WebAuthn `PublicKeyCredentialCreationOptionsJSON` with `rp.id == "hapi.run"`, a base64url `user.id`, and `user.name` of the form `hapi[:<ns>]@<hub host>` so the system picker can tell hubs apart. Create the credential with the platform API, then `POST /api/passkey/register/verify` with `{ "response": <RegistrationResponseJSON>, "name": "<device name>" }`.
-2. **Sign in** (no JWT): `POST /api/passkey/login/options` with `{ "client": "native" }`. The response is `PublicKeyCredentialRequestOptionsJSON` whose `allowCredentials` lists this hub's valid native passkeys, so the sheet does not offer other hubs' passkeys. `404 {"error":"no_passkeys"}` means none are registered; fall back to the access token. Then `POST /api/passkey/login/verify` with `{ "response": <AuthenticationResponseJSON> }` returns `{ token, user, passkeySession }`.
-3. **Refresh**: store `passkeySession` in secure storage, keyed per hub like the access token. Exchange it with `POST /api/auth { "passkeySession": "..." }` in the normal silent re-auth loop. `401 passkey_session_invalid` is terminal: ask the user to sign in again.
-
-All binary fields are base64url without padding. Registration and sign-in require user verification. Clients should check `rp.id` / `rpId` against their compiled RP ID and refuse a mismatch.
+Static association sources: `web/passkey-site/.well-known/`. Build with
+`bun run build:passkey-site`; deploy **only `website/dist/auth/`** to
+`https://auth.hapi.run`, with the supplied security headers. The bridge uses `strict-origin` referrers
+(origin only, no request parameters); `no-referrer` would turn Chromium form
+POST origins into `null` and is not appropriate for this bridge. It is independent
+of the marketing site's `website/dist/public/` output.
 
 ## Namespaces
 

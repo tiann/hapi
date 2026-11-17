@@ -1533,6 +1533,15 @@ export class SyncEngine {
             namespace = session.namespace
             let targetId = ownerSessionId
 
+            // A turn is running: the agent is present and can read `job list`.
+            // Injecting a message here would interrupt it, so drop the wake.
+            if (session.active && session.thinking) {
+                this.store.sessionJobs.markTerminalWakeDelivered(ownerSessionId, ownerJobKey, claimId)
+                this.clearJobTerminalWakeRetry(ownerSessionId, ownerJobKey)
+                this.clearJobTerminalWakeRetry(sessionId, job.key)
+                return
+            }
+
             if (!session.active) {
                 const resume = await this.resumeSession(ownerSessionId, namespace)
                 if (resume.type !== 'success') {
@@ -1636,7 +1645,7 @@ export class SyncEngine {
             // MessageService.sweepImmediateQueuedOnSessionEnd).
             await this.sendMessage(targetId, {
                 text,
-                sentFrom: 'webapp',
+                sentFrom: 'hapi-system',
                 localId: buildJobWakeLocalId(ownerJobKey, claimId),
             })
             this.store.sessionJobs.markTerminalWakeDelivered(ownerSessionId, ownerJobKey, claimId)
@@ -1967,7 +1976,7 @@ export class SyncEngine {
                 path: string
                 previewUrl?: string
             }>
-            sentFrom?: 'telegram-bot' | 'webapp'
+            sentFrom?: 'telegram-bot' | 'webapp' | 'hapi-system'
             scheduledAt?: number | null
             deliveryMode?: MessageDeliveryMode
         }

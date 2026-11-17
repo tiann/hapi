@@ -22,13 +22,13 @@ import androidx.credentials.exceptions.GetCredentialUnsupportedException
 import androidx.credentials.exceptions.NoCredentialException
 
 /**
- * [PasskeyPlatform] over Jetpack Credential Manager. The hub's options JSON
- * goes in as `requestJson` untouched; `registrationResponseJson` /
+ * [PasskeyPlatform] over Jetpack Credential Manager. Validated, whitelisted
+ * options go in as `requestJson`; `registrationResponseJson` /
  * `authenticationResponseJson` come back for the verify call.
  *
  * Passkeys need Android 9+ (API 28); older devices get
  * [PasskeyCeremonyException.Unavailable]. Needs an [Activity]: the system sheet is launched on top of it. Ceremonies
- * for RP ID `hapi.run` only succeed when `https://hapi.run/.well-known/assetlinks.json`
+ * for RP ID `auth.hapi.run` only succeed when `https://auth.hapi.run/.well-known/assetlinks.json`
  * lists this build's package + signing-certificate SHA-256 (see the Android
  * README, "Passkeys").
  */

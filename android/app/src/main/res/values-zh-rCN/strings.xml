@@ -808,9 +808,7 @@
     <string name="settings_passkeys_empty">还没有通行密钥。</string>
     <string name="settings_passkeys_dates">创建于 %1$s · 上次使用 %2$s</string>
     <string name="settings_passkeys_dates_unused">创建于 %1$s · 从未使用</string>
-    <string name="settings_passkeys_tag_web">网页</string>
     <string name="settings_passkeys_tag_inactive">已失效</string>
-    <string name="settings_passkeys_web_note">在网页应用中创建，无法用于登录本应用。</string>
     <string name="settings_passkeys_unnamed">未命名的通行密钥</string>
     <string name="settings_passkeys_delete_title">删除通行密钥</string>
     <string name="settings_passkeys_delete_message">删除“%1$s”？使用它登录的设备需要重新登录。它可能仍保留在密码管理器中，请另行删除。</string>

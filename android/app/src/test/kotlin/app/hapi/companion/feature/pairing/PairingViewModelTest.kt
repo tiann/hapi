@@ -3,6 +3,8 @@
 
 package app.hapi.companion.feature.pairing
 
+import app.hapi.protocol.wire.NativePasskeys
+import app.hapi.companion.feature.passkey.boundPasskeyOptions
 import app.hapi.companion.feature.passkey.FakePasskeyPlatform
 import app.hapi.companion.feature.passkey.PasskeyCeremonyException
 import app.hapi.companion.feature.passkey.PasskeyIssue
@@ -52,7 +54,7 @@ private class FakePairingClient : PairingClient {
         return authResult(accessToken)
     }
 
-    var loginOptionsResult: () -> String = { """{"challenge":"Y2g","rpId":"hapi.run","allowCredentials":[]}""" }
+    var loginOptionsResult: () -> String = { boundPasskeyOptions(HUB, "login") }
     var loginVerifyResult: (JsonObject) -> PasskeyLoginResponse = {
         PasskeyLoginResponse(token = "jwt-passkey", user = AuthUser(id = 1), passkeySession = "ps-1")
     }
@@ -256,8 +258,8 @@ class PairingViewModelTest {
         advanceUntilIdle()
 
         assertEquals(PairingUiState.Success(HUB), vm.state.value)
-        assertEquals(1, platform.getRequests.size, "options are handed to the platform verbatim")
-        assertEquals(client.loginOptionsResult(), platform.getRequests.single())
+        assertEquals(1, platform.getRequests.size, "validated options are handed to the platform")
+        assertEquals(NativePasskeys.ceremonyOptions(client.loginOptionsResult(), HUB, "login"), platform.getRequests.single())
         assertTrue(client.authCalls.isEmpty(), "no access-token exchange on the passkey path")
 
         val verified = client.verifyBodies.single()

@@ -808,9 +808,7 @@
     <string name="settings_passkeys_empty">No passkeys yet.</string>
     <string name="settings_passkeys_dates">Created %1$s · Last used %2$s</string>
     <string name="settings_passkeys_dates_unused">Created %1$s · Never used</string>
-    <string name="settings_passkeys_tag_web">Web</string>
     <string name="settings_passkeys_tag_inactive">Inactive</string>
-    <string name="settings_passkeys_web_note">Created in the web app; it can’t sign in to this app.</string>
     <string name="settings_passkeys_unnamed">Unnamed passkey</string>
     <string name="settings_passkeys_delete_title">Delete passkey</string>
     <string name="settings_passkeys_delete_message">Delete “%1$s”? Anyone signed in with it will have to sign in again. It may stay in your password manager; remove it there separately.</string>

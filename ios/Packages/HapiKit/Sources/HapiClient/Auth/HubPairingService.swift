@@ -138,7 +138,7 @@ public struct HubPairingService: Sendable {
 
         let request: PasskeyAssertionRequest
         do {
-            request = try PasskeyAssertionRequest(options: try await client.passkeyLoginOptions())
+            request = try PasskeyAssertionRequest(options: try await client.passkeyLoginOptions(), hubURL: baseURL)
         } catch PasskeyError.noPasskeys {
             throw PairingFailure.noPasskeys
         } catch is PasskeyError {

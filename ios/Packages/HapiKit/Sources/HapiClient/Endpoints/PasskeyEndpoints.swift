@@ -67,7 +67,7 @@ extension APIClient {
     /// ``APIError``.
     public func registerPasskey(name: String?, using authenticator: any PasskeyAuthenticating) async throws {
         let options = try await passkeyRegistrationOptions()
-        let request = try PasskeyRegistrationRequest(options: options)
+        let request = try PasskeyRegistrationRequest(options: options, hubURL: baseURL)
         let result = try await authenticator.register(request)
         try await verifyPasskeyRegistration(PasskeyRegistrationResponseJSON(result), name: name)
     }

@@ -2,6 +2,8 @@
 
 package app.hapi.companion.feature.settings
 
+import app.hapi.protocol.wire.NativePasskeys
+import app.hapi.companion.feature.passkey.boundPasskeyOptions
 import app.hapi.companion.feature.passkey.FakePasskeyPlatform
 import app.hapi.companion.feature.passkey.PasskeyCeremonyException
 import app.hapi.companion.feature.passkey.PasskeyIssue
@@ -27,9 +29,10 @@ class PasskeysViewModelTest {
         CoroutineScope(SupervisorJob() + StandardTestDispatcher(testScheduler))
 
     private class FakeGateway : PasskeysGateway {
+        override val hubUrl = "https://hub.example.com"
         var passkeys = mutableListOf<PasskeySummary>()
         var options: () -> String = {
-            """{"rp":{"id":"hapi.run","name":"HAPI"},"user":{"id":"dXNlcg","name":"hapi@hub"},"challenge":"Y2g"}"""
+            boundPasskeyOptions(hubUrl, "register")
         }
         var verifyError: Exception? = null
         val verified = mutableListOf<Pair<JsonObject, String?>>()
@@ -40,7 +43,7 @@ class PasskeysViewModelTest {
         override suspend fun registerVerify(response: JsonObject, name: String?) {
             verifyError?.let { throw it }
             verified += response to name
-            passkeys += PasskeySummary(id = "new", name = name, rpId = "hapi.run", createdAt = 99)
+            passkeys += PasskeySummary(id = "new", name = name, rpId = "auth.hapi.run", createdAt = 99)
         }
         override suspend fun delete(id: String) {
             deleted += id
@@ -48,7 +51,7 @@ class PasskeysViewModelTest {
         }
     }
 
-    private fun passkey(id: String, rpId: String = "hapi.run", createdAt: Long = 1, valid: Boolean = true) =
+    private fun passkey(id: String, rpId: String = "auth.hapi.run", createdAt: Long = 1, valid: Boolean = true) =
         PasskeySummary(id = id, name = id, rpId = rpId, createdAt = createdAt, valid = valid)
 
     @Test
@@ -80,7 +83,7 @@ class PasskeysViewModelTest {
         assertEquals(PasskeysBusy.Adding, vm.busy.value)
         advanceUntilIdle()
 
-        assertEquals(listOf(gateway.options()), platform.createRequests)
+        assertEquals(listOf(NativePasskeys.ceremonyOptions(gateway.options(), gateway.hubUrl, "register")), platform.createRequests)
         val (response, name) = gateway.verified.single()
         assertEquals("Pixel 9", name)
         assertEquals("public-key", response["type"]?.jsonPrimitive?.content)
