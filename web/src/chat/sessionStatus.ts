@@ -219,6 +219,12 @@ export function buildSessionStatusData(args: {
             if (!matched) continue
             subagent.linkedSessionId = matched.id
             subagent.linkKind = matched.metadata?.parentLink?.kind ?? subagent.linkKind ?? 'peer'
+            const matchedState = classifyLinkedSessionState(matched)
+            if (matchedState === 'error' || subagent.state === 'error') {
+                subagent.state = 'error'
+            } else if (matchedState === 'waiting' || subagent.state === 'waiting') {
+                subagent.state = 'waiting'
+            }
             coveredSessionIds.add(matched.id)
         }
 

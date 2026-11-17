@@ -311,6 +311,110 @@ describe('buildSessionStatusData', () => {
         ])
     })
 
+    it('reconciles deduplicated wrapper subagents with live waiting, background, and error child states', () => {
+        const blocks: ChatBlock[] = [
+            toolBlock({
+                id: 'block-wait-wrap',
+                name: 'Bash',
+                tool: {
+                    id: 'call-wait-wrap',
+                    state: 'running',
+                    input: {
+                        command: '~/.claude/bin/codeagent-wrapper --backend codex resume codex-wait-1 - "/work/app"',
+                        description: 'Resume waiting worker',
+                    },
+                    result: '...\n---\nSESSION_ID: codex-wait-1',
+                }
+            }),
+            toolBlock({
+                id: 'block-err-wrap',
+                name: 'Bash',
+                tool: {
+                    id: 'call-err-wrap',
+                    state: 'running',
+                    input: {
+                        command: '~/.claude/bin/codeagent-wrapper --backend claude resume claude-err-1 - "/work/app"',
+                        description: 'Resume failing worker',
+                    },
+                    result: '...\n---\nSESSION_ID: claude-err-1',
+                }
+            }),
+        ]
+
+        const linkedSessions: SessionSummary[] = [
+            makeSummary({
+                id: 'child-wait',
+                active: true,
+                thinking: false,
+                pendingRequestsCount: 1,
+                metadata: {
+                    path: '/work/app',
+                    name: 'Waiting Wrapper',
+                    agentSessionId: 'codex-wait-1',
+                    parentLink: { parentSessionId: 'parent-2', kind: 'peer' },
+                },
+            }),
+            makeSummary({
+                id: 'child-err',
+                active: true,
+                thinking: false,
+                metadata: {
+                    path: '/work/app',
+                    name: 'Error Wrapper',
+                    agentSessionId: 'claude-err-1',
+                    parentLink: { parentSessionId: 'parent-2', kind: 'peer' },
+                    lastModelError: {
+                        eventId: 'err-2',
+                        kind: 'rate_limit',
+                        transient: true,
+                        rawSnippet: '429',
+                        atTs: 500,
+                        priorAssistantClaimsDone: false,
+                    },
+                },
+            }),
+            makeSummary({
+                id: 'child-bg-only',
+                active: true,
+                thinking: false,
+                backgroundTaskCount: 1,
+                updatedAt: 400,
+                metadata: {
+                    path: '/work/app',
+                    name: 'Background Only Worker',
+                    flavor: 'codex',
+                    parentLink: { parentSessionId: 'parent-2', kind: 'peer' },
+                },
+            }),
+        ]
+
+        const status = buildSessionStatusData({
+            sessionId: 'parent-2',
+            goal: null,
+            tasks: [],
+            blocks,
+            linkedSessions,
+        })
+
+        expect(status?.subagents).toEqual([
+            expect.objectContaining({
+                id: 'call-wait-wrap',
+                linkedSessionId: 'child-wait',
+                state: 'waiting',
+            }),
+            expect.objectContaining({
+                id: 'call-err-wrap',
+                linkedSessionId: 'child-err',
+                state: 'error',
+            }),
+            expect.objectContaining({
+                id: 'session:child-bg-only',
+                linkedSessionId: 'child-bg-only',
+                state: 'running',
+            }),
+        ])
+    })
+
     it('lists Claude background tasks with the command that started them', () => {
         const blocks: ChatBlock[] = [toolBlock({
             name: 'Agent',
