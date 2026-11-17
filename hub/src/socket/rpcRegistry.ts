@@ -51,5 +51,11 @@ export class RpcRegistry {
     getSocketIdForMethod(method: string): string | null {
         return this.methodToSocketId.get(method) ?? null
     }
+
+    /** Every method key registered by one socket (e.g. to find a stable
+     *  machine-scoped anchor for a probe sent on that socket). */
+    getMethodsForSocket(socketId: string): string[] {
+        return [...(this.socketIdToMethods.get(socketId) ?? [])]
+    }
 }
 
