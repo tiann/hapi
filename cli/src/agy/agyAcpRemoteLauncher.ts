@@ -302,6 +302,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private turn: AgyTurn | null = null;
     private backendLost = false;
     private startBackendPromise: Promise<void> | null = null;
+    private hasReceivedAvailableCommands = false;
     private cachedAvailableCommands: AcpAvailableCommand[] = [];
     private readonly availableCommandsWaiters: Array<() => void> = [];
 
@@ -766,7 +767,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     private recordAvailableCommands(commands: AcpAvailableCommand[]): void {
-        if (commands.length === 0) return;
+        this.hasReceivedAvailableCommands = true;
         this.cachedAvailableCommands = commands.map((command) => ({ ...command }));
         this.session.client.updateMetadata((metadata) => ({
             ...metadata,
@@ -781,7 +782,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (this.startBackendPromise) {
             await this.startBackendPromise.catch(() => {});
         }
-        if (this.cachedAvailableCommands.length === 0 && this.backend && !this.backendLost) {
+        if (!this.hasReceivedAvailableCommands && this.backend && !this.backendLost) {
             const existing = this.backend.getAvailableCommands?.(this.acpSessionId) ?? [];
             if (existing.length > 0) {
                 this.recordAvailableCommands(existing);

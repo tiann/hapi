@@ -2287,6 +2287,30 @@ describe('AgyAcpRemoteLauncher questions (agy ask_question)', () => {
             expect.objectContaining({ name: 'goal', source: 'builtin' })
         ]));
 
+        // A subsequent empty catalog update replaces the cached catalog and clears metadata.slashCommands.
+        backend.availableCommands = [
+            { name: 'stale-backend-command', description: 'Should not be re-read after empty update' }
+        ];
+        backend.availableCommandsListener?.('agy-conv-new', []);
+
+        const updatedMetadata = client.updateMetadata.mock.calls.map(
+            ([updater]) => (updater as (m: Record<string, unknown>) => Record<string, unknown>)({})
+        );
+        expect(updatedMetadata.at(-1)).toEqual(expect.objectContaining({
+            slashCommands: []
+        }));
+
+        const clearedResult = await listHandler({ agent: 'agy' }) as {
+            success: boolean;
+            commands: Array<{ name: string; description?: string; source: string }>;
+        };
+        expect(clearedResult.success).toBe(true);
+        const clearedNames = clearedResult.commands.map((cmd) => cmd.name);
+        expect(clearedNames).not.toContain('custom-skill');
+        expect(clearedNames).not.toContain('run-workflow');
+        expect(clearedNames).not.toContain('stale-backend-command');
+        expect(clearedNames).toContain('swarm');
+
         queue.close();
         await run;
     });
