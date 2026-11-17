@@ -124,13 +124,13 @@ struct PairingFlowView: View {
                     .macSheetSizing()
             }
             .sheet(isPresented: $showPasskeySignIn) {
-                ManualEntryView(mode: .passkey)
+                PasskeyDiscoveryView()
                     .macSheetSizing()
             }
         }
     }
 
-    /// URL-only sign-in for hubs where a passkey was already added
+    /// Discover a Hub from an already registered passkey without typing its URL
     /// (Settings → Passkeys after a token pairing).
     private var passkeyButton: some View {
         Button {

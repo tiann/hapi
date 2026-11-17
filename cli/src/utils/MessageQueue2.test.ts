@@ -9,6 +9,118 @@ describe('MessageQueue2', () => {
         expect(queue.isClosed()).toBe(false);
     });
 
+    it('answers in-flight for a dequeued-but-uncommitted localId so a Cancel holds the row busy instead of double-delivering', async () => {
+        // Round-7 cross-review §3.1 sequence A: with the ACK deferred to the
+        // dispatch commit, a Cancel landing inside the dequeue→commit window
+        // used to answer false ('not-found'), which pushed the hub row to
+        // indeterminate and let a Retry re-emit the message → delivered twice.
+        const queue = new MessageQueue2<string>(mode => mode);
+        const consumed: string[][] = [];
+        queue.onBatchConsumed = (ids) => { consumed.push([...ids]); };
+        queue.push('M', 'local', 'L');
+        const batch = await queue.waitForDeferredBatch();
+        expect(batch?.items.map(item => item.localId)).toEqual(['L']);
+        expect(consumed).toEqual([]);
+        // Cancel inside the window: the row is neither queued nor reserved.
+        expect(queue.cancelByLocalId('L')).toBe('in-flight');
+        // The commit lands after the cancel attempt: the message is delivered
+        // exactly once, the hub row goes invoked, and the in-flight mark is
+        // cleared immediately even while the queue stays idle.
+        queue.commitBatch(batch!);
+        expect(consumed).toEqual([['L']]);
+        expect(queue.cancelByLocalId('L')).toBe(false);
+        // A retry re-emit with the same localId must still be cancellable —
+        // both while queued and when reserved via takeByLocalId.
+        queue.push('M again', 'local', 'L');
+        expect(queue.cancelByLocalId('L')).toBe(true);
+        expect(queue.size()).toBe(0);
+        queue.push('M reserved', 'local', 'L');
+        expect(queue.takeByLocalId('L')).not.toBeNull();
+        expect(queue.cancelByLocalId('L')).toBe(true);
+        expect(queue.size()).toBe(0);
+    });
+
+    it('keeps answering in-flight for repeated cancels while the batch is still uncommitted', async () => {
+        // Round-7 cross-review §3.1 sequence B: a second Cancel on the
+        // indeterminate row must not read 'not-found' (the hub would delete
+        // the row while the CLI still dispatches it — delivered after an
+        // explicit cancel). Until the commit settles, the answer stays
+        // 'in-flight'.
+        const queue = new MessageQueue2<string>(mode => mode);
+        queue.push('M', 'local', 'L');
+        await queue.waitForDeferredBatch();
+        expect(queue.cancelByLocalId('L')).toBe('in-flight');
+        expect(queue.cancelByLocalId('L')).toBe('in-flight');
+        // Terminal hygiene: resetting the queue clears the in-flight marks.
+        queue.reset();
+        expect(queue.cancelByLocalId('L')).toBe(false);
+    });
+
+    it('clears in-flight tracking when a deferred batch is dropped via releaseBatch', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        const consumed: string[][] = [];
+        queue.onBatchConsumed = (ids) => { consumed.push([...ids]); };
+        queue.push('M', 'local', 'L');
+        const batch = await queue.waitForDeferredBatch();
+        expect(queue.cancelByLocalId('L')).toBe('in-flight');
+
+        queue.releaseBatch(batch!);
+        expect(consumed).toEqual([]);
+        expect(queue.cancelByLocalId('L')).toBe(false);
+
+        queue.push('M retry', 'local', 'L');
+        expect(queue.takeByLocalId('L')).not.toBeNull();
+        expect(queue.cancelByLocalId('L')).toBe(true);
+    });
+
+    it('never marks non-deferred waitForMessagesAndGetAsString batches as in-flight (opencode, claude, agy)', async () => {
+        const queueWithAck = new MessageQueue2<string>(mode => mode);
+        const consumed: string[][] = [];
+        queueWithAck.onBatchConsumed = (ids) => { consumed.push([...ids]); };
+        queueWithAck.push('M1', 'local', 'L1');
+        await queueWithAck.waitForMessagesAndGetAsString();
+        expect(consumed).toEqual([['L1']]);
+        expect(queueWithAck.cancelByLocalId('L1')).toBe(false);
+
+        const queueWithoutAck = new MessageQueue2<string>(mode => mode);
+        queueWithoutAck.push('M2', 'local', 'L2');
+        await queueWithoutAck.waitForMessagesAndGetAsString();
+        expect(queueWithoutAck.cancelByLocalId('L2')).toBe(false);
+    });
+
+    it('unshiftBatch restores a dequeued batch in original order with localIds intact and no extra ACK', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        const consumed: string[][] = [];
+        queue.onBatchConsumed = ids => { consumed.push(ids); };
+        queue.push('a', 'local', 'id-a');
+        queue.push('b', 'local', 'id-b');
+        const batch = await queue.waitForMessagesAndGetAsString();
+        expect(batch?.items.map(item => item.localId)).toEqual(['id-a', 'id-b']);
+        expect(queue.size()).toBe(0);
+        queue.unshiftBatch(batch!);
+        expect(queue.pendingLocalIds()).toEqual(['id-a', 'id-b']);
+        const again = await queue.waitForMessagesAndGetAsString();
+        expect(again?.message).toBe('a\nb');
+        expect(again?.items.map(item => item.localId)).toEqual(['id-a', 'id-b']);
+        // One ACK per collection: the unshift itself fired none.
+        expect(consumed).toEqual([['id-a', 'id-b'], ['id-a', 'id-b']]);
+    });
+
+    it('unshiftBatch preserves internal provenance for non-isolated batches', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        const internal = { kind: 'control' } as const;
+        // A non-isolated batch that carries an internal item (the shape the
+        // launchers' requeue helpers hand back): the unshift branch must keep
+        // the provenance or hasPendingNonBridgeTurn miscounts the row.
+        queue.unshiftBatch({
+            mode: 'local',
+            isolate: false,
+            items: [{ message: 'ctrl', localId: 'id-c', internal }]
+        });
+        const again = await queue.waitForMessagesAndGetAsString();
+        expect(again?.items[0]?.internal).toEqual(internal);
+    });
+
     it('should push and retrieve messages with same mode', async () => {
         const queue = new MessageQueue2<string>(mode => mode);
         
@@ -136,14 +248,106 @@ describe('MessageQueue2', () => {
     it('should handle abort signal with existing messages', async () => {
         const queue = new MessageQueue2<string>(mode => mode);
         const abortController = new AbortController();
-        
+
         // Add messages
         queue.push('message1', 'local');
-        
+
         // Should return messages even with abort signal
         const result = await queue.waitForMessagesAndGetAsString(abortController.signal);
         expect(result).not.toBeNull();
         expect(result?.message).toBe('message1');
+    });
+
+    it('does not collect or ACK pending messages when the signal is already aborted', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        const consumed: string[][] = [];
+        queue.onBatchConsumed = (ids) => { consumed.push([...ids]); };
+        queue.push('message1', 'local', 'id1');
+        queue.push('message2', 'local', 'id2');
+
+        const abortController = new AbortController();
+        abortController.abort();
+
+        const result = await queue.waitForMessagesAndGetAsString(abortController.signal);
+        expect(result).toBeNull();
+        expect(consumed).toEqual([]);
+        expect(queue.pendingLocalIds()).toEqual(['id1', 'id2']);
+    });
+
+    it.each(['pending', 'awakened'] as const)('preserves internal control identity across an aborted %s drain', async (state) => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        const consumed: string[][] = [];
+        queue.onBatchConsumed = ids => { consumed.push([...ids]); };
+        const controller = new AbortController();
+        const waiting = state === 'awakened'
+            ? queue.waitForMessagesAndGetAsString(controller.signal)
+            : undefined;
+        queue.pushIsolated('/auto on', 'remote', undefined, { internal: { kind: 'control' } });
+        queue.push('follow-up', 'remote', 'original-user');
+        controller.abort();
+
+        expect(await (waiting ?? queue.waitForMessagesAndGetAsString(controller.signal))).toBeNull();
+        expect(queue.size()).toBe(2);
+        expect(consumed).toEqual([]);
+        const control = await queue.waitForMessagesAndGetAsString(new AbortController().signal);
+        expect(control?.items).toEqual([{ message: '/auto on', localId: undefined, internal: { kind: 'control' } }]);
+        expect(control?.isolate).toBe(true);
+        expect(consumed).toEqual([]);
+        const user = await queue.waitForMessagesAndGetAsString();
+        expect(user?.items).toEqual([{ message: 'follow-up', localId: 'original-user', internal: undefined }]);
+        expect(consumed).toEqual([['original-user']]);
+        expect(queue.size()).toBe(0);
+    });
+
+    it('does not collect an idle-waited message that arrives while the signal is aborted; a fresh signal collects it exactly once', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        const consumed: string[][] = [];
+        queue.onBatchConsumed = (ids) => { consumed.push([...ids]); };
+
+        const abortController = new AbortController();
+        const pending = queue.waitForMessagesAndGetAsString(abortController.signal);
+
+        // Abort, then a message arrives during teardown — must NOT be collected.
+        abortController.abort();
+        queue.push('message1', 'local', 'id1');
+
+        const result = await pending;
+        expect(result).toBeNull();
+        expect(consumed).toEqual([]);
+        expect(queue.pendingLocalIds()).toEqual(['id1']);
+
+        // After teardown, a fresh (non-aborted) signal collects the same
+        // message exactly once.
+        const fresh = new AbortController();
+        const second = await queue.waitForMessagesAndGetAsString(fresh.signal);
+        expect(second?.message).toBe('message1');
+        expect(consumed).toEqual([['id1']]);
+        expect(queue.size()).toBe(0);
+    });
+
+    it('does not collect when the idle waiter wakes true and the signal aborts before the continuation', async () => {
+        const queue = new MessageQueue2<string>(mode => mode);
+        const consumed: string[][] = [];
+        queue.onBatchConsumed = (ids) => { consumed.push([...ids]); };
+
+        const abortController = new AbortController();
+        const pending = queue.waitForMessagesAndGetAsString(abortController.signal);
+
+        // Wake the waiter with a message, then synchronously abort so the
+        // post-await continuation must NOT collectBatch / ACK.
+        queue.push('message1', 'local', 'id1');
+        abortController.abort();
+
+        const result = await pending;
+        expect(result).toBeNull();
+        expect(consumed).toEqual([]);
+        expect(queue.pendingLocalIds()).toEqual(['id1']);
+
+        const fresh = new AbortController();
+        const second = await queue.waitForMessagesAndGetAsString(fresh.signal);
+        expect(second?.message).toBe('message1');
+        expect(consumed).toEqual([['id1']]);
+        expect(queue.size()).toBe(0);
     });
 
     it('should throw when pushing to closed queue', () => {

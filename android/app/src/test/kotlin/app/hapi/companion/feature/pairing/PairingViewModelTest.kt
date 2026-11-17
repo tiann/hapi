@@ -365,4 +365,46 @@ class PairingViewModelTest {
         )
         assertNull(credentialStore.get(HUB))
     }
+
+    @Test
+    fun `discovering a Hub never sends an assertion until the user confirms real login`() = runVmTest {
+        val authority = java.net.URI(HUB).rawAuthority.toByteArray()
+        val user = java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(byteArrayOf(2, authority.size.toByte()) + authority + ByteArray(16))
+        val platform = FakePasskeyPlatform()
+        val actualLogin = platform.getResult
+        platform.getResult = {
+            if (platform.getRequests.size == 1) """{"response":{"userHandle":"$user"},"signature":"discovery-only"}""" else actualLogin(it)
+        }
+        val vm = viewModel()
+        vm.discoverPasskeyHub(platform)
+        advanceUntilIdle()
+        assertEquals(PairingUiState.PasskeyHubFound(HUB), vm.state.value)
+        assertTrue(requestedUrls.isEmpty())
+        assertTrue(client.verifyBodies.isEmpty())
+        assertNull(credentialStore.get(HUB))
+
+        vm.signInWithPasskey(HUB, platform)
+        advanceUntilIdle()
+        assertEquals(PairingUiState.Success(HUB), vm.state.value)
+        assertEquals(2, platform.getRequests.size)
+        assertEquals(1, client.verifyBodies.size)
+        assertTrue(!client.verifyBodies.single().toString().contains("discovery-only"))
+        assertEquals("ps-1", credentialStore.get(HUB)?.passkeySession)
+    }
+
+    @Test
+    fun `missing discovery metadata offers manual entry and cancellation stays silent`() = runVmTest {
+        val platform = FakePasskeyPlatform()
+        val vm = viewModel()
+        vm.discoverPasskeyHub(platform)
+        advanceUntilIdle()
+        assertEquals(PairingUiState.Error(PairingError.Passkey(PasskeyIssue.DiscoveryUnavailable)), vm.state.value)
+        assertTrue(requestedUrls.isEmpty())
+        platform.getResult = { throw PasskeyCeremonyException.Cancelled() }
+        vm.discoverPasskeyHub(platform)
+        advanceUntilIdle()
+        assertEquals(PairingUiState.Idle, vm.state.value)
+        assertTrue(requestedUrls.isEmpty())
+    }
+
 }

@@ -4,7 +4,7 @@ import { AgentSessionBase } from '@/agent/sessionBase';
 import type { OpencodeHookEvent, OpencodeMode, PermissionMode } from './types';
 import type { LocalLaunchExitReason } from '@/agent/localLaunchPolicy';
 import type { LocalHistoryPublisher } from './localHistory';
-import { OpenCodeRuntimeGate } from './rewind';
+import { OpenCodeRuntimeBlockedError, OpenCodeRuntimeGate } from './rewind';
 
 type LocalLaunchFailure = {
     message: string;
@@ -61,6 +61,12 @@ export class OpencodeSession extends AgentSessionBase<OpencodeMode> {
         this.startedBy = opts.startedBy;
         this.runtimeGate = opts.runtimeGate ?? new OpenCodeRuntimeGate();
         this.queue.beforeDequeue = () => {
+            // A plain Stop preserves queued input: refuse to shift+ACK a batch
+            // while a cancellation drain is in flight, so the launcher re-loops
+            // (its cancellation-idle fence parks it) and dequeues after the
+            // Stop settles instead of dropping an ACKed batch on its
+            // aborted-continue.
+            if (this.runtimeGate.hasCancellationActivity()) throw new OpenCodeRuntimeBlockedError();
             // An aborted collectBatch (an onBatchConsumed throw) leaves the
             // previous admission unreleased and the launcher never reaches
             // takeDequeuedRuntimeRelease: take it before acquiring the next.

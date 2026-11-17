@@ -12564,6 +12564,91 @@
           }
         }
       }
+    },
+    "Choose a passkey to find its Hub. This step does not sign you in.": {
+      "extractionState": "manual",
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Выберите ключ доступа, чтобы найти хаб. Это ещё не вход в систему."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "选择通行密钥以查找 Hub。此步骤不会完成登录。"
+          }
+        }
+      }
+    },
+    "Find Hub with a Passkey": {
+      "extractionState": "manual",
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Найти хаб с ключом доступа"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "使用通行密钥查找 Hub"
+          }
+        }
+      }
+    },
+    "Could not find the Hub. Try again or enter its address manually.": {
+      "extractionState": "manual",
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Не удалось найти хаб. Повторите попытку или введите адрес вручную."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "无法找到 Hub，请重试或手动输入地址。"
+          }
+        }
+      }
+    },
+    "Confirm this Hub before connecting. A separate passkey check will sign you in.": {
+      "extractionState": "manual",
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Подтвердите хаб перед подключением. Для входа потребуется отдельная проверка ключа."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "连接前请确认此 Hub，然后通过另一次通行密钥验证完成登录。"
+          }
+        }
+      }
+    },
+    "Enter Hub address manually": {
+      "extractionState": "manual",
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ввести адрес хаба вручную"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "手动输入 Hub 地址"
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

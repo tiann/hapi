@@ -165,33 +165,101 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
             onAbort: () => this.handleAbort(),
             onSwitch: () => this.handleSwitchRequest()
-        });
+        }, () => this.abortController.abort(),
+        // A rejected cancel must not leave the loop on the aborted signal.
+        () => { if (this.abortController.signal.aborted) this.abortController = new AbortController(); });
 
         const sendReady = () => {
             session.sendSessionEvent({ type: 'ready' });
         };
 
         while (!this.shouldExit) {
-            const batch = await session.queue.waitForMessagesAndGetAsString(this.abortController.signal);
+            await this.waitForAbortBarrier();
+            if (this.shouldExit) break;
+            const waitSignal = this.abortController.signal;
+            // Defer hub ack until the dispatch commit point below: a batch
+            // dropped by a concurrent teardown must not be stamped `invoked`.
+            const batch = await session.queue.waitForDeferredBatch(waitSignal);
             if (!batch) {
-                if (this.abortController.signal.aborted && !this.shouldExit) {
+                if (waitSignal.aborted && !this.shouldExit) {
                     continue;
                 }
                 break;
             }
+            let batchSettled = false;
+            const requeue = () => {
+                if (!session.queue.isClosed()) {
+                    session.queue.unshiftBatch(batch);
+                    batchSettled = true;
+                }
+            };
+            try {
+                if (this.shouldExit) {
+                    // Terminal teardown reset the queue while this batch sat in
+                    // the wait: drop it un-ACKed and end.
+                    break;
+                }
 
-            const modelBeforeBatch = this.currentBackendModel;
-            if (batch.mode.model && batch.mode.model !== this.currentBackendModel) {
-                batch.mode.model = await this.applyQueuedModel(batch.mode.model) ?? undefined;
-            }
-            if (this.currentBackendModel !== modelBeforeBatch) {
-                this.captureEffortBaseline(acpSessionId);
-            }
-            await this.applyQueuedEffort(acpSessionId, batch.mode);
+                const modelBeforeBatch = this.currentBackendModel;
+                if (batch.mode.model && batch.mode.model !== this.currentBackendModel) {
+                    batch.mode.model = await this.applyQueuedModel(batch.mode.model) ?? undefined;
+                    if (this.currentBackendModel !== modelBeforeBatch) {
+                        // Take the NEW model's effort baseline before any
+                        // bail-out: the requeued batch re-enters with the model
+                        // already applied and would otherwise keep the previous
+                        // model's baseline.
+                        this.captureEffortBaseline(acpSessionId);
+                    }
+                    if (this.shouldExit) {
+                        break;
+                    }
+                    if (waitSignal.aborted) {
+                        requeue();
+                        continue;
+                    }
+                }
+                await this.applyQueuedEffort(acpSessionId, batch.mode);
+                if (this.shouldExit) {
+                    break;
+                }
+                if (waitSignal.aborted) {
+                    requeue();
+                    continue;
+                }
 
-            const desiredAgentMode = batch.mode.agentMode ?? session.getAgentMode();
-            if (desiredAgentMode !== this.currentAgentMode) {
-                await this.applyAgentMode(desiredAgentMode);
+                const desiredAgentMode = batch.mode.agentMode ?? session.getAgentMode();
+                if (desiredAgentMode !== this.currentAgentMode) {
+                    await this.applyAgentMode(desiredAgentMode);
+                    if (this.shouldExit) {
+                        break;
+                    }
+                    if (waitSignal.aborted) {
+                        requeue();
+                        continue;
+                    }
+                }
+                if (this.shouldExit) {
+                    // Terminal teardown reset the queue: drop the un-ACKed batch
+                    // and end.
+                    break;
+                }
+                if (waitSignal.aborted) {
+                    // A plain Stop preserves the queue, and this batch was never
+                    // hub-ACKed: put it back so it drains once the Stop settles
+                    // instead of dispatching a cancelled turn.
+                    requeue();
+                    continue;
+                }
+
+                // Dispatch commit point: every pre-dispatch bail-out above
+                // requeued the never-ACKed batch, so the hub ack only fires once
+                // the turn is really going out.
+                batchSettled = true;
+                session.queue.commitBatch(batch);
+            } finally {
+                if (!batchSettled) {
+                    session.queue.releaseBatch(batch);
+                }
             }
 
             this.applyDisplayMode(batch.mode.permissionMode, batch.mode.model);
@@ -509,14 +577,27 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
         return this.currentBackendModel;
     }
 
-    private async handleAbort(): Promise<void> {
+    private async handleAbort(leavingRemote = false): Promise<void> {
+        if (leavingRemote) {
+            // Terminal switch/exit must unpark a waiting loop iteration
+            // before the teardown's awaits: a batch arriving meanwhile would
+            // otherwise be dequeued and hub-ACKed against the still-live
+            // signal and dropped after the teardown resets the queue
+            // (mirrors dsh's entry abort-and-replace).
+            this.abortController.abort();
+            this.abortController = new AbortController();
+        }
         const backend = this.backend;
         if (backend && this.session.sessionId) {
             await backend.cancelPrompt(this.session.sessionId);
         }
         await this.permissionHandler?.cancelAll('User aborted');
         this.session.sendSessionEvent({ type: 'message', message: 'Session aborted' });
-        this.session.queue.reset();
+        // Plain Stop preserves the pending queue for the next drain; only
+        // terminal cleanup (exit / switch-to-local) resets it.
+        if (leavingRemote) {
+            this.session.queue.reset();
+        }
         this.session.onThinkingChange(false);
         this.abortController.abort();
         this.abortController = new AbortController();
@@ -524,15 +605,23 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleExitFromUi(): Promise<void> {
-        await this.requestExit('exit', () => this.handleAbort());
+        await this.requestExit('exit', () => this.handleAbort(true));
     }
 
     private async handleSwitchFromUi(): Promise<void> {
-        await this.requestExit('switch', () => this.handleAbort());
+        await this.requestExit('switch', () => this.handleAbort(true));
     }
 
     private async handleSwitchRequest(): Promise<void> {
-        await this.requestExit('switch', () => this.handleAbort());
+        await this.requestExit('switch', () => this.handleAbort(true));
+    }
+
+    protected override onTerminalTeardownRejected(): void {
+        // A rejected terminal teardown still owes the queue reset and the
+        // dequeue-signal abort, or an idle waiter parks forever on the
+        // un-aborted signal and start() never reaches cleanup().
+        this.session.queue.reset();
+        this.abortController.abort();
     }
 }
 

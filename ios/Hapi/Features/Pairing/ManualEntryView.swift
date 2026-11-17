@@ -266,3 +266,65 @@ struct ManualPairingFormView: View {
         onPair(submission)
     }
 }
+
+/// Discovery is a locator-only local ceremony. Confirm before contacting the
+/// recovered Hub, then obtain a separate, Hub-bound authentication challenge.
+struct PasskeyDiscoveryView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(AppModel.self) private var model
+    @State private var attempt = PairingAttempt()
+    @State private var discoveredHub: String?
+    @State private var finding = false
+    @State private var discoveryError: String?
+    @State private var showManual = false
+
+    private var busy: Bool { finding || attempt.isPairing }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Text("Choose a passkey to find its Hub. This step does not sign you in.")
+                    Button("Find Hub with a Passkey") {
+                        finding = true
+                        discoveredHub = nil
+                        discoveryError = nil
+                        attempt.failure = nil
+                        Task {
+                            defer { finding = false }
+                            do {
+                                discoveredHub = try await NativePasskeys.discoverHub(authenticator: PlatformPasskeyAuthenticator())
+                            } catch PasskeyError.canceled {
+                                // Silent; no Hub request has been made.
+                            } catch {
+                                discoveryError = String(localized: "Could not find the Hub. Try again or enter its address manually.")
+                            }
+                        }
+                    }
+                    .disabled(busy)
+                }
+                if let hub = discoveredHub {
+                    Section {
+                        Text(hub).textSelection(.enabled)
+                        Text("Confirm this Hub before connecting. A separate passkey check will sign you in.")
+                        Button("Sign in with a Passkey") { attempt.signInWithPasskey(model, hubUrl: hub) }
+                            .disabled(busy)
+                    }
+                }
+                if busy { ProgressView() }
+                if let discoveryError { Text(discoveryError).foregroundStyle(.red) }
+                if let failure = attempt.failure { PairingErrorView(failure: failure) }
+                Section {
+                    Button("Enter Hub address manually") { showManual = true }.disabled(busy)
+                }
+            }
+            .navigationTitle("Sign in with a Passkey")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() }.disabled(busy) }
+            }
+            .interactiveDismissDisabled(busy)
+            .sheet(isPresented: $showManual) { ManualEntryView(mode: .passkey).macSheetSizing() }
+        }
+    }
+}

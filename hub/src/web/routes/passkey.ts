@@ -147,7 +147,7 @@ async function optionsFor(
     const account = ns === 'default' ? 'hapi' : `hapi:${ns}`
     const options = await generateRegistrationOptions({
         rpName: 'HAPI', rpID: PASSKEY_RP_ID, challenge: Buffer.from(challenge, 'base64url'),
-        userID: passkeyUserHandle(deps.jwtSecret, ns, hub),
+        userID: await passkeyUserHandle(deps.jwtSecret, ns, hub),
         userName: `${account}@${new URL(hub).host}`,
         userDisplayName: `HAPI · ${new URL(hub).host}${ns === 'default' ? '' : ` (${ns})`}`,
         attestationType: 'none',

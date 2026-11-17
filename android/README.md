@@ -529,3 +529,15 @@ frame-time, memory, or predictive-back measurements are claimed by these checks.
 Unread state uses the hub’s [revision read-state contract](../docs/api/client-contract/read-state.md).
 List selection and metadata updates never acknowledge reading. The resumed chat
 acknowledges only its rendered tail, with a durable outbox scoped by hub and namespace.
+
+### Address-free Passkey sign-in
+
+The pairing Passkey entry first runs a local resident-credential selection to
+recover the Hub from its v2 user handle, without HTTP requests. Confirm the
+recovered HTTPS origin, then run the existing health/options/Hub-bound assertion
+flow. The discovery assertion is never sent to the Hub and never authorizes a
+session. Registration validates the handle's Hub origin (or hash for long
+addresses) before opening system UI. The handle reserves 16 bytes for a stable
+account tag and fits 46 ASCII authority bytes; longer addresses retain manual
+sign-in. Re-register credentials to enable discovery. No central server is
+required; the credential must be available through the local/synced provider.

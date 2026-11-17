@@ -1,8 +1,8 @@
 import { webcrypto } from 'node:crypto'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiClient, ApiError } from '@/api/client'
-import { PASSKEY_ORIGIN, passkeyBase64url } from '@hapi/protocol/passkey'
-import { signInWithPasskey } from './passkey'
+import { PASSKEY_ORIGIN, PASSKEY_DISCOVERY_MESSAGE, passkeyBase64url } from '@hapi/protocol/passkey'
+import { discoverAndSignInWithPasskey, signInWithPasskey } from './passkey'
 
 const start = vi.spyOn(ApiClient.prototype, 'startPasskeyBrowser')
 const exchange = vi.spyOn(ApiClient.prototype, 'exchangePasskeyCode')
@@ -72,6 +72,47 @@ describe('Passkey browser handoff', () => {
         await vi.waitFor(() => expect(replace).toHaveBeenCalled())
         callback({ state: start.mock.calls[0]![1].state, error: 'passkey_revoked' })
         await rejected
+        expect(exchange).not.toHaveBeenCalled()
+    })
+})
+
+
+describe('Passkey Hub discovery', () => {
+    it('discovers without a Hub, checks the sender, then reuses the popup for real PKCE login', async () => {
+        const result = discoverAndSignInWithPasskey()
+        const request = JSON.parse(decodeURIComponent(new URL(replace.mock.calls[0]![0]).hash.slice(1)))
+        expect(request).toEqual({ operation: 'discover', state: expect.any(String), callbackOrigin: window.location.origin })
+        expect(start).not.toHaveBeenCalled()
+        callback({ type: PASSKEY_DISCOVERY_MESSAGE, state: request.state, hub: 'https://hub.example' }, 'https://evil.example')
+        callback({ type: PASSKEY_DISCOVERY_MESSAGE, state: 'wrong', hub: 'https://hub.example' }, PASSKEY_ORIGIN)
+        expect(start).not.toHaveBeenCalled()
+        callback({ type: PASSKEY_DISCOVERY_MESSAGE, state: request.state, hub: 'https://hub.example' }, PASSKEY_ORIGIN)
+        await vi.waitFor(() => expect(start).toHaveBeenCalledOnce())
+        await vi.waitFor(() => expect(replace).toHaveBeenCalledTimes(2))
+        expect(window.open).toHaveBeenCalledOnce()
+        callback({ state: start.mock.calls[0]![1].state, code: 'real-code' })
+        expect(await result).toEqual({ hubUrl: 'https://hub.example', passkeySession: 'session' })
+        expect(exchange).toHaveBeenCalledWith('real-code', expect.any(String))
+    })
+    it('rejects noncanonical or insecure locators without contacting any Hub', async () => {
+        for (const hub of ['http://hub.example', 'https://u:p@hub.example', 'https://hub.example/path', 'https://hub.example/']) {
+            replace.mockClear()
+            const result = discoverAndSignInWithPasskey()
+            const rejected = expect(result).rejects.toThrow()
+            const request = JSON.parse(decodeURIComponent(new URL(replace.mock.calls[0]![0]).hash.slice(1)))
+            callback({ type: PASSKEY_DISCOVERY_MESSAGE, state: request.state, hub }, PASSKEY_ORIGIN)
+            await rejected
+        }
+        expect(start).not.toHaveBeenCalled()
+        expect(exchange).not.toHaveBeenCalled()
+    })
+    it('offers manual entry for opaque credentials without treating discovery as a session', async () => {
+        const result = discoverAndSignInWithPasskey()
+        const rejected = expect(result).rejects.toMatchObject({ code: 'passkey_hub_discovery_unavailable' })
+        const request = JSON.parse(decodeURIComponent(new URL(replace.mock.calls[0]![0]).hash.slice(1)))
+        callback({ type: PASSKEY_DISCOVERY_MESSAGE, state: request.state, error: 'passkey_hub_discovery_unavailable' }, PASSKEY_ORIGIN)
+        await rejected
+        expect(start).not.toHaveBeenCalled()
         expect(exchange).not.toHaveBeenCalled()
     })
 })

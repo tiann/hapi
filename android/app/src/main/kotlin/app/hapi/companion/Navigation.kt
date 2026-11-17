@@ -767,6 +767,11 @@ fun HapiNavigation() {
                 PasskeySignInScreen(
                     state = state,
                     initialHubUrl = prefill?.hubUrl.orEmpty(),
+                    onDiscover = {
+                        context.findActivity()?.let { activity ->
+                            viewModel.discoverPasskeyHub(CredentialManagerPasskeyPlatform(activity))
+                        }
+                    },
                     onSignIn = { hubUrl ->
                         // The system sheet needs the hosting Activity.
                         context.findActivity()?.let { activity ->

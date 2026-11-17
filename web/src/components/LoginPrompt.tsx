@@ -6,14 +6,15 @@ import { Spinner } from '@/components/Spinner'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import { useTranslation } from '@/lib/use-translation'
-import { isPasskeyCancelled, isPasskeySupported, signInWithPasskey } from '@/lib/passkey'
+import { discoverAndSignInWithPasskey, isPasskeyCancelled, isPasskeySupported, signInWithPasskey } from '@/lib/passkey'
+import { normalizeServerUrl } from '@/hooks/useServerUrl'
 import type { ServerUrlResult } from '@/hooks/useServerUrl'
 
 type LoginPromptProps = {
     mode?: 'login' | 'bind'
     onLogin?: (token: string) => void
     onBind?: (token: string) => Promise<void>
-    onPasskeyLogin?: (passkeySession: string) => void
+    onPasskeyLogin?: (passkeySession: string, hubUrl?: string) => void
     baseUrl: string
     serverUrl: string | null
     setServerUrl: (input: string) => ServerUrlResult
@@ -34,26 +35,28 @@ export function LoginPrompt(props: LoginPromptProps) {
     const [isPasskeyLoading, setIsPasskeyLoading] = useState(false)
     const canUsePasskey = !isBindMode && Boolean(props.onPasskeyLogin) && isPasskeySupported()
 
-    const handlePasskeyLogin = useCallback(async () => {
+    const handlePasskeyLogin = useCallback(async (knownHub?: string) => {
         if (!props.onPasskeyLogin) return
-        if (props.requireServerUrl && !props.serverUrl) {
-            setServerError(t('login.server.required'))
-            setIsServerDialogOpen(true)
-            return
-        }
         setIsPasskeyLoading(true)
         setError(null)
         try {
-            const session = await signInWithPasskey(props.baseUrl)
-            props.onPasskeyLogin(session)
+            const result = knownHub
+                ? { hubUrl: knownHub, passkeySession: await signInWithPasskey(knownHub) }
+                : await discoverAndSignInWithPasskey()
+            // Persist under the discovered Hub before switching the active base
+            // URL. Never attach the new session to the previously selected Hub.
+            props.onPasskeyLogin(result.passkeySession, result.hubUrl)
+            if (result.hubUrl !== props.baseUrl) props.setServerUrl(result.hubUrl)
         } catch (e) {
             if (isPasskeyCancelled(e)) return
             const code = e instanceof ApiError ? e.code : undefined
-            setError(code === 'passkey_popup_blocked'
-                ? t('login.passkey.popupBlocked')
-                : code === 'passkey_revoked'
-                    ? t('login.passkey.revoked')
-                    : t('login.passkey.failed'))
+            setError(code === 'passkey_hub_discovery_unavailable'
+                ? t('login.passkey.manualRequired')
+                : code === 'passkey_popup_blocked'
+                    ? t('login.passkey.popupBlocked')
+                    : code === 'passkey_revoked'
+                        ? t('login.passkey.revoked')
+                        : t('login.passkey.failed'))
         } finally {
             setIsPasskeyLoading(false)
         }
@@ -274,6 +277,17 @@ export function LoginPrompt(props: LoginPromptProps) {
                                         <div className="text-sm text-red-500">
                                             {serverError}
                                         </div>
+                                    )}
+
+                                    {canUsePasskey && (
+                                        <Button type="button" variant="secondary" disabled={isPasskeyLoading || isLoading} onClick={() => {
+                                            const result = normalizeServerUrl(serverInput || props.baseUrl)
+                                            if (!result.ok) { setServerError(result.error); return }
+                                            setIsServerDialogOpen(false)
+                                            void handlePasskeyLogin(result.value)
+                                        }}>
+                                            {t('login.passkey.useEnteredHub')}
+                                        </Button>
                                     )}
 
                                     <div className="flex items-center justify-end gap-2">

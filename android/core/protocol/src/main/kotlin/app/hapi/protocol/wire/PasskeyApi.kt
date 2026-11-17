@@ -2,6 +2,7 @@ package app.hapi.protocol.wire
 
 import java.net.URI
 import java.security.MessageDigest
+import java.security.SecureRandom
 import java.util.Base64
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonArray
@@ -120,11 +121,7 @@ object NativePasskeys {
     fun requireHubBinding(optionsJson: String, hubUrl: String, operation: String) {
         require(operation == "login" || operation == "register")
         val options = parseObject(optionsJson) ?: error("Invalid passkey options")
-        val uri = URI(hubUrl)
-        require(uri.scheme.equals("https", ignoreCase = true) && uri.host != null && uri.rawUserInfo == null
-            && uri.rawQuery == null && uri.rawFragment == null && (uri.path.isNullOrEmpty() || uri.path == "/"))
-        val port = if (uri.port == -1 || uri.port == 443) "" else ":${uri.port}"
-        val hub = "https://${uri.host.lowercase()}$port"
+        val hub = canonicalHub(hubUrl)
         val encoded = options["challenge"].stringOrNull ?: error("Missing passkey challenge")
         require(encoded.length <= 4096)
         val challenge = parseObject(String(Base64.getUrlDecoder().decode(encoded), Charsets.UTF_8))
@@ -140,8 +137,57 @@ object NativePasskeys {
             val user = options["user"].objOrNull ?: error("Missing passkey account")
             val handle = Base64.getUrlDecoder().decode(user["id"].stringOrNull ?: error("Missing passkey account"))
             val prefix = MessageDigest.getInstance("SHA-256").digest(hub.toByteArray(Charsets.UTF_8))
-            require(handle.size == 64 && handle.copyOfRange(0, 32).contentEquals(prefix)) { "Passkey account belongs to another Hub" }
+            val discovered = userHandleHub(handle)
+            require(if (discovered != null) discovered == hub else handle.copyOfRange(2, 34).contentEquals(prefix)) { "Passkey account belongs to another Hub" }
             require(user["name"].stringOrNull?.endsWith("@${URI(hub).rawAuthority}") == true)
+        }
+    }
+
+    private fun canonicalHub(hubUrl: String): String {
+        val uri = URI(hubUrl)
+        require(uri.scheme.equals("https", ignoreCase = true) && uri.host != null && uri.rawUserInfo == null
+            && uri.rawQuery == null && uri.rawFragment == null && (uri.path.isNullOrEmpty() || uri.path == "/"))
+        val port = if (uri.port == -1 || uri.port == 443) "" else ":${uri.port}"
+        return "https://${uri.host.lowercase()}$port"
+    }
+
+    /** v2: [2, authority length, authority, 16-byte account tag], HTTPS implicit.
+     * Length 0 is a hash-bound long address, usable only with manual entry. */
+    fun userHandleHub(handle: ByteArray): String? {
+        require(handle.size in 2..64 && handle[0].toInt() == 2) { "Invalid passkey account" }
+        val length = handle[1].toInt() and 255
+        if (length == 0 && handle.size == 50) return null
+        require(length in 1..46 && handle.size == length + 18)
+        val bytes = handle.copyOfRange(2, 2 + length)
+        require(bytes.all { it.toInt() in 33..126 })
+        val hub = "https://${String(bytes, Charsets.US_ASCII)}"
+        require(canonicalHub(hub) == hub)
+        return hub
+    }
+
+    /** Generated locally, without a Hub, caller-supplied challenges or extensions. */
+    fun discoveryOptions(): String {
+        val nonce = ByteArray(32).also { SecureRandom().nextBytes(it) }
+        val b64 = Base64.getUrlEncoder().withoutPadding()
+        val challenge = buildJsonObject {
+            put("v", 1); put("operation", "discover"); put("channel", "native")
+            put("nonce", b64.encodeToString(nonce))
+        }
+        return buildJsonObject {
+            put("challenge", b64.encodeToString(challenge.toString().toByteArray(Charsets.UTF_8)))
+            put("rpId", RP_ID); put("userVerification", "required"); put("timeout", 120000)
+        }.toString()
+    }
+
+    /** The response is used only as a locator and is never posted to any Hub. */
+    fun discoveredHub(responseJson: String): String {
+        try {
+            val encoded = parseObject(responseJson)?.get("response").objOrNull?.get("userHandle").stringOrNull
+                ?: throw PasskeyDiscoveryUnavailableException()
+            require(encoded.length <= 88)
+            return userHandleHub(Base64.getUrlDecoder().decode(encoded)) ?: throw PasskeyDiscoveryUnavailableException()
+        } catch (_: Exception) {
+            throw PasskeyDiscoveryUnavailableException()
         }
     }
 
@@ -206,3 +252,6 @@ class PasskeyRpMismatchException(
     val expected: String,
     val actual: String?,
 ) : IllegalStateException("Passkey RP ID mismatch: expected $expected, got ${actual ?: "none"}")
+
+/** Enter the Hub manually when the selected passkey cannot locate it. */
+class PasskeyDiscoveryUnavailableException : IllegalStateException("Enter the Hub address manually")

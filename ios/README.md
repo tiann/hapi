@@ -174,8 +174,8 @@ The app supports multiple hubs with one active selection. See the
   `https://auth.hapi.run/.well-known/apple-app-site-association` (source:
   `web/passkey-site/.well-known/`). No association file is needed on a user's
   Hub domain. `PasskeysTests`, `PasskeyAuthTests`, and `PasskeyHubBindingTests`
-  cover the wire flow and isolation rules. CryptoKit-backed registration tests
-  run on macOS; non-Apple builds fail closed for registration without CryptoKit.
+  cover the wire flow and isolation rules. Discoverable-handle registration tests also run on non-Apple platforms;
+  opaque-handle SHA-256 validation fails closed without CryptoKit.
 - **Hubs:** Settings → Hubs switches between paired hubs and adds another.
 - **Sign out:** Settings → Hubs → Sign Out removes that hub's credentials and
   falls back to another paired hub or pairing. A rejected access token, or a freshly
@@ -775,3 +775,15 @@ TEST_RUNNER_HAPI_HOME_CAPTURE=/tmp/hapi-home-review \
 Unread state uses the hub’s [revision read-state contract](../docs/api/client-contract/read-state.md).
 Only a foreground transcript laid out at the latest tail acknowledges content.
 Local pending reads persist before the dot clears and retry when connectivity returns.
+
+### Address-free Passkey sign-in
+
+The pairing Passkey entry first runs a local resident-credential selection to
+recover the Hub from its v2 user handle, without HTTP requests. Confirm the
+recovered HTTPS origin, then run the existing health/options/Hub-bound assertion
+flow. The discovery assertion is never sent to the Hub and never authorizes a
+session. Registration validates the handle's Hub origin (or hash for long
+addresses) before opening system UI. The handle reserves 16 bytes for a stable
+account tag and fits 46 ASCII authority bytes; longer addresses retain manual
+sign-in. Re-register credentials to enable discovery. No central server is
+required; the credential must be available through the local/synced provider.

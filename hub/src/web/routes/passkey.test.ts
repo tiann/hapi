@@ -3,7 +3,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { PASSKEY_ORIGIN, PASSKEY_RP_ID } from '@hapi/protocol/passkey'
+import { PASSKEY_ORIGIN, PASSKEY_RP_ID, passkeyUserHandleHub, passkeyDiscoveryOptions, validatePasskeyUserHandle } from '@hapi/protocol/passkey'
 import { Hono } from 'hono'
 import { SoftAuthenticator } from '../testHelpers/passkeyAuthenticator'
 import { createConfiguration, getConfiguration } from '../../configuration'
@@ -68,7 +68,7 @@ async function registerNative(app: Hono<WebAppEnv>, authenticator: SoftAuthentic
     expect(res.status).toBe(200)
     const options = await res.json() as Options
     expect(options.rp.id).toBe(PASSKEY_RP_ID)
-    expect(Buffer.from(options.user.id, 'base64url')).toHaveLength(64)
+    expect(passkeyUserHandleHub(Buffer.from(options.user.id, 'base64url'))).toBe(ORIGIN)
     expect(options.user.name).toBe(`${namespace === 'default' ? 'hapi' : `hapi:${namespace}`}@${HOST}`)
     const verify = await post(app, '/api/passkey/register/verify', { response: authenticator.create(options), name: 'Laptop' }, await bearer(namespace))
     expect([verify.status, await verify.clone().text()]).toEqual([200, expect.any(String)])
@@ -112,6 +112,34 @@ beforeAll(async () => {
 beforeEach(() => { getConfiguration()._setCliApiToken('token-one', 'env', false) })
 
 describe('unified passkeys', () => {
+    it('encodes stable, namespace-isolated Hub locators and hash-binds long addresses', async () => {
+        const { app } = createApp(newStore())
+        const first = await (await nativeOptions(app, 'register')).json() as Options
+        const repeat = await (await nativeOptions(app, 'register')).json() as Options
+        const team = await (await nativeOptions(app, 'register', 'team')).json() as Options
+        expect(first.user.id).toBe(repeat.user.id)
+        expect(team.user.id).not.toBe(first.user.id)
+        for (const options of [first, team]) {
+            expect(passkeyUserHandleHub(Buffer.from(options.user.id, 'base64url'))).toBe(ORIGIN)
+            await validatePasskeyUserHandle(options.user.id, ORIGIN)
+        }
+        const long = `https://${'a'.repeat(43)}.com`
+        const other = createApp(newStore(), { hub: long }).app
+        const opaque = await (await nativeOptions(other, 'register')).json() as Options
+        expect(Buffer.from(opaque.user.id, 'base64url')).toHaveLength(50)
+        expect(passkeyUserHandleHub(Buffer.from(opaque.user.id, 'base64url'))).toBeNull()
+        await validatePasskeyUserHandle(opaque.user.id, long)
+        await expect(validatePasskeyUserHandle(opaque.user.id, ORIGIN)).rejects.toThrow()
+    })
+    it('never accepts a locator-only discovery assertion as authentication', async () => {
+        const { app } = createApp(newStore())
+        const a = new SoftAuthenticator(PASSKEY_RP_ID, PASSKEY_ORIGIN)
+        await registerNative(app, a)
+        const discovery = passkeyDiscoveryOptions('native')
+        expect((await post(app, '/api/passkey/login/verify', { response: a.get(discovery) })).status).toBe(401)
+        expect((await complete(app, discovery.challenge, a.get(discovery))).status).toBe(401)
+        expect((await nativeLogin(app, a)).res.status).toBe(200)
+    })
     it('logs into web with an App-created passkey; the bridge never gets tokens', async () => {
         const store = newStore()
         const { app } = createApp(store)
