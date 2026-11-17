@@ -120,7 +120,7 @@ describe('SyncEngine reopen/resume PTY session id preservation', () => {
         expect(staleReadyPresentAtSpawn).toBe(false)
     })
 
-    it('retries a resume when the replacement did not become active, then preserves success', async () => {
+    it('does not spawn a second remote wrapper when a resume does not become active', async () => {
         const sessionId = insertSession(
             'remote-session-active-retry',
             baseMetadata({ lifecycleState: 'archived', archivedBy: 'hub', archiveReason: 'inactivity' }),
@@ -133,15 +133,10 @@ describe('SyncEngine reopen/resume PTY session id preservation', () => {
             return { type: 'success', sessionId }
         }
         ;(engine as any).waitForSessionActive = async () => ++activeChecks >= 2
-        const engineClass = SyncEngine as unknown as { RESUME_FAILED_RETRY_DELAYS_MS: number[] }
-        const originalDelays = [...engineClass.RESUME_FAILED_RETRY_DELAYS_MS]
-        engineClass.RESUME_FAILED_RETRY_DELAYS_MS.splice(0, originalDelays.length, 0, 0)
-        try {
-            await expect(engine.resumeSession(sessionId, NAMESPACE)).resolves.toMatchObject({ type: 'success', sessionId })
-        } finally {
-            engineClass.RESUME_FAILED_RETRY_DELAYS_MS.splice(0, 2, ...originalDelays)
-        }
-        expect(spawnCalls).toBe(2)
+        await expect(engine.resumeSession(sessionId, NAMESPACE)).resolves.toMatchObject({
+            type: 'error', code: 'resume_failed', message: 'Session failed to become active'
+        })
+        expect(spawnCalls).toBe(1)
     })
 
     it('reopening an archived PTY session keeps the same hub session id (no new row, old row intact)', async () => {
