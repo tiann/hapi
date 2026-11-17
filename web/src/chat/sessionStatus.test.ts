@@ -1,6 +1,32 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatBlock, ToolCallBlock } from '@/chat/types'
+import type { SessionSummary } from '@/types/api'
 import { buildSessionStatusData } from './sessionStatus'
+
+function makeSummary(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
+    return {
+        active: false,
+        thinking: false,
+        activeAt: 0,
+        updatedAt: 0,
+        metadata: null,
+        metadataVersion: 0,
+        agentStateVersion: 0,
+        todosUpdatedAt: 0,
+        todoProgress: null,
+        pendingRequestsCount: 0,
+        pendingRequestKinds: [],
+        pendingRequests: [],
+        backgroundTaskCount: 0,
+        futureScheduledMessageCount: 0,
+        nextScheduledAt: null,
+        model: null,
+        effort: null,
+        attachedJob: null,
+        attachedJobUpdatedAt: 0,
+        ...overrides,
+    }
+}
 
 function toolBlock(overrides: Omit<Partial<ToolCallBlock>, 'tool'> & {
     name: string
@@ -189,6 +215,100 @@ describe('buildSessionStatusData', () => {
             })
         ])
         expect(status?.terminals).toEqual([])
+    })
+
+    it('merges linked child sessions into subagents and deduplicates active tool blocks', () => {
+        const blocks: ChatBlock[] = [
+            toolBlock({
+                id: 'block-spawn-live',
+                name: 'mcp__hapi__spawn_peer',
+                tool: {
+                    id: 'call-spawn-live',
+                    state: 'running',
+                    input: { directory: '/work/app', name: 'Live Peer' },
+                    result: 'Spawned child-live (Live Peer)',
+                }
+            })
+        ]
+
+        const linkedSessions: SessionSummary[] = [
+            makeSummary({
+                id: 'parent-1',
+                active: true,
+                metadata: { path: '/work/app', name: 'Parent' },
+            }),
+            makeSummary({
+                id: 'child-live',
+                active: true,
+                thinking: true,
+                updatedAt: 200,
+                metadata: {
+                    path: '/work/app',
+                    name: 'Live Peer',
+                    flavor: 'codex',
+                    parentLink: { parentSessionId: 'parent-1', kind: 'peer' },
+                },
+            }),
+            makeSummary({
+                id: 'child-done',
+                active: false,
+                updatedAt: 300,
+                metadata: {
+                    path: '/work/app',
+                    name: 'Finished Fork',
+                    flavor: 'claude',
+                    parentLink: { parentSessionId: 'parent-1', kind: 'fork' },
+                },
+            }),
+            makeSummary({
+                id: 'child-running-extra',
+                active: true,
+                thinking: true,
+                updatedAt: 100,
+                metadata: {
+                    path: '/work/app',
+                    name: 'Extra Worker',
+                    flavor: 'agy',
+                    parentLink: { parentSessionId: 'parent-1', kind: 'peer' },
+                },
+            }),
+        ]
+
+        const status = buildSessionStatusData({
+            sessionId: 'parent-1',
+            goal: null,
+            tasks: [],
+            blocks,
+            linkedSessions,
+        })
+
+        expect(status?.subagents).toEqual([
+            expect.objectContaining({
+                id: 'call-spawn-live',
+                blockId: 'block-spawn-live',
+                linkedSessionId: 'child-live',
+                linkKind: 'peer',
+                state: 'running',
+            }),
+            expect.objectContaining({
+                id: 'session:child-running-extra',
+                blockId: null,
+                title: 'Extra Worker',
+                detail: 'agy',
+                state: 'running',
+                linkedSessionId: 'child-running-extra',
+                linkKind: 'peer',
+            }),
+            expect.objectContaining({
+                id: 'session:child-done',
+                blockId: null,
+                title: 'Finished Fork',
+                detail: 'claude',
+                state: 'idle',
+                linkedSessionId: 'child-done',
+                linkKind: 'fork',
+            }),
+        ])
     })
 
     it('lists Claude background tasks with the command that started them', () => {

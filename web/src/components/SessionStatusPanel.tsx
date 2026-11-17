@@ -1,8 +1,30 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { formatDuration } from '@/chat/presentation'
 import type { SessionStatusData, SessionStatusSubagent } from '@/chat/sessionStatus'
+import { SessionLinkAnchor } from '@/components/SessionLinkAnchor'
 import { ChecklistList } from '@/components/ToolCard/checklist'
 import { useTranslation } from '@/lib/use-translation'
+
+function LinkedSessionIcon(props: { className?: string }) {
+    return (
+        <svg
+            xmlns="http://www.w3.org/2000/svg"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={props.className}
+            aria-hidden="true"
+        >
+            <line x1="6" y1="3" x2="6" y2="15" />
+            <circle cx="18" cy="6" r="3" />
+            <circle cx="6" cy="18" r="3" />
+            <path d="M18 9a9 9 0 0 1-9 9" />
+        </svg>
+    )
+}
 
 function Section(props: { title: string; children: ReactNode }) {
     return (
@@ -18,6 +40,7 @@ function Section(props: { title: string; children: ReactNode }) {
 function subagentTone(state: SessionStatusSubagent['state']): string {
     if (state === 'error') return 'text-red-600'
     if (state === 'waiting') return 'text-amber-600'
+    if (state === 'idle') return 'text-[var(--app-hint)]'
     return 'text-emerald-600'
 }
 
@@ -32,7 +55,9 @@ export function SessionStatusPanel({ data, onInspectSubagent }: {
 }) {
     const { t } = useTranslation()
     const completedTasks = data.tasks.filter((task) => task.status === 'completed').length
-    const runningSubagents = data.subagents.filter((subagent) => subagent.state === 'running').length
+    const activeSubagents = data.subagents.filter(
+        (subagent) => subagent.state === 'running' || subagent.state === 'waiting'
+    ).length
     const errorSubagents = data.subagents.filter((subagent) => subagent.state === 'error').length
     const hasLiveElapsed = data.terminals.length > 0
         || data.subagents.some((subagent) => subagent.endedAt === null && subagent.startedAt !== null)
@@ -44,14 +69,18 @@ export function SessionStatusPanel({ data, onInspectSubagent }: {
         return () => window.clearInterval(timer)
     }, [hasLiveElapsed])
 
+    const subagentCountLabel = activeSubagents > 0 && activeSubagents < data.subagents.length
+        ? `${activeSubagents}/${data.subagents.length}`
+        : `${data.subagents.length}`
+
     return (
         <details className="group mx-3 mt-3 rounded-md border border-[var(--app-border)] bg-[var(--app-subtle-bg)]">
             <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-xs font-semibold text-[var(--app-fg)] [&::-webkit-details-marker]:hidden">
                 <span>{t('session.status.title')}</span>
                 <span className="ml-auto flex items-center gap-2 text-[11px] font-normal text-[var(--app-hint)]">
                     {data.subagents.length > 0 ? (
-                        <span className={errorSubagents > 0 ? 'text-red-600' : runningSubagents > 0 ? 'text-emerald-600' : ''}>
-                            {t('session.status.subagents')} {data.subagents.length}
+                        <span className={errorSubagents > 0 ? 'text-red-600' : activeSubagents > 0 ? 'text-emerald-600' : ''}>
+                            {t('session.status.subagents')} {subagentCountLabel}
                         </span>
                     ) : null}
                     {data.tasks.length > 0 ? (
@@ -88,31 +117,75 @@ export function SessionStatusPanel({ data, onInspectSubagent }: {
                         <div className="flex flex-col gap-1.5">
                             {data.subagents.map((subagent) => {
                                 const elapsed = elapsedSince(subagent.startedAt, subagent.endedAt ?? now)
+                                const isLinkedSession = Boolean(subagent.linkedSessionId)
+                                const showState = subagent.state !== 'idle'
+                                const actionGlyph = isLinkedSession ? '↗' : onInspectSubagent ? '›' : null
                                 const body = (
                                     <>
-                                        <div className="flex min-w-0 items-baseline gap-1.5">
-                                            <span className={`shrink-0 text-xs ${subagentTone(subagent.state)}`}>●</span>
-                                            <span className="min-w-0 break-words text-[var(--app-fg)]">{subagent.title}</span>
-                                            <span className={`ml-auto shrink-0 text-xs ${subagentTone(subagent.state)}`}>
-                                                {t(`session.status.subagent.${subagent.state}`)}
-                                                {elapsed ? ` · ${elapsed}` : ''}
-                                            </span>
-                                            {onInspectSubagent ? (
-                                                <span className="shrink-0 text-xs text-[var(--app-hint)]" aria-hidden="true">›</span>
+                                        <div className="flex min-w-0 items-center gap-1.5">
+                                            {isLinkedSession ? (
+                                                <LinkedSessionIcon className={`h-3 w-3 shrink-0 ${subagentTone(subagent.state)}`} />
+                                            ) : (
+                                                <span className={`shrink-0 text-xs ${subagentTone(subagent.state)}`}>●</span>
+                                            )}
+                                            <span className="min-w-0 truncate text-[var(--app-fg)]">{subagent.title}</span>
+                                            {subagent.linkKind && subagent.linkKind !== 'peer' ? (
+                                                <span className="shrink-0 rounded bg-[var(--app-bg)] px-1 py-px text-[10px] leading-none text-[var(--app-hint)]">
+                                                    {t(`sessions.lineage.kind.${subagent.linkKind}`)}
+                                                </span>
+                                            ) : null}
+                                            {showState ? (
+                                                <span className={`ml-auto shrink-0 text-xs ${subagentTone(subagent.state)}`}>
+                                                    {t(`session.status.subagent.${subagent.state}`)}
+                                                    {elapsed ? ` · ${elapsed}` : ''}
+                                                </span>
+                                            ) : null}
+                                            {actionGlyph ? (
+                                                <span
+                                                    className={`${showState ? '' : 'ml-auto '}shrink-0 text-xs text-[var(--app-hint)]`}
+                                                    aria-hidden="true"
+                                                >
+                                                    {actionGlyph}
+                                                </span>
                                             ) : null}
                                         </div>
                                         {subagent.detail ? (
-                                            <div className="ml-3.5 break-words text-xs text-[var(--app-hint)]">{subagent.detail}</div>
+                                            <div className="ml-4 break-words text-xs text-[var(--app-hint)]">{subagent.detail}</div>
                                         ) : null}
                                     </>
                                 )
+                                if (subagent.linkedSessionId) {
+                                    return (
+                                        <SessionLinkAnchor
+                                            key={subagent.id}
+                                            sessionId={subagent.linkedSessionId}
+                                            aria-label={`${t('sessions.lineage.openSession')}: ${subagent.title}`}
+                                            onClick={(event) => {
+                                                if (
+                                                    onInspectSubagent
+                                                    && event.button === 0
+                                                    && !event.metaKey
+                                                    && !event.ctrlKey
+                                                    && !event.shiftKey
+                                                    && !event.altKey
+                                                ) {
+                                                    event.preventDefault()
+                                                    onInspectSubagent(subagent)
+                                                }
+                                            }}
+                                            className="block min-w-0 rounded px-1.5 py-1 text-left text-sm transition-colors hover:bg-[var(--app-bg)] touch-manipulation"
+                                        >
+                                            {body}
+                                        </SessionLinkAnchor>
+                                    )
+                                }
                                 return onInspectSubagent ? (
                                     <button
                                         key={subagent.id}
                                         type="button"
                                         onClick={() => onInspectSubagent(subagent)}
                                         aria-label={`${t('session.status.inspectSubagent')}: ${subagent.title}`}
-                                        className="min-w-0 rounded px-1.5 py-1 text-left text-sm transition-colors hover:bg-[var(--app-bg)]"
+                                        className="min-w-0 rounded px-1.5 py-1 text-left text-sm transition-colors hover:bg-[var(--app-bg)] touch-manipulation"
                                     >
                                         {body}
                                     </button>

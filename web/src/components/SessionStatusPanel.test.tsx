@@ -45,4 +45,54 @@ describe('SessionStatusPanel', () => {
             blockId: 'block-agent-1'
         }))
     })
+
+    it('renders linked child sessions with distinct session-link icons and clean idle rows', () => {
+        const onInspectSubagent = vi.fn()
+        render(
+            <I18nProvider>
+                <SessionStatusPanel
+                    data={{
+                        goal: null,
+                        tasks: [],
+                        subagents: [
+                            {
+                                id: 'block-live',
+                                blockId: 'block-1',
+                                title: 'Ephemeral Task',
+                                detail: 'Grep',
+                                state: 'running',
+                                startedAt: Date.now() - 2000,
+                                endedAt: null,
+                            },
+                            {
+                                id: 'session:child-1',
+                                blockId: null,
+                                title: 'Codex Fork Worker',
+                                detail: 'codex',
+                                state: 'idle',
+                                startedAt: null,
+                                endedAt: null,
+                                linkedSessionId: 'child-1',
+                                linkKind: 'fork',
+                            },
+                        ],
+                        terminals: [],
+                    }}
+                    onInspectSubagent={onInspectSubagent}
+                />
+            </I18nProvider>
+        )
+
+        expect(screen.getByText('Subagents 1/2')).toBeInTheDocument()
+        expect(screen.getByText('fork')).toBeInTheDocument()
+        expect(screen.queryByText('idle')).toBeNull()
+
+        const link = screen.getByRole('link', { name: 'Open session: Codex Fork Worker' })
+        expect(link.getAttribute('href')).toBe('/sessions/child-1')
+        fireEvent.click(link)
+        expect(onInspectSubagent).toHaveBeenCalledWith(expect.objectContaining({
+            linkedSessionId: 'child-1',
+            linkKind: 'fork',
+        }))
+    })
 })

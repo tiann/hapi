@@ -1489,8 +1489,6 @@ export default {
   'sessions.lineage.kind.fork': '派生',
   'sessions.lineage.kind.branch': '分支',
   'sessions.lineage.parentPrefix': '父会话',
-  'sessions.lineage.childrenLabel': '关联会话',
-  'sessions.lineage.showMoreChildren': '+{count}',
   'sessions.lineage.openSession': '打开会话',
   'session.status.inspectSubagent': '查看子代理详情',
 } as const

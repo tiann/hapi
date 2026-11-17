@@ -1,21 +1,24 @@
-import { isObject } from '@hapi/protocol'
-import type { BackgroundTask, ThreadGoal, TodoItem } from '@/types/api'
+import { isObject, type SessionLinkKind } from '@hapi/protocol'
+import type { BackgroundTask, SessionSummary, ThreadGoal, TodoItem } from '@/types/api'
 import type { ChatBlock, ToolCallBlock } from '@/chat/types'
 import { isSubagentToolName } from '@/chat/subagentTool'
+import { hasUrgentModelError } from '@/components/ModelErrorBanner'
 import { getCodexAgentActivity, getCodexAgentSummary } from '@/components/ToolCard/codexAgents'
 import { extractSpawnedSessionId, parsePeerToolName, parseWrapperToolInvocation } from '@/components/ToolCard/peerTools'
+import { getSessionTitle } from '@/lib/sessionTitle'
 import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
 
 export type SessionStatusSubagent = {
     id: string
-    blockId: string
+    blockId: string | null
     title: string
     detail: string | null
-    state: 'running' | 'waiting' | 'error'
+    state: 'running' | 'waiting' | 'error' | 'idle'
     startedAt: number | null
     endedAt: number | null
     linkedSessionId?: string | null
     nativeSessionId?: string | null
+    linkKind?: SessionLinkKind | null
 }
 
 export type SessionStatusTerminal = {
@@ -155,11 +158,32 @@ function subagentFromBlock(
     }
 }
 
+function classifyLinkedSessionState(session: SessionSummary): SessionStatusSubagent['state'] {
+    if (hasUrgentModelError(session.metadata)) return 'error'
+    if (session.active && (session.pendingRequestsCount ?? 0) > 0) return 'waiting'
+    if ((session.active && session.thinking) || session.attachedJob?.status === 'running') return 'running'
+    return 'idle'
+}
+
+function linkedSessionSortPriority(
+    session: SessionSummary,
+    state: SessionStatusSubagent['state']
+): number {
+    switch (state) {
+        case 'error': return 0
+        case 'waiting': return 1
+        case 'running': return 2
+        case 'idle': return session.active ? 3 : 4
+    }
+}
+
 export function buildSessionStatusData(args: {
+    sessionId?: string
     goal: ThreadGoal | null | undefined
     tasks: readonly TodoItem[] | null | undefined
     blocks: readonly ChatBlock[]
     backgroundTasks?: readonly BackgroundTask[]
+    linkedSessions?: readonly SessionSummary[]
 }): SessionStatusData | null {
     const tools = collectToolBlocks(args.blocks)
     const backgroundTasks = args.backgroundTasks ?? []
@@ -170,12 +194,71 @@ export function buildSessionStatusData(args: {
             activeBackgroundWrapperBlockIds.add(launchBlock.id)
         }
     }
+
+    const subagents: SessionStatusSubagent[] = tools
+        .map((block) => subagentFromBlock(block, activeBackgroundWrapperBlockIds))
+        .filter((subagent): subagent is SessionStatusSubagent => subagent !== null)
+
+    if (args.linkedSessions && args.linkedSessions.length > 0) {
+        const byId = new Map<string, SessionSummary>()
+        const byNativeId = new Map<string, SessionSummary>()
+        for (const candidate of args.linkedSessions) {
+            if (args.sessionId && candidate.id === args.sessionId) continue
+            byId.set(candidate.id, candidate)
+            const nativeId = candidate.metadata?.agentSessionId?.trim()
+            if (nativeId && !byNativeId.has(nativeId)) {
+                byNativeId.set(nativeId, candidate)
+            }
+        }
+
+        const coveredSessionIds = new Set<string>()
+        for (const subagent of subagents) {
+            const matched = (subagent.linkedSessionId ? byId.get(subagent.linkedSessionId) : undefined)
+                ?? (subagent.nativeSessionId ? byNativeId.get(subagent.nativeSessionId) : undefined)
+            if (!matched) continue
+            subagent.linkedSessionId = matched.id
+            subagent.linkKind = matched.metadata?.parentLink?.kind ?? subagent.linkKind ?? 'peer'
+            coveredSessionIds.add(matched.id)
+        }
+
+        if (args.sessionId) {
+            const extraChildren = args.linkedSessions
+                .filter((candidate) => candidate.id !== args.sessionId
+                    && candidate.metadata?.parentLink?.parentSessionId === args.sessionId
+                    && !coveredSessionIds.has(candidate.id))
+                .map((session) => {
+                    const state = classifyLinkedSessionState(session)
+                    return {
+                        session,
+                        state,
+                        priority: linkedSessionSortPriority(session, state),
+                    }
+                })
+            extraChildren.sort((a, b) => {
+                if (a.priority !== b.priority) return a.priority - b.priority
+                return b.session.updatedAt - a.session.updatedAt
+            })
+            for (const { session, state } of extraChildren) {
+                const kind = session.metadata?.parentLink?.kind ?? 'peer'
+                subagents.push({
+                    id: `session:${session.id}`,
+                    blockId: null,
+                    title: getSessionTitle(session),
+                    detail: session.metadata?.flavor?.trim() || null,
+                    state,
+                    startedAt: null,
+                    endedAt: null,
+                    linkedSessionId: session.id,
+                    linkKind: kind,
+                })
+            }
+        }
+    }
+
     const data: SessionStatusData = {
         goal: args.goal ?? null,
         tasks: args.tasks ? [...args.tasks] : [],
-        subagents: tools
-            .map((block) => subagentFromBlock(block, activeBackgroundWrapperBlockIds))
-            .filter((subagent): subagent is SessionStatusSubagent => subagent !== null),
+        subagents,
         terminals: buildBackgroundTerminals(tools, backgroundTasks)
     }
 

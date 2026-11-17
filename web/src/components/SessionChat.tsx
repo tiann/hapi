@@ -89,7 +89,7 @@ import {
     type ScratchlistParkResult,
 } from '@/lib/scratchlistAttachmentFlow'
 import type { ScratchlistEntry } from '@/lib/scratchlist'
-import { isHubScratchlistAttachmentPath } from '@hapi/protocol'
+import { isHubScratchlistAttachmentPath, resolveSessionParentLink } from '@hapi/protocol'
 import {
     type AttachmentDraftInput,
 } from '@/lib/composer-attachment-drafts'
@@ -101,9 +101,10 @@ import { CursorMigrationBanner } from '@/components/CursorMigrationBanner'
 import { ModelErrorBanner, hasActiveModelError, isBridgeSettling, shouldKeepPendingBridge, visibleBridgeFailureReason } from '@/components/ModelErrorBanner'
 import { TeamPanel } from '@/components/TeamPanel'
 import { SessionStatusPanel } from '@/components/SessionStatusPanel'
-import { SessionLineageBar } from '@/components/SessionLineageBar'
+import { SessionLinkAnchor } from '@/components/SessionLinkAnchor'
 import { SubagentInspectorDialog } from '@/components/SubagentInspectorDialog'
 import { buildSessionStatusData, type SessionStatusSubagent } from '@/chat/sessionStatus'
+import { isTelegramApp } from '@/hooks/useTelegram'
 import { usePlatform } from '@/hooks/usePlatform'
 import { getToolCardDisplayPresentation, useToolCardDisplayMode } from '@/hooks/useToolCardDisplayMode'
 import { useConciseChatMode } from '@/hooks/useConciseChatMode'
@@ -1817,18 +1818,31 @@ function SessionChatInner(props: SessionChatProps) {
     )
     const sessionStatus = useMemo(
         () => buildSessionStatusData({
+            sessionId: props.session.id,
             goal: reduced.latestGoal,
             tasks: props.session.todos,
             blocks: reconciled.blocks,
-            backgroundTasks: props.session.backgroundTasks
+            backgroundTasks: props.session.backgroundTasks,
+            linkedSessions: allSessions,
         }),
         [
+            props.session.id,
             reduced.latestGoal,
             props.session.todos,
             props.session.backgroundTasks,
-            reconciled.blocks
+            reconciled.blocks,
+            allSessions,
         ]
     )
+    const parentHeaderSession = useMemo(() => {
+        const link = resolveSessionParentLink(props.session.metadata, props.session.id)
+        if (!link) return null
+        const matched = allSessions.find((s) => s.id === link.parentSessionId)
+        return {
+            id: link.parentSessionId,
+            title: matched ? getSessionTitle(matched) : link.parentSessionId.slice(0, 8),
+        }
+    }, [props.session.metadata, props.session.id, allSessions])
     const hasRunningChildAgent = useMemo(
         () => hasAbortableAgentRun(reduced.blocks),
         [reduced.blocks]
@@ -1851,7 +1865,9 @@ function SessionChatInner(props: SessionChatProps) {
             })
             return
         }
-        setInspectedSubagentBlockId(subagent.blockId)
+        if (subagent.blockId) {
+            setInspectedSubagentBlockId(subagent.blockId)
+        }
     }, [allSessions, navigate, props.session.id])
 
     useEffect(() => {
@@ -2324,6 +2340,7 @@ function SessionChatInner(props: SessionChatProps) {
         <div className="flex h-full min-h-0 flex-col">
             <SessionHeader
                 session={props.session}
+                parentSession={parentHeaderSession}
                 serviceTier={effectiveCodexServiceTier}
                 onBack={props.onBack}
                 onToggleFiles={props.session.metadata?.path ? handleToggleFiles : undefined}
@@ -2406,7 +2423,28 @@ function SessionChatInner(props: SessionChatProps) {
                         )}
                         <div className={(terminalVisible && canViewAgentTerminal) ? 'hidden' : 'flex min-h-0 flex-1 flex-col'}>
 
-                    <SessionLineageBar session={props.session} sessions={allSessions} />
+                    {props.session.metadata?.conversationBranch ? (
+                        <div className="border-b border-[var(--app-divider)] p-3 text-xs text-[var(--app-hint)]">
+                            <SessionLinkAnchor
+                                sessionId={props.session.metadata.conversationBranch.sourceSessionId}
+                                className="underline hover:text-[var(--app-link)]"
+                            >
+                                {t('branch.source')}
+                            </SessionLinkAnchor>{' · '}{t('branch.filesNotice')}
+                            {props.session.metadata.conversationBranch.state !== 'started'
+                                ? <p role="status">{t('branch.uncertain')}</p> : null}
+                        </div>
+                    ) : isTelegramApp() && parentHeaderSession ? (
+                        <div className="border-b border-[var(--app-divider)] px-3 py-1.5 text-xs text-[var(--app-hint)]">
+                            <SessionLinkAnchor
+                                sessionId={parentHeaderSession.id}
+                                className="inline-flex max-w-full items-center gap-1 font-medium text-[var(--app-link)] hover:underline"
+                            >
+                                <span aria-hidden="true">↑</span>
+                                <span className="truncate">{parentHeaderSession.title}</span>
+                            </SessionLinkAnchor>
+                        </div>
+                    ) : null}
                     {branchPoint && props.session.metadata?.machineId ? <BranchConversationDialog
                         api={props.api}
                         machineId={props.session.metadata.machineId}
