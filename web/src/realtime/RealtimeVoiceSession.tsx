@@ -17,12 +17,24 @@ const ElevenLabsConversationBridge = lazy(() =>
 // Debug logging
 const DEBUG = import.meta.env.DEV
 
-// Static reference to the conversation hook instance and lazy bridge trigger
+// Static reference to the conversation hook instance, lazy bridge trigger, and lifecycle generation
 let conversationInstance: ReturnType<typeof useConversation> | null = null
 let ensureConversationInstance: (() => Promise<ReturnType<typeof useConversation>>) | null = null
+let voiceSessionGeneration = 0
 
 // Store reference for status updates
 let statusCallback: StatusCallback | null = null
+
+function assertActiveGeneration(
+    generation: number,
+    expectedConversation?: ReturnType<typeof useConversation>
+): void {
+    if (generation !== voiceSessionGeneration || (expectedConversation && conversationInstance !== expectedConversation)) {
+        statusCallback?.('disconnected')
+        resetRealtimeSessionState()
+        throw new Error('Realtime voice session cancelled')
+    }
+}
 
 // Global voice session implementation
 class RealtimeVoiceSessionImpl implements VoiceSession {
@@ -40,6 +52,7 @@ class RealtimeVoiceSessionImpl implements VoiceSession {
             throw error
         }
 
+        const generation = ++voiceSessionGeneration
         statusCallback?.('connecting')
 
         // Load and mount the @elevenlabs/react bridge in parallel with mic
@@ -53,12 +66,20 @@ class RealtimeVoiceSessionImpl implements VoiceSession {
         try {
             permissionStream = await navigator.mediaDevices.getUserMedia({ audio: true })
         } catch (error) {
+            void conversationPromise.catch(() => {})
+            assertActiveGeneration(generation)
             console.error('[Voice] Failed to get microphone permission:', error)
             statusCallback?.('error', 'Microphone permission denied')
-            void conversationPromise.catch(() => {})
             throw error
         } finally {
             permissionStream?.getTracks().forEach((track) => track.stop())
+        }
+
+        try {
+            assertActiveGeneration(generation)
+        } catch (error) {
+            void conversationPromise.catch(() => {})
+            throw error
         }
 
         // Fetch conversation token from server
@@ -68,8 +89,15 @@ class RealtimeVoiceSessionImpl implements VoiceSession {
                 voiceId: config.voiceId ?? readStoredVoiceSelection('elevenlabs') ?? undefined
             })
         } catch (error) {
+            void conversationPromise.catch(() => {})
+            assertActiveGeneration(generation)
             console.error('[Voice] Failed to fetch voice token:', error)
             statusCallback?.('error', 'Network error')
+            throw error
+        }
+        try {
+            assertActiveGeneration(generation)
+        } catch (error) {
             void conversationPromise.catch(() => {})
             throw error
         }
@@ -110,7 +138,12 @@ class RealtimeVoiceSessionImpl implements VoiceSession {
         // Use conversation token from server (private agent flow)
         try {
             const conversation = await conversationPromise
+            assertActiveGeneration(generation, conversation)
             const conversationId = await conversation.startSession(baseSessionConfig)
+            if (generation !== voiceSessionGeneration || conversationInstance !== conversation) {
+                await conversation.endSession().catch(() => {})
+                assertActiveGeneration(generation, conversation)
+            }
 
             if (DEBUG) {
                 console.log('[Voice] Started conversation with ID:', conversationId)
@@ -121,6 +154,7 @@ class RealtimeVoiceSessionImpl implements VoiceSession {
                 initialContext: config.initialContext,
                 sendChunk: (chunk) => conversation.sendContextualUpdate(chunk)
             })
+            assertActiveGeneration(generation, conversation)
 
             if (isVoiceProactiveSummaryEnabled()) {
                 this.sendTextMessage(
@@ -128,6 +162,7 @@ class RealtimeVoiceSessionImpl implements VoiceSession {
                 )
             }
         } catch (error) {
+            assertActiveGeneration(generation)
             const errorMessage = error instanceof Error ? error.message : String(error)
             console.error('[Voice] Failed to start realtime session:', {
                 error: errorMessage,
@@ -141,7 +176,9 @@ class RealtimeVoiceSessionImpl implements VoiceSession {
     }
 
     async endSession(): Promise<void> {
+        voiceSessionGeneration += 1
         if (!conversationInstance) {
+            statusCallback?.('disconnected')
             return
         }
 
@@ -303,6 +340,7 @@ export function RealtimeVoiceSession({
 
         return () => {
             // Clean up on unmount
+            voiceSessionGeneration += 1
             conversationInstance = null
             ensureConversationInstance = null
             const waiters = conversationWaitersRef.current.splice(0)
