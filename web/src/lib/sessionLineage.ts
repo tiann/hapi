@@ -49,6 +49,7 @@ function findNearestVisibleAncestorId(
     visibleIndexById: ReadonlyMap<string, number>,
     lookupById: ReadonlyMap<string, SessionSummary>
 ): string | null {
+    if (session.pinned) return null
     const visited = new Set<string>([session.id])
     let cursor: SessionSummary | undefined = session
     for (let hop = 0; hop < MAX_ANCESTOR_HOPS; hop += 1) {

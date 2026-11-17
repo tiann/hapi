@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import type { SessionSummary } from '@/types/api'
+import { DEFAULT_SESSION_PREVIEW_LIMIT } from '@/hooks/useSessionPreviewLimit'
 import { I18nProvider } from '@/lib/i18n-context'
 import { ToastProvider } from '@/lib/toast-context'
 import { markSessionSeen } from '@/lib/sessionLastSeen'
@@ -36,23 +37,8 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string }): Sessi
     }
 }
 
-function renderList(sessions: SessionSummary[], selectedSessionId: string | null = null) {
-    const wrapper = ({ children }: { children: ReactNode }) => (
-        <QueryClientProvider
-            client={new QueryClient({
-                defaultOptions: {
-                    queries: { retry: false },
-                    mutations: { retry: false }
-                }
-            })}
-        >
-            <ToastProvider>
-                <I18nProvider>{children}</I18nProvider>
-            </ToastProvider>
-        </QueryClientProvider>
-    )
-
-    return render(
+function makeListNode(sessions: SessionSummary[], selectedSessionId: string | null = null) {
+    return (
         <SessionList
             sessions={sessions}
             selectedSessionId={selectedSessionId}
@@ -62,9 +48,32 @@ function renderList(sessions: SessionSummary[], selectedSessionId: string | null
             isLoading={false}
             renderHeader
             api={null}
-        />,
-        { wrapper }
+        />
     )
+}
+
+function renderList(sessions: SessionSummary[], selectedSessionId: string | null = null) {
+    const queryClient = new QueryClient({
+        defaultOptions: {
+            queries: { retry: false },
+            mutations: { retry: false }
+        }
+    })
+    const wrapper = ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={queryClient}>
+            <ToastProvider>
+                <I18nProvider>{children}</I18nProvider>
+            </ToastProvider>
+        </QueryClientProvider>
+    )
+
+    const view = render(makeListNode(sessions, selectedSessionId), { wrapper })
+    return {
+        ...view,
+        rerenderList: (nextSessions: SessionSummary[], nextSelectedId: string | null = selectedSessionId) => {
+            view.rerender(makeListNode(nextSessions, nextSelectedId))
+        }
+    }
 }
 
 describe('SessionList lineage grouping and attention folding', () => {
@@ -172,5 +181,169 @@ describe('SessionList lineage grouping and attention folding', () => {
         ])
 
         expect(screen.getByText('↳ Lead Repo A')).toBeInTheDocument()
+    })
+
+    it('keeps a project-pinned settled child visible above the pin divider with its parent label', () => {
+        markSessionSeen('parent', 500)
+        markSessionSeen('pinned-child', 400)
+
+        renderList([
+            makeSession({
+                id: 'parent',
+                active: true,
+                updatedAt: 500,
+                metadata: { path: '/work/proj', name: 'Coordinator' }
+            }),
+            makeSession({
+                id: 'pinned-child',
+                active: false,
+                pinned: true,
+                updatedAt: 400,
+                metadata: {
+                    path: '/work/proj',
+                    name: 'Pinned Worker',
+                    parentLink: { parentSessionId: 'parent', kind: 'peer' }
+                }
+            })
+        ])
+
+        const pinnedTitle = screen.getByTitle('Pinned Worker')
+        const parentTitle = screen.getByTitle('Coordinator')
+        const pinnedButton = pinnedTitle.closest('button')
+        const parentButton = parentTitle.closest('button')
+        const divider = screen.getByTestId('session-pin-divider')
+
+        expect(pinnedButton).not.toBeNull()
+        expect(parentButton).not.toBeNull()
+        expect(screen.getByText('↳ Coordinator')).toBeInTheDocument()
+        expect(Boolean(pinnedButton!.compareDocumentPosition(divider) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
+        expect(Boolean(divider.compareDocumentPosition(parentButton!) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
+    })
+
+    it('keeps an older parent and its running read child visible past root pagination', () => {
+        const recentSessions = Array.from({ length: DEFAULT_SESSION_PREVIEW_LIMIT + 2 }, (_, idx) => {
+            const id = `recent-${idx}`
+            const updatedAt = 5000 - idx * 10
+            markSessionSeen(id, updatedAt)
+            return makeSession({
+                id,
+                active: idx === 0,
+                updatedAt,
+                metadata: { path: '/work/proj', name: `Recent ${idx}` }
+            })
+        })
+        markSessionSeen('older-parent', 100)
+        markSessionSeen('running-child', 90)
+
+        renderList([
+            ...recentSessions,
+            makeSession({
+                id: 'older-parent',
+                active: false,
+                updatedAt: 100,
+                metadata: { path: '/work/proj', name: 'Older Parent' }
+            }),
+            makeSession({
+                id: 'running-child',
+                active: true,
+                thinking: true,
+                updatedAt: 90,
+                metadata: {
+                    path: '/work/proj',
+                    name: 'Active Deep Worker',
+                    parentLink: { parentSessionId: 'older-parent', kind: 'peer' }
+                }
+            })
+        ])
+
+        expect(screen.getByRole('button', { name: /Older Parent/ })).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: /Active Deep Worker/ })).toBeInTheDocument()
+    })
+
+    it('peeks unread and urgent-error children after explicit lineage collapse', () => {
+        markSessionSeen('parent', 500)
+        markSessionSeen('child', 450)
+
+        const parent = makeSession({
+            id: 'parent',
+            active: true,
+            updatedAt: 500,
+            metadata: { path: '/work/proj', name: 'Coordinator' }
+        })
+        const runningReadChild = makeSession({
+            id: 'child',
+            active: true,
+            thinking: true,
+            updatedAt: 450,
+            metadata: {
+                path: '/work/proj',
+                name: 'Inspectable Worker',
+                parentLink: { parentSessionId: 'parent', kind: 'peer' }
+            }
+        })
+
+        const { rerenderList } = renderList([parent, runningReadChild])
+        const panel = screen.getByTitle('Inspectable Worker').closest('.collapsible-panel')
+        expect(panel?.hasAttribute('data-open')).toBe(true)
+
+        fireEvent.click(screen.getByTestId('session-lineage-toggle'))
+        expect(panel?.hasAttribute('data-open')).toBe(false)
+
+        rerenderList([
+            parent,
+            makeSession({
+                id: 'child',
+                active: false,
+                updatedAt: 600,
+                contentRevision: 600,
+                metadata: {
+                    path: '/work/proj',
+                    name: 'Inspectable Worker',
+                    parentLink: { parentSessionId: 'parent', kind: 'peer' }
+                }
+            })
+        ])
+        expect(panel?.hasAttribute('data-open')).toBe(true)
+
+        markSessionSeen('child', 700)
+        rerenderList([
+            parent,
+            makeSession({
+                id: 'child',
+                active: true,
+                updatedAt: 700,
+                contentRevision: 700,
+                metadata: {
+                    path: '/work/proj',
+                    name: 'Inspectable Worker',
+                    parentLink: { parentSessionId: 'parent', kind: 'peer' }
+                }
+            })
+        ])
+        expect(panel?.hasAttribute('data-open')).toBe(false)
+
+        rerenderList([
+            parent,
+            makeSession({
+                id: 'child',
+                active: true,
+                updatedAt: 700,
+                contentRevision: 700,
+                metadata: {
+                    path: '/work/proj',
+                    name: 'Inspectable Worker',
+                    parentLink: { parentSessionId: 'parent', kind: 'peer' },
+                    lastModelError: {
+                        eventId: 'err-1',
+                        kind: 'rate_limit',
+                        transient: true,
+                        rawSnippet: '429',
+                        atTs: 700,
+                        priorAssistantClaimsDone: false,
+                    }
+                }
+            })
+        ])
+        expect(panel?.hasAttribute('data-open')).toBe(true)
     })
 })

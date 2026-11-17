@@ -24,14 +24,14 @@ export function parsePeerToolName(toolName: string): HapiPeerToolName | null {
 }
 
 function flattenResultText(result: unknown, depth: number = 0): string {
-    if (depth > 2 || result === null || result === undefined) return ''
+    if (depth > 5 || result === null || result === undefined) return ''
     if (typeof result === 'string') return result
     if (Array.isArray(result)) {
         return result.map((item) => flattenResultText(item, depth + 1)).filter(Boolean).join('\n')
     }
     if (isObject(result)) {
         if (typeof result.sessionId === 'string') return result.sessionId
-        for (const key of ['text', 'content', 'output', 'message', 'error'] as const) {
+        for (const key of ['text', 'content', 'result', 'output', 'message', 'error'] as const) {
             const nested = flattenResultText(result[key], depth + 1)
             if (nested) return nested
         }

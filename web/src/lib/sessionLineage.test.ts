@@ -82,6 +82,16 @@ describe('buildSessionLineage', () => {
             + Array.from(forest.descendantsByRootId.values()).reduce((sum, list) => sum + list.length, 0)
         expect(total).toBe(4)
     })
+
+    it('keeps project-pinned children as independent roots instead of folding under an unpinned parent', () => {
+        const pinnedChild = makeSession({ id: 'pinned-child', pinned: true, metadata: link('parent') })
+        const parent = makeSession({ id: 'parent', metadata: { path: '/work/proj' } })
+        const unpinnedChild = makeSession({ id: 'unpinned-child', metadata: link('parent') })
+
+        const forest = buildSessionLineage([pinnedChild, parent, unpinnedChild])
+        expect(forest.roots.map((s) => s.id)).toEqual(['pinned-child', 'parent'])
+        expect(forest.childrenByParentId.get('parent')?.map((s) => s.id)).toEqual(['unpinned-child'])
+    })
 })
 
 describe('attention auto-folding predicates', () => {

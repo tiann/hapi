@@ -2386,9 +2386,7 @@ export function SessionList(props: {
             const descendants = lineage.descendantsByRootId.get(root.id)
             if (!descendants || descendants.length === 0) return false
             return descendants.some(({ session: child }) =>
-                child.id === selectedSessionId
-                || (child.active && child.pendingRequestsCount > 0)
-                || Boolean(previewIsUnread?.(child))
+                childIsWorking(child) || childDemandsAttention(child, attentionCtx)
             )
         }
         const visibleRoots = getVisibleSessionPreview(lineage.roots, {
@@ -2403,10 +2401,7 @@ export function SessionList(props: {
         const isRowOpen = (s: SessionSummary) => !isCollapsed || (keepUnreadSessionsVisible && isSessionUnread(s))
         const isDescendantRowOpen = (child: SessionSummary, parentExpanded: boolean) => isCollapsed
             ? (keepUnreadSessionsVisible && isSessionUnread(child))
-            : (parentExpanded
-                || isFiltering
-                || child.id === selectedSessionId
-                || (child.active && (child.pendingRequestsCount ?? 0) > 0))
+            : (parentExpanded || isFiltering || childDemandsAttention(child, attentionCtx))
         const anyRowOpen = visibleRoots.some((root) => {
             if (isRowOpen(root)) return true
             const descendants = lineage.descendantsByRootId.get(root.id)

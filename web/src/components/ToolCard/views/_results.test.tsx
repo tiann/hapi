@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import type { ToolCallBlock } from '@/chat/types'
 import { extractCodexBashDisplay, extractTextFromResult, getMutationResultRenderMode, getToolResultViewComponent, parseNumberedFileLines } from '@/components/ToolCard/views/_results'
+import { getToolViewComponent } from '@/components/ToolCard/views/_all'
 import { I18nProvider } from '@/lib/i18n-context'
 
 vi.mock('@/components/MarkdownRenderer', () => ({
@@ -744,5 +745,36 @@ describe('PeerToolResultView', () => {
 
         const link = screen.getByRole('link', { name: /Open session/ })
         expect(link.getAttribute('href')).toBe('/sessions/33333333-3333-4333-8333-333333333333')
+    })
+
+    it('extracts session links from Codex object-wrapped MCP result envelopes and short-prefix calls', () => {
+        const spawnBlock = makeResultBlock({
+            name: 'mcp__hapi__spawn_peer',
+            input: { directory: '/work/repo', name: 'Codex Worker' },
+            result: { content: [{ type: 'text', text: 'Spawned 33333333-3333-4333-8333-333333333333 (Codex Worker)' }] },
+        })
+        const CompactView = getToolViewComponent(spawnBlock.tool.name, spawnBlock.tool)
+        expect(CompactView).not.toBeNull()
+        if (!CompactView) throw new Error('Expected PeerCompactView to be resolved')
+        const { unmount } = render(
+            <I18nProvider>
+                <CompactView block={spawnBlock} metadata={null} surface="inline" />
+            </I18nProvider>
+        )
+        expect(screen.getByRole('link', { name: /Codex Worker/ }).getAttribute('href')).toBe('/sessions/33333333-3333-4333-8333-333333333333')
+        unmount()
+
+        const pingBlock = makeResultBlock({
+            name: 'functions.hapi__ping_peer',
+            input: { sessionIdPrefix: '33333333', message: 'Check status' },
+            result: { content: [{ type: 'text', text: 'Delivered to [Codex Worker](/sessions/33333333-3333-4333-8333-333333333333)' }] },
+        })
+        const PingResultView = getToolResultViewComponent(pingBlock.tool.name, pingBlock)
+        render(
+            <I18nProvider>
+                <PingResultView block={pingBlock} metadata={null} surface="dialog" />
+            </I18nProvider>
+        )
+        expect(screen.getByRole('link', { name: /Open session/ }).getAttribute('href')).toBe('/sessions/33333333-3333-4333-8333-333333333333')
     })
 })
