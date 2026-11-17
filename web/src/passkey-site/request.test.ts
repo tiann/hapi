@@ -1,6 +1,6 @@
 import { webcrypto } from 'node:crypto'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
-import { encodePasskeyChallenge, passkeyBase64url, PASSKEY_RP_ID } from '@hapi/protocol/passkey'
+import { encodePasskeyChallenge, encodePasskeyUserHandle, passkeyBase64url, PASSKEY_RP_ID } from '@hapi/protocol/passkey'
 import { parseCeremonyRequest } from './request'
 
 beforeAll(() => { vi.stubGlobal('crypto', webcrypto) })
@@ -15,8 +15,8 @@ describe('static passkey bridge', () => {
     it('pins the RP and user verification, ignoring untrusted extensions', async () => {
         const input = { ...request(), options: { ...request().options, userVerification: 'discouraged', extensions: { largeBlob: { read: true } } } }
         const result = await parseCeremonyRequest(fragment(input))
-        expect(result.options).toMatchObject({ rpId: PASSKEY_RP_ID, userVerification: 'required' })
-        expect(result.options).not.toHaveProperty('extensions')
+        expect(result.operation === 'discover' ? null : result.options).toMatchObject({ rpId: PASSKEY_RP_ID, userVerification: 'required' })
+        expect(result.operation === 'discover' ? null : result.options).not.toHaveProperty('extensions')
     })
     it('rejects a malicious Hub proxying another Hub challenge', async () => {
         await expect(parseCeremonyRequest(fragment({ ...request(), hub: 'https://evil.example' }))).rejects.toThrow()
@@ -29,8 +29,7 @@ describe('static passkey bridge', () => {
         }
     })
     it('validates registration account binding and strips RP/attestation/extension choices', async () => {
-        const prefix = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(hub)))
-        const bytes = new Uint8Array(64); bytes.set(prefix)
+        const bytes = await encodePasskeyUserHandle(hub, new Uint8Array(16))
         const input = {
             ...request('register'), options: {
                 challenge: request('register').options.challenge, rp: { id: PASSKEY_RP_ID, name: 'untrusted' },
@@ -38,7 +37,7 @@ describe('static passkey bridge', () => {
             }
         }
         const result = await parseCeremonyRequest(fragment(input))
-        expect(result.options).toMatchObject({ rp: { id: PASSKEY_RP_ID, name: 'HAPI' }, attestation: 'none' })
+        expect(result.operation === 'discover' ? null : result.options).toMatchObject({ rp: { id: PASSKEY_RP_ID, name: 'HAPI' }, attestation: 'none' })
         await expect(parseCeremonyRequest(fragment({ ...input, options: { ...input.options, user: { ...input.options.user, id: 'YQ' } } }))).rejects.toThrow()
     })
     it('rejects malformed or oversized input and non-HTTPS Hub identities', async () => {
@@ -46,4 +45,13 @@ describe('static passkey bridge', () => {
             await expect(parseCeremonyRequest(input)).rejects.toThrow()
         }
     })
+})
+
+
+it('allows only the minimal discovery request and never caller-supplied options', async () => {
+    const request = { operation: 'discover', callbackOrigin: 'https://app.example', state: 'a'.repeat(43) }
+    expect(await parseCeremonyRequest(fragment(request))).toEqual(request)
+    for (const changed of [{ state: 'short' }, { callbackOrigin: 'http://app.example' }, { options: { challenge: 'proxied' } }, { hub: 'https://victim.example' }]) {
+        await expect(parseCeremonyRequest(fragment({ ...request, ...changed }))).rejects.toThrow()
+    }
 })

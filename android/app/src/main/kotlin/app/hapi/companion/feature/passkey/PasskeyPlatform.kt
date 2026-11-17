@@ -2,6 +2,7 @@ package app.hapi.companion.feature.passkey
 
 import app.hapi.data.api.ApiError
 import app.hapi.protocol.wire.PasskeyRpMismatchException
+import app.hapi.protocol.wire.PasskeyDiscoveryUnavailableException
 import java.io.IOException
 
 /**
@@ -39,6 +40,7 @@ sealed class PasskeyCeremonyException(message: String?) : Exception(message) {
  * localize via `passkeyIssueText`.
  */
 sealed interface PasskeyIssue {
+    data object DiscoveryUnavailable : PasskeyIssue
     /** `404 no_passkeys` — the hub has no app passkeys yet. */
     data object NoneRegistered : PasskeyIssue
 
@@ -75,6 +77,7 @@ sealed interface PasskeyIssue {
  * [PasskeyIssue]; null for a user cancellation, which must stay silent.
  */
 fun passkeyIssueOf(error: Throwable): PasskeyIssue? = when (error) {
+    is PasskeyDiscoveryUnavailableException -> PasskeyIssue.DiscoveryUnavailable
     is PasskeyCeremonyException.Cancelled -> null
     is PasskeyCeremonyException.NoCredential -> PasskeyIssue.NoCredentialOnDevice
     is PasskeyCeremonyException.Unavailable -> PasskeyIssue.Unavailable

@@ -32,7 +32,7 @@ fun boundPasskeyOptions(hub: String, operation: String): String {
         """{"v":1,"hub":"$hub","id":"${"a".repeat(43)}","nonce":"${"b".repeat(43)}","operation":"$operation","channel":"native"}""".toByteArray(),
     )
     if (operation == "login") return """{"challenge":"$challenge","rpId":"auth.hapi.run","allowCredentials":[{"id":"Y3JlZA","type":"public-key"}]}"""
-    val prefix = java.security.MessageDigest.getInstance("SHA-256").digest(hub.toByteArray())
-    val user = b64.encodeToString(prefix + ByteArray(32) { 1 })
+    val authority = java.net.URI(hub).rawAuthority.toByteArray()
+    val user = b64.encodeToString(byteArrayOf(2, authority.size.toByte()) + authority + ByteArray(16) { 1 })
     return """{"challenge":"$challenge","rp":{"id":"auth.hapi.run"},"user":{"id":"$user","name":"hapi@${java.net.URI(hub).rawAuthority}"}}"""
 }

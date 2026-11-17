@@ -180,11 +180,56 @@ canonical HTTPS Hub origin, `operation` is `login|register`, and `channel` is
 sheet**; the Hub verifies its exact saved challenge and consumes it once.
 A malicious Hub cannot proxy another Hub's challenge through the shared RP.
 
-The 64-byte user handle is `SHA-256(hub) || HMAC-SHA256(secret, namespace)` (the
-HMAC uses a domain-separated input). Clients validate the Hub prefix before
-registration so a malicious Hub cannot overwrite another Hub's account. It is
-not a Hub URL discovery mechanism. Login options restrict `allowCredentials` to
-this Hub's currently valid shared-RP credentials.
+The v2 user handle is self-describing, at most 64 bytes:
+
+- Discoverable: `[2, N, authority (N ASCII bytes), accountTag (16 bytes)]`.
+  HTTPS is implicit; `authority` is the canonical, lowercase ASCII/IDNA hostname
+  (IPv6 includes brackets) with an optional non-default port. `N` is 1–46.
+- Long address: `[2, 0, SHA256(canonical HTTPS origin) (32 bytes), accountTag
+  (16 bytes)]`, exactly 50 bytes. These credentials work with a manually entered
+  Hub, but cannot discover its address.
+- `accountTag` is the first 16 bytes of
+  `HMAC-SHA256(jwtSecret, "hapi-passkey-user:" + namespace)`. It is stable per
+  namespace and never contains the access token.
+
+Registration clients validate the canonical origin encoded in the handle, or
+its hash for long addresses, **before system UI**. A malicious Hub cannot use
+another Hub's account handle to overwrite its passkey. Login options restrict
+`allowCredentials` to this Hub's currently valid shared-RP credentials.
+
+### Hub discovery (no address input)
+
+Discovery is a separate, **locator-only** ceremony, not a login endpoint or an
+authentication proof. The trusted authentication page/native app generates its
+own random challenge `{v:1, operation:"discover", channel, nonce}` and requests a
+resident credential for `auth.hapi.run` with UV required, no allowlist and no
+extensions. Callers cannot supply a challenge or WebAuthn options for this step.
+No Hub request has been made yet, and Hubs reject these unissued challenges.
+
+The returned `userHandle` supplies the canonical HTTPS Hub origin. The UI shows
+that origin and requires confirmation **before connecting**. Then it obtains a
+fresh Hub-bound login challenge and performs the ordinary authentication flow;
+the discovery assertion is discarded and never posted to a Hub or opener.
+Two system authenticator interactions may be required. Missing/malformed handles
+and long addresses offer manual Hub entry; access-token/QR pairing remains.
+
+For Web, the opener opens `auth.hapi.run/#<encoded JSON>` with exactly
+`{operation:"discover", callbackOrigin, state}`. The page displays the requesting
+HTTPS origin and, after user selection and confirmation, posts only
+`{type:"hapi-passkey-discovery", state, hub}` (or `error`) to the exact-origin
+opener. It never sends the credential ID, user handle, or signed assertion.
+The opener validates the authentication origin, popup identity, state and Hub
+URL before reusing the popup for the ordinary PKCE ceremony. The bridge reloads
+on the next fragment navigation, clearing discovery state. A valid discovery
+result alone never creates a session; callback CORS authorization still applies.
+
+Web persists the verified session under the discovered Hub, then selects that
+Hub. Old pairing URL parameters are cleared, and previous Hub credentials/JWTs
+are masked synchronously on a Hub switch, including pending refreshes. Native
+clients similarly do not register/persist a Hub until real login succeeds.
+Credentials must be available in the local/synced provider; no central discovery
+registry or backend is introduced. Re-register existing credentials to obtain
+the v2 discoverable handle.
 
 The authentication origin is part of the security boundary. It must contain no
 marketing app, third-party scripts, analytics, or service worker. Compromising
@@ -196,7 +241,7 @@ credentials using other RP IDs are not supported; register new credentials.
 Native clients use the same RP/credentials, without a browser redirect:
 
 1. `POST /api/passkey/register/options {client:"native"}` (JWT required),
-   validate RP, connected Hub, operation/channel and user-handle prefix, invoke
+   validate RP, connected Hub, operation/channel and user-handle origin, invoke
    the platform API, then `POST /api/passkey/register/verify {response, name}`.
 2. `POST /api/passkey/login/options {client:"native"}` (unauthenticated),
    validate RP and challenge binding, invoke the platform API, then

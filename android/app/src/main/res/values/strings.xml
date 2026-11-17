@@ -644,7 +644,7 @@
     <string name="pairing_notice_missing_credentials">The stored credentials for this hub went missing. Pair again to continue.</string>
     <string name="pairing_passkey_entry">Sign in with a passkey</string>
     <string name="pairing_passkey_title">Sign in with a passkey</string>
-    <string name="pairing_passkey_hint">Enter your hub URL, then pick the passkey this app saved for it (Settings → Passkeys on a paired device). Passkeys created in the web app only work there.</string>
+    <string name="pairing_passkey_hint">Choose a passkey to find its Hub. Web and App passkeys work in both clients.</string>
     <string name="pairing_passkey_button">Continue with passkey</string>
     <string name="pairing_notice_passkey_session_invalid">Your passkey sign-in ended — the passkey was deleted, the hub’s access token changed, or the session expired. Sign in again to continue.</string>
 
@@ -815,4 +815,8 @@
     <string name="settings_passkeys_delete_confirm">Delete</string>
     <string name="settings_passkeys_added">Passkey added.</string>
     <string name="settings_passkeys_deleted">Passkey deleted.</string>
+    <string name="passkey_find_hub">Find Hub with a passkey</string>
+    <string name="passkey_enter_hub">Enter Hub address manually</string>
+    <string name="passkey_discovery_confirm">Confirm this Hub before connecting. A separate passkey check will sign you in.</string>
+    <string name="passkey_discovery_unavailable">This passkey cannot locate its Hub. Enter the address manually.</string>
 </resources>

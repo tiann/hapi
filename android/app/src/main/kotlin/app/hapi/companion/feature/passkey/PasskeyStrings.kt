@@ -8,6 +8,7 @@ import app.hapi.protocol.wire.NativePasskeys
 /** Localize a [PasskeyIssue] (pairing sign-in + settings management). */
 @Composable
 fun passkeyIssueText(issue: PasskeyIssue): String = when (issue) {
+    PasskeyIssue.DiscoveryUnavailable -> stringResource(R.string.passkey_discovery_unavailable)
     PasskeyIssue.NoneRegistered -> stringResource(R.string.passkey_error_none_registered)
     PasskeyIssue.NoCredentialOnDevice -> stringResource(R.string.passkey_error_no_credential)
     PasskeyIssue.Unavailable -> stringResource(R.string.passkey_error_unavailable)
