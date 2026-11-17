@@ -144,6 +144,7 @@ let notifyRafId: ReturnType<typeof requestAnimationFrame> | null = null
 let notifyTimerId: ReturnType<typeof setTimeout> | null = null
 let persistTimerId: ReturnType<typeof setTimeout> | null = null
 let lastNotifyAt = 0
+let nextGenerationFloor = 0
 
 function requestNotifyFrame(): void {
     if (notifyRafId !== null) {
@@ -324,8 +325,8 @@ function pruneExcessPersistedWindows(): void {
         if (typeof sessionStorage.length !== 'number' || typeof sessionStorage.key !== 'function') {
             return
         }
-        const inactiveStorageKeys: string[] = []
-        const orphanedKeys: string[] = []
+        let inactiveCount = 0
+        const candidateKeys: string[] = []
         for (let i = 0; i < sessionStorage.length; i += 1) {
             const key = sessionStorage.key(i)
             if (!key || !key.startsWith(STORAGE_KEY_PREFIX)) {
@@ -335,15 +336,21 @@ function pruneExcessPersistedWindows(): void {
             if ((listeners.get(id)?.size ?? 0) > 0) {
                 continue
             }
-            inactiveStorageKeys.push(key)
-            if (!states.has(id) && !hasProtectedPersistedWindow(key)) {
-                orphanedKeys.push(key)
+            inactiveCount += 1
+            if (!states.has(id)) {
+                candidateKeys.push(key)
             }
         }
-        let excess = inactiveStorageKeys.length - MAX_RETAINED_INACTIVE_WINDOWS
-        for (const key of orphanedKeys) {
+        let excess = inactiveCount - MAX_RETAINED_INACTIVE_WINDOWS
+        if (excess <= 0 || candidateKeys.length === 0) {
+            return
+        }
+        for (const key of candidateKeys) {
             if (excess <= 0) {
                 break
+            }
+            if (hasProtectedPersistedWindow(key)) {
+                continue
             }
             sessionStorage.removeItem(key)
             excess -= 1
@@ -377,6 +384,11 @@ function evictExcessInactiveWindows(protectedSessionId?: string): void {
         if (!isEvictableInactiveWindow(candidateId, state)) {
             continue
         }
+        nextGenerationFloor = Math.max(
+            nextGenerationFloor,
+            state.syncGeneration + 1,
+            state.olderGeneration + 1
+        )
         states.delete(candidateId)
         tailSyncControllers.delete(candidateId)
         appliedRewindLocalIds.delete(candidateId)
@@ -437,8 +449,8 @@ function createState(sessionId: string): InternalState {
         requiresLatestReset: false,
         preferLatestOnActivation: false,
         pendingGapRecovery: false,
-        syncGeneration: 0,
-        olderGeneration: 0
+        syncGeneration: nextGenerationFloor,
+        olderGeneration: nextGenerationFloor
     }
 }
 

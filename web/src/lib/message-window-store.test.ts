@@ -3669,4 +3669,76 @@ describe('gap recovery', () => {
             vi.useRealTimers()
         }
     })
+
+    it('rejects a stale tail response even after the session is evicted and recreated', async () => {
+        const targetId = sessionId('evict-gen-floor')
+        const staleResponse = deferred<MessagesResponse>()
+        const freshMessage = makeUserMessage({ id: 'fresh-msg', seq: 2, createdAt: 2_000, invokedAt: 2_000 })
+        const obsoleteMessage = makeUserMessage({ id: 'obsolete-rewound', seq: 1, createdAt: 1_000, invokedAt: 1_000 })
+
+        let calls = 0
+        const api = createApi(async () => {
+            calls += 1
+            if (calls === 1) {
+                return staleResponse.promise
+            }
+            return latestResponse([freshMessage], { epoch: 2 })
+        })
+
+        // Start a tail sync that remains in flight, invalidate it, then evict targetId under LRU pressure.
+        const firstSync = syncTailMessages(api, targetId)
+        clearMessageWindow(targetId)
+
+        for (let i = 0; i < MAX_RETAINED_INACTIVE_WINDOWS + 2; i += 1) {
+            const fillerId = sessionId(`evict-filler-${i}`)
+            ingestIncomingMessages(fillerId, [
+                makeUserMessage({ id: `filler-msg-${i}`, seq: 1, createdAt: (i + 1) * 1_000, invokedAt: (i + 1) * 1_000 })
+            ])
+        }
+
+        // Recreate targetId after eviction and load fresh state.
+        await syncTailMessages(api, targetId)
+        expect(getMessageWindowState(targetId).messages.map((m) => m.id)).toEqual(['fresh-msg'])
+
+        // Late completion of the pre-eviction request must not overwrite or merge obsolete rows.
+        staleResponse.resolve(latestResponse([obsoleteMessage], { epoch: 1 }))
+        await firstSync
+
+        expect(getMessageWindowState(targetId).messages.map((m) => m.id)).toEqual(['fresh-msg'])
+    })
+
+    it('does not parse unhydrated sessionStorage payloads when inactive storage count is within the limit', () => {
+        vi.useFakeTimers()
+        const parseSpy = vi.spyOn(JSON, 'parse')
+        try {
+            const unhydratedId = sessionId('unhydrated-under-limit')
+            sessionStorage.setItem(`hapi:message-window:v2:${unhydratedId}`, JSON.stringify({
+                messages: [makeUserMessage({ id: 'msg-unhydrated', seq: 1, createdAt: 100, invokedAt: 100 })],
+                hasMore: false,
+                oldestPositionAt: 100,
+                oldestPositionSeq: 1,
+                newestPositionAt: 100,
+                newestPositionSeq: 1,
+                contextNewestAt: null,
+                contextNewestSeq: null,
+                epoch: 1,
+                requiresLatestReset: false
+            }))
+
+            parseSpy.mockClear()
+
+            const activeId = sessionId('active-under-limit')
+            ingestIncomingMessages(activeId, [
+                makeUserMessage({ id: 'msg-active', seq: 1, createdAt: 200, invokedAt: 200 })
+            ])
+
+            vi.advanceTimersByTime(300)
+
+            expect(parseSpy).not.toHaveBeenCalled()
+            expect(sessionStorage.getItem(`hapi:message-window:v2:${unhydratedId}`)).not.toBeNull()
+        } finally {
+            parseSpy.mockRestore()
+            vi.useRealTimers()
+        }
+    })
 })
