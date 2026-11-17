@@ -9,7 +9,7 @@ import {
     putShareTransfer,
 } from './lib/shareTransfer'
 import { shareTargetPathname } from './lib/sharePath'
-import { cacheOkResponsesOnly, cacheJavaScriptOnly, cacheCssOnly, cacheFontOnly } from './lib/swCachePolicy'
+import { cacheOkResponsesOnly, cacheJavaScriptOnly, cacheCssOnly, cacheFontOnly, isRuntimeCachedFontPath } from './lib/swCachePolicy'
 import { focusOrOpenNotificationClient, resolveNotificationTarget } from './lib/notificationClick'
 
 const sharePath = shareTargetPathname()
@@ -67,7 +67,7 @@ registerRoute(
 )
 
 registerRoute(
-    ({ url }) => url.origin === self.location.origin && /\/assets\/fonts\/[^/]+\.woff2$/i.test(url.pathname),
+    ({ url }) => url.origin === self.location.origin && isRuntimeCachedFontPath(url.pathname),
     new CacheFirst({
         cacheName: 'katex-fonts',
         plugins: [

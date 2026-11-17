@@ -48,6 +48,11 @@ export const cacheCssOnly = {
             : null,
 }
 
+/** Matches both static KaTeX fonts and Vite-hashed WOFF2 font assets emitted in dist/assets/. */
+export function isRuntimeCachedFontPath(pathname: string): boolean {
+    return /\/assets\/(?:fonts\/)?[^/]+\.woff2$/i.test(pathname)
+}
+
 /** Never cache an SSO login page or redirect in place of a webfont asset. */
 export const cacheFontOnly = {
     cacheWillUpdate: async ({ response }: { response: Response }): Promise<Response | null> =>

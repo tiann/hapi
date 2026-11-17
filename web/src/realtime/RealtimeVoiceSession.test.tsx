@@ -2,22 +2,20 @@ import { useEffect } from 'react'
 import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ApiClient } from '@/api/client'
-import type { VoiceSession } from '@/realtime/types'
+import {
+    getCurrentRealtimeSessionId,
+    getVoiceSession,
+    isVoiceSessionStarted,
+    resetRealtimeSessionState,
+    startRealtimeSession,
+} from '@/realtime/RealtimeSession'
 
-let registeredSession: VoiceSession | null = null
 const startSessionMock = vi.fn().mockResolvedValue('conv-123')
 const endSessionMock = vi.fn().mockResolvedValue(undefined)
 const sendContextualUpdateMock = vi.fn()
 const sendUserMessageMock = vi.fn()
 const fetchVoiceTokenMock = vi.fn()
 let bridgeLoadCount = 0
-
-vi.mock('@/realtime/RealtimeSession', () => ({
-    registerVoiceSession: (session: VoiceSession) => {
-        registeredSession = session
-    },
-    resetRealtimeSessionState: vi.fn(),
-}))
 
 vi.mock('@/realtime/realtimeClientTools', () => ({
     registerSessionStore: vi.fn(),
@@ -75,7 +73,7 @@ describe('RealtimeVoiceSession lazy bridge lifecycle', () => {
 
     beforeEach(() => {
         vi.clearAllMocks()
-        registeredSession = null
+        resetRealtimeSessionState()
         Object.defineProperty(navigator, 'mediaDevices', {
             configurable: true,
             value: { getUserMedia: getUserMediaMock },
@@ -87,6 +85,7 @@ describe('RealtimeVoiceSession lazy bridge lifecycle', () => {
 
     afterEach(() => {
         cleanup()
+        resetRealtimeSessionState()
     })
 
     it('does not load the ElevenLabs bridge on idle mount and aborts startup if unmounted while token is pending', async () => {
@@ -95,10 +94,10 @@ describe('RealtimeVoiceSession lazy bridge lifecycle', () => {
 
         const { unmount } = render(<RealtimeVoiceSession api={api} micMuted={false} />)
 
-        expect(registeredSession).not.toBeNull()
+        expect(getVoiceSession()).not.toBeNull()
         expect(bridgeLoadCount).toBe(0)
 
-        const startPromise = registeredSession!.startSession({
+        const startPromise = getVoiceSession()!.startSession({
             sessionId: 'sess-1',
             initialContext: 'hello',
         })
@@ -131,7 +130,7 @@ describe('RealtimeVoiceSession lazy bridge lifecycle', () => {
 
         render(<RealtimeVoiceSession api={api} micMuted={false} />)
 
-        const startPromise = registeredSession!.startSession({
+        const startPromise = getVoiceSession()!.startSession({
             sessionId: 'sess-2',
             initialContext: 'hello',
         })
@@ -142,7 +141,7 @@ describe('RealtimeVoiceSession lazy bridge lifecycle', () => {
             await Promise.resolve()
         })
 
-        await registeredSession!.endSession()
+        await getVoiceSession()!.endSession()
 
         await act(async () => {
             tokenDeferred.resolve({ allowed: true, token: 'tok-def' })
@@ -159,7 +158,7 @@ describe('RealtimeVoiceSession lazy bridge lifecycle', () => {
 
         render(<RealtimeVoiceSession api={api} micMuted={false} />)
 
-        const startPromise = registeredSession!.startSession({
+        const startPromise = getVoiceSession()!.startSession({
             sessionId: 'sess-3',
             initialContext: 'hello context',
         })
@@ -188,7 +187,7 @@ describe('RealtimeVoiceSession lazy bridge lifecycle', () => {
         expect(sendContextualUpdateMock).toHaveBeenCalled()
     })
 
-    it('closes only the originating conversation when a stale connection finishes after a replacement call connects', async () => {
+    it('preserves replacement session state and closes only originating handle when stale connection settles after B connects', async () => {
         const endA = vi.fn().mockResolvedValue(undefined)
         const startB = vi.fn().mockResolvedValue('conv-B')
         const endB = vi.fn().mockResolvedValue(undefined)
@@ -201,10 +200,7 @@ describe('RealtimeVoiceSession lazy bridge lifecycle', () => {
 
         render(<RealtimeVoiceSession api={api} micMuted={false} />)
 
-        const startAPromise = registeredSession!.startSession({
-            sessionId: 'sess-A',
-            initialContext: 'context-A',
-        })
+        const startAPromise = startRealtimeSession('sess-A', 'context-A')
 
         await act(async () => {
             await Promise.resolve()
@@ -213,7 +209,7 @@ describe('RealtimeVoiceSession lazy bridge lifecycle', () => {
         })
         expect(startSessionMock).toHaveBeenCalledTimes(1)
 
-        // Switch bridge to handle B and start replacement call while A's connect promise is still pending.
+        // Switch bridge to handle B and start replacement call through the real startRealtimeSession wrapper.
         latestConversationCallback?.({
             startSession: startB,
             endSession: endB,
@@ -221,23 +217,25 @@ describe('RealtimeVoiceSession lazy bridge lifecycle', () => {
             sendUserMessage: vi.fn(),
         })
 
-        const startBPromise = registeredSession!.startSession({
-            sessionId: 'sess-B',
-            initialContext: 'context-B',
-        })
+        const startBPromise = startRealtimeSession('sess-B', 'context-B')
 
         await act(async () => {
             await startBPromise
         })
 
-        // Now stale connection A finishes: A must clean up ONLY handle A, never closing handle B.
+        expect(getCurrentRealtimeSessionId()).toBe('sess-B')
+        expect(isVoiceSessionStarted()).toBe(true)
+
+        // Stale call A now settles: must close only A without clearing B's shared session state.
         await act(async () => {
             connectADeferred.resolve('conv-A')
-            await expect(startAPromise).rejects.toThrow('cancelled')
+            await startAPromise
         })
 
         expect(endA).toHaveBeenCalledTimes(1)
         expect(endB).not.toHaveBeenCalled()
         expect(sendContextB).toHaveBeenCalledWith('context-B')
+        expect(getCurrentRealtimeSessionId()).toBe('sess-B')
+        expect(isVoiceSessionStarted()).toBe(true)
     })
 })

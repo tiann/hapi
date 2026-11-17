@@ -89,3 +89,15 @@ describe('cacheOkResponsesOnly', () => {
         expect(await cacheOkResponsesOnly.cachedResponseWillBeUsed({})).toBeNull()
     })
 })
+
+import { isRuntimeCachedFontPath } from './swCachePolicy'
+
+describe('isRuntimeCachedFontPath', () => {
+    it('matches both copied fonts directory and Vite-hashed KaTeX WOFF2 assets', () => {
+        expect(isRuntimeCachedFontPath('/assets/fonts/KaTeX_Main-Regular.woff2')).toBe(true)
+        expect(isRuntimeCachedFontPath('/assets/KaTeX_Main-Regular-Ab12Cd34.woff2')).toBe(true)
+        expect(isRuntimeCachedFontPath('/assets/KaTeX_Main-Regular-Ab12Cd34.woff')).toBe(false)
+        expect(isRuntimeCachedFontPath('/assets/KaTeX_Main-Regular-Ab12Cd34.ttf')).toBe(false)
+        expect(isRuntimeCachedFontPath('/vendor/font.woff2')).toBe(false)
+    })
+})
