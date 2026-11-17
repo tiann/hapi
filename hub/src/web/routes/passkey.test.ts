@@ -342,6 +342,12 @@ describe('Cloudflare-derived sessions', () => {
         expect(optionsRes.status).toBe(403)
         expect(await optionsRes.json()).toEqual({ error: 'Passkey registration requires a non-Cloudflare sign-in' })
 
+        // The browser bridge registration path is refused identically, before
+        // any challenge is armed.
+        const bridgeRes = await post(app, '/api/passkey/browser/register/start', startBody(), auth)
+        expect(bridgeRes.status).toBe(403)
+        expect(await bridgeRes.json()).toEqual({ error: 'Passkey registration requires a non-Cloudflare sign-in' })
+
         // Even a well-formed assertion body cannot store a credential.
         const authenticator = new SoftAuthenticator(PASSKEY_RP_ID, PASSKEY_ORIGIN)
         const verifyRes = await post(app, '/api/passkey/register/verify', {
@@ -349,6 +355,9 @@ describe('Cloudflare-derived sessions', () => {
         }, auth)
         expect(verifyRes.status).toBe(403)
         expect(await verifyRes.json()).toEqual({ error: 'Passkey registration requires a non-Cloudflare sign-in' })
+
+        // No bridge challenge was armed, so the ceremony cannot complete either.
+        expect((await complete(app, randomBytes(32).toString('base64url'))).status).toBe(401)
 
         expect(store.passkeys.listByNamespace('default')).toHaveLength(0)
         store.close()
@@ -361,6 +370,9 @@ describe('Cloudflare-derived sessions', () => {
         await registerNative(app, authenticator)
         const listed = await (await app.request('/api/passkeys', { headers: await bearer() })).json() as { passkeys: unknown[] }
         expect(listed.passkeys).toHaveLength(1)
+
+        // The browser bridge registration path stays open for token-derived sessions.
+        await browserStart(app, 'register')
         store.close()
     })
 })
