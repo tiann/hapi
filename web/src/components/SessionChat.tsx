@@ -2520,6 +2520,7 @@ function SessionChatInner(props: SessionChatProps) {
                         modelReasoningEffort={agentFlavor === 'codex' || agentFlavor === 'opencode' ? props.session.modelReasoningEffort : undefined}
                         effort={agentFlavor === 'agy' ? agyCurrentEffort : props.session.effort}
                         agentFlavor={agentFlavor}
+                        machineId={sessionMachineId}
                         availableModelOptions={
                             agentFlavor === 'codex'
                                 ? codexModelOptions
