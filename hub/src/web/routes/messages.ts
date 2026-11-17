@@ -107,6 +107,25 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         ))
     })
 
+    // Explicit "send now" for a queued row (queued-bar ↑ affordance). No
+    // requireActive: the primary use case is a row stranded by an abort, when
+    // the session exists but no turn is running.
+    app.post('/sessions/:id/messages/:messageId/deliver-now', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+        return c.json(await engine.deliverQueuedMessageNow(
+            sessionResult.sessionId,
+            c.req.param('messageId')
+        ))
+    })
+
     app.post('/sessions/:id/messages/queued-state', async (c) => {
         const engine = requireSyncEngine(c, getSyncEngine)
         if (engine instanceof Response) {

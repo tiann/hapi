@@ -65,6 +65,7 @@ type AckCallback = (
         inFlight?: boolean
         indeterminate?: boolean
         consumed?: boolean
+        accepted?: boolean
     }>
 ) => void
 
@@ -2219,6 +2220,134 @@ describe('tool-call upsert write skip', () => {
         expect(repeat.updated).toBe(true)
         expect(repeat.message.id).toBe(first.message.id)
         expect(store.messages.getAllMessages(session.id)).toHaveLength(1)
+        store.close()
+    })
+})
+
+// ---------------------------------------------------------------------------
+// deliverQueuedMessageNow ("send now" recovery for abort-stranded rows)
+// ---------------------------------------------------------------------------
+
+describe('MessageService deliverQueuedMessageNow', () => {
+    it('force re-delivers a stranded queued row the CLI no longer holds (post-abort DSH shape)', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-stranded')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'stranded' } }, 'stranded-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            if (calls === 1) {
+                // Cancel-ack: the abort already cleared the CLI's in-memory queue.
+                ack(null, [{ removed: false }])
+            } else {
+                // Forced re-delivery bypasses the message-id dedup.
+                ack(null, [{ removed: false, accepted: true }])
+            }
+        }), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'stranded-q'))
+            .toEqual({ status: 'delivered', localId: 'stranded-q' })
+        expect(calls).toBe(2)
+        // The row stays queued; invocation is stamped later via messages-consumed.
+        expect(store.messages.lookupQueuedMessage(session.id, 'stranded-q').status).toBe('queued')
+        store.close()
+    })
+
+    it('re-accepts a row the CLI still holds in memory (post-abort Claude shape)', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-held')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'held' } }, 'held-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, calls === 1 ? [{ removed: true }] : [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'held-q'))
+            .toEqual({ status: 'delivered', localId: 'held-q' })
+        expect(store.messages.lookupQueuedMessage(session.id, 'held-q').status).toBe('queued')
+        store.close()
+    })
+
+    it('returns unavailable and never emits when no CLI socket is in the room', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-offline')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'offline' } }, 'off-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, [{ removed: false, accepted: true }])
+        }, 0), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'off-q'))
+            .toEqual({ status: 'unavailable', localId: 'off-q' })
+        expect(calls).toBe(0)
+        expect(store.messages.lookupQueuedMessage(session.id, 'off-q').status).toBe('queued')
+        store.close()
+    })
+
+    it('keeps the row queued when the CLI does not accept the forced emit', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-refused')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'refused' } }, 'refused-q')
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, calls === 1 ? [{ removed: false }] : [{ removed: false, accepted: false }])
+        }), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'refused-q'))
+            .toEqual({ status: 'unavailable', localId: 'refused-q' })
+        // Refusal never degrades the row to indeterminate — it was safely queued.
+        expect(store.messages.lookupQueuedMessage(session.id, 'refused-q').status).toBe('queued')
+        store.close()
+    })
+
+    it('reports invoked when the row was already consumed', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-done')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'done' } }, 'done-q')
+        store.messages.markMessagesInvoked(session.id, ['done-q'], Date.now())
+        const service = new MessageService(store, makeIo(ack => ack(null, [{ removed: false, accepted: true }])), makePublisher() as unknown as EventPublisher)
+        const result = await service.deliverQueuedMessageNow(session.id, 'done-q')
+        expect(result.status).toBe('invoked')
+        if (result.status === 'invoked') {
+            expect(result.message.localId).toBe('done-q')
+        }
+        store.close()
+    })
+
+    it('refuses future-scheduled rows', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-scheduled')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'later' } }, 'sched-q', Date.now() + 60_000)
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            ack(null, [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        expect(await service.deliverQueuedMessageNow(session.id, 'sched-q'))
+            .toEqual({ status: 'scheduled', localId: 'sched-q' })
+        expect(calls).toBe(0)
+        store.close()
+    })
+
+    it('serializes concurrent clicks on the same row', async () => {
+        const store = makeStore()
+        const session = makeSession(store, 'deliver-race')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'race' } }, 'race-q')
+        let release: () => void = () => {}
+        const gate = new Promise<void>(resolve => { release = resolve })
+        let calls = 0
+        const service = new MessageService(store, makeIo(ack => {
+            calls += 1
+            if (calls === 1) {
+                void gate.then(() => ack(null, [{ removed: false }]))
+                return
+            }
+            ack(null, [{ removed: false, accepted: true }])
+        }), makePublisher() as unknown as EventPublisher)
+        const first = service.deliverQueuedMessageNow(session.id, 'race-q')
+        const second = await service.deliverQueuedMessageNow(session.id, 'race-q')
+        expect(second).toEqual({ status: 'busy', localId: 'race-q' })
+        release()
+        expect(await first).toEqual({ status: 'delivered', localId: 'race-q' })
         store.close()
     })
 })

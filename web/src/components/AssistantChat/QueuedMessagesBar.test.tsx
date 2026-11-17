@@ -961,3 +961,45 @@ it('does not expose a second Steer when REST success beats the pending SSE', asy
     expect(screen.getByText('queuedMessages.deliveryPending')).toBeInTheDocument()
     expect(mocks.addToast).not.toHaveBeenCalled()
 })
+
+describe('QueuedMessagesBar send-now affordance', () => {
+    it('shows the ↑ send-now button for a queued row once the turn has stopped and delivers on click', async () => {
+        const deliverNow = vi.fn().mockResolvedValue({ status: 'delivered', localId: 'local-server-message-id' })
+        const api = { deliverQueuedMessageNow: deliverNow } as unknown as ApiClient
+        renderQueuedMessage(null, null, 0, false, api)
+        const button = screen.getByRole('button', { name: 'queuedMessages.deliverNow' })
+        await act(async () => {
+            fireEvent.click(button)
+        })
+        await waitFor(() => expect(deliverNow).toHaveBeenCalledWith('session-1', 'server-message-id'))
+    })
+
+    it('hides ↑ while a turn is dispatching, even when steer is not available', () => {
+        renderQueuedMessage(null, null, 0, false, null, {}, true)
+        expect(screen.queryByRole('button', { name: 'queuedMessages.deliverNow' })).toBeNull()
+    })
+
+    it('hides ↑ while steer owns the row (mid-turn case)', () => {
+        renderQueuedMessage(null, null, 0, true, null)
+        expect(screen.queryByRole('button', { name: 'queuedMessages.deliverNow' })).toBeNull()
+        expect(screen.getByRole('button', { name: 'Steer queued message' })).toBeTruthy()
+    })
+
+    it('hides ↑ for future-scheduled rows', () => {
+        renderQueuedMessage(Date.now() + 60_000, null, 0, false, null)
+        expect(screen.queryByRole('button', { name: 'queuedMessages.deliverNow' })).toBeNull()
+    })
+
+    it('toasts when the runner cannot accept the re-delivery and keeps the row actionable', async () => {
+        const deliverNow = vi.fn().mockResolvedValue({ status: 'unavailable', localId: 'local-server-message-id' })
+        const api = { deliverQueuedMessageNow: deliverNow } as unknown as ApiClient
+        renderQueuedMessage(null, null, 0, false, api)
+        await act(async () => {
+            fireEvent.click(screen.getByRole('button', { name: 'queuedMessages.deliverNow' }))
+        })
+        await waitFor(() => expect(mocks.addToast).toHaveBeenCalledTimes(1))
+        expect(mocks.addToast.mock.calls[0][0].title).toBe('queuedMessages.deliverNowUnavailable')
+        // The row is untouched; the affordance stays available for another try.
+        expect(screen.getByRole('button', { name: 'queuedMessages.deliverNow' })).toBeTruthy()
+    })
+})

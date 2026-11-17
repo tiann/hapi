@@ -195,6 +195,20 @@ export type RetryIndeterminateMessageResult =
     | { status: 'invoked'; message: DecryptedMessage }
     | { status: 'not-found' }
 
+/**
+ * Explicit "send now" outcome for a queued row. 'delivered' means the CLI
+ * force-accepted the row; invocation is stamped later through the normal
+ * messages-consumed ack. Every non-invoked outcome leaves the row queued
+ * and unchanged.
+ */
+export type DeliverQueuedMessageNowResult =
+    | { status: 'delivered'; localId: string }
+    | { status: 'busy'; localId: string }
+    | { status: 'unavailable'; localId: string }
+    | { status: 'scheduled'; localId: string }
+    | { status: 'invoked'; message: DecryptedMessage }
+    | { status: 'not-found' }
+
 function contentForDeferredDelivery(content: unknown): unknown {
     if (!isObject(content) || content.role !== 'user' || !isObject(content.meta)) {
         return content
@@ -217,6 +231,7 @@ export class MessageService {
     /** One scheduled-matured SSE per localId per hub process (cleared on cancel/consume paths here). */
     private readonly scheduledMatureNotifiedLocalIds = new Set<string>()
     private readonly activeIndeterminateRetries = new Set<string>()
+    private readonly activeDeliverNow = new Set<string>()
 
     constructor(
         private readonly store: Store,
@@ -886,6 +901,122 @@ export class MessageService {
         return { status: 'retried', localId: message.localId }
         } finally {
             this.activeIndeterminateRetries.delete(retryKey)
+        }
+    }
+
+    /**
+     * Explicit "send now" for a queued row (the queued bar's ↑ affordance).
+     *
+     * Recovery path for rows stranded by an abort: DSH and Codex clear their
+     * in-memory queue synchronously when an abort begins, and the hub's
+     * session-alive replay of the still-queued row is dropped by the CLI's
+     * message-id dedup, so the row can hang with invoked_at NULL until the
+     * end-of-session sweep discards it unread. This mirrors
+     * retryIndeterminateMessage's CLI round-trip — a cancel-ack to release any
+     * stale in-memory copy, then a force 'retry-queued-message' emit that
+     * bypasses the dedup — but keeps the row in the 'queued' delivery state
+     * throughout: the CLI consumes it into a fresh turn and stamps invoked_at
+     * through the normal messages-consumed ack. Claude-flavor sessions keep
+     * their in-memory copy across aborts; there the cancel-ack removes it and
+     * the re-emit re-accepts it, so the click is still a no-op reorder at worst.
+     *
+     * Every non-invoked outcome leaves the row exactly as it was; concurrent
+     * clicks are serialized by the activeDeliverNow guard on top of the web
+     * client's queued-operation mutex.
+     */
+    async deliverQueuedMessageNow(
+        sessionId: string,
+        messageId: string
+    ): Promise<DeliverQueuedMessageNowResult> {
+        const lookup = this.store.messages.lookupQueuedMessage(sessionId, messageId)
+        if (lookup.status === 'absent') return { status: 'not-found' }
+        if (lookup.status === 'invoked') {
+            return { status: 'invoked', message: toDecryptedMessage(lookup.message) }
+        }
+        if (!lookup.localId) return { status: 'not-found' }
+        if (lookup.status !== 'queued') {
+            // dispatching / indeterminate rows are not deliverable through this
+            // path; indeterminate rows already own the retry affordance.
+            return { status: 'unavailable', localId: lookup.localId }
+        }
+        if (lookup.scheduledAt != null && lookup.scheduledAt > Date.now()) {
+            // Future-scheduled rows mature through the scheduler tick, the same
+            // rule steer enforces.
+            return { status: 'scheduled', localId: lookup.localId }
+        }
+        const deliverKey = `${sessionId}:${lookup.localId}`
+        if (this.activeDeliverNow.has(deliverKey)) {
+            return { status: 'busy', localId: lookup.localId }
+        }
+        this.activeDeliverNow.add(deliverKey)
+        try {
+            const roomName = `session:${sessionId}`
+            const cliCount = this.io.of('/cli').adapter.rooms.get(roomName)?.size ?? 0
+            if (this.store.isOpenCodeClearDeliveryGated(sessionId) || cliCount !== 1) {
+                return { status: 'unavailable', localId: lookup.localId }
+            }
+
+            const cancelResult = await this.requestCliCancelAck(sessionId, lookup.localId, messageId, 500)
+            if (cancelResult === 'consumed') {
+                const settled = this.recordConsumedAcknowledgement(sessionId, lookup.localId)
+                return settled.status === 'invoked'
+                    ? { status: 'invoked', message: toDecryptedMessage(settled.message) }
+                    : { status: 'not-found' }
+            }
+            if (cancelResult === 'in-flight' || cancelResult === 'timeout' || cancelResult === 'indeterminate') {
+                return { status: 'unavailable', localId: lookup.localId }
+            }
+            if ((this.store.sessions.getSession(sessionId)?.metadata as Metadata | null)?.capabilities?.concurrentClients
+                && cancelResult !== 'removed') {
+                return { status: 'unavailable', localId: lookup.localId }
+            }
+            const refreshed = this.store.messages.lookupQueuedMessage(sessionId, messageId)
+            if (refreshed.status === 'invoked') {
+                return { status: 'invoked', message: toDecryptedMessage(refreshed.message) }
+            }
+            if (refreshed.status === 'absent') return { status: 'not-found' }
+            if (refreshed.status !== 'queued') {
+                return { status: 'unavailable', localId: lookup.localId }
+            }
+            const message = this.store.messages.getMessageById(sessionId, lookup.resolvedId)
+            if (!message || !message.localId) return { status: 'not-found' }
+
+            const update = {
+                id: message.id,
+                seq: message.seq,
+                createdAt: message.createdAt,
+                body: {
+                    t: 'retry-queued-message' as const,
+                    sid: sessionId,
+                    messageId: message.id,
+                    localId: message.localId,
+                    message: {
+                        id: message.id,
+                        seq: message.seq,
+                        createdAt: message.createdAt,
+                        localId: message.localId,
+                        content: contentForDeferredDelivery(message.content)
+                    }
+                }
+            }
+            const room = this.io.of('/cli').to(roomName)
+            const accepted = await new Promise<boolean>((resolve) => {
+                room.timeout(500).emit(
+                    'update',
+                    update,
+                    (_err: Error | null, responses: Array<{ accepted?: boolean }>) => {
+                        resolve(responses?.some((response) => response.accepted === true) ?? false)
+                    }
+                )
+            })
+            if (!accepted) {
+                // The row was safely queued before this call; keep it that way
+                // rather than degrading it to indeterminate.
+                return { status: 'unavailable', localId: lookup.localId }
+            }
+            return { status: 'delivered', localId: message.localId }
+        } finally {
+            this.activeDeliverNow.delete(deliverKey)
         }
     }
 

@@ -9,6 +9,7 @@ import type { DecryptedMessage } from '@/types/api'
 import { useCancelQueuedMessage } from '@/hooks/mutations/useCancelQueuedMessage'
 import { useSteerQueuedMessage } from '@/hooks/mutations/useSteerQueuedMessage'
 import { useRetryIndeterminateMessage } from '@/hooks/mutations/useRetryIndeterminateMessage'
+import { useDeliverQueuedMessageNow } from '@/hooks/mutations/useDeliverQueuedMessageNow'
 import { useTranslation } from '@/lib/use-translation'
 import { useToast } from '@/lib/toast-context'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
@@ -229,6 +230,7 @@ export function QueuedMessagesBar({
     const cancelMutation = useCancelQueuedMessage(api)
     const steerMutation = useSteerQueuedMessage(api)
     const retryMutation = useRetryIndeterminateMessage(api)
+    const deliverNowMutation = useDeliverQueuedMessageNow(api)
     const { t } = useTranslation()
     const { addToast } = useToast()
     const pendingScheduleRef = useRef(pendingSchedule)
@@ -400,6 +402,37 @@ export function QueuedMessagesBar({
                                 messageId: msg.id,
                             }).catch(() => {
                                 // useSteerQueuedMessage already toasts the failure.
+                            }).finally(() => {
+                                endQueuedOperation(sessionId, token)
+                            })
+                        }
+
+                        // "Send now" (↑) recovers rows stranded by an abort:
+                        // DSH/Codex drop their in-memory queue when a stop
+                        // begins and the hub's replay is deduped away by the
+                        // CLI, so the row would hang until the session-end
+                        // sweep discards it unread. Offered only when no turn
+                        // is dispatching (deliveryActive) and Steer cannot run
+                        // (canSteerRow covers the mid-turn case).
+                        const canDeliverNowRow = Boolean(
+                            !canSteerRow
+                                && !deliveryActive
+                                && msg.deliveryState !== 'indeterminate'
+                                && msg.scheduledAt == null
+                                && canCancel
+                        )
+                        const deliverNowPending = deliverNowMutation.isPending
+                            && deliverNowMutation.variables?.sessionId === sessionId
+                            && deliverNowMutation.variables.messageId === msg.id
+                        const handleDeliverNow = () => {
+                            if (!canDeliverNowRow) return
+                            const token = beginQueuedOperation(sessionId)
+                            if (!token) return
+                            void deliverNowMutation.mutateAsync({
+                                sessionId,
+                                messageId: msg.id,
+                            }).catch(() => {
+                                // useDeliverQueuedMessageNow already toasts the failure.
                             }).finally(() => {
                                 endQueuedOperation(sessionId, token)
                             })
@@ -589,6 +622,19 @@ export function QueuedMessagesBar({
                                             className="flex h-6 w-6 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40"
                                         >
                                             <SteerIcon />
+                                        </button>
+                                    ) : null}
+                                    {canDeliverNowRow ? (
+                                        <button
+                                            type="button"
+                                            aria-label={t('queuedMessages.deliverNow')}
+                                            title={t('queuedMessages.deliverNow')}
+                                            disabled={deliverNowPending}
+                                            onClick={handleDeliverNow}
+                                            onMouseDown={(e) => e.preventDefault()}
+                                            className="flex h-6 w-6 items-center justify-center rounded text-[var(--app-hint)] transition-colors hover:bg-[var(--app-border)] hover:text-[var(--app-fg)] disabled:cursor-not-allowed disabled:opacity-40"
+                                        >
+                                            <span aria-hidden="true" className="text-sm leading-none font-semibold">↑</span>
                                         </button>
                                     ) : null}
                                     <button
