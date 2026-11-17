@@ -873,12 +873,12 @@ function agentMessageContent(text: string): unknown {
     }
 }
 
-function toolCallResultContent(callId: string, output: unknown): unknown {
+function toolCallResultContent(callId: string, output: unknown, isError?: boolean): unknown {
     return {
         role: 'agent',
         content: {
             type: AGENT_MESSAGE_PAYLOAD_TYPE,
-            data: { type: 'tool-call-result', callId, output }
+            data: { type: 'tool-call-result', callId, output, ...(isError !== undefined ? { is_error: isError } : {}) }
         }
     }
 }
@@ -1178,6 +1178,140 @@ describe('tool-call upsert', () => {
         expect(getToolCallId(rows[0]!.content)).toBe('call-1')
         expect(rows[0]!.id).toBe(update.message.id)
         expect(toolCallDataOf(rows[1]!).callId).toBe('call-2')
+        store.close()
+    })
+})
+
+describe('tool-call-result settlement', () => {
+    it('advances an in_progress call to completed when its result arrives', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-settle-completed')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { input: { path: '/a' }, status: 'in_progress' }), 'call-1')
+        // Flavors like DSH workflow tools never re-emit the call after it
+        // finishes: the result row is the only settlement signal.
+        store.messages.addMessage(session.id, toolCallResultContent('call-1', 'done'))
+
+        const rows = store.messages.getAllMessages(session.id)
+        expect(rows).toHaveLength(2)
+        expect(getToolCallId(rows[0]!.content)).toBe('call-1')
+        // The call row settles in place, keeping the payload its ticks merged.
+        const callData = toolCallDataOf(rows[0]!)
+        expect(callData.status).toBe('completed')
+        expect(callData.input).toEqual({ path: '/a' })
+        expect(toolCallDataOf(rows[1]!).type).toBe('tool-call-result')
+        store.close()
+    })
+
+    it('settles a call as failed when the result carries the error signal', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-settle-failed')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        store.messages.addMessage(session.id, toolCallResultContent('call-1', 'boom', true))
+
+        const rows = toolCallRows(store, session.id)
+        expect(rows).toHaveLength(1)
+        expect(rows[0]!.data.status).toBe('failed')
+        store.close()
+    })
+
+    it('accepts the camelCase isError alias as the failure signal', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-settle-failed-alias')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: { type: 'tool-call-result', callId: 'call-1', output: 'boom', isError: true }
+            }
+        })
+
+        expect(toolCallRows(store, session.id)[0]!.data.status).toBe('failed')
+        store.close()
+    })
+
+    it('does not regress a completed call when its result carries no error signal', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-settle-no-regress-completed')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'completed' }), 'call-1')
+        store.messages.addMessage(session.id, toolCallResultContent('call-1', 'done'))
+
+        const rows = toolCallRows(store, session.id)
+        expect(rows).toHaveLength(1)
+        expect(rows[0]!.data.status).toBe('completed')
+        store.close()
+    })
+
+    it('leaves the settled row untouched when the result is re-sent', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-settle-duplicate-result')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        store.messages.addMessage(session.id, toolCallResultContent('call-1', 'done'))
+        // A duplicate result (no localId to dedupe on) must neither regress
+        // the settled call row nor throw: the scan stops at the first stored
+        // result row for the callId.
+        store.messages.addMessage(session.id, toolCallResultContent('call-1', 'done again', true))
+
+        const callRows = toolCallRows(store, session.id)
+        expect(callRows).toHaveLength(1)
+        expect(callRows[0]!.data.status).toBe('completed')
+        // Both result rows survive as their own rows.
+        expect(store.messages.getAllMessages(session.id)).toHaveLength(3)
+        store.close()
+    })
+
+    it('keeps a settled completed row when a late tick re-emits pending', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-settle-late-pending')
+
+        const first = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        store.messages.addMessage(session.id, toolCallResultContent('call-1', 'done'))
+        // normalizeStatus maps a missing/unknown status to `pending`, so a
+        // permission-round re-send can land after the result. The reused
+        // callId starts a new row (existing semantics); the settled row keeps
+        // its terminal status.
+        const late = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'pending' }), 'call-1')
+
+        expect(late.updated).toBe(false)
+        expect(late.message.id).not.toBe(first.message.id)
+        const rows = toolCallRows(store, session.id)
+        expect(rows).toHaveLength(2)
+        expect(rows.find(row => row.id === first.message.id)!.data.status).toBe('completed')
+        expect(rows.find(row => row.id === late.message.id)!.data.status).toBe('pending')
+        store.close()
+    })
+
+    it('does not settle a call that a user turn already closed', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-settle-user-boundary')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'next turn' } })
+        // A result arriving after a human turn is late for the closed call:
+        // the liveness scan stops at the user row and leaves it alone.
+        store.messages.addMessage(session.id, toolCallResultContent('call-1', 'late'))
+
+        const rows = toolCallRows(store, session.id)
+        expect(rows).toHaveLength(1)
+        expect(rows[0]!.data.status).toBe('in_progress')
+        store.close()
+    })
+
+    it('stores an orphan result row without a matching call', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-settle-orphan')
+
+        expect(() => store.messages.addMessage(session.id, toolCallResultContent('call-x', 'orphan'))).not.toThrow()
+
+        const rows = store.messages.getAllMessages(session.id)
+        expect(rows).toHaveLength(1)
+        expect(toolCallDataOf(rows[0]!).type).toBe('tool-call-result')
         store.close()
     })
 })

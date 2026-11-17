@@ -21,7 +21,7 @@ import {
     dropCachedToolCallRowsForSession,
     getCachedToolCallRowId,
     setCachedToolCallRowId
-} from './toolCallRowCach'
+} from './toolCallRowCache'
 
 type DbMessageRow = {
     content_revision: number
@@ -190,9 +190,10 @@ export function addMessage(
     const invokedAt = localId ? null : stampedAt
 
     // Fresh rows close what the tool-call upsert cache considers live: a
-    // tool-call-result with this callId settles the call, and a user message
-    // row starts a new turn that closes every live call of the session. Drop
-    // the affected memo entries so a later tick never merges into a dead row.
+    // tool-call-result with this callId settles the call (advancing its row's
+    // status before the result lands), and a user message row starts a new
+    // turn that closes every live call of the session. Drop the affected memo
+    // entries so a later tick never merges into a dead row.
     const settledCallId = toolCallResultCallId(content)
     if (settledCallId !== null) {
         dropCachedToolCallRow(db, sessionId, settledCallId)
@@ -201,6 +202,12 @@ export function addMessage(
     }
 
     return db.transaction(() => {
+        // Settle before this result row is stored: the liveness scan must not
+        // see it (a stored result closes its own call), and the settlement and
+        // the insert commit as one.
+        if (settledCallId !== null) {
+            settleToolCallRow(db, sessionId, settledCallId, content)
+        }
         const previousHead = getNewestMessagePosition(db, sessionId)
         prepareCached(db, `
             INSERT INTO messages (
@@ -284,6 +291,20 @@ function mergeToolCallStatus(stored: unknown, incoming: unknown): unknown {
     return incomingRank >= storedRank ? incoming : stored
 }
 
+/** Rewrite a stored tool-call row's status to the terminal state a result
+ *  reports, merging through the same progression rank the tick merge uses —
+ *  settlement can only advance, never regress. Returns the input reference
+ *  when nothing changed so the caller can skip the write. */
+function withTerminalToolCallStatus(stored: unknown, status: 'completed' | 'failed'): unknown {
+    const envelope = unwrapRoleWrappedRecordEnvelope(stored)
+    if (!envelope || !isRecord(envelope.content) || !isRecord(envelope.content.data)) return stored
+    const data = envelope.content.data
+    const merged = mergeToolCallStatus(data.status, status)
+    return merged === data.status
+        ? stored
+        : { ...envelope, content: { ...envelope.content, data: { ...data, status: merged } } }
+}
+
 export type UpsertToolCallResult = {
     message: StoredMessage
     /** True when an existing tool-call row was updated in place. */
@@ -304,6 +325,20 @@ function toolCallResultCallId(value: unknown): string | null {
     if (!data || data.type !== 'tool-call-result') return null
     const callId = data.callId
     return typeof callId === 'string' && callId.trim().length > 0 ? callId : null
+}
+
+/** Whether a stored `tool-call-result` payload reports a failed call. The CLI
+ *  wire declares `is_error` (convertAgentMessage maps an agent's terminal
+ *  `failed` status onto it); `isError` is read as the camelCase alias the
+ *  codex launchers also accept. A result carrying neither signal settles as
+ *  completed — a missed failure is cheaper than a false one. */
+function isFailedToolCallResult(value: unknown): boolean {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent' || !isRecord(record.content)) return false
+    if (record.content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return false
+    const data = isRecord(record.content.data) ? record.content.data : null
+    if (!data || data.type !== 'tool-call-result') return false
+    return data.is_error === true || data.isError === true
 }
 
 function isUserMessageRow(value: unknown): boolean {
@@ -362,6 +397,165 @@ function findLiveToolCallRow(db: Database, sessionId: string, callId: string): D
         if (isUserMessageRow(decoded)) return null
     }
     return null
+}
+
+/** Settle the live tool-call row a result closes: advance its status to the
+ *  terminal state the result reports.
+ *
+ *  Flavors that never re-emit a call after it finishes (DSH workflow tools)
+ *  left the stored row on its last pre-result tick forever — the result was
+ *  stored as its own row but never folded back, so history pages kept reading
+ *  the call as open work (the 58/58 stuck workflow rows). The scan runs
+ *  before the result row itself is inserted and shares findLiveToolCallRow's
+ *  liveness contract: a call already closed by a newer result or by a user
+ *  turn stays untouched, and the rank merge keeps the permission-round
+ *  pending guard — settlement only ever advances. */
+function settleToolCallRow(db: Database, sessionId: string, callId: string, resultContent: unknown): void {
+    const existing = findLiveToolCallRow(db, sessionId, callId)
+    if (!existing) return
+    const storedContent = decodeMessageContent(existing.content)
+    const settledContent = truncateOversizedMessageContent(withTerminalToolCallStatus(
+        storedContent,
+        isFailedToolCallResult(resultContent) ? 'failed' : 'completed'
+    ))
+    if (isDeepStrictEqual(settledContent, storedContent)) return
+    // Same in-place content swap as the tick merge (mergeIntoToolCallRow): no
+    // new seq, no content_revision bump — the row's identity never moves, so
+    // live clients keep merging by id and stored ordering stays stable.
+    prepareCached(db, 'UPDATE messages SET content = ? WHERE id = ?').run(
+        encodeMessageContent(settledContent),
+        existing.id
+    )
+}
+
+/** The `data` record of a Claude-SDK passthrough row
+ *  (`{ role: 'agent', content: { type: 'output', data } }`), or null. */
+function claudeOutputData(value: unknown): Record<string, unknown> | null {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent' || !isRecord(record.content)) return null
+    if (record.content.type !== 'output') return null
+    return isRecord(record.content.data) ? record.content.data : null
+}
+
+/** Claude passthrough rows the chat never renders (meta / compact summaries /
+ *  subagent sidechains). Their tool traffic has no settlement contract in the
+ *  main thread, so the liveness sweep must ignore them on both sides. */
+function isHiddenClaudeOutput(data: Record<string, unknown>): boolean {
+    return data.isMeta === true || data.isCompactSummary === true || data.isSidechain === true
+}
+
+/** The `message.content` block array of a Claude passthrough row, or null. */
+function claudeMessageBlocks(data: Record<string, unknown>): unknown[] | null {
+    const message = isRecord(data.message) ? data.message : null
+    return Array.isArray(message?.content) ? message.content : null
+}
+
+/** Collect `tool_result` tool_use_ids from a Claude user passthrough row.
+ *  Returns whether the row carried any tool_result at all — a user row
+ *  without one is a human prompt, which starts a new turn. */
+function collectClaudeToolResultIds(data: Record<string, unknown>, into: Set<string>): boolean {
+    const blocks = claudeMessageBlocks(data)
+    if (!blocks) return false
+    let found = false
+    for (const block of blocks) {
+        if (!isRecord(block) || block.type !== 'tool_result') continue
+        if (typeof block.tool_use_id === 'string' && block.tool_use_id.length > 0) {
+            into.add(block.tool_use_id)
+            found = true
+        }
+    }
+    return found
+}
+
+/** Whether a Claude assistant passthrough row holds a `tool_use` block whose
+ *  result has not settled yet (work the agent is still waiting on). */
+function claudeAssistantHasOpenToolUse(data: Record<string, unknown>, settledToolUseIds: Set<string>): boolean {
+    const blocks = claudeMessageBlocks(data)
+    if (!blocks) return false
+    for (const block of blocks) {
+        if (!isRecord(block) || block.type !== 'tool_use') continue
+        if (typeof block.id === 'string' && block.id.length > 0 && !settledToolUseIds.has(block.id)) {
+            return true
+        }
+    }
+    return false
+}
+
+/** Whether a stored ACP `tool-call` row already reports a terminal status.
+ *  Flavors that settle a call through its status (instead of a separate
+ *  `tool-call-result` row) must not read as open work. */
+function isTerminalToolCallRow(value: unknown): boolean {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (!record || !isRecord(record.content) || record.content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return false
+    const data = isRecord(record.content.data) ? record.content.data : null
+    if (!data || data.type !== 'tool-call') return false
+    return toolCallStatusRank(data.status) === TOOL_CALL_STATUS_RANK.completed
+}
+
+/** Whether the session tail still holds tool work that started but never
+ *  settled — the transcript-derived "the agent is demonstrably working"
+ *  signal for the hub's work-scoped liveness sweep.
+ *
+ *  Scans the same bounded tail window as `findLiveToolCallRow` and shares its
+ *  liveness contract (which the toolCallRowCache also keys on): a settled
+ *  call is closed by a later result row, and every live call of the session
+ *  is closed by a later human turn. Walking newest-first:
+ *
+ *  - ACP flavors: an unsettled, non-terminal `tool-call` row means open work.
+ *  - Claude passthrough: an assistant `tool_use` block with no later user
+ *    `tool_result` for its id means open work. Tool-result carriers do NOT
+ *    close the turn (the agent loop continues through them); a user row with
+ *    no tool_result is a human prompt and does.
+ *
+ *  Anything older than the window reads as no work — the same err-closed
+ *  bias the upsert scan uses for ancient rows. */
+export function getLiveToolWork(db: Database, sessionId: string): boolean {
+    const rows = prepareCached(db, `
+        SELECT id, content FROM messages
+        WHERE session_id = ?
+        ORDER BY seq DESC
+        LIMIT ?
+    `).all(sessionId, TOOL_CALL_UPSERT_LOOKBACK) as Array<Pick<DbMessageRow, 'id' | 'content'>>
+
+    const settledAcpCallIds = new Set<string>()
+    const settledClaudeToolUseIds = new Set<string>()
+    for (const row of rows) {
+        const decoded = decodeMessageContent(row.content)
+        // A human turn (web prompt, native user row) starts a new round and
+        // closes every tool call older than it — stop, nothing is open.
+        if (isUserMessageRow(decoded)) return false
+
+        const claudeData = claudeOutputData(decoded)
+        if (claudeData !== null) {
+            if (isHiddenClaudeOutput(claudeData)) continue
+            if (claudeData.type === 'user') {
+                if (!collectClaudeToolResultIds(claudeData, settledClaudeToolUseIds)) return false
+                continue
+            }
+            if (claudeData.type === 'result') {
+                // Turn-end marker: everything newer was walked already, so the
+                // calls of this finished turn are settled. Idle sessions end
+                // here, which keeps the sweep's every-tick scan to one row.
+                return false
+            }
+            if (claudeData.type === 'assistant'
+                && claudeAssistantHasOpenToolUse(claudeData, settledClaudeToolUseIds)) {
+                return true
+            }
+            continue
+        }
+
+        const resultCallId = toolCallResultCallId(decoded)
+        if (resultCallId !== null) {
+            settledAcpCallIds.add(resultCallId)
+            continue
+        }
+        const callId = getToolCallId(decoded)
+        if (callId !== null && !settledAcpCallIds.has(callId) && !isTerminalToolCallRow(decoded)) {
+            return true
+        }
+    }
+    return false
 }
 
 /** Merge an incoming tool-call snapshot into a known live row. Shared by the
@@ -696,7 +890,7 @@ export function getDeliverableMessagesAfter(
  *  newest rows of its session. Scanning a bounded tail keeps this off the hot
  *  path on sessions with tens of thousands of messages; anything older than
  *  the window is left alone, which errs toward keeping data. */
-const SNAPSHOT_SWEEP_LOOKBACK = 50
+const REASONING_SNAPSHOT_LOOKBACK = 50
 
 export function deleteLiveReasoningSnapshots(
     db: Database,
