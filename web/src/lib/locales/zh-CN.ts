@@ -1034,6 +1034,8 @@ export default {
   'settings.display.description': '外观、字体和会话列表偏好。',
   'settings.display.typography': '字体',
   'settings.display.sessions': '会话列表',
+  'settings.display.smoothIndicators': '列表动画平滑',
+  'settings.display.smoothIndicators.desc': '在低频心跳步进之间补帧,让加载动画更流畅(GPU 合成;关闭可获得最省电的表现)',
   'settings.display.appearance': '外观',
   'settings.display.appearanceMode': '显示模式',
   'settings.display.appearance.system': '跟随系统',
