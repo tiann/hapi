@@ -67,6 +67,169 @@ describe('Claude rewind hub integration', () => {
         }
     })
 
+    it('broadcasts the hub cut confirmation to CLI sockets after a successful marker write', async () => {
+        const store = new Store(':memory:')
+        const cliUpdates: Array<{ room: string; event: string; update: any }> = []
+        const io = {
+            of: () => ({
+                to: (room: string) => ({
+                    emit: (event: string, update: any) => cliUpdates.push({ room, event, update })
+                })
+            })
+        }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const session = engine.getOrCreateSession('claude-rewind-cut-broadcast', {
+                path: '/tmp/project', host: 'localhost', flavor: 'claude',
+                capabilities: { conversationHistory: { rewindToMessage: true } },
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: session.id, time: Date.now(), mode: 'remote' })
+            seedTwoTurns(store, session)
+
+            ;(engine as any).rpcGateway.rewindConversation = async () => {
+                // The runner persists the durable intent before the restart
+                // teardown; the flush that gates the RPC reply is what makes
+                // it visible here.
+                const stored = store.sessions.getSession(session.id) as { metadataVersion?: number; metadata?: Record<string, unknown> }
+                store.sessions.updateSessionMetadata(session.id, {
+                    ...(stored?.metadata ?? {}),
+                    claudeRewind: {
+                        targetLocalId: 'local-t2',
+                        truncateFromLocalId: 'local-t2',
+                        keepBoundary: 'native-boundary-uuid',
+                        droppedPrompts: ['native-prompt-uuid'],
+                    },
+                }, (stored?.metadataVersion ?? 1) as number, 'default')
+                ;(engine as any).sessionCache.refreshSession(session.id)
+                return { success: true, truncateFromLocalId: 'local-t2' }
+            }
+
+            await expect(engine.rewindConversation(session.id, 'default', 'local-t2')).resolves.toEqual({ type: 'success' })
+
+            // A CLI that already holds native proof must see the marker without
+            // waiting for its next write or a reconnect; otherwise fork/rewind
+            // stays blocked until then.
+            const markerUpdate = cliUpdates.find(
+                (entry) => entry.room === `session:${session.id}` && entry.event === 'update'
+            )
+            expect(markerUpdate).toBeDefined()
+            expect(markerUpdate!.update.body.sid).toBe(session.id)
+            expect(markerUpdate!.update.body.metadata.value.claudeRewind.hubCutApplied).toBe(true)
+
+            const stored = store.sessions.getSession(session.id) as { metadata?: Record<string, any> }
+            expect(stored.metadata?.claudeRewind?.hubCutApplied).toBe(true)
+        } finally {
+            engine.stop()
+            store.close()
+        }
+    })
+
+    it('does not broadcast the CLI metadata update when the marker write is a no-op', async () => {
+        const store = new Store(':memory:')
+        const cliUpdates: Array<{ room: string; event: string; update: any }> = []
+        const io = {
+            of: () => ({
+                to: (room: string) => ({
+                    emit: (event: string, update: any) => cliUpdates.push({ room, event, update })
+                })
+            })
+        }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const session = engine.getOrCreateSession('claude-rewind-cut-noop', {
+                path: '/tmp/project', host: 'localhost', flavor: 'claude',
+                capabilities: { conversationHistory: { rewindToMessage: true } },
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: session.id, time: Date.now(), mode: 'remote' })
+            seedTwoTurns(store, session)
+
+            ;(engine as any).rpcGateway.rewindConversation = async () => {
+                // Model the idempotent second cut: the intent already carries
+                // the marker, so the marker write is a no-op return.
+                const stored = store.sessions.getSession(session.id) as { metadataVersion?: number; metadata?: Record<string, unknown> }
+                store.sessions.updateSessionMetadata(session.id, {
+                    ...(stored?.metadata ?? {}),
+                    claudeRewind: {
+                        targetLocalId: 'local-t2',
+                        truncateFromLocalId: 'local-t2',
+                        keepBoundary: 'native-boundary-uuid',
+                        droppedPrompts: ['native-prompt-uuid'],
+                        hubCutApplied: true,
+                    },
+                }, (stored?.metadataVersion ?? 1) as number, 'default')
+                ;(engine as any).sessionCache.refreshSession(session.id)
+                return { success: true, truncateFromLocalId: 'local-t2' }
+            }
+
+            await expect(engine.rewindConversation(session.id, 'default', 'local-t2')).resolves.toEqual({ type: 'success' })
+            expect(store.messages.getAllMessages(session.id).map((m) => m.localId)).not.toContain('local-t2')
+            expect(cliUpdates).toEqual([])
+        } finally {
+            engine.stop()
+            store.close()
+        }
+    })
+
+    it('does not broadcast the CLI metadata update when the marker write exhausts its version-mismatch retries', async () => {
+        const store = new Store(':memory:')
+        const cliUpdates: Array<{ room: string; event: string; update: any }> = []
+        const io = {
+            of: () => ({
+                to: (room: string) => ({
+                    emit: (event: string, update: any) => cliUpdates.push({ room, event, update })
+                })
+            })
+        }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        try {
+            const session = engine.getOrCreateSession('claude-rewind-cut-version-mismatch', {
+                path: '/tmp/project', host: 'localhost', flavor: 'claude',
+                capabilities: { conversationHistory: { rewindToMessage: true } },
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: session.id, time: Date.now(), mode: 'remote' })
+            seedTwoTurns(store, session)
+
+            // Model a concurrent writer that keeps advancing the stored
+            // version: every marker-write attempt loses the race and returns
+            // version-mismatch.
+            const realUpdate = store.sessions.updateSessionMetadata.bind(store.sessions)
+            ;(store.sessions as any).updateSessionMetadata = (
+                id: string, metadata: any, expectedVersion: number, namespace: string, options?: any
+            ) => {
+                if (metadata?.claudeRewind?.hubCutApplied === true) {
+                    return { result: 'version-mismatch' }
+                }
+                return realUpdate(id, metadata, expectedVersion, namespace, options)
+            }
+
+            ;(engine as any).rpcGateway.rewindConversation = async () => {
+                // The runner persisted the durable intent before the restart
+                // teardown; the flush that gates the RPC reply made it visible.
+                const stored = store.sessions.getSession(session.id) as { metadataVersion?: number; metadata?: Record<string, unknown> }
+                store.sessions.updateSessionMetadata(session.id, {
+                    ...(stored?.metadata ?? {}),
+                    claudeRewind: {
+                        targetLocalId: 'local-t2',
+                        truncateFromLocalId: 'local-t2',
+                        keepBoundary: 'native-boundary-uuid',
+                        droppedPrompts: ['native-prompt-uuid'],
+                    },
+                }, (stored?.metadataVersion ?? 1) as number, 'default')
+                ;(engine as any).sessionCache.refreshSession(session.id)
+                return { success: true, truncateFromLocalId: 'local-t2' }
+            }
+
+            await expect(engine.rewindConversation(session.id, 'default', 'local-t2')).resolves.toEqual({ type: 'success' })
+            expect(store.messages.getAllMessages(session.id).map((m) => m.localId)).not.toContain('local-t2')
+            const after = store.sessions.getSession(session.id) as { metadata?: Record<string, any> }
+            expect(after.metadata?.claudeRewind?.hubCutApplied).not.toBe(true)
+            expect(cliUpdates).toEqual([])
+        } finally {
+            engine.stop()
+            store.close()
+        }
+    })
+
     it('refuses fork and rewind while a rewind intent is pending', async () => {
         const { store, engine } = createEngine()
         try {

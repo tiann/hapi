@@ -1099,6 +1099,10 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         drainingUserMessages = true;
         try {
             while (deferredMessages.length > 0 && !settleRetryAbort.signal.aborted) {
+                // The rewind intent write must be durable before any prompt
+                // dispatch: a hub restart mid-write drops the history-action
+                // lock, and a prompt dispatched now would race the cut.
+                if (rewindPersistInFlight) await rewindPersistInFlight;
                 if ((unknownRewindIntent || settleInFlight) && !await ensureUnknownRewindSettledForMessages()) {
                     return;
                 }
@@ -1111,7 +1115,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         }
     };
     session.onUserMessage((...args) => {
-        if (!messagePipelineReady || unknownRewindIntent || drainingUserMessages || deferredMessages.length > 0 || settleInFlight !== null) {
+        if (!messagePipelineReady || unknownRewindIntent || drainingUserMessages || deferredMessages.length > 0 || settleInFlight !== null || rewindPersistInFlight !== null) {
             deferredMessages.push(args);
             void flushUserMessages();
             return;

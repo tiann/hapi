@@ -2989,6 +2989,10 @@ export class SyncEngine {
             )
             if (result.result === 'success') {
                 this.sessionCache.refreshSession(sessionId)
+                // A CLI holding native proof clears the intent on this update;
+                // without the push it waits for its next write or a reconnect,
+                // keeping fork/rewind blocked on an already-applied cut.
+                this.emitCliSessionMetadataUpdate(sessionId)
                 return
             }
             if (result.result !== 'version-mismatch') return

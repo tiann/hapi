@@ -42,6 +42,7 @@ const harness = vi.hoisted(() => {
         getMetadata: () => state.metadata,
         flushMetadata: async (timeoutMs?: number) => {
             harness.flushTimeouts.push(timeoutMs ?? 0)
+            if (harness.flushGate) await harness.flushGate
             const flushed = harness.flushResult ?? true
             // A successful flush of a rewind-intent write means the hub took
             // it; the hub applies its transcript cut synchronously with the RPC
@@ -112,7 +113,9 @@ const harness = vi.hoisted(() => {
         cancelQueuedMessageHandler: null as ((localId: string) => boolean) | null,
         nativeTurns: null as Array<{ promptUuid: string; endUuid: string }> | null,
         /** Model the lost-RPC window: the hub took the write but never replied. */
-        suppressHubCutMarker: false
+        suppressHubCutMarker: false,
+        /** Model a pending intent write: flushMetadata stays unresolved until released. */
+        flushGate: null as Promise<void> | null
     }
 })
 
@@ -310,6 +313,7 @@ describe('runClaude rewind proof lifetime', () => {
         harness.flushTimeouts = []
         harness.nativeTurns = null
         harness.suppressHubCutMarker = false
+        harness.flushGate = null
         harness.loopImpl = null
         harness.runError = null
         // deriveSpawnArgs reads the REAL transcript, so restore the unproven
@@ -848,6 +852,55 @@ describe('runClaude rewind proof lifetime', () => {
             const rewind = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!
             expect(await rewind({ messageLocalId: 'local-2' })).toMatchObject({ success: true })
             expect(harness.flushTimeouts[0]).toBeGreaterThanOrEqual(30_000)
+        } finally {
+            sessionInstance.stopKeepAlive()
+        }
+    })
+
+    it('holds queued prompts until the rewind intent write settles, then dispatches them in order', { timeout: 20_000 }, async () => {
+        // While the durable intent write is pending, a hub restart can drop
+        // the hub-side history-action lock; a prompt dispatched before the
+        // write lands would race the cut. Incoming messages must wait.
+        const prev = snapshotRunner()
+        const runPromise = runClaude({
+            workingDirectory: '/tmp/hapi-rewind-test',
+            startedBy: 'runner',
+            startingMode: 'remote'
+        })
+        runPromise.catch((error) => { harness.runError = error })
+
+        await waitForFreshRunner(prev)
+
+        const sessionInstance = createRunnerSession()
+        sessionInstance.sessionId = 'native-a'
+        sessionInstance.requestRemoteRestart = async () => {}
+        try {
+            harness.loopOpts.onSessionReady(sessionInstance)
+            harness.sessionStub.updateMetadata((metadata: any) => ({
+                ...metadata,
+                conversationHistoryEntryIds: { 'local-1': 'uuid-1' }
+            }))
+
+            // Hold the intent write open: flushMetadata stays unresolved.
+            let releaseFlush!: () => void
+            harness.flushGate = new Promise<void>((resolve) => { releaseFlush = resolve })
+            const rewindPromise = harness.rpcHandlers.get(RPC_METHODS.RewindConversation)!({ messageLocalId: 'local-1' })
+            await new Promise((resolve) => setTimeout(resolve, 30))
+            expect(harness.state.metadata.claudeRewind).toMatchObject({ keepBoundary: 'keep-boundary-uuid' })
+
+            const dispatched = () => harness.loopOpts!.messageQueue.queue.map((item: any) => item.message)
+            harness.userMessageHandler!({ content: { text: 'first after rewind' } }, 'msg-1')
+            harness.userMessageHandler!({ content: { text: 'second after rewind' } }, 'msg-2')
+            await new Promise((resolve) => setTimeout(resolve, 30))
+            // The intent write is not durable yet: neither prompt may dispatch.
+            expect(dispatched()).toEqual([])
+
+            releaseFlush()
+            await expect(rewindPromise).resolves.toMatchObject({ success: true, truncateFromLocalId: 'local-1' })
+            await vi.waitFor(() => {
+                expect(dispatched()).toEqual(['first after rewind', 'second after rewind'])
+            })
+            expect(harness.state.metadata.claudeRewind).toMatchObject({ keepBoundary: 'keep-boundary-uuid' })
         } finally {
             sessionInstance.stopKeepAlive()
         }
