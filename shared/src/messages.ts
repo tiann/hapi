@@ -922,23 +922,51 @@ function classifyNearMiss(jsonPart: string): NotifySummaryNearMissReason {
     return 'invalid-json'
 }
 
-/**
- * Delimiters that mark the token as *quoted* rather than glued to prose.
- *
- * The strict matcher can afford to ignore these: a payload that parses as an
- * object through end of line is its own evidence that the line is a real
- * footer. A near miss has no such evidence, so it must not delete text that
- * merely looks like an example - ``Use `AGENT_NOTIFY_SUMMARY {...}` here.``
- */
-const NEAR_MISS_QUOTE_PREFIXES = new Set(['`', '"', "'", '“', '‘', '(', '[', '<'])
+/** An apostrophe inside a word (`didn't`) is punctuation, not a quote. */
+function isApostropheInsideWord(line: string, idx: number): boolean {
+    return /[\p{L}\p{N}]/u.test(line[idx - 1] ?? '') && /[\p{L}\p{N}]/u.test(line[idx + 1] ?? '')
+}
 
-/** True when `idx` falls inside an inline-code span on this line. */
-function isInsideInlineCodeSpan(line: string, idx: number): boolean {
-    let ticks = 0
+/**
+ * Whether `idx` sits inside an open quoting or code span on this line.
+ *
+ * Quoting is a property of the *span*, not of the single character before the
+ * token: `The agent wrote "Done.AGENT_NOTIFY_SUMMARY {...}" verbatim.` has
+ * ordinary prose punctuation immediately before the token and is still an
+ * example rather than an attempt at a footer. Symmetric delimiters are counted
+ * by parity so a *closed* pair earlier on the line (`He said "hello".`) does
+ * not grant immunity; bracketing delimiters are counted by depth.
+ *
+ * The strict matcher deliberately does not consult this: a payload that parses
+ * as an object through end of line is its own evidence that the line is a real
+ * footer, so a quote-glued valid footer is almost certainly an agent that
+ * forgot the newline. A near miss has no such evidence, so it has to be
+ * conservative about what it will delete - and the Codex commentary path
+ * strips before storage rather than before display, so text lost here is gone
+ * rather than merely hidden.
+ *
+ * Angle brackets are deliberately absent: `a < b` is far more common in agent
+ * prose than an angle-bracketed footer example, and treating `<` as an opener
+ * would hide real footers.
+ */
+function isInsideQuotedSpan(line: string, idx: number): boolean {
+    let backticks = 0
+    let doubleQuotes = 0
+    let singleQuotes = 0
+    let depth = 0
     for (let i = 0; i < idx; i += 1) {
-        if (line[i] === '`') ticks += 1
+        const char = line[i]
+        if (char === '`') backticks += 1
+        else if (char === '"' || char === '“' || char === '”') doubleQuotes += 1
+        else if (char === "'" || char === '‘' || char === '’') {
+            if (!isApostropheInsideWord(line, i)) singleQuotes += 1
+        } else if (char === '(' || char === '[') depth += 1
+        else if (char === ')' || char === ']') depth = Math.max(0, depth - 1)
     }
-    return ticks % 2 === 1
+    return backticks % 2 === 1
+        || doubleQuotes % 2 === 1
+        || singleQuotes % 2 === 1
+        || depth > 0
 }
 
 type NearMissMatch = NotifySummaryNearMiss & { start: number }
@@ -947,12 +975,9 @@ function matchNearMissLine(line: string): NearMissMatch | null {
     if (matchNotifySummaryLine(line) !== null) return null
 
     for (const start of eligibleTokenStarts(line)) {
-        // Quoted or fenced examples are prose about the contract, not attempts
-        // at it. Dropping them would delete the explanation around them too -
-        // and the Codex commentary path strips before storage, not just before
-        // display, so the text would be gone rather than merely hidden.
-        if (start > 0 && NEAR_MISS_QUOTE_PREFIXES.has(line[start - 1]!)) continue
-        if (isInsideInlineCodeSpan(line, start)) continue
+        // Quoted and fenced examples are prose *about* the contract, not
+        // attempts at it; stripping one deletes the explanation around it too.
+        if (isInsideQuotedSpan(line, start)) continue
         const jsonPart = line.slice(start + NOTIFY_SUMMARY_PREFIX.length).trim()
         // A bare token with no payload is prose, not an attempted footer.
         if (jsonPart.length === 0) continue

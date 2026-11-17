@@ -738,8 +738,30 @@ describe('stripNotifySummaryFooter', () => {
         expect(stripNotifySummaryFooter(parenthesised)).toBe(parenthesised)
     })
 
+    test('keeps a quoted example that has glued prose inside the quotes', () => {
+        // Quoting is a span, not the one character before the token: the char
+        // before the token here is ordinary prose punctuation.
+        const quotedGlue = 'The agent wrote "Done.AGENT_NOTIFY_SUMMARY {"status":"done"}" verbatim.'
+        const parenthesisedGlue = `('Done.AGENT_NOTIFY_SUMMARY {"status":"done"}')`
+        const bracketed = 'See [Done.AGENT_NOTIFY_SUMMARY {"status":"done"}] above.'
+        expect(stripNotifySummaryFooter(quotedGlue)).toBe(quotedGlue)
+        expect(stripNotifySummaryFooter(parenthesisedGlue)).toBe(parenthesisedGlue)
+        expect(stripNotifySummaryFooter(bracketed)).toBe(bracketed)
+    })
+
     test('still strips a genuine glued footer after an earlier inline-code span', () => {
         expect(stripNotifySummaryFooter('Ran `bun test`.AGENT_NOTIFY_SUMMARY {"status":')).toBe('Ran `bun test`.')
+    })
+
+    test('still strips a genuine glued footer after closed quotes and brackets', () => {
+        expect(stripNotifySummaryFooter('He said "hello".AGENT_NOTIFY_SUMMARY {"status":')).toBe('He said "hello".')
+        expect(stripNotifySummaryFooter('Ran it (twice).AGENT_NOTIFY_SUMMARY {"status":')).toBe('Ran it (twice).')
+    })
+
+    test('does not read an in-word apostrophe as an open quote', () => {
+        // Parity on every `'` would make `didn't` hide a real footer.
+        expect(stripNotifySummaryFooter(`I didn't finish.AGENT_NOTIFY_SUMMARY {"status":`)).toBe("I didn't finish.")
+        expect(stripNotifySummaryFooter(`The agent's turn.AGENT_NOTIFY_SUMMARY {"status":`)).toBe("The agent's turn.")
     })
 
     test('keeps the bare token with no payload', () => {
@@ -813,8 +835,21 @@ describe('detectNotifySummaryNearMiss', () => {
         expect(detectNotifySummaryNearMiss('The shape is `Done.AGENT_NOTIFY_SUMMARY {"status":"done"}`')).toBeNull()
     })
 
+    test('returns null for a quoted example with glued prose inside the quotes', () => {
+        expect(
+            detectNotifySummaryNearMiss('The agent wrote "Done.AGENT_NOTIFY_SUMMARY {"status":"done"}" verbatim.')
+        ).toBeNull()
+        expect(detectNotifySummaryNearMiss(`('Done.AGENT_NOTIFY_SUMMARY {"status":"done"}')`)).toBeNull()
+    })
+
     test('still reports a genuine glued footer after an earlier inline-code span', () => {
         expect(detectNotifySummaryNearMiss('Ran `bun test`.AGENT_NOTIFY_SUMMARY {"status":')?.reason).toBe(
+            'unterminated-json'
+        )
+        expect(detectNotifySummaryNearMiss('He said "hello".AGENT_NOTIFY_SUMMARY {"status":')?.reason).toBe(
+            'unterminated-json'
+        )
+        expect(detectNotifySummaryNearMiss(`I didn't finish.AGENT_NOTIFY_SUMMARY {"status":`)?.reason).toBe(
             'unterminated-json'
         )
     })
