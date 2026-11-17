@@ -7,7 +7,7 @@
  * - No E2E encryption; data is stored as JSON in SQLite
  */
 
-import { type SessionReadStateRequest, isKnownFlavor, matchesClaudeSessionId, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
+import { type SessionReadStateRequest, extractExplicitParentSessionIdFromRemit, isKnownFlavor, matchesClaudeSessionId, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, resolveSessionParentLink, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
 import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
@@ -46,7 +46,7 @@ import { isUserInputMessage } from '../store/sessionUserActivity'
 import { EventPublisher, type SyncEventListener } from './eventPublisher'
 import { MachineCache, type Machine } from './machineCache'
 import { MessageService, type RetryIndeterminateMessageResult } from './messageService'
-import { createTitleSuggestionService, type TitleSuggestionService } from './titleSuggestion'
+import { createTitleSuggestionService, extractUserText, type TitleSuggestionService } from './titleSuggestion'
 import { createPromptTitle } from './promptTitle'
 import { selectForkTranscriptPrefix } from './forkTranscript'
 import { buildForkSessionSummary } from './forkSessionSummary'
@@ -341,6 +341,7 @@ export class SyncEngine {
                 if (isUserInputMessage(event.message.content)) {
                     this.sessionCache.refreshLastUserMessageAt(event.sessionId)
                     this.recordPromptTitle(event.sessionId, event.message.content)
+                    this.recordParentSessionFromRemit(event.sessionId, event.message.content)
                 }
                 if (!this.sessionCache.getSession(event.sessionId)?.hasConversationContent
                     && hasConversationMessageContent(event.message.content)) {
@@ -3724,7 +3725,8 @@ export class SyncEngine {
         startingMode?: 'remote' | 'pty',
         // Required for fresh machine spawns so the runner stamps the HAPI id on
         // argv before the first webhook (#1911 Major: unreapable window).
-        namespace?: string
+        namespace?: string,
+        parentSessionId?: string
     ): ReturnType<RpcGateway['spawnSession']> {
         // Fresh machine spawns historically omitted existingSessionId, so
         // buildCliArgs could not stamp --hapi-session-id / --existing-session-id.
@@ -3737,6 +3739,7 @@ export class SyncEngine {
             const machine = this.getMachineByNamespace(machineId, namespace)
                 ?? this.getMachine(machineId)
             allocatedSessionId = randomUUID()
+            const normalizedParentId = parentSessionId?.trim()
             this.sessionCache.getOrCreateSession(
                 `machine-spawn:${allocatedSessionId}`,
                 {
@@ -3746,6 +3749,9 @@ export class SyncEngine {
                     machineId,
                     startedBy: 'runner',
                     startedFromRunner: true,
+                    ...(normalizedParentId && normalizedParentId !== allocatedSessionId
+                        ? { parentSessionId: normalizedParentId }
+                        : {}),
                 },
                 null,
                 namespace,
@@ -5901,6 +5907,23 @@ export class SyncEngine {
             this.sessionCache.updatePromptTitle(sessionId, title)
         } catch {
             // A display-only title must never interrupt message delivery.
+        }
+    }
+
+    private recordParentSessionFromRemit(sessionId: string, content: unknown): void {
+        const session = this.sessionCache.getSession(sessionId)
+        if (!session?.metadata || resolveSessionParentLink(session.metadata, sessionId) !== null) return
+        const record = unwrapRoleWrappedRecordEnvelope(content)
+        if (record?.role !== 'user') return
+        const text = extractUserText(record.content)
+        if (!text) return
+        const candidateId = extractExplicitParentSessionIdFromRemit(text)
+        if (!candidateId || candidateId === sessionId) return
+        if (!this.sessionCache.getSessionByNamespace(candidateId, session.namespace)) return
+        try {
+            this.sessionCache.updateParentSessionId(sessionId, candidateId)
+        } catch {
+            // Best-effort lineage link must never interrupt message delivery.
         }
     }
 

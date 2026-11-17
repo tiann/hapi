@@ -132,6 +132,18 @@ export function extractParentSessionIdFromRemit(message: string): string | null 
 }
 
 /**
+ * Extracts a parent session id only when an explicit `## Parent` heading exists.
+ * Prevents ordinary user prompts that cite `/sessions/<id>` for context from
+ * creating false parent-child session links.
+ */
+export function extractExplicitParentSessionIdFromRemit(message: string): string | null {
+    if (!message) return null
+    const section = extractParentSection(message)
+    if (!section) return null
+    return extractSessionCitationIds(section)[0] ?? null
+}
+
+/**
  * Ensure an orchestrated remit cites the parent under a `## Parent` chip block.
  * Idempotent when a `## Parent` section already has a markdown chip for this
  * UUID. Bare citations (or an empty Parent heading) do not suppress the stamp.

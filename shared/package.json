@@ -23,6 +23,7 @@
         "./peerParentStamp": "./src/peerParentStamp.ts",
         "./sessionExport": "./src/sessionExport.ts",
         "./sessionLifecycle": "./src/sessionLifecycle.ts",
+        "./sessionLink": "./src/sessionLink.ts",
         "./types": "./src/types.ts",
         "./voice": "./src/voice.ts",
         "./voicePickerCatalog": "./src/voicePickerCatalog.ts",

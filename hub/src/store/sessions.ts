@@ -87,6 +87,7 @@ const HUB_OWNED_METADATA_FIELDS = [
     'titleSuggestionAutoAttemptedAt',
     'titleSuggestionTurn',
     'promptTitle',
+    'parentSessionId',
     'forkedFrom',
     'conversationBranch'
 ] as const

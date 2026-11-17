@@ -1400,4 +1400,39 @@ describe('machines routes', () => {
         expect((await app.request('/api/machines/machine-2/agent-quotas?refresh=1')).status).toBe(200)
         expect(calls).toEqual([{ refresh: false }, { refresh: true }])
     })
+
+    it('forwards parentSessionId to SyncEngine.spawnSession only when the parent belongs to the namespace', async () => {
+        const machine = createMachine()
+        const capturedCalls: unknown[][] = []
+        const engine = {
+            getMachine: () => machine,
+            getMachineByNamespace: () => machine,
+            getSessionByNamespace: (id: string, ns: string) =>
+                id === 'parent-in-ns' && ns === 'default' ? { id } : null,
+            spawnSession: async (...args: unknown[]) => {
+                capturedCalls.push(args)
+                return { type: 'success', sessionId: 's-1' }
+            }
+        } as unknown as Partial<SyncEngine>
+
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+        app.route('/api', createMachinesRoutes(() => engine as SyncEngine))
+
+        const okResp = await app.request('/api/machines/machine-1/spawn', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ directory: '/tmp/x', parentSessionId: 'parent-in-ns' })
+        })
+        expect(okResp.status).toBe(200)
+        expect(capturedCalls[0]?.[17]).toBe('parent-in-ns')
+
+        const foreignResp = await app.request('/api/machines/machine-1/spawn', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ directory: '/tmp/x', parentSessionId: 'foreign-parent' })
+        })
+        expect(foreignResp.status).toBe(200)
+        expect(capturedCalls[1]?.[17]).toBeUndefined()
+    })
 })

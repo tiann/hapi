@@ -318,6 +318,11 @@ export function createMachinesRoutes(
                 ? resolved.effort
                 : undefined
 
+        const rawParentId = parsed.data.parentSessionId?.trim()
+        const verifiedParentId = rawParentId && engine.getSessionByNamespace(rawParentId, namespace)
+            ? rawParentId
+            : undefined
+
         const result = await engine.spawnSession(
             machineId,
             parsed.data.directory,
@@ -335,7 +340,8 @@ export function createMachinesRoutes(
             parsed.data.collaborationMode,
             parsed.data.copilotAgentMode,
             startingMode,
-            namespace
+            namespace,
+            verifiedParentId
         )
         return c.json(result)
     })

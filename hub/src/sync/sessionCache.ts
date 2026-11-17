@@ -1,4 +1,4 @@
-import { mergeClaudeSessionIdHistory, mergeReadState } from '@hapi/protocol'
+import { mergeClaudeSessionIdHistory, mergeReadState, resolveSessionParentLink } from '@hapi/protocol'
 import { SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING } from '@hapi/protocol'
 import { AgentStateSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
 import type { BackgroundTask, CodexCollaborationMode, CopilotAgentMode, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
@@ -1417,6 +1417,53 @@ export class SessionCache {
         return false
     }
 
+    /**
+     * Persist a hub-verified parent session id on a child session without
+     * overwriting an existing parent link or creating self-links.
+     */
+    updateParentSessionId(sessionId: string, parentSessionId: string): boolean {
+        const normalizedParentId = parentSessionId.trim()
+        if (!normalizedParentId || normalizedParentId === sessionId) return false
+
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+            if (!session?.metadata) return false
+            if (resolveSessionParentLink(session.metadata, sessionId) !== null) {
+                return false
+            }
+
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                { ...session.metadata, parentSessionId: normalizedParentId },
+                session.metadataVersion,
+                session.namespace,
+                { touchUpdatedAt: false }
+            )
+
+            if (result.result === 'error') return false
+            if (result.result === 'success') {
+                const parsed = MetadataSchema.safeParse(result.value)
+                if (!parsed.success) {
+                    this.refreshSession(sessionId)
+                    return true
+                }
+                session.metadata = parsed.data
+                session.metadataVersion = result.version
+                this.publisher.emit({
+                    type: 'session-updated',
+                    sessionId,
+                    namespace: session.namespace,
+                    data: { metadata: { version: result.version, value: parsed.data } } satisfies SessionPatch
+                })
+                return true
+            }
+
+            this.refreshSession(sessionId)
+        }
+
+        return false
+    }
+
     async markModelErrorBridged(sessionId: string, eventId: string): Promise<void> {
         const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
         if (!session) {
@@ -1827,7 +1874,7 @@ export class SessionCache {
             if (!source || !latest) break
             const result = this.store.sessions.updateSessionMetadata(
                 newSessionId,
-                this.mergeSessionMetadata(source.metadata, latest.metadata),
+                this.mergeSessionMetadata(source.metadata, latest.metadata, newSessionId),
                 latest.metadataVersion,
                 namespace,
                 { touchUpdatedAt: false, inheritTitleLockFrom: options.deleteOldSession ? oldSessionId : undefined }
@@ -1946,7 +1993,7 @@ export class SessionCache {
         for (let attempt = 0; attempt < 2; attempt += 1) {
             const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
             if (!latest) break
-            const mergedMetadata = this.mergeSessionMetadata(oldStored.metadata, latest.metadata)
+            const mergedMetadata = this.mergeSessionMetadata(oldStored.metadata, latest.metadata, newSessionId)
             if (mergedMetadata === null || mergedMetadata === latest.metadata) break
             const result = this.store.sessions.updateSessionMetadata(
                 newSessionId,
@@ -2507,7 +2554,11 @@ export class SessionCache {
         return allocated
     }
 
-    private mergeSessionMetadata(oldMetadata: unknown | null, newMetadata: unknown | null): unknown | null {
+    private mergeSessionMetadata(
+        oldMetadata: unknown | null,
+        newMetadata: unknown | null,
+        targetSessionId?: string
+    ): unknown | null {
         if (!oldMetadata || typeof oldMetadata !== 'object') {
             return newMetadata
         }
@@ -2538,6 +2589,15 @@ export class SessionCache {
 
         if (typeof oldObj.promptTitle === 'string' && typeof newObj.promptTitle !== 'string') {
             merged.promptTitle = oldObj.promptTitle
+            changed = true
+        }
+
+        if (
+            typeof oldObj.parentSessionId === 'string'
+            && typeof newObj.parentSessionId !== 'string'
+            && (!targetSessionId || oldObj.parentSessionId !== targetSessionId)
+        ) {
+            merged.parentSessionId = oldObj.parentSessionId
             changed = true
         }
 

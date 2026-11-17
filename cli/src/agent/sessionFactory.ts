@@ -204,6 +204,9 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     if (metadata.conversationHistoryDiverged !== undefined) {
         preserved.conversationHistoryDiverged = metadata.conversationHistoryDiverged
     }
+    if (metadata.parentSessionId !== undefined) {
+        preserved.parentSessionId = metadata.parentSessionId
+    }
     if (metadata.forkedFrom !== undefined) {
         preserved.forkedFrom = metadata.forkedFrom
     }

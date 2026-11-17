@@ -92,6 +92,8 @@ export const MetadataSchema = z.object({
     // some resumes / local↔remote switches). Lets a resume by an older Claude
     // id find the same HAPI session instead of minting a duplicate.
     claudeSessionIdHistory: z.array(z.string()).optional(),
+    // Parent HAPI session id when spawned by a peer/orchestrator (`spawn_peer`).
+    parentSessionId: z.string().min(1).optional(),
     // Parent HAPI session id when this session was created by message-level fork
     // (`claude --resume <id> --fork-session`). Lets the web list mark the new
     // session as a branch of `<id>` instead of an unrelated duplicate.
