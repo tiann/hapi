@@ -7,7 +7,7 @@
  * - No E2E encryption; data is stored as JSON in SQLite
  */
 
-import { type SessionReadStateRequest, extractExplicitParentSessionIdFromRemit, isKnownFlavor, matchesClaudeSessionId, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, resolveSessionParentLink, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
+import { AGENT_MESSAGE_PAYLOAD_TYPE, type SessionReadStateRequest, extractCodeagentWrapperSessionIds, extractExplicitParentSessionIdFromRemit, getNativeAgentSessionIds, isKnownFlavor, isObject, matchesClaudeSessionId, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, resolveSessionParentLink, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
 import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
@@ -221,6 +221,62 @@ function extractClaudeUserMessageTextFromAgentOutput(content: unknown): string |
     return extractUserMessageText(message.content)
 }
 
+const WRAPPER_PARENT_CACHE_MAX = 512
+const WRAPPER_PARENT_TTL_MS = 24 * 60 * 60_000
+
+function flattenToolResultText(value: unknown, depth: number = 0): string {
+    if (depth > 4 || value === null || value === undefined) return ''
+    if (typeof value === 'string') return value
+    if (Array.isArray(value)) {
+        return value.map((item) => flattenToolResultText(item, depth + 1)).filter(Boolean).join('\n')
+    }
+    if (isObject(value)) {
+        for (const key of ['text', 'content', 'output', 'stdout'] as const) {
+            const nested = flattenToolResultText(value[key], depth + 1)
+            if (nested) return nested
+        }
+    }
+    return ''
+}
+
+function extractWrapperSessionIdsFromMessage(messageContent: unknown): string[] {
+    const record = unwrapRoleWrappedRecordEnvelope(messageContent)
+    if (!record || (record.role !== 'agent' && record.role !== 'assistant')) return []
+    if (!isObject(record.content) || typeof record.content.type !== 'string') return []
+
+    const chunks: string[] = []
+    if (record.content.type === 'output') {
+        const data = isObject(record.content.data) ? record.content.data : null
+        const message = data && data.type === 'user' && isObject(data.message) ? data.message : null
+        const blocks = message && Array.isArray(message.content) ? message.content : null
+        if (blocks) {
+            for (const block of blocks) {
+                if (!isObject(block) || block.type !== 'tool_result') continue
+                const text = flattenToolResultText(block.content)
+                if (text) chunks.push(text)
+            }
+        }
+    } else if (record.content.type === AGENT_MESSAGE_PAYLOAD_TYPE) {
+        const data = isObject(record.content.data) ? record.content.data : null
+        if (data?.type === 'tool-call-result') {
+            const text = flattenToolResultText(data.output)
+            if (text) chunks.push(text)
+        }
+    }
+
+    if (chunks.length === 0) return []
+    const ids: string[] = []
+    const seen = new Set<string>()
+    for (const chunk of chunks) {
+        for (const id of extractCodeagentWrapperSessionIds(chunk)) {
+            if (seen.has(id)) continue
+            seen.add(id)
+            ids.push(id)
+        }
+    }
+    return ids
+}
+
 export class SyncEngine {
     private readonly archiveRequests = new Map<string, Promise<void>>()
     // KillSession's beforeKill drain completes before the CLI's async cleanup
@@ -322,6 +378,7 @@ export class SyncEngine {
      * Heartbeats retry persisted desired state until reconcile succeeds.
      */
     private readonly pendingAutoBridgeReconcile = new Set<string>()
+    private readonly wrapperParentByNativeId = new Map<string, { parentSessionId: string; recordedAt: number }>()
 
     constructor(
         private readonly store: Store,
@@ -342,6 +399,8 @@ export class SyncEngine {
                     this.sessionCache.refreshLastUserMessageAt(event.sessionId)
                     this.recordPromptTitle(event.sessionId, event.message.content)
                     this.recordParentSessionFromRemit(event.sessionId, event.message.content)
+                } else {
+                    this.recordWrapperSpawnedChildren(event.sessionId, event.message.content)
                 }
                 if (!this.sessionCache.getSession(event.sessionId)?.hasConversationContent
                     && hasConversationMessageContent(event.message.content)) {
@@ -737,6 +796,7 @@ export class SyncEngine {
                 this.eventPublisher.emit(event)
                 const after = this.sessionCache.getSession(event.sessionId)
                 this.reconcileSteerDeliveryOwner(beforeMetadata, after)
+                this.reconcileWrapperParentForSession(event.sessionId)
                 if (after?.metadata && !this.hasSameAgentSessionIds(beforeMetadata, after.metadata)) {
                     if (!this.canRunCursorDedup(after)) {
                         return
@@ -754,6 +814,7 @@ export class SyncEngine {
             this.sessionCache.refreshSession(event.sessionId)
             const after = this.sessionCache.getSession(event.sessionId)
             this.reconcileSteerDeliveryOwner(beforeMetadata, after)
+            this.reconcileWrapperParentForSession(event.sessionId)
             if (after?.metadata && !this.hasSameAgentSessionIds(beforeMetadata, after.metadata)) {
                 if (!this.canRunCursorDedup(after)) {
                     return
@@ -1928,7 +1989,7 @@ export class SyncEngine {
         modelReasoningEffort?: string,
         requestedId?: string
     ): Session {
-        return this.sessionCache.getOrCreateSession(
+        const session = this.sessionCache.getOrCreateSession(
             tag,
             metadata,
             agentState,
@@ -1938,6 +1999,8 @@ export class SyncEngine {
             modelReasoningEffort,
             requestedId
         )
+        this.reconcileWrapperParentForSession(session.id)
+        return this.getSession(session.id) ?? session
     }
 
     adoptPreallocatedSession(
@@ -1950,7 +2013,7 @@ export class SyncEngine {
         effort?: string,
         modelReasoningEffort?: string
     ): Session {
-        return this.sessionCache.adoptPreallocatedSession(
+        const session = this.sessionCache.adoptPreallocatedSession(
             id,
             tag,
             metadata,
@@ -1960,6 +2023,8 @@ export class SyncEngine {
             effort,
             modelReasoningEffort
         )
+        this.reconcileWrapperParentForSession(session.id)
+        return this.getSession(session.id) ?? session
     }
 
     getOrCreateMachine(id: string, metadata: unknown, runnerState: unknown, namespace: string): Machine {
@@ -5924,6 +5989,82 @@ export class SyncEngine {
             this.sessionCache.updateParentSessionId(sessionId, candidateId)
         } catch {
             // Best-effort lineage link must never interrupt message delivery.
+        }
+    }
+
+    private wrapperCacheKey(namespace: string, nativeSessionId: string): string {
+        return `${namespace}\0${nativeSessionId}`
+    }
+
+    private rememberWrapperSpawnedNativeId(
+        namespace: string,
+        nativeSessionId: string,
+        parentSessionId: string,
+        now: number
+    ): void {
+        const key = this.wrapperCacheKey(namespace, nativeSessionId)
+        if (this.wrapperParentByNativeId.has(key)) {
+            this.wrapperParentByNativeId.delete(key)
+        }
+        this.wrapperParentByNativeId.set(key, { parentSessionId, recordedAt: now })
+        while (this.wrapperParentByNativeId.size > WRAPPER_PARENT_CACHE_MAX) {
+            const oldestKey = this.wrapperParentByNativeId.keys().next().value
+            if (!oldestKey) break
+            this.wrapperParentByNativeId.delete(oldestKey)
+        }
+    }
+
+    private linkWrapperChildIfEligible(child: Session, parentId: string): void {
+        if (child.id === parentId) return
+        if (resolveSessionParentLink(child.metadata, child.id) !== null) return
+        const parent = this.sessionCache.getSessionByNamespace(parentId, child.namespace)
+        if (!parent) return
+        try {
+            this.sessionCache.updateParentSessionId(child.id, parent.id)
+        } catch {
+            // Best-effort lineage link must never interrupt message delivery or sync.
+        }
+    }
+
+    private recordWrapperSpawnedChildren(sessionId: string, content: unknown): void {
+        const parent = this.sessionCache.getSession(sessionId)
+        if (!parent) return
+        const nativeIds = extractWrapperSessionIdsFromMessage(content)
+        if (nativeIds.length === 0) return
+
+        const now = Date.now()
+        const nativeSet = new Set(nativeIds)
+        for (const nativeId of nativeIds) {
+            this.rememberWrapperSpawnedNativeId(parent.namespace, nativeId, parent.id, now)
+        }
+
+        for (const candidate of this.sessionCache.getSessionsByNamespace(parent.namespace)) {
+            if (candidate.id === parent.id) continue
+            if (resolveSessionParentLink(candidate.metadata, candidate.id) !== null) continue
+            const candidateIds = getNativeAgentSessionIds(candidate.metadata)
+            if (candidateIds.some((id) => nativeSet.has(id))) {
+                this.linkWrapperChildIfEligible(candidate, parent.id)
+            }
+        }
+    }
+
+    private reconcileWrapperParentForSession(sessionId: string): void {
+        const session = this.sessionCache.getSession(sessionId)
+        if (!session?.metadata) return
+        if (resolveSessionParentLink(session.metadata, session.id) !== null) return
+        if (this.wrapperParentByNativeId.size === 0) return
+
+        const now = Date.now()
+        for (const nativeId of getNativeAgentSessionIds(session.metadata)) {
+            const key = this.wrapperCacheKey(session.namespace, nativeId)
+            const entry = this.wrapperParentByNativeId.get(key)
+            if (!entry) continue
+            if (now - entry.recordedAt > WRAPPER_PARENT_TTL_MS) {
+                this.wrapperParentByNativeId.delete(key)
+                continue
+            }
+            this.linkWrapperChildIfEligible(session, entry.parentSessionId)
+            return
         }
     }
 

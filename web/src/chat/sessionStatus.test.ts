@@ -110,6 +110,47 @@ describe('buildSessionStatusData', () => {
         ])
     })
 
+    it('tracks active codeagent-wrapper Bash invocations under subagents without duplicating terminals', () => {
+        const blocks: ChatBlock[] = [
+            toolBlock({
+                id: 'block-wrapper-running',
+                name: 'Bash',
+                tool: {
+                    id: 'call-wrapper-1',
+                    state: 'running',
+                    input: {
+                        command: '~/.claude/bin/codeagent-wrapper --backend codex - "/work/app" <<\'EOF\'\nROLE_FILE: ~/.claude/.ccg/prompts/codex/reviewer.md\nReview diff\nEOF',
+                        description: 'Codex security review',
+                    },
+                    result: 'Command running in background with ID: bg-wrapper',
+                }
+            })
+        ]
+
+        const status = buildSessionStatusData({
+            goal: null,
+            tasks: [],
+            blocks,
+            backgroundTasks: [
+                { id: 'bg-wrapper', type: 'local_bash', description: 'Codex security review' },
+                { id: 'bg-shell', type: 'local_bash', description: 'Run dev server' },
+            ]
+        })
+
+        expect(status?.subagents).toEqual([
+            expect.objectContaining({
+                id: 'call-wrapper-1',
+                blockId: 'block-wrapper-running',
+                title: 'codex · reviewer',
+                detail: 'Codex security review',
+                state: 'running',
+            })
+        ])
+        expect(status?.terminals).toEqual([
+            { id: 'bg-shell', command: 'Run dev server', cwd: null, startedAt: null }
+        ])
+    })
+
     it('lists Claude background tasks with the command that started them', () => {
         const blocks: ChatBlock[] = [toolBlock({
             name: 'Agent',

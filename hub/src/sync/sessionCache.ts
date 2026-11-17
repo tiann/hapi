@@ -1,4 +1,4 @@
-import { mergeClaudeSessionIdHistory, mergeReadState, resolveSessionParentLink } from '@hapi/protocol'
+import { isObject, mergeClaudeSessionIdHistory, mergeReadState, resolveSessionParentLink } from '@hapi/protocol'
 import { SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING } from '@hapi/protocol'
 import { AgentStateSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
 import type { BackgroundTask, CodexCollaborationMode, CopilotAgentMode, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
@@ -157,6 +157,38 @@ export class SessionCache {
         return this.getSessions().filter((session) => session.active)
     }
 
+    private sanitizeIncomingParentMetadata(
+        metadata: unknown,
+        namespace: string,
+        ownSessionId?: string
+    ): unknown {
+        if (!isObject(metadata) || !Object.prototype.hasOwnProperty.call(metadata, 'parentSessionId')) {
+            return metadata
+        }
+        const rawParentId = typeof metadata.parentSessionId === 'string'
+            ? metadata.parentSessionId.trim()
+            : ''
+        if (!rawParentId || (ownSessionId && rawParentId === ownSessionId)) {
+            const copy = { ...metadata }
+            delete copy.parentSessionId
+            return copy
+        }
+        const parent = this.getSessionByNamespace(rawParentId, namespace)
+            ?? (() => {
+                const stored = this.store.sessions.getSession(rawParentId)
+                return stored && stored.namespace === namespace ? stored : undefined
+            })()
+        if (!parent) {
+            const copy = { ...metadata }
+            delete copy.parentSessionId
+            return copy
+        }
+        if (rawParentId === metadata.parentSessionId) {
+            return metadata
+        }
+        return { ...metadata, parentSessionId: rawParentId }
+    }
+
     getOrCreateSession(
         tag: string,
         metadata: unknown,
@@ -167,9 +199,10 @@ export class SessionCache {
         modelReasoningEffort?: string,
         requestedId?: string
     ): Session {
+        const sanitizedMetadata = this.sanitizeIncomingParentMetadata(metadata, namespace, requestedId)
         const stored = this.store.sessions.getOrCreateSession(
             tag,
-            metadata,
+            sanitizedMetadata,
             agentState,
             namespace,
             model,
@@ -190,10 +223,11 @@ export class SessionCache {
         effort?: string,
         modelReasoningEffort?: string
     ): Session {
+        const sanitizedMetadata = this.sanitizeIncomingParentMetadata(metadata, namespace, id)
         const stored = this.store.sessions.adoptPreallocatedSession(
             id,
             tag,
-            metadata,
+            sanitizedMetadata,
             agentState,
             namespace,
             model,

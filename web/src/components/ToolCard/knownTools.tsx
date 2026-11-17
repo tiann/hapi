@@ -9,7 +9,7 @@ import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
 import { getGoalToolName } from '@/components/ToolCard/goalTools'
 import { parseCursorAskQuestionInput } from '@/components/ToolCard/cursorAskQuestion'
 import { resolveToolNameAlias } from '@/components/ToolCard/toolNameAliases'
-import { extractPeerTargetSessionId, parsePeerToolName } from '@/components/ToolCard/peerTools'
+import { extractPeerTargetSessionId, parsePeerToolName, parseWrapperToolInvocation } from '@/components/ToolCard/peerTools'
 import {
     getCodexAgentActivity,
     getCodexAgentPrompt,
@@ -750,6 +750,16 @@ export function getToolPresentation(
             title: knownPeer.title({ ...opts, t }),
             subtitle: knownPeer.subtitle ? knownPeer.subtitle(opts) : null,
             minimal: typeof knownPeer.minimal === 'function' ? knownPeer.minimal(opts) : (knownPeer.minimal ?? true)
+        }
+    }
+
+    const wrapper = parseWrapperToolInvocation(opts.toolName, opts.input, opts.result)
+    if (wrapper) {
+        return {
+            icon: <UsersIcon className={DEFAULT_ICON_CLASS} />,
+            title: wrapper.label,
+            subtitle: wrapper.description ? truncate(wrapper.description, 120) : null,
+            minimal: true
         }
     }
 

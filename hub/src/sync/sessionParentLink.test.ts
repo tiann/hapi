@@ -113,4 +113,86 @@ describe('session parent link recording and persistence', () => {
             store.close()
         }
     })
+
+    it('sanitizes incoming parentSessionId on session creation across namespaces', () => {
+        const { store, engine } = setup()
+        try {
+            const otherNsParent = engine.getOrCreateSession('foreign-parent', { path: '/tmp/repo', host: 'mac' }, null, 'other-ns')
+            const sameNsParent = engine.getOrCreateSession('same-parent', { path: '/tmp/repo', host: 'mac' }, null, 'default')
+
+            const rejected = engine.getOrCreateSession(
+                'rejected-child',
+                { path: '/tmp/repo', host: 'mac', parentSessionId: otherNsParent.id },
+                null,
+                'default'
+            )
+            expect(rejected.metadata?.parentSessionId).toBeUndefined()
+
+            const accepted = engine.getOrCreateSession(
+                'accepted-child',
+                { path: '/tmp/repo', host: 'mac', parentSessionId: sameNsParent.id },
+                null,
+                'default'
+            )
+            expect(accepted.metadata?.parentSessionId).toBe(sameNsParent.id)
+        } finally {
+            engine.stop()
+            store.close()
+        }
+    })
+
+    it('correlates codeagent-wrapper SESSION_ID outputs with native sessions in the same namespace', () => {
+        const { store, engine, receive } = setup()
+        try {
+            const parent = engine.getOrCreateSession('lead', { path: '/tmp/repo', host: 'mac' }, null, 'default')
+            const existingCodex = engine.getOrCreateSession(
+                'existing-codex',
+                { path: '/tmp/repo', host: 'mac', flavor: 'codex', codexSessionId: '019a0000-1111-7222-8333-444455556666' },
+                null,
+                'default'
+            )
+            const foreignCodex = engine.getOrCreateSession(
+                'foreign-codex',
+                { path: '/tmp/repo', host: 'mac', flavor: 'codex', codexSessionId: '019a0000-1111-7222-8333-444455556666' },
+                null,
+                'other-ns'
+            )
+
+            receive(parent.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: {
+                        type: 'user',
+                        message: {
+                            content: [{
+                                type: 'tool_result',
+                                content: [
+                                    'Backend check finished',
+                                    '---',
+                                    'SESSION_ID: 019a0000-1111-7222-8333-444455556666',
+                                    '---',
+                                    'SESSION_ID: agy-follow-up-99',
+                                ].join('\n')
+                            }]
+                        }
+                    }
+                }
+            }, 'wrapper-tool-res-1')
+
+            expect(engine.getSession(existingCodex.id)?.metadata?.parentSessionId).toBe(parent.id)
+            expect(engine.getSession(foreignCodex.id)?.metadata?.parentSessionId).toBeUndefined()
+
+            const laterImportedAgy = engine.getOrCreateSession(
+                'later-agy',
+                { path: '/tmp/repo', host: 'mac', flavor: 'agy', agySessionId: 'agy-follow-up-99' },
+                null,
+                'default'
+            )
+            expect(engine.getSession(laterImportedAgy.id)?.metadata?.parentSessionId).toBe(parent.id)
+        } finally {
+            engine.stop()
+            store.close()
+        }
+    })
 })

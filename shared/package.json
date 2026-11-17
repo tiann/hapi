@@ -9,6 +9,7 @@
         ".": "./src/index.ts",
         "./passkey": "./src/passkey.ts",
         "./apiTypes": "./src/apiTypes.ts",
+        "./codeagentWrapper": "./src/codeagentWrapper.ts",
         "./localTranscript": "./src/localTranscript.ts",
         "./messages": "./src/messages.ts",
         "./slashCommands": "./src/slashCommands.ts",

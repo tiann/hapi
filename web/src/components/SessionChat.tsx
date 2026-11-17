@@ -1839,16 +1839,20 @@ function SessionChatInner(props: SessionChatProps) {
         return block?.kind === 'tool-call' ? block : null
     }, [inspectedSubagentBlockId, reconciled.byId])
     const handleInspectSubagent = useCallback((subagent: SessionStatusSubagent) => {
-        if (subagent.linkedSessionId) {
+        const directSessionId = subagent.linkedSessionId
+            ?? (subagent.nativeSessionId
+                ? allSessions.find((s) => s.id !== props.session.id && s.metadata?.agentSessionId === subagent.nativeSessionId)?.id
+                : undefined)
+        if (directSessionId) {
             void navigate({
                 to: '/sessions/$sessionId',
-                params: { sessionId: subagent.linkedSessionId },
+                params: { sessionId: directSessionId },
                 ...PRESERVE_SESSION_SIDEBAR_SCROLL,
             })
             return
         }
         setInspectedSubagentBlockId(subagent.blockId)
-    }, [navigate])
+    }, [allSessions, navigate, props.session.id])
 
     useEffect(() => {
         blocksByIdRef.current = reconciled.byId

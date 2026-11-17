@@ -3,7 +3,7 @@ import type { BackgroundTask, ThreadGoal, TodoItem } from '@/types/api'
 import type { ChatBlock, ToolCallBlock } from '@/chat/types'
 import { isSubagentToolName } from '@/chat/subagentTool'
 import { getCodexAgentActivity, getCodexAgentSummary } from '@/components/ToolCard/codexAgents'
-import { extractSpawnedSessionId, parsePeerToolName } from '@/components/ToolCard/peerTools'
+import { extractSpawnedSessionId, parsePeerToolName, parseWrapperToolInvocation } from '@/components/ToolCard/peerTools'
 import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
 
 export type SessionStatusSubagent = {
@@ -15,6 +15,7 @@ export type SessionStatusSubagent = {
     startedAt: number | null
     endedAt: number | null
     linkedSessionId?: string | null
+    nativeSessionId?: string | null
 }
 
 export type SessionStatusTerminal = {
@@ -60,24 +61,36 @@ function collectToolBlocks(blocks: readonly ChatBlock[]): ToolCallBlock[] {
     return tools
 }
 
+function isWrapperToolBlock(block: ToolCallBlock): boolean {
+    return parseWrapperToolInvocation(
+        block.tool.name,
+        block.tool.input,
+        block.tool.result,
+        block.tool.nativeKind
+    ) !== null
+}
+
 function buildBackgroundTerminals(
     tools: readonly ToolCallBlock[],
     tasks: readonly BackgroundTask[]
 ): SessionStatusTerminal[] {
-    return tasks.map((task) => {
+    const terminals: SessionStatusTerminal[] = []
+    for (const task of tasks) {
         // Claude's snapshot carries the Bash description, not the command;
         // the tool result that started the task names its exact ID.
         const launch = task.type === 'local_bash' && task.id ? backgroundLaunchPattern(task.id) : null
         const block = launch
             ? tools.find((tool) => tool.tool.name === 'Bash' && matchesText(tool.tool.result, launch))
             : undefined
-        return {
+        if (block && isWrapperToolBlock(block)) continue
+        terminals.push({
             id: task.id,
             command: (block && commandFromInput(block.tool.input)) || task.description || task.type,
             cwd: block ? getInputStringAny(block.tool.input, ['cwd', 'workdir', 'path']) : null,
             startedAt: block ? block.tool.startedAt ?? block.createdAt : null
-        }
-    })
+        })
+    }
+    return terminals
 }
 
 function subagentTitle(block: ToolCallBlock): string {
@@ -93,34 +106,42 @@ function subagentTitle(block: ToolCallBlock): string {
 
 function subagentFromBlock(block: ToolCallBlock): SessionStatusSubagent | null {
     const isPeerSpawn = parsePeerToolName(block.tool.name) === 'spawn_peer'
-    if (block.tool.name !== 'CodexAgent' && !isSubagentToolName(block.tool.name) && !isPeerSpawn) return null
+    const wrapper = isPeerSpawn
+        ? null
+        : parseWrapperToolInvocation(block.tool.name, block.tool.input, block.tool.result, block.tool.nativeKind)
+    if (block.tool.name !== 'CodexAgent' && !isSubagentToolName(block.tool.name) && !isPeerSpawn && !wrapper) return null
     if (block.tool.state === 'completed') return null
 
     const latestChild = block.children.at(-1)
     const activity = isPeerSpawn
         ? getInputStringAny(block.tool.input, ['directory'])
-        : block.tool.name === 'CodexAgent'
-            ? getCodexAgentActivity(block.tool.input)
-            : latestChild?.kind === 'tool-call'
-                ? latestChild.tool.nativeTitle ?? latestChild.tool.name
-                : null
+        : wrapper
+            ? wrapper.description
+            : block.tool.name === 'CodexAgent'
+                ? getCodexAgentActivity(block.tool.input)
+                : latestChild?.kind === 'tool-call'
+                    ? latestChild.tool.nativeTitle ?? latestChild.tool.name
+                    : null
     const waiting = block.tool.state === 'pending'
         || (activity?.toLowerCase().startsWith('waiting') ?? false)
-    const peerTitle = isPeerSpawn
+    const resolvedTitle = isPeerSpawn
         ? getInputStringAny(block.tool.input, ['name']) ?? subagentTitle(block)
-        : subagentTitle(block)
+        : wrapper
+            ? wrapper.label
+            : subagentTitle(block)
 
     return {
         id: block.tool.id,
         blockId: block.id,
-        title: peerTitle,
+        title: resolvedTitle,
         detail: activity,
         state: block.tool.state === 'error' ? 'error' : waiting ? 'waiting' : 'running',
         startedAt: block.tool.startedAt ?? (block.tool.state === 'pending' ? null : block.createdAt),
         endedAt: block.tool.state === 'error'
             ? block.tool.completedAt ?? block.tool.startedAt ?? block.createdAt
             : null,
-        ...(isPeerSpawn ? { linkedSessionId: extractSpawnedSessionId(block.tool.result) } : {})
+        ...(isPeerSpawn ? { linkedSessionId: extractSpawnedSessionId(block.tool.result) } : {}),
+        ...(wrapper ? { nativeSessionId: wrapper.nativeSessionId } : {}),
     }
 }
 

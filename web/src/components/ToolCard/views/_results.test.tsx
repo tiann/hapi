@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { render, screen } from '@testing-library/react'
 import type { ToolCallBlock } from '@/chat/types'
 import { extractCodexBashDisplay, extractTextFromResult, getMutationResultRenderMode, getToolResultViewComponent, parseNumberedFileLines } from '@/components/ToolCard/views/_results'
@@ -776,5 +777,62 @@ describe('PeerToolResultView', () => {
             </I18nProvider>
         )
         expect(screen.getByRole('link', { name: /Open session/ }).getAttribute('href')).toBe('/sessions/33333333-3333-4333-8333-333333333333')
+    })
+
+    it('links codeagent-wrapper Bash results when a HAPI session owns the returned SESSION_ID', () => {
+        const queryClient = new QueryClient()
+        queryClient.setQueryData(['sessions'], {
+            sessions: [{
+                id: 'linked-wrapper-hapi-1',
+                active: true,
+                thinking: false,
+                activeAt: 100,
+                updatedAt: 100,
+                metadataVersion: 1,
+                agentStateVersion: 0,
+                todosUpdatedAt: 0,
+                todoProgress: null,
+                pendingRequestsCount: 0,
+                pendingRequestKinds: [],
+                pendingRequests: [],
+                backgroundTaskCount: 0,
+                futureScheduledMessageCount: 0,
+                nextScheduledAt: null,
+                model: null,
+                effort: null,
+                attachedJob: null,
+                attachedJobUpdatedAt: 0,
+                metadata: {
+                    path: '/work/repo',
+                    name: 'Codex Reviewer',
+                    flavor: 'codex',
+                    agentSessionId: '019a0000-1111-7222-8333-444455556666',
+                },
+            }],
+        })
+
+        const wrapperBlock = makeResultBlock({
+            name: 'Bash',
+            input: {
+                command: 'codeagent-wrapper --backend codex - "/work/repo"',
+                description: 'Run Codex review',
+            },
+            result: [
+                'Approved',
+                '---',
+                'SESSION_ID: 019a0000-1111-7222-8333-444455556666',
+            ].join('\n'),
+        })
+        const WrapperResultView = getToolResultViewComponent(wrapperBlock.tool.name, wrapperBlock)
+        render(
+            <QueryClientProvider client={queryClient}>
+                <I18nProvider>
+                    <WrapperResultView block={wrapperBlock} metadata={null} surface="dialog" />
+                </I18nProvider>
+            </QueryClientProvider>
+        )
+
+        expect(screen.getByRole('link', { name: /Codex Reviewer/ }).getAttribute('href')).toBe('/sessions/linked-wrapper-hapi-1')
+        expect(screen.getAllByText(/Approved/).length).toBeGreaterThanOrEqual(1)
     })
 })

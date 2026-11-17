@@ -14,8 +14,8 @@ import { UpdatePlanView } from '@/components/ToolCard/views/UpdatePlanView'
 import { WriteView } from '@/components/ToolCard/views/WriteView'
 import { GoalView } from '@/components/ToolCard/views/GoalView'
 import { canShowGoalPreview, isGoalToolName } from '@/components/ToolCard/goalTools'
-import { extractPeerTargetSessionId, parsePeerToolName } from '@/components/ToolCard/peerTools'
-import { SessionLinkAnchor } from '@/components/SessionLinkAnchor'
+import { extractPeerTargetSessionId, parsePeerToolName, parseWrapperToolInvocation } from '@/components/ToolCard/peerTools'
+import { LinkedNativeSessionChip, SessionLinkAnchor } from '@/components/SessionLinkAnchor'
 import { getInputStringAny } from '@/lib/toolInputUtils'
 import { useTranslation } from '@/lib/use-translation'
 import {
@@ -151,10 +151,32 @@ const PeerCompactView: ToolViewComponent = ({ block }: ToolViewProps) => {
     )
 }
 
+const WrapperCompactView: ToolViewComponent = ({ block }: ToolViewProps) => {
+    const wrapper = parseWrapperToolInvocation(
+        block.tool.name,
+        block.tool.input,
+        block.tool.result,
+        block.tool.nativeKind
+    )
+    if (!wrapper?.nativeSessionId) return null
+    return (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+            <LinkedNativeSessionChip
+                nativeSessionId={wrapper.nativeSessionId}
+                fallbackLabel={wrapper.label}
+                className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1 font-medium text-[var(--app-link)] transition-colors hover:border-[var(--app-link)]"
+            />
+        </div>
+    )
+}
+
 export function getToolViewComponent(toolName: string, tool?: Pick<ChatToolCall, 'input' | 'result' | 'state'>): ToolViewComponent | null {
     if (isGoalToolName(toolName)) return tool && canShowGoalPreview(tool) ? GoalView : null
     if (parsePeerToolName(toolName) && tool && extractPeerTargetSessionId(toolName, tool.input, tool.result)) {
         return PeerCompactView
+    }
+    if (tool && parseWrapperToolInvocation(toolName, tool.input, tool.result)?.nativeSessionId) {
+        return WrapperCompactView
     }
     return toolViewRegistry[toolName] ?? null
 }
