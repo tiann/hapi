@@ -211,6 +211,52 @@ describe('ready events', () => {
         expect(f.events).toHaveBeenCalledExactlyOnceWith({ type: 'ready' });
         expect((await f.ledger()).entries['b-1'].state).toBe('queued');
     });
+
+    it('announces ready once for a duplicated completion', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        f.submit('only', 'only-1');
+        await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+        const queued = f.native.queue[0]!;
+        f.native.notify('item/completed', { threadId: 'thread', turnId: 't1', item: {
+            id: 'input', type: 'userMessage', clientId: queued.clientUserMessageId, content: queued.input
+        } });
+        f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 't1', status: 'completed' } });
+        f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 't1', status: 'completed' } });
+        await f.drain();
+        const readyCalls = f.events.mock.calls.filter(([event]) => (event as { type?: string })?.type === 'ready');
+        expect(readyCalls).toHaveLength(1);
+    });
+
+    it('announces ready for a completion superseded by a newer started turn', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        f.submit('only', 'only-1');
+        await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+        const queued = f.native.queue[0]!;
+        f.native.notify('item/completed', { threadId: 'thread', turnId: 't1', item: {
+            id: 'input', type: 'userMessage', clientId: queued.clientUserMessageId, content: queued.input
+        } });
+        f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 't1', status: 'completed' } });
+        f.native.notify('turn/started', { threadId: 'thread', turn: { id: 't2', status: 'inProgress' } });
+        await f.drain();
+        const readyCalls = f.events.mock.calls.filter(([event]) => (event as { type?: string })?.type === 'ready');
+        expect(readyCalls).toHaveLength(1);
+    });
+
+    it('announces ready when a turn fails although queued input remains', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        f.submit('A', 'a-1');
+        await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+        f.submit('B', 'b-1');
+        await vi.waitFor(async () => expect((await f.ledger()).entries['b-1']?.state).toBe('queued'));
+        f.native.notify('turn/completed', { threadId: 'thread', turn: { id: 't1', status: 'failed' } });
+        await f.drain();
+        const readyCalls = f.events.mock.calls.filter(([event]) => (event as { type?: string })?.type === 'ready');
+        expect(readyCalls).toHaveLength(1);
+        expect((await f.ledger()).entries['b-1'].state).toBe('queued');
+    });
 });
 
 describe('externally attached root', () => {

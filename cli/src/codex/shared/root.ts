@@ -60,6 +60,9 @@ export class SharedCodexRoot {
     private work: Promise<unknown> = Promise.resolve();
     private notifications = Promise.resolve();
     private currentTurn: string | undefined;
+    // Recently completed root turn ids, bounded: a duplicate or late completion
+    // notification must not announce ready twice.
+    private readonly completedTurns = new Set<string>();
     // Ephemeral observations only: dequeue/compaction never prove acceptance.
     private readonly dequeuedInputs = new Set<string>();
     private deliveryTurn?: string;
@@ -394,11 +397,22 @@ export class SharedCodexRoot {
             }
             await projection.notification(method, params); return;
         }
-        // Decide once, when this completing turn is still the latest root turn: ready
-        // unless the native queue holds an entry about to run. After an interrupt
-        // the queue is paused, so its entries wait for the user instead.
-        if (method === 'turn/completed' && (!this.currentTurn || record(p.turn).id === this.currentTurn)) {
-            emitReadyIfIdle(this.session, () => this.hasPendingInput());
+        // Decide once per completed turn: hold ready only when this turn completed
+        // successfully while the native queue still holds an entry about to run.
+        // Failed and interrupted turns tell the user now, whether or not the
+        // engine pauses its queue, and a duplicate or late completion never
+        // announces twice.
+        if (method === 'turn/completed') {
+            const turnId = string(record(p.turn).id);
+            // An id-less completion cannot be deduplicated and announces as before.
+            if (!turnId || !this.completedTurns.has(turnId)) {
+                if (turnId) {
+                    this.completedTurns.add(turnId);
+                    if (this.completedTurns.size > 64) this.completedTurns.delete(this.completedTurns.keys().next().value!);
+                }
+                const completed = string(record(p.turn).status) === 'completed';
+                emitReadyIfIdle(this.session, () => completed && this.queue.hasPendingInput());
+            }
         }
         if (method === 'thread/name/updated' && (typeof p.threadName === 'string' || p.threadName === null)) {
             const name = p.threadName ?? undefined; this.session.updateMetadata(metadata => ({ ...metadata, name }));
@@ -429,12 +443,6 @@ export class SharedCodexRoot {
         await this.projection.notification(method, params, modelAtReceipt, receivedAt);
         if (this.host.attached && method === 'turn/completed' && !this.stopping) await this.refresh();
         this.publishCompaction(); this.alive();
-    }
-    private hasPendingInput(): boolean {
-        // After an interrupt the native queue is paused: its entries wait for the
-        // user, so they are not input about to run.
-        if (this.interrupted) return false;
-        return this.queue.hasPendingInput();
     }
     private invalidateHistory(): void {
         this.stopAccepting();
