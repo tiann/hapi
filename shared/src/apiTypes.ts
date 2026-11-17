@@ -785,6 +785,24 @@ export const SendMessageRequestSchema = z.object({
 
 export type SendMessageRequest = z.infer<typeof SendMessageRequestSchema>
 
+/** Portable visible-history branch; native fork remains a separate operation. */
+export const BranchConversationRequestSchema = z.object({
+    requestId: z.uuid(),
+    messageLocalId: z.string().min(1).optional(),
+    messageId: z.string().min(1).optional(),
+    boundary: z.enum(['before', 'after']).default('before'),
+    agent: z.enum(['claude', 'codex']),
+    model: z.string().trim().min(1).max(256).optional(),
+    workspace: z.enum(['current', 'worktree']).default('current'),
+    worktreeName: z.string().trim().min(1).max(100).optional(),
+    instruction: z.string().trim().min(1).max(16_000)
+}).strict().refine(data => !(data.messageLocalId && data.messageId), {
+    message: 'Specify only one branch boundary identifier', path: ['messageId']
+})
+
+export type BranchConversationRequest = z.infer<typeof BranchConversationRequestSchema>
+export type BranchConversationResponse = { sessionId: string; warning?: string }
+
 export const ForkConversationRequestSchema = z.object({
     messageLocalId: z.string().min(1).optional(),
     latestCompleted: z.boolean().optional()
@@ -1028,15 +1046,25 @@ export const PasskeyCredentialResponseSchema = z.object({
     authenticatorAttachment: z.string().nullish()
 })
 
-/**
- * Body of `POST /api/passkey/{login,register}/options`. Web clients omit it
- * (the RP is derived from the Origin header); official native apps send
- * `{ "client": "native" }` to use the hub's fixed native RP ID.
- */
-export const PasskeyOptionsRequestSchema = z.object({
-    client: z.enum(['web', 'native']).default('web')
-})
+/** Direct options/verify ceremonies are native-only. Browsers use the bridge. */
+export const PasskeyOptionsRequestSchema = z.object({ client: z.literal('native') })
 export type PasskeyOptionsRequest = z.infer<typeof PasskeyOptionsRequestSchema>
+
+export const PasskeyBrowserStartRequestSchema = z.object({
+    codeChallenge: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+    state: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+    callbackOrigin: z.string().url().max(2048),
+    name: z.string().trim().max(64).optional()
+}).strict()
+export type PasskeyBrowserStartRequest = z.infer<typeof PasskeyBrowserStartRequestSchema>
+export type PasskeyBrowserStartResponse = { url: string }
+export const PasskeyBrowserExchangeRequestSchema = z.object({
+    code: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+    verifier: z.string().regex(/^[A-Za-z0-9_-]{43}$/)
+}).strict()
+export type PasskeyBrowserExchangeResponse =
+    | { operation: 'register' }
+    | { operation: 'login'; token: string; passkeySession: string }
 
 export const PasskeyRegisterVerifyRequestSchema = z.object({
     response: PasskeyCredentialResponseSchema,

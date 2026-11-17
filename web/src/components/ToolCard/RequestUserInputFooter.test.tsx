@@ -17,6 +17,7 @@ vi.mock('@/lib/use-translation', () => ({
 }))
 
 import { RequestUserInputFooter } from './RequestUserInputFooter'
+import { AskUserQuestionFooter } from './AskUserQuestionFooter'
 
 const choice = { id: 'choice', question: 'Choose', isOther: true, options: [{ label: 'Alpha' }, { label: 'Beta' }] }
 
@@ -265,4 +266,40 @@ describe('RequestUserInputFooter', () => {
         expect(screen.getByRole('textbox')).toBeInTheDocument()
         expect(screen.queryByRole('button', { name: 'tool.requestUserInput.addNote' })).not.toBeInTheDocument()
     })
+})
+
+// Browser translation can replace React's text node with <font> elements.
+// Exercise both the start and finish of submission with those nodes displaced.
+it.each([RequestUserInputFooter, AskUserQuestionFooter])('submits and recovers from failure after browser translation replaces button text (%#)', async (Footer) => {
+    const approvePermission = vi.fn().mockResolvedValue(undefined)
+    render(<Footer
+        api={{ approvePermission } as unknown as ApiClient}
+        sessionId="session-1"
+        tool={{ ...makeTool({ questions: [choice] }), name: Footer === AskUserQuestionFooter ? 'AskUserQuestion' : 'request_user_input' }}
+        disabled={false}
+        onDone={vi.fn()}
+    />)
+    let rejectSubmission!: (reason: Error) => void
+    approvePermission.mockImplementationOnce(() => new Promise((_, reject) => { rejectSubmission = reject }))
+    fireEvent.click(screen.getByRole('radio', { name: /Alpha/ }))
+    const button = screen.getByRole('button', { name: 'tool.submit' })
+    const translateLabel = () => {
+        const walker = document.createTreeWalker(button, NodeFilter.SHOW_TEXT)
+        let text = walker.nextNode()
+        while (text && !text.textContent?.startsWith('tool.')) text = walker.nextNode()
+        expect(text).not.toBeNull()
+        const font = document.createElement('font')
+        font.textContent = '确认'
+        text!.parentNode!.replaceChild(font, text!)
+    }
+    translateLabel()
+    fireEvent.click(button)
+    expect(approvePermission).toHaveBeenCalledOnce()
+    expect(button).toHaveAttribute('aria-busy', 'true')
+    translateLabel()
+    rejectSubmission(new Error('Try again'))
+    await waitFor(() => expect(button).toHaveAttribute('aria-busy', 'false'))
+    expect(screen.getByText('Try again')).toBeInTheDocument()
+    fireEvent.click(button)
+    await waitFor(() => expect(approvePermission).toHaveBeenCalledTimes(2))
 })

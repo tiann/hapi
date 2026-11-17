@@ -7,7 +7,7 @@ import java.io.IOException
 /**
  * Platform passkey ceremony seam. Production is
  * [CredentialManagerPasskeyPlatform] (needs an Activity); JVM tests script a
- * fake. Both methods take the hub's WebAuthn options JSON verbatim and return
+ * fake. Both methods take validated, whitelisted WebAuthn options JSON and return
  * the platform's response JSON, or throw [PasskeyCeremonyException].
  */
 interface PasskeyPlatform {

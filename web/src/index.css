@@ -884,10 +884,6 @@ html[data-theme="oled"] .shiki span:not([data-line-number]) {
   animation: spin 1s linear infinite;
 }
 
-.animate-spin-slow {
-  animation: spin 2s linear infinite;
-}
-
 /* New messages indicator bounce animation */
 @keyframes bounce-in {
   0% {
@@ -914,21 +910,7 @@ html[data-theme="oled"] .shiki span:not([data-line-number]) {
  * drift slowly. Quiet contrast + slow background-position, not a loud chunk
  * marquee and not a frozen empty track.
  */
-/*
- * Seamless loop: shift must equal one background-size tile (was -12px on an
- * 8px tile → visible jump every cycle). For -45° stripes, move both axes by
- * one tile so the diagonal phase matches at the loop boundary.
- */
-@keyframes attached-job-indeterminate-stripes {
-  from {
-    background-position: 0 0;
-  }
-  to {
-    background-position: 8px 8px;
-  }
-}
-
-.animate-attached-job-indeterminate {
+.attached-job-stripes {
   position: absolute;
   inset: 0;
   border-radius: inherit;
@@ -942,13 +924,12 @@ html[data-theme="oled"] .shiki span:not([data-line-number]) {
     transparent 66%
   );
   background-size: 8px 8px;
-  animation: attached-job-indeterminate-stripes 5s linear infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .animate-attached-job-indeterminate {
-    animation: none;
-  }
+  /*
+   * No animation here: the shared low-rate ticker writes `background-position`
+   * (tile/40 px per tick — one 8px tile per 5 s, both axes so the -45° diagonal
+   * phase matches at the loop boundary). Keeping this static means the page
+   * produces no 60 Hz frames while the stripes still drift.
+   */
 }
 
 /* ReactQueryDevtools button - move to middle-right to avoid blocking UI */

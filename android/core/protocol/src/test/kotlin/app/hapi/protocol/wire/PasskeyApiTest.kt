@@ -17,7 +17,7 @@ class PasskeyApiTest {
 
     private val creationOptions = """
         {
-          "rp": {"id": "hapi.run", "name": "HAPI"},
+          "rp": {"id": "auth.hapi.run", "name": "HAPI"},
           "user": {"id": "dXNlcg", "name": "hapi@hub.example", "displayName": "HAPI"},
           "challenge": "Y2hhbGxlbmdl",
           "pubKeyCredParams": [{"type": "public-key", "alg": -7}, {"type": "public-key", "alg": -257}],
@@ -28,7 +28,7 @@ class PasskeyApiTest {
     private val requestOptions = """
         {
           "challenge": "Y2hhbGxlbmdl",
-          "rpId": "hapi.run",
+          "rpId": "auth.hapi.run",
           "allowCredentials": [{"type": "public-key", "id": "Y3JlZA"}],
           "userVerification": "required"
         }
@@ -100,7 +100,7 @@ class PasskeyApiTest {
         val list = HapiJson.decodeFromString<PasskeyListResponse>(
             """
             {"passkeys":[
-              {"id":"native-1","name":"Pixel 9","rpId":"hapi.run","createdAt":1750000000000,
+              {"id":"native-1","name":"Pixel 9","rpId":"auth.hapi.run","createdAt":1750000000000,
                "lastUsedAt":null,"valid":true},
               {"id":"web-1","name":null,"rpId":"hub.example","createdAt":1750000000001,"valid":false}
             ]}
@@ -123,19 +123,19 @@ class PasskeyApiTest {
 
     @Test
     fun `reads the declared relying party from both option shapes`() {
-        assertEquals("hapi.run", NativePasskeys.creationRpId(creationOptions))
-        assertEquals("hapi.run", NativePasskeys.requestRpId(requestOptions))
+        assertEquals("auth.hapi.run", NativePasskeys.creationRpId(creationOptions))
+        assertEquals("auth.hapi.run", NativePasskeys.requestRpId(requestOptions))
         NativePasskeys.requireCreationRpId(creationOptions)
         NativePasskeys.requireRequestRpId(requestOptions)
     }
 
     @Test
     fun `rejects options for a different or missing relying party`() {
-        val foreign = creationOptions.replace("\"hapi.run\"", "\"evil.example\"")
+        val foreign = creationOptions.replace("\"auth.hapi.run\"", "\"evil.example\"")
         val mismatch = assertFailsWith<PasskeyRpMismatchException> {
             NativePasskeys.requireCreationRpId(foreign)
         }
-        assertEquals("hapi.run", mismatch.expected)
+        assertEquals("auth.hapi.run", mismatch.expected)
         assertEquals("evil.example", mismatch.actual)
 
         val missing = assertFailsWith<PasskeyRpMismatchException> {

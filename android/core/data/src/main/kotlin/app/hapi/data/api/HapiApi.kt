@@ -213,7 +213,7 @@ class HapiApi internal constructor(
         request("POST", url("api", "auth").build(), AuthRequest(accessToken = accessToken).toJsonBody(), authClient)
 
     // ------------------------------------------------------------ passkeys --
-    // Native passkeys use the fixed RP ID `hapi.run`; every call sends
+    // Native passkeys use the shared RP ID `auth.hapi.run`; every call sends
     // `{"client":"native"}` and exchanges base64url WebAuthn JSON with the
     // platform credential provider. Hub: `hub/src/web/routes/passkey.ts`.
 

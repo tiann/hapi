@@ -3,8 +3,7 @@ import SwiftUI
 import UIKit
 
 /// Passkeys of the active hub's namespace (`GET /api/passkeys`): add one for
-/// this device (native RP `hapi.run`), delete any. Web passkeys (other RP
-/// IDs) are listed for management only — the app cannot sign in with them.
+/// the shared Web/App RP `auth.hapi.run`, or delete a credential.
 @MainActor @Observable
 final class PasskeysModel {
     enum LoadState: Equatable {
@@ -88,7 +87,7 @@ final class PasskeysModel {
         switch error {
         case PasskeyError.relyingPartyMismatch(let rpId):
             return String(
-                format: String(localized: "The hub requested a passkey for “%@”, but this app only supports hapi.run. Update the hub."),
+                format: String(localized: "The hub requested a passkey for “%@”, but this app only supports auth.hapi.run. Update the hub."),
                 rpId
             )
         case PasskeyError.platform(let detail):
@@ -222,7 +221,7 @@ struct PasskeysView: View {
                     }
             }
         } footer: {
-            Text("Sign in to \(HubDisplay.host(hubUrl)) from another device with “Sign in with a Passkey” — only the hub URL is needed. Passkeys marked Web belong to the browser and are listed here for management only.")
+            Text("Sign in to \(HubDisplay.host(hubUrl)) from another device with “Sign in with a Passkey” — only the hub URL is needed. Passkeys work in both the web app and this app.")
         }
 
         Section {
@@ -266,24 +265,16 @@ private struct PasskeyRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            Image(systemName: passkey.isNative ? "person.badge.key" : "globe")
+            Image(systemName: "person.badge.key")
                 .foregroundStyle(passkey.valid ? Color.accentColor : Color.secondary)
                 .frame(width: 24)
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
                     Text(Self.displayName(passkey))
                         .foregroundStyle(passkey.valid ? Color.primary : Color.secondary)
-                    if !passkey.isNative {
-                        badge(Text("Web"), color: .blue)
-                    }
                     if !passkey.valid {
                         badge(Text("Revoked"), color: .orange)
                     }
-                }
-                if !passkey.isNative {
-                    Text(verbatim: passkey.rpId)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
                 Text("Created \(passkey.createdDate, format: .dateTime.year().month().day())")
                     .font(.caption)

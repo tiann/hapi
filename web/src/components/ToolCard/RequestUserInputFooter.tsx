@@ -370,13 +370,10 @@ export function RequestUserInputFooter(props: {
                             className={cn(askUserQuestionNavButtonClassName, 'gap-2')}
                         >
                             {loading ? (
-                                <>
-                                    <Spinner size="sm" label={null} className="text-[var(--app-fg)]" />
-                                    {t('tool.submitting')}
-                                </>
-                            ) : (
-                                t('tool.submit')
-                            )}
+                                <Spinner size="sm" label={null} className="text-[var(--app-fg)]" />
+                            ) : null}
+                            {/* Keep the label element stable if browser translation replaces its text node. */}
+                            <span>{loading ? t('tool.submitting') : t('tool.submit')}</span>
                         </Button>
                     )}
                 </div>

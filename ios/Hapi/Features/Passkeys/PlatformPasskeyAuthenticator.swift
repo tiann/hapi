@@ -4,10 +4,10 @@ import UIKit
 
 /// AuthenticationServices implementation of ``PasskeyAuthenticating``.
 ///
-/// Native passkeys live on the shared RP ID `hapi.run`
-/// (`webcredentials:hapi.run` in the Associated Domains entitlement, backed by
-/// `https://hapi.run/.well-known/apple-app-site-association`); the system
-/// reports the origin `https://hapi.run`, which every hub accepts. Options
+/// Native passkeys live on the shared RP ID `auth.hapi.run`
+/// (`webcredentials:auth.hapi.run` in the Associated Domains entitlement, backed by
+/// `https://auth.hapi.run/.well-known/apple-app-site-association`); the system
+/// reports the origin `https://auth.hapi.run`, which every hub accepts. Options
 /// arrive already RP-checked and decoded (``PasskeyRegistrationRequest`` /
 /// ``PasskeyAssertionRequest``); this type only drives the system sheet and
 /// returns raw bytes for HapiClient to encode as base64url JSON.
@@ -28,7 +28,7 @@ struct PlatformPasskeyAuthenticator: PasskeyAuthenticating {
                     ASAuthorizationPlatformPublicKeyCredentialDescriptor(credentialID: $0)
                 }
             }
-            return registration
+            return [registration]
         }
         guard let credential = authorization.credential
             as? ASAuthorizationPlatformPublicKeyCredentialRegistration else {
@@ -56,19 +56,34 @@ struct PlatformPasskeyAuthenticator: PasskeyAuthenticating {
             assertion.allowedCredentials = request.allowedCredentialIDs.map {
                 ASAuthorizationPlatformPublicKeyCredentialDescriptor(credentialID: $0)
             }
-            return assertion
+            // Web-created resident credentials may live on a roaming security
+            // key rather than iCloud. Offer both providers for the same Hub.
+            let securityKey = ASAuthorizationSecurityKeyPublicKeyCredentialProvider(
+                relyingPartyIdentifier: request.relyingPartyID
+            ).createCredentialAssertionRequest(challenge: request.challenge)
+            securityKey.userVerificationPreference = .required
+            securityKey.allowedCredentials = request.allowedCredentialIDs.map {
+                ASAuthorizationSecurityKeyPublicKeyCredentialDescriptor(
+                    credentialID: $0, transports: [.usb, .nfc, .bluetooth]
+                )
+            }
+            return [assertion, securityKey]
         }
-        guard let credential = authorization.credential
-            as? ASAuthorizationPlatformPublicKeyCredentialAssertion else {
-            throw PasskeyError.platform("Unexpected credential type")
+        if let credential = authorization.credential as? ASAuthorizationPlatformPublicKeyCredentialAssertion {
+            return PasskeyAssertionResult(
+                credentialID: credential.credentialID, clientDataJSON: credential.rawClientDataJSON,
+                authenticatorData: credential.rawAuthenticatorData, signature: credential.signature,
+                userID: credential.userID
+            )
         }
-        return PasskeyAssertionResult(
-            credentialID: credential.credentialID,
-            clientDataJSON: credential.rawClientDataJSON,
-            authenticatorData: credential.rawAuthenticatorData,
-            signature: credential.signature,
-            userID: credential.userID
-        )
+        if let credential = authorization.credential as? ASAuthorizationSecurityKeyPublicKeyCredentialAssertion {
+            return PasskeyAssertionResult(
+                credentialID: credential.credentialID, clientDataJSON: credential.rawClientDataJSON,
+                authenticatorData: credential.rawAuthenticatorData, signature: credential.signature,
+                userID: credential.userID, authenticatorAttachment: "cross-platform"
+            )
+        }
+        throw PasskeyError.platform("Unexpected credential type")
     }
 }
 
@@ -85,7 +100,7 @@ private final class PasskeyCeremony: NSObject,
     private var controller: ASAuthorizationController?
 
     static func perform(
-        _ makeRequest: @MainActor () -> ASAuthorizationRequest
+        _ makeRequest: @MainActor () -> [ASAuthorizationRequest]
     ) async throws -> ASAuthorization {
         let ceremony = PasskeyCeremony()
         let request = makeRequest()
@@ -94,9 +109,9 @@ private final class PasskeyCeremony: NSObject,
         }
     }
 
-    private func start(_ request: ASAuthorizationRequest, continuation: CheckedContinuation<ASAuthorization, Error>) {
+    private func start(_ request: [ASAuthorizationRequest], continuation: CheckedContinuation<ASAuthorization, Error>) {
         self.continuation = continuation
-        let controller = ASAuthorizationController(authorizationRequests: [request])
+        let controller = ASAuthorizationController(authorizationRequests: request)
         controller.delegate = self
         controller.presentationContextProvider = self
         self.controller = controller

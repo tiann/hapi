@@ -1,8 +1,9 @@
-import type { ReactNode } from 'react'
+import { useRef, type ReactNode } from 'react'
 import type { PendingRequest, SessionSummary } from '@/types/api'
 import type { SessionAttention } from '@/lib/sessionAttention'
 import { getSessionAttentionLabelKey } from '@/lib/sessionAttention'
 import { useTranslation } from '@/lib/use-translation'
+import { useLowRateAnimation } from '@/hooks/useLowRateAnimation'
 import { HoverTooltip, SESSION_ROW_TOOLTIP_FOCUS_CLASS } from '@/components/HoverTooltip'
 import { HandIcon, LoaderIcon, MessageIcon } from '@/components/icons'
 
@@ -27,7 +28,10 @@ export function SessionRequestIcon(props: { kind: 'permission' | 'input'; label?
 /** Row spinner: green while a turn runs, blue while only background work runs. */
 export function SessionSpinner(props: { background?: boolean }) {
     const color = props.background ? 'text-blue-400' : 'text-[var(--app-badge-success-text)]'
-    return <LoaderIcon className={`h-3.5 w-3.5 shrink-0 animate-spin-slow ${color}`} />
+    const ref = useRef<SVGSVGElement | null>(null)
+    // Rotation comes from the shared low-rate ticker, not a CSS animation.
+    useLowRateAnimation(ref, 'spin')
+    return <LoaderIcon ref={ref} className={`h-3.5 w-3.5 shrink-0 ${color}`} />
 }
 
 /**
