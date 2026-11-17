@@ -16,6 +16,12 @@ import {
     rebuildMessageContentSearchForSessions,
     removeMessageContentSearchIndex
 } from './messageContentSearch'
+import {
+    dropCachedToolCallRow,
+    dropCachedToolCallRowsForSession,
+    getCachedToolCallRowId,
+    setCachedToolCallRowId
+} from './toolCallRowCach'
 
 type DbMessageRow = {
     content_revision: number
@@ -71,6 +77,9 @@ export function addImportedMessage(
 
     const now = Date.now()
     const stampedAt = Number.isFinite(createdAt) ? Math.min(createdAt, now) : now
+    // Imported transcript rows can be user turns landing after live tool
+    // calls; those entries must not survive (see addMessage).
+    if (isUserMessageRow(content)) dropCachedToolCallRowsForSession(db, sessionId)
     return db.transaction(() => {
         const previousHead = getNewestMessagePosition(db, sessionId)
         const msgSeqRow = prepareCached(db,
@@ -179,6 +188,17 @@ export function addMessage(
     // COALESCE(invoked_at, created_at) sort reflects the transcript's own jsonl order instead of
     // hub arrival order.
     const invokedAt = localId ? null : stampedAt
+
+    // Fresh rows close what the tool-call upsert cache considers live: a
+    // tool-call-result with this callId settles the call, and a user message
+    // row starts a new turn that closes every live call of the session. Drop
+    // the affected memo entries so a later tick never merges into a dead row.
+    const settledCallId = toolCallResultCallId(content)
+    if (settledCallId !== null) {
+        dropCachedToolCallRow(db, sessionId, settledCallId)
+    } else if (isUserMessageRow(content)) {
+        dropCachedToolCallRowsForSession(db, sessionId)
+    }
 
     return db.transaction(() => {
         const previousHead = getNewestMessagePosition(db, sessionId)
@@ -344,6 +364,25 @@ function findLiveToolCallRow(db: Database, sessionId: string, callId: string): D
     return null
 }
 
+/** Merge an incoming tool-call snapshot into a known live row. Shared by the
+ *  cache-hit path and the tail-scan path so both produce identical rows. */
+function mergeIntoToolCallRow(db: Database, existing: DbMessageRow, content: unknown): UpsertToolCallResult {
+    const storedContent = decodeMessageContent(existing.content)
+    const mergedContent = truncateOversizedMessageContent(mergeToolCallContent(storedContent, content))
+    // A re-emitted tick that changes nothing must not rewrite the row:
+    // only observable content changes touch the database.
+    if (isDeepStrictEqual(mergedContent, storedContent)) {
+        return { message: toStoredMessage(existing), updated: true }
+    }
+    const encoded = encodeMessageContent(mergedContent)
+    // Same in-place content swap as the queued-message edit path
+    // (syncNativeQueuedMessage): no new seq, no content_revision bump.
+    prepareCached(db, 'UPDATE messages SET content = ? WHERE id = ?').run(encoded, existing.id)
+    const row = prepareCached(db, 'SELECT * FROM messages WHERE id = ?').get(existing.id) as DbMessageRow | undefined
+    if (!row) throw new Error('Failed to update tool-call message')
+    return { message: toStoredMessage(row), updated: true }
+}
+
 /** Store one ACP `tool-call` agent message, updating the call's existing row
  *  in place when the same callId is still live in the session tail.
  *
@@ -351,7 +390,13 @@ function findLiveToolCallRow(db: Database, sessionId: string, callId: string): D
  *  its own row filled history pages with duplicates the web then folded back
  *  into one card. Updating the single row keeps history pages honest. The
  *  row's id/seq/createdAt/localId never move, so live clients can merge the
- *  rebroadcast by id and stored ordering stays stable. */
+ *  rebroadcast by id and stored ordering stays stable.
+ *
+ *  The live row is remembered in a per-process callId→rowId memo
+ *  (toolCallRowCache.ts); a hit skips the 200-row tail scan and its zstd
+ *  decodes entirely. The memo is dropped when a result/user row or a
+ *  delete/move closes the call, and a hit re-verifies the row before use, so
+ *  the fallback scan stays the authority for anything the memo missed. */
 export function upsertToolCallMessage(
     db: Database,
     sessionId: string,
@@ -361,24 +406,25 @@ export function upsertToolCallMessage(
     createdAt?: number
 ): UpsertToolCallResult {
     return db.transaction(() => {
+        const cachedRowId = getCachedToolCallRowId(db, sessionId, callId)
+        if (cachedRowId !== null) {
+            const cached = prepareCached(db, 'SELECT * FROM messages WHERE id = ? AND session_id = ?')
+                .get(cachedRowId, sessionId) as DbMessageRow | undefined
+            if (cached && getToolCallId(decodeMessageContent(cached.content)) === callId) {
+                return mergeIntoToolCallRow(db, cached, content)
+            }
+            // Row deleted/moved or no longer holds this call: fall through to
+            // the authoritative scan after forgetting the stale entry.
+            dropCachedToolCallRow(db, sessionId, callId)
+        }
         const existing = findLiveToolCallRow(db, sessionId, callId)
         if (!existing) {
-            return { message: addMessage(db, sessionId, content, localId, undefined, createdAt), updated: false }
+            const message = addMessage(db, sessionId, content, localId, undefined, createdAt)
+            setCachedToolCallRowId(db, sessionId, callId, message.id)
+            return { message, updated: false }
         }
-        const storedContent = decodeMessageContent(existing.content)
-        const mergedContent = truncateOversizedMessageContent(mergeToolCallContent(storedContent, content))
-        // A re-emitted tick that changes nothing must not rewrite the row:
-        // only observable content changes touch the database.
-        if (isDeepStrictEqual(mergedContent, storedContent)) {
-            return { message: toStoredMessage(existing), updated: true }
-        }
-        const encoded = encodeMessageContent(mergedContent)
-        // Same in-place content swap as the queued-message edit path
-        // (syncNativeQueuedMessage): no new seq, no content_revision bump.
-        prepareCached(db, 'UPDATE messages SET content = ? WHERE id = ?').run(encoded, existing.id)
-        const row = prepareCached(db, 'SELECT * FROM messages WHERE id = ?').get(existing.id) as DbMessageRow | undefined
-        if (!row) throw new Error('Failed to update tool-call message')
-        return { message: toStoredMessage(row), updated: true }
+        setCachedToolCallRowId(db, sessionId, callId, existing.id)
+        return mergeIntoToolCallRow(db, existing, content)
     })()
 }
 
@@ -462,6 +508,11 @@ export function copyMessageToSession(
         // still land behind a Web client's cached composite tail cursor. Mark the
         // target history as structurally changed so incremental readers reset.
         recordUserMessage(db, sessionId, message.content, createdAt)
+        // Copies preserve the source display timestamp, so a new high-seq row
+        // can still land behind a Web client's cached composite tail cursor.
+        // Copied rows can be user turns appended after live tool calls, so
+        // the target's upsert memo must not survive them.
+        dropCachedToolCallRowsForSession(db, sessionId)
         bumpMessageEpoch(db, sessionId)
         return toStoredMessage(row)
     })
@@ -527,6 +578,7 @@ export function copyMessagesToSession(
             nextSeq += 1
         }
 
+        dropCachedToolCallRowsForSession(db, sessionId)
         bumpMessageEpoch(db, sessionId)
         return messages.length
     })()
@@ -639,21 +691,13 @@ export function getDeliverableMessagesAfter(
 
 /** How far back to look for a stream's replaceable snapshots.
  *
- *  The CLI re-sends a growing reasoning buffer every few hundred milliseconds,
- *  so the previous snapshot of a stream is always among the newest rows of its
- *  session. Scanning a bounded tail keeps this off the hot path on sessions
- *  with tens of thousands of messages; anything older than the window is left
- *  alone, which errs toward keeping data. */
-const REASONING_SNAPSHOT_LOOKBACK = 50
+ *  The CLI re-sends a growing reasoning/text buffer every few hundred
+ *  milliseconds, so the previous snapshot of a stream is always among the
+ *  newest rows of its session. Scanning a bounded tail keeps this off the hot
+ *  path on sessions with tens of thousands of messages; anything older than
+ *  the window is left alone, which errs toward keeping data. */
+const SNAPSHOT_SWEEP_LOOKBACK = 50
 
-/** Drop the replaceable snapshots of one reasoning stream.
- *
- *  Only messages explicitly marked live are eligible, and `keepMessageId` is
- *  always spared. Callers run this *after* storing the message that supersedes
- *  them, so the stream never passes through a moment with no row at all — the
- *  two statements are separate transactions, and a crash between them must not
- *  be able to take the whole stream with it. Returns how many rows were
- *  removed. */
 export function deleteLiveReasoningSnapshots(
     db: Database,
     sessionId: string,
@@ -1045,6 +1089,9 @@ export function cancelQueuedMessage(
 
         if (deleted.changes > 0) {
             removeMessageContentSearchIndex(db, row.id)
+            // Rows of this session changed; stale upsert memos must not
+            // outlive them.
+            dropCachedToolCallRowsForSession(db, sessionId)
             bumpMessageEpoch(db, sessionId)
         }
 
@@ -1146,6 +1193,7 @@ export function deleteQueuedMessageById(
         `).run(sessionId, messageId, messageId)
         if (deleted.changes > 0) {
             if (row) removeMessageContentSearchIndex(db, row.id)
+            dropCachedToolCallRowsForSession(db, sessionId)
             bumpMessageEpoch(db, sessionId)
             return true
         }
@@ -1313,6 +1361,8 @@ export function moveUninvokedScheduledMessages(
             update.run(toSessionId, nextSeq, row.id)
             recordUserMessage(db, toSessionId, decodeMessageContent(row.content), row.created_at)
         }
+        dropCachedToolCallRowsForSession(db, fromSessionId)
+        dropCachedToolCallRowsForSession(db, toSessionId)
         bumpMessageEpoch(db, fromSessionId)
         bumpMessageEpoch(db, toSessionId)
         db.exec('COMMIT')
@@ -1365,6 +1415,8 @@ export function moveUninvokedMessages(db: Database, fromSessionId: string, toSes
             update.run(toSessionId, ++nextSeq, row.id)
             recordUserMessage(db, toSessionId, decodeMessageContent(row.content), row.created_at)
         }
+        dropCachedToolCallRowsForSession(db, fromSessionId)
+        dropCachedToolCallRowsForSession(db, toSessionId)
         bumpMessageEpoch(db, fromSessionId)
         bumpMessageEpoch(db, toSessionId)
         return discarded + moved
@@ -1446,6 +1498,8 @@ export function mergeSessionMessages(
                     (SELECT last_user_message_at FROM sessions WHERE id = ?))
                 WHERE id = ? AND (SELECT last_user_message_at FROM sessions WHERE id = ?) IS NOT NULL
             `).run(fromSessionId, toSessionId, fromSessionId)
+            dropCachedToolCallRowsForSession(db, fromSessionId)
+            dropCachedToolCallRowsForSession(db, toSessionId)
             bumpMessageEpoch(db, fromSessionId)
             bumpMessageEpoch(db, toSessionId)
         }
@@ -1574,6 +1628,8 @@ export function truncateMessagesFromLocalId(
                 SELECT 1 FROM messages WHERE session_id = sessions.id AND content_revision > sessions.read_revision
             )`).run(sessionId)
         const epoch = bumpMessageEpoch(db, sessionId)
+        // The truncated suffix may contain cached live tool-call rows.
+        dropCachedToolCallRowsForSession(db, sessionId)
         return { deleted: deleted.changes, inserted, epoch }
     })()
 }

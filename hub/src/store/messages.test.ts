@@ -829,6 +829,7 @@ describe('deleteLiveReasoningSnapshots', () => {
     })
 })
 
+
 type ToolCallFields = {
     name?: string
     input?: unknown
@@ -1124,11 +1125,13 @@ describe('tool-call upsert', () => {
         store.close()
     })
 
-    it('inserts a new row once the live row falls outside the lookback window', () => {
+    it('inserts a new row once the live row falls outside the lookback window (memo miss)', () => {
         const store = makeStore()
         const session = makeSession(store, 'acp-upsert-lookback-outside')
 
-        const first = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        // Seed the row through the plain insert path so this test exercises
+        // the authoritative tail scan with no upsert memo in play.
+        const first = store.messages.addMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }))
         // The 200th row after the call pushes it past the scan window.
         for (let i = 0; i < 200; i++) {
             store.messages.addMessage(session.id, agentMessageContent(`filler ${i}`))
@@ -1136,8 +1139,28 @@ describe('tool-call upsert', () => {
 
         const outside = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'completed' }), 'call-1')
         expect(outside.updated).toBe(false)
-        expect(outside.message.id).not.toBe(first.message.id)
+        expect(outside.message.id).not.toBe(first.id)
         expect(toolCallRows(store, session.id)).toHaveLength(2)
+        store.close()
+    })
+
+    it('still merges through the memo once the live row falls outside the lookback window', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-upsert-memo-past-window')
+
+        // The first upsert remembers the row; the memo is dropped only when
+        // the call closes (result/user row) or rows are deleted/moved, not by
+        // window arithmetic, so far more than 200 rows of agent chatter must
+        // not split one still-live call into two rows.
+        const first = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        for (let i = 0; i < 400; i++) {
+            store.messages.addMessage(session.id, agentMessageContent(`filler ${i}`))
+        }
+
+        const update = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'completed' }), 'call-1')
+        expect(update.updated).toBe(true)
+        expect(update.message.id).toBe(first.message.id)
+        expect(toolCallRows(store, session.id)).toHaveLength(1)
         store.close()
     })
 
@@ -1155,6 +1178,108 @@ describe('tool-call upsert', () => {
         expect(getToolCallId(rows[0]!.content)).toBe('call-1')
         expect(rows[0]!.id).toBe(update.message.id)
         expect(toolCallDataOf(rows[1]!).callId).toBe('call-2')
+        store.close()
+    })
+})
+
+describe('tool-call upsert memo (callId→rowId LRU)', () => {
+    it('drops the memo when the call result lands, so a reused callId starts a new row', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-memo-result-drop')
+
+        const first = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        // Without invalidation the memo would happily merge this tick into the
+        // closed call's row even though the result row closed it.
+        store.messages.addMessage(session.id, toolCallResultContent('call-1', 'done'))
+        const reused = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+
+        expect(reused.updated).toBe(false)
+        expect(reused.message.id).not.toBe(first.message.id)
+        expect(toolCallRows(store, session.id)).toHaveLength(2)
+        store.close()
+    })
+
+    it('drops the session memos when a user message starts a new turn', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-memo-user-drop')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'next turn' } })
+        const afterUser = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+
+        expect(afterUser.updated).toBe(false)
+        expect(toolCallRows(store, session.id)).toHaveLength(2)
+        store.close()
+    })
+
+    it('falls back to a fresh row when the memoized row disappears', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-memo-row-deleted')
+        const raw = (store as unknown as { db: import('bun:sqlite').Database }).db
+
+        const first = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        // Simulate an out-of-band delete that bypasses every invalidation hook.
+        raw.prepare('DELETE FROM messages WHERE id = ?').run(first.message.id)
+
+        const recreated = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        expect(recreated.updated).toBe(false)
+        expect(recreated.message.id).not.toBe(first.message.id)
+        expect(toolCallRows(store, session.id)).toHaveLength(1)
+        store.close()
+    })
+
+    it('drops the session memos when the transcript tail is truncated', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-memo-truncate')
+
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'q' } }, 'lid-trunc-q')
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        store.messages.truncateMessagesFromLocalId(session.id, 'lid-trunc-q', [])
+
+        const recreated = store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        expect(recreated.updated).toBe(false)
+        expect(toolCallRows(store, session.id)).toHaveLength(1)
+        store.close()
+    })
+
+    it('keys memos per session so forked sessions sharing a callId stay independent', () => {
+        const store = makeStore()
+        const sessionA = makeSession(store, 'acp-memo-fork-a')
+        const sessionB = makeSession(store, 'acp-memo-fork-b')
+
+        // Forked sessions copy rows verbatim, so both hold rows with the
+        // same callId; the memo must not let A's tick land on B's row.
+        const rowA = store.messages.upsertToolCallMessage(sessionA.id, toolCallContent('call-1', { input: { path: '/a' }, status: 'in_progress' }), 'call-1')
+        const rowB = store.messages.upsertToolCallMessage(sessionB.id, toolCallContent('call-1', { input: { path: '/b' }, status: 'in_progress' }), 'call-1')
+        expect(rowB.message.id).not.toBe(rowA.message.id)
+
+        store.messages.upsertToolCallMessage(sessionA.id, toolCallContent('call-1', { input: { path: '/a2' }, status: 'completed' }), 'call-1')
+        store.messages.upsertToolCallMessage(sessionB.id, toolCallContent('call-1', { input: { path: '/b2' }, status: 'completed' }), 'call-1')
+
+        const rowsA = toolCallRows(store, sessionA.id)
+        const rowsB = toolCallRows(store, sessionB.id)
+        expect(rowsA).toHaveLength(1)
+        expect(rowsB).toHaveLength(1)
+        expect(rowsA[0]!.data.input).toEqual({ path: '/a2' })
+        expect(rowsB[0]!.data.input).toEqual({ path: '/b2' })
+        store.close()
+    })
+
+    it('drops the session memos when the session is deleted', () => {
+        const store = makeStore()
+        const session = makeSession(store, 'acp-memo-session-deleted')
+
+        store.messages.upsertToolCallMessage(session.id, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        // Delete the session (messages die by cascade) and recreate one under
+        // the same id: a memo that survived the deletion would point at a
+        // vanished row, and the next tick must fall back to a fresh insert.
+        const sessionId = session.id
+        expect(store.sessions.deleteSession(sessionId, 'default')).toBe(true)
+        store.sessions.getOrCreateSession('acp-memo-session-deleted', {}, null, 'default', undefined, undefined, undefined, sessionId)
+
+        const fresh = store.messages.upsertToolCallMessage(sessionId, toolCallContent('call-1', { status: 'in_progress' }), 'call-1')
+        expect(fresh.updated).toBe(false)
+        expect(toolCallRows(store, sessionId)).toHaveLength(1)
         store.close()
     })
 })
