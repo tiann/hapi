@@ -693,3 +693,81 @@ test('scroll events cannot bypass backoff before an epoch-reset stop', async ({ 
     )
     expect(afterStop).toBe(2)
 })
+
+test('switching sessions keeps the viewport pinned to the latest tail across cold and cached entries', async ({ page }) => {
+    await page.goto('/e2e-fixtures/history-load-fixture.html?sessionSwitch=1')
+    const viewport = page.locator('.app-scroll-y')
+    const scrollToBottomButton = page.getByRole('button', { name: 'Scroll to bottom', exact: true })
+    await expect(viewport).toBeVisible()
+
+    const countRequests = async (sessionId: string, direction: 'latest' | 'before') =>
+        await page.evaluate(
+            ({ targetSessionId, targetDirection }) => window.__probe.requests.filter(
+                (request) => request.sessionId === targetSessionId && request.direction === targetDirection
+            ).length,
+            { targetSessionId: sessionId, targetDirection: direction }
+        )
+
+    const assertPinnedAcrossSettling = async (latestText: string) => {
+        await expect(page.getByText(latestText, { exact: true })).toBeVisible()
+        const deadline = Date.now() + 2200
+        while (Date.now() < deadline) {
+            const metrics = await viewport.evaluate((element) => ({
+                distanceFromBottom: element.scrollHeight - element.scrollTop - element.clientHeight,
+                scrollHeight: element.scrollHeight,
+                clientHeight: element.clientHeight
+            }))
+            expect(metrics.distanceFromBottom).toBeLessThanOrEqual(2)
+            expect(await scrollToBottomButton.count()).toBe(0)
+            await page.waitForTimeout(150)
+        }
+        await expect(page.getByText(latestText, { exact: true })).toBeInViewport()
+    }
+
+    // 1. Cold open of session-overflow-margin: overflows viewport by < 200px,
+    // so topSentinel sits inside HISTORY_PRELOAD_MARGIN_PX while pinned at tail.
+    await expect(page.getByText('Overflow-margin message 220', { exact: true })).toBeVisible()
+    const overflowGeometry = await viewport.evaluate((element) => ({
+        overflowPx: element.scrollHeight - element.clientHeight
+    }))
+    expect(overflowGeometry.overflowPx).toBeGreaterThan(10)
+    expect(overflowGeometry.overflowPx).toBeLessThan(200)
+    await assertPinnedAcrossSettling('Overflow-margin message 220')
+    expect(await countRequests('session-overflow-margin', 'before')).toBe(0)
+
+    // 2. Cold open of session-short-tail: collapsed latest page is shorter
+    // than viewport, triggers one coverage prepend, and stays pinned at bottom.
+    await page.getByTestId('switch-short-tail').click()
+    await expect(page.getByText('Short-tail latest 220', { exact: true })).toBeVisible()
+    await expect.poll(() => countRequests('session-short-tail', 'before')).toBe(1)
+    await expect.poll(async () => await page.evaluate(() => ({
+        messageCount: window.__probe.windowState().messageCount,
+        overflowPx: (() => {
+            const element = document.querySelector('.app-scroll-y')
+            return element ? element.scrollHeight - element.clientHeight : 0
+        })()
+    }))).toEqual({
+        messageCount: 220,
+        overflowPx: expect.any(Number)
+    })
+    const shortTailColdOverflow = await viewport.evaluate((element) => element.scrollHeight - element.clientHeight)
+    expect(shortTailColdOverflow).toBeGreaterThan(500)
+    await assertPinnedAcrossSettling('Short-tail latest 220')
+    expect(await countRequests('session-short-tail', 'before')).toBe(1)
+
+    // 3. Cached re-entry of session-overflow-margin: latest refresh keeps it
+    // pinned without triggering gratuitous before requests.
+    await page.getByTestId('switch-overflow-margin').click()
+    await expect.poll(() => countRequests('session-overflow-margin', 'latest')).toBe(2)
+    await assertPinnedAcrossSettling('Overflow-margin message 220')
+    expect(await countRequests('session-overflow-margin', 'before')).toBe(0)
+
+    // 4. Cached re-entry of session-short-tail: server latest refresh (20 rows)
+    // replaces the cached window, triggers 1 coverage load, and stays at bottom.
+    await page.getByTestId('switch-short-tail').click()
+    await expect.poll(() => countRequests('session-short-tail', 'latest')).toBe(2)
+    await expect.poll(() => countRequests('session-short-tail', 'before')).toBe(2)
+    await expect.poll(async () => await page.evaluate(() => window.__probe.windowState().messageCount)).toBe(220)
+    await assertPinnedAcrossSettling('Short-tail latest 220')
+    expect(await countRequests('session-short-tail', 'before')).toBe(2)
+})

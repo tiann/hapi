@@ -48,12 +48,19 @@ type ScrollAnchor = {
     topOffset: number
 }
 
+type PrependAnchorMetrics = {
+    bottomOffset: number
+    height: number
+}
+
 type PendingScrollRestore = {
     runId: number
     anchor: ScrollAnchor | null
+    prependFirstCardMetrics: PrependAnchorMetrics | null
     scrollTop: number
     scrollHeight: number
     targetHistoryVersion: number | null
+    preserveTail: boolean
 }
 
 type HistoryLoadSource = 'coverage' | 'user' | 'consumer'
@@ -275,6 +282,22 @@ export function captureScrollAnchor(viewport: HTMLElement): ScrollAnchor | null 
         }
     }
     return null
+}
+
+function capturePrependFirstCardMetrics(
+    viewport: HTMLElement,
+    anchor: ScrollAnchor | null
+): PrependAnchorMetrics | null {
+    const firstMessage = viewport.querySelector<HTMLElement>(MESSAGE_ANCHOR_SELECTOR)
+    if (!anchor || !firstMessage || firstMessage.id !== anchor.id) {
+        return null
+    }
+    const viewportRect = viewport.getBoundingClientRect()
+    const rect = firstMessage.getBoundingClientRect()
+    return {
+        bottomOffset: rect.bottom - viewportRect.top,
+        height: rect.height
+    }
 }
 
 export function restoreScrollAnchor(viewport: HTMLElement, anchor: ScrollAnchor): boolean {
@@ -889,7 +912,7 @@ export function HappyThread(props: {
         () => Promise.resolve('transient-stop')
     )
     const startHistoryLoadAttemptRef = useRef<(runId: number) => void>(() => {})
-    const needsViewportCoverageRef = useRef<() => boolean>(() => false)
+    const needsViewportCoverageRef = useRef<(options?: { includePreloadMargin?: boolean }) => boolean>(() => false)
     useSelectedSessionSeen(props.sessionId,
         !props.isSyncingTail && !props.messagesWarning ? props.readThroughRevision : undefined,
         props.session.readState?.version, viewportRef, contentRef)
@@ -898,6 +921,15 @@ export function HappyThread(props: {
     const forceScrollTokenRef = useRef(props.forceScrollToken)
     const lastScrollTopRef = useRef(0)
     const sessionIdRef = useRef(props.sessionId)
+    const userCancelledInitialTailRef = useRef(false)
+    const initialTargetMessageIdRef = useRef(Boolean(props.initialTargetMessageId?.trim()))
+    initialTargetMessageIdRef.current = Boolean(props.initialTargetMessageId?.trim())
+    const rawMessagesCountRef = useRef(props.rawMessagesCount)
+    rawMessagesCountRef.current = props.rawMessagesCount
+    const messagesVersionRef = useRef(props.messagesVersion)
+    messagesVersionRef.current = props.messagesVersion
+    const appliedMessagesVersionRef = useRef(appliedMessagesVersion)
+    appliedMessagesVersionRef.current = appliedMessagesVersion
     const initialScrollSessionRef = useRef<string | null>(null)
     const initialScrollDeadlineRef = useRef(0)
     const initialScrollTimersRef = useRef<number[]>([])
@@ -953,7 +985,7 @@ export function HappyThread(props: {
     useEffect(() => {
         hasMoreMessagesRef.current = props.hasMoreMessages
     }, [props.hasMoreMessages])
-    useEffect(() => {
+    useLayoutEffect(() => {
         isSyncingTailRef.current = props.isSyncingTail
     }, [props.isSyncingTail])
     useLayoutEffect(() => {
@@ -1031,7 +1063,7 @@ export function HappyThread(props: {
         onCancelLoadMoreRef.current = props.onCancelLoadMore
     }, [props.onCancelLoadMore])
 
-    useEffect(() => {
+    useLayoutEffect(() => {
         sessionIdRef.current = props.sessionId
     }, [props.sessionId])
 
@@ -1068,6 +1100,43 @@ export function HappyThread(props: {
     const isInitialScrollSettling = useCallback(() => {
         return initialScrollSessionRef.current === sessionIdRef.current && Date.now() < initialScrollDeadlineRef.current
     }, [])
+
+    const hasBlockingScrollRestore = useCallback((): boolean => {
+        const pending = pendingScrollRef.current
+        if (!pending) {
+            return false
+        }
+        return !pending.preserveTail || historyLoaderRef.current.phase === 'awaiting-render'
+    }, [])
+
+    const isAwaitingInitialTailCommit = useCallback((): boolean => {
+        return initialScrollSessionRef.current !== sessionIdRef.current
+            && !userCancelledInitialTailRef.current
+            && !searchTargetHistoryLockRef.current
+            && !initialTargetMessageIdRef.current
+    }, [])
+
+    const canBypassInitialSettlingForUncoveredTail = useCallback((): boolean => {
+        const viewport = viewportRef.current
+        if (!viewport || viewport.clientHeight <= 0) {
+            return false
+        }
+        return !isSyncingTailRef.current
+            && rawMessagesCountRef.current > 0
+            && appliedMessagesVersionRef.current === messagesVersionRef.current
+            && initialScrollSessionRef.current === sessionIdRef.current
+            && autoScrollEnabledRef.current
+            && atBottomRef.current
+            && !searchTargetHistoryLockRef.current
+            && viewport.scrollHeight <= viewport.clientHeight + 1
+    }, [])
+
+    const isReadyForAutomaticCoverage = useCallback((): boolean => {
+        return !isSyncingTailRef.current
+            && !isLoadingMoreRef.current
+            && appliedMessagesVersionRef.current === messagesVersionRef.current
+            && !(rawMessagesCountRef.current > 0 && isAwaitingInitialTailCommit())
+    }, [isAwaitingInitialTailCommit])
 
     const clearInitialScrollTimers = useCallback(() => {
         for (const timer of initialScrollTimersRef.current) {
@@ -1316,7 +1385,9 @@ export function HappyThread(props: {
             // the eventual prepend will preserve that row instead.
             const pending = pendingScrollRef.current
             if (pending && historyLoaderRef.current.runId === pending.runId) {
-                pending.anchor = captureScrollAnchor(viewport)
+                const anchor = captureScrollAnchor(viewport)
+                pending.anchor = anchor
+                pending.prependFirstCardMetrics = capturePrependFirstCardMetrics(viewport, anchor)
                 pending.scrollTop = viewport.scrollTop
                 pending.scrollHeight = viewport.scrollHeight
             }
@@ -1342,9 +1413,12 @@ export function HappyThread(props: {
             const hadExplicitUpwardIntent = hasExplicitUpwardIntent(intent)
             const explicitUpwardIntent = needsCoverage && consumeExplicitUpwardIntent(intent)
 
-            if (isInitialScrollSettling()) {
-                setShowScrollToBottom(false)
+            if (isInitialScrollSettling() || isAwaitingInitialTailCommit()) {
                 if (shouldCancelInitialScrollSettling(intent, hadExplicitUpwardIntent)) {
+                    userCancelledInitialTailRef.current = true
+                    if (pending && historyLoaderRef.current.runId === pending.runId) {
+                        pending.preserveTail = false
+                    }
                     setShowScrollToBottom(shouldShowScrollToBottomButton(intent))
                     initialScrollDeadlineRef.current = 0
                     clearInitialScrollTimers()
@@ -1352,6 +1426,17 @@ export function HappyThread(props: {
                     setAtBottomMode(false)
                     if (explicitUpwardIntent) {
                         void requestOlderRef.current('user')
+                    }
+                } else {
+                    setShowScrollToBottom(false)
+                    if (
+                        autoScrollEnabledRef.current
+                        && !searchTargetHistoryLockRef.current
+                        && !hasBlockingScrollRestore()
+                        && !intent.isNearBottom
+                    ) {
+                        viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'instant' })
+                        lastScrollTopRef.current = viewport.scrollTop
                     }
                 }
                 return
@@ -1378,7 +1463,7 @@ export function HappyThread(props: {
                 && !searchTargetHistoryLockRef.current
                 && !intent.isScrollingUp
                 && !tailScrollInProgressRef.current
-                && !pendingScrollRef.current
+                && !hasBlockingScrollRestore()
             ) {
                 setShowScrollToBottom(false)
                 setAutoScrollMode(true)
@@ -1391,6 +1476,9 @@ export function HappyThread(props: {
             }
 
             if (intent.isScrollingUp && intent.distanceFromBottom > MANUAL_SCROLL_EPSILON_PX) {
+                if (pending && historyLoaderRef.current.runId === pending.runId) {
+                    pending.preserveTail = false
+                }
                 tailScrollInProgressRef.current = false
                 setShowScrollToBottom(shouldShowScrollToBottomButton(intent))
                 setAutoScrollMode(false)
@@ -1456,7 +1544,7 @@ export function HappyThread(props: {
             // Native keyboard scrolling can outlive a fixed intent timeout.
             // Keep this gesture armed until consumed, completed, or cancelled.
             keyboardResumeActive = true
-            if (needsViewportCoverageRef.current()) {
+            if (needsViewportCoverageRef.current({ includePreloadMargin: true })) {
                 keyboardResumeActive = false
                 void requestOlderRef.current('user')
             }
@@ -1543,7 +1631,7 @@ export function HappyThread(props: {
             }
             lastWheelAt = now
             wheelIntentUntil = now + WHEEL_GESTURE_GAP_MS
-            if (!needsViewportCoverageRef.current() || wheelLatched) {
+            if (!needsViewportCoverageRef.current({ includePreloadMargin: true }) || wheelLatched) {
                 return
             }
             wheelLatched = true
@@ -1606,7 +1694,7 @@ export function HappyThread(props: {
         const handleScrollEnd = (event: Event) => {
             if (event.target !== viewport) return
             // Recheck the final geometry before retiring unconsumed demand.
-            if (keyboardResumeActive && needsViewportCoverageRef.current()) {
+            if (keyboardResumeActive && needsViewportCoverageRef.current({ includePreloadMargin: true })) {
                 void requestOlderRef.current('user')
             }
             clearKeyboardIntent()
@@ -1682,6 +1770,7 @@ export function HappyThread(props: {
 
     // Scroll to bottom handler for the indicator button
     const scrollToBottom = useCallback(() => {
+        userCancelledInitialTailRef.current = false
         if (activeSearchTargetId) {
             dismissSearchTarget()
         } else {
@@ -1715,6 +1804,7 @@ export function HappyThread(props: {
     // Reset state when session changes
     useLayoutEffect(() => {
         const hasInitialSearchTarget = Boolean(props.initialTargetMessageId?.trim())
+        userCancelledInitialTailRef.current = false
         searchTargetHistoryLockRef.current = false
         setShowScrollToBottom(false)
         autoScrollEnabledRef.current = true
@@ -1769,12 +1859,18 @@ export function HappyThread(props: {
             || initialScrollSessionRef.current === props.sessionId
             || props.isSyncingTail
             || props.rawMessagesCount === 0
-            || pendingScrollRef.current
+            || appliedMessagesVersion !== props.messagesVersion
+            || hasBlockingScrollRestore()
         ) {
             return
         }
 
         initialScrollSessionRef.current = props.sessionId
+        if (userCancelledInitialTailRef.current) {
+            initialScrollDeadlineRef.current = 0
+            clearInitialScrollTimers()
+            return
+        }
         autoScrollEnabledRef.current = true
         atBottomRef.current = true
         onViewModeChangeRef.current('tail')
@@ -1787,7 +1883,7 @@ export function HappyThread(props: {
                 initialScrollSessionRef.current !== props.sessionId
                 || !autoScrollEnabledRef.current
                 || searchTargetHistoryLockRef.current
-                || pendingScrollRef.current
+                || hasBlockingScrollRestore()
             ) {
                 return
             }
@@ -1799,8 +1895,10 @@ export function HappyThread(props: {
         props.isSyncingTail,
         props.rawMessagesCount,
         props.messagesVersion,
+        appliedMessagesVersion,
         scrollToBottomInstant,
-        clearInitialScrollTimers
+        clearInitialScrollTimers,
+        hasBlockingScrollRestore
     ])
 
     useLayoutEffect(() => {
@@ -2102,11 +2200,19 @@ export function HappyThread(props: {
         scrollToBottom()
     }, [props.forceScrollToken, scrollToBottom])
 
-    const needsViewportCoverage = useCallback((): boolean => {
+    const needsViewportCoverage = useCallback((options?: { includePreloadMargin?: boolean }): boolean => {
         const viewport = viewportRef.current
         const sentinel = topSentinelRef.current
-        if (!viewport || !sentinel) {
+        if (!viewport || !sentinel || viewport.clientHeight <= 0) {
             return false
+        }
+        const isPinnedAtTail = autoScrollEnabledRef.current
+            && atBottomRef.current
+            && !searchTargetHistoryLockRef.current
+            && viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= AUTO_SCROLL_RESUME_THRESHOLD_PX
+        const includePreloadMargin = options?.includePreloadMargin ?? !isPinnedAtTail
+        if (!includePreloadMargin) {
+            return viewport.scrollHeight <= viewport.clientHeight + 1
         }
         const viewportRect = viewport.getBoundingClientRect()
         const sentinelRect = sentinel.getBoundingClientRect()
@@ -2128,11 +2234,15 @@ export function HappyThread(props: {
         const delay = getHistoryCoverageRetryDelay(initialScrollDeadlineRef.current, Date.now())
         coverageCheckTimerRef.current = window.setTimeout(() => {
             coverageCheckTimerRef.current = null
-            if (!searchTargetHistoryLockRef.current && needsViewportCoverage()) {
+            if (
+                !searchTargetHistoryLockRef.current
+                && isReadyForAutomaticCoverage()
+                && needsViewportCoverage()
+            ) {
                 void requestOlderRef.current('coverage')
             }
         }, delay)
-    }, [clearCoverageCheckTimer, needsViewportCoverage])
+    }, [clearCoverageCheckTimer, isReadyForAutomaticCoverage, needsViewportCoverage])
 
     const startHistoryLoadAttempt = useCallback((runId: number): void => {
         const state = historyLoaderRef.current
@@ -2163,7 +2273,12 @@ export function HappyThread(props: {
             }
         }
 
-        if (state.source !== 'consumer' && !needsViewportCoverage()) {
+        if (state.source === 'coverage' && !isReadyForAutomaticCoverage()) {
+            finishStoppedAttempt(state, 'transient-stop')
+            return
+        }
+        const includePreloadMargin = state.source === 'user' ? true : undefined
+        if (state.source !== 'consumer' && !needsViewportCoverage({ includePreloadMargin })) {
             finishStoppedAttempt(state, 'transient-stop')
             return
         }
@@ -2183,14 +2298,25 @@ export function HappyThread(props: {
         }
 
         clearFailureRetryTimer()
+        const distanceFromBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
+        const preserveTail = state.source === 'coverage'
+            && autoScrollEnabledRef.current
+            && atBottomRef.current
+            && !searchTargetHistoryLockRef.current
+            && distanceFromBottom <= AUTO_SCROLL_RESUME_THRESHOLD_PX
+        const anchor = captureScrollAnchor(viewport)
         pendingScrollRef.current = {
             runId,
-            anchor: captureScrollAnchor(viewport),
+            anchor,
+            prependFirstCardMetrics: capturePrependFirstCardMetrics(viewport, anchor),
             scrollTop: viewport.scrollTop,
             scrollHeight: viewport.scrollHeight,
-            targetHistoryVersion: null
+            targetHistoryVersion: null,
+            preserveTail
         }
-        autoScrollEnabledRef.current = false
+        if (!preserveTail) {
+            autoScrollEnabledRef.current = false
+        }
         historyLoaderRef.current = { ...state, phase: 'loading' }
 
         void (async () => {
@@ -2207,7 +2333,10 @@ export function HappyThread(props: {
                     ) {
                         return false
                     }
-                    if (current.source !== 'consumer' && !needsViewportCoverage()) {
+                    if (
+                        current.source !== 'consumer'
+                        && !needsViewportCoverage({ includePreloadMargin: current.source === 'user' ? true : undefined })
+                    ) {
                         return false
                     }
                     pending.targetHistoryVersion = historyVersion
@@ -2275,6 +2404,7 @@ export function HappyThread(props: {
         })()
     }, [
         clearFailureRetryTimer,
+        isReadyForAutomaticCoverage,
         needsViewportCoverage,
         scheduleCoverageAfterSettling,
         settlePendingLoad
@@ -2291,7 +2421,11 @@ export function HappyThread(props: {
             if (state.autoPaused) {
                 return Promise.resolve('terminal-stop')
             }
-            if (isInitialScrollSettling() || !needsViewportCoverage()) {
+            if (
+                !isReadyForAutomaticCoverage()
+                || (isInitialScrollSettling() && !canBypassInitialSettlingForUncoveredTail())
+                || !needsViewportCoverage()
+            ) {
                 return Promise.resolve('transient-stop')
             }
         } else {
@@ -2299,9 +2433,16 @@ export function HappyThread(props: {
             // scroll-to-bottom settling window.
             initialScrollDeadlineRef.current = 0
             clearInitialScrollTimers()
-            if (source === 'user' && state.autoPaused) {
-                state = { ...state, autoPaused: false }
-                historyLoaderRef.current = state
+            if (source === 'user') {
+                userCancelledInitialTailRef.current = true
+                autoScrollEnabledRef.current = false
+                if (pendingScrollRef.current && historyLoaderRef.current.runId === pendingScrollRef.current.runId) {
+                    pendingScrollRef.current.preserveTail = false
+                }
+                if (state.autoPaused) {
+                    state = { ...state, autoPaused: false }
+                    historyLoaderRef.current = state
+                }
             }
         }
 
@@ -2338,6 +2479,8 @@ export function HappyThread(props: {
         clearFailureRetryTimer,
         clearInitialScrollTimers,
         isInitialScrollSettling,
+        canBypassInitialSettlingForUncoveredTail,
+        isReadyForAutomaticCoverage,
         needsViewportCoverage
     ])
     requestOlderRef.current = requestOlder
@@ -2374,6 +2517,8 @@ export function HappyThread(props: {
             !props.hasMoreMessages
             || props.isSyncingTail
             || props.isLoadingMoreMessages
+            || appliedMessagesVersion !== props.messagesVersion
+            || (props.rawMessagesCount > 0 && isAwaitingInitialTailCommit())
         ) {
             clearCoverageCheckTimer()
             return
@@ -2381,7 +2526,7 @@ export function HappyThread(props: {
         if (!needsViewportCoverage()) {
             return
         }
-        if (isInitialScrollSettling()) {
+        if (isInitialScrollSettling() && !canBypassInitialSettlingForUncoveredTail()) {
             scheduleCoverageAfterSettling()
             return
         }
@@ -2390,8 +2535,12 @@ export function HappyThread(props: {
         props.hasMoreMessages,
         props.isSyncingTail,
         props.isLoadingMoreMessages,
+        props.rawMessagesCount,
         props.messagesVersion,
+        appliedMessagesVersion,
+        isAwaitingInitialTailCommit,
         isInitialScrollSettling,
+        canBypassInitialSettlingForUncoveredTail,
         needsViewportCoverage,
         scheduleCoverageAfterSettling,
         clearCoverageCheckTimer
@@ -2409,13 +2558,13 @@ export function HappyThread(props: {
             // content may resize). Keep a smooth tail jump aligned with the
             // newest content until it reaches the bottom; otherwise the
             // browser's original smooth-scroll target can become stale.
-            if (tailScrollInProgressRef.current && !pendingScrollRef.current) {
+            if (tailScrollInProgressRef.current && !hasBlockingScrollRestore()) {
                 scrollToBottomSmooth()
             } else if (
                 autoScrollEnabledRef.current
                 && atBottomRef.current
                 && !searchTargetHistoryLockRef.current
-                && !pendingScrollRef.current
+                && !hasBlockingScrollRestore()
             ) {
                 scrollToBottomInstant()
             }
@@ -2424,10 +2573,11 @@ export function HappyThread(props: {
             // in-flight load, backoff, or paused run remains exclusive.
             if (
                 !searchTargetHistoryLockRef.current
-                && !pendingScrollRef.current
+                && !hasBlockingScrollRestore()
+                && isReadyForAutomaticCoverage()
                 && needsViewportCoverage()
             ) {
-                if (isInitialScrollSettling()) {
+                if (isInitialScrollSettling() && !canBypassInitialSettlingForUncoveredTail()) {
                     scheduleCoverageAfterSettling()
                 } else {
                     void requestOlderRef.current('coverage')
@@ -2440,6 +2590,9 @@ export function HappyThread(props: {
         scrollToBottomInstant,
         scrollToBottomSmooth,
         isInitialScrollSettling,
+        canBypassInitialSettlingForUncoveredTail,
+        hasBlockingScrollRestore,
+        isReadyForAutomaticCoverage,
         needsViewportCoverage,
         scheduleCoverageAfterSettling
     ])
@@ -2468,10 +2621,35 @@ export function HappyThread(props: {
             ) {
                 return
             }
-            const restoredByAnchor = pending.anchor ? restoreScrollAnchor(viewport, pending.anchor) : false
-            if (!restoredByAnchor) {
-                const delta = viewport.scrollHeight - pending.scrollHeight
-                viewport.scrollTop = pending.scrollTop + delta
+            const shouldPreserveTail = pending.preserveTail
+                && autoScrollEnabledRef.current
+                && atBottomRef.current
+                && !searchTargetHistoryLockRef.current
+            if (shouldPreserveTail) {
+                scrollToBottomInstant()
+            } else {
+                let restoredByAnchor = false
+                if (pending.anchor) {
+                    const target = document.getElementById(pending.anchor.id)
+                    if (target && viewport.contains(target)) {
+                        const metrics = pending.prependFirstCardMetrics
+                        if (metrics && metrics.height > 0) {
+                            const viewportRect = viewport.getBoundingClientRect()
+                            const targetRect = target.getBoundingClientRect()
+                            if (targetRect.height > metrics.height + 1) {
+                                viewport.scrollTop += targetRect.bottom - viewportRect.top - metrics.bottomOffset
+                                restoredByAnchor = true
+                            }
+                        }
+                        if (!restoredByAnchor) {
+                            restoredByAnchor = restoreScrollAnchor(viewport, pending.anchor)
+                        }
+                    }
+                }
+                if (!restoredByAnchor) {
+                    const delta = viewport.scrollHeight - pending.scrollHeight
+                    viewport.scrollTop = pending.scrollTop + delta
+                }
             }
             const loaderState = historyLoaderRef.current
             if (loaderState.runId !== pending.runId || loaderState.phase !== 'awaiting-render') {
@@ -2498,6 +2676,7 @@ export function HappyThread(props: {
             !searchTargetHistoryLockRef.current
             && atBottomRef.current
             && autoScrollEnabledRef.current
+            && !hasBlockingScrollRestore()
         ) {
             scrollToBottomInstant()
         }
@@ -2505,6 +2684,7 @@ export function HappyThread(props: {
         appliedMessagesVersion,
         appliedHistoryVersion,
         scrollToBottomInstant,
+        hasBlockingScrollRestore,
         settlePendingLoad,
         clearFailureRetryTimer
     ])
