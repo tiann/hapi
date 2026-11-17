@@ -362,4 +362,171 @@ describe('useAuth — weak-network and JWT expiry resilience', () => {
         expect(h.getAuthCount()).toBe(3)
         expect(result.current.token).toBe(freshJwt)
     })
+
+    it('returns null from stale refresh across hub/authSource switches without leaking replacement credentials', async () => {
+        let resolveStaleRefresh!: (value: { token: string; user: { id: string } }) => void
+        let rejectStaleRefresh!: (error: unknown) => void
+
+        h.setAuthenticateImpl((count) => {
+            if (count === 1) {
+                return Promise.resolve({ token: 'token-hub-a-1', user: { id: 'u-a' } })
+            }
+            if (count === 2) {
+                return new Promise((resolve) => {
+                    resolveStaleRefresh = resolve
+                })
+            }
+            if (count === 3) {
+                return Promise.resolve({ token: 'token-hub-b-1', user: { id: 'u-b' } })
+            }
+            if (count === 4) {
+                return new Promise((_resolve, reject) => {
+                    rejectStaleRefresh = reject
+                })
+            }
+            return Promise.resolve({ token: 'token-hub-c-1', user: { id: 'u-c' } })
+        })
+
+        const sourceA = { type: 'accessToken' as const, token: 'seed-a' }
+        const sourceB = { type: 'accessToken' as const, token: 'seed-b' }
+        const sourceC = { type: 'accessToken' as const, token: 'seed-c' }
+
+        const { result, rerender } = renderHook(
+            ({ source, hub }: { source: { type: 'accessToken'; token: string }; hub: string }) =>
+                useAuth(source, hub),
+            { initialProps: { source: sourceA, hub: 'http://hub-a.test' } }
+        )
+        await flushMicrotasks()
+
+        const apiA = result.current.api as unknown as ApiWithOptions
+        expect(result.current.token).toBe('token-hub-a-1')
+
+        // Start a refresh on Hub A's client while it is still current.
+        let staleResolveResult: unknown = 'pending'
+        await act(async () => {
+            const p = Promise.resolve(apiA.options?.onUnauthorized?.()).then((val) => {
+                staleResolveResult = val
+            })
+            void p
+            await Promise.resolve()
+        })
+
+        // Switch hub & authSource before Hub A's refresh resolves.
+        rerender({ source: sourceB, hub: 'http://hub-b.test' })
+        await flushMicrotasks()
+
+        expect(result.current.token).toBe('token-hub-b-1')
+        expect(apiA.options?.getToken?.()).toBeNull()
+
+        // Hub A's delayed refresh settles AFTER Hub B is authenticated -> must return null, NEVER token-hub-b-1.
+        await act(async () => {
+            resolveStaleRefresh({ token: 'token-hub-a-late', user: { id: 'u-a' } })
+            await Promise.resolve()
+            await Promise.resolve()
+        })
+        expect(staleResolveResult).toBeNull()
+        expect(result.current.token).toBe('token-hub-b-1')
+
+        // Calling onUnauthorized on obsolete apiA after switch returns null without hitting authenticate.
+        const countBeforeOldCall = h.getAuthCount()
+        let lateCallResult: unknown = 'pending'
+        await act(async () => {
+            lateCallResult = await apiA.options?.onUnauthorized?.()
+        })
+        expect(lateCallResult).toBeNull()
+        expect(h.getAuthCount()).toBe(countBeforeOldCall)
+
+        // Also verify a rejecting stale refresh after switching authSource on the same hub returns null and preserves session C.
+        const apiB = result.current.api as unknown as ApiWithOptions
+        let staleRejectResult: unknown = 'pending'
+        await act(async () => {
+            const p = Promise.resolve(apiB.options?.onUnauthorized?.()).then((val) => {
+                staleRejectResult = val
+            })
+            void p
+            await Promise.resolve()
+        })
+
+        rerender({ source: sourceC, hub: 'http://hub-b.test' })
+        await flushMicrotasks()
+        expect(result.current.token).toBe('token-hub-c-1')
+
+        await act(async () => {
+            rejectStaleRefresh(new h.MockApiError('Auth failed: HTTP 401 Unauthorized', 401))
+            await Promise.resolve()
+            await Promise.resolve()
+        })
+        expect(staleRejectResult).toBeNull()
+        expect(result.current.token).toBe('token-hub-c-1')
+        expect(result.current.error).toBeNull()
+    })
+
+    it('honors transient retry backoff across repeated handleSseClosed calls when JWT is expiring', async () => {
+        vi.useFakeTimers()
+        const baseTimeMs = new Date('2026-01-01T00:00:00Z').getTime()
+        vi.setSystemTime(baseTimeMs)
+
+        const expiringJwt = makeJwtWithExp(Math.floor(baseTimeMs / 1000) + 45)
+        const freshJwt = makeJwtWithExp(Math.floor(baseTimeMs / 1000) + 14_400)
+        let shouldFail = false
+
+        h.setAuthenticateImpl(async (count) => {
+            if (count === 1) {
+                return { token: expiringJwt, user: { id: 'u1' } }
+            }
+            if (shouldFail) {
+                throw new h.MockApiError('Auth failed: HTTP 502 Bad Gateway', 502)
+            }
+            return { token: freshJwt, user: { id: 'u1' } }
+        })
+
+        const authSource = { type: 'accessToken' as const, token: 'seed' }
+        const { result } = renderHook(() => useAuth(authSource, 'http://hub.test'))
+        await flushMicrotasks()
+        expect(h.getAuthCount()).toBe(1)
+
+        // First SSE closure when JWT has <=60s remaining triggers immediate recovery attempt,
+        // which fails transiently and arms the 5_000ms backoff window.
+        shouldFail = true
+        await act(async () => {
+            result.current.handleSseClosed()
+            await Promise.resolve()
+        })
+        expect(h.getAuthCount()).toBe(2)
+
+        // Repeated SSE closures during the 5_000ms transient backoff window are suppressed.
+        for (const stepMs of [200, 1_000, 2_000]) {
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(stepMs)
+                result.current.handleSseClosed()
+                await Promise.resolve()
+            })
+            expect(h.getAuthCount()).toBe(2)
+        }
+
+        // Reaching t = 5_000ms fires the scheduled retry (arming the 10_000ms window).
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(1_800)
+        })
+        expect(h.getAuthCount()).toBe(3)
+
+        // Repeated SSE closures during the 10_000ms backoff window are suppressed as well.
+        for (const stepMs of [3_000, 4_000]) {
+            await act(async () => {
+                await vi.advanceTimersByTimeAsync(stepMs)
+                result.current.handleSseClosed()
+                await Promise.resolve()
+            })
+            expect(h.getAuthCount()).toBe(3)
+        }
+
+        // Recovery succeeds when the 10_000ms backoff timer completes (t = 15_000ms).
+        shouldFail = false
+        await act(async () => {
+            await vi.advanceTimersByTimeAsync(3_000)
+        })
+        expect(h.getAuthCount()).toBe(4)
+        expect(result.current.token).toBe(freshJwt)
+        expect(result.current.error).toBeNull()
+    })
 })

@@ -58,6 +58,13 @@ function classifyAuthError(error: unknown): AuthErrorKind {
     return 'transient'
 }
 
+function getTransientRetryDelayMs(attempt: number, hasToken: boolean): number {
+    if (hasToken) {
+        return Math.min(15_000, 5_000 * (2 ** Math.min(attempt - 1, 2)))
+    }
+    return Math.min(15_000, 3_000 * (2 ** Math.min(attempt - 1, 3)))
+}
+
 const ACCESS_TOKEN_PREFIX = 'hapi_access_token::'
 
 function rememberAccessToken(baseUrl: string, accessToken: string): void {
@@ -78,8 +85,12 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
     bind: (accessToken: string) => Promise<void>
     handleSseClosed: () => void
 } {
-    const [token, setToken] = useState<string | null>(null)
-    const [user, setUser] = useState<AuthResponse['user'] | null>(null)
+    const [session, setSession] = useState<{
+        token: string
+        user: AuthResponse['user']
+        authSource: AuthSource
+        baseUrl: string
+    } | null>(null)
     const [isLoading, setIsLoading] = useState<boolean>(false)
     const [error, setError] = useState<string | null>(null)
     const [needsBinding, setNeedsBinding] = useState<boolean>(false)
@@ -89,7 +100,15 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
     const lastRefreshAttemptRef = useRef<number>(0)
     const authEpochRef = useRef<number>(0)
     const transientFailureCountRef = useRef<number>(0)
+    const nextTransientRetryAtRef = useRef<number>(0)
     const lastErrorKindRef = useRef<AuthErrorKind | null>(null)
+
+    const isCurrentSession =
+        session !== null &&
+        session.authSource === authSource &&
+        session.baseUrl === baseUrl
+    const token = isCurrentSession ? session.token : null
+    const user = isCurrentSession ? session.user : null
 
     // Stable reference for auth source to use in effects
     const authSourceRef = useRef(authSource)
@@ -100,8 +119,12 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
         minTtlMs?: number
         hardFail?: boolean
         force?: boolean
+        expectedEpoch?: number
     }): Promise<string | null> => {
         const epoch = authEpochRef.current
+        if (options?.expectedEpoch !== undefined && options.expectedEpoch !== epoch) {
+            return null
+        }
         const currentSource = authSourceRef.current
         const currentToken = tokenRef.current
         const hadToken = currentToken !== null
@@ -131,29 +154,29 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
                 const client = new ApiClient('', { baseUrl })
                 const auth = await client.authenticate(getAuthPayload(currentSource))
                 if (authEpochRef.current !== epoch) {
-                    return tokenRef.current
+                    return null
                 }
                 transientFailureCountRef.current = 0
+                nextTransientRetryAtRef.current = 0
                 lastErrorKindRef.current = null
                 tokenRef.current = auth.token
-                setToken(auth.token)
-                setUser(auth.user)
+                setSession({ token: auth.token, user: auth.user, authSource: currentSource, baseUrl })
                 setError(null)
                 setNeedsBinding(false)
                 setTransientRetryTick(0)
                 return auth.token
             } catch (error) {
                 if (authEpochRef.current !== epoch) {
-                    return tokenRef.current
+                    return null
                 }
                 const kind = classifyAuthError(error)
                 lastErrorKindRef.current = kind
 
                 if (currentSource.type === 'telegram' && kind === 'not_bound') {
                     transientFailureCountRef.current = 0
+                    nextTransientRetryAtRef.current = 0
                     tokenRef.current = null
-                    setToken(null)
-                    setUser(null)
+                    setSession(null)
                     setError(null)
                     setNeedsBinding(true)
                     return null
@@ -161,9 +184,9 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
 
                 if (kind === 'rejected') {
                     transientFailureCountRef.current = 0
+                    nextTransientRetryAtRef.current = 0
                     tokenRef.current = null
-                    setToken(null)
-                    setUser(null)
+                    setSession(null)
                     setNeedsBinding(false)
                     if (hadToken) {
                         const msg = currentSource.type === 'telegram'
@@ -178,12 +201,12 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
 
                 if (kind === 'redirected') {
                     transientFailureCountRef.current = 0
+                    nextTransientRetryAtRef.current = 0
                     setTransientRetryTick(0)
                     const isExpired = expMs !== null ? Date.now() >= expMs : false
                     if (!hadToken || isExpired || options?.hardFail) {
                         tokenRef.current = null
-                        setToken(null)
-                        setUser(null)
+                        setSession(null)
                         setNeedsBinding(false)
                         setError(error instanceof Error ? error.message : 'Auth failed')
                     }
@@ -193,7 +216,9 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
                 // Transient network / gateway failure: schedule bounded retries.
                 // Preserve an active session even past JWT expMs so flaky networks
                 // do not dump authenticated users onto the login prompt.
-                transientFailureCountRef.current += 1
+                const attempt = transientFailureCountRef.current + 1
+                transientFailureCountRef.current = attempt
+                nextTransientRetryAtRef.current = Date.now() + getTransientRetryDelayMs(attempt, hadToken)
                 setTransientRetryTick((tick) => tick + 1)
                 if (!hadToken) {
                     setNeedsBinding(false)
@@ -232,12 +257,12 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
                 return
             }
             transientFailureCountRef.current = 0
+            nextTransientRetryAtRef.current = 0
             lastErrorKindRef.current = null
             refreshPromiseRef.current = null
             setTransientRetryTick(0)
             tokenRef.current = auth.token
-            setToken(auth.token)
-            setUser(auth.user)
+            setSession({ token: auth.token, user: auth.user, authSource: currentSource, baseUrl })
             setNeedsBinding(false)
             // Persist the CLI access token so Settings → Companion pairing QR
             // can encode the same long-lived token in the deeplink. The PWA
@@ -261,15 +286,17 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
     // `api`'s identity, which remounts everything keyed on it (VoiceBackendSession `[props.api]`,
     // GeneratedImageCard `[ctx.api, ...]`) and drives the remount/refetch storm. Issue #927.
     const hasToken = token !== null
-    const api = useMemo(() => (
-        hasToken
-            ? new ApiClient(tokenRef.current ?? '', {
-                baseUrl,
-                getToken: () => tokenRef.current,
-                onUnauthorized: () => refreshAuth({ force: true })
-            })
-            : null
-    ), [baseUrl, refreshAuth, hasToken])
+    const api = useMemo(() => {
+        if (!hasToken) {
+            return null
+        }
+        const clientEpoch = authEpochRef.current
+        return new ApiClient(tokenRef.current ?? '', {
+            baseUrl,
+            getToken: () => (authEpochRef.current === clientEpoch ? tokenRef.current : null),
+            onUnauthorized: () => refreshAuth({ force: true, expectedEpoch: clientEpoch })
+        })
+    }, [baseUrl, refreshAuth, hasToken])
 
     useEffect(() => {
         authEpochRef.current += 1
@@ -279,10 +306,10 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
         refreshPromiseRef.current = null
         lastRefreshAttemptRef.current = 0
         transientFailureCountRef.current = 0
+        nextTransientRetryAtRef.current = 0
         lastErrorKindRef.current = null
         setTransientRetryTick(0)
-        setToken(null)
-        setUser(null)
+        setSession(null)
         setError(null)
         setNeedsBinding(false)
 
@@ -316,17 +343,15 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
         let delayMs: number | null = null
 
         if (!token) {
-            const attempt = transientFailureCountRef.current
-            if (attempt <= 0 || isHidden) {
+            if (transientFailureCountRef.current <= 0 || isHidden) {
                 return
             }
-            delayMs = Math.min(15_000, 3_000 * (2 ** Math.min(attempt - 1, 3)))
+            delayMs = Math.max(0, nextTransientRetryAtRef.current - Date.now())
         } else if (transientFailureCountRef.current > 0) {
             if (isHidden) {
                 return
             }
-            const attempt = transientFailureCountRef.current
-            delayMs = Math.min(15_000, 5_000 * (2 ** Math.min(attempt - 1, 2)))
+            delayMs = Math.max(0, nextTransientRetryAtRef.current - Date.now())
         } else {
             const expMs = decodeJwtExpMs(token)
             if (!expMs) {
@@ -396,12 +421,20 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
         if (!authSourceRef.current || !tokenRef.current) {
             return
         }
-        const expMs = decodeJwtExpMs(tokenRef.current)
-        if (expMs !== null && expMs - Date.now() <= 60_000) {
+        const now = Date.now()
+        if (transientFailureCountRef.current > 0) {
+            if (now < nextTransientRetryAtRef.current) {
+                return
+            }
             void refreshAuth({ force: true })
             return
         }
-        if (Date.now() - lastRefreshAttemptRef.current >= 15_000) {
+        const expMs = decodeJwtExpMs(tokenRef.current)
+        if (expMs !== null && expMs - now <= 60_000) {
+            void refreshAuth({ force: true })
+            return
+        }
+        if (now - lastRefreshAttemptRef.current >= 15_000) {
             void refreshAuth({ force: true })
         }
     }, [refreshAuth])
