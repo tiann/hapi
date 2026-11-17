@@ -118,6 +118,7 @@ export class AcpSdkBackend implements AgentBackend {
     private transport: AcpStdioTransport | null = null;
     private permissionHandler: ((request: PermissionRequest) => void) | null = null;
     private stderrErrorHandler: ((error: AcpStderrError) => void) | null = null;
+    private unexpectedExitListener: ((error: Error) => void) | null = null;
     private readonly pendingPermissions = new Map<string, PendingPermission>();
     private formElicitationHandler: ((request: FormElicitationRequest) => Promise<FormElicitationResponse>) | null = null;
     private readonly pendingElicitations = new Set<PendingElicitation>();
@@ -266,23 +267,7 @@ export class AcpSdkBackend implements AgentBackend {
 
         this.transport = transport;
 
-        this.transport.onNotification((method, params) => {
-            this.handleNotification(method, params);
-        });
-
-        this.transport.onStderrError((error) => {
-            this.stderrErrorHandler?.(error);
-        });
-
-        this.transport.registerRequestHandler('session/request_permission', async (params, requestId) => {
-            return await this.handlePermissionRequest(params, requestId);
-        });
-
-        if (this.options.elicitationForm) {
-            this.transport.registerRequestHandler('elicitation/create', async (params) => {
-                return await this.handleElicitationRequest(params);
-            });
-        }
+        this.attachTransportListeners(this.transport);
 
         const response = await withRetry(
             () => this.transport!.sendRequest('initialize', {
@@ -719,6 +704,31 @@ export class AcpSdkBackend implements AgentBackend {
      */
     setAgentActivityListener(listener: AgentActivityListener | null): void {
         this.agentActivityListener = listener;
+    }
+
+    /** Lets remote launchers recreate a dead native ACP child before another prompt arrives. */
+    setUnexpectedExitListener(listener: ((error: Error) => void) | null): void {
+        this.unexpectedExitListener = listener;
+    }
+
+    private attachTransportListeners(transport: AcpStdioTransport): void {
+        transport.onNotification((method, params) => {
+            this.handleNotification(method, params);
+        });
+        transport.onStderrError((error) => {
+            this.stderrErrorHandler?.(error);
+        });
+        transport.onUnexpectedExit((error) => {
+            this.unexpectedExitListener?.(error);
+        });
+        transport.registerRequestHandler('session/request_permission', async (params, requestId) => {
+            return await this.handlePermissionRequest(params, requestId);
+        });
+        if (this.options.elicitationForm) {
+            transport.registerRequestHandler('elicitation/create', async (params) => {
+                return await this.handleElicitationRequest(params);
+            });
+        }
     }
 
     /** Reads the agent's persisted native title through stable ACP session/list. */

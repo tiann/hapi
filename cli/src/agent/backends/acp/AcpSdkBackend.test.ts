@@ -54,6 +54,22 @@ afterEach(() => {
 });
 
 describe('AcpSdkBackend', () => {
+    it('forwards an unexpected ACP child exit to its launcher', () => {
+        const backend = new AcpSdkBackend({ command: 'opencode' });
+        const exits: Error[] = [];
+        backend.setUnexpectedExitListener((error) => exits.push(error));
+        const transport = {
+            onNotification: () => {},
+            onStderrError: () => {},
+            onUnexpectedExit: (handler: (error: Error) => void) => handler(new Error('ACP process exited (signal=SIGKILL)')),
+            registerRequestHandler: () => {}
+        };
+
+        (backend as unknown as { transport: unknown }).transport = transport;
+        (backend as unknown as { attachTransportListeners: (transport: unknown) => void }).attachTransportListeners(transport);
+
+        expect(exits.map((error) => error.message)).toEqual(['ACP process exited (signal=SIGKILL)']);
+    });
     it('forwards ACP session_info_update titles without requiring an active prompt', () => {
         const backend = new AcpSdkBackend({ command: 'agent' });
         const updates: Array<{ sessionId: string | null; title: string | null }> = [];

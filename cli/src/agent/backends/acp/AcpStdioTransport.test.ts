@@ -133,6 +133,32 @@ describe('AcpStdioTransport agent CLI guard', () => {
         spawnState.stdoutDataHandlers = [];
     });
 
+    test('reports a SIGKILL close immediately unless HAPI initiated the close', async () => {
+        const transport = await AcpStdioTransport.create({ command: 'opencode', args: ['acp'] });
+        const exits: Error[] = [];
+        transport.onUnexpectedExit((error) => exits.push(error));
+
+        for (const handler of spawnState.closeHandlers) {
+            handler(null, 'SIGKILL');
+        }
+
+        expect(exits).toHaveLength(1);
+        expect(exits[0]?.message).toContain('SIGKILL');
+    });
+
+    test('does not report an unexpected exit when HAPI closes the transport', async () => {
+        const transport = await AcpStdioTransport.create({ command: 'opencode', args: ['acp'] });
+        const exits: Error[] = [];
+        transport.onUnexpectedExit((error) => exits.push(error));
+
+        await transport.close();
+        for (const handler of spawnState.closeHandlers) {
+            handler(null, 'SIGTERM');
+        }
+
+        expect(exits).toEqual([]);
+    });
+
     test('registers cross-process guard only for Cursor agent command', async () => {
         const transport = await AcpStdioTransport.create({ command: 'agent', args: ['acp'] });
         expect(guard.register).toHaveBeenCalledTimes(1);

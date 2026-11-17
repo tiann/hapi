@@ -11,6 +11,7 @@ vi.mock('./AcpStdioTransport', () => {
         }
         onNotification = vi.fn();
         onStderrError = vi.fn();
+        onUnexpectedExit = vi.fn();
         registerRequestHandler = vi.fn();
         sendRequest = vi.fn(async (method: string, params?: unknown) => {
             transportState.calls.push({ method, params });

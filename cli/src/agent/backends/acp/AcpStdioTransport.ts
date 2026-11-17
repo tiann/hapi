@@ -88,6 +88,7 @@ export class AcpStdioTransport {
     private readonly requestHandlers = new Map<string, RequestHandler>();
     private notificationHandler: ((method: string, params: unknown) => void) | null = null;
     private stderrErrorHandler: ((error: AcpStderrError) => void) | null = null;
+    private unexpectedExitHandler: ((error: Error) => void) | null = null;
     private buffer = '';
     private recentStderr = '';
     private stderrParseBuffer = '';
@@ -97,6 +98,8 @@ export class AcpStdioTransport {
     private protocolError: Error | null = null;
     private guardReleased = false;
     private closed = false;
+    /** Set before HAPI itself tears down stdio, so its own close is not recovered. */
+    private closeRequested = false;
     private closeError: Error | null = null;
     /** True after process 'exit'; blocks new writes until 'close' drains stderr. */
     private exited = false;
@@ -268,6 +271,11 @@ export class AcpStdioTransport {
         this.stderrErrorHandler = handler;
     }
 
+    /** Called once when the ACP child disappears without an HAPI-requested close. */
+    onUnexpectedExit(handler: ((error: Error) => void) | null): void {
+        this.unexpectedExitHandler = handler;
+    }
+
     registerRequestHandler(method: string, handler: RequestHandler): void {
         this.requestHandlers.set(method, handler);
     }
@@ -422,6 +430,7 @@ export class AcpStdioTransport {
     }
 
     async close(): Promise<void> {
+        this.closeRequested = true;
         this.process.stdin.end();
         await killProcessByChildProcess(this.process);
         this.releaseAgentCliGuard();
@@ -591,6 +600,9 @@ export class AcpStdioTransport {
         this.closed = true;
         this.closeError = error;
         this.rejectAllPending(error);
+        if (!this.closeRequested) {
+            this.unexpectedExitHandler?.(error);
+        }
     }
 
     private rejectAllPending(error: Error): void {
