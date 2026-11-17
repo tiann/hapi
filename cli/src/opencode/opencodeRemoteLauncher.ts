@@ -84,6 +84,22 @@ type OpencodeRemoteLauncherOptions = {
     onClearRequested?: () => Promise<void>;
     onClearCleanupComplete?: () => Promise<void>;
     onClearCleanupFailed?: () => Promise<void>;
+    /** Internal wrapper hooks that keep Stop/Switch meaningful while a dead ACP child is replaced. */
+    onRecoveryStart?: () => void;
+    onRecoveryHandlersCleared?: () => void;
+    onRecoveryReady?: () => void;
+    onRecoverySwitchRequested?: () => void;
+    /** A replacement must resume this native session, never create a blank one. */
+    isRecoveryAttempt?: boolean;
+    /** Outer recovery cancellation is observed before replacement can admit a queue batch. */
+    recoverySignal?: AbortSignal;
+    /** Test seam. Production uses the bounded 1 s, 5 s, 15 s schedule below. */
+    recoveryBackoffsMs?: readonly number[];
+    /** Test seam. A ready replacement resets its child-exit budget after this stable interval. */
+    recoveryStabilityMs?: number;
+    /** Test seam. Prevent periodic ready-then-die children from resetting forever. */
+    recoveryWindowMs?: number;
+    recoveryMaxAttemptsPerWindow?: number;
 };
 
 export type AbortStatusDecision = {
@@ -187,10 +203,16 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private readonly session: OpencodeSession;
     private backend: ReturnType<typeof createOpencodeBackend> | null = null;
     private unexpectedChildExit: Error | null = null;
+    private startupChildExit: Error | null = null;
+    private completedPrompt = false;
+    private cleanupFailed = false;
     /** Loopback base URL of the OpenCode ACP subprocess's internal HTTP API, set once the backend is spawned with an explicit --port/--hostname. */
     private baseUrl: string | null = null;
     private permissionHandler: OpencodePermissionHandler | null = null;
     private happyServer: { stop: () => void } | null = null;
+    /** Resources begun by this replacement startup. Cleanup owns these even if Switch wins their await race. */
+    private readonly recoveryAttemptDisposers = new Set<() => void>();
+    private recoveryAttemptDisposed = false;
     // Becomes true when the FIFO loop reaches /clear. Its callback is deferred
     // until cleanup() completes so a failed OpenCode disconnect cannot create a
     // replacement while the source backend may still be live.
@@ -224,6 +246,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private setModelSupported: boolean | undefined = undefined;
     private setEffortSupported: boolean | undefined = undefined;
     private activeAcpSessionId: string | null = null;
+    /** A child exit is resumable only after startup has installed normal handlers and declared readiness. */
+    private recoveryEligible = false;
     /** Subscription to the agent's own server event stream; null until the ACP session id is known, closed in cleanup(). */
     private eventStream: OpencodeEventSubscription | null = null;
     private nativeTranscript: OpencodeNativeTranscript | null = null;
@@ -406,33 +430,115 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     }
 
     public get shouldRecoverUnexpectedChildExit(): boolean {
-        return this.unexpectedChildExit !== null;
+        return this.unexpectedChildExit !== null && this.startupChildExit === null;
+    }
+
+    public get hasCompletedPrompt(): boolean {
+        return this.completedPrompt;
+    }
+
+    public get hasCleanupFailure(): boolean {
+        return this.cleanupFailed;
     }
 
     protected createDisplay(context: RemoteLauncherDisplayContext): React.ReactElement {
         return React.createElement(OpencodeDisplay, context);
     }
 
+    private disposeRecoveryAttempt(): void {
+        if (this.recoveryAttemptDisposed) return;
+        this.recoveryAttemptDisposed = true;
+        for (const dispose of this.recoveryAttemptDisposers) {
+            try {
+                dispose();
+            } catch (error) {
+                logger.warn('[opencode-remote] recovery startup resource cleanup failed', error);
+            }
+        }
+        this.recoveryAttemptDisposers.clear();
+    }
+
+    private ownRecoveryHappyServer(server: { stop: () => void }): void {
+        if (!this.options.isRecoveryAttempt) {
+            this.happyServer = server;
+            return;
+        }
+        let owned = true;
+        const dispose = () => {
+            if (!owned) return;
+            owned = false;
+            if (this.happyServer === server) this.happyServer = null;
+            server.stop();
+        };
+        if (this.recoveryAttemptDisposed) {
+            dispose();
+            return;
+        }
+        this.recoveryAttemptDisposers.add(dispose);
+        this.happyServer = server;
+    }
+
+    private async awaitRecoveryStartup<T>(operation: () => Promise<T>, disposeLate?: (value: T) => void): Promise<T> {
+        const signal = this.options.isRecoveryAttempt ? this.options.recoverySignal : undefined;
+        if (!signal) return await operation();
+        if (signal.aborted) this.throwIfRecoverySwitched();
+        const started = operation();
+        return await new Promise<T>((resolve, reject) => {
+            const finish = () => signal.removeEventListener('abort', onAbort);
+            let aborted = false;
+            const onAbort = () => {
+                aborted = true;
+                finish();
+                this.shouldExit = true;
+                this.exitReason = 'switch';
+                reject(new Error('OpenCode recovery switched before replacement startup settled'));
+            };
+            signal.addEventListener('abort', onAbort, { once: true });
+            started.then(
+                value => {
+                    if (aborted) {
+                        try {
+                            disposeLate?.(value);
+                        } catch (error) {
+                            logger.warn('[opencode-remote] late recovery startup resource cleanup failed', error);
+                        }
+                        return;
+                    }
+                    finish();
+                    resolve(value);
+                },
+                error => {
+                    if (aborted) return;
+                    finish();
+                    reject(error);
+                }
+            );
+        });
+    }
+
     protected async runMainLoop(): Promise<void> {
         const session = this.session;
         const messageBuffer = this.messageBuffer;
+        this.throwIfRecoverySwitched();
         // Published up front so a session that never reaches a normal prompt
         // advertises "not steerable" rather than a stale value.
         this.setSteeringActive(false);
 
         const titleSync = createAcpSessionTitleSync(session.client);
-        const { server: happyServer, mcpServers } = await buildHapiMcpBridge(session.client, {
+        const { server: happyServer, mcpServers } = await this.awaitRecoveryStartup(() => buildHapiMcpBridge(session.client, {
             onChangeTitle: () => titleSync.markManualTitle(),
             skillLookup: { workingDirectory: session.path, flavor: 'opencode' }
-        });
-        this.happyServer = happyServer;
+        }), bridge => bridge.server.stop());
+        this.ownRecoveryHappyServer(happyServer);
+        this.throwIfRecoverySwitched();
 
         // opencode v2 dropped the `acp --cwd/--port/--hostname` flags and
         // binds its internal HTTP API to a random loopback port it exposes
         // nowhere (verified 2026-10-15), so the spawn strategy and the
         // baseUrl discovery differ per major version. Detected once per
         // session; any detection failure falls back to the v1 path.
-        this.majorVersion = await detectOpencodeFlavorVersion();
+        this.majorVersion = await this.awaitRecoveryStartup(() => detectOpencodeFlavorVersion());
+        this.throwIfRecoverySwitched();
         const isV2 = this.majorVersion === 'v2';
         if (!isV2) {
             // v1 keeps upstream's non-history behavior; the fork/rewind
@@ -451,10 +557,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         let beforeSnapshot: Set<number> | null = null;
         let v1Port: number | null = null;
         if (isV2) {
-            beforeSnapshot = await listLoopbackListeners();
+            beforeSnapshot = await this.awaitRecoveryStartup(() => listLoopbackListeners());
             this.baseUrl = null;
         } else {
-            v1Port = await allocateFreePort(hostname);
+            v1Port = await this.awaitRecoveryStartup(() => allocateFreePort(hostname));
             this.baseUrl = `http://${hostname}:${v1Port}`;
         }
 
@@ -476,12 +582,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         });
         backend.setUnexpectedExitListener((error) => this.handleUnexpectedChildExit(error));
 
-        await backend.initialize();
+        await this.awaitRecoveryStartup(() => backend.initialize());
+        this.throwIfRecoverySwitched();
 
         // Read the REST value itself before using cached metadata to select a
         // native resume or publish a session binding. A failed read remains
         // an owned entry fence until a later connection event retries it.
-        const initialSnapshot = await session.client.readRewindMetadata();
+        const initialSnapshot = await this.awaitRecoveryStartup(() => session.client.readRewindMetadata());
+        this.throwIfRecoverySwitched();
 
         // Forks can trust restored metadata only after the previous launcher's
         // writes reached the hub. Ordinary ACP resumes can run without forks.
@@ -489,13 +597,16 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         if (typeof session.client.flushMetadata === 'function'
             && !(typeof session.client.isPending === 'function' && session.client.isPending())) {
             try {
-                historyMetadataDurable = await session.client.flushMetadata();
+                historyMetadataDurable = await this.awaitRecoveryStartup(() => session.client.flushMetadata());
             } catch {
                 historyMetadataDurable = false;
             }
         }
 
         const resumeSessionId = session.sessionId;
+        if (this.options.isRecoveryAttempt && !resumeSessionId) {
+            throw new Error('OpenCode recovery requires an existing native session id');
+        }
         // A fork child's transcript already lives on the hub; silently
         // falling back to a blank native session would show inherited
         // messages the model cannot actually see (same fence as grok).
@@ -515,12 +626,17 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         let acpSessionId: string;
         if (resumeSessionId) {
             try {
-                acpSessionId = await backend.loadSession({
+                acpSessionId = await this.awaitRecoveryStartup(() => backend.loadSession({
                     sessionId: resumeSessionId,
                     cwd: session.path,
                     mcpServers: mcpServerList
-                });
+                }));
+                this.throwIfRecoverySwitched();
             } catch (error) {
+                if (this.startupChildExit) throw error;
+                if (this.options.isRecoveryAttempt) {
+                    throw error;
+                }
                 if (strictForkResume) {
                     throw error;
                 }
@@ -530,16 +646,17 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     type: 'message',
                     message: 'OpenCode resume failed; starting a new session.'
                 });
-                acpSessionId = await backend.newSession({
+                acpSessionId = await this.awaitRecoveryStartup(() => backend.newSession({
                     cwd: session.path,
                     mcpServers: mcpServerList
-                });
+                }));
             }
         } else {
-            acpSessionId = await backend.newSession({
+            acpSessionId = await this.awaitRecoveryStartup(() => backend.newSession({
                 cwd: session.path,
                 mcpServers: mcpServerList
-            });
+            }));
+            this.throwIfRecoverySwitched();
         }
 
         // Fire the validated session-ready fence only now (after the actual
@@ -561,6 +678,11 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             session.sessionId = acpSessionId;
         }
         this.activeAcpSessionId = acpSessionId;
+        // A stored native session can recover once session/load established
+        // its identity. A first-launch newSession remains a startup failure
+        // until ready, so an exit cannot turn a just-created session into an
+        // accidental recovery attempt.
+        if (resumeSessionId) this.recoveryEligible = true;
 
         // v2: the internal HTTP API port is bound randomly after spawn and
         // exposed nowhere, so discover it now that the ACP session is up
@@ -577,9 +699,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             // it, so an unrelated descendant listener cannot win the
             // lowest-port race; without a match, fall back to the tree-wide
             // scan.
-            const descendants = acpPid !== null ? await listChildPids(acpPid) : [];
+            const descendants = acpPid !== null ? await this.awaitRecoveryStartup(() => listChildPids(acpPid)) : [];
             const servePid = acpPid !== null
-                ? await findOpencodeServePid({ rootPids: [acpPid, ...descendants] })
+                ? await this.awaitRecoveryStartup(() => findOpencodeServePid({ rootPids: [acpPid, ...descendants] }))
                 : null;
             const marker = servePid !== null ? getProcessStartMarker(servePid) : null;
             if (servePid !== null && marker) this.nativeProcess = { pid: servePid, startMarker: marker };
@@ -588,11 +710,11 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 : acpPid !== null
                     ? [acpPid, ...descendants]
                     : undefined;
-            const discoveredPort = await discoverOpencodeV2RestPort({
+            const discoveredPort = await this.awaitRecoveryStartup(() => discoverOpencodeV2RestPort({
                 beforeSnapshot: beforeSnapshot ?? new Set(),
                 ownerPids
-            });
-            const password = acpPid !== null ? await readOpencodeV2ServerPassword(acpPid) : null;
+            }));
+            const password = acpPid !== null ? await this.awaitRecoveryStartup(() => readOpencodeV2ServerPassword(acpPid)) : null;
             if (discoveredPort !== null && password) {
                 this.v2RestInfo = { baseUrl: `http://127.0.0.1:${discoveredPort}`, password };
             } else {
@@ -658,7 +780,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 );
             }
         });
-        await this.nativeTranscript.refresh();
+        const nativeTranscript = this.nativeTranscript;
+        await this.awaitRecoveryStartup(() => nativeTranscript.refresh());
         this.eventStream = subscribeToOpencodeEvents({
             baseUrl: restBaseUrl,
             // Required. Omitting it yields heartbeats and no session events
@@ -978,7 +1101,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             if (!this.runtimeGate.isBlocked()) session.client.updateMetadata(metadata => metadata.opencodeRewind && !this.runtimeGate.hasReconciled(metadata.opencodeRewind.operationId)
                 ? metadata : ({ ...metadata, opencodeWorkerId: this.workerId,
                     opencodeWorkerProcess: { workerId: this.workerId, pid: process.pid, startMarker: workerStartMarker } }));
-            if (!await session.client.flushMetadata()) return;
+            if (!await session.client.flushMetadata() || this.rewindStopped) return;
             session.client.rpcHandlerManager.registerHandler(RPC_METHODS.RewindConversation, async (payload: unknown) => {
                 const input = payload as { messageLocalId?: string; opencodeRewind?: unknown };
                 const operation = OpenCodeRewindSchema.parse(input?.opencodeRewind);
@@ -1017,8 +1140,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         try {
             // A failed optional publication is not proof of absence. The strict
             // snapshot below still decides whether admission is safe.
-            await session.client.flushMetadata().catch(() => false);
-            if (initialSnapshot) await reconcileEntry();
+            await this.awaitRecoveryStartup(() => session.client.flushMetadata().catch(() => false));
+            if (initialSnapshot) await this.awaitRecoveryStartup(() => reconcileEntry());
             // A null startup read on a live socket is a transient miss (the GET
             // swallowed a timeout/503 or saw a stale version), not a waiting
             // socket: retry it through the same serialized backoff. A socket
@@ -1040,7 +1163,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 if (!this.entryFence) await this.conversationHistory.disableFork().catch((error) => logger.warn('[opencode-remote] Forks disabled while metadata is unavailable', error));
             } else {
                 try {
-                    await this.conversationHistory.publish();
+                    await this.awaitRecoveryStartup(() => this.conversationHistory.publish());
                 } catch (error) {
                     await this.conversationHistory.disableFork().catch((writeError) => logger.warn('[opencode-remote] Forks disabled while history is unavailable', writeError));
                     if (strictHistoryVerification) throw error;
@@ -1058,7 +1181,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             return { ...result, opencodeHistoryCheckpoint: await this.conversationHistory.checkpointForkedSession(result.nativeSessionId) };
             } finally { release(); }
         });
-        await registerRewindHandler();
+        await this.awaitRecoveryStartup(() => registerRewindHandler());
         if (isV2 && !historyDiverged) {
             void this.conversationHistory.probeCapabilities(this.historyProbeAbortController.signal).catch(() => {});
         }
@@ -1094,7 +1217,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         ) {
             const release = this.runtimeGate.enterRuntime();
             try {
-                await backend.setModel(acpSessionId, requestedStartupModel, { flavor: 'opencode' });
+                await this.awaitRecoveryStartup(() => backend.setModel(acpSessionId, requestedStartupModel, { flavor: 'opencode' }));
                 this.currentBackendModel = requestedStartupModel;
                 // The lookup above ran before the switch — re-query so the
                 // seeded effort reflects the eagerly applied model.
@@ -1169,6 +1292,11 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         // waiting and the request pending in the session state.
         session.setKillHandler(() => this.permissionHandler?.cancelAll('Session terminated'));
         this.applyDisplayMode(session.getPermissionMode() as PermissionMode);
+        // The wrapper owns Switch until the normal handlers below replace its
+        // temporary recovery handlers. Nothing asynchronous follows this
+        // check, so a Switch observed anywhere in replacement startup wins
+        // before those handlers can overwrite it.
+        this.throwIfRecoverySwitched();
 
         this.setupAbortHandlers(session.client.rpcHandlerManager, {
             // Explicit `false`: plain Stop stays in this remote session, so
@@ -1177,6 +1305,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             onAbort: () => this.handleAbort(false),
             onSwitch: () => this.handleSwitchRequest()
         });
+        this.recoveryEligible = true;
+        this.options.onRecoveryReady?.();
 
         this.installSteerHandler(session, acpSessionId);
         if (isV2 && this.v2RestInfo) {
@@ -1257,13 +1387,6 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 // Install the controller before async model/effort changes so
                 // handleAbort() can cancel this batch even before HTTP work starts.
                 const isCompactBatch = batch.mode.operation === 'compact';
-                if (isCompactBatch) {
-                    // Keep /compact's dequeue-time consumption and cancellation
-                    // semantics separate and unchanged (see runOpencode.ts's
-                    // "No manual emitMessagesConsumed" comment).
-                    batchSettled = true;
-                    session.queue.commitBatch(batch);
-                }
                 const compactAbortController = isCompactBatch ? new AbortController() : null;
                 if (compactAbortController) {
                     this.compactAbortController = compactAbortController;
@@ -1385,14 +1508,6 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     }
                 }
 
-                if (isCompactBatch) {
-                    // Compact exits at its own continue points below, before
-                    // the dispatch echo; print it here. Regular batches echo
-                    // at the dispatch commit point instead, so a pre-dispatch
-                    // bail-out that requeues the batch does not double-echo it.
-                    messageBuffer.addMessage(batch.message, 'user');
-                }
-
                 // /compact reaches here through the exact same dequeue loop as
                 // any prompt — it was pushed via messageQueue.pushIsolated(...)
                 // in runOpencode.ts, so it occupies its real FIFO position
@@ -1421,6 +1536,12 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         (this.compactResultSuppressed && !compactAbortController.signal.aborted)
                         || compactCancelledByLocalId;
                     if (cancelledBeforeStart) {
+                        // Cancellation owns this isolated item even if the
+                        // child exits in the same setup window. Do not let
+                        // the recovery finalizer resurrect a command whose
+                        // local-id cancellation was already acknowledged.
+                        batchSettled = true;
+                        session.queue.commitBatch(batch);
                         if (this.compactAbortController === compactAbortController) {
                             this.compactAbortController = null;
                             this.compactOperationPhase = 'idle';
@@ -1442,6 +1563,25 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         }
                         continue;
                     }
+
+                    if (this.shouldExit) {
+                        // An unexpected child exit during model/effort setup
+                        // has not issued a compact request. Leave this batch
+                        // unsettled so the common recovery finalizer restores
+                        // it at the front of the launcher queue.
+                        continue;
+                    }
+
+                    // Model/effort setup completed and the compact operation
+                    // is about to own the request. Keep its established
+                    // dequeue-time ACK semantics from this dispatch point on.
+                    batchSettled = true;
+                    session.queue.commitBatch(batch);
+                    // Compact exits at its own continue points below, before
+                    // the regular dispatch echo. Record it only once it owns
+                    // the request, so a pre-dispatch recovery requeue cannot
+                    // duplicate the user-visible command on retry.
+                    messageBuffer.addMessage(batch.message, 'user');
 
                     this.nextRoundSnapshot = null;
                     session.onThinkingChange(true);
@@ -1611,6 +1751,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                         await backend.prompt(acpSessionId, promptContent, (message: AgentMessage) => {
                             this.handleAgentMessage(message);
                         });
+                        if (!this.unexpectedChildExit) this.completedPrompt = true;
                     } finally {
                         promptDurationMs = performance.now() - promptStartedAt;
                         this.roundSummaryPhase = 'settle';
@@ -1704,7 +1845,13 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 }
             } finally {
                 if (!batchSettled) {
-                    session.queue.releaseBatch(batch);
+                    if (this.unexpectedChildExit) {
+                        // This batch never crossed the dispatch commit point,
+                        // so recovery owns it and must preserve FIFO delivery.
+                        requeue();
+                    } else {
+                        session.queue.releaseBatch(batch);
+                    }
                 }
                 this.conversationHistory.setBusy(false);
                 releaseRuntime();
@@ -2436,6 +2583,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     }
 
     protected async cleanup(): Promise<void> {
+        this.disposeRecoveryAttempt();
         this.rewindStopped = true;
         this.detachRewindEntry();
         // Before anything that can fail: a steer still parked on a
@@ -2457,6 +2605,11 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         this.eventStream?.close();
         this.eventStream = null;
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
+        // The outer recovery coordinator owns these two handlers from the
+        // moment an unexpected exit is observed through replacement startup.
+        // cleanup() normally makes them inert, so immediately restore that
+        // ownership before any awaited teardown can open a blind window.
+        if (this.unexpectedChildExit || this.options.isRecoveryAttempt) this.options.onRecoveryHandlersCleared?.();
         const failures: unknown[] = [];
         if (this.permissionHandler) {
             try {
@@ -2486,6 +2639,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             }
         }
         if (failures.length > 0) {
+            this.cleanupFailed = true;
             if (this.clearRequested) await this.options.onClearCleanupFailed?.();
             throw failures.length === 1 ? failures[0] : new AggregateError(failures, 'OpenCode cleanup failed');
         }
@@ -2517,6 +2671,17 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private handleUnexpectedChildExit(error: Error): void {
         if (this.shouldExit || this.exitReason || this.unexpectedChildExit) return;
         this.unexpectedChildExit = error;
+        if (!this.activeAcpSessionId || !this.recoveryEligible) {
+            // A child that dies before it established a native session is a
+            // startup failure, not a resumable interruption. Retrying here
+            // could create a blank session and hide the original error.
+            this.startupChildExit = error;
+            this.abortController.abort();
+            this.shouldExit = true;
+            this.exitReason = 'exit';
+            return;
+        }
+        this.options.onRecoveryStart?.();
         logger.warn('[opencode-remote] ACP child exited unexpectedly; scheduling recovery', error);
         this.messageBuffer.addMessage('Agent process stopped unexpectedly. Recovering the session…', 'status');
         // Wake an idle queue read immediately. The queue itself remains intact
@@ -2524,6 +2689,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         this.abortController.abort();
         this.shouldExit = true;
         this.exitReason = 'exit';
+    }
+
+    private throwIfRecoverySwitched(): void {
+        if (this.startupChildExit) throw this.startupChildExit;
+        if (!this.options.recoverySignal?.aborted) return;
+        this.shouldExit = true;
+        this.exitReason = 'switch';
+        throw new Error('OpenCode recovery switched before replacement became ready');
     }
 
     /**
@@ -3250,6 +3423,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleSwitchFromUi(): Promise<void> {
+        this.options.onRecoverySwitchRequested?.();
         if (this.runtimeGate.isBlocked() && !this.runtimeGate.isRewindBlocked()) {
             await this.requestExit('switch', () => this.handleAbort(true));
             return;
@@ -3261,6 +3435,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     }
 
     private async handleSwitchRequest(): Promise<void> {
+        this.options.onRecoverySwitchRequested?.();
         if (this.runtimeGate.isBlocked() && !this.runtimeGate.isRewindBlocked()) {
             await this.requestExit('switch', () => this.handleAbort(true));
             return;
@@ -3285,23 +3460,134 @@ export async function opencodeRemoteLauncher(
     session: OpencodeSession,
     options: OpencodeRemoteLauncherOptions = {}
 ): Promise<'switch' | 'exit'> {
-    const recoveryBackoffsMs = [1_000, 5_000, 15_000];
-    for (let attempt = 0; ; attempt += 1) {
-        const launcher = new OpencodeRemoteLauncher(session, options);
+    const recoveryBackoffsMs = options.recoveryBackoffsMs ?? [1_000, 5_000, 15_000];
+    let recoveryAttempt = 0;
+    let recoveryStarted = false;
+    let recoveryExitReason: RemoteLauncherExitReason | null = null;
+    const recoveryController = new AbortController();
+    let lastRecoveryError: unknown = null;
+    let recoveryStabilityTimer: ReturnType<typeof setTimeout> | null = null;
+    let recoveryWindowStartedAt = Date.now();
+    let recoveryAttemptsInWindow = 0;
+    const recoveryWindowMs = options.recoveryWindowMs ?? 5 * 60_000;
+    const recoveryMaxAttemptsInWindow = options.recoveryMaxAttemptsPerWindow ?? recoveryBackoffsMs.length;
+
+    const clearRecoveryStabilityTimer = () => {
+        if (recoveryStabilityTimer !== null) {
+            clearTimeout(recoveryStabilityTimer);
+            recoveryStabilityTimer = null;
+        }
+    };
+
+    const requestRecoverySwitch = () => {
+        if (!recoveryStarted) return;
+        recoveryExitReason = 'switch';
+        recoveryController.abort();
+    };
+
+    const installRecoveryHandlers = () => {
+        clearRecoveryStabilityTimer();
+        recoveryStarted = true;
+        session.client.rpcHandlerManager.registerHandler(RPC_METHODS.Abort, async () => {
+            // There is no live prompt to cancel. Keep the native session and
+            // let the bounded recovery continue.
+        });
+        session.client.rpcHandlerManager.registerHandler(RPC_METHODS.Switch, async () => {
+            requestRecoverySwitch();
+        });
+    };
+
+    const waitForRecoveryDelay = async (delayMs: number): Promise<void> => {
+        const signal = recoveryController.signal;
+        if (signal.aborted) return;
+        await new Promise<void>((resolve) => {
+            const timer = setTimeout(() => {
+                signal.removeEventListener('abort', onAbort);
+                resolve();
+            }, delayMs);
+            const onAbort = () => {
+                clearTimeout(timer);
+                resolve();
+            };
+            signal.addEventListener('abort', onAbort, { once: true });
+        });
+    };
+
+    for (;;) {
+        const isRecoveryAttempt = recoveryStarted;
+        let recoveryLaunchReady = false;
+        const launcher = new OpencodeRemoteLauncher(session, {
+            ...options,
+            isRecoveryAttempt,
+            recoverySignal: recoveryController.signal,
+            onRecoveryStart: installRecoveryHandlers,
+            onRecoveryHandlersCleared: installRecoveryHandlers,
+            onRecoverySwitchRequested: requestRecoverySwitch,
+            onRecoveryReady: () => {
+                options.onRecoveryReady?.();
+                recoveryLaunchReady = true;
+                if (isRecoveryAttempt) {
+                    // Startup errors after this point are ordinary launcher
+                    // errors, not continuation failures of the replacement.
+                    // Keep the child-exit counter until a prompt completes so
+                    // a repeatedly dying child still reaches its bound.
+                    recoveryStarted = false;
+                    clearRecoveryStabilityTimer();
+                    recoveryStabilityTimer = setTimeout(() => {
+                        recoveryStabilityTimer = null;
+                        recoveryAttempt = 0;
+                        lastRecoveryError = null;
+                    }, options.recoveryStabilityMs ?? 30_000);
+                    recoveryStabilityTimer.unref?.();
+                }
+            }
+        });
         let result: RemoteLauncherExitReason;
+        let launchError: unknown = null;
         try {
             result = await launcher.launch();
         } catch (error) {
-            if (!launcher.shouldRecoverUnexpectedChildExit) throw error;
+            launchError = error;
+            if (launcher.hasCleanupFailure) throw error;
             result = 'exit';
         }
-        if (!launcher.shouldRecoverUnexpectedChildExit) return result;
-        if (attempt >= recoveryBackoffsMs.length - 1) {
-            logger.warn('[opencode-remote] ACP child recovery exhausted; ending wrapper session');
-            return 'exit';
+        const needsRecovery = launcher.shouldRecoverUnexpectedChildExit
+            || (isRecoveryAttempt && !recoveryLaunchReady && launchError !== null);
+        if (!needsRecovery) {
+            clearRecoveryStabilityTimer();
+            if (launchError !== null) throw launchError;
+            return result;
         }
-        const delayMs = recoveryBackoffsMs[attempt]!;
-        logger.warn(`[opencode-remote] retrying ACP child recovery in ${delayMs}ms (attempt ${attempt + 2}/${recoveryBackoffsMs.length})`);
-        await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+        installRecoveryHandlers();
+        if (launcher.hasCompletedPrompt) recoveryAttempt = 0;
+        if (launchError !== null) lastRecoveryError = launchError;
+        if (recoveryExitReason) {
+            clearRecoveryStabilityTimer();
+            return recoveryExitReason;
+        }
+        if (Date.now() - recoveryWindowStartedAt >= recoveryWindowMs) {
+            recoveryWindowStartedAt = Date.now();
+            recoveryAttemptsInWindow = 0;
+        }
+        if (recoveryAttempt >= recoveryBackoffsMs.length || recoveryAttemptsInWindow >= recoveryMaxAttemptsInWindow) {
+            clearRecoveryStabilityTimer();
+            const error = lastRecoveryError instanceof Error
+                ? lastRecoveryError
+                : new Error('ACP child exited repeatedly');
+            logger.warn('[opencode-remote] ACP child recovery exhausted; crashing wrapper session', error);
+            session.sendSessionEvent({
+                type: 'message',
+                message: 'OpenCode recovery failed after repeated agent process exits. The session stopped and can be resumed.'
+            });
+            throw new Error(`OpenCode recovery failed: ${error.message}`);
+        }
+        const delayMs = recoveryBackoffsMs[recoveryAttempt++]!;
+        recoveryAttemptsInWindow++;
+        logger.warn(`[opencode-remote] retrying ACP child recovery in ${delayMs}ms (attempt ${recoveryAttempt}/${recoveryBackoffsMs.length})`);
+        await waitForRecoveryDelay(delayMs);
+        if (recoveryExitReason) {
+            clearRecoveryStabilityTimer();
+            return recoveryExitReason;
+        }
     }
 }
