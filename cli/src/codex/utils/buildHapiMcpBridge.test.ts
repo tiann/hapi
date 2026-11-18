@@ -15,8 +15,8 @@ vi.mock('@/claude/utils/startHappyServer', () => ({
         return {
             url: 'http://127.0.0.1:43006/',
             toolNames: options.skillLookup
-                ? ['change_title', 'link_pr', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer', 'session_job', 'skill_lookup']
-                : ['change_title', 'link_pr', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer', 'session_job'],
+                ? ['change_title', 'link_pr', 'link_issue', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer', 'session_job', 'skill_lookup']
+                : ['change_title', 'link_pr', 'link_issue', 'display_image', 'display_video', 'display_media', 'list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer', 'session_job'],
             stop: vi.fn()
         }
     })
@@ -75,13 +75,14 @@ describe('buildHapiMcpBridge skill lookup config', () => {
             '--url',
             'http://127.0.0.1:43006/',
             '--tools',
-            'change_title,link_pr,display_image,display_video,display_media,list_peers,ping_peer,inspect_peer,spawn_peer,session_job,skill_lookup',
+            'change_title,link_pr,link_issue,display_image,display_video,display_media,list_peers,ping_peer,inspect_peer,spawn_peer,session_job,skill_lookup',
             '--hapi-session-id',
             'hub-session-1',
         ])
         expect(bridge.mcpServers.hapi.tools).toEqual({
             change_title: { approval_mode: 'approve' },
             link_pr: { approval_mode: 'prompt' },
+            link_issue: { approval_mode: 'prompt' },
             display_image: { approval_mode: 'prompt' },
             display_video: { approval_mode: 'prompt' },
             display_media: { approval_mode: 'prompt' },
@@ -109,13 +110,14 @@ describe('buildHapiMcpBridge skill lookup config', () => {
             '--url',
             'http://127.0.0.1:43006/',
             '--tools',
-            'change_title,link_pr,display_image,display_video,display_media,list_peers,ping_peer,inspect_peer,spawn_peer,session_job',
+            'change_title,link_pr,link_issue,display_image,display_video,display_media,list_peers,ping_peer,inspect_peer,spawn_peer,session_job',
             '--hapi-session-id',
             'hub-session-1',
         ])
         expect(bridge.mcpServers.hapi.tools).toEqual({
             change_title: { approval_mode: 'approve' },
             link_pr: { approval_mode: 'prompt' },
+            link_issue: { approval_mode: 'prompt' },
             display_image: { approval_mode: 'prompt' },
             display_video: { approval_mode: 'prompt' },
             display_media: { approval_mode: 'prompt' },
@@ -140,6 +142,18 @@ describe('buildHapiMcpBridge skill lookup config', () => {
         const trustedContext = { trustedHapiMcp: true }
         expect(resolveToolAutoApprovalDecision('read-only', 'link_pr', 'call-1', undefined, trustedContext)).toBeNull()
         expect(resolveToolAutoApprovalDecision('default', 'link_pr', 'call-1', undefined, trustedContext)).not.toBeNull()
+    })
+
+    // Regression (bot review, hapi#2147, third follow-up on the same gap):
+    // link_issue mutates session metadata exactly like link_pr and is
+    // unconditionally registered (no opt-in toggle) — `approve` here would
+    // let Codex pre-approve it before it ever reaches HAPI's permission handler.
+    it('configures link_issue for prompt (not approve) so HAPI\'s read-only guard is reachable', async () => {
+        const bridge = await buildHapiMcpBridge(createClient())
+
+        expect(bridge.mcpServers.hapi.tools?.link_issue).toEqual({ approval_mode: 'prompt' })
+        const trustedContext = { trustedHapiMcp: true }
+        expect(resolveToolAutoApprovalDecision('read-only', 'link_issue', 'call-1', undefined, trustedContext)).toBeNull()
     })
 
     it('materializes pending lazy sessions before starting the MCP server', async () => {

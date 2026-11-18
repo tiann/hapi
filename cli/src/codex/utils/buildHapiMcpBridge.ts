@@ -132,6 +132,16 @@ export async function buildHapiMcpBridge(
             approval_mode: 'prompt'
         };
     }
+    if (happyServer.toolNames.includes('link_issue')) {
+        // Same reasoning as link_pr above: link_issue mutates session
+        // metadata too, and is unconditionally registered (no opt-in toggle)
+        // — `approve` would let Codex short-circuit it before it ever
+        // reaches HAPI's own permission handler (bot review, hapi#2147,
+        // third follow-up on this same gap).
+        tools.link_issue = {
+            approval_mode: 'prompt'
+        };
+    }
 
     // Discovery shortlist only - same trust as skill_lookup / change_title.
     // Skipped under HAPI_DISABLE_PEER_TOOLS (tool is not registered then).
