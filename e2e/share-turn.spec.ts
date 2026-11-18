@@ -159,7 +159,7 @@ test('keeps long inline code aligned when exporting a wrapped message', async ({
 test('hides markdown table scrollbars in the shared image export', async ({ page }, testInfo) => {
     await page.goto('/e2e-fixtures/share-turn-fixture.html')
 
-    const sourceTableWrapper = page.getByTestId('source-turn').locator('.aui-md-table-wrapper').first()
+    const sourceTableWrapper = page.getByTestId('source-turn').locator('.aui-md-table-scroll').first()
     await sourceTableWrapper.evaluate((wrapper) => {
         const table = wrapper.querySelector<HTMLTableElement>('.aui-md-table')
         if (!table) throw new Error('Missing fixture table')
@@ -181,7 +181,7 @@ test('hides markdown table scrollbars in the shared image export', async ({ page
     await page.getByRole('button', { name: 'Open share preview' }).click()
     const exportMetricsPromise = page.waitForFunction(() => {
         const frame = document.querySelector<HTMLIFrameElement>('iframe[aria-hidden="true"]')
-        const wrapper = frame?.contentDocument?.querySelector<HTMLElement>('.hapi-share-export-root .aui-md-table-wrapper')
+        const wrapper = frame?.contentDocument?.querySelector<HTMLElement>('.hapi-share-export-root .aui-md-table-scroll')
         if (!wrapper) return null
         const style = getComputedStyle(wrapper)
         const scrollbarStyle = getComputedStyle(wrapper, '::-webkit-scrollbar')

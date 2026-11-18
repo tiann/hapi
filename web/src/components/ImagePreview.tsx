@@ -361,7 +361,7 @@ export function ImagePreview(props: {
                     onError={props.onThumbnailError}
                 />
                 {props.caption}
-                <span className="sr-only">{props.fileName}</span>
+                <span data-image-preview-filename="" className="sr-only">{props.fileName}</span>
             </button>
 
             <DialogPrimitive.Root

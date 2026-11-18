@@ -55,6 +55,7 @@ describe('ChatMarkdownImage', () => {
 
         await waitFor(() => expect(screen.getByRole('img', { name: 'Chart', hidden: false }).tagName).toBe('IMG'))
         expect(screen.getByRole('img', { name: 'Chart' })).toHaveAttribute('src', 'data:image/png;base64,cG5nLWJ5dGVz')
+        expect(screen.getByRole('img', { name: 'Chart' })).toHaveAttribute('data-hapi-markdown-src', 'images/chart.png')
         expect(readSessionFile).toHaveBeenCalledWith('session-1', 'images/chart.png', MAX_MARKDOWN_IMAGE_BYTES)
     })
 
