@@ -309,4 +309,45 @@ describe('claudeCommand resume identity', () => {
         expect(getLocalResumeTargetByAgentSessionIdMock).not.toHaveBeenCalled()
         expect(runClaudeMock).toHaveBeenNthCalledWith(1, { claudeArgs: ['--resume', claudeId, '--fork-session'] })
     })
+
+    it('preserves explicit --resume-session-at for terminal resume without --fork-session (HAPI reopen and passthrough)', async () => {
+        const boundaryUuid = '22222222-2222-4222-8222-222222222222'
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+        getLocalResumeTargetByAgentSessionIdMock.mockResolvedValueOnce({ target: owner(), historical: false })
+        getLocalResumeTargetByAgentSessionIdMock.mockResolvedValueOnce({ target: null, historical: false })
+        try {
+            await claudeCommand.run(createCommandContext(['--resume', claudeId, '--resume-session-at', boundaryUuid]))
+            await claudeCommand.run(createCommandContext(['--resume', claudeId, '--resume-session-at', boundaryUuid]))
+        } finally {
+            logSpy.mockRestore()
+        }
+
+        expect(runClaudeMock).toHaveBeenNthCalledWith(1, expect.objectContaining({
+            existingSessionId: 'hapi-owner',
+            resumeSessionId: claudeId,
+            startingMode: 'local',
+            startupResumeSessionAt: boundaryUuid
+        }))
+        const firstInvocationOptions = (runClaudeMock.mock.calls[0] as unknown as [{ claudeArgs?: string[] }] | undefined)?.[0]
+        expect(firstInvocationOptions?.claudeArgs).toBeUndefined()
+
+        expect(runClaudeMock).toHaveBeenNthCalledWith(2, {
+            claudeArgs: ['--resume', claudeId],
+            startupResumeSessionAt: boundaryUuid
+        })
+    })
+
+    it('keeps --resume-session-at on claudeArgs when --fork-session or runner spawn is used', async () => {
+        const boundaryUuid = '22222222-2222-4222-8222-222222222222'
+        await claudeCommand.run(createCommandContext(['--resume', claudeId, '--resume-session-at', boundaryUuid, '--fork-session']))
+        await claudeCommand.run(createCommandContext(['--resume', claudeId, '--resume-session-at', boundaryUuid, '--started-by', 'runner']))
+
+        expect(runClaudeMock).toHaveBeenNthCalledWith(1, {
+            claudeArgs: ['--resume', claudeId, '--resume-session-at', boundaryUuid, '--fork-session']
+        })
+        expect(runClaudeMock).toHaveBeenNthCalledWith(2, {
+            startedBy: 'runner',
+            claudeArgs: ['--resume', claudeId, '--resume-session-at', boundaryUuid]
+        })
+    })
 })

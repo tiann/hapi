@@ -261,6 +261,8 @@ export class SyncEngine {
     private readonly reopenTails = new Map<string, Promise<ReopenSessionResult>>()
     /** Serialize fork/rewind per session so concurrent native rollbacks cannot stack. */
     private readonly historyActionsInFlight = new Set<string>()
+    /** Track Claude rewind RPCs in flight on this hub process so live metadata writes wait for the RPC outcome. */
+    private readonly claudeRewindRpcsInFlight = new Map<string, string>()
     /** Pending #1489 wake retries after recoverable pre-delivery failures. */
     private readonly jobTerminalWakeRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
     private readonly jobTerminalWakeRetryAttempts = new Map<string, number>()
@@ -738,6 +740,7 @@ export class SyncEngine {
                 this.eventPublisher.emit(event)
                 const after = this.sessionCache.getSession(event.sessionId)
                 this.reconcileSteerDeliveryOwner(beforeMetadata, after)
+                this.reconcilePendingClaudeRewind(after)
                 if (after?.metadata && !this.hasSameAgentSessionIds(beforeMetadata, after.metadata)) {
                     if (!this.canRunCursorDedup(after)) {
                         return
@@ -755,6 +758,7 @@ export class SyncEngine {
             this.sessionCache.refreshSession(event.sessionId)
             const after = this.sessionCache.getSession(event.sessionId)
             this.reconcileSteerDeliveryOwner(beforeMetadata, after)
+            this.reconcilePendingClaudeRewind(after)
             if (after?.metadata && !this.hasSameAgentSessionIds(beforeMetadata, after.metadata)) {
                 if (!this.canRunCursorDedup(after)) {
                     return
@@ -1941,6 +1945,7 @@ export class SyncEngine {
     private reloadAll(): void {
         this.sessionCache.reloadAll()
         this.machineCache.reloadAll()
+        this.reconcilePendingClaudeRewinds()
         this.queuePersistedActiveCursorAutoBridgeReconcile()
     }
 
@@ -2180,6 +2185,14 @@ export class SyncEngine {
         const queued = this.store.messages.getUninvokedLocalMessages(session.id)
         if (queued.length > 0) {
             throw new Error('Session has queued messages')
+        }
+        // A pending Claude rewind means the hub transcript and the native
+        // boundary are mid-handoff: the hub truncated at RPC success and the
+        // CLI is re-arming the native boundary. Forking or rewinding here
+        // would copy rows the native side already dropped (the #1673 class of
+        // drift), so history actions wait for the next prompt to settle it.
+        if (session.metadata?.claudeRewind) {
+            throw new Error('A Claude rewind is pending; send a message to settle it first')
         }
     }
 
@@ -3186,7 +3199,9 @@ export class SyncEngine {
                 source.collaborationMode,
                 undefined,
                 undefined,
-                rpcResult.forkSession === true
+                rpcResult.forkSession === true,
+                undefined,
+                rpcResult.resumeSessionAt
             )
             if (spawn.type !== 'success') {
                 throw new Error(spawn.message)
@@ -3291,6 +3306,210 @@ export class SyncEngine {
         }
     }
 
+    /**
+     * Hub-restart recovery for interrupted Claude rewind RPCs: if a committed
+     * `claudeRewind` intent persisted in metadata still has its boundary in SQLite,
+     * apply the idempotent transcript cut before accepting CLI or user traffic.
+     */
+    private reconcilePendingClaudeRewinds(): void {
+        for (const session of this.sessionCache.getSessions()) {
+            this.reconcilePendingClaudeRewind(session)
+        }
+    }
+
+    /** Clear the in-flight RPC marker only if it still belongs to the same rewind request. */
+    private clearClaudeRewindInFlight(sessionId: string, messageLocalId: string): void {
+        if (this.claudeRewindRpcsInFlight.get(sessionId) === messageLocalId) {
+            this.claudeRewindRpcsInFlight.delete(sessionId)
+        }
+    }
+
+    /** Idempotently reconcile a persisted claudeRewind intent when no matching rewind RPC is active. */
+    private reconcilePendingClaudeRewind(session: Session | undefined): void {
+        if (!session) {
+            return
+        }
+        const stored = this.store.sessions.getSession(session.id)
+        const rawMetadata = asRecord(stored?.metadata)
+        const hasRawRewind = rawMetadata !== null && rawMetadata.claudeRewind !== undefined
+        const intent = session.metadata?.claudeRewind
+        if (!intent && !hasRawRewind) {
+            return
+        }
+        if (session.metadata?.conversationHistoryDiverged === true || rawMetadata?.conversationHistoryDiverged === true) {
+            return
+        }
+
+        const truncateFromLocalId = typeof intent?.truncateFromLocalId === 'string' && intent.truncateFromLocalId.length > 0
+            ? intent.truncateFromLocalId
+            : null
+        if (truncateFromLocalId && this.claudeRewindRpcsInFlight.get(session.id) === truncateFromLocalId) {
+            return
+        }
+        if (!truncateFromLocalId) {
+            if (session.metadata) {
+                this.markConversationHistoryDiverged(session.id, session.namespace)
+            } else if (rawMetadata && stored) {
+                const { claudeRewind: _invalid, ...rest } = rawMetadata
+                this.store.sessions.updateSessionMetadata(
+                    session.id,
+                    { ...rest, conversationHistoryDiverged: true } as unknown as Session['metadata'],
+                    stored.metadataVersion,
+                    session.namespace,
+                    { touchUpdatedAt: false }
+                )
+                this.sessionCache.refreshSession(session.id)
+            }
+            return
+        }
+
+        const states = this.store.messages.getLocalMessageStates(session.id, [truncateFromLocalId])
+        if (states.length === 0) {
+            // Already truncated (RPC reply, catch recovery, or prior startup).
+            // Record the commitment so the CLI's native proof can clear the
+            // intent instead of holding it until the next restart.
+            this.markClaudeRewindCutApplied(session.id, session.namespace, truncateFromLocalId)
+            return
+        }
+
+        const targetState = states[0]
+        // The cut is bounded by the intent's discardedThroughSeq: uninvoked
+        // rows queued after that bound are newer input the recovery cut must
+        // preserve, not evidence of an unsafe transcript. Intents without a
+        // bound (written by an older CLI or hub) cut unbounded, so any
+        // uninvoked row still blocks the cut.
+        const discardedThroughSeq = intent?.discardedThroughSeq
+        const uninvokedMessages = this.store.messages.getUninvokedLocalMessages(session.id)
+        const hasUninvokedMessages = discardedThroughSeq === undefined
+            ? uninvokedMessages.length > 0
+            : uninvokedMessages.some((message) => message.seq <= discardedThroughSeq)
+        const isClaudeSession = session.metadata?.flavor === undefined || session.metadata.flavor === 'claude'
+        if (!isClaudeSession || targetState?.invokedAt == null || hasUninvokedMessages) {
+            this.markConversationHistoryDiverged(session.id, session.namespace)
+            return
+        }
+
+        try {
+            this.truncateHubTranscriptFrom(session.id, session.namespace, truncateFromLocalId, intent?.discardedThroughSeq)
+        } catch {
+            this.markConversationHistoryDiverged(session.id, session.namespace)
+        }
+    }
+
+    /**
+     * Hub-side half of a rewind: delete the transcript from the keyed localId
+     * on, refresh derived state, and tell clients to refetch. Runs once, at
+     * rewind-RPC success — the native re-arm is the CLI's durable intent, so
+     * no later metadata-driven truncation pass can eat post-rewind turns.
+     * `discardedThroughSeq` is the newest row that existed when the rewind was
+     * dispatched: a delayed or recovery cut never deletes rows created later.
+     */
+    private truncateHubTranscriptFrom(
+        sessionId: string,
+        namespace: string,
+        truncateFromLocalId: string,
+        discardedThroughSeq?: number
+    ): void {
+        this.store.messages.truncateMessagesFromLocalId(sessionId, truncateFromLocalId, [], discardedThroughSeq)
+        this.scrubHistoryLocators(sessionId, namespace)
+        this.sessionCache.rebuildTodosFromTranscript(sessionId)
+        this.markClaudeRewindCutApplied(sessionId, namespace, truncateFromLocalId)
+        this.eventPublisher.emit({
+            type: 'messages-invalidated',
+            sessionId,
+            namespace,
+            reason: 'rewind',
+            truncateFromLocalId
+        })
+        this.sessionCache.refreshSession(sessionId)
+    }
+
+    /**
+     * Record on the intent that this hub has applied the transcript cut.
+     *
+     * The CLI owns the native branch and deletes the intent as soon as its
+     * proof (post-rewind input re-parented onto the kept boundary) lands. A
+     * transient disconnect can drop the rewind RPC reply, so the proof may be
+     * observed while the hub cut has not happened yet: the pending guard then
+     * skips reconciliation for this hub process, and the deletion would leave
+     * the transcript mismatched with no intent left to repair it. The marker
+     * is what lets the CLI tell the two apart - it only clears the intent once
+     * the cut is confirmed, so the timeout/reconnect reconcile still finds it.
+     */
+    private markClaudeRewindCutApplied(sessionId: string, namespace: string, truncateFromLocalId: string): void {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const session = this.sessionCache.getSessionByNamespace(sessionId, namespace)
+                ?? this.sessionCache.refreshSession(sessionId)
+            if (!session?.metadata) return
+            const intent = asRecord(session.metadata.claudeRewind)
+            if (intent === null || intent.truncateFromLocalId !== truncateFromLocalId || intent.hubCutApplied === true) return
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                { ...session.metadata, claudeRewind: { ...intent, hubCutApplied: true } },
+                session.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'success') {
+                this.sessionCache.refreshSession(sessionId)
+                // A CLI holding native proof clears the intent on this update;
+                // without the push it waits for its next write or a reconnect,
+                // keeping fork/rewind blocked on an already-applied cut.
+                this.emitCliSessionMetadataUpdate(sessionId)
+                return
+            }
+            if (result.result !== 'version-mismatch') return
+        }
+    }
+
+    /**
+     * A `claudeRewind` intent visible in hub metadata means the rewind is
+     * committed: the CLI's unknown-outcome settlement arms the native boundary
+     * as soon as it sees the intent (flush timeout released the local launch),
+     * so the hub transcript cut has to happen here too. The RPC reply can be a
+     * rejection that was produced after the write landed; deleting the intent
+     * then would leave the hub with turns the native side already dropped.
+     * Returns the truncate key when that committed intent matches the request.
+     */
+    private committedClaudeRewindLocalId(sessionId: string, messageLocalId: string): string | null {
+        const intent = asRecord(asRecord(this.sessionCache.refreshSession(sessionId)?.metadata)?.claudeRewind)
+        const truncateFromLocalId = typeof intent?.truncateFromLocalId === 'string' && intent.truncateFromLocalId.length > 0
+            ? intent.truncateFromLocalId
+            : null
+        return truncateFromLocalId === messageLocalId ? truncateFromLocalId : null
+    }
+
+    /**
+     * Drop a `claudeRewind` intent that the RPC outcome proved was never
+     * committed: this rewind's own target (`messageLocalId`), or a stale
+     * intent for an older target whose retrying metadata write lost its
+     * version race (that write's rejection finds nothing matching and lands
+     * here). Leaving one behind would arm a bogus native boundary on the next
+     * start and block history actions behind the pending-rewind guard.
+     */
+    private clearUncommittedClaudeRewind(sessionId: string, namespace: string): void {
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+            const session = this.sessionCache.getSessionByNamespace(sessionId, namespace)
+                ?? this.sessionCache.refreshSession(sessionId)
+            if (!session?.metadata) return
+            if (asRecord(session.metadata.claudeRewind) === null) return
+
+            const { claudeRewind: _cleared, ...nextMetadata } = session.metadata
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                nextMetadata,
+                session.metadataVersion,
+                namespace,
+                { touchUpdatedAt: false }
+            )
+            if (result.result === 'success') {
+                this.sessionCache.refreshSession(sessionId)
+                return
+            }
+            if (result.result !== 'version-mismatch') return
+        }
+    }
+
     private async rewindConversationUnlocked(
         sessionId: string,
         namespace: string,
@@ -3324,45 +3543,79 @@ export class SyncEngine {
 
         if (session.metadata?.flavor === 'opencode') return await this.rewindOpenCode(session, namespace, messageLocalId)
 
+        this.claudeRewindRpcsInFlight.set(sessionId, messageLocalId)
+        // The CLI persists this bound with its intent, so recovery after a
+        // lost reply or a hub restart cuts exactly what was discarded now.
+        const discardedThroughSeq = this.store.messages.getMaxSeq(sessionId)
         let rpcResult: Awaited<ReturnType<RpcGateway['rewindConversation']>>
         try {
-            rpcResult = await this.rpcGateway.rewindConversation(sessionId, { messageLocalId })
+            rpcResult = await this.rpcGateway.rewindConversation(sessionId, { messageLocalId, discardedThroughSeq })
         } catch (error) {
-            if (!(error instanceof RpcTargetMissingError)) {
-                this.markConversationHistoryDiverged(sessionId, namespace)
-                return {
-                    type: 'error',
-                    hydrateFailed: true,
-                    message: 'Rewind outcome is unknown; session history requires reconciliation'
+            // Crash window: the runner persists the durable rewind intent
+            // BEFORE it starts the restart teardown, and the native branch
+            // re-arms from that intent on the next start. If the intent for
+            // exactly this rewind is already visible here, the rewind is
+            // committed - truncate now (idempotent with the success path)
+            // instead of leaving the hub transcript diverged from the native
+            // side that will inevitably cut the same turns.
+            try {
+                this.sessionCache.refreshSession(sessionId)
+                const intent = this.getSession(sessionId)?.metadata?.claudeRewind as { truncateFromLocalId?: string } | undefined
+                if (intent?.truncateFromLocalId === messageLocalId) {
+                    try {
+                        this.truncateHubTranscriptFrom(sessionId, namespace, messageLocalId, discardedThroughSeq)
+                        return { type: 'success' }
+                    } catch {
+                        // Fall through: the diverged marker below is the honest state.
+                    }
                 }
-            }
-            return { type: 'error', message: error.message }
-        }
-
-        if (rpcResult?.success !== true) {
-            return {
-                type: 'error',
-                message: rpcResult?.error ?? 'Native rewind failed',
-                ...(rpcResult?.success === false && rpcResult.code ? { code: rpcResult.code } : {})
+                if (!(error instanceof RpcTargetMissingError)) {
+                    this.markConversationHistoryDiverged(sessionId, namespace)
+                    return {
+                        type: 'error',
+                        hydrateFailed: true,
+                        message: 'Rewind outcome is unknown; session history requires reconciliation'
+                    }
+                }
+                return { type: 'error', message: error.message }
+            } finally {
+                this.clearClaudeRewindInFlight(sessionId, messageLocalId)
             }
         }
 
         try {
-            this.store.messages.truncateMessagesFromLocalId(
-                sessionId,
-                rpcResult.truncateFromLocalId ?? messageLocalId,
-                rpcResult.messages ?? []
-            )
-            this.scrubHistoryLocators(sessionId, namespace)
-            this.sessionCache.rebuildTodosFromTranscript(sessionId)
-            this.eventPublisher.emit({
-                type: 'messages-invalidated',
-                sessionId,
-                namespace,
-                reason: 'rewind',
-                truncateFromLocalId: rpcResult.truncateFromLocalId ?? messageLocalId
-            })
-            this.sessionCache.refreshSession(sessionId)
+            if (rpcResult?.success !== true) {
+                // The write can land while the RPC reply is still a rejection
+                // (the CLI aborts the retrying write on a flush timeout but the
+                // first attempt persisted). A rejection then must not delete an
+                // intent that the CLI's local settlement already consumed:
+                // treat it as committed and reconcile the cut idempotently.
+                // (The lost-RPC catch above does the same.)
+                const committedLocalId = this.committedClaudeRewindLocalId(sessionId, messageLocalId)
+                if (committedLocalId) {
+                    // Nothing to truncate (already cut) or the boundary is gone:
+                    // the native side already dropped those turns either way.
+                    try {
+                        this.truncateHubTranscriptFrom(sessionId, namespace, committedLocalId, discardedThroughSeq)
+                    } catch {
+                        // Preserve the committed intent: the startup reconcile
+                        // owns the cut once the transcript is repairable again.
+                    }
+                    return { type: 'success' }
+                }
+                this.clearUncommittedClaudeRewind(sessionId, namespace)
+                return {
+                    type: 'error',
+                    message: rpcResult?.error ?? 'Native rewind failed',
+                    ...(rpcResult?.success === false && rpcResult.code ? { code: rpcResult.code } : {})
+                }
+            }
+        } finally {
+            this.clearClaudeRewindInFlight(sessionId, messageLocalId)
+        }
+
+        try {
+            this.truncateHubTranscriptFrom(sessionId, namespace, rpcResult.truncateFromLocalId ?? messageLocalId, discardedThroughSeq)
             return { type: 'success' }
         } catch (error) {
             // Native history already changed; refuse further history actions until repaired.
@@ -4080,7 +4333,9 @@ export class SyncEngine {
         startingMode?: 'remote' | 'pty',
         // Required for fresh machine spawns so the runner stamps the HAPI id on
         // argv before the first webhook (#1911 Major: unreapable window).
-        namespace?: string
+        namespace?: string,
+        /** Claude: resume the spawned child truncated to this entry uuid. */
+        resumeSessionAt?: string
     ): ReturnType<RpcGateway['spawnSession']> {
         // Fresh machine spawns historically omitted existingSessionId, so
         // buildCliArgs could not stamp --hapi-session-id / --existing-session-id.
@@ -4135,7 +4390,8 @@ export class SyncEngine {
                 copilotAgentMode,
                 startingMode,
                 undefined,
-                preallocated ? allocatedSessionId : undefined
+                preallocated ? allocatedSessionId : undefined,
+                resumeSessionAt
             )
         } catch (error) {
             // Ambiguous post-dispatch failure — keep the stub (child may exist).

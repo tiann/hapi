@@ -10,6 +10,17 @@ import { cn } from '@/lib/utils'
 import { ShareTurnButton } from './ShareTurnButton'
 import { MessageActionButton } from './MessageActionButton'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
+import type { SessionMetadataSummary } from '@/types/api'
+
+/**
+ * Hub rejects all conversation history mutations while a Claude rewind branch is
+ * unconfirmed or when native/hub transcripts have diverged.
+ */
+export function isConversationHistoryBlocked(
+    metadata: SessionMetadataSummary | null | undefined
+): boolean {
+    return Boolean(metadata?.conversationHistoryDiverged || metadata?.claudeRewind)
+}
 
 export type MessageHistoryAction = {
     kind: 'forkCurrent' | 'forkAtMessage' | 'rewind'

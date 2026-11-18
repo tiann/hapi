@@ -1855,7 +1855,10 @@ export function truncateMessagesFromLocalId(
         localId?: string | null
         createdAt?: number
         invokedAt?: number | null
-    }> = []
+    }> = [],
+    // Rows created after the rewind was dispatched have a higher seq and
+    // must survive a delayed or recovery cut.
+    upToSeq: number = Number.MAX_SAFE_INTEGER
 ): { deleted: number; inserted: number; epoch: number } {
     return db.transaction(() => {
         const target = prepareCached(db, `
@@ -1872,19 +1875,21 @@ export function truncateMessagesFromLocalId(
         const deletedRows = prepareCached(db, `
             SELECT id FROM messages
             WHERE session_id = ?
+              AND seq <= ?
               AND (
                 COALESCE(invoked_at, created_at) > ?
                 OR (COALESCE(invoked_at, created_at) = ? AND seq >= ?)
               )
-        `).all(sessionId, target.position_at, target.position_at, target.seq) as Array<{ id: string }>
+        `).all(sessionId, upToSeq, target.position_at, target.position_at, target.seq) as Array<{ id: string }>
         const deleted = prepareCached(db, `
             DELETE FROM messages
             WHERE session_id = ?
+              AND seq <= ?
               AND (
                 COALESCE(invoked_at, created_at) > ?
                 OR (COALESCE(invoked_at, created_at) = ? AND seq >= ?)
               )
-        `).run(sessionId, target.position_at, target.position_at, target.seq)
+        `).run(sessionId, upToSeq, target.position_at, target.position_at, target.seq)
         invalidateMessageContentSearchInjectedTurnCache(db, [sessionId])
         for (const row of deletedRows) removeMessageContentSearchIndex(db, row.id)
 

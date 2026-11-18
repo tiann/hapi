@@ -352,6 +352,30 @@ export const MetadataSchema = z.object({
     // Pi localId → append-only session entry id mapping. Pi entry ids are the
     // only stable native boundary accepted by its fork API.
     conversationHistoryEntryIds: z.record(z.string(), z.string().min(1)).optional(),
+    // Durable re-arm record for Claude's native rewind (--resume-session-at,
+    // v2.1.223+). Presence means the native branch is still pending: the hub
+    // already truncated at rewind-RPC success, and the CLI derives the
+    // boundary flag on every spawn until the dropped turns leave the native
+    // active chain. History RPCs (fork/rewind) must refuse while this is set.
+    // A malformed value (e.g. an older shape written by a previous hub) parses
+    // as undefined instead of failing MetadataSchema: the hub would otherwise
+    // drop the whole session metadata (flavor, machine, path, lifecycle).
+    claudeRewind: z.object({
+        targetLocalId: z.string().min(1),
+        truncateFromLocalId: z.string().min(1),
+        keepBoundary: z.string().min(1),
+        droppedPrompts: z.array(z.string().min(1)),
+        // Hub-owned confirmation that the transcript cut for this intent was
+        // applied. The CLI's native proof (the re-parented post-rewind input)
+        // only clears the intent once this marker is visible, so a lost RPC
+        // reply leaves the intent in place for the hub's timeout/reconnect
+        // reconcile instead of stranding the transcript mismatched.
+        hubCutApplied: z.boolean().optional(),
+        // Newest transcript seq at dispatch (echoed by the CLI from the RPC
+        // payload): the hub's cut never deletes rows created after it. Absent
+        // on intents written by an older CLI or hub, which cut unbounded.
+        discardedThroughSeq: z.number().int().nonnegative().optional()
+    }).optional().catch(undefined),
     // Latest Pi append-log entry observed by HAPI. Import uses it as the
     // incremental cursor so native history already streamed live is not copied twice.
     piHistoryLeafEntryId: z.string().optional(),
