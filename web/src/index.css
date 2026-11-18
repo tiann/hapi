@@ -672,10 +672,15 @@ html:has(.chat-scroll-y) #root {
 /*
  * Fallback for engines without content-visibility: layout is fully realized,
  * so keep the manual scroll-restore system free of native anchoring side
- * effects (#567).
+ * effects (#567). Guard with the exact negation of the block above — an
+ * unguarded selector here would override overflow-anchor: auto in supported
+ * browsers (same specificity, later rule wins) and reintroduce the #567
+ * behavior for everyone.
  */
-.happy-thread-messages > * {
-    overflow-anchor: none;
+@supports not ((content-visibility: auto) and (contain-intrinsic-size: auto 120px)) {
+    .happy-thread-messages > * {
+        overflow-anchor: none;
+    }
 }
 
 /* Keep the message selected from a session-content search result identifiable
