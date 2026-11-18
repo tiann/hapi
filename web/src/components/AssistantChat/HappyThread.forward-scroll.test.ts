@@ -62,6 +62,18 @@ describe('forward history load scroll anchoring', () => {
     })
 })
 
+describe('programmatic jump momentum kill', () => {
+    const source = readFileSync(resolve(__dirname, 'HappyThread.tsx'), 'utf8')
+
+    it('scrollToBottomInstant ends residual scroll momentum', () => {
+        const fn = source.slice(
+            source.indexOf('const scrollToBottomInstant = useCallback'),
+            source.indexOf('}, [])', source.indexOf('const scrollToBottomInstant = useCallback'))
+        )
+        expect(fn).toContain('cancelResidualScrollMomentum(viewport)')
+    })
+})
+
 describe('older-page load residual momentum kill', () => {
     const source = readFileSync(resolve(__dirname, 'HappyThread.tsx'), 'utf8')
 

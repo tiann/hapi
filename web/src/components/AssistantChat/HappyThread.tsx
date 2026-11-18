@@ -1760,6 +1760,12 @@ export function HappyThread(props: {
         if (viewport) {
             viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'instant' })
             lastScrollTopRef.current = viewport.scrollTop
+            // A programmatic relocation ends the gesture that caused it: the
+            // native fling momentum otherwise keeps scrolling from the NEW
+            // position (persisted-window re-entry swap -> jump to bottom ->
+            // residual upward fling carries the viewport deep into history,
+            // the same failure the older-page apply kill covers).
+            cancelResidualScrollMomentum(viewport)
         }
     }, [])
 
