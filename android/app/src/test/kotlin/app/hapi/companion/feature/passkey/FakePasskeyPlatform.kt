@@ -9,10 +9,7 @@ class FakePasskeyPlatform : PasskeyPlatform {
         """{"id":"Y3JlZA","rawId":"Y3JlZA","type":"public-key","authenticatorAttachment":null,""" +
             """"response":{"clientDataJSON":"e30","attestationObject":"e30"},"clientExtensionResults":{}}"""
     }
-    var getResult: (String) -> String = {
-        """{"id":"Y3JlZA","rawId":"Y3JlZA","type":"public-key",""" +
-            """"response":{"clientDataJSON":"e30","authenticatorData":"e30","signature":"e30"}}"""
-    }
+    var getResult: (String) -> String = { passkeyAssertion(null) }
 
     override suspend fun createPasskey(requestJson: String): String {
         createRequests += requestJson
@@ -25,14 +22,31 @@ class FakePasskeyPlatform : PasskeyPlatform {
     }
 }
 
-/** The production clients must validate these envelopes before platform UI. */
-fun boundPasskeyOptions(hub: String, operation: String): String {
+/** Hub-issued v1 registration options; production validates them before platform UI. */
+fun boundRegistrationOptions(hub: String): String {
     val b64 = java.util.Base64.getUrlEncoder().withoutPadding()
     val challenge = b64.encodeToString(
-        """{"v":1,"hub":"$hub","id":"${"a".repeat(43)}","nonce":"${"b".repeat(43)}","operation":"$operation","channel":"native"}""".toByteArray(),
+        """{"v":1,"hub":"$hub","id":"${"a".repeat(43)}","nonce":"${"b".repeat(43)}","operation":"register","channel":"native"}""".toByteArray(),
     )
-    if (operation == "login") return """{"challenge":"$challenge","rpId":"auth.hapi.run","allowCredentials":[{"id":"Y3JlZA","type":"public-key"}]}"""
-    val authority = java.net.URI(hub).rawAuthority.toByteArray()
-    val user = b64.encodeToString(byteArrayOf(2, authority.size.toByte()) + authority + ByteArray(16) { 1 })
+    val user = b64.encodeToString(passkeyUserHandle(hub))
     return """{"challenge":"$challenge","rp":{"id":"auth.hapi.run"},"user":{"id":"$user","name":"hapi@${java.net.URI(hub).rawAuthority}"}}"""
+}
+
+/** v2 discoverable user handle: [2, authority length, authority, 16-byte tag]. */
+fun passkeyUserHandle(hub: String): ByteArray {
+    val authority = java.net.URI(hub).rawAuthority.toByteArray()
+    return byteArrayOf(2, authority.size.toByte()) + authority + ByteArray(16) { 1 }
+}
+
+/** v2 long-address user handle: [2, 0, SHA-256(origin), 16-byte tag]. */
+fun opaquePasskeyUserHandle(hub: String): ByteArray =
+    byteArrayOf(2, 0) + java.security.MessageDigest.getInstance("SHA-256").digest(hub.toByteArray()) + ByteArray(16) { 1 }
+
+/** An `AuthenticationResponseJSON` whose credential carries [userHandle]. */
+fun passkeyAssertion(userHandle: ByteArray?): String {
+    val handle = userHandle?.let {
+        ""","userHandle":"${java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(it)}""""
+    }.orEmpty()
+    return """{"id":"Y3JlZA","rawId":"Y3JlZA","type":"public-key",""" +
+        """"response":{"clientDataJSON":"e30","authenticatorData":"e30","signature":"e30"$handle}}"""
 }

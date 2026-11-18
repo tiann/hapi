@@ -392,4 +392,65 @@ describe('SSEManager agy catalog announcements', () => {
         expect(sessionAlpha).toHaveLength(0)
         expect(globalBeta).toHaveLength(0)
     })
+
+    it('serializes each broadcast once and shares the encoded payload across live and replayed subscribers', () => {
+        const manager = new SSEManager(0, new VisibilityTracker())
+        const payloadsA: Array<string | undefined> = []
+        const payloadsB: Array<string | undefined> = []
+
+        const sub1 = manager.subscribe({
+            id: 'a',
+            namespace: 'alpha',
+            all: true,
+            send: (_event, _eventId, serialized) => { payloadsA.push(serialized) },
+            sendHeartbeat: () => {}
+        })
+        manager.subscribe({
+            id: 'b',
+            namespace: 'alpha',
+            all: true,
+            send: (_event, _eventId, serialized) => { payloadsB.push(serialized) },
+            sendHeartbeat: () => {}
+        })
+        expect(sub1.resume).toBe('gap')
+
+        const stringifyCallsBefore = JSON.stringify
+        let calls = 0
+        JSON.stringify = ((...args: Parameters<typeof JSON.stringify>) => {
+            calls += 1
+            return stringifyCallsBefore(...args)
+        }) as typeof JSON.stringify
+        try {
+            const seenCursorIds: string[] = []
+            manager.subscribe({
+                id: 'c',
+                namespace: 'alpha',
+                all: true,
+                send: (_event, id) => { if (id) seenCursorIds.push(id) },
+                sendHeartbeat: () => {}
+            })
+            const event1: SyncEvent = { type: 'session-updated', sessionId: 's-1', namespace: 'alpha' }
+            const event2: SyncEvent = { type: 'session-updated', sessionId: 's-2', namespace: 'alpha' }
+            manager.broadcast(event1)
+            manager.broadcast(event2)
+
+            expect(calls).toBe(2)
+            expect(payloadsA).toEqual([stringifyCallsBefore(event1), stringifyCallsBefore(event2)])
+            expect(payloadsB).toEqual([stringifyCallsBefore(event1), stringifyCallsBefore(event2)])
+
+            const reconnect = manager.subscribe({
+                id: 'd',
+                namespace: 'alpha',
+                all: true,
+                resumeFrom: seenCursorIds[0],
+                send: () => {},
+                sendHeartbeat: () => {}
+            })
+            expect(calls).toBe(2)
+            expect(reconnect.resume).toBe('ok')
+            expect(reconnect.replay.map((entry) => entry.serialized)).toEqual([stringifyCallsBefore(event2)])
+        } finally {
+            JSON.stringify = stringifyCallsBefore
+        }
+    })
 })

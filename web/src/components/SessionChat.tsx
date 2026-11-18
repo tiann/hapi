@@ -676,6 +676,8 @@ type SessionChatProps = {
     hasMoreMessages: boolean
     hasMoreNewerMessages?: boolean
     isSyncingTail: boolean
+    /** Cached re-entry: the authoritative latest-page fetch is still in flight. */
+    isCatchingUpFromCache: boolean
     isLoadingMoreMessages: boolean
     isSending: boolean
     viewMode: 'tail' | 'history'
@@ -1547,6 +1549,7 @@ function SessionChatInner(props: SessionChatProps) {
     ), [agentFlavor, cursorModelEffortOptions, props.session.model])
     const {
         abortSession,
+        isAborting,
         switchSession,
         setPermissionMode,
         setCollaborationMode,
@@ -2425,6 +2428,7 @@ function SessionChatInner(props: SessionChatProps) {
                         onJumpToTail={props.onJumpToTail}
                         readThroughRevision={!terminalVisible && props.viewMode === 'tail' ? props.readThroughRevision : undefined}
                         isSyncingTail={props.isSyncingTail}
+                        isCatchingUpFromCache={props.isCatchingUpFromCache}
                         messagesWarning={props.messagesWarning}
                         hasMoreMessages={props.hasMoreMessages}
                         hasMoreNewerMessages={props.hasMoreNewerMessages}
@@ -2532,6 +2536,7 @@ function SessionChatInner(props: SessionChatProps) {
                         key={`composer-${props.session.id}`}
                         sessionId={props.session.id}
                         canRestoreAttachments={props.session.active}
+                        isAborting={isAborting}
                         attachmentsEnabled={attachmentAdapter !== undefined}
                         onUploadDraftSnapshot={(text, attachments) => {
                             uploadDraftSnapshotRef.current = { text, attachments }

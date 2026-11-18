@@ -577,6 +577,15 @@ describe('createSpawnDeduplicator', () => {
 })
 
 describe('classifyRecoveredProcessGeneration', () => {
+    it('uses the process table liveness evidence without probing the PID again', () => {
+        const pid = 2147483647
+        const record = { processStartMarker: 'expected' }
+        expect(probeRecoveredProcessGeneration(pid, record, 'expected', true)).toBe('verified')
+        expect(probeRecoveredProcessGeneration(pid, record, null, true)).toBe('quarantined')
+        expect(probeRecoveredProcessGeneration(pid, record, 'different', true)).toBe('exited')
+        expect(probeRecoveredProcessGeneration(pid, record, 'expected')).toBe('exited')
+    })
+
     it('releases a recovered record from a different boot even when its PID is alive and its marker is unavailable', () => {
         expect(classifyRecoveredProcessGeneration(true, null, 'old-marker', {
             pid: 123, threadGroupId: 123,

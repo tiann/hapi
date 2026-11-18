@@ -73,7 +73,7 @@ function AppInner() {
     const { t } = useTranslation()
     const { serverUrl, baseUrl, setServerUrl, clearServerUrl } = useServerUrl()
     const { authSource, isLoading: isAuthSourceLoading, setAccessToken, setPasskeySession } = useAuthSource(baseUrl)
-    const { token, api, isLoading: isAuthLoading, error: authError, needsBinding, bind } = useAuth(authSource, baseUrl)
+    const { token, api, isLoading: isAuthLoading, error: authError, needsBinding, bind, handleSseClosed } = useAuth(authSource, baseUrl)
     const [titleSuggestionAvailable, setTitleSuggestionAvailable] = useState(false)
     const goBack = useAppGoBack()
     const pathname = useLocation({ select: (location) => location.pathname })
@@ -320,7 +320,10 @@ function AppInner() {
         if (!isFirstConnectRef.current) {
             reportSseDisconnect(reason)
         }
-    }, [reportSseDisconnect])
+        if (reason === 'closed') {
+            handleSseClosed()
+        }
+    }, [handleSseClosed, reportSseDisconnect])
 
     const handleSseEvent = useCallback((event: SyncEvent) => {
         if (event.type !== 'messages-invalidated') {

@@ -11,7 +11,7 @@ import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * Wire shapes of the native passkey flow (`docs/api/client-contract/auth.md`
- * §Native passkeys) and the RP-ID guard every ceremony runs first.
+ * §Native passkeys) and the RP-ID guard registration runs first.
  */
 class PasskeyApiTest {
 
@@ -22,15 +22,6 @@ class PasskeyApiTest {
           "challenge": "Y2hhbGxlbmdl",
           "pubKeyCredParams": [{"type": "public-key", "alg": -7}, {"type": "public-key", "alg": -257}],
           "attestation": "none"
-        }
-    """.trimIndent()
-
-    private val requestOptions = """
-        {
-          "challenge": "Y2hhbGxlbmdl",
-          "rpId": "auth.hapi.run",
-          "allowCredentials": [{"type": "public-key", "id": "Y3JlZA"}],
-          "userVerification": "required"
         }
     """.trimIndent()
 
@@ -122,11 +113,9 @@ class PasskeyApiTest {
     // ------------------------------------------------------------- rp guard --
 
     @Test
-    fun `reads the declared relying party from both option shapes`() {
+    fun `reads the declared relying party from creation options`() {
         assertEquals("auth.hapi.run", NativePasskeys.creationRpId(creationOptions))
-        assertEquals("auth.hapi.run", NativePasskeys.requestRpId(requestOptions))
         NativePasskeys.requireCreationRpId(creationOptions)
-        NativePasskeys.requireRequestRpId(requestOptions)
     }
 
     @Test
@@ -139,12 +128,12 @@ class PasskeyApiTest {
         assertEquals("evil.example", mismatch.actual)
 
         val missing = assertFailsWith<PasskeyRpMismatchException> {
-            NativePasskeys.requireRequestRpId("""{"challenge":"e30"}""")
+            NativePasskeys.requireCreationRpId("""{"challenge":"e30"}""")
         }
         assertNull(missing.actual)
 
         assertFailsWith<PasskeyRpMismatchException> {
-            NativePasskeys.requireRequestRpId("not json")
+            NativePasskeys.requireCreationRpId("not json")
         }
     }
 

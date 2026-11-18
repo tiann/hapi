@@ -208,9 +208,13 @@ export function SessionRowSummary(props: {
     // Presence represents foreground work and connection state on the agent
     // icon. Connected sessions with only background work are waiting from the
     // foreground's perspective; the title-side blue dot owns that state.
+    // Derived tool work (hub transcript sweep) and an attached job both
+    // represent work that outlives the `thinking` flag, so they render
+    // working too.
+    const derivedWork = s.derivedToolWork === true
     const isRunning = s.active && s.thinking
     const isBackgroundOnly = s.active && !s.thinking && (s.backgroundTaskCount ?? 0) > 0
-    const presence: 'working' | 'waiting' | 'stopped' = isRunning || attachedJob
+    const presence: 'working' | 'waiting' | 'stopped' = isRunning || attachedJob || derivedWork
         ? 'working'
         : s.active
             ? 'waiting'
@@ -229,8 +233,10 @@ export function SessionRowSummary(props: {
     // the spinner rather than hiding real work behind the request symbol.
     // Background-only work gets a static title dot so the spinner remains a
     // stable "foreground turn running" signal. An attached job keeps its own
-    // running spinner because it outlives the agent and is independently visible.
-    const hasForegroundWork = Boolean(attachedJob) || isRunning
+    // running spinner because it outlives the agent and is independently
+    // visible; hub-derived open tool work (autonomous rounds) spins for the
+    // same reason — the transcript proves the agent is mid-call.
+    const hasForegroundWork = Boolean(attachedJob) || derivedWork || isRunning
     // At-rest unread styling applies to background-only work too: its title dot
     // is static, unlike the foreground spinner that carries unread by color.
     const emphasizeUnread = isUnread && !hasForegroundWork

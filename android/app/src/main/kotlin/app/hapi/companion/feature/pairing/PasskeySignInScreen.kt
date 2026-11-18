@@ -18,6 +18,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -28,24 +29,28 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import app.hapi.companion.R
+import app.hapi.companion.feature.passkey.PasskeyIssue
 
 /**
- * Discover the Hub without typing, confirm its address, then perform a fresh
- * Hub-bound login. Manual entry remains available for opaque/long addresses.
+ * One system passkey sheet signs in: the selected credential names its Hub.
+ * Manual entry stays available for an explicit Hub, and opens by itself when
+ * the chosen passkey cannot name its Hub (long address).
  */
 @Composable
 fun PasskeySignInScreen(
     state: PairingUiState,
     initialHubUrl: String,
-    onSignIn: (hubUrl: String) -> Unit,
-    onDiscover: () -> Unit,
+    /** null = let the selected passkey name its Hub. */
+    onSignIn: (hubUrl: String?) -> Unit,
     onBack: () -> Unit,
     onDismissError: () -> Unit,
 ) {
     var hubUrl by rememberSaveable { mutableStateOf(initialHubUrl) }
     var manual by rememberSaveable { mutableStateOf(false) }
     val validating = state is PairingUiState.Validating
-    val discovered = (state as? PairingUiState.PasskeyHubFound)?.hubUrl
+    val addressRequired =
+        ((state as? PairingUiState.Error)?.error as? PairingError.Passkey)?.issue == PasskeyIssue.HubAddressRequired
+    LaunchedEffect(addressRequired) { if (addressRequired) manual = true }
 
     Surface(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -87,20 +92,8 @@ fun PasskeySignInScreen(
 
             PairingStatus(state = state, onDismissError = onDismissError)
 
-            if (!manual && discovered != null) {
-                Text(discovered, style = MaterialTheme.typography.titleMedium)
-                Text(stringResource(R.string.passkey_discovery_confirm))
-                Spacer(modifier = Modifier.height(16.dp))
-            }
-
             Button(
-                onClick = {
-                    when {
-                        manual -> onSignIn(hubUrl)
-                        discovered != null -> onSignIn(discovered)
-                        else -> onDiscover()
-                    }
-                },
+                onClick = { onSignIn(if (manual) hubUrl else null) },
                 enabled = !validating && (!manual || hubUrl.isNotBlank()),
                 modifier = Modifier.fillMaxWidth(),
             ) {

@@ -162,10 +162,8 @@ The app supports multiple hubs with one active selection. See the
 - **Passkeys:** Settings → Hubs → Passkeys manages this namespace's credentials.
   Web and App credentials share RP ID `auth.hapi.run`: a credential created in
   either client signs in to the same Hub from both. Configure the Hub's
-  `HAPI_PUBLIC_URL` as its canonical HTTPS origin. Native sign-in uses
-  `/health` → `POST /api/passkey/login/options {client:"native"}` → validate
-  RP/Hub/operation/channel → system sheet → verify. The allowlist limits the
-  sheet to this Hub's valid credentials; `404 no_passkeys` falls back to pairing.
+  `HAPI_PUBLIC_URL` as its canonical HTTPS origin. Native sign-in is one
+  system sheet; see [Address-free Passkey sign-in](#address-free-passkey-sign-in).
   A passkey session replaces the access token in secure per-Hub storage;
   silent re-auth exchanges `{passkeySession}` and treats its 401 as terminal.
   Registration also validates the Hub-bound user handle before system UI.
@@ -778,12 +776,30 @@ Local pending reads persist before the dot clears and retry when connectivity re
 
 ### Address-free Passkey sign-in
 
-The pairing Passkey entry first runs a local resident-credential selection to
-recover the Hub from its v2 user handle, without HTTP requests. Confirm the
-recovered HTTPS origin, then run the existing health/options/Hub-bound assertion
-flow. The discovery assertion is never sent to the Hub and never authorizes a
-session. Registration validates the handle's Hub origin (or hash for long
-addresses) before opening system UI. The handle reserves 16 bytes for a stable
-account tag and fits 46 ASCII authority bytes; longer addresses retain manual
-sign-in. Re-register credentials to enable discovery. No central server is
-required; the credential must be available through the local/synced provider.
+Pairing → **Sign in with a Passkey** runs one system ceremony; there is no
+options request and no discovery/confirm step:
+
+1. The app self-issues the challenge
+   `{"v":2,"operation":"login","channel":"native","iat":<epoch ms>,"nonce":<32 random bytes, base64url>}`
+   (`PasskeyAssertionRequest.nativeLogin(now:)`, mirroring
+   `createPasskeyNativeLoginChallenge` in `shared/src/passkey.ts`) and asks for
+   a resident credential on RP `auth.hapi.run` with user verification
+   required, no allow list, and no extensions.
+2. The selected credential's v2 user handle names the Hub (HTTPS implicit).
+3. `GET /health` on that Hub, then `POST /api/passkey/login/verify {response}`.
+   The Hub accepts the self-issued challenge once, within five minutes of
+   `iat` (one minute of clock skew), and verifies the assertion itself; the
+   handle is only a locator.
+
+A handle that does not name its Hub (long addresses use an opaque, hash-bound
+handle; the handle holds 46 ASCII authority bytes plus a 16-byte account tag)
+fails with `PairingFailure.passkeyHubAddressRequired` before any request, and
+the app opens manual passkey entry. With a typed Hub URL the order is
+`/health` first (no prompt for an unreachable Hub), then the ceremony; the
+handle must belong to that Hub (`PairingFailure.passkeyWrongHub` otherwise),
+then verify. The self-issued challenge is not Hub-bound, so an assertion is
+only ever posted to the Hub its handle names; credentials with pre-v2 handles
+cannot be matched and must be re-registered. Registration still uses Hub-issued, Hub-bound v1 challenges and
+validates the handle's Hub origin (or hash) before opening system UI. No
+central server is required; the credential must be available through the
+local/synced provider.

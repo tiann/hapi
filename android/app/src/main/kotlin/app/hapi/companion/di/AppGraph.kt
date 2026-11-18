@@ -197,7 +197,6 @@ class AppGraph(context: Context) {
             override suspend fun health(): HubHealthResponse = api.health()
             override suspend fun authenticate(accessToken: String): AuthResponse =
                 api.authenticate(accessToken)
-            override suspend fun passkeyLoginOptions(): String = api.passkeyLoginOptions()
             override suspend fun passkeyLoginVerify(response: JsonObject): PasskeyLoginResponse =
                 api.passkeyLoginVerify(response)
         }

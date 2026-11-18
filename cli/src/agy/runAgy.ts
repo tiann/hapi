@@ -15,6 +15,7 @@ import { getInvokedCwd } from '@/utils/invokedCwd';
 import type { SessionEffort, SessionModel } from '@/api/types';
 import { splitAgyModelSelection } from '@hapi/protocol';
 import { listAgyModels } from '@/modules/common/agyModels';
+import { parseAgySwarmBoardCommand } from './agySwarmBoard';
 import { normalizeAgyModelSelection } from './utils/agyModelSelection';
 
 export async function runAgy(opts: {
@@ -163,6 +164,10 @@ export async function runAgy(opts: {
                 model: sessionModel,
                 effort: sessionEffort,
             };
+            if (parseAgySwarmBoardCommand(formattedText)) {
+                messageQueue.pushIsolated(formattedText, mode, localId);
+                return;
+            }
             messageQueue.push(formattedText, mode, localId);
         });
 

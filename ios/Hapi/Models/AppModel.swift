@@ -119,12 +119,13 @@ final class AppModel {
         return paired
     }
 
-    /// URL-only sign-in with a native passkey (health → login options →
-    /// system sheet → verify); the hub is then authenticated by its passkey
-    /// session. Throws ``PairingFailure``, or `PasskeyError.canceled` when the
-    /// user dismissed the sheet.
+    /// Sign-in with a native passkey in one system sheet (self-issued
+    /// challenge → hub from the passkey, or the given `hubUrl` → health →
+    /// verify); the hub is then authenticated by its passkey session. Throws
+    /// ``PairingFailure``, or `PasskeyError.canceled` when the user dismissed
+    /// the sheet.
     @discardableResult
-    func signInWithPasskey(hubUrl: String) async throws -> PairedHub {
+    func signInWithPasskey(hubUrl: String? = nil) async throws -> PairedHub {
         let paired = try await pairingService.signInWithPasskey(
             rawHubUrl: hubUrl,
             authenticator: PlatformPasskeyAuthenticator()

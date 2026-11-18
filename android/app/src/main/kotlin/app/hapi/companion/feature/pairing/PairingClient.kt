@@ -18,9 +18,6 @@ interface PairingClient {
     /** `POST /api/auth` — access-token → JWT exchange; 401 = token rejected. */
     suspend fun authenticate(accessToken: String): AuthResponse
 
-    /** `POST /api/passkey/login/options` `{"client":"native"}` — raw options JSON; 404 `no_passkeys`. */
-    suspend fun passkeyLoginOptions(): String
-
     /** `POST /api/passkey/login/verify` — JWT + passkey session; 401 on a bad assertion. */
     suspend fun passkeyLoginVerify(response: JsonObject): PasskeyLoginResponse
 }

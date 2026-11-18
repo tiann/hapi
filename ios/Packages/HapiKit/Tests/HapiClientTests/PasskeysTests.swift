@@ -25,14 +25,6 @@ struct PasskeysTests {
         """
     }
 
-    private func assertionOptionsJSON(rpId: String = "auth.hapi.run", credentials: [String] = ["Y3JlZA"]) -> String {
-        let allowed = credentials.map { "{\"id\":\"\($0)\",\"type\":\"public-key\",\"transports\":[\"internal\"]}" }
-        return """
-        {"challenge":"\(Base64URL.encode(boundPasskeyChallenge()))","rpId":"\(rpId)",
-         "allowCredentials":[\(allowed.joined(separator: ","))],"userVerification":"required"}
-        """
-    }
-
     // MARK: - base64url
 
     @Test func base64urlRoundTripsWithoutPadding() throws {
@@ -80,25 +72,34 @@ struct PasskeysTests {
         }
     }
 
-    @Test func assertionRequestDecodesAllowList() throws {
-        let options = try HapiJSON.decoder.decode(
-            PasskeyAssertionOptions.self,
-            from: Data(assertionOptionsJSON(credentials: ["Y3JlZDE"]).utf8)
-        )
-        let request = try PasskeyAssertionRequest(options: options, hubURL: URL(string: testHubURLString)!)
+    // MARK: - Native login challenge
+
+    /// Mirrors `parsePasskeyNativeLoginChallenge` in `shared/src/passkey.ts`.
+    @Test func nativeLoginChallengeMatchesHubFormat() throws {
+        let now = Date(timeIntervalSince1970: 1_700_000_000.123_9)
+        let request = PasskeyAssertionRequest.nativeLogin(now: now)
         #expect(request.relyingPartyID == "auth.hapi.run")
-        #expect(request.challenge == boundPasskeyChallenge())
-        #expect(request.allowedCredentialIDs == [Data("cred1".utf8)])
+        let json = try #require(try JSONSerialization.jsonObject(with: request.challenge) as? [String: Any])
+        #expect(Set(json.keys) == ["v", "operation", "channel", "iat", "nonce"])
+        #expect(json["v"] as? Int == 2)
+        #expect(json["operation"] as? String == "login")
+        #expect(json["channel"] as? String == "native")
+        // Integer epoch milliseconds (the Hub requires a safe integer).
+        #expect(json["iat"] as? Int64 == 1_700_000_000_123)
+        #expect(!String(decoding: request.challenge, as: UTF8.self).contains("."))
+        let nonce = try #require(json["nonce"] as? String)
+        #expect(nonce.count == 43)
+        #expect(nonce.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") })
+        #expect(Base64URL.decode(nonce)?.count == 32)
+        // The Hub base64url-decodes clientDataJSON.challenge back to these bytes.
+        #expect(Base64URL.decode(Base64URL.encode(request.challenge)) == request.challenge)
     }
 
-    @Test func assertionRejectsForeignRelyingParty() throws {
-        let options = try HapiJSON.decoder.decode(
-            PasskeyAssertionOptions.self,
-            from: Data(assertionOptionsJSON(rpId: "evil.example").utf8)
-        )
-        #expect(throws: PasskeyError.relyingPartyMismatch("evil.example")) {
-            _ = try PasskeyAssertionRequest(options: options, hubURL: URL(string: testHubURLString)!)
-        }
+    @Test func nativeLoginChallengesAreFresh() {
+        let first = PasskeyAssertionRequest.nativeLogin(now: testNow)
+        let second = PasskeyAssertionRequest.nativeLogin(now: testNow)
+        #expect(first.challenge != second.challenge)
+        #expect(first != second)
     }
 
     // MARK: - Response encoding
@@ -202,18 +203,6 @@ struct PasskeysTests {
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer \(freshJWT())")
         let body = try #require(request.httpBody.flatMap { String(data: $0, encoding: .utf8) })
         #expect(body == "{\"client\":\"native\"}")
-    }
-
-    @Test func loginOptionsIsUnauthenticatedAndMapsNoPasskeys() async throws {
-        let harness = try makeHarness(paired: false)
-        await harness.performer.enqueue(status: 404, json: "{\"error\":\"no_passkeys\"}")
-        let error = await capturedError { try await harness.client.passkeyLoginOptions() }
-        #expect(error as? PasskeyError == .noPasskeys)
-        let requests = await harness.performer.requests
-        let request = try #require(requests.first)
-        #expect(request.url?.absoluteString == "\(testHubURLString)/api/passkey/login/options")
-        #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
-        #expect(request.httpBody.flatMap { String(data: $0, encoding: .utf8) } == "{\"client\":\"native\"}")
     }
 
     @Test func loginVerifyPostsResponseEnvelope() async throws {
