@@ -8,6 +8,7 @@ import {
     CursorMigrateToAcpRequestSchema,
     DeleteUploadRequestSchema,
     ForkConversationRequestSchema,
+    ForkPreviewRequestSchema,
     BranchConversationRequestSchema,
     ImplementCodexPlanRequestSchema,
     InitChunkedUploadRequestSchema,
@@ -1034,12 +1035,42 @@ export function createSessionsRoutes(
             sessionResult.sessionId,
             c.get('namespace'),
             parsed.data.messageLocalId,
-            parsed.data.latestCompleted
+            parsed.data.latestCompleted,
+            parsed.data.boundary
+        )
+        if (result.type === 'error') {
+            return c.json({ error: result.message, ...(result.code ? { code: result.code } : {}) }, 409)
+        }
+        return c.json({ sessionId: result.sessionId })
+    })
+
+    app.post('/sessions/:id/fork-preview', async (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        const sessionResult = requireSessionFromParam(c, engine)
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
+        const body = await c.req.json().catch(() => null)
+        const parsed = ForkPreviewRequestSchema.safeParse(body)
+        if (!parsed.success) {
+            return c.json({ error: 'Invalid body' }, 400)
+        }
+
+        const result = await engine.forkPreview(
+            sessionResult.sessionId,
+            c.get('namespace'),
+            parsed.data.intent,
+            parsed.data.messageLocalId
         )
         if (result.type === 'error') {
             return c.json({ error: result.message }, 409)
         }
-        return c.json({ sessionId: result.sessionId })
+        return c.json(result.preview)
     })
 
     app.post('/sessions/:id/rewind', async (c) => {
@@ -1048,21 +1079,26 @@ export function createSessionsRoutes(
             return engine
         }
 
-        const sessionResult = requireSessionFromParam(c, engine, { requireActive: true })
-        if (sessionResult instanceof Response) {
-            return sessionResult
-        }
-
         const body = await c.req.json().catch(() => null)
         const parsed = RewindConversationRequestSchema.safeParse(body)
         if (!parsed.success) {
             return c.json({ error: 'Invalid body' }, 400)
         }
 
+        // Every rewind boundary token is minted on an active source, so a
+        // confirm arriving on an inactive one is a moved boundary the engine
+        // must re-check (boundary_moved refresh), mirroring the fork route.
+        // Legacy token-less rewinds keep the session_inactive 409.
+        const sessionResult = requireSessionFromParam(c, engine, { requireActive: !parsed.data.boundary })
+        if (sessionResult instanceof Response) {
+            return sessionResult
+        }
+
         const result = await engine.rewindConversation(
             sessionResult.sessionId,
             c.get('namespace'),
-            parsed.data.messageLocalId
+            parsed.data.messageLocalId,
+            parsed.data.boundary
         )
         if (result.type === 'error') {
             return c.json({

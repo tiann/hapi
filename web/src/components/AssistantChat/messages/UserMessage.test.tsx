@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { PropsWithChildren } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/lib/i18n-context'
@@ -41,9 +41,9 @@ vi.mock('@/components/ui/ConfirmDialog', () => ({
 }))
 
 function mount() { render(<I18nProvider><HappyUserMessage /></I18nProvider>) }
-async function confirmFork() {
+async function requestFork() {
     fireEvent.click(screen.getByRole('button', { name: 'Fork' }))
-    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Fork' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
     await waitFor(() => expect(onFork).toHaveBeenCalledTimes(1))
 }
 
@@ -73,7 +73,7 @@ describe('user-only completed fork boundary', () => {
         expect(boundary).toBe(state.message.id)
         mount()
         expect(screen.queryByRole('button', { name: 'Rewind' })).toBeNull()
-        await confirmFork()
+        await requestFork()
         expect(onFork).toHaveBeenCalledWith('local-interrupted')
     })
 
@@ -115,7 +115,7 @@ describe('user-only completed fork boundary', () => {
     it('retains current-fork semantics for the same card when idle', async () => {
         state.thread.isRunning = false
         mount()
-        await confirmFork()
+        await requestFork()
         expect(onFork.mock.calls[0]).toEqual([])
     })
 
@@ -125,7 +125,7 @@ describe('user-only completed fork boundary', () => {
         ctx.allowInactiveFork = true
         mount()
         expect(screen.queryByRole('button', { name: 'Rewind' })).toBeNull()
-        await confirmFork()
+        await requestFork()
         expect(onFork.mock.calls[0]).toEqual([])
     })
 
@@ -137,7 +137,7 @@ describe('user-only completed fork boundary', () => {
         ctx.metadata.capabilities.conversationHistory.forkAtMessage = false
         try {
             mount()
-            await confirmFork()
+            await requestFork()
         } finally { ctx.metadata.capabilities.conversationHistory.forkCurrent = true }
     })
 
