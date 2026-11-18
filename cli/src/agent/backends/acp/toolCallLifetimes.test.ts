@@ -196,7 +196,13 @@ describe('AcpToolCallLifetimes', () => {
         // The earlier request died with the old process: the re-ask gets its own id.
         expect(lifetimes.allocateRequestId(stored)).toMatch(new RegExp(`^${stored}~`));
         expect(lifetimes.resolve('shell:0', 'terminal', childToolCallScope('ses_child'))).toBe('shell:0#S');
-        // A fresh start comes from the new process: never the stored lifetime.
+        // The call that re-asked announces itself next: it stays on the stored card.
+        expect(lifetimes.resolve('question:0', 'start')).toBe(stored);
+    });
+
+    it('opens a new lifetime for a fresh start after a restore without a preceding request', () => {
+        const lifetimes = new AcpToolCallLifetimes(sequentialIds());
+        lifetimes.restore([{ agentToolCallId: 'question:0', scope: 'main', id: 'question:0#S' }]);
         expect(lifetimes.resolve('question:0', 'start')).toBe('question:0#L1');
     });
 
@@ -307,5 +313,58 @@ describe('AcpToolCallLifetimes', () => {
         });
         lifetimes.resolve('shell:0', 'start');
         expect(opened).toEqual(['shell:0#L1']);
+    });
+
+    it('keeps a request-first call on its restored lifetime through start and result', () => {
+        const lifetimes = new AcpToolCallLifetimes(sequentialIds());
+        lifetimes.restore([{ agentToolCallId: 'question:0', scope: 'main', id: 'question:0#S' }]);
+        lifetimes.beginGeneration();
+        expect(lifetimes.resolve('question:0', 'request')).toBe('question:0#S');
+        expect(lifetimes.resolve('question:0', 'start')).toBe('question:0#S');
+        expect(lifetimes.resolve('question:0', 'terminal')).toBe('question:0#S');
+        // Finished: the next start is a new call.
+        expect(lifetimes.resolve('question:0', 'start')).toBe('question:0#L1');
+    });
+
+    it('keeps a request-first call on an answered lifetime through start and result', () => {
+        const lifetimes = new AcpToolCallLifetimes(sequentialIds());
+        lifetimes.beginGeneration();
+        const answered = lifetimes.resolve('edit:1', 'start');
+        lifetimes.resolve('edit:1', 'request');
+        lifetimes.settleRequest(answered);
+        lifetimes.beginGeneration();
+        expect(lifetimes.resolve('edit:1', 'request')).toBe(answered);
+        expect(lifetimes.resolve('edit:1', 'start')).toBe(answered);
+        expect(lifetimes.resolve('edit:1', 'terminal')).toBe(answered);
+    });
+
+    it('still opens a new lifetime for a start without a preceding request after an answer', () => {
+        const lifetimes = new AcpToolCallLifetimes(sequentialIds());
+        lifetimes.beginGeneration();
+        const answered = lifetimes.resolve('edit:1', 'start');
+        lifetimes.resolve('edit:1', 'request');
+        lifetimes.settleRequest(answered);
+        lifetimes.beginGeneration();
+        expect(lifetimes.resolve('edit:1', 'start')).not.toBe(answered);
+    });
+
+    it('does not let a late request after a cancel pull a fresh start into the cancelled call', () => {
+        const lifetimes = new AcpToolCallLifetimes(sequentialIds());
+        lifetimes.beginGeneration();
+        const cancelled = lifetimes.resolve('shell:0', 'start');
+        lifetimes.cancel();
+        expect(lifetimes.resolve('shell:0', 'request')).toBe(cancelled);
+        expect(lifetimes.resolve('shell:0', 'start')).not.toBe(cancelled);
+    });
+
+    it('keeps a request-first mark only until the prompt ends', () => {
+        const lifetimes = new AcpToolCallLifetimes(sequentialIds());
+        lifetimes.restore([{ agentToolCallId: 'shell:0', scope: 'main', id: 'shell:0#S' }]);
+        lifetimes.beginGeneration();
+        expect(lifetimes.resolve('shell:0', 'request')).toBe('shell:0#S');
+        lifetimes.settleRequest('shell:0#S');
+        expect(lifetimes.resolve('shell:0', 'update')).toBe('shell:0#S');
+        lifetimes.beginGeneration();
+        expect(lifetimes.resolve('shell:0', 'start')).toBe('shell:0#L1');
     });
 });

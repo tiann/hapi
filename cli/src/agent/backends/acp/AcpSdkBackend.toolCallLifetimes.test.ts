@@ -762,4 +762,30 @@ describe('AcpSdkBackend tool call lifetimes', () => {
 
         expect(toolIds(messages, 'tool_result')).toEqual(['shell:0#STORED']);
     });
+
+    it('keeps a restored call announced by its request first on one card', async () => {
+        const store = memoryStore([{ agentToolCallId: 'shell:0', scope: 'main', id: 'shell:0#STORED' }]);
+        const { backend, internal, notify, scriptPrompts } = makeBackend({ toolCallLifetimeStore: store });
+        const requests: PermissionRequest[] = [];
+        backend.onPermissionRequest((request) => {
+            requests.push(request);
+            void backend.respondToPermission(SESSION, request, { outcome: 'selected', optionId: 'once' });
+        });
+        const messages: AgentMessage[] = [];
+        scriptPrompts(async () => {
+            await internal.handlePermissionRequest({
+                sessionId: SESSION,
+                toolCall: { toolCallId: 'shell:0', title: 'shell' },
+                options: [{ optionId: 'once', name: 'Allow', kind: 'allow_once' }]
+            }, null);
+            notify(toolCall('shell:0', { status: 'in_progress' }));
+            notify(toolUpdate('shell:0', 'completed'));
+            return 'end_turn';
+        });
+        await prompt(backend, messages);
+
+        expect(requests.map((request) => request.toolCallId)).toEqual(['shell:0#STORED']);
+        expect(new Set(toolIds(messages, 'tool_call'))).toEqual(new Set(['shell:0#STORED']));
+        expect(toolIds(messages, 'tool_result')).toEqual(['shell:0#STORED']);
+    });
 });

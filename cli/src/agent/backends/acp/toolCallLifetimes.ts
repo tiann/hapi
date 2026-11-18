@@ -57,6 +57,12 @@ type Lifetime = {
     closedForStart: boolean;
     /** A request no longer joins this lifetime. Updates and results always still map here. */
     closedForRequest: boolean;
+    /**
+     * A request joined this lifetime while it was closed for starts (restored,
+     * or answered in an earlier prompt): the call announced itself by its
+     * request, so its following start belongs here too.
+     */
+    requestBeforeStart: boolean;
     /** Rebuilt from stored state after a restart. */
     restored: boolean;
     /** Requests asked under this lifetime so far (each gets its own request id). */
@@ -141,10 +147,16 @@ export class AcpToolCallLifetimes {
             return current.id;
         }
         if (kind === 'request') {
-            return current.closedForRequest ? this.open(agentToolCallId, kind, scope).id : current.id;
+            if (current.closedForRequest) return this.open(agentToolCallId, kind, scope).id;
+            // Only a call that may still be announced (not cancelled) can
+            // pull its next start in; a late request of a cancelled call must
+            // not undo the cancel barrier.
+            if (current.closedForStart && !current.cancelled) current.requestBeforeStart = true;
+            return current.id;
         }
-        if (!current.closedForStart) {
+        if (!current.closedForStart || current.requestBeforeStart) {
             current.startSeen = true;
+            current.requestBeforeStart = false;
             return current.id;
         }
         if (
@@ -182,6 +194,10 @@ export class AcpToolCallLifetimes {
      */
     beginGeneration(scope: ToolCallScope = MAIN_TOOL_CALL_SCOPE): void {
         this.generations.set(scope, this.generationOf(scope) + 1);
+        // A request bridges to its start only within one prompt or child turn.
+        for (const lifetime of this.lifetimes.values()) {
+            if (lifetime.scope === scope) lifetime.requestBeforeStart = false;
+        }
         for (const lifetime of this.lifetimes.values()) {
             if (lifetime.scope === scope && lifetime.requestSettled) {
                 lifetime.closedForStart = true;
@@ -205,6 +221,8 @@ export class AcpToolCallLifetimes {
         for (const lifetime of this.lifetimes.values()) {
             if (lifetime.scope === scope && !lifetime.terminal) {
                 lifetime.cancelled = true;
+                // A start after the cancel is a new call, even after a request.
+                lifetime.requestBeforeStart = false;
                 lifetime.closedForStart = true;
             }
         }
@@ -267,6 +285,7 @@ export class AcpToolCallLifetimes {
                 requestSettled: false,
                 closedForStart: true,
                 closedForRequest: false,
+                requestBeforeStart: false,
                 restored: true,
                 // Its earlier request (if any) died with the old process.
                 requests: 1,
@@ -302,6 +321,7 @@ export class AcpToolCallLifetimes {
             requestSettled: false,
             closedForStart: false,
             closedForRequest: false,
+            requestBeforeStart: false,
             restored: false,
             requests: 0,
             openedAt: Date.now()
@@ -333,6 +353,7 @@ export class AcpToolCallLifetimes {
     private markTerminal(lifetime: Lifetime): void {
         if (lifetime.terminal) return;
         lifetime.terminal = true;
+        lifetime.requestBeforeStart = false;
         lifetime.closedForStart = true;
         lifetime.closedForRequest = true;
         this.touch(lifetimeKey(lifetime.scope, lifetime.agentToolCallId), lifetime);
