@@ -1,4 +1,6 @@
+import * as shutdown from '@/modules/common/remote/settleAcpLauncherShutdown';
 import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
+import { expectAcpKill } from '@/test/expectAcpKill';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import type { EnhancedMode } from './loop';
 import type { AgentMessage } from '@/agent/types';
@@ -474,6 +476,123 @@ function makeClient() {
 }
 
 describe('cursorAcpRemoteLauncher', () => {
+
+
+    it.each(['initialize', 'loadSession'] as const)('disconnects during a stalled %s', async (phase) => {
+        const session = makeSession('resume-me', { keepQueueOpen: true });
+        const blocked = Promise.withResolvers<never>();
+        void blocked.promise.catch(() => undefined);
+        const entered = vi.fn();
+        const disconnect = vi.fn(async () => { blocked.reject(new Error('stopped during startup')) });
+        const create = vi.mocked(createCursorAcpBackend);
+        const factory = create.getMockImplementation()!;
+        create.mockImplementationOnce((...args) => {
+            const backend = factory(...args);
+            vi.mocked(backend[phase]).mockImplementation(async () => {
+                entered();
+                return blocked.promise;
+            });
+            vi.mocked(backend.disconnect).mockImplementation(disconnect);
+            return backend;
+        });
+        const running = cursorAcpRemoteLauncher(session);
+        const failure = running.catch(() => undefined);
+        try {
+            await vi.waitFor(() => expect(entered).toHaveBeenCalledOnce());
+            const killing = session.kill();
+            void killing.catch(() => undefined);
+            await vi.waitFor(() => expect(disconnect).toHaveBeenCalledOnce(), { timeout: 350 });
+            await expect(killing).resolves.toBeUndefined();
+            await expect(running).resolves.toBe('exit');
+        } finally {
+            blocked.reject(new Error('test cleanup'));
+            session.queue.close();
+            await failure;
+        }
+    });
+
+    it.each(['rejects', 'hangs'] as const)('settles kill when disconnect %s', async (outcome) => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        const waiting = vi.spyOn(session.queue, 'waitForMessagesAndGetAsString');
+        const running = cursorAcpRemoteLauncher(session);
+        const failure = running.catch(() => undefined);
+        const disconnect = Promise.withResolvers<void>();
+        try {
+            await vi.waitFor(() => expect(waiting).toHaveBeenCalled());
+            const backend = vi.mocked(createCursorAcpBackend).mock.results.at(-1)!.value;
+            vi.mocked(backend.disconnect).mockReturnValue(disconnect.promise);
+            const kill = session.kill;
+            vi.useFakeTimers();
+            const settled = vi.fn();
+            const killing = kill().then(settled);
+            void killing.catch(() => undefined);
+            if (outcome === 'rejects') disconnect.reject(new Error('disconnect failed'));
+            await vi.advanceTimersByTimeAsync(5_000);
+            expect(settled).toHaveBeenCalledOnce();
+            expect(backend.disconnect).toHaveBeenCalledOnce();
+        } finally {
+            vi.useRealTimers();
+            disconnect.resolve();
+            session.queue.close();
+            await failure;
+        }
+    });
+
+    it('ends an active prompt and wins over a pending switch to local', async () => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        const waiting = vi.spyOn(session.queue, 'waitForMessagesAndGetAsString');
+        const running = cursorAcpRemoteLauncher(session);
+        const prompt = Promise.withResolvers<boolean>();
+        const settle = vi.spyOn(shutdown, 'settleAcpLauncherShutdown');
+        const switching = Promise.withResolvers<void>();
+        try {
+            await vi.waitFor(() => expect(waiting).toHaveBeenCalled());
+            const backend = vi.mocked(createCursorAcpBackend).mock.results.at(-1)!.value;
+            vi.mocked(backend.prompt).mockReturnValue(prompt.promise);
+            vi.mocked(backend.cancelPrompt).mockReturnValueOnce(switching.promise);
+            vi.mocked(backend.disconnect).mockImplementation(async () => { prompt.reject(new Error('ACP transport closed')) });
+            session.queue.push('active', { permissionMode: 'default', model: undefined });
+            await vi.waitFor(() => expect(backend.prompt).toHaveBeenCalledOnce());
+            const manager = session.client.rpcHandlerManager as unknown as {
+                handlers: Map<string, () => Promise<void>>
+            };
+            const switchToLocal = manager.handlers.get(RPC_METHODS.Switch)!;
+            const switched = switchToLocal();
+            const kill = session.kill;
+            await kill();
+            switching.resolve();
+            await switched;
+            // Check the base loop result before launch() applies its final shutdown guard.
+            await expect(settle.mock.calls[0][0].running).resolves.toBe('exit');
+            await expect(running).resolves.toBe('exit');
+            expect(session.client.sendAgentMessage).not.toHaveBeenCalledWith({
+                type: 'error',
+                message: expect.stringContaining('ACP transport closed')
+            });
+        } finally {
+            settle.mockRestore();
+            switching.resolve();
+            prompt.resolve(true);
+            session.queue.close();
+            await running;
+        }
+    });
+
+    it('waits for one backend disconnect when killed', async () => {
+        const session = makeSession(null, { keepQueueOpen: true })
+        const setKillHandler = vi.spyOn(session, 'setKillHandler');
+        const waitForMessage = vi.spyOn(session.queue, 'waitForMessagesAndGetAsString');
+        const running = cursorAcpRemoteLauncher(session);
+        try {
+            await vi.waitFor(() => expect(waitForMessage).toHaveBeenCalled());
+            expect(setKillHandler).toHaveBeenCalled();
+            const backend = vi.mocked(createCursorAcpBackend).mock.results.at(-1)!.value;
+            await expectAcpKill(session.kill, vi.mocked(backend.disconnect), running);
+        } finally {
+            session.queue.close();
+            await running;
+        }
+    });
     beforeEach(() => {
         harness.initializeError = null;
         harness.initializeAttempts = 0;
@@ -1352,6 +1471,45 @@ describe('cursorAcpRemoteLauncher', () => {
         expect(harness.titleSyncRegistered.length).toBeGreaterThan(0);
         for (const controller of harness.titleSyncRegistered) {
             expect(controller).toBe(harness.titleSyncControllers[0]);
+        }
+    });
+
+    it('disconnects an unpublished replacement on kill during model relaunch', async () => {
+        const session = makeSession(null, { keepQueueOpen: true });
+        session.model = 'composer-2.5[fast=false]';
+        const running = cursorAcpRemoteLauncher(session);
+        const blocked = Promise.withResolvers<never>();
+        void blocked.promise.catch(() => undefined);
+        const entered = vi.fn();
+        const disconnect = vi.fn(async () => { blocked.reject(new Error('replacement stopped')); });
+        try {
+            await vi.waitFor(() => expect(session.canApplyModelConfig()).toBe(true));
+            const create = vi.mocked(createCursorAcpBackend);
+            const factory = create.getMockImplementation()!;
+            const before = create.mock.calls.length;
+            create.mockImplementationOnce((...args) => {
+                const backend = factory(...args);
+                vi.mocked(backend.initialize).mockImplementation(async () => {
+                    entered();
+                    return blocked.promise;
+                });
+                vi.mocked(backend.disconnect).mockImplementation(disconnect);
+                return backend;
+            });
+            const switching = session.applyModelConfig('auto');
+            void switching.catch(() => undefined);
+            await vi.waitFor(() => expect(entered).toHaveBeenCalledOnce());
+            const killing = session.kill();
+            void killing.catch(() => undefined);
+            await vi.waitFor(() => expect(disconnect).toHaveBeenCalledOnce(), { timeout: 350 });
+            await killing;
+            await expect(switching).rejects.toThrow();
+            await expect(running).resolves.toBe('exit');
+            expect(create).toHaveBeenCalledTimes(before + 1);
+        } finally {
+            blocked.reject(new Error('test cleanup'));
+            session.queue.close();
+            await running;
         }
     });
 

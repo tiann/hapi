@@ -1,4 +1,7 @@
+import * as shutdown from '@/modules/common/remote/settleAcpLauncherShutdown';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createCopilotBackend } from './utils/copilotBackend';
+import { expectAcpKill } from '@/test/expectAcpKill';
 import type { CopilotSession } from './session';
 import { CopilotRemoteLauncher } from './copilotRemoteLauncher';
 import type { AgentMessage } from '@/agent/types';
@@ -265,6 +268,7 @@ type CopilotTestMode = { permissionMode: string; model?: string };
 function createAbortSession(queue: MessageQueue2<CopilotTestMode>) {
     const rpcHandlers = new Map<string, () => Promise<void>>();
     const session = {
+        setKillHandler: vi.fn(),
         path: '/tmp/copilot-abort-test',
         logPath: '/tmp/copilot-abort-test/test.log',
         client: {
@@ -304,6 +308,121 @@ beforeEach(() => {
 });
 
 describe('CopilotRemoteLauncher Abort queue preservation', () => {
+
+
+    it.each(['initialize', 'loadSession'] as const)('disconnects during a stalled %s', async (phase) => {
+        const { session } = createAbortSession(new MessageQueue2<CopilotTestMode>(() => 'mode'));
+        session.sessionId = 'resume-me';
+        const blocked = Promise.withResolvers<never>();
+        void blocked.promise.catch(() => undefined);
+        const entered = vi.fn();
+        const disconnect = vi.fn(async () => { blocked.reject(new Error('stopped during startup')) });
+        const create = vi.mocked(createCopilotBackend);
+        const factory = create.getMockImplementation()!;
+        create.mockImplementationOnce((...args) => {
+            const backend = factory(...args);
+            vi.mocked(backend[phase]).mockImplementation(async () => {
+                entered();
+                return blocked.promise;
+            });
+            vi.mocked(backend.disconnect).mockImplementation(disconnect);
+            return backend;
+        });
+        const running = new CopilotRemoteLauncher(session as never, {}).launch();
+        const failure = running.catch(() => undefined);
+        try {
+            await vi.waitFor(() => expect(entered).toHaveBeenCalledOnce());
+            const killing = (session.setKillHandler.mock.calls[0][0] as () => Promise<void>)();
+            void killing.catch(() => undefined);
+            await vi.waitFor(() => expect(disconnect).toHaveBeenCalledOnce(), { timeout: 350 });
+            await expect(killing).resolves.toBeUndefined();
+            await expect(running).resolves.toBe('exit');
+        } finally {
+            blocked.reject(new Error('test cleanup'));
+            session.queue.close();
+            await failure;
+        }
+    });
+
+    it.each(['rejects', 'hangs'] as const)('settles kill when disconnect %s', async (outcome) => {
+        const { session } = createAbortSession(new MessageQueue2<CopilotTestMode>(() => 'mode'));
+        const waiting = vi.spyOn(session.queue, 'waitForMessagesAndGetAsString');
+        const running = new CopilotRemoteLauncher(session as never, {}).launch();
+        const failure = running.catch(() => undefined);
+        const disconnect = Promise.withResolvers<void>();
+        try {
+            await vi.waitFor(() => expect(waiting).toHaveBeenCalled());
+            const backend = abortHarness.backends.at(-1)!;
+            backend.disconnect.mockReturnValue(disconnect.promise);
+            const kill = session.setKillHandler.mock.calls[0][0] as () => Promise<void>;
+            vi.useFakeTimers();
+            const settled = vi.fn();
+            const killing = kill().then(settled);
+            void killing.catch(() => undefined);
+            if (outcome === 'rejects') disconnect.reject(new Error('disconnect failed'));
+            await vi.advanceTimersByTimeAsync(5_000);
+            expect(settled).toHaveBeenCalledOnce();
+            expect(backend.disconnect).toHaveBeenCalledOnce();
+        } finally {
+            vi.useRealTimers();
+            disconnect.resolve();
+            session.queue.close();
+            await failure;
+        }
+    });
+
+    it('ends an active prompt and wins over a pending switch to local', async () => {
+        const { session, rpcHandlers } = createAbortSession(new MessageQueue2<CopilotTestMode>(() => 'mode'));
+        const waiting = vi.spyOn(session.queue, 'waitForMessagesAndGetAsString');
+        const running = new CopilotRemoteLauncher(session as never, {}).launch();
+        const prompt = Promise.withResolvers<void>();
+        const settle = vi.spyOn(shutdown, 'settleAcpLauncherShutdown');
+        const switching = Promise.withResolvers<void>();
+        try {
+            await vi.waitFor(() => expect(waiting).toHaveBeenCalled());
+            const backend = abortHarness.backends.at(-1)!;
+            backend.prompt.mockReturnValue(prompt.promise);
+            backend.cancelPrompt.mockReturnValueOnce(switching.promise);
+            backend.disconnect.mockImplementation(async () => { prompt.reject(new Error('ACP transport closed')) });
+            session.queue.push('active', { permissionMode: 'default', model: 'auto' });
+            await vi.waitFor(() => expect(backend.prompt).toHaveBeenCalledOnce());
+            const switchToLocal = rpcHandlers.get(RPC_METHODS.Switch)!;
+            const switched = switchToLocal();
+            const kill = session.setKillHandler.mock.calls[0][0] as () => Promise<void>;
+            await kill();
+            switching.resolve();
+            await switched;
+            // Check the base loop result before launch() applies its final shutdown guard.
+            await expect(settle.mock.calls[0][0].running).resolves.toBe('exit');
+            await expect(running).resolves.toBe('exit');
+            expect(session.sendSessionEvent).not.toHaveBeenCalledWith({
+                type: 'message',
+                message: expect.stringContaining('prompt failed')
+            });
+        } finally {
+            settle.mockRestore();
+            switching.resolve();
+            prompt.resolve();
+            session.queue.close();
+            await running;
+        }
+    });
+
+    it('waits for one backend disconnect when killed', async () => {
+        const { session } = createAbortSession(new MessageQueue2<CopilotTestMode>(() => "mode"))
+        const setKillHandler = vi.spyOn(session, 'setKillHandler');
+        const waitForMessage = vi.spyOn(session.queue, 'waitForMessagesAndGetAsString');
+        const running = new CopilotRemoteLauncher(session as never, {}).launch();
+        try {
+            await vi.waitFor(() => expect(waitForMessage).toHaveBeenCalled());
+            expect(setKillHandler).toHaveBeenCalled();
+            const backend = abortHarness.backends.at(-1)!;
+            await expectAcpKill(setKillHandler.mock.calls[0][0] as () => Promise<void>, vi.mocked(backend.disconnect), running);
+        } finally {
+            session.queue.close();
+            await running;
+        }
+    });
     it.each(
         (['switch', 'exit'] as const).flatMap(reason =>
             [false, true].flatMap(active =>
