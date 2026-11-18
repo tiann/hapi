@@ -1912,6 +1912,148 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         await runPromise;
     });
 
+    it('keeps one background entry when a live turn streams a wakeup run_command the watcher then replays', async () => {
+        const backend = new WakeupTestBackend();
+        const { session, queue, client } = makeHarness('always-proceed');
+        const acp = backend.sessionIdToCreate;
+
+        // The turn ends, an earlier task's SYSTEM_MESSAGE wakes agy, and the same
+        // live ACP stream carries the wakeup's backgrounded run_command and text.
+        backend.promptScripts.push(async (onUpdate) => {
+            onUpdate({
+                type: 'tool_call',
+                id: 'call-live-33',
+                name: 'manage_task',
+                title: 'manage_task',
+                status: 'in_progress',
+                input: {},
+                nativeName: 'manage_task',
+                nativeArgs: { Action: 'update' }
+            });
+            onUpdate({ type: 'tool_result', id: 'call-live-33', status: 'completed', output: 'Task list updated.' });
+            onUpdate({ type: 'text', text: 'Task list updated.' });
+            onUpdate({
+                type: 'tool_call',
+                id: 'call-live-37',
+                name: 'python3 scan.py',
+                title: 'python3 scan.py',
+                status: 'in_progress',
+                input: {},
+                nativeName: 'run_command',
+                nativeArgs: { CommandLine: 'python3 scan.py' }
+            });
+            onUpdate({ type: 'text', text: 'Comparing the folders.' });
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+            writeTranscript(tempBrainDir, acp, [
+                { step_index: 32, source: 'USER_EXPLICIT', type: 'USER_INPUT', content: 'continue' },
+                {
+                    step_index: 33,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [{ name: 'manage_task', args: { Action: '"update"' } }]
+                },
+                { step_index: 34, source: 'MODEL', type: 'GENERIC', status: 'DONE', content: 'Task list updated.' },
+                { step_index: 35, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Task list updated.' },
+                {
+                    step_index: 36,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: `<SYSTEM_MESSAGE>\nTask id "${acp}/task-31" finished with result:\nCommand exited with code 0.\n\nCommand output:\nEARLIER\n</SYSTEM_MESSAGE>`
+                },
+                {
+                    step_index: 37,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    tool_calls: [{ name: 'run_command', args: { CommandLine: '"python3 scan.py"' } }]
+                },
+                {
+                    step_index: 38,
+                    source: 'MODEL',
+                    type: 'RUN_COMMAND',
+                    status: 'RUNNING',
+                    content: `Tool is running as a background task with task id: ${acp}/task-38`
+                },
+                { step_index: 39, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Comparing the folders.' }
+            ]);
+        });
+
+        const launcher = new AgyAcpRemoteLauncher(session, {
+            createBackend: () => backend as unknown as AcpSdkBackend,
+            brainDir: tempBrainDir,
+            reactivePollMs: 15,
+            reactiveSettleMs: 25,
+            reactiveToolParkMs: 60
+        });
+        const runPromise = launcher.launch();
+
+        // The turn-end cursor stops at the terminal planner (35), so right after
+        // the turn's ready the watcher replays 36-39 as a reactive wakeup.
+        const readyCount = () => client.sendSessionEvent.mock.calls
+            .filter(([event]) => event.type === 'ready').length;
+        queue.push('continue', { permissionMode: 'always-proceed' }, 'msg-1');
+        await vi.waitFor(() => {
+            expect(backend.resumeCalls).toEqual([acp]);
+            expect(readyCount()).toBe(2);
+        });
+        client.sendSessionEvent.mockClear();
+
+        // task-38's single completion arrives in a later wakeup.
+        const { compactPath } = agyTranscriptPaths(tempBrainDir, acp)!;
+        appendFileSync(
+            compactPath,
+            [
+                JSON.stringify({
+                    step_index: 40,
+                    source: 'SYSTEM',
+                    type: 'SYSTEM_MESSAGE',
+                    status: 'DONE',
+                    content: `<SYSTEM_MESSAGE>\nTask id "${acp}/task-38" finished with result:\nCommand exited with code 0.\n\nCommand output:\nSCANNED\n</SYSTEM_MESSAGE>`
+                }),
+                JSON.stringify({
+                    step_index: 41,
+                    source: 'MODEL',
+                    type: 'PLANNER_RESPONSE',
+                    status: 'DONE',
+                    content: 'Scan finished.'
+                })
+            ].join('\n') + '\n',
+            'utf8'
+        );
+
+        await vi.waitFor(() => {
+            expect(backend.resumeCalls).toEqual([acp, acp]);
+            expect(client.sendSessionEvent).toHaveBeenCalledWith({ type: 'ready' });
+        });
+
+        // The replayed step 37 never becomes a second card.
+        const sentMessages = client.sendAgentMessage.mock.calls.map(([msg]) => msg);
+        expect(sentMessages.filter((msg) =>
+            typeof msg.callId === 'string' && msg.callId.startsWith('agy-wakeup-')
+        )).toEqual([]);
+        // The completion lands on the live card.
+        expect(sentMessages).toContainEqual(expect.objectContaining({
+            type: 'tool-call-result',
+            callId: 'call-live-37',
+            is_error: false,
+            output: { stdout: 'SCANNED', exit_code: 0 }
+        }));
+
+        // The indicator only ever tracked the live call id, and empties at the end.
+        const snapshots = client.sendClaudeSessionMessage.mock.calls
+            .map(([msg]) => msg)
+            .filter((msg) => msg.type === 'system' && msg.subtype === 'background_tasks_changed');
+        expect(snapshots.map((msg) => msg.tasks.map((task: { task_id: string }) => task.task_id))).toEqual([
+            ['call-live-37'],
+            []
+        ]);
+
+        queue.close();
+        await runPromise;
+    });
+
     it('associates task ID when a parked wakeup run_command is approved, backgrounds, and completes in a later wakeup', async () => {
         const backend = new WakeupTestBackend();
         const { session, queue, client } = makeHarness('always-proceed');
