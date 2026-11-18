@@ -163,10 +163,6 @@ export function opencodeEffortOptionsInvalidationKey(
     return queryKeys.sessionOpencodeReasoningEffortOptions(sessionId)
 }
 
-export function isRewindForkFallbackError(error: unknown): boolean {
-    return error instanceof ApiError && error.code === 'ambiguous_native_boundary_fork_safe'
-}
-
 export function resolvePiContextWindow(
     models: PiModelSummary[] | undefined,
     selectedModel: { provider: string; modelId: string } | null | undefined,

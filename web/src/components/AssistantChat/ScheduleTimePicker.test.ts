@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import {
-    clampToMaxDays,
     computeSchedulePickerPlacement,
     parsePreset,
     validateSpecificDatetime,
@@ -35,27 +34,6 @@ describe('parsePreset', () => {
         const now = Date.now()
         const result = parsePreset('+4h', now)
         expect(result).toBe(now + 4 * 60 * 60 * 1000)
-    })
-})
-
-describe('clampToMaxDays', () => {
-    it('returns value unchanged when within 7 days', () => {
-        const now = Date.now()
-        const future = now + 2 * 24 * 60 * 60 * 1000 // 2 days
-        expect(clampToMaxDays(future, now, 7)).toBe(future)
-    })
-
-    it('clamps value to now + 7 days when beyond limit', () => {
-        const now = Date.now()
-        const tooFar = now + 8 * 24 * 60 * 60 * 1000 // 8 days
-        const expected = now + 7 * 24 * 60 * 60 * 1000
-        expect(clampToMaxDays(tooFar, now, 7)).toBe(expected)
-    })
-
-    it('returns exact boundary (7 days) unchanged', () => {
-        const now = Date.now()
-        const boundary = now + 7 * 24 * 60 * 60 * 1000
-        expect(clampToMaxDays(boundary, now, 7)).toBe(boundary)
     })
 })
 

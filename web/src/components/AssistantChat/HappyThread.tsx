@@ -311,13 +311,6 @@ export function restoreScrollAnchor(viewport: HTMLElement, anchor: ScrollAnchor)
     return true
 }
 
-export function hasAppliedHistoryVersion(
-    pendingHistoryVersion: number,
-    appliedHistoryVersion: number
-): boolean {
-    return appliedHistoryVersion > pendingHistoryVersion
-}
-
 export async function locateOutlineTargetMessage(options: LocateOutlineTargetOptions): Promise<HTMLElement | null> {
     const anchorId = getConversationMessageAnchorId(options.targetMessageId)
     let target = options.findTarget(anchorId)
