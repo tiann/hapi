@@ -154,7 +154,7 @@ import { IssueRefChip } from '@/components/IssueRefChip'
 import { getLinkedGithubIssue, type BoardItemMatch } from '@/lib/externalRefs'
 import { Spinner } from '@/components/Spinner'
 import { transferComposerDraftThenNavigate } from '@/lib/composer-draft-transfer'
-import { useToast } from '@/lib/toast-context'
+import { useAddToast } from '@/lib/toast-context'
 import {
     shedToolbarSlots,
     toolbarActionBudget,
@@ -1180,7 +1180,7 @@ function CollapsiblePanel(props: { open: boolean; children: ReactNode }) {
     )
 }
 
-const SessionItem = memo(function SessionItem(props: {
+type SessionItemProps = {
     session: SessionSummary
     onSelect: (sessionId: string, targetMessageId?: string, targetMessageQuery?: string, pendingRequestId?: string) => void
     showPath?: boolean
@@ -1200,9 +1200,19 @@ const SessionItem = memo(function SessionItem(props: {
     lastSeenVersion: number
     getBoardMatchForIssue?: (ref: ExternalRef) => BoardItemMatch | null
     onOpenBoardItem?: (match: BoardItemMatch) => void
-}) {
+}
+
+function shallowEqualExcept<T extends object>(previous: T, next: T, ignored: keyof T): boolean {
+    if (previous === next) return true
+    const keys = Object.keys(previous) as Array<keyof T>
+    return keys.length === Object.keys(next).length
+        && keys.every(key => Object.hasOwn(next, key)
+            && (key === ignored || Object.is(previous[key], next[key])))
+}
+
+const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     const { t } = useTranslation()
-    const { addToast } = useToast()
+    const addToast = useAddToast()
     const {
         session: s,
         onSelect,
@@ -1792,7 +1802,11 @@ const SessionItem = memo(function SessionItem(props: {
             ) : null}
         </>
     )
-})
+}, (previous, next) =>
+    shallowEqualExcept(previous, next, 'session')
+    // The watermark orders REST and SSE updates in the cache. The row renders the job value.
+    && shallowEqualExcept(previous.session, next.session, 'attachedJobUpdatedAt')
+)
 
 type PullToRefreshState = 'idle' | 'pulling' | 'ready'
 

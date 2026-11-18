@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { Session } from './session';
-import type { EnhancedMode } from './loop';
+import { claudeBatchModeHash, type EnhancedMode } from './loop';
 
 // claudeRemote() wraps the actual Claude Agent SDK subprocess spawn (the
 // external-process boundary for this launcher) -- mock it the same way
@@ -36,6 +36,7 @@ function makeClient() {
             })
         },
         updateMetadata: vi.fn(),
+        getMetadata: () => ({}),
         updateAgentState: vi.fn((handler: (state: any) => any) => {
             agentState = handler(agentState);
         }),
@@ -477,5 +478,83 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
         // the cap never firing).
         expect(callCount).toBeLessThan(SAFETY_CUTOFF);
         expect(hasDropBanner(client)).toBe(true);
+    });
+
+    it('restores a parked pending batch into the queue when the launcher exits on switch', async () => {
+        const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
+        queue.push('first', { permissionMode: 'bypassPermissions' }, 'local-id-1');
+        queue.push('second', { permissionMode: 'bypassPermissions' }, 'local-id-2');
+
+        const client = makeClient();
+        const session = makeSession(queue, client);
+        session.claudeArgs = ['--resume', 'source-id', '--fork-session', '--resume-session-at', 'fork-boundary'];
+
+        claudeRemoteMock.mockImplementation(async (opts: any) => {
+            // Seed a different mode on the running attempt or park via isolate:
+            // here we park via an isolate batch or mode mismatch by delivering
+            // a mode mismatch against a resume-at spawn whose modeHash was
+            // seeded before a mode-changed batch arrived.
+            const initial = await opts.nextMessage();
+            expect(initial?.message).toBe('first\nsecond');
+            // Push a mode-changed follow-up batch that nextMessage() parks into
+            // `pending` and returns null for, then switch before Attempt 2 runs.
+            queue.push('parked-a', { permissionMode: 'plan' }, 'parked-1');
+            queue.push('parked-b', { permissionMode: 'plan' }, 'parked-2');
+            const second = await opts.nextMessage();
+            expect(second).toBeNull();
+            expect(session.queue.size()).toBe(0);
+            triggerSwitch(client);
+        });
+
+        const { claudeRemoteLauncher } = await import('./claudeRemoteLauncher');
+        const exitReason = await claudeRemoteLauncher(session);
+
+        expect(exitReason).toBe('switch');
+        expect(session.queue.queue.map((item) => ({
+            message: item.message,
+            localId: item.localId
+        }))).toEqual([
+            { message: 'parked-a', localId: 'parked-1' },
+            { message: 'parked-b', localId: 'parked-2' }
+        ]);
+    });
+
+    it('drops the failing head batch instead of looping forever when a resume-at spawn fails before nextMessage()', async () => {
+        const queue = new MessageQueue2<EnhancedMode>(claudeBatchModeHash);
+        queue.push('bad message', { permissionMode: 'default', model: 'broken-model' }, 'bad-local-id');
+        queue.push('good message', { permissionMode: 'default', model: 'working-model' }, 'good-local-id');
+
+        const client = makeClient();
+        const session = makeSession(queue, client);
+        session.claudeArgs = ['--resume', 'source-id', '--fork-session', '--resume-session-at', 'fork-boundary'];
+
+        let callCount = 0;
+        const SAFETY_CUTOFF = 20;
+        const deliveredMessages: string[] = [];
+
+        claudeRemoteMock.mockImplementation(async (opts: any) => {
+            callCount += 1;
+            if (callCount > SAFETY_CUTOFF) {
+                triggerSwitch(client);
+                throw new Error('safety cutoff exceeded');
+            }
+            // Mirrors awaitingResumeAtInit in claudeRemote.ts: query() spawns
+            // with bootstrapMode BEFORE opts.nextMessage() is called.
+            if (opts.bootstrapMode?.model === 'broken-model') {
+                throw new Error('invalid model broken-model');
+            }
+            const initial = await opts.nextMessage();
+            if (initial) {
+                deliveredMessages.push(initial.message);
+            }
+            triggerSwitch(client);
+        });
+
+        const { claudeRemoteLauncher } = await import('./claudeRemoteLauncher');
+        await claudeRemoteLauncher(session);
+
+        expect(callCount).toBe(4);
+        expect(hasDropBanner(client)).toBe(true);
+        expect(deliveredMessages).toEqual(['good message']);
     });
 });

@@ -270,3 +270,52 @@ describe('MetadataSchema preserves the rest of a session\'s metadata around a ma
         ]);
     });
 });
+
+describe('MetadataSchema claudeRewind', () => {
+    const base = {
+        path: '/tmp',
+        host: 'test',
+        flavor: 'claude',
+    };
+
+    const validIntent = {
+        targetLocalId: 'local-1',
+        truncateFromLocalId: 'local-1',
+        keepBoundary: 'boundary-uuid',
+        droppedPrompts: ['prompt-uuid'],
+    };
+
+    it('parses a valid rewind intent unchanged', () => {
+        const result = MetadataSchema.safeParse({ ...base, claudeRewind: validIntent });
+        expect(result.success).toBe(true);
+        expect(result.data?.claudeRewind).toEqual(validIntent);
+        expect(result.data?.flavor).toBe('claude');
+    });
+
+    it('ignores a legacy-shaped claudeRewind instead of failing the whole metadata', () => {
+        const result = MetadataSchema.safeParse({
+            ...base,
+            claudeRewind: {
+                operationId: 'op-1',
+                phase: 'pending',
+                requestedLocalId: 'local-1',
+                truncateFromLocalId: 'local-1',
+                keepBoundary: 'boundary-uuid',
+                cutoffSeq: 7,
+            },
+        });
+        expect(result.success).toBe(true);
+        expect(result.data?.claudeRewind).toBeUndefined();
+        expect(result.data?.path).toBe('/tmp');
+        expect(result.data?.host).toBe('test');
+        expect(result.data?.flavor).toBe('claude');
+    });
+
+    it('ignores a garbage claudeRewind value instead of failing the whole metadata', () => {
+        const result = MetadataSchema.safeParse({ ...base, claudeRewind: 'legacy' });
+        expect(result.success).toBe(true);
+        expect(result.data?.claudeRewind).toBeUndefined();
+        expect(result.data?.path).toBe('/tmp');
+        expect(result.data?.host).toBe('test');
+    });
+});

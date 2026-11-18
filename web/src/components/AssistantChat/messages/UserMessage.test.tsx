@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { PropsWithChildren } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import type { HappyChatContextValue } from '@/components/AssistantChat/context'
 import { I18nProvider } from '@/lib/i18n-context'
 import { findLatestCompletedBoundaryId } from '@/lib/assistant-runtime'
 import { HappyUserMessage } from './UserMessage'
@@ -13,7 +14,20 @@ const state = {
         metadata: { custom: { kind: 'user', localId: 'local-interrupted' as string | null, sourceMessageId: 'stored-message', invokedAt: 10 as number | null, isTranscriptEcho: false } } },
     thread: { isRunning: true, messages: [] }
 }
-const ctx = {
+type ContextMetadata = NonNullable<HappyChatContextValue['metadata']>
+type UserMessageTestContext = Pick<HappyChatContextValue,
+    'disabled' | 'historyActionPending' | 'allowInactiveFork' | 'isLatestCompletedBoundary'
+    | 'onBranchConversation' | 'onForkConversation' | 'onRewindConversation'
+> & {
+    metadata: Pick<ContextMetadata,
+        'flavor' | 'conversationHistoryPoints' | 'conversationHistoryDiverged' | 'claudeRewind'
+    > & {
+        capabilities: {
+            conversationHistory: Required<NonNullable<NonNullable<ContextMetadata['capabilities']>['conversationHistory']>>
+        }
+    }
+}
+const ctx: UserMessageTestContext = {
     metadata: { flavor: 'codex', capabilities: { conversationHistory: { forkCurrent: true, forkAtMessage: true, rewindToMessage: true } },
         conversationHistoryPoints: { 'local-interrupted': true } as Record<string, true> },
     disabled: false, historyActionPending: false, allowInactiveFork: false,
@@ -58,7 +72,10 @@ describe('user-only completed fork boundary', () => {
         state.thread.isRunning = true
         ctx.metadata.flavor = 'codex'
         ctx.metadata.capabilities.conversationHistory.forkAtMessage = true
+        ctx.metadata.capabilities.conversationHistory.rewindToMessage = true
         ctx.metadata.conversationHistoryPoints = { 'local-interrupted': true }
+        delete ctx.metadata.conversationHistoryDiverged
+        delete ctx.metadata.claudeRewind
         ctx.disabled = false
         ctx.allowInactiveFork = false
         ctx.historyActionPending = false
@@ -155,6 +172,36 @@ describe('user-only completed fork boundary', () => {
         mount()
         expect(screen.queryByRole('button', { name: 'Fork' })).toBeNull()
         expect(onFork).not.toHaveBeenCalled()
+    })
+
+    it.each(['claudeRewind', 'diverged'] as const)(
+        'hides Fork and Rewind actions when %s blocks history mutations',
+        blocker => {
+            state.thread.isRunning = false
+            ctx.metadata.flavor = 'claude'
+            if (blocker === 'claudeRewind') {
+                ctx.metadata.claudeRewind = {
+                    targetLocalId: 'local-interrupted',
+                    truncateFromLocalId: 'local-next',
+                    keepBoundary: 'keep-1',
+                    droppedPrompts: ['drop-1']
+                }
+            } else {
+                ctx.metadata.conversationHistoryDiverged = true
+            }
+            mount()
+            expect(screen.queryByRole('button', { name: 'Fork' })).toBeNull()
+            expect(screen.queryByRole('button', { name: 'Rewind' })).toBeNull()
+        }
+    )
+
+    it('hides archived Codex Fork when conversationHistoryDiverged is true', () => {
+        state.thread.isRunning = false
+        ctx.disabled = true
+        ctx.allowInactiveFork = true
+        ctx.metadata.conversationHistoryDiverged = true
+        mount()
+        expect(screen.queryByRole('button', { name: 'Fork' })).toBeNull()
     })
 })
 

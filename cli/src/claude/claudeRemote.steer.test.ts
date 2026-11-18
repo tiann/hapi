@@ -147,6 +147,7 @@ describe('claudeRemote steering', () => {
         expect(fake.stdin[1]!.message.content).toBe('Also run lint');
         expect(fake.stdin[1]!.uuid).toEqual(expect.any(String));
         expect(fake.stdin[1]!.uuid).not.toBe(fake.stdin[0]!.uuid);
+        expect(delivery!.uuid).toBe(fake.stdin[1]!.uuid);
 
         fake.replay(fake.stdin[1]!);
         await expect(delivery!.delivered).resolves.toBe(true);

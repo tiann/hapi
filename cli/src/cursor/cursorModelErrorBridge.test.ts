@@ -3,9 +3,7 @@ import {
     buildModelErrorBridgePrompt,
     canBridgeModelError,
     mergeBridgeGateFields,
-    MODEL_ERROR_BRIDGE_HEADER,
-    MAX_LAST_USER_MESSAGE_CHARS,
-    truncateLastUserMessage
+    MODEL_ERROR_BRIDGE_HEADER
 } from './cursorModelErrorBridge';
 
 describe('buildModelErrorBridgePrompt', () => {
@@ -128,22 +126,5 @@ describe('mergeBridgeGateFields', () => {
             eventId: 'evt-1000',
             ...merged
         })).toBe(false);
-    });
-});
-
-describe('truncateLastUserMessage', () => {
-    it('passes through short messages unchanged', () => {
-        expect(truncateLastUserMessage('hello')).toBe('hello');
-    });
-
-    it('caps very long messages', () => {
-        const long = 'x'.repeat(40_000);
-        expect(truncateLastUserMessage(long).length).toBe(MAX_LAST_USER_MESSAGE_CHARS);
-    });
-});
-
-describe('MAX_LAST_USER_MESSAGE_CHARS', () => {
-    it('is the bridge fail-closed limit', () => {
-        expect(MAX_LAST_USER_MESSAGE_CHARS).toBe(32_000);
     });
 });

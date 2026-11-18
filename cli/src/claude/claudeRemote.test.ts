@@ -168,6 +168,42 @@ describe('claudeRemote async message handling', () => {
         }
     });
 
+    it('resets thinking when query() throws synchronously after initial turn delivery', async () => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        queryMock.mockImplementationOnce(() => {
+            throw new Error('Fallback model cannot be the same as main model');
+        });
+
+        const thinking: boolean[] = [];
+        try {
+            await expect(claudeRemote({
+                sessionId: 'session-1',
+                path: process.cwd(),
+                mcpServers: {},
+                claudeEnvVars: {},
+                claudeArgs: [],
+                allowedTools: [],
+                hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => ({
+                    message: 'Review this project',
+                    mode: { permissionMode: 'default', model: 'sonnet', fallbackModel: 'sonnet' }
+                }),
+                onReady: () => {},
+                isAborted: () => false,
+                onSessionFound: () => {},
+                onMessage: () => {},
+                onThinkingChange: (value) => thinking.push(value)
+            })).rejects.toThrow('Fallback model cannot be the same as main model');
+
+            expect(thinking).toEqual([true, false]);
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+    });
+
     it('waits for async onReady work before completing the result stream', async () => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');

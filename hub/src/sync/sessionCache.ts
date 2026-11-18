@@ -434,12 +434,18 @@ export class SessionCache {
     refreshSession(sessionId: string): Session | null {
         let stored = this.store.sessions.getSession(sessionId)
         if (!stored) {
+            // Capture the namespace BEFORE the map delete: the event publisher
+            // resolves namespaces from the live session map, so emitting after
+            // deletion broadcasts without a namespace — and shouldSend drops
+            // the event for every connection (ghost sessions on all clients).
+            const cached = this.sessions.get(sessionId)
+            const namespace = cached?.namespace
             const existed = this.sessions.delete(sessionId)
             this.pendingThinkingUntilBySessionId.delete(sessionId)
             this.runtimeConfigUpdatedAtBySessionId.delete(sessionId)
             this.agentProgressAtBySessionId.delete(sessionId)
             if (existed) {
-                this.publisher.emit({ type: 'session-removed', sessionId })
+                this.publisher.emit({ type: 'session-removed', sessionId, namespace })
             }
             return null
         }

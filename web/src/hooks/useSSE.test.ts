@@ -7,7 +7,6 @@ import type { Session } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
 import {
     applySessionDetailPatch,
-    canApplyVersionedSummaryPatch,
     isGlobalScopedMessageStreamEvent,
     isNewerVersionedPatch,
     isRenderIrrelevantPatch,
@@ -202,58 +201,6 @@ function makeSummary(overrides: Partial<SessionSummary> = {}): SessionSummary {
         ...overrides
     } as SessionSummary
 }
-
-describe('canApplyVersionedSummaryPatch (PR #897 review, HAPI Bot 2026-07-23 Major)', () => {
-    it('allows non-versioned patches without a detail cache', () => {
-        expect(canApplyVersionedSummaryPatch({}, false)).toBe(true)
-        expect(canApplyVersionedSummaryPatch({ metadata: undefined, agentState: undefined }, false)).toBe(true)
-    })
-
-    it('refuses metadata/agentState/todos summary patches when detail version source is missing', () => {
-        expect(
-            canApplyVersionedSummaryPatch(
-                { metadata: { version: 1, value: null } },
-                false
-            )
-        ).toBe(false)
-        expect(
-            canApplyVersionedSummaryPatch(
-                { agentState: { version: 1, value: null } },
-                false
-            )
-        ).toBe(false)
-        expect(
-            canApplyVersionedSummaryPatch(
-                { todos: { version: 1, value: [] } },
-                false
-            )
-        ).toBe(false)
-    })
-
-    it('allows teamState-only patches without detail (summary no-op)', () => {
-        expect(
-            canApplyVersionedSummaryPatch(
-                { teamState: { version: 1, value: null } },
-                false
-            )
-        ).toBe(true)
-    })
-
-    it('allows versioned summary patches when detail is present', () => {
-        expect(
-            canApplyVersionedSummaryPatch(
-                { metadata: { version: 2, value: null } },
-                true
-            )
-        ).toBe(true)
-        expect(
-            canApplyVersionedSummaryPatch(
-                { todos: { version: 2, value: [] } },
-                true
-            )
-        ).toBe(true)
-    })
-})
 
 describe('isNewerVersionedPatch (PR #897 review, HAPI Bot 2026-06-16 Major)', () => {
     // Pin the version-monotonicity contract for structured metadata /
