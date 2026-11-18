@@ -58,13 +58,15 @@ describe('SessionRowSummary background status', () => {
         localStorage.clear()
     })
 
-    it('uses a title blue dot and waiting presence for background-only work', () => {
+    it('shows background-only work as working: a labelled spinner and working presence', () => {
         const background = renderSummary(false).container
         const backgroundBadge = background.querySelector('[data-testid="session-presence"]') as HTMLElement
-        expect(backgroundBadge).toHaveAttribute('data-presence', 'waiting')
-        expect(background.querySelector('[data-testid="session-background"]')).toHaveClass('bg-blue-500')
-        // Background-only work shows a dot, never a spinning loader.
-        expect(background.querySelector('[data-testid="session-activity"]')).toBeNull()
+        // A background subagent is still work; a waiting badge or static dot reads as done.
+        expect(backgroundBadge).toHaveAttribute('data-presence', 'working')
+        const activity = background.querySelector('[data-testid="session-activity"]') as HTMLElement
+        expect(activity).toHaveAttribute('data-activity', 'background')
+        expect(activity).toHaveAttribute('aria-label', 'Background tasks running')
+        expect(background.querySelector('[data-testid="session-background"]')).toBeNull()
         cleanup()
 
         const thinking = render(
@@ -260,7 +262,7 @@ describe('SessionRowSummary background status', () => {
         expect(container.querySelector('[data-testid="session-presence"]')).toHaveAttribute('data-presence', 'working')
     })
 
-    it('shows unseen output with background-only work using a blue dot', () => {
+    it('shows unseen output with background-only work as a blue spinner', () => {
         const session = makeSummary({ id: 'background-unread', backgroundTaskCount: 1, updatedAt: 2_000 })
         markSessionSeen(session.id, 1_000)
 
@@ -270,9 +272,9 @@ describe('SessionRowSummary background status', () => {
             </I18nProvider>
         )
 
-        expectUnread()
-        expect(screen.getByTestId('session-background')).toHaveClass('bg-blue-500')
-        expect(container.querySelector('[data-testid="session-presence"]')).toHaveAttribute('data-presence', 'waiting')
+        expectRunningUnread()
+        expect(screen.getByTestId('session-activity').querySelector('svg')).toHaveClass('text-blue-500')
+        expect(container.querySelector('[data-testid="session-presence"]')).toHaveAttribute('data-presence', 'working')
     })
 
     it('shows a working spinner for hub-derived open tool work (autonomous rounds)', () => {
@@ -572,33 +574,35 @@ describe('SessionRowSummary combined activity and unread indicator', () => {
         expect(screen.queryByTestId('session-activity')).toBeNull()
     })
 
-    it('shows background-only work as a blue dot for both read and unread output', () => {
+    it('spins for background-only work, grey when read and blue when unread, until the work ends', () => {
         let session = makeSummary({ thinking: false, backgroundTaskCount: 1, contentRevision: 2 })
         markSessionSeen(session.id, 2)
         const row = () => <I18nProvider><SessionRowSummary session={session} lastSeenVersion={session.contentRevision} /></I18nProvider>
         const view = render(row())
-        expect(screen.getByTestId('session-background')).toHaveClass('bg-blue-500')
-        expect(screen.queryByTestId('session-activity')).toBeNull()
+        const spinner = () => screen.getByTestId('session-activity')
+        expect(spinner()).toHaveAttribute('data-activity', 'background')
+        expect(spinner().querySelector('svg')).toHaveClass('text-[var(--app-hint)]')
         expect(screen.queryByTestId('session-unread')).toBeNull()
         expect(screen.getByText('Background demo')).toHaveClass('font-normal')
 
+        // New output while a background subagent runs: the spinner turns blue,
+        // and the title keeps its weight so the row does not look finished.
         session = { ...session, contentRevision: 3 }
         view.rerender(row())
-        expect(screen.getByTestId('session-background')).toHaveClass('bg-blue-500')
-        expect(screen.queryByTestId('session-activity')).toBeNull()
+        expect(spinner().querySelector('svg')).toHaveClass('text-blue-500')
         expect(screen.queryByTestId('session-unread')).toBeNull()
-        expect(screen.getByText('Background demo')).toHaveClass('font-semibold')
+        expect(screen.getByText('Background demo')).toHaveClass('font-normal')
 
         session = { ...session, thinking: true }
         view.rerender(row())
-        expect(screen.queryByTestId('session-background')).toBeNull()
-        expect(screen.getByTestId('session-activity')).toBeVisible()
+        expect(spinner()).toHaveAttribute('data-activity', 'foreground')
 
+        // Only once all work has ended does the at-rest unread look appear.
         session = { ...session, thinking: false, backgroundTaskCount: 0 }
         view.rerender(row())
-        expect(screen.queryByTestId('session-background')).toBeNull()
         expect(screen.queryByTestId('session-activity')).toBeNull()
         expect(screen.getByTestId('session-unread')).toHaveClass('bg-[var(--app-fg)]')
+        expect(screen.getByText('Background demo')).toHaveClass('font-semibold')
     })
 
     it('returns to a grey spinner when running content is read, and keeps manual unread blue', () => {
