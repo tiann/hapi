@@ -6,6 +6,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import docsConfig from '../../docs/.vitepress/config'
+import { SUPPORTED_AGENTS } from '../src/const'
 
 const SITE = 'https://hapi.run'
 const DOCS_BASE = '/docs/'
@@ -85,9 +86,11 @@ const allPages = [...sections.flatMap((s) => s.pages), privacy]
 const llmsTxt = [
     '# HAPI',
     '',
-    '> HAPI is a local-first platform for running coding agents (Claude Code, Codex, Cursor, OpenCode, GitHub Copilot, Antigravity and more) on your own machine and controlling them remotely from the web app/PWA, native iOS, Android and macOS apps, or Telegram.',
+    `> HAPI is a local-first platform for running coding agents (${SUPPORTED_AGENTS.join(', ')}) on your own machine and controlling them remotely from the web app/PWA, native iOS, Android and macOS apps, or Telegram.`,
     '',
-    'The `hapi` CLI (npm package `@twsxtd/hapi`) wraps the official agent CLIs; a self-hosted hub relays sessions to clients over REST + SSE, optionally through an end-to-end encrypted relay (WireGuard + TLS). HAPI is open source under AGPL-3.0: https://github.com/tiann/hapi',
+    'The `hapi` CLI (npm package `@twsxtd/hapi`) wraps the official agent CLIs; a self-hosted hub relays sessions to clients over REST + SSE, optionally through an end-to-end encrypted relay (WireGuard + TLS). Quick start: `npx @twsxtd/hapi hub --relay`, then `npx @twsxtd/hapi`. The CLI, hub and web app/PWA are free and open source under AGPL-3.0 (https://github.com/tiann/hapi); the native iOS, Android and macOS apps are paid.',
+    '',
+    `Website: ${SITE}/ (English), ${SITE}/zh/ (简体中文)`,
     '',
     ...sections.flatMap((section) => [
         `## ${section.title}`,

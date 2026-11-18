@@ -1,28 +1,16 @@
-import NotFound from "@/pages/NotFound";
-import { Route, Switch } from "wouter";
-import ErrorBoundary from "./components/ErrorBoundary";
-import { ThemeProvider } from "./contexts/ThemeContext";
-import Home from "./pages/Home";
+import { LocaleProvider } from "./locale";
+import type { Locale, Page } from "./content";
+import { SiteHeader } from "./components/SiteHeader";
+import { SiteFooter } from "./components/SiteFooter";
+import { Home } from "./components/Home";
+import { NotFound } from "./components/NotFound";
 
-function Router() {
-  return (
-    <Switch>
-      <Route path={"/"} component={Home} />
-      <Route path={"/404"} component={NotFound} />
-      {/* Final fallback route */}
-      <Route component={NotFound} />
-    </Switch>
-  );
+export function App({ locale, page }: { locale: Locale; page: Page }) {
+    return (
+        <LocaleProvider locale={locale}>
+            <SiteHeader page={page} />
+            <main id="main">{page === "home" ? <Home /> : <NotFound />}</main>
+            <SiteFooter />
+        </LocaleProvider>
+    );
 }
-
-function App() {
-  return (
-    <ErrorBoundary>
-      <ThemeProvider defaultTheme="system" storageKey="hapi-theme">
-        <Router />
-      </ThemeProvider>
-    </ErrorBoundary>
-  );
-}
-
-export default App;

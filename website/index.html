@@ -1,75 +1,15 @@
 <!doctype html>
-<html lang="en">
-
+<html lang="<!--app-lang-->">
   <head>
     <meta charset="UTF-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1.0, maximum-scale=1" />
-    <title>HAPI - Vibe Coding Anytime, Anywhere</title>
-    <meta name="description" content="HAPI is the local-first platform for running coding agents like Claude Code, Codex, Cursor and more on your own machine, and controlling them from the web, iOS, Android or macOS." />
-    <link rel="canonical" href="https://hapi.run/" />
-    <link rel="alternate" hreflang="en" href="https://hapi.run/?lng=en" />
-    <link rel="alternate" hreflang="zh" href="https://hapi.run/?lng=zh" />
-    <link rel="alternate" hreflang="x-default" href="https://hapi.run/" />
-    <link rel="alternate" type="text/plain" title="llms.txt" href="https://hapi.run/llms.txt" />
-    <link rel="apple-touch-icon" href="/apple-touch-icon-180x180.png" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <link rel="icon" href="/favicon.ico" sizes="48x48" />
     <link rel="icon" href="/icon.svg" sizes="any" type="image/svg+xml" />
-
-    <meta property="og:type" content="website" />
-    <meta property="og:site_name" content="HAPI" />
-    <meta property="og:url" content="https://hapi.run/" />
-    <meta property="og:title" content="HAPI - Vibe Coding Anytime, Anywhere" />
-    <meta property="og:description" content="Run Claude Code, Codex, Cursor and more on your own machine and control them from the web, iOS, Android or macOS." />
-    <meta property="og:image" content="https://hapi.run/images/hero-illustration.webp" />
-    <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:creator" content="@tiann" />
-
-    <script type="application/ld+json">
-      {
-        "@context": "https://schema.org",
-        "@graph": [
-          {
-            "@type": "SoftwareApplication",
-            "@id": "https://hapi.run/#software",
-            "name": "HAPI",
-            "url": "https://hapi.run/",
-            "description": "Local-first platform for running coding agents (Claude Code, Codex, Cursor, OpenCode, GitHub Copilot, Antigravity and more) on your own machine and controlling them remotely from the web, iOS, Android or macOS.",
-            "applicationCategory": "DeveloperApplication",
-            "operatingSystem": "macOS, Linux, Windows",
-            "license": "https://www.gnu.org/licenses/agpl-3.0.html",
-            "isAccessibleForFree": true,
-            "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
-            "downloadUrl": "https://www.npmjs.com/package/@twsxtd/hapi",
-            "softwareHelp": "https://hapi.run/docs/",
-            "codeRepository": "https://github.com/tiann/hapi",
-            "sameAs": [
-              "https://github.com/tiann/hapi",
-              "https://apps.apple.com/app/id6805699104",
-              "https://play.google.com/store/apps/details?id=run.hapi.companion"
-            ]
-          },
-          {
-            "@type": "WebSite",
-            "@id": "https://hapi.run/#website",
-            "name": "HAPI",
-            "url": "https://hapi.run/",
-            "inLanguage": ["en", "zh"],
-            "about": { "@id": "https://hapi.run/#software" }
-          }
-        ]
-      }
-    </script>
-    <style>
-      .static-fallback { max-width: 48rem; margin: 0 auto; padding: 2rem 1.25rem; font-family: system-ui, sans-serif; line-height: 1.6; }
-      .static-fallback code { font-family: ui-monospace, monospace; }
-    </style>
+    <link rel="apple-touch-icon" href="/apple-touch-icon-180x180.png" />
+    <!--app-head-->
   </head>
-
   <body>
-    <div id="root"><!--static-fallback--></div>
-    <script type="module" src="/src/main.tsx"></script>
+    <div id="root"><!--app-html--></div>
+    <script type="module" src="/src/entry-client.tsx"></script>
   </body>
-
 </html>
