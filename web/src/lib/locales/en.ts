@@ -1,4 +1,11 @@
 export default {
+  'searchHistory.title': 'Search history',
+  'searchHistory.local': 'Stored only in this browser for the current Hub and account. History is not synced across devices.',
+  'searchHistory.description': 'Save recent session, file, and outline searches. Turning this off hides history and stops saving; existing entries are kept.',
+  'searchHistory.recent': 'Recent searches',
+  'searchHistory.clear': 'Clear history',
+  'searchHistory.clearAll': 'Clear search history',
+  'searchHistory.remove': 'Remove search: {query}',
   // Loading states
   'loading': 'Loading…',
   'authorizing': 'Authorizing…',

@@ -1,4 +1,11 @@
 export default {
+  'searchHistory.title': '搜索历史',
+  'searchHistory.local': '仅保存在此浏览器中，按当前 Hub 和账号区分，不会跨设备同步。',
+  'searchHistory.description': '保存最近的会话、文件和大纲搜索。关闭后隐藏历史并停止保存，已有记录仍会保留。',
+  'searchHistory.recent': '最近搜索',
+  'searchHistory.clear': '清空历史',
+  'searchHistory.clearAll': '清空搜索历史',
+  'searchHistory.remove': '删除搜索：{query}',
   // Loading states
   'loading': '加载中…',
   'authorizing': '认证中…',
