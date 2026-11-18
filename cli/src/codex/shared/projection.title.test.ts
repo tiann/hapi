@@ -119,6 +119,17 @@ describe('shared Codex titles', () => {
         expect(f.update).toHaveBeenCalledTimes(1);
     });
 
+    it('restores a historical title from a baseline turn without replaying it (#2086)', async () => {
+        const f = fixture();
+        f.update(metadata => {
+            const { name: _ignored, ...rest } = metadata;
+            return rest as Metadata;
+        });
+        await f.projection.history(history(titleItem('title', 'Legacy')), { turns: new Set(['turn']), capture: false, before: 0 });
+        expect(f.metadata().name).toBe('Legacy');
+        expect(f.send).not.toHaveBeenCalled();
+    });
+
     it('never overwrites an existing display title during a cold history replay', async () => {
         const f = fixture();
         f.update(metadata => ({ ...metadata, summary: { text: 'Existing', updatedAt: 123 } }));

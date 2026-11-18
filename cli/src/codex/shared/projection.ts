@@ -44,6 +44,36 @@ function metadataHasDisplayTitle(metadata: { name?: string; summary?: { text: st
     return Boolean(metadata?.name?.trim() || metadata?.summary?.text?.trim());
 }
 
+/** `before` (unix seconds) bounds capture to turns that predate the bind. */
+export type HistoryBaseline = { turns: Set<string>; capture: boolean; before: number };
+
+/** Use matching message order to distinguish repeated text in separate turns. */
+export function captureImportedTurns(thread: unknown, messages: Array<{ role: 'user' | 'agent'; text: string }>, baseline: HistoryBaseline): void {
+    const turns = record(thread).turns;
+    if (!Array.isArray(turns)) return;
+    let index = 0;
+    for (const value of turns) {
+        const turn = record(value);
+        const turnId = string(turn.id);
+        if (!turnId || turn.status !== 'completed' || !Array.isArray(turn.items)) break;
+        const comparable = turn.items.flatMap<{ role: 'user' | 'agent'; text: string }>(item => {
+            const raw = record(item);
+            if (raw.type === 'userMessage') {
+                const text = userMessageDisplayText(raw);
+                return text ? [{ role: 'user', text }] : [];
+            }
+            const text = raw.type === 'agentMessage' ? string(raw.text) : undefined;
+            return text ? [{ role: 'agent', text }] : [];
+        });
+        if (comparable.at(-1)?.role !== 'agent' || comparable.some(({ role, text }, offset) => {
+            const stored = messages[index + offset];
+            return stored?.role !== role || stored.text !== text;
+        })) break;
+        baseline.turns.add(turnId);
+        index += comparable.length;
+    }
+}
+
 /** Canonical V2 stream only. Stable message IDs also deduplicate snapshot replay at the hub. */
 export class SharedCodexProjection {
     private converter = new AppServerEventConverter();
@@ -331,7 +361,8 @@ export class SharedCodexProjection {
         this.generation.noteTokenUsage(0);
     }
 
-    async history(thread: unknown): Promise<void> {
+    /** Baseline turns were stored before stable replay ids, so never replay them. */
+    async history(thread: unknown, baseline?: HistoryBaseline): Promise<void> {
         if (record(thread).id === this.threadId) this.summaryThread = thread;
         const turns = record(thread).turns;
         if (!Array.isArray(turns)) return;
@@ -340,6 +371,12 @@ export class SharedCodexProjection {
         for (const value of turns) {
             const turn = record(value);
             if (!Array.isArray(turn.items)) continue;
+            const turnId = string(turn.id);
+            const startedAt = typeof turn.startedAt === 'number' ? turn.startedAt : undefined;
+            if (turnId && baseline?.capture && turn.status !== 'inProgress' && (startedAt === undefined || startedAt < baseline.before)) {
+                baseline.turns.add(turnId);
+            }
+            const skip = Boolean(turnId && baseline?.turns.has(turnId));
             for (const item of turn.items) {
                 const params = { threadId: this.threadId, turnId: turn.id, item };
                 const titleKey = `${string(turn.id) ?? 'thread'}:${record(item).id}`;
@@ -347,7 +384,11 @@ export class SharedCodexProjection {
                 if (!this.parentThreadId && string(record(item).id) && pendingTitle && !this.completedTitles.has(titleKey)) {
                     this.pendingTitles.set(titleKey, pendingTitle);
                 }
-                await this.project('item/started', params, undefined, true);
+                // Stored before stable ids: emit nothing, but keep title repair
+                // and prove acceptance so a redelivered input never runs twice.
+                const clientId = string(record(item).clientId ?? record(item).clientUserMessageId);
+                if (!skip) await this.project('item/started', params, undefined, true);
+                else if (!this.parentThreadId && record(item).type === 'userMessage' && clientId) await this.committed(clientId);
                 // Active snapshots can contain partial assistant text. Do not
                 // settle it under the final stable id and suppress completion.
                 if (turn.status !== 'inProgress' || record(item).status === 'completed' || record(item).type === 'userMessage'
@@ -360,7 +401,7 @@ export class SharedCodexProjection {
                         }
                         this.pendingTitles.delete(titleKey);
                     }
-                    await this.project('item/completed', params, undefined, true);
+                    if (!skip) await this.project('item/completed', params, undefined, true);
                 }
             }
         }

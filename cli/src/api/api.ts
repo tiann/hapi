@@ -8,6 +8,7 @@ import type { LocalResumeTarget, LocalResumeTargetByAgentResponse, ResumableSess
 import {
     AgentStateSchema,
     ClearOpencodeSessionResponseSchema,
+    CliMessagesResponseSchema,
     CreateMachineResponseSchema,
     CreateSessionResponseSchema,
     GetSessionResponseSchema,
@@ -162,6 +163,18 @@ export class ApiClient {
             permissionMode: raw.permissionMode,
             collaborationMode: raw.collaborationMode
         }
+    }
+
+    async getSessionMessages(sessionId: string, afterSeq: number, limit: number) {
+        const response = await axios.get(
+            `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}/messages`,
+            { params: { afterSeq, limit }, headers: this.authHeaders(), timeout: 15_000 }
+        )
+        const parsed = CliMessagesResponseSchema.safeParse(response.data)
+        if (!parsed.success) {
+            throw apiValidationError('Invalid /cli/sessions/:id/messages response', response)
+        }
+        return parsed.data.messages
     }
 
     async getSession(sessionId: string): Promise<Session> {

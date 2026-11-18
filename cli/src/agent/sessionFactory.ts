@@ -163,6 +163,7 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     if (metadata.claudeSessionIdHistory !== undefined) preserved.claudeSessionIdHistory = metadata.claudeSessionIdHistory
     if (metadata.codexSessionId !== undefined) preserved.codexSessionId = metadata.codexSessionId
     if (metadata.codexRuntime !== undefined) preserved.codexRuntime = metadata.codexRuntime
+    if (metadata.codexImportedAt !== undefined) preserved.codexImportedAt = metadata.codexImportedAt
     if (metadata.codexSourceSessionId !== undefined) preserved.codexSourceSessionId = metadata.codexSourceSessionId
     if (metadata.geminiSessionId !== undefined) preserved.geminiSessionId = metadata.geminiSessionId
     if (metadata.opencodeSessionId !== undefined) preserved.opencodeSessionId = metadata.opencodeSessionId
@@ -199,6 +200,9 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     if (metadata.opencodeForkPending !== undefined) preserved.opencodeForkPending = metadata.opencodeForkPending
     if (metadata.conversationHistoryTurns !== undefined) {
         preserved.conversationHistoryTurns = metadata.conversationHistoryTurns
+    }
+    if (metadata.codexHistoryBaseline !== undefined) {
+        preserved.codexHistoryBaseline = metadata.codexHistoryBaseline
     }
     if (metadata.conversationHistoryEntryIds !== undefined) {
         preserved.conversationHistoryEntryIds = metadata.conversationHistoryEntryIds
@@ -409,6 +413,8 @@ export async function bootstrapExistingSession(options: {
     startedBy?: SessionStartedBy
     workingDirectory: string
     metadataOverrides?: Partial<Metadata>
+    /** Derived from the persisted row before `metadataOverrides` replace it. */
+    deriveMetadata?: (current: Metadata | null | undefined) => Partial<Metadata>
     requireMetadataFlush?: (metadata: Metadata | null | undefined) => boolean
 }): Promise<SessionBootstrapResult> {
     const startedBy = options.startedBy ?? 'terminal'
@@ -458,6 +464,7 @@ export async function bootstrapExistingSession(options: {
             ...baseMetadata,
             ...preserved,
             ...options.metadataOverrides,
+            ...options.deriveMetadata?.(current),
             capabilities: {
                 ...baseMetadata.capabilities,
                 ...preserved.capabilities,
