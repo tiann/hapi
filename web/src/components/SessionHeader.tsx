@@ -1,4 +1,5 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { NativeAppPromoButton } from '@/components/NativeAppPromo'
 import { useIsMutating, useQueryClient } from '@tanstack/react-query'
 import type { Session } from '@/types/api'
 import type { ApiClient } from '@/api/client'
@@ -571,6 +572,8 @@ export function SessionHeader(props: {
                             <TerminalIcon />
                         </button>
                     ) : null}
+
+                    <NativeAppPromoButton className="hidden split:block" />
 
                     <button
                         type="button"
