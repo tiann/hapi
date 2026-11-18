@@ -4,7 +4,9 @@
     "howItWorks": "How it Works",
     "installation": "Installation",
     "getStarted": "Get Started",
-    "viewOnGithub": "View on GitHub"
+    "viewOnGithub": "View on GitHub",
+    "docs": "Docs",
+    "whyHapi": "Why HAPI"
   },
   "hero": {
     "version": "{{version}} is now available",
@@ -14,7 +16,7 @@
     "githubBtn": "View on GitHub",
     "appStore": "App Store",
     "googlePlay": "Google Play",
-    "appsNote": "Native iOS/Android apps are paid. The web app/PWA is free.",
+    "appsNote": "Native iOS, Android and macOS apps are paid (the App Store purchase also runs on Apple silicon Macs). The web app/PWA is free.",
     "notification": {
       "title": "Instant Notification",
       "content": "\"Task completed! 3 files updated.<br/>Ready for review?\""
@@ -23,23 +25,23 @@
   "showcase": {
     "handoff": "Seamless Handoff",
     "title": "Start on Desktop. <br class=\"hidden md:block\" /> <span class=\"text-primary\">Continue Anywhere. Switch Back Anytime.</span>",
-    "subtitle": "Your session lives on your machine. Your phone is just a window. Work locally with native Claude Code or Codex, switch to remote when away, double-space to switch back instantly.",
+    "subtitle": "Your session lives on your machine. Your phone is just a window. Work locally in your agent's own terminal UI, switch to remote when away, double-space to switch back instantly.",
     "localCore": {
       "title": "Local Core",
       "desc": "Heavy lifting happens on your powerful desktop machine. No cloud limits."
     },
     "remoteControl": {
       "title": "Remote Control",
-      "desc": "Continue sessions from native iOS/Android apps, the PWA, or Telegram Mini App."
+      "desc": "Continue sessions from native iOS, Android and macOS apps, the PWA, or the Telegram Mini App."
     },
     "modeSwitch": {
       "title": "Switch Freely",
-      "desc": "Move between terminal and mobile seamlessly. Double-space to return to local. Session state stays perfectly synced."
+      "desc": "Move between terminal and mobile seamlessly. Double-space to return to local. Session state stays in sync."
     },
     "screenshots": {
       "startAnywhere": {
         "title": "Start Anywhere",
-        "desc": "Launch sessions with Claude, Codex, or Gemini directly from your phone."
+        "desc": "Launch Claude Code, Codex, Cursor and more directly from your phone."
       },
       "seamlessChat": {
         "title": "Seamless Chat",
@@ -55,7 +57,7 @@
       },
       "powerfulCommands": {
         "title": "Powerful Commands",
-        "desc": "Use /review, /undo, and more to control the agent efficiently."
+        "desc": "Use your agent's slash commands, like /review, right from the composer."
       },
       "manageWorkspaces": {
         "title": "Manage Workspaces",
@@ -83,17 +85,59 @@
   },
   "features": {
     "title": "Power When You Need It",
-    "telegram": {
-      "title": "Messaging App Integration",
-      "desc": "The perfect balance of distance and control. Get notified via Telegram or other apps only when your input is truly needed."
+    "subtitle": "Everything you need to run real coding work from anywhere, without giving up the tools you already use.",
+    "agents": {
+      "title": "Your Agent, Your Choice",
+      "desc": "HAPI wraps the official agent CLIs instead of replacing them. Same terminal, same experience, one unified workflow for remote control.",
+      "hint": "Start any of them with <code>hapi &lt;agent&gt;</code>, or run <code>hapi</code> to pick one."
     },
-    "yolo": {
-      "title": "YOLO Mode",
-      "desc": "Trust your agents? Enable YOLO mode to bypass approvals and let them sprint while you sleep."
+    "apps": {
+      "title": "Native Apps + PWA",
+      "desc": "Paid native apps for iOS, Android and macOS, plus a free, full-featured web app that installs as a PWA."
+    },
+    "passkey": {
+      "title": "Passkey Sign-in",
+      "desc": "Sign in with Face ID, Touch ID, Windows Hello or a security key. The same passkey works in the web app and the native apps."
+    },
+    "relay": {
+      "title": "Encrypted Relay",
+      "desc": "Run <code>hapi hub --relay</code> for a public URL with no port forwarding. Traffic is end-to-end encrypted with WireGuard + TLS; the relay only forwards opaque packets."
+    },
+    "notifications": {
+      "title": "Push Notifications",
+      "desc": "Get notified when a session needs input, asks for permission, fails or completes, via native push, Web Push, Telegram and more."
+    },
+    "peers": {
+      "title": "Peer Sessions",
+      "desc": "Agents can list, inspect, message and spawn other HAPI sessions, so one agent can delegate work to another."
+    },
+    "branch": {
+      "title": "Fork, Branch & Rewind",
+      "desc": "Fork a conversation, rewind to an earlier message, or branch from a user turn into a new Claude Code or Codex session, even across harnesses. Availability depends on the agent."
+    },
+    "steer": {
+      "title": "Mid-turn Steer",
+      "desc": "Send a follow-up while the agent is still working and steer it into the running turn, on agents that support it."
+    },
+    "sessions": {
+      "title": "Find Any Session",
+      "desc": "Search, sort and filter your sessions, with active, archived and unread views, on the web and in the native apps."
+    },
+    "voice": {
+      "title": "Voice Control",
+      "desc": "Talk to your agent hands-free with the web voice assistant, or dictate messages and review them before sending."
+    },
+    "usage": {
+      "title": "Usage & Plan Quota",
+      "desc": "Track token usage across sessions and see your agent accounts' plan quotas and rate limits in Settings → Usage."
+    },
+    "jobs": {
+      "title": "Session-attached Jobs",
+      "desc": "Long-running work that outlives the agent, like batch imports or overnight scripts, shows its progress right on the session list."
     },
     "terminal": {
       "title": "Full Terminal Access",
-      "desc": "Open the terminal in your phone's browser or desktop web app to run commands on your working machine."
+      "desc": "Open a terminal in your phone's browser or the desktop web app to run commands on your working machine."
     }
   },
   "howItWorks": {
@@ -104,7 +148,7 @@
     },
     "step2": {
       "title": "2. Connect Mobile",
-      "desc": "Open the free web app/PWA or Mini App, or pair the native iOS/Android app with your hub to control your sessions."
+      "desc": "Open the free web app/PWA or Mini App, or pair the native iOS, Android or macOS app with your hub to control your sessions."
     },
     "step3": {
       "title": "3. Vibe Code",
@@ -118,7 +162,8 @@
       "step1": "1. Start the Server",
       "step2": "2. Start a Coding Session",
       "step3": "3. Open the URL",
-      "step3Hint": "URL and QR code shown in terminal"
+      "step3Hint": "URL and QR code shown in terminal",
+      "step2Hint": "Or start an agent directly with <code>npx @twsxtd/hapi claude</code>, <code>… codex</code>, <code>… cursor</code> and so on. Installed globally, it's just <code>hapi &lt;agent&gt;</code>."
     }
   },
   "cta": {

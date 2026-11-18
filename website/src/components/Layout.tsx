@@ -83,9 +83,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             <div>
               <h3 className="font-bold mb-4">{t('footer.product')}</h3>
               <ul className="space-y-2 text-sm text-muted-foreground">
-                <li><a href="#features" className="hover:text-foreground transition-colors">{t('nav.features')}</a></li>
-                <li><a href="#how-it-works" className="hover:text-foreground transition-colors">{t('nav.howItWorks')}</a></li>
-                <li><a href="#installation" className="hover:text-foreground transition-colors">{t('nav.installation')}</a></li>
+                <li><a href="/#features" className="hover:text-foreground transition-colors">{t('nav.features')}</a></li>
+                <li><a href="/#how-it-works" className="hover:text-foreground transition-colors">{t('nav.howItWorks')}</a></li>
+                <li><a href="/#installation" className="hover:text-foreground transition-colors">{t('nav.installation')}</a></li>
+                <li><a href="/docs/" className="hover:text-foreground transition-colors">{t('nav.docs')}</a></li>
+                <li><a href="/docs/guide/why-hapi" className="hover:text-foreground transition-colors">{t('nav.whyHapi')}</a></li>
               </ul>
             </div>
 

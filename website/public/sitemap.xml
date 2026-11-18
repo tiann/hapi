@@ -1,11 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">
   <url>
-    <loc>https://hapi.manus.space/</loc>
-    <lastmod>2025-01-01</lastmod>
+    <loc>https://hapi.run/</loc>
+    <lastmod>2026-11-18</lastmod>
     <changefreq>weekly</changefreq>
     <priority>1.0</priority>
-    <xhtml:link rel="alternate" hreflang="en" href="https://hapi.manus.space/?lng=en"/>
-    <xhtml:link rel="alternate" hreflang="zh" href="https://hapi.manus.space/?lng=zh"/>
+    <xhtml:link rel="alternate" hreflang="en" href="https://hapi.run/?lng=en"/>
+    <xhtml:link rel="alternate" hreflang="zh" href="https://hapi.run/?lng=zh"/>
+  </url>
+  <url>
+    <loc>https://hapi.run/docs/guide/quick-start</loc>
+    <lastmod>2026-11-18</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.8</priority>
   </url>
 </urlset>

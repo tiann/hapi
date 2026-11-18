@@ -4,7 +4,9 @@
     "howItWorks": "工作原理",
     "installation": "安装指南",
     "getStarted": "立即开始",
-    "viewOnGithub": "GitHub"
+    "viewOnGithub": "GitHub",
+    "docs": "文档",
+    "whyHapi": "为什么选 HAPI"
   },
   "hero": {
     "version": "{{version}} 现已发布",
@@ -14,7 +16,7 @@
     "githubBtn": "查看 GitHub",
     "appStore": "App Store",
     "googlePlay": "Google Play",
-    "appsNote": "iOS/Android 原生 App 为付费应用，Web/PWA 免费使用。",
+    "appsNote": "iOS、Android 和 macOS 原生 App 为付费应用（App Store 购买后也可在 Apple 芯片的 Mac 上使用），Web/PWA 免费使用。",
     "notification": {
       "title": "即时通知",
       "content": "\"任务完成！更新了 3 个文件。<br/>准备好审查了吗？\""
@@ -23,23 +25,23 @@
   "showcase": {
     "handoff": "无缝切换",
     "title": "始于桌面，<br class=\"hidden md:block\" /> <span class=\"text-primary\">续于任何地方，随时切回。</span>",
-    "subtitle": "会话驻留在你的电脑上，手机只是一个窗口。本地就是原生 Claude Code 或 Codex，外出时切换到手机，双空格键瞬间切回本地。",
+    "subtitle": "会话驻留在你的电脑上，手机只是一个窗口。在本地照常使用代理自己的终端界面，外出时切换到手机，按两下空格即可切回本地。",
     "localCore": {
       "title": "本地核心",
       "desc": "繁重的计算在你的高性能桌面上完成。没有云端限制。"
     },
     "remoteControl": {
       "title": "远程控制",
-      "desc": "通过 iOS/Android 原生 App、PWA 或 Telegram 小程序继续会话。"
+      "desc": "通过 iOS、Android、macOS 原生 App、PWA 或 Telegram 小程序继续会话。"
     },
     "modeSwitch": {
       "title": "自由切换",
-      "desc": "在终端和手机之间无缝切换。双空格键切回本地。会话状态完美同步。"
+      "desc": "在终端和手机之间无缝切换，按两下空格切回本地，会话状态始终同步。"
     },
     "screenshots": {
       "startAnywhere": {
         "title": "随时开始",
-        "desc": "直接从手机启动 Claude、Codex 或 Gemini 会话。"
+        "desc": "直接从手机启动 Claude Code、Codex、Cursor 等代理的会话。"
       },
       "seamlessChat": {
         "title": "无缝对话",
@@ -55,7 +57,7 @@
       },
       "powerfulCommands": {
         "title": "强大指令",
-        "desc": "使用 /review, /undo 等指令高效控制代理。"
+        "desc": "直接在输入框中使用代理自带的斜杠命令，例如 /review。"
       },
       "manageWorkspaces": {
         "title": "工作区管理",
@@ -83,13 +85,55 @@
   },
   "features": {
     "title": "随需而动的力量",
-    "telegram": {
-      "title": "即时通讯集成",
-      "desc": "距离与控制的完美平衡。通过 Telegram 或其他应用，只在真正需要你输入时才通知你。"
+    "subtitle": "随时随地处理真正的编码工作，无需放弃你已经在用的工具。",
+    "agents": {
+      "title": "代理由你选择",
+      "desc": "HAPI 包装官方代理 CLI，而不是取代它们。终端还是那个终端，体验还是那个体验，远程控制只需一套统一的流程。",
+      "hint": "使用 <code>hapi &lt;agent&gt;</code> 直接启动任意代理，或运行 <code>hapi</code> 交互式选择。"
     },
-    "yolo": {
-      "title": "YOLO 模式",
-      "desc": "信任你的代理？开启 YOLO 模式，跳过审批，让你在睡梦中也能飞速开发。"
+    "apps": {
+      "title": "原生 App + PWA",
+      "desc": "付费的 iOS、Android、macOS 原生 App，以及免费、功能完整、可安装为 PWA 的 Web 应用。"
+    },
+    "passkey": {
+      "title": "通行密钥登录",
+      "desc": "使用面容 ID、触控 ID、Windows Hello 或安全密钥登录。同一个通行密钥在 Web 和原生 App 中通用。"
+    },
+    "relay": {
+      "title": "加密中继",
+      "desc": "运行 <code>hapi hub --relay</code> 即可获得公网地址，无需端口转发。流量经 WireGuard + TLS 端到端加密，中继只转发无法解读的数据包。"
+    },
+    "notifications": {
+      "title": "推送通知",
+      "desc": "会话需要输入、请求权限、出错或完成时，通过原生推送、Web Push、Telegram 等渠道及时通知你。"
+    },
+    "peers": {
+      "title": "会话协作",
+      "desc": "代理可以列出、查看、发消息给其他 HAPI 会话，甚至创建新会话，把工作委派给另一个代理。"
+    },
+    "branch": {
+      "title": "分叉、分支与回退",
+      "desc": "分叉对话、回退到之前的消息，或从某条用户消息分支出新的 Claude Code 或 Codex 会话，甚至可以跨代理。具体能力取决于代理。"
+    },
+    "steer": {
+      "title": "运行中引导",
+      "desc": "代理仍在工作时发送补充消息，直接并入当前这一轮，及时调整方向（需代理支持）。"
+    },
+    "sessions": {
+      "title": "快速找到会话",
+      "desc": "在 Web 和原生 App 中搜索、排序和筛选会话，可按活跃、已归档或未读查看。"
+    },
+    "voice": {
+      "title": "语音控制",
+      "desc": "通过 Web 语音助手解放双手与代理对话，或用语音输入消息，确认后再发送。"
+    },
+    "usage": {
+      "title": "用量与套餐额度",
+      "desc": "在「设置 → 用量」中查看各会话的 token 用量，以及代理账号的套餐额度和速率限制。"
+    },
+    "jobs": {
+      "title": "会话附属任务",
+      "desc": "批量导入、通宵脚本等比代理活得更久的长任务，会直接在会话列表上显示进度。"
     },
     "terminal": {
       "title": "全功能终端访问",
@@ -104,7 +148,7 @@
     },
     "step2": {
       "title": "2. 移动连接",
-      "desc": "打开免费的 Web/PWA 或小程序，或将 iOS/Android 原生 App 与 Hub 配对，来控制会话。"
+      "desc": "打开免费的 Web/PWA 或小程序，或将 iOS、Android、macOS 原生 App 与 Hub 配对，来控制会话。"
     },
     "step3": {
       "title": "3. Vibe Code",
@@ -118,7 +162,8 @@
       "step1": "1. 启动服务器",
       "step2": "2. 启动编码会话",
       "step3": "3. 打开 URL",
-      "step3Hint": "终端中显示 URL 和二维码"
+      "step3Hint": "终端中显示 URL 和二维码",
+      "step2Hint": "也可以直接指定代理启动：<code>npx @twsxtd/hapi claude</code>、<code>… codex</code>、<code>… cursor</code> 等。全局安装后只需 <code>hapi &lt;agent&gt;</code>。"
     }
   },
   "cta": {

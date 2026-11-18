@@ -2,14 +2,29 @@ import Layout from "@/components/Layout";
 import AppShowcase from "@/components/AppShowcase";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Apple, ArrowRight, Check, Code2, Copy, Globe, Laptop, Lock, MessageSquare, Smartphone, Terminal, Zap, GitBranch, ShieldAlert, Coffee, Mountain, Footprints, Play } from "lucide-react";
+import { Activity, Apple, ArrowRight, Bell, Check, Coffee, Copy, Footprints, Gauge, GitBranch, Globe, KeyRound, Laptop, Lock, MessageSquare, Mic, Mountain, Navigation, Play, Search, Smartphone, Terminal, Users, Zap, type LucideIcon } from "lucide-react";
 import { useState } from "react";
-import { Link } from "wouter";
 import { motion, useScroll, useTransform } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import { SEO } from "@/components/SEO";
 import { useLatestVersion } from "@/hooks/useLatestVersion";
-import { APP_STORE_URL, GOOGLE_PLAY_URL } from "@/const";
+import { APP_STORE_URL, GOOGLE_PLAY_URL, SUPPORTED_AGENTS } from "@/const";
+
+
+const FEATURES: { key: string; icon: LucideIcon; tint: string }[] = [
+  { key: "apps", icon: Smartphone, tint: "bg-primary/10 text-primary" },
+  { key: "passkey", icon: KeyRound, tint: "bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400" },
+  { key: "relay", icon: Lock, tint: "bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400" },
+  { key: "notifications", icon: Bell, tint: "bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400" },
+  { key: "peers", icon: Users, tint: "bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400" },
+  { key: "branch", icon: GitBranch, tint: "bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400" },
+  { key: "steer", icon: Navigation, tint: "bg-pink-100 dark:bg-pink-900/30 text-pink-600 dark:text-pink-400" },
+  { key: "sessions", icon: Search, tint: "bg-secondary text-secondary-foreground" },
+  { key: "voice", icon: Mic, tint: "bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400" },
+  { key: "usage", icon: Gauge, tint: "bg-teal-100 dark:bg-teal-900/30 text-teal-600 dark:text-teal-400" },
+  { key: "jobs", icon: Activity, tint: "bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400" },
+  { key: "terminal", icon: Terminal, tint: "bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300" },
+];
 
 export default function Home() {
   const [copied, setCopied] = useState("");
@@ -191,52 +206,56 @@ export default function Home() {
       {/* Features Section */}
       <section id="features" className="py-20">
         <div className="container">
-          <div className="flex flex-col lg:flex-row gap-16 items-center">
+          <div className="text-center max-w-3xl mx-auto mb-16">
+            <h2 className="text-3xl md:text-4xl font-bold mb-6">{t('features.title')}</h2>
+            <p className="text-lg text-muted-foreground">{t('features.subtitle')}</p>
+          </div>
+
+          <div className="flex flex-col lg:flex-row gap-16 items-center mb-20">
             <div className="lg:w-1/2">
               <div className="relative rounded-[1.5rem] overflow-hidden border-2 border-border shadow-hard-lg bg-white">
-                <img 
-                  src="/images/multi-agent.webp" 
-                  alt="Multi-Agent Support" 
+                <img
+                  src="/images/multi-agent.webp"
+                  alt="Multi-Agent Support"
                   className="w-full h-auto object-cover"
                 />
               </div>
             </div>
-            
-            <div className="lg:w-1/2 space-y-8">
-              <h2 className="text-3xl md:text-4xl font-bold">{t('features.title')}</h2>
-              
-              <div className="space-y-6">
-                <div className="flex gap-4">
-                  <div className="h-10 w-10 shrink-0 rounded-lg bg-primary/10 border-2 border-border flex items-center justify-center text-primary font-bold">
-                    <MessageSquare className="h-5 w-5" />
-                  </div>
-                  <div>
-                    <h3 className="text-xl font-bold mb-2">{t('features.telegram.title')}</h3>
-                    <p className="text-muted-foreground">{t('features.telegram.desc')}</p>
-                  </div>
-                </div>
 
-                <div className="flex gap-4">
-                  <div className="h-10 w-10 shrink-0 rounded-lg bg-red-100 border-2 border-border flex items-center justify-center text-red-600 font-bold">
-                    <ShieldAlert className="h-5 w-5" />
-                  </div>
-                  <div>
-                    <h3 className="text-xl font-bold mb-2">{t('features.yolo.title')}</h3>
-                    <p className="text-muted-foreground">{t('features.yolo.desc')}</p>
-                  </div>
-                </div>
-
-                <div className="flex gap-4">
-                  <div className="h-10 w-10 shrink-0 rounded-lg bg-secondary border-2 border-border flex items-center justify-center text-secondary-foreground font-bold">
-                    <Terminal className="h-5 w-5" />
-                  </div>
-                  <div>
-                    <h3 className="text-xl font-bold mb-2">{t('features.terminal.title')}</h3>
-                    <p className="text-muted-foreground">{t('features.terminal.desc')}</p>
-                  </div>
-                </div>
-              </div>
+            <div className="lg:w-1/2 space-y-6">
+              <h3 className="text-2xl md:text-3xl font-bold">{t('features.agents.title')}</h3>
+              <p className="text-lg text-muted-foreground">{t('features.agents.desc')}</p>
+              <ul className="flex flex-wrap gap-3">
+                {SUPPORTED_AGENTS.map((agent) => (
+                  <li key={agent} className="px-4 py-2 rounded-full bg-card border-2 border-border shadow-hard-sm text-sm font-bold">
+                    {agent}
+                  </li>
+                ))}
+              </ul>
+              <p
+                className="text-muted-foreground [&_code]:font-mono [&_code]:text-sm [&_code]:bg-muted [&_code]:px-1.5 [&_code]:py-0.5 [&_code]:rounded"
+                dangerouslySetInnerHTML={{ __html: t('features.agents.hint') }}
+              />
             </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+            {FEATURES.map(({ key, icon: Icon, tint }) => (
+              <Card key={key} className="border-2 border-border shadow-hard hover-lift bg-card">
+                <CardHeader>
+                  <div className={`w-12 h-12 rounded-xl border-2 border-border flex items-center justify-center mb-4 ${tint}`}>
+                    <Icon className="h-6 w-6" />
+                  </div>
+                  <CardTitle>{t(`features.${key}.title`)}</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p
+                    className="text-muted-foreground [&_code]:font-mono [&_code]:text-sm [&_code]:bg-muted [&_code]:px-1 [&_code]:rounded"
+                    dangerouslySetInnerHTML={{ __html: t(`features.${key}.desc`) }}
+                  />
+                </CardContent>
+              </Card>
+            ))}
           </div>
         </div>
       </section>
@@ -308,6 +327,10 @@ export default function Home() {
                     {copied === "session" ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                   </Button>
                 </div>
+                <p
+                  className="text-sm text-muted-foreground [&_code]:font-mono [&_code]:bg-muted [&_code]:px-1 [&_code]:rounded"
+                  dangerouslySetInnerHTML={{ __html: t('installation.npm.step2Hint') }}
+                />
               </div>
 
               <div className="space-y-2">

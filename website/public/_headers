@@ -2,3 +2,7 @@
   Content-Type: application/json
 /.well-known/assetlinks.json
   Content-Type: application/json
+/llms.txt
+  Content-Type: text/plain; charset=utf-8
+/llms-full.txt
+  Content-Type: text/plain; charset=utf-8
