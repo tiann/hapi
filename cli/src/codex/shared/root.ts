@@ -215,7 +215,8 @@ export class SharedCodexRoot {
         if (!this.host.attached) this.bridge = await buildHapiMcpBridge(this.session, { exportSessionEnv: false, emitTitleSummary: false,
             skillLookup: { workingDirectory: this.bootstrap.workingDirectory, flavor: 'codex' } });
         await initializeSharedClient(this.client);
-        this.asyncQuestions = new SharedCodexAsyncQuestions(this.session, (threadId, text, id) => this.submitQuestionAnswer(threadId, text, id));
+        this.asyncQuestions = new SharedCodexAsyncQuestions(this.session, (threadId, text, id) => this.submitQuestionAnswer(threadId, text, id),
+            this.bootstrap.sessionInfo.agentState?.completedRequests);
         this.permissions = new SharedCodexPermissions(this.session, this.client, this.host.generation, reply => this.asyncQuestions.answer(reply), this.userWaitFor);
         this.client.setServerRequestHandler(request => { void this.receiveRequest(request); });
     }
