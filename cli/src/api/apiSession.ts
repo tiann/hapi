@@ -508,6 +508,11 @@ export class ApiSessionClient extends EventEmitter {
         return this.metadata
     }
 
+    /** The latest agent state this client holds (stored state right after a resume). */
+    getAgentStateSnapshot(): AgentState | null {
+        return this.agentState
+    }
+
     isPending(): boolean {
         return this.state === 'pending' || this.state === 'materializing'
     }

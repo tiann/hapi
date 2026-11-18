@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import agySteeredTurn from './__fixtures__/agy-steered-turn.json';
-import type { AgentMessage } from '@/agent/types';
+import type { AgentMessage, PermissionRequest } from '@/agent/types';
 import { logger } from '@/ui/logger';
 import { AcpSdkBackend } from './AcpSdkBackend';
 import { AcpMessageHandler } from './AcpMessageHandler';
@@ -315,7 +315,7 @@ describe('AcpSdkBackend', () => {
             }
         });
 
-        expect(capturedRequestId).toBe('tool-approve');
+        expect(capturedRequestId).toMatch(/^tool-approve#[0-9a-f-]{36}$/);
     });
 
     it('uses session/set_model by default (gemini flavor)', async () => {
@@ -2441,8 +2441,10 @@ describe('AcpSdkBackend', () => {
         backend.setAgentActivityListener((thinking) => {
             activity.push(thinking);
         });
-        backend.onPermissionRequest(() => {
+        let request: PermissionRequest | null = null;
+        backend.onPermissionRequest((received) => {
             // leave pending; we only care that activity fired first
+            request = received;
         });
 
         const backendInternal = backend as unknown as {
@@ -2462,14 +2464,8 @@ describe('AcpSdkBackend', () => {
 
         expect(activity).toEqual([true]);
         // Cancel so the promise does not hang the suite.
-        await backend.respondToPermission('session-1', {
-            id: 'tc-1',
-            sessionId: 'session-1',
-            toolCallId: 'tc-1',
-            title: 'Shell',
-            kind: 'execute',
-            options: []
-        }, { outcome: 'cancelled' });
+        expect(request).not.toBeNull();
+        await backend.respondToPermission('session-1', request!, { outcome: 'cancelled' });
         await pending;
     });
 });

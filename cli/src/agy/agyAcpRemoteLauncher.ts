@@ -1688,13 +1688,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // Only a live turn can be asked on: after Stop, or once that turn has
         // ended, nothing would settle the card.
         if (!this.turn || this.turn.aborted || this.shouldExit) return { action: 'cancel' };
-        // Keyed by agy's tool call so the card shows on it, unless that id
-        // was already used for a request.
-        const id = form.toolCallId && !permissionHandler.isUsed(form.toolCallId)
-            ? form.toolCallId
+        // Shown on agy's tool call card (toolCallId). The request id is the
+        // backend's id for this question, unless that id was already used.
+        const preferredId = request.requestId ?? form.toolCallId;
+        const id = preferredId && !permissionHandler.isUsed(preferredId)
+            ? preferredId
             : `agy-question-${randomUUID()}`;
         const shownLabels = form.toolCallId ? this.questionLabels.get(form.toolCallId) : undefined;
-        const answer = await permissionHandler.askUser(id, QUESTION_TOOL_NAME, questionCardInput(form.questions));
+        const answer = await permissionHandler.askUser(id, QUESTION_TOOL_NAME, questionCardInput(form.questions), form.toolCallId ?? undefined);
         if (answer.decision === 'abort') return { action: 'cancel' };
         if (answer.decision === 'denied') return { action: 'decline' };
         const content = agyQuestionContent(form.questions, answer.answers, shownLabels);
