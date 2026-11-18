@@ -252,6 +252,22 @@ export function SessionListViewMenu(props: {
                                 onSelect={() => props.onChange({ unreadOnly: !props.view.unreadOnly })}
                             />
                         </div>
+                        <div className="mx-3 my-1 h-px bg-[var(--app-divider)]" />
+                        <div role="group" aria-label={t('sessions.view.density')}>
+                            <SectionLabel>{t('sessions.view.density')}</SectionLabel>
+                            <MenuRow
+                                role="menuitemcheckbox"
+                                label={t('sessions.view.compactRows')}
+                                checked={props.view.compactRows}
+                                onSelect={() => props.onChange({ compactRows: !props.view.compactRows })}
+                            />
+                            <MenuRow
+                                role="menuitemcheckbox"
+                                label={t('sessions.view.showPresenceBadge')}
+                                checked={props.view.showPresenceBadge}
+                                onSelect={() => props.onChange({ showPresenceBadge: !props.view.showPresenceBadge })}
+                            />
+                        </div>
                         {customized ? (
                             <>
                                 <div className="mx-3 my-1 h-px bg-[var(--app-divider)]" />

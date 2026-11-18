@@ -418,6 +418,35 @@ describe('SessionRowSummary attached job progress', () => {
         expect(faded!.contains(badge)).toBe(false)
     })
 
+    it('restarts the presence pulse when the badge pref is toggled back on', async () => {
+        vi.useFakeTimers()
+        try {
+            localStorage.setItem('hapi-session-list-show-presence-badge', 'false')
+            const working = makeSummary({ active: true, thinking: true })
+            const { container, rerender } = render(
+                <I18nProvider>
+                    <SessionRowSummary session={working} showDetailedStatus={false} />
+                </I18nProvider>
+            )
+            expect(container.querySelector('[data-testid="session-presence"]')).toBeNull()
+
+            localStorage.setItem('hapi-session-list-show-presence-badge', 'true')
+            window.dispatchEvent(new StorageEvent('storage', { key: 'hapi-session-list-show-presence-badge', newValue: 'true' }))
+            rerender(
+                <I18nProvider>
+                    <SessionRowSummary session={working} showDetailedStatus={false} />
+                </I18nProvider>
+            )
+            const badge = container.querySelector('[data-testid="session-presence"]') as HTMLElement
+            expect(badge).not.toBeNull()
+            expect(badge).toHaveAttribute('data-presence', 'working')
+            await act(async () => { vi.advanceTimersByTime(LOW_RATE_TICK_MS) })
+            expect(badge.style.opacity).toBe('1')
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
     it('renders a subtle indeterminate striped bar (no %) when fraction is unknown', () => {
         const { container } = render(
             <I18nProvider>

@@ -11,6 +11,7 @@ import { formatScheduledTooltipDetail } from '@/lib/scheduledTime'
 import { getCodexImportedAt, subscribeCodexImportedSessions } from '@/lib/codexImportedSessions'
 import { useMinuteTick } from '@/hooks/useMinuteTick'
 import { LOW_RATE_STRIPES_CLASS, useLowRateAnimation } from '@/hooks/useLowRateAnimation'
+import { useSessionListView } from '@/hooks/useSessionListView'
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { useTranslation } from '@/lib/use-translation'
 import { getWorktreeSessionLabel } from '@/lib/sessionWorktreeLabel'
@@ -187,6 +188,9 @@ export function SessionRowSummary(props: {
     const scheduleId = scheduleTooltipIdProp ?? ownedIds.scheduleId
     // Rows are memoized, so the label keeps itself current (also advances job elapsed).
     useMinuteTick()
+    // List density + presence badge are display preferences shared with the
+    // sidebar menu; rows read them directly so every surface stays in sync.
+    const { view } = useSessionListView()
     const nowMs = Date.now()
     const codexSessionId = s.metadata?.flavor === 'codex' ? s.metadata?.agentSessionId : null
     const importedAt = useSyncExternalStore(subscribeCodexImportedSessions, () => getCodexImportedAt(codexSessionId))
@@ -255,7 +259,12 @@ export function SessionRowSummary(props: {
     // The presence badge lives in `agentIcon`, which may be handed to
     // `SessionAttentionIndicator` as a tooltip target, so the badge only pulses
     // in the plain (non-background-attention, non-unread) render path.
-    useLowRateAnimation(presenceRef, 'pulse', presence === 'working' && !plainUnreadTarget)
+    // `view.showPresenceBadge` participates in the enabled condition so toggling
+    // the badge back on restarts the effect: a row mounted with badges hidden
+    // never subscribed (null ref), and the ref alone changing does not re-run
+    // the hook — the newly visible working badge would pulse only after the
+    // next presence change.
+    useLowRateAnimation(presenceRef, 'pulse', view.showPresenceBadge && presence === 'working' && !plainUnreadTarget)
     // The halo expands and fades (a ping), not a rotation: rotating a uniformly
     // colored circle shows no motion, so the attention cue would disappear.
     useLowRateAnimation(modelErrorRef, 'ping', modelErrorActive)
@@ -263,22 +272,25 @@ export function SessionRowSummary(props: {
     useLowRateAnimation(jobDotRef, 'pulse', attachedJob !== null && !jobStale)
     useLowRateAnimation(jobStripesRef, 'stripes', attachedJob !== null && jobFraction === null)
 
+    const iconSize = view.compactRows ? 'h-4 w-4' : 'h-6 w-6'
     const agentIcon = (
-        <span className="relative inline-flex h-6 w-6 shrink-0 items-center justify-center">
-            <AgentFlavorIcon flavor={s.metadata?.flavor} className="h-6 w-6" />
-            <span
-                ref={presenceRef}
-                data-testid="session-presence"
-                data-presence={presence}
-                className={`absolute -bottom-0.5 -right-0.5 box-border flex h-2.5 w-2.5 items-center justify-center rounded-full ring-2 ring-[var(--app-bg)] ${PRESENCE_BADGE_CLASS[presence]}`}
-            >
-                {presence === 'stopped' ? <StoppedBadgeIcon className="h-2.5 w-2.5" /> : null}
-            </span>
+        <span className={`relative inline-flex shrink-0 items-center justify-center ${iconSize} ${view.compactRows ? '-translate-y-px' : ''}`}>
+            <AgentFlavorIcon flavor={s.metadata?.flavor} className={iconSize} />
+            {view.showPresenceBadge ? (
+                <span
+                    ref={presenceRef}
+                    data-testid="session-presence"
+                    data-presence={presence}
+                    className={`absolute -bottom-0.5 -right-0.5 box-border flex h-2.5 w-2.5 items-center justify-center rounded-full ring-2 ring-[var(--app-bg)] ${PRESENCE_BADGE_CLASS[presence]}`}
+                >
+                    {presence === 'stopped' ? <StoppedBadgeIcon className="h-2.5 w-2.5" /> : null}
+                </span>
+            ) : null}
         </span>
     )
 
     return (
-        <div className={`flex w-full min-w-0 items-center gap-2.5 ${className ?? ''}`}>
+        <div className={`flex w-full min-w-0 items-center ${view.compactRows ? 'gap-2' : 'gap-2.5'} ${className ?? ''}`}>
             {attention?.kind === 'background' && nestedTooltips && attentionId ? (
                 <SessionAttentionIndicator
                     attention={attention}
@@ -481,11 +493,11 @@ export function SessionRowSummary(props: {
                         ) : null}
                     </div>
                 ) : null}
-                {projectLabel || machineLabel ? (
+                {!view.compactRows && (projectLabel || machineLabel) ? (
                     <div className="truncate text-xs text-[var(--app-hint)]" title={[projectLabel, machineLabel].filter(Boolean).join(' · ')}>
                         {[projectLabel, machineLabel].filter(Boolean).join(' · ')}
                     </div>
-                ) : showPath || worktreeLabel ? (
+                ) : !view.compactRows && (showPath || worktreeLabel) ? (
                     <div
                         className="truncate text-xs text-[var(--app-hint)]"
                         title={worktreeLabel

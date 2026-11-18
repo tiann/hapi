@@ -13,19 +13,29 @@ export type SessionListView = {
     status: SessionListStatus
     activeFirst: boolean
     unreadOnly: boolean
+    /** Compact rows: smaller agent icon, no per-row subtitle line — restores
+     *  the pre-two-line list density for users who prefer more rows on screen. */
+    compactRows: boolean
+    /** Presence badge on the agent icon corner. Off = the icon alone carries
+     *  connection state; the activity spinner/unread marks are unaffected. */
+    showPresenceBadge: boolean
 }
 
 export const DEFAULT_SESSION_LIST_VIEW: SessionListView = {
     sort: 'last-message',
     status: 'all',
     activeFirst: true,
-    unreadOnly: false
+    unreadOnly: false,
+    compactRows: false,
+    showPresenceBadge: true
 }
 
 const SORT_KEY = 'hapi-session-list-sort'
 const STATUS_KEY = 'hapi-session-list-status'
 const ACTIVE_FIRST_KEY = 'hapi-session-list-active-first'
 const UNREAD_ONLY_KEY = 'hapi-session-list-unread-only'
+const COMPACT_ROWS_KEY = 'hapi-session-list-compact-rows'
+const SHOW_PRESENCE_BADGE_KEY = 'hapi-session-list-show-presence-badge'
 // Pre-status "Show active sessions only" setting; read once as the default status.
 const LEGACY_ACTIVE_ONLY_KEY = 'hapi-show-active-sessions-only'
 
@@ -56,13 +66,17 @@ export function readSessionListView(): SessionListView {
     const status = safeGetItem(STATUS_KEY)
     const activeFirst = safeGetItem(ACTIVE_FIRST_KEY)
     const unreadOnly = safeGetItem(UNREAD_ONLY_KEY)
+    const compactRows = safeGetItem(COMPACT_ROWS_KEY)
+    const showPresenceBadge = safeGetItem(SHOW_PRESENCE_BADGE_KEY)
     return {
         sort: SORTS.includes(sort as SessionListSort) ? sort as SessionListSort : DEFAULT_SESSION_LIST_VIEW.sort,
         status: STATUSES.includes(status as SessionListStatus)
             ? status as SessionListStatus
             : safeGetItem(LEGACY_ACTIVE_ONLY_KEY) === 'true' ? 'active' : DEFAULT_SESSION_LIST_VIEW.status,
         activeFirst: activeFirst === null ? DEFAULT_SESSION_LIST_VIEW.activeFirst : activeFirst === 'true',
-        unreadOnly: unreadOnly === null ? DEFAULT_SESSION_LIST_VIEW.unreadOnly : unreadOnly === 'true'
+        unreadOnly: unreadOnly === null ? DEFAULT_SESSION_LIST_VIEW.unreadOnly : unreadOnly === 'true',
+        compactRows: compactRows === null ? DEFAULT_SESSION_LIST_VIEW.compactRows : compactRows === 'true',
+        showPresenceBadge: showPresenceBadge === null ? DEFAULT_SESSION_LIST_VIEW.showPresenceBadge : showPresenceBadge === 'true'
     }
 }
 
@@ -76,7 +90,7 @@ const listeners = new Set<() => void>()
 
 function getSnapshot(): SessionListView {
     if (unsaved) return unsaved
-    const raw = [SORT_KEY, STATUS_KEY, ACTIVE_FIRST_KEY, UNREAD_ONLY_KEY, LEGACY_ACTIVE_ONLY_KEY].map(safeGetItem).join('\u0000')
+    const raw = [SORT_KEY, STATUS_KEY, ACTIVE_FIRST_KEY, UNREAD_ONLY_KEY, COMPACT_ROWS_KEY, SHOW_PRESENCE_BADGE_KEY, LEGACY_ACTIVE_ONLY_KEY].map(safeGetItem).join('\u0000')
     if (current?.raw !== raw) current = { raw, view: readSessionListView() }
     return current.view
 }
@@ -89,7 +103,8 @@ function subscribe(listener: () => void): () => void {
     listeners.add(listener)
     const onStorage = (event: StorageEvent) => {
         if (event.key !== null && event.key !== SORT_KEY && event.key !== STATUS_KEY
-            && event.key !== ACTIVE_FIRST_KEY && event.key !== UNREAD_ONLY_KEY && event.key !== LEGACY_ACTIVE_ONLY_KEY) return
+            && event.key !== ACTIVE_FIRST_KEY && event.key !== UNREAD_ONLY_KEY && event.key !== COMPACT_ROWS_KEY
+            && event.key !== SHOW_PRESENCE_BADGE_KEY && event.key !== LEGACY_ACTIVE_ONLY_KEY) return
         emit()
     }
     if (typeof window !== 'undefined') window.addEventListener('storage', onStorage)
@@ -116,6 +131,12 @@ export function updateSessionListView(patch: Partial<SessionListView>): void {
     if (patch.unreadOnly !== undefined) {
         saved = safeSetItem(UNREAD_ONLY_KEY, next.unreadOnly === DEFAULT_SESSION_LIST_VIEW.unreadOnly ? null : String(next.unreadOnly)) && saved
     }
+    if (patch.compactRows !== undefined) {
+        saved = safeSetItem(COMPACT_ROWS_KEY, next.compactRows === DEFAULT_SESSION_LIST_VIEW.compactRows ? null : String(next.compactRows)) && saved
+    }
+    if (patch.showPresenceBadge !== undefined) {
+        saved = safeSetItem(SHOW_PRESENCE_BADGE_KEY, next.showPresenceBadge === DEFAULT_SESSION_LIST_VIEW.showPresenceBadge ? null : String(next.showPresenceBadge)) && saved
+    }
     unsaved = saved ? null : next
     emit()
 }
@@ -125,6 +146,8 @@ export function isDefaultSessionListView(view: SessionListView): boolean {
         && view.status === DEFAULT_SESSION_LIST_VIEW.status
         && view.activeFirst === DEFAULT_SESSION_LIST_VIEW.activeFirst
         && view.unreadOnly === DEFAULT_SESSION_LIST_VIEW.unreadOnly
+        && view.compactRows === DEFAULT_SESSION_LIST_VIEW.compactRows
+        && view.showPresenceBadge === DEFAULT_SESSION_LIST_VIEW.showPresenceBadge
 }
 
 export function useSessionListView(): {

@@ -43,6 +43,8 @@ export const SETTINGS_STORAGE_KEYS: readonly string[] = [
     'hapi-pin-in-progress-sessions',
     'hapi-session-list-status-mode',
     'hapi-session-list-status',
+    'hapi-session-list-compact-rows',
+    'hapi-session-list-show-presence-badge',
     'hapi-session-list-sort',
     'hapi-session-list-active-first',
     'hapi-session-list-unread-only',
