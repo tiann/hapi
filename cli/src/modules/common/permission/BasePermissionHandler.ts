@@ -60,6 +60,10 @@ const HAPI_LINK_PR_TOOL_NAMES = new Set([
 const HAPI_LINK_ISSUE_TOOL_NAMES = new Set([
     'link_issue',
     'link issue',
+    // Advertised MCP registerTool() title (startHappyServer.ts,
+    // happyMcpStdioBridge.ts) — ACP permission-name derivation prefers this
+    // title over the raw tool name (bot review, hapi#2147, follow-up pass).
+    'link github issue',
     'happy__link_issue',
     'hapi_link_issue',
     'hapi__link_issue',
