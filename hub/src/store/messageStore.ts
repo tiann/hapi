@@ -8,6 +8,7 @@ import type { StoredMessage } from './types'
 import {
     addMessage,
     upsertToolCallMessage,
+    getLiveToolWork,
     syncNativeQueuedMessage,
     addImportedMessage,
     cancelQueuedMessage,
@@ -79,6 +80,12 @@ export class MessageStore {
 
     upsertToolCallMessage(sessionId: string, content: unknown, callId: string, localId?: string, createdAt?: number): UpsertToolCallResult {
         return upsertToolCallMessage(this.db, sessionId, content, callId, localId, createdAt)
+    }
+
+    /** Whether the session tail still holds unsettled tool work (see
+     *  getLiveToolWork in messages.ts for the liveness contract). */
+    getLiveToolWork(sessionId: string): boolean {
+        return getLiveToolWork(this.db, sessionId)
     }
 
     syncNativeQueuedMessage(sessionId: string, localId: string, text: string): StoredMessage {

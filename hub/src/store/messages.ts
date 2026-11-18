@@ -506,6 +506,155 @@ function findLiveToolCallRow(db: Database, sessionId: string, callId: string): D
     return full
 }
 
+/** The `data` record of a Claude-SDK passthrough row
+ *  (`{ role: 'agent', content: { type: 'output', data } }`), or null. */
+function claudeOutputData(value: unknown): Record<string, unknown> | null {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent' || !isRecord(record.content)) return null
+    if (record.content.type !== 'output') return null
+    return isRecord(record.content.data) ? record.content.data : null
+}
+
+/** Claude passthrough rows the chat never renders (meta / compact summaries /
+ *  subagent sidechains). Their tool traffic has no settlement contract in the
+ *  main thread, so the liveness sweep must ignore them on both sides. */
+function isHiddenClaudeOutput(data: Record<string, unknown>): boolean {
+    return data.isMeta === true || data.isCompactSummary === true || data.isSidechain === true
+}
+
+/** The `message.content` block array of a Claude passthrough row, or null. */
+function claudeMessageBlocks(data: Record<string, unknown>): unknown[] | null {
+    const message = isRecord(data.message) ? data.message : null
+    return Array.isArray(message?.content) ? message.content : null
+}
+
+/** Collect `tool_result` tool_use_ids from a Claude user passthrough row.
+ *  Returns whether the row carried any tool_result at all — a user row
+ *  without one is a human prompt, which starts a new turn. */
+function collectClaudeToolResultIds(data: Record<string, unknown>, into: Set<string>): boolean {
+    const blocks = claudeMessageBlocks(data)
+    if (!blocks) return false
+    let found = false
+    for (const block of blocks) {
+        if (!isRecord(block) || block.type !== 'tool_result') continue
+        if (typeof block.tool_use_id === 'string' && block.tool_use_id.length > 0) {
+            into.add(block.tool_use_id)
+            found = true
+        }
+    }
+    return found
+}
+
+/** Whether a Claude assistant passthrough row holds a `tool_use` block whose
+ *  result has not settled yet (work the agent is still waiting on). */
+function claudeAssistantHasOpenToolUse(data: Record<string, unknown>, settledToolUseIds: Set<string>): boolean {
+    const blocks = claudeMessageBlocks(data)
+    if (!blocks) return false
+    for (const block of blocks) {
+        if (!isRecord(block) || block.type !== 'tool_use') continue
+        if (typeof block.id === 'string' && block.id.length > 0 && !settledToolUseIds.has(block.id)) {
+            return true
+        }
+    }
+    return false
+}
+
+/** Whether a stored ACP `tool-call` row already reports a terminal status.
+ *  Flavors that settle a call through its status (instead of a separate
+ *  `tool-call-result` row) must not read as open work. */
+function isTerminalToolCallRow(value: unknown): boolean {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (!record || !isRecord(record.content) || record.content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return false
+    const data = isRecord(record.content.data) ? record.content.data : null
+    if (!data || data.type !== 'tool-call') return false
+    return toolCallStatusRank(data.status) === TOOL_CALL_STATUS_RANK.completed
+}
+
+/** Whether the session tail still holds tool work that started but never
+ *  settled — the transcript-derived "the agent is demonstrably working"
+ *  signal for the hub's work-scoped liveness sweep.
+ *
+ *  Scans the same bounded tail window as `findLiveToolCallRow` and shares its
+ *  liveness contract (which the toolCallRowCache also keys on): a settled
+ *  call is closed by a later result row, and every live call of the session
+ *  is closed by a later human turn. Walking newest-first:
+ *
+ *  - ACP flavors: an unsettled, non-terminal `tool-call` row means open work.
+ *  - Claude passthrough: an assistant `tool_use` block with no later user
+ *    `tool_result` for its id means open work. Tool-result carriers do NOT
+ *    close the turn (the agent loop continues through them); a user row with
+ *    no tool_result is a human prompt and does.
+ *
+ *  Anything older than the window reads as no work — the same err-closed
+ *  bias the upsert scan uses for ancient rows. */
+export function getLiveToolWork(db: Database, sessionId: string): boolean {
+    const rows = prepareCached(db, `
+        SELECT id, content FROM messages
+        WHERE session_id = ?
+        ORDER BY seq DESC
+        LIMIT ?
+    `).all(sessionId, TOOL_CALL_UPSERT_LOOKBACK) as Array<Pick<DbMessageRow, 'id' | 'content'>>
+
+    const settledAcpCallIds = new Set<string>()
+    const settledClaudeToolUseIds = new Set<string>()
+    for (const row of rows) {
+        const decoded = decodeMessageContent(row.content)
+        // A human turn (web prompt, native user row) starts a new round and
+        // closes every tool call older than it — stop, nothing is open.
+        if (isUserMessageRow(decoded)) return false
+
+        const claudeData = claudeOutputData(decoded)
+        if (claudeData !== null) {
+            if (isHiddenClaudeOutput(claudeData)) continue
+            if (claudeData.type === 'user') {
+                if (!collectClaudeToolResultIds(claudeData, settledClaudeToolUseIds)) return false
+                continue
+            }
+            if (claudeData.type === 'result') {
+                // Turn-end marker: everything newer was walked already, so the
+                // calls of this finished turn are settled. Idle sessions end
+                // here, which keeps the sweep's every-tick scan to one row.
+                return false
+            }
+            if (claudeData.type === 'assistant'
+                && claudeAssistantHasOpenToolUse(claudeData, settledClaudeToolUseIds)) {
+                return true
+            }
+            continue
+        }
+
+        const resultCallId = toolCallResultCallId(decoded)
+        if (resultCallId !== null) {
+            settledAcpCallIds.add(resultCallId)
+            continue
+        }
+        const callId = getToolCallId(decoded)
+        if (callId !== null && !settledAcpCallIds.has(callId) && !isTerminalToolCallRow(decoded)) {
+            return true
+        }
+    }
+    return false
+}
+
+/** Merge an incoming tool-call snapshot into a known live row. Shared by the
+ *  cache-hit path and the tail-scan path so both produce identical rows. */
+function mergeIntoToolCallRow(db: Database, existing: DbMessageRow, content: unknown): UpsertToolCallResult {
+    const storedContent = decodeMessageContent(existing.content)
+    const mergedContent = truncateOversizedMessageContent(mergeToolCallContent(storedContent, content))
+    // A re-emitted tick that changes nothing must not rewrite the row:
+    // only observable content changes touch the database.
+    if (isDeepStrictEqual(mergedContent, storedContent)) {
+        return { message: toStoredMessage(existing), updated: true }
+    }
+    const encoded = encodeMessageContent(mergedContent)
+    // Same in-place content swap as the queued-message edit path
+    // (syncNativeQueuedMessage): no new seq, no content_revision bump.
+    prepareCached(db, 'UPDATE messages SET content = ? WHERE id = ?').run(encoded, existing.id)
+    const row = prepareCached(db, 'SELECT * FROM messages WHERE id = ?').get(existing.id) as DbMessageRow | undefined
+    if (!row) throw new Error('Failed to update tool-call message')
+    return { message: toStoredMessage(row), updated: true }
+}
+
 /** Store one ACP `tool-call` agent message, updating the call's existing row
  *  in place when the same callId is still live in the session tail.
  *
