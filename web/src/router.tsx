@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { NativeAppPromoButton, NativeAppPromoSheet } from '@/components/NativeAppPromo'
 import { useQueryClient } from '@tanstack/react-query'
 import {
     Navigate,
@@ -759,6 +760,11 @@ function SessionsPage() {
             ) : null}
 
             <div className={`${hasRightPaneContent ? 'flex' : 'hidden split:flex'} relative min-w-0 flex-1 flex-col bg-[var(--app-bg)]`}>
+                {isSessionsIndex ? (
+                    <div className="absolute right-3 top-[calc(env(safe-area-inset-top)+0.75rem)] z-10 hidden split:block">
+                        <NativeAppPromoButton />
+                    </div>
+                ) : null}
                 {!shouldShowSidebar ? (
                     <SidebarShowButton
                         showLabel={t('session.sidebar.show')}
@@ -851,6 +857,7 @@ function SessionsPage() {
                 </div>
             </div>
             </div>
+            <NativeAppPromoSheet enabled={isSessionsIndex} />
         </IssueBoardLinkContext.Provider>
     )
 }

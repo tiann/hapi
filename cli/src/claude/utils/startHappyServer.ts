@@ -919,7 +919,6 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
         throw new Error('startHappyServer requires at least one enabled tool');
     }
     const enabledTools = new Set(toolNames);
-
     const transports = new Map<string, StreamableHTTPServerTransport>();
     const mcps = new Map<string, McpServer>();
     const linkPrVisibilitySyncers = new Set<(enabled: boolean) => void>();
@@ -1012,7 +1011,7 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
     // fire when Settings flips while the session is quiet.
     const awarenessPollMs = options.awarenessPollMs ?? 15_000;
     let awarenessPollTimer: ReturnType<typeof setInterval> | undefined;
-    if (linkPrMode === 'dynamic' && awarenessPollMs > 0) {
+    if (linkPrMode === 'dynamic' && enabledTools.has('link_pr') && awarenessPollMs > 0) {
         awarenessPollTimer = setInterval(() => {
             void syncLinkPrVisibility();
         }, awarenessPollMs);

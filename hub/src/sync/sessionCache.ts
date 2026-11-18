@@ -1530,7 +1530,10 @@ export class SessionCache {
                 // sparse snapshot. Without this, the generic union-on-write
                 // merge could resurrect a ref this exact mutation just
                 // removed (review finding, hapi#238).
-                { touchUpdatedAt: false, replaceExternalRefs: true }
+                //
+                // Hub-authored PR attach must not release the machine-spawn stub
+                // tag either; adoptPreallocatedSession still needs it after the write.
+                { touchUpdatedAt: false, replaceExternalRefs: true, preservePreallocation: true }
             )
 
             if (result.result === 'error') {
@@ -2297,7 +2300,6 @@ export class SessionCache {
         // mergeSessionMetadata rebuilds from the stale pre-merge snapshot).
         // Source transfer pointer was installed immediately after job transfer.
         this.recordJobsAcceptedFromSession(newSessionId, oldSessionId, namespace)
-
         if (newStored.model === null && oldStored.model !== null) {
             const updated = this.store.sessions.setSessionModel(newSessionId, oldStored.model, namespace, {
                 touchUpdatedAt: false

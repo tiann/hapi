@@ -588,6 +588,67 @@ describe('session model', () => {
         expect(meta.externalRefs).toEqual(refs)
     })
 
+    it('keeps machine-spawn stub adoptable after attaching a PR', async () => {
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, createPublisher([]))
+        const allocatedId = crypto.randomUUID()
+
+        const stub = store.sessions.getOrCreateSession(
+            `machine-spawn:${allocatedId}`,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                machineId: 'machine-1',
+                startedBy: 'runner',
+                startedFromRunner: true,
+            },
+            null,
+            'default',
+            undefined,
+            undefined,
+            undefined,
+            allocatedId
+        )
+        expect(stub.tag).toBe(`machine-spawn:${allocatedId}`)
+        cache.refreshSession(allocatedId)
+
+        await cache.setSessionExternalRefs(allocatedId, [{
+            kind: 'github_pr',
+            repo: 'tiann/hapi',
+            number: 1163,
+            url: 'https://github.com/tiann/hapi/pull/1163',
+            role: 'primary',
+            source: 'user',
+            linkedAt: 1,
+        }])
+
+        const afterLink = store.sessions.getSessionByNamespace(allocatedId, 'default')
+        expect(afterLink?.tag).toBe(`machine-spawn:${allocatedId}`)
+
+        const cliTag = crypto.randomUUID()
+        const adopted = store.sessions.adoptPreallocatedSession(
+            allocatedId,
+            cliTag,
+            {
+                path: '/tmp/project',
+                host: 'localhost',
+                flavor: 'claude',
+                machineId: 'machine-1',
+                startedBy: 'runner',
+                startedFromRunner: true,
+                hostPid: 4242,
+            },
+            { controlledByUser: false },
+            'default'
+        )
+        expect(adopted.tag).toBe(cliTag)
+        const meta = adopted.metadata as { externalRefs?: unknown[]; hostPid?: number }
+        expect(meta.hostPid).toBe(4242)
+        expect(Array.isArray(meta.externalRefs)).toBe(true)
+        expect(meta.externalRefs).toHaveLength(1)
+    })
+
     it('preserves global pin from old session when merging into resumed session', async () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []

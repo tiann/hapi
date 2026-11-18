@@ -1519,4 +1519,22 @@ export default {
 
   // Session shell
   'session.notFound.returning': 'Сессия не найдена. Возвращаемся к списку…',
+  // Native app promo
+  'nativeAppPromo.title': 'Поддержите HAPI',
+  'nativeAppPromo.pill': 'Приложение',
+  'nativeAppPromo.body': 'HAPI полностью открыт, а веб-версия остаётся бесплатной и полнофункциональной. Если HAPI вам полезен, нативное приложение — самый прямой способ поддержать разработку.',
+  'nativeAppPromo.benefit.push': 'Нативные push-уведомления без настройки на хабе',
+  'nativeAppPromo.benefit.native': 'Нативный интерфейс на iPhone, iPad и Android',
+  'nativeAppPromo.benefit.mac': 'Та же покупка в App Store работает на Mac с Apple silicon',
+  'nativeAppPromo.benefit.support': 'Покупка финансирует дальнейшую open-source разработку',
+  'nativeAppPromo.appStore': 'App Store',
+  'nativeAppPromo.googlePlay': 'Google Play',
+  'nativeAppPromo.dismiss': 'Скрыть',
+  'nativeAppPromo.dontShowAgain': 'Больше не показывать',
+  'nativeAppPromo.continueWeb': 'Продолжить в веб-версии',
+  'nativeAppPromo.qrLabel': 'QR-код страницы загрузки приложения HAPI',
+  'nativeAppPromo.qrHint': 'Отсканируйте телефоном, чтобы скачать.',
+  'nativeAppPromo.alreadyInstalled': 'Уже установлено? Подключить',
+  'settings.about.nativeApp.title': 'Нативные приложения',
+  'settings.about.nativeApp.description': 'HAPI полностью открыт, а веб-версия остаётся бесплатной и полнофункциональной. Платные приложения для iOS и Android поддерживают разработку.',
 } as const

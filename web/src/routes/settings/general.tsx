@@ -23,6 +23,7 @@ const locales: ReadonlyArray<{ value: Locale; label: string }> = [
     { value: 'en', label: 'English' },
     { value: 'zh-CN', label: '简体中文' },
     { value: 'ru', label: 'Русский' },
+    { value: 'ja', label: '日本語' },
 ]
 
 export default function SettingsGeneralPage() {

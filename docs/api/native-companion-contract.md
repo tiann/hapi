@@ -1,3 +1,7 @@
+---
+description: "Contract for native companion apps (Android phone, Wear OS and iOS) that pair with a HAPI hub and receive push notifications."
+---
+
 # Native companion API contract (phone + Wear + iOS)
 
 **Audience:** Implementers of native companion apps (Android phone + Wear OS via FCM, iOS via APNs) that pair with a hapi hub.

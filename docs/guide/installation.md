@@ -1,3 +1,7 @@
+---
+description: "Install the HAPI CLI (Homebrew, npm, npx, binary or source), start the hub, choose a remote access option, and connect the web or native apps."
+---
+
 # Installation
 
 Install the HAPI CLI and set up the hub. To install the paid phone apps and
@@ -8,24 +12,9 @@ browser client, see [PWA](./pwa.md).
 
 - At least one supported agent CLI installed (Claude Code, Codex, Cursor Agent, Grok Build, OpenCode, DeepSeek Harness ACP server, and more — see [Supported Agents](./agents.md))
 
-Verify your CLI is installed:
-
-```bash
-# For Claude Code
-claude --version
-
-# For OpenAI Codex CLI
-codex --version
-
-# For Cursor Agent CLI
-agent --version
-
-# For Grok Build CLI
-grok --version
-
-# For OpenCode CLI
-opencode --version
-```
+Check that the agent you plan to use runs on its own first, for example
+`claude --version` or `codex --version`. [Supported Agents](./agents.md) lists
+the command and install steps for each agent.
 
 ## Architecture
 
@@ -164,13 +153,28 @@ hapi hub
 hapi hub --no-relay
 ```
 
-The hub listens on `http://localhost:3006` by default.
+The hub listens on `http://localhost:3006` by default. Use `--host` and
+`--port` to change the bind address and port:
+
+```bash
+hapi hub --host 0.0.0.0 --port 8080
+```
+
+They set `HAPI_LISTEN_HOST` / `HAPI_LISTEN_PORT`. Like those variables, they
+are saved to `settings.json` when `listenHost` / `listenPort` is not set
+there yet, so later runs keep them; edit `settings.json` to change a saved
+value. Binding to `0.0.0.0` exposes the hub to your network; restrict access
+with a firewall.
 
 On first run, HAPI:
 
 1. Creates `~/.hapi/`
 2. Generates a secure access token
 3. Prints the token and saves it to `~/.hapi/settings.json`
+
+Open the web app and sign in with that token. After the first sign-in you can
+add a passkey so you no longer need the token in the browser or app; see
+[Authentication](./authentication.md).
 
 <details>
 <summary>Config files</summary>
@@ -184,79 +188,28 @@ On first run, HAPI:
 ```
 </details>
 
-<details>
-<summary>Environment variables</summary>
+### Common settings
 
-| Variable | Default | settings.json | Description |
-|----------|---------|---------------|-------------|
-| `CLI_API_TOKEN` | Auto-generated | `cliApiToken` | Shared secret for authentication |
-| `HAPI_API_URL` | `http://localhost:3006` | `apiUrl` | Hub URL for CLI connections |
-| `HAPI_EXTRA_HEADERS_JSON` | - | `extraHeaders` | JSON object of extra outbound headers for CLI → hub HTTP/WebSocket requests |
-| `HAPI_LISTEN_HOST` | `127.0.0.1` | `listenHost` | Hub HTTP bind address |
-| `HAPI_LISTEN_PORT` | `3006` | `listenPort` | Hub HTTP port |
-| `HAPI_PUBLIC_URL` | - | `publicUrl` | Public URL for external access |
-| `CORS_ORIGINS` | - | `corsOrigins` | Allowed CORS origins (comma-separated) |
-| `TELEGRAM_BOT_TOKEN` | - | `telegramBotToken` | Telegram Bot API token |
-| `TELEGRAM_NOTIFICATION` | `true` | `telegramNotification` | Enable Telegram notifications |
-| `SERVERCHAN_SENDKEY` | - | `serverChanSendKey` | Server酱 (ServerChan) SendKey for push notifications |
-| `SERVERCHAN_NOTIFICATION` | `true` | `serverChanNotification` | Enable ServerChan notifications |
-| `SERVERCHAN_BACKGROUND_ONLY` | `false` | `serverChanBackgroundOnly` | Only send ServerChan notifications when no visible HAPI connection exists in the namespace |
-| `HAPI_RELAY_API` | `relay.hapi.run` | - | Relay API domain for the public relay |
-| `HAPI_RELAY_AUTH` | Per-hub key issued by the relay | `relayAuthKey` | Relay auth key override (set only when an operator provides a key) |
-| `HAPI_RELAY_FORCE_TCP` | `false` | - | Force TCP mode for relay |
-| `HAPI_OFFICIAL_WEB_URL` | `https://app.hapi.run` | - | Official web app origin, added to CORS when the relay is enabled |
-| `VAPID_SUBJECT` | `mailto:admin@hapi.run` | - | Web Push contact info |
-| `HAPI_ANDROID_PUSH` | `auto` | `androidPushMode` | Android push: official relay by default, direct FCM when private credentials are configured; also accepts `relay`, `fcm`, `off` |
-| `HAPI_IOS_PUSH` | `relay` | `iosPushMode` | iOS push: `relay`, direct `apns`, or `off` |
-| `HAPI_PUSH_RELAY_URL` | `https://push.hapi.run` | `iosPushRelayUrl` | Shared Android/iOS push relay, independent of the network tunnel |
-| `FCM_SERVICE_ACCOUNT_PATH` | - | `fcmServiceAccountPath` | Direct FCM credentials for private builds using the same Firebase project |
-| `HAPI_HOME` | `~/.hapi` | - | Config directory path |
-| `DB_PATH` | `~/.hapi/hapi.db` | - | Database file path |
-| `HAPI_EXPERIMENTAL` | - | - | CLI: enable experimental features (`true`/`1`/`yes`) |
-| `ELEVENLABS_API_KEY` | - | Settings / env | ElevenLabs API key for voice + dictation |
-| `ELEVENLABS_AGENT_ID` | Auto-created | - | Custom ElevenLabs agent ID |
-| `ELEVENLABS_MAX_DURATION_SECONDS` | `1800` | - | Max length of one ElevenLabs voice conversation (60-7200) |
-| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | - | Settings / env | Gemini Live voice assistant |
-| `DASHSCOPE_API_KEY` / `QWEN_API_KEY` | - | Settings / env | Qwen Realtime voice assistant |
-| `VOICE_BACKEND` | Auto-detected | - | Default assistant backend: `elevenlabs`, `gemini-live`, or `qwen-realtime` |
-| `OPENAI_API_KEY` | - | Settings / env | OpenAI API key for dictation (`gpt-transcribe` / `gpt-live-transcribe`) |
-| `DEEPGRAM_API_KEY` | - | Settings / env | Deepgram API key for dictation (`nova-3`) |
-| `GROQ_API_KEY` | - | Settings / env | Groq API key for dictation (`whisper-large-v3`) |
-| `TRANSCRIPTION_BASE_URL` | - | Settings / env | OpenAI-compatible/local transcription base URL |
-| `TRANSCRIPTION_MODEL` | - | Settings / env | Model for the OpenAI-compatible transcription endpoint |
-| `TRANSCRIPTION_API_KEY` | - | Settings / env | Optional bearer token for that endpoint |
-| `HAPI_TITLE_PROVIDER_BASE_URL` | - | - | Server-only OpenAI-compatible Chat Completions base URL for generated session titles |
-| `HAPI_TITLE_PROVIDER_API_KEY` | - | - | Server-only API key for generated session titles; never sent to the browser |
-| `HAPI_TITLE_PROVIDER_MODEL` | - | - | Server-only lightweight model used for generated session titles |
-| `HAPI_TITLE_SUGGESTION_RATE_LIMIT` | `5` | - | Maximum title suggestions per session in the rate-limit window |
-| `HAPI_TITLE_SUGGESTION_RATE_WINDOW_MS` | `600000` | - | Title suggestion rate-limit window in milliseconds |
-| `HAPI_TITLE_PROVIDER_MAX_TOKENS` | `64` | - | Maximum completion-token budget per generated title; raise for reasoning-model providers |
-| `HAPI_TITLE_PROVIDER_TIMEOUT_MS` | `10000` | - | Title provider request timeout in milliseconds |
-</details>
+Configuration priority is **environment variable > `settings.json` >
+default**. The hub saves environment values it sees to `settings.json` the
+first time. The most common settings:
 
-The session rename dialog's **Generate** action is unavailable until all three
-`HAPI_TITLE_PROVIDER_*` variables are configured on the Hub. The provider is
-used by the automatic fallback below and the manual **Generate** action. The
-existing manual rename flow does not require these variables. Each request
-sends recent visible user/assistant conversation text
-(up to 200 stored messages and a bounded prompt) to that configured provider.
+| Variable | `settings.json` | Default | Purpose |
+|----------|-----------------|---------|---------|
+| `CLI_API_TOKEN` | `cliApiToken` | Auto-generated | Access token |
+| `HAPI_API_URL` | `apiUrl` | `http://localhost:3006` | Hub URL used by the CLI and runner |
+| `HAPI_LISTEN_HOST` | `listenHost` | `127.0.0.1` | Hub bind address |
+| `HAPI_LISTEN_PORT` | `listenPort` | `3006` | Hub port |
+| `HAPI_PUBLIC_URL` | `publicUrl` | – | Public HTTPS origin; required for passkeys and Telegram |
+| `CORS_ORIGINS` | `corsOrigins` | From `publicUrl` | Allowed web origins |
+| `HAPI_HOME` | – | `~/.hapi` | Data directory |
 
-When a provider is configured, the Hub also makes one best-effort automatic
-request after the first completed turn if the session has no manual name or
-existing summary. Automatic failures are ignored and do not affect the primary
-conversation. The manual **Generate** action remains available for retrying
-after an automatic failure. An attempt is remembered across Hub restarts, so
-later turns do not silently retry it. A manual or Agent title arriving during
-generation takes precedence. Without a configured provider, existing title
-behavior is unchanged.
+See the [Configuration reference](./configuration.md) for every variable,
+including notifications, voice, generated titles, upload limits and agent
+paths.
 
 <details>
 <summary>settings.json example</summary>
-
-Configuration priority: **ENV > settings.json > default**
-
-When ENV values are set and not present in settings.json, they are automatically saved.
-`HAPI_EXTRA_HEADERS_JSON` is not automatically saved, so access credentials are not persisted unexpectedly.
 
 ```json
 {
@@ -269,6 +222,9 @@ When ENV values are set and not present in settings.json, they are automatically
   }
 }
 ```
+
+`extraHeaders` (`HAPI_EXTRA_HEADERS_JSON`) is never saved from the
+environment, so access credentials are not persisted unexpectedly.
 
 JSON Schema: [settings.schema.json](https://hapi.run/docs/schemas/settings.schema.json)
 </details>
@@ -296,6 +252,9 @@ hapi auth status
 hapi auth login
 hapi auth logout
 ```
+
+See [Authentication](./authentication.md) for all sign-in methods and the
+[CLI reference](./cli-reference.md) for every command.
 
 Each machine gets a unique ID stored in `~/.hapi/settings.json`. This allows:
 
@@ -385,7 +344,7 @@ You can run **one hub** and **runners on many machines** (each machine installs 
 
 ## Security notes
 
-- Keep tokens secret and rotate if needed
+- Keep tokens secret; see [Rotating the access token](./authentication.md#rotating-the-access-token) for what rotation revokes
 - Use HTTPS for public access
 - Restrict CORS origins in production
 

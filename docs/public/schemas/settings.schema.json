@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://hapi.run/docs/schemas/settings.schema.json",
   "title": "HAPI Settings",
-  "description": "Configuration file for HAPI (~/.hapi/settings.json)",
+  "description": "Configuration file for HAPI (~/.hapi/settings.json, or $HAPI_HOME/settings.json). Shared by the hub and the CLI on the same machine. See https://hapi.run/docs/guide/configuration",
   "type": "object",
   "properties": {
     "cliApiToken": {
@@ -22,6 +22,10 @@
       },
       "description": "Extra headers for CLI to hub HTTP and WebSocket requests. ENV: HAPI_EXTRA_HEADERS_JSON"
     },
+    "serverUrl": {
+      "type": "string",
+      "description": "Legacy name for apiUrl. Read by the CLI only when apiUrl is absent."
+    },
     "listenHost": {
       "type": "string",
       "default": "127.0.0.1",
@@ -37,14 +41,14 @@
     "publicUrl": {
       "type": "string",
       "format": "uri",
-      "description": "Public URL for external access (e.g., Telegram Mini App). ENV: HAPI_PUBLIC_URL"
+      "description": "Public URL for external access. Must be the hub's canonical HTTPS origin (no path) for passkeys; also used for the Telegram Mini App and to derive default CORS origins. Default: http://localhost:<listenPort>. ENV: HAPI_PUBLIC_URL"
     },
     "corsOrigins": {
       "type": "array",
       "items": {
         "type": "string"
       },
-      "description": "Allowed CORS origins. ENV: CORS_ORIGINS (comma-separated)"
+      "description": "Allowed CORS origins, or [\"*\"]. Default: derived from publicUrl. ENV: CORS_ORIGINS (comma-separated)"
     },
     "telegramBotToken": {
       "type": "string",
@@ -69,6 +73,62 @@
       "default": false,
       "description": "Only send ServerChan notifications when no visible HAPI connection exists in the namespace. ENV: SERVERCHAN_BACKGROUND_ONLY"
     },
+    "androidPushMode": {
+      "type": "string",
+      "enum": [
+        "auto",
+        "relay",
+        "fcm",
+        "off"
+      ],
+      "default": "auto",
+      "description": "Android push transport. auto: direct FCM when fcmServiceAccountPath is set, otherwise the official push relay. ENV: HAPI_ANDROID_PUSH"
+    },
+    "fcmServiceAccountPath": {
+      "type": "string",
+      "description": "Firebase service-account JSON for direct FCM (private builds using the same Firebase project). ENV: FCM_SERVICE_ACCOUNT_PATH"
+    },
+    "iosPushMode": {
+      "type": "string",
+      "enum": [
+        "relay",
+        "apns",
+        "off"
+      ],
+      "default": "relay",
+      "description": "iOS push transport. apns requires apnsKeyP8Path, apnsKeyId, apnsTeamId and apnsBundleId. ENV: HAPI_IOS_PUSH"
+    },
+    "iosPushRelayUrl": {
+      "type": "string",
+      "format": "uri",
+      "default": "https://push.hapi.run",
+      "description": "Shared Android/iOS native push relay URL (independent of the --relay network tunnel). ENV: HAPI_PUSH_RELAY_URL"
+    },
+    "apnsKeyP8Path": {
+      "type": "string",
+      "description": "Path to the APNs .p8 auth key for direct APNs. ENV: APNS_KEY_P8_PATH"
+    },
+    "apnsKeyId": {
+      "type": "string",
+      "description": "APNs key ID for direct APNs. ENV: APNS_KEY_ID"
+    },
+    "apnsTeamId": {
+      "type": "string",
+      "description": "Apple developer team ID for direct APNs. ENV: APNS_TEAM_ID"
+    },
+    "apnsBundleId": {
+      "type": "string",
+      "description": "iOS app bundle ID (APNs topic) for direct APNs. ENV: APNS_BUNDLE_ID"
+    },
+    "apnsEnv": {
+      "type": "string",
+      "enum": [
+        "production",
+        "sandbox"
+      ],
+      "default": "production",
+      "description": "APNs environment for direct APNs. ENV: APNS_ENV"
+    },
     "relayAuthKey": {
       "type": "string",
       "description": "Per-hub relay auth key issued by the relay server. Auto-obtained if not set. ENV: HAPI_RELAY_AUTH"
@@ -84,7 +144,10 @@
           "type": "string"
         }
       },
-      "required": ["publicKey", "privateKey"]
+      "required": [
+        "publicKey",
+        "privateKey"
+      ]
     },
     "machineId": {
       "type": "string",
@@ -96,14 +159,85 @@
     },
     "runnerAutoStartWhenRunningHappy": {
       "type": "boolean",
-      "description": "Auto-start runner when running hapi command."
+      "description": "Legacy field; currently not read by HAPI."
+    },
+    "sessionSummaryContract": {
+      "type": "boolean",
+      "default": false,
+      "description": "Inject the AGENT_NOTIFY_SUMMARY trailing-line contract into supported agents' instructions. Editable in web Settings. CLI env HAPI_SESSION_SUMMARY_CONTRACT overrides per process."
+    },
+    "sessionSummaryInChat": {
+      "type": "boolean",
+      "default": false,
+      "description": "Show a compact AGENT_NOTIFY_SUMMARY row in web chat instead of stripping the footer. Editable in web Settings."
+    },
+    "autoBridgeTransientModelErrors": {
+      "type": "boolean",
+      "default": false,
+      "description": "Cursor sessions automatically enqueue a one-shot bridge after a transient model error. Editable in web Settings."
+    },
+    "peerSpawnDefaults": {
+      "type": "object",
+      "description": "Hub-wide defaults for spawn_peer / hapi spawn-peer. Unset fields fall back to agent=claude, permissionMode=yolo, models={claude: sonnet}. Editable in web Settings.",
+      "properties": {
+        "agent": {
+          "type": "string",
+          "enum": [
+            "agy",
+            "claude",
+            "codex",
+            "dsh",
+            "copilot",
+            "cursor",
+            "grok",
+            "kimi",
+            "opencode",
+            "pi"
+          ],
+          "description": "Default agent flavor for spawned peers."
+        },
+        "permissionMode": {
+          "type": "string",
+          "enum": [
+            "default",
+            "acceptEdits",
+            "auto",
+            "bypassPermissions",
+            "plan",
+            "ask",
+            "debug",
+            "autoReview",
+            "read-only",
+            "safe-yolo",
+            "yolo",
+            "request-review",
+            "always-proceed"
+          ],
+          "description": "Default permission intent; mapped to an equivalent mode the target agent supports."
+        },
+        "models": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Per-agent model overrides keyed by agent flavor, e.g. {\"claude\": \"sonnet\"}."
+        }
+      },
+      "additionalProperties": false
+    },
+    "elevenLabsMaxDurationSeconds": {
+      "type": "integer",
+      "minimum": 60,
+      "maximum": 7200,
+      "default": 1800,
+      "description": "Maximum length of one ElevenLabs voice conversation, in seconds. Editable in web Settings. ENV ELEVENLABS_MAX_DURATION_SECONDS wins when set."
     },
     "providerCredentials": {
       "type": "object",
       "additionalProperties": {
         "type": "string"
       },
-      "description": "Hub-managed voice and dictation provider credentials; process environment variables win over settings-backed values."
+      "description": "Hub-managed voice and dictation provider credentials, keyed by env var name (OPENAI_API_KEY, ELEVENLABS_API_KEY, DEEPGRAM_API_KEY, GROQ_API_KEY, TRANSCRIPTION_BASE_URL, TRANSCRIPTION_MODEL, TRANSCRIPTION_API_KEY, GEMINI_API_KEY, GOOGLE_API_KEY, DASHSCOPE_API_KEY, QWEN_API_KEY). Managed from web Settings; process environment variables win over settings-backed values."
     }
   },
   "additionalProperties": false

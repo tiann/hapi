@@ -76,6 +76,7 @@ export class SessionStore {
             allowUnarchive?: boolean
             replaceExternalRefs?: boolean
             allowTitleUpdate?: boolean
+            preservePreallocation?: boolean
             titleLocked?: boolean
             inheritTitleLockFrom?: string
         }

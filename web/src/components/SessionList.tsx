@@ -1601,7 +1601,13 @@ const SessionItem = memo(function SessionItem(props: {
                     />
                 ) : null}
                 {githubPrAwarenessEnabled && primaryPrRef ? (
-                    <div className="flex shrink-0 items-center self-start py-2 pr-2">
+                    <div
+                        data-testid="session-pr-chip-wrap"
+                        className="flex shrink-0 items-center self-start py-2 pr-2"
+                        style={hasQuickAction
+                            ? { paddingRight: 'calc(var(--session-row-action-span, 2rem) + 0.5rem)' }
+                            : undefined}
+                    >
                         <SessionPrChip
                             refs={s.metadata?.externalRefs}
                             displayProfile={prChipDisplay}
@@ -1857,8 +1863,13 @@ export function SessionList(props: {
     const prClockTick = useMinuteTick(githubPrAwarenessEnabled)
     // Pinned to the minute tick (and re-stamped when awareness toggles on) so
     // this doesn't change — and force every memoized row to re-render — on
-    // every unrelated render, e.g. an SSE update to one other session.
-    const prNowMs = useMemo(() => Date.now(), [prClockTick, githubPrAwarenessEnabled])
+    // every unrelated render, e.g. an SSE update to one other session. Stable
+    // at 0 while awareness is off so toggling it off doesn't itself cause a
+    // remount of every memoized row either.
+    const prNowMs = useMemo(
+        () => (githubPrAwarenessEnabled ? Date.now() : 0),
+        [prClockTick, githubPrAwarenessEnabled]
+    )
     const { sessionPreviewLimit } = useSessionPreviewLimit()
     const { sessionListStatusMode } = useSessionListStatusMode()
     const { view: listView, setView: setListView } = useSessionListView()

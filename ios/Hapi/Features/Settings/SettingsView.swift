@@ -225,6 +225,8 @@ struct SettingsView: View {
                     UserDefaults.standard.set(["zh-Hans"], forKey: "AppleLanguages")
                 case .russian:
                     UserDefaults.standard.set(["ru"], forKey: "AppleLanguages")
+                case .japanese:
+                    UserDefaults.standard.set(["ja"], forKey: "AppleLanguages")
                 }
             }
         )

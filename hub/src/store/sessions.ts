@@ -93,8 +93,6 @@ const SIMPLE_RESUME_TOKENS = [
     'dshSessionId'
 ] as const
 
-const CONTRIBUTION_FIELDS = ['externalRefs'] as const
-
 // Hub-owned metadata that must survive sparse CLI metadata replacements.
 // `null` remains the explicit-clear sentinel handled by carryForwardIfMissing.
 const HUB_OWNED_METADATA_FIELDS = [
@@ -107,6 +105,7 @@ const HUB_OWNED_METADATA_FIELDS = [
     'conversationBranch'
 ] as const
 
+const CONTRIBUTION_FIELDS = ['externalRefs'] as const
 const ALERT_STATE_FIELDS = ['lastModelError'] as const
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -645,6 +644,8 @@ export function updateSessionMetadata(
         allowUnarchive?: boolean
         replaceExternalRefs?: boolean
         allowTitleUpdate?: boolean
+        /** Keep machine-spawn stub tag so adoptPreallocatedSession can still bind. */
+        preservePreallocation?: boolean
         titleLocked?: boolean
         inheritTitleLockFrom?: string
     }
@@ -717,6 +718,7 @@ export function updateSessionMetadata(
             if (
                 result.result === 'success'
                 && !options?.allowTitleUpdate
+                && !options?.preservePreallocation
                 && isMachineSpawnPreallocatedStub(existing)
                 && !isHubArchivedSessionMetadata(merged)
             ) {
