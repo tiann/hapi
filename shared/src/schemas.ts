@@ -35,7 +35,9 @@ const ConversationHistoryCapabilitiesSchema = z.object({
     forkCurrent: z.boolean().optional(),
     forkLatestCompleted: z.boolean().optional(),
     forkAtMessage: z.boolean().optional(),
-    rewindToMessage: z.boolean().optional()
+    rewindToMessage: z.boolean().optional(),
+    /** Runner answers fork-preview boundary questions for this session. */
+    forkPreview: z.boolean().optional()
 })
 
 // Written to an archived OpenCode source before the runner is asked to spawn.

@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
-import type { ApiClient } from '@/api/client'
+import { ApiError, type ApiClient } from '@/api/client'
 import type { SessionSummary } from '@/types/api'
 import { I18nProvider } from '@/lib/i18n-context'
 import { ToastProvider } from '@/lib/toast-context'
@@ -315,8 +315,19 @@ describe('SessionList action menu parity', () => {
 })
 
 describe('SessionList fork session action', () => {
-    it('forks a supported active session from the menu and opens the child', async () => {
+    function previewResponse(mode: 'current' | 'latestCompleted' = 'current') {
+        return {
+            mode,
+            boundary: { v: 1 as const, mode, epoch: 3, tailSeq: 4 },
+            keptTail: [],
+            excluded: [],
+            counts: { kept: 4, excluded: 0 }
+        }
+    }
+
+    it('previews a supported active session from the menu and forks through the hub boundary', async () => {
         const forkConversation = vi.fn(async () => ({ sessionId: 'child-session' }))
+        const forkPreview = vi.fn(async () => previewResponse())
         const onSelect = vi.fn()
         const session = makeSession({
             id: 'source-session',
@@ -331,20 +342,23 @@ describe('SessionList fork session action', () => {
         })
         renderWithProviders(<SessionList sessions={[session]} selectedSessionId={session.id} onSelect={onSelect}
             onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
-            api={{ forkConversation } as unknown as ApiClient} />)
+            api={{ forkConversation, forkPreview } as unknown as ApiClient} />)
 
         fireEvent.contextMenu(screen.getByRole('button', { name: /Source session/ }))
         fireEvent.click(screen.getByRole('menuitem', { name: 'Fork session' }))
-        const dialog = screen.getByRole('dialog')
-        expect(within(dialog).getByRole('heading', { name: 'Fork session' })).toBeInTheDocument()
-        fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }))
+        const dialog = await screen.findByTestId('fork-preview-thread')
+        expect(dialog).toBeInTheDocument()
+        await waitFor(() => expect(forkPreview).toHaveBeenCalledWith('source-session', 'current', undefined))
 
-        await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('source-session'))
+        fireEvent.click(screen.getByTestId('fork-preview-confirm'))
+        await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('source-session', undefined, false,
+            { v: 1, mode: 'current', epoch: 3, tailSeq: 4 }))
         expect(onSelect).toHaveBeenCalledWith('child-session')
     })
 
-    it('forks a running capable session through the latest completed native turn', async () => {
+    it('forks a running capable session through the hub-resolved latest completed mode', async () => {
         const forkConversation = vi.fn(async () => ({ sessionId: 'child-session' }))
+        const forkPreview = vi.fn(async () => previewResponse('latestCompleted'))
         const onSelect = vi.fn()
         const session = makeSession({
             id: 'source-session',
@@ -360,15 +374,15 @@ describe('SessionList fork session action', () => {
         })
         renderWithProviders(<SessionList sessions={[session]} selectedSessionId={session.id} onSelect={onSelect}
             onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
-            api={{ forkConversation } as unknown as ApiClient} />)
+            api={{ forkConversation, forkPreview } as unknown as ApiClient} />)
 
         fireEvent.contextMenu(screen.getByRole('button', { name: /Source session/ }))
         fireEvent.click(screen.getByRole('menuitem', { name: 'Fork session' }))
-        const dialog = screen.getByRole('dialog')
-        expect(within(dialog).getByRole('heading', { name: 'Fork session' })).toBeInTheDocument()
-        fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }))
+        await screen.findByTestId('fork-preview-thread')
+        fireEvent.click(screen.getByTestId('fork-preview-confirm'))
 
-        await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('source-session', undefined, true))
+        await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('source-session', undefined, true,
+            { v: 1, mode: 'latestCompleted', epoch: 3, tailSeq: 4 }))
         expect(onSelect).toHaveBeenCalledWith('child-session')
     })
 
@@ -390,7 +404,7 @@ describe('SessionList fork session action', () => {
 
         fireEvent.contextMenu(screen.getByRole('button', { name: /Running source/ }))
         expect(screen.getByRole('menuitem', { name: 'Fork session' })).toHaveAttribute('aria-disabled', 'true')
-        expect(screen.queryByRole('dialog')).toBeNull()
+        expect(screen.queryByTestId('fork-preview-thread')).toBeNull()
     })
 
     it('hides Fork session for locally controlled sessions', () => {
@@ -429,8 +443,9 @@ describe('SessionList fork session action', () => {
         expect(screen.queryByRole('menuitem', { name: 'Fork session' })).toBeNull()
     })
 
-    it('forks an archived Codex session directly from the list menu', async () => {
+    it('previews an archived Codex session directly from the list menu', async () => {
         const forkConversation = vi.fn(async () => ({ sessionId: 'archived-child' }))
+        const forkPreview = vi.fn(async () => previewResponse())
         const onSelect = vi.fn()
         const session = makeSession({
             id: 'archived-source',
@@ -446,20 +461,21 @@ describe('SessionList fork session action', () => {
         })
         renderWithProviders(<SessionList sessions={[session]} selectedSessionId={null} onSelect={onSelect}
             onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
-            api={{ forkConversation } as unknown as ApiClient} />)
+            api={{ forkConversation, forkPreview } as unknown as ApiClient} />)
 
         fireEvent.click(screen.getByTitle('/work/archived'))
         fireEvent.contextMenu(screen.getByRole('button', { name: /Archived source/ }))
         fireEvent.click(screen.getByRole('menuitem', { name: 'Fork session' }))
-        const dialog = screen.getByRole('dialog')
-        fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }))
+        await screen.findByTestId('fork-preview-thread')
+        fireEvent.click(screen.getByTestId('fork-preview-confirm'))
 
-        await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('archived-source'))
+        await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('archived-source', undefined, false,
+            { v: 1, mode: 'current', epoch: 3, tailSeq: 4 }))
         expect(onSelect).toHaveBeenCalledWith('archived-child')
     })
 
-    it('keeps the dialog open and reports a fork failure without navigating', async () => {
-        const forkConversation = vi.fn(async () => { throw new Error('fork failed') })
+    it('reports a preview failure without navigating', async () => {
+        const forkPreview = vi.fn(async () => { throw new Error('Session is busy') })
         const onSelect = vi.fn()
         const session = makeSession({
             id: 'failing-source',
@@ -473,16 +489,72 @@ describe('SessionList fork session action', () => {
         })
         renderWithProviders(<SessionList sessions={[session]} selectedSessionId={null} onSelect={onSelect}
             onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
-            api={{ forkConversation } as unknown as ApiClient} />)
+            api={{ forkPreview } as unknown as ApiClient} />)
 
         fireEvent.contextMenu(screen.getByRole('button', { name: /Failing source/ }))
         fireEvent.click(screen.getByRole('menuitem', { name: 'Fork session' }))
-        const dialog = screen.getByRole('dialog')
+        const dialog = await screen.findByRole('dialog')
+        await waitFor(() => expect(within(dialog).getByText('Session is busy')).toBeInTheDocument())
+        expect(onSelect).not.toHaveBeenCalled()
+    })
+
+    it('falls back to the legacy confirm when the hub has no preview route', async () => {
+        const forkConversation = vi.fn(async () => ({ sessionId: 'child-session' }))
+        const forkPreview = vi.fn(async () => { throw new ApiError('HTTP 404 Not Found', 404) })
+        const onSelect = vi.fn()
+        const session = makeSession({
+            id: 'legacy-source',
+            active: true,
+            metadata: {
+                path: '/work/legacy',
+                name: 'Legacy source',
+                flavor: 'codex',
+                conversationHistory: { forkCurrent: true },
+            },
+        })
+        renderWithProviders(<SessionList sessions={[session]} selectedSessionId={session.id} onSelect={onSelect}
+            onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
+            api={{ forkConversation, forkPreview } as unknown as ApiClient} />)
+
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Legacy source/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Fork session' }))
+        const dialog = await screen.findByRole('dialog')
+        expect(within(dialog).getByRole('heading', { name: 'Fork session' })).toBeInTheDocument()
         fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }))
 
-        await waitFor(() => expect(within(dialog).getByText('fork failed')).toBeInTheDocument())
-        expect(onSelect).not.toHaveBeenCalled()
-        expect(dialog).toBeInTheDocument()
+        await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('legacy-source', undefined))
+        expect(onSelect).toHaveBeenCalledWith('child-session')
+    })
+
+    it('forks latest completed on the legacy fallback of a running capable session', async () => {
+        const forkConversation = vi.fn(async () => ({ sessionId: 'child-session' }))
+        const forkPreview = vi.fn(async () => { throw new ApiError('HTTP 404 Not Found', 404) })
+        const onSelect = vi.fn()
+        const session = makeSession({
+            id: 'legacy-source',
+            active: true,
+            thinking: true,
+            metadata: {
+                path: '/work/legacy',
+                name: 'Legacy source',
+                flavor: 'codex',
+                conversationHistory: { forkCurrent: true, forkLatestCompleted: true },
+            },
+        })
+        renderWithProviders(<SessionList sessions={[session]} selectedSessionId={session.id} onSelect={onSelect}
+            onNewSession={vi.fn()} onRefresh={vi.fn()} isLoading={false} renderHeader={false}
+            api={{ forkConversation, forkPreview } as unknown as ApiClient} />)
+
+        fireEvent.contextMenu(screen.getByRole('button', { name: /Legacy source/ }))
+        fireEvent.click(screen.getByRole('menuitem', { name: 'Fork session' }))
+        const dialog = await screen.findByRole('dialog')
+        expect(within(dialog).getByRole('heading', { name: 'Fork session' })).toBeInTheDocument()
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Confirm' }))
+
+        // The summary carries the capability flat on metadata (not under
+        // capabilities): a running session must still fork latest completed.
+        await waitFor(() => expect(forkConversation).toHaveBeenCalledWith('legacy-source', undefined, true))
+        expect(onSelect).toHaveBeenCalledWith('child-session')
     })
 })
 
