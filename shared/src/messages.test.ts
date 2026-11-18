@@ -12,6 +12,9 @@ import {
     getAgyTaskLogId,
     getLiveReasoningStreamId,
     getReasoningStreamId,
+    getTextLiveStreamId,
+    getTextSnapshotStreamId,
+    getTextStreamId,
     getToolCallId,
     isRedundantGoalStatusEventContent,
     detectNotifySummaryNearMiss,
@@ -1004,6 +1007,121 @@ describe('reasoning stream identity', () => {
     ])('returns null for %s', (_label, value) => {
         expect(getReasoningStreamId(value)).toBeNull()
         expect(getLiveReasoningStreamId(value)).toBeNull()
+    })
+})
+
+describe('text stream identity', () => {
+    function textContent(overrides: Record<string, unknown> = {}) {
+        return {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: { type: 'message', message: 'answer', id: 'text-stream-1', ...overrides }
+            }
+        }
+    }
+
+    test('reads the stream id from a live snapshot', () => {
+        const live = textContent({ streamSnapshot: true, live: true })
+        expect(getTextStreamId(live)).toBe('text-stream-1')
+        expect(getTextLiveStreamId(live)).toBe('text-stream-1')
+        expect(getTextSnapshotStreamId(live)).toBe('text-stream-1')
+    })
+
+    test('treats a settled text message as part of the stream but not as live', () => {
+        const settled = textContent({ streamSnapshot: true })
+        expect(getTextStreamId(settled)).toBe('text-stream-1')
+        expect(getTextLiveStreamId(settled)).toBeNull()
+        expect(getTextSnapshotStreamId(settled)).toBe('text-stream-1')
+    })
+
+    test('a snapshot-marked row without the live marker still groups by stream (backfill shape)', () => {
+        // Rows written before the hub learned to sweep text streams: the wire
+        // carried streamSnapshot but never live, so only the snapshot reader
+        // can recognise them as members of a stream.
+        const legacy = textContent({ streamSnapshot: true })
+        expect(getTextSnapshotStreamId(legacy)).toBe('text-stream-1')
+        expect(getTextLiveStreamId(legacy)).toBeNull()
+    })
+
+    test('an id-less text message never reads as a stream', () => {
+        const plain = { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', message: 'answer' } } }
+        expect(getTextStreamId(plain)).toBeNull()
+        expect(getTextLiveStreamId(plain)).toBeNull()
+        expect(getTextSnapshotStreamId(plain)).toBeNull()
+    })
+
+    test('an id-bearing text message without the snapshot marker is not a backfill candidate', () => {
+        const noMarker = textContent()
+        expect(getTextStreamId(noMarker)).toBe('text-stream-1')
+        expect(getTextSnapshotStreamId(noMarker)).toBeNull()
+    })
+
+    test('does not treat a non-boolean live marker as live', () => {
+        expect(getTextLiveStreamId(textContent({ streamSnapshot: true, live: 'yes' }))).toBeNull()
+    })
+
+    test.each([
+        ['a user-role envelope', { role: 'user', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', message: 'hi', id: 's', streamSnapshot: true } } }],
+        ['a different payload type', { role: 'agent', content: { type: 'event', data: { type: 'message', message: 'hi', id: 's', streamSnapshot: true } } }],
+        ['a different data type', { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'reasoning', message: 'hi', id: 's', streamSnapshot: true } } }],
+        ['a blank id', { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', message: 'hi', id: '   ', streamSnapshot: true } } }],
+        ['a non-string id', { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', message: 'hi', id: 7, streamSnapshot: true } } }],
+        ['a non-object value', 'text']
+    ])('returns null for %s', (_label, value) => {
+        expect(getTextStreamId(value)).toBeNull()
+        expect(getTextLiveStreamId(value)).toBeNull()
+        expect(getTextSnapshotStreamId(value)).toBeNull()
+    })
+})
+
+describe('claude settled-line stream markers (output flavor)', () => {
+    // A settled Claude assistant transcript line: content.type 'output' with
+    // the SDK assistant message as data. The remote launcher stamps
+    // streamId/reasoningStreamId on it so the line supersedes its own live
+    // snapshots — the hub sweep key and the web collapse key both read them
+    // through these readers.
+    function claudeAssistant(overrides: Record<string, unknown> = {}) {
+        return {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'assistant',
+                    message: { role: 'assistant', content: [{ type: 'text', text: 'final' }] },
+                    ...overrides
+                }
+            }
+        }
+    }
+
+    test('reads both markers off a settled assistant line', () => {
+        const settled = claudeAssistant({ streamId: 'claude-msg_1-text', reasoningStreamId: 'claude-msg_1-reasoning' })
+        expect(getTextStreamId(settled)).toBe('claude-msg_1-text')
+        expect(getReasoningStreamId(settled)).toBe('claude-msg_1-reasoning')
+    })
+
+    test('a settled line is never a live snapshot, whatever it carries', () => {
+        const settled = claudeAssistant({ streamId: 'claude-msg_1-text', live: true })
+        expect(getTextLiveStreamId(settled)).toBeNull()
+        expect(getLiveReasoningStreamId(settled)).toBeNull()
+    })
+
+    test('marker-less settled lines read as null (pre-streaming rows keep working)', () => {
+        const plain = claudeAssistant()
+        expect(getTextStreamId(plain)).toBeNull()
+        expect(getReasoningStreamId(plain)).toBeNull()
+    })
+
+    test.each([
+        ['a non-assistant data type', claudeAssistant({ type: 'user' })],
+        ['a user-role envelope', { role: 'user', content: { type: 'output', data: { type: 'assistant', streamId: 's' } } }],
+        ['a non-object data', { role: 'agent', content: { type: 'output', data: 'assistant' } }],
+        ['a blank marker', claudeAssistant({ streamId: '   ' })],
+        ['a non-string marker', claudeAssistant({ streamId: 9 })]
+    ])('returns null for %s', (_label, value) => {
+        expect(getTextStreamId(value)).toBeNull()
+        expect(getReasoningStreamId(value)).toBeNull()
     })
 })
 

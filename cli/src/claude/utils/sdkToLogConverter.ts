@@ -386,6 +386,22 @@ export class SDKToLogConverter {
                     // Set on synthetic API error messages; the web renders these as errors
                     error: (assistantMsg as any).error
                 }
+                // Live-stream markers stamped by the remote launcher (see
+                // utils/streamSnapshots.ts): the settled line carries the ids of
+                // its own live snapshots so the hub sweeps them and the web
+                // swaps the streaming bubble for the final text. Absent on
+                // sidechain settles and non-streamed messages.
+                const streamMarkers = (assistantMsg as any).hapi_stream_markers as
+                    | { streamId?: string; reasoningStreamId?: string }
+                    | undefined
+                if (streamMarkers !== undefined && streamMarkers !== null) {
+                    if (typeof streamMarkers.streamId === 'string') {
+                        (logMessage as any).streamId = streamMarkers.streamId
+                    }
+                    if (typeof streamMarkers.reasoningStreamId === 'string') {
+                        (logMessage as any).reasoningStreamId = streamMarkers.reasoningStreamId
+                    }
+                }
                 // if (assistantMsg.message.content && Array.isArray(assistantMsg.message.content)) {
                 //     for (const content of assistantMsg.message.content) {
                 //         if (content.type === 'tool_use' && content.id) {

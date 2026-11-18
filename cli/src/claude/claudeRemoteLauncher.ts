@@ -1,4 +1,5 @@
 import React from "react";
+import { randomUUID } from "node:crypto";
 import { Session } from "./session";
 import { RemoteModeDisplay } from "@/ui/ink/RemoteModeDisplay";
 import { claudeRemote, type ClaudeSteerTarget, type CompactSummaryPayload } from "./claudeRemote";
@@ -17,6 +18,7 @@ import type { ClaudePermissionMode } from "@hapi/protocol/types";
 import { RPC_METHODS } from "@hapi/protocol/rpcMethods";
 import { parseSpecialCommand } from "@/parsers/specialCommands";
 import { ClaudeToolResultImages } from './utils/toolResultImages';
+import { ClaudeStreamSnapshotEmitter, isStreamSnapshotMessage } from './utils/streamSnapshots';
 import { applySessionTitleFallback, readNativeSessionTitle, stripAttachmentReferences } from './utils/sessionTitleFallback';
 import {
     RemoteLauncherBase,
@@ -144,9 +146,18 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         this.permissionHandler = permissionHandler;
 
         const toolResultImages = new ClaudeToolResultImages();
-        const messageQueue = new OutgoingMessageQueue(
-            (logMessage) => toolResultImages.send(session.client, logMessage)
-        );
+        const streamSnapshots = new ClaudeStreamSnapshotEmitter((snapshot) => {
+            messageQueue.enqueue(snapshot);
+        });
+        const messageQueue = new OutgoingMessageQueue((logMessage) => {
+            if (isStreamSnapshotMessage(logMessage)) {
+                // Live snapshots ride the agent (DSH) message path, not the
+                // Claude transcript path.
+                session.client.sendAgentMessage(logMessage);
+            } else {
+                toolResultImages.send(session.client, logMessage);
+            }
+        });
 
         permissionHandler.setOnPermissionRequest((toolCallId: string) => {
             messageQueue.releaseToolCall(toolCallId);
@@ -270,6 +281,17 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         let ongoingToolCalls = new Map<string, { parentToolCallId: string | null }>();
 
         function onMessage(message: SDKMessage) {
+            if (message.type === 'stream_event') {
+                // Partial-message deltas never reach the transcript mirror;
+                // the emitter folds them into throttled live snapshots.
+                streamSnapshots.handleStreamEvent(message);
+                return;
+            }
+            if (message.type === 'result') {
+                // End of turn: close any still-open stream with a terminal
+                // snapshot so an aborted/errored turn leaves no live bubble.
+                streamSnapshots.finalizeOpenStreams();
+            }
             formatClaudeMessageForInk(message, messageBuffer);
             permissionHandler.onMessage(message);
 
@@ -309,6 +331,15 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
             }
 
             let msg = message;
+
+            if (message.type === 'assistant' && !message.parent_tool_use_id) {
+                // Stamp the stream ids of this message's live snapshots so the
+                // settled line supersedes them (hub sweep + web in-place swap).
+                const markers = streamSnapshots.takeSettledMarkers(message as SDKAssistantMessage);
+                if (markers) {
+                    msg = { ...(msg as SDKAssistantMessage), hapi_stream_markers: markers };
+                }
+            }
 
             if (message.type === 'user') {
                 let umessage = message as SDKUserMessage;
@@ -623,6 +654,20 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             session.consumeOneTimeFlags();
                         },
                         onThinkingChange: session.onThinkingChange,
+                        onGoalEvent: (event) => {
+                            // Same forwarding path the Codex goal pipeline
+                            // rides: the generic agent envelope
+                            // (AGENT_MESSAGE_PAYLOAD_TYPE inside
+                            // sendAgentMessage) with a fresh id for dedup.
+                            // thread_id is null only when no Claude session id
+                            // was known at frame time — fall back to the hapi
+                            // session id so the event stays attributable.
+                            const threadId = event.thread_id ?? session.sessionId ?? session.client.sessionId;
+                            const scoped = event.type === 'thread_goal_updated'
+                                ? { ...event, thread_id: threadId, goal: { ...event.goal, threadId } }
+                                : { ...event, thread_id: threadId };
+                            session.client.sendAgentMessage({ ...scoped, id: randomUUID() });
+                        },
                         claudeEnvVars: session.claudeEnvVars,
                         claudeArgs: session.claudeArgs,
                         onMessage,

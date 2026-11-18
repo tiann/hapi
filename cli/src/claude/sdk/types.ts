@@ -56,6 +56,25 @@ export interface SDKAssistantMessage extends SDKMessage {
     }
 }
 
+/**
+ * A partial streaming event emitted with `--include-partial-messages`: Claude
+ * re-emits the assistant output as Anthropic Messages API stream events
+ * (message_start / content_block_start / content_block_delta / content_block_stop
+ * / message_delta / message_stop) ahead of each complete assistant message.
+ * The remote launcher folds the text/thinking deltas into throttled live
+ * snapshots so the web streams Claude turns like it already streams DSH.
+ * Never persisted to the transcript — consumed by the snapshot emitter only.
+ */
+export interface SDKStreamEventMessage extends SDKMessage {
+    type: 'stream_event'
+    parent_tool_use_id?: string
+    event: {
+        type: string
+        index?: number
+        [key: string]: unknown
+    }
+}
+
 export interface SDKSystemMessage extends SDKMessage {
     type: 'system'
     subtype: string
@@ -231,6 +250,13 @@ export interface QueryOptions {
      * Claude starts processing it. Requires a streaming prompt.
      */
     replayUserMessages?: boolean
+    /**
+     * Add `--include-partial-messages` so Claude emits `stream_event` entries
+     * (text/thinking deltas) ahead of each complete assistant message. The
+     * remote launcher turns those into throttled live snapshots for the web;
+     * consumers that ignore `stream_event` lines are unaffected.
+     */
+    includePartialMessages?: boolean
     canCallTool?: CanCallToolCallback
     promptFailureCleanupTimeoutMs?: number
 }

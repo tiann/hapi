@@ -386,20 +386,52 @@ function normalizeAssistantOutput(
     const message = isObject(data.message) ? data.message : null
     if (!message) return null
 
+    // Live-stream markers (cli utils/streamSnapshots.ts): the settled line
+    // carries the ids of the live text / reasoning snapshots it supersedes, so
+    // the timeline collapses each streaming bubble into the matching final
+    // block instead of showing both.
+    const settledTextStreamId = asString(data.streamId)
+    const settledReasoningStreamId = asString(data.reasoningStreamId)
+    let textMarkerAttached = false
+    let reasoningMarkerAttached = false
+
     const modelContent = message.content
     const blocks: NormalizedAgentContent[] = []
 
     if (typeof modelContent === 'string') {
-        blocks.push({ type: 'text', text: modelContent, uuid, parentUUID })
+        blocks.push({
+            type: 'text',
+            text: modelContent,
+            uuid,
+            ...(settledTextStreamId !== null && !textMarkerAttached ? { streamId: settledTextStreamId } : {}),
+            parentUUID
+        })
+        textMarkerAttached = true
     } else if (Array.isArray(modelContent)) {
         for (const block of modelContent) {
             if (!isObject(block) || typeof block.type !== 'string') continue
             if (block.type === 'text' && typeof block.text === 'string') {
-                blocks.push({ type: 'text', text: block.text, uuid, parentUUID })
+                blocks.push({
+                    type: 'text',
+                    text: block.text,
+                    uuid,
+                    ...(settledTextStreamId !== null && !textMarkerAttached ? { streamId: settledTextStreamId } : {}),
+                    parentUUID
+                })
+                textMarkerAttached = true
                 continue
             }
             if (block.type === 'thinking' && typeof block.thinking === 'string') {
-                blocks.push({ type: 'reasoning', text: block.thinking, uuid, parentUUID })
+                blocks.push({
+                    type: 'reasoning',
+                    text: block.thinking,
+                    uuid,
+                    ...(settledReasoningStreamId !== null && !reasoningMarkerAttached
+                        ? { streamId: settledReasoningStreamId }
+                        : {}),
+                    parentUUID
+                })
+                reasoningMarkerAttached = true
                 continue
             }
             if (block.type === 'tool_use' && typeof block.id === 'string') {

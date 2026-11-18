@@ -197,6 +197,42 @@ describe('SDKToLogConverter', () => {
 
             expect((logMessage as any).error).toBe('invalid_request')
         })
+
+        it('stamps live-stream markers onto the settled assistant line', () => {
+            const sdkMessage: any = {
+                type: 'assistant',
+                message: {
+                    role: 'assistant',
+                    content: [{ type: 'text', text: 'Final answer' }]
+                },
+                hapi_stream_markers: {
+                    streamId: 'claude-msg_1-text',
+                    reasoningStreamId: 'claude-msg_1-reasoning'
+                }
+            }
+
+            const logMessage: any = converter.convert(sdkMessage)
+
+            expect(logMessage.streamId).toBe('claude-msg_1-text')
+            expect(logMessage.reasoningStreamId).toBe('claude-msg_1-reasoning')
+            // The marker envelope itself never lands in the transcript line.
+            expect(logMessage.hapi_stream_markers).toBeUndefined()
+        })
+
+        it('leaves marker-less assistant lines untouched', () => {
+            const sdkMessage: SDKAssistantMessage = {
+                type: 'assistant',
+                message: {
+                    role: 'assistant',
+                    content: [{ type: 'text', text: 'Plain' }]
+                }
+            }
+
+            const logMessage: any = converter.convert(sdkMessage)
+
+            expect(logMessage.streamId).toBeUndefined()
+            expect(logMessage.reasoningStreamId).toBeUndefined()
+        })
     })
 
     describe('System messages', () => {

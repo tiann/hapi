@@ -22,6 +22,8 @@ export type GoalSnapshot = {
     timeUsedSeconds?: number
     createdAt?: number
     updatedAt?: number
+    roundsStarted?: number
+    maxGoalRounds?: number
 }
 
 export type GoalResult = { kind: 'goal'; goal: GoalSnapshot } | { kind: 'empty' }
@@ -31,16 +33,23 @@ function readField(record: Record<string, unknown>, camel: string, snake: string
 }
 
 function parseSnapshot(value: unknown): GoalSnapshot | null {
-    if (!isObject(value) || typeof value.objective !== 'string' || !value.objective.trim()
-        || typeof value.status !== 'string' || !value.status.trim()) return null
+    if (!isObject(value) || typeof value.objective !== 'string' || !value.objective.trim()) return null
+    // DSH goal tools report the lifecycle as `phase` (active/paused/blocked/
+    // complete — a subset of the ThreadGoalStatus enum); accept it as an alias
+    // for `status`, with an explicit `status` still winning when both exist.
+    const status = typeof value.status === 'string' && value.status.trim()
+        ? value.status
+        : typeof value.phase === 'string' && value.phase.trim() ? value.phase : null
+    if (!status) return null
 
-    const goal: GoalSnapshot = { objective: value.objective, status: value.status }
+    const goal: GoalSnapshot = { objective: value.objective, status }
     const threadId = readField(value, 'threadId', 'thread_id')
     if (typeof threadId === 'string' && threadId.trim()) goal.threadId = threadId
 
     const fields = [
         ['tokenBudget', 'token_budget'], ['tokensUsed', 'tokens_used'],
-        ['timeUsedSeconds', 'time_used_seconds'], ['createdAt', 'created_at'], ['updatedAt', 'updated_at']
+        ['timeUsedSeconds', 'time_used_seconds'], ['createdAt', 'created_at'], ['updatedAt', 'updated_at'],
+        ['roundsStarted', 'rounds_started'], ['maxGoalRounds', 'max_goal_rounds']
     ] as const
     for (const [camel, snake] of fields) {
         const number = readField(value, camel, snake)

@@ -89,12 +89,41 @@ export function isRedundantGoalStatusMessageText(value: unknown): boolean {
  *
  * Anything unrecognised reads as `null`, which means "keep it".
  */
+/**
+ * Stream marker on a settled Claude-flavor assistant line.
+ *
+ * The Claude remote launcher streams assistant text/reasoning as growing
+ * `codex`-shaped live snapshots under a stable stream id (same wire shape the
+ * ACP/DSH path uses), so the hub sweep and the web timeline replacement work
+ * unchanged for the snapshots themselves. The settled Claude transcript line
+ * that closes the stream is a different envelope (`output` flavor), so it
+ * carries the id of the snapshots it supersedes as a top-level marker
+ * (`streamId` for text, `reasoningStreamId` for thinking). Only the sweep and
+ * render-key readers consume the markers; anything unrecognised reads as
+ * `null`, which means "keep it".
+ */
+function readClaudeSettledStreamMarker(
+    record: RoleWrappedRecord,
+    marker: 'streamId' | 'reasoningStreamId'
+): string | null {
+    if (record.role !== 'agent') return null
+    const content = record.content
+    if (!isObject(content) || content.type !== 'output') return null
+    const data = isObject(content.data) ? content.data : null
+    if (!data || data.type !== 'assistant') return null
+    const id = data[marker]
+    if (typeof id !== 'string' || id.trim().length === 0) return null
+    return id
+}
+
 function readReasoningStreamId(value: unknown, liveOnly: boolean): string | null {
     const record = unwrapRoleWrappedRecordEnvelope(value)
     if (record?.role !== 'agent') return null
 
     const content = record.content
-    if (!isObject(content) || content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return null
+    if (!isObject(content) || content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) {
+        return liveOnly ? null : (record ? readClaudeSettledStreamMarker(record, 'reasoningStreamId') : null)
+    }
 
     const data = isObject(content.data) ? content.data : null
     if (!data || data.type !== 'reasoning') return null
@@ -111,6 +140,68 @@ export function getReasoningStreamId(value: unknown): string | null {
 
 export function getLiveReasoningStreamId(value: unknown): string | null {
     return readReasoningStreamId(value, true)
+}
+
+/**
+ * Text-stream identity readers, the mirror of the reasoning pair above.
+ *
+ * ACP agents stream assistant text under one stable id too: the CLI buffers
+ * a segment and, on every typing pause, re-sends the growing buffer as a
+ * `streamSnapshot: true, live: true` message; the segment's boundary flush
+ * then re-sends the full text under the same id with no `live` marker (that
+ * settled copy is the survivor). Plain text messages carry no id and read as
+ * `null`, which means "keep it".
+ *
+ *  - `getTextStreamId` answers "which stream does this belong to" and matches
+ *    both live snapshots and the settled message, so the settled message can
+ *    trigger the cleanup of its own leftovers.
+ *  - `getTextLiveStreamId` answers "is this a replaceable snapshot" and only
+ *    matches rows safe to drop.
+ *  - `getTextSnapshotStreamId` matches any snapshot-marked row of a stream
+ *    (live or settled). Stored rows written before the hub learned to sweep
+ *    text streams carry no `live` marker at all, so the one-time backfill
+ *    cannot use the live reader — it groups on this one instead and keeps
+ *    the newest row per stream.
+ */
+function readTextStreamId(value: unknown, liveOnly: boolean): string | null {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent') return null
+
+    const content = record.content
+    if (!isObject(content) || content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) {
+        return liveOnly ? null : (record ? readClaudeSettledStreamMarker(record, 'streamId') : null)
+    }
+
+    const data = isObject(content.data) ? content.data : null
+    if (!data || data.type !== 'message') return null
+    if (liveOnly && data.live !== true) return null
+
+    const id = data.id
+    if (typeof id !== 'string' || id.trim().length === 0) return null
+    return id
+}
+
+export function getTextStreamId(value: unknown): string | null {
+    return readTextStreamId(value, false)
+}
+
+export function getTextLiveStreamId(value: unknown): string | null {
+    return readTextStreamId(value, true)
+}
+
+export function getTextSnapshotStreamId(value: unknown): string | null {
+    const record = unwrapRoleWrappedRecordEnvelope(value)
+    if (record?.role !== 'agent') return null
+
+    const content = record.content
+    if (!isObject(content) || content.type !== AGENT_MESSAGE_PAYLOAD_TYPE) return null
+
+    const data = isObject(content.data) ? content.data : null
+    if (!data || data.type !== 'message' || data.streamSnapshot !== true) return null
+
+    const id = data.id
+    if (typeof id !== 'string' || id.trim().length === 0) return null
+    return id
 }
 
 /**

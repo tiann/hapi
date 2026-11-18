@@ -43,6 +43,30 @@ export interface ClaudeSteerTarget {
     steer(message: string): { delivered: Promise<boolean> } | null;
 }
 
+/**
+ * Claude Code (v2.1.314+) goal-mode frames converted into the thread-goal
+ * agent events the Codex goal pipeline already emits (`thread_goal_updated` /
+ * `thread_goal_cleared`, riding the generic agent envelope). `thread_id` is
+ * null only when no Claude session id is known yet — the launcher substitutes
+ * the hapi session id there.
+ */
+export type ClaudeGoalAgentEvent =
+    | {
+        type: 'thread_goal_updated';
+        thread_id: string | null;
+        goal: {
+            threadId: string | null;
+            objective: string;
+            status: 'active' | 'blocked';
+            tokensUsed?: number;
+            timeUsedSeconds?: number;
+        };
+    }
+    | {
+        type: 'thread_goal_cleared';
+        thread_id: string | null;
+    };
+
 interface ActiveCompact {
     baseline: number | null;
     failure: string | null;
@@ -90,6 +114,12 @@ export async function claudeRemote(opts: {
     onSessionFound: (id: string, extras?: { forkedFrom?: string }) => void,
     onThinkingChange?: (thinking: boolean) => void,
     onMessage: (message: SDKMessage) => void,
+    /**
+     * Receives live goal-mode frames (`active_goal` / `goal_status`) converted
+     * to thread-goal agent events. Live-only: the frames are intercepted
+     * before onMessage and never persisted into the transcript.
+     */
+    onGoalEvent?: (event: ClaudeGoalAgentEvent) => void,
     onContextUsage?: (usage: { model?: string, maxTokens?: number }) => void,
     onAccountIdentity?: (accountIdentity: string | null) => void,
     onFirstResult?: (initialMessage: string) => void,
@@ -353,6 +383,10 @@ export async function claudeRemote(opts: {
         additionalDirectories: [getHapiBlobsDir()],
         // Steering acks a mid-turn message by its echo.
         replayUserMessages: true,
+        // Stream assistant text/thinking deltas ahead of each complete message
+        // so the remote launcher can forward throttled live snapshots to the
+        // hub (DSH-parity streaming for Claude sessions).
+        includePartialMessages: true,
     }
 
     if (!awaitingForkInit) {
@@ -533,6 +567,67 @@ export async function claudeRemote(opts: {
     };
 
     updateThinking(true);
+
+    // Claude Code (v2.1.314+) streams live goal-mode frames: `active_goal`
+    // carries the goal snapshot in `value` (null once the goal is gone) and
+    // `goal_status` reports completion via `met: true`. They are control-plane
+    // state, not conversation content: convert them to the thread-goal agent
+    // events the Codex goal pipeline already emits, and keep them out of
+    // onMessage — and thus out of the persisted transcript.
+    const goalFrameThreadId = (message: SDKMessage): string | null => {
+        const frameSessionId = message.session_id;
+        if (typeof frameSessionId === 'string' && frameSessionId.trim()) return frameSessionId;
+        return currentSessionId;
+    };
+    const handleGoalFrame = (message: SDKMessage): void => {
+        if (message.type === 'active_goal') {
+            const value = message.value;
+            if (value !== null && typeof value === 'object') {
+                const snapshot = value as Record<string, unknown>;
+                const condition = snapshot.condition;
+                const objective = typeof condition === 'string' ? condition : '';
+                if (!objective.trim()) {
+                    logger.debug(`${debugPrefix} active_goal frame without condition; ignored`);
+                    return;
+                }
+                const threadId = goalFrameThreadId(message);
+                const lastReason = snapshot.last_reason;
+                const tokensAtStart = snapshot.tokens_at_start;
+                const setAt = snapshot.set_at;
+                const tokensUsed = typeof tokensAtStart === 'number' && Number.isFinite(tokensAtStart)
+                    ? tokensAtStart
+                    : undefined;
+                const timeUsedSeconds = typeof setAt === 'number' && Number.isFinite(setAt)
+                    ? Math.max(0, Math.round((Date.now() - setAt * 1000) / 1000))
+                    : undefined;
+                opts.onGoalEvent?.({
+                    type: 'thread_goal_updated',
+                    thread_id: threadId,
+                    goal: {
+                        threadId,
+                        objective,
+                        // A reported stop reason means Claude halted the goal
+                        // loop awaiting something; otherwise it is running.
+                        status: typeof lastReason === 'string' && lastReason.trim() ? 'blocked' : 'active',
+                        ...(tokensUsed !== undefined ? { tokensUsed } : {}),
+                        ...(timeUsedSeconds !== undefined ? { timeUsedSeconds } : {})
+                    }
+                });
+                return;
+            }
+            // value === null: the goal no longer exists on the Claude side.
+            opts.onGoalEvent?.({ type: 'thread_goal_cleared', thread_id: goalFrameThreadId(message) });
+            return;
+        }
+        if (message.type === 'goal_status') {
+            // Only a reported success finishes the goal; anything else is
+            // covered by the following active_goal frames.
+            if (message.met === true) {
+                opts.onGoalEvent?.({ type: 'thread_goal_cleared', thread_id: goalFrameThreadId(message) });
+            }
+        }
+    };
+
     try {
         logger.debug(`[claudeRemote] Starting to iterate over response`);
 
@@ -643,6 +738,14 @@ export async function claudeRemote(opts: {
                     }
                     continue;
                 }
+            }
+
+            // Goal-mode frames are live-only: convert them to thread-goal
+            // agent events and never hand them to onMessage (the converter
+            // would drop them anyway; persisting them is not wanted).
+            if (message.type === 'active_goal' || message.type === 'goal_status') {
+                handleGoalFrame(message);
+                continue;
             }
 
             const compactMetadata =
