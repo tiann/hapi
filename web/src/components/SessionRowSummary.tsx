@@ -14,6 +14,8 @@ import { LOW_RATE_STRIPES_CLASS, useLowRateAnimation } from '@/hooks/useLowRateA
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { useTranslation } from '@/lib/use-translation'
 import { getWorktreeSessionLabel } from '@/lib/sessionWorktreeLabel'
+import { SessionPrChip } from '@/components/SessionPrChip'
+import { getPrimaryGithubPrRef, type PrChipDisplayProfile } from '@hapi/protocol'
 import {
     attachedJobFraction,
     formatAttachedJobProgress,
@@ -107,6 +109,16 @@ export function SessionRowSummary(props: {
     lastSeenVersion?: number
     scheduleTooltipId?: string
     className?: string
+    /** When enabled, show primary GitHub PR chip left of the time column (ADR D8). */
+    githubPrAwarenessEnabled?: boolean
+    /**
+     * When false, omit the inline PR chip (parent renders an interactive chip
+     * beside the row button to avoid nesting `<a>` inside `<button>`).
+     */
+    showPrChip?: boolean
+    prChipDisplay?: PrChipDisplayProfile
+    /** Shared minute clock from the session list (avoids per-row timers). */
+    prNowMs?: number
     /** Rows inside the pinned "in progress" section skip the pending text label. */
     inRunningSection?: boolean
     /** Short project name shown under the title (pinned "in progress" rows). */
@@ -130,6 +142,10 @@ export function SessionRowSummary(props: {
         lastSeenVersion,
         scheduleTooltipId: scheduleTooltipIdProp,
         className,
+        githubPrAwarenessEnabled = false,
+        showPrChip = true,
+        prChipDisplay,
+        prNowMs,
         inRunningSection = false,
         projectLabel,
         machineLabel,
@@ -185,13 +201,20 @@ export function SessionRowSummary(props: {
             noHeartbeat: t('session.item.attachedJob.noHeartbeat'),
         })
         : null
+    const primaryPrRef = githubPrAwarenessEnabled
+        ? getPrimaryGithubPrRef(s.metadata?.externalRefs)
+        : null
 
     // Presence represents foreground work and connection state on the agent
     // icon. Connected sessions with only background work are waiting from the
     // foreground's perspective; the title-side blue dot owns that state.
+    // Derived tool work (hub transcript sweep) and an attached job both
+    // represent work that outlives the `thinking` flag, so they render
+    // working too.
+    const derivedWork = s.derivedToolWork === true
     const isRunning = s.active && s.thinking
     const isBackgroundOnly = s.active && !s.thinking && (s.backgroundTaskCount ?? 0) > 0
-    const presence: 'working' | 'waiting' | 'stopped' = isRunning || attachedJob
+    const presence: 'working' | 'waiting' | 'stopped' = isRunning || attachedJob || derivedWork
         ? 'working'
         : s.active
             ? 'waiting'
@@ -210,8 +233,10 @@ export function SessionRowSummary(props: {
     // the spinner rather than hiding real work behind the request symbol.
     // Background-only work gets a static title dot so the spinner remains a
     // stable "foreground turn running" signal. An attached job keeps its own
-    // running spinner because it outlives the agent and is independently visible.
-    const hasForegroundWork = Boolean(attachedJob) || isRunning
+    // running spinner because it outlives the agent and is independently
+    // visible; hub-derived open tool work (autonomous rounds) spins for the
+    // same reason — the transcript proves the agent is mid-call.
+    const hasForegroundWork = Boolean(attachedJob) || derivedWork || isRunning
     // At-rest unread styling applies to background-only work too: its title dot
     // is static, unlike the foreground spinner that carries unread by color.
     const emphasizeUnread = isUnread && !hasForegroundWork
@@ -355,6 +380,14 @@ export function SessionRowSummary(props: {
                             <span className="shrink-0 text-[var(--app-badge-warning-text)]">
                                 {t('session.item.pending')} {s.pendingRequestsCount}
                             </span>
+                        ) : null}
+                        {primaryPrRef && showPrChip ? (
+                            <SessionPrChip
+                                refs={s.metadata?.externalRefs}
+                                displayProfile={prChipDisplay}
+                                nowMs={prNowMs}
+                                interactive={false}
+                            />
                         ) : null}
                         {timeLabel ? (
                             <span className={`min-w-0 translate-y-[0.5px] truncate whitespace-nowrap tabular-nums ${

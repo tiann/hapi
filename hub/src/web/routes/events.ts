@@ -96,7 +96,7 @@ export function createEventsRoutes(
                 machineId,
                 visibility,
                 resumeFrom,
-                send: (event, eventId) => stream.writeSSE({ data: JSON.stringify(event), id: eventId }),
+                send: (event, eventId, serializedEvent) => stream.writeSSE({ data: serializedEvent ?? JSON.stringify(event), id: eventId }),
                 close: () => stream.abort(),
                 sendHeartbeat: async () => {
                     await stream.writeSSE({
@@ -127,7 +127,7 @@ export function createEventsRoutes(
                 })
 
                 for (const item of replay) {
-                    await stream.writeSSE({ data: JSON.stringify(item.event), id: item.eventId })
+                    await stream.writeSSE({ data: item.serialized, id: item.eventId })
                 }
                 await manager.drainPending(subscriptionId)
 

@@ -134,9 +134,12 @@ export function classifyRecoveredProcessGeneration(
 export function probeRecoveredProcessGeneration(
   pid: number,
   record: { processStartMarker: string; bootId?: string },
-  currentMarker?: string | null
+  currentMarker?: string | null,
+  knownAlive = false
 ): 'verified' | 'quarantined' | 'exited' {
-  if (!isProcessAlive(pid)) return 'exited';
+  // A successful process-table lookup already establishes liveness. Avoid a
+  // synchronous per-PID tasklist call that blocks the socket event loop.
+  if (!knownAlive && !isProcessAlive(pid)) return 'exited';
   const evidence = {
     pid,
     threadGroupId: getProcessThreadGroupId(pid),
@@ -2018,7 +2021,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         const persisted = persistedResumeProcesses.get(pid);
         if (persisted) {
           const currentMarker = heartbeatTable ? heartbeatTable.get(pid)?.marker ?? null : undefined;
-          const generation = probeRecoveredProcessGeneration(pid, persisted, currentMarker);
+          const generation = probeRecoveredProcessGeneration(pid, persisted, currentMarker, !!heartbeatTable);
           if (generation === 'exited') {
             logger.debug(`[RUNNER RUN] Removing stale session with reused PID ${pid}`);
             discardStaleProcess(pid);

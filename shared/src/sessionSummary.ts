@@ -1,4 +1,4 @@
-import type { AgentState, AttachedJob, Metadata, Session, TodoItem, WorktreeMetadata } from './schemas'
+import type { AgentState, AttachedJob, ExternalRef, Metadata, Session, TodoItem, WorktreeMetadata } from './schemas'
 import type { SessionReadState } from './sessionReadState'
 import type { ConversationHistoryCapabilities } from './conversationHistory'
 import { isKnownFlavor } from './flavors'
@@ -68,6 +68,8 @@ export type SessionSummaryMetadata = {
     worktree?: WorktreeMetadata
     agentSessionId?: string
     lifecycleState?: string
+    /** Structured contribution links (GitHub PRs, …). tiann/hapi#1160. */
+    externalRefs?: ExternalRef[]
     conversationHistory?: ConversationHistoryCapabilities
     /** Loopback MCP URL when session CLI happy server is running (#956). */
     hapiMcpUrl?: string
@@ -117,6 +119,14 @@ export type SessionSummary = {
      *  `pendingRequestsCount`. */
     pendingRequests: PendingRequest[]
     backgroundTaskCount: number
+    /**
+     * Hub-derived "open tool work exists in the transcript tail" (work-scoped
+     * liveness). True when the hub's sweep found a tool call that started but
+     * never settled — the autonomous-round case where `thinking` is false and
+     * no background task is declared, yet the agent is demonstrably working.
+     * Optional because older hubs never send it.
+     */
+    derivedToolWork?: boolean
     futureScheduledMessageCount: number
     /** Epoch ms of the soonest uninvoked future scheduled message, or null. */
     nextScheduledAt: number | null
@@ -258,6 +268,7 @@ export function toSessionSummaryMetadata(metadata: Metadata | null | undefined):
         worktree: metadata.worktree,
         agentSessionId: getSummaryAgentSessionId(metadata),
         lifecycleState: metadata.lifecycleState,
+        externalRefs: metadata.externalRefs,
         conversationHistory: metadata.capabilities?.conversationHistory,
         hapiMcpUrl: metadata.hapiMcpUrl ?? undefined,
         // Omit lastUserMessage — bridge recovery text stays in full session
@@ -306,6 +317,7 @@ export function toSessionSummary(
         pendingRequestKinds: computePendingRequestKinds(session.agentState),
         pendingRequests: computePendingRequests(session.agentState, session.updatedAt),
         backgroundTaskCount: session.backgroundTaskCount ?? 0,
+        derivedToolWork: session.derivedToolWork === true,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
         attachedJob,

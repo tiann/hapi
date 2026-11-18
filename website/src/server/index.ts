@@ -24,11 +24,25 @@ async function startServer() {
       setHeaders: (res) => res.setHeader("Content-Type", "application/json"),
     })
   );
-  app.use(express.static(staticPath));
 
-  // Handle client-side routing - serve index.html for all routes
-  app.get("*", (_req, res) => {
-    res.sendFile(path.join(staticPath, "index.html"));
+  // Docs entry points (mirrors public/_redirects).
+  app.get(["/docs", "/docs/"], (_req, res) => {
+    res.redirect(301, "/docs/guide/quick-start");
+  });
+
+  // Old client-side language links (/?lng=zh) now live at /zh/.
+  app.get("/", (req, res, next) => {
+    if (req.query.lng === "zh") return res.redirect(301, "/zh/");
+    next();
+  });
+
+  // Prerendered pages: / -> index.html, /zh/ -> zh/index.html (and /zh -> /zh/),
+  // docs pages via their .html files.
+  app.use(express.static(staticPath, { extensions: ["html"] }));
+
+  // Everything else is a real 404 with the prerendered not-found page.
+  app.use((_req, res) => {
+    res.status(404).sendFile(path.join(staticPath, "404.html"));
   });
 
   const port = process.env.PORT || 3000;

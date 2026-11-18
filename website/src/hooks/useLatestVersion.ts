@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 
 const GITHUB_REPO = "tiann/hapi";
 const CACHE_KEY = "hapi-latest-version";
@@ -9,48 +9,49 @@ interface CachedVersion {
     timestamp: number;
 }
 
-export function useLatestVersion(fallback: string = "latest") {
-    const [version, setVersion] = useState<string>(() => {
-        // Try to get from cache first
+/**
+ * Latest GitHub release tag. Always `null` during prerender and the hydration
+ * render (so server and client markup match); filled in after mount.
+ */
+export function useLatestVersion(): string | null {
+    const [version, setVersion] = useState<string | null>(null);
+
+    useEffect(() => {
+        let cancelled = false;
         try {
             const cached = localStorage.getItem(CACHE_KEY);
             if (cached) {
-                const { version, timestamp }: CachedVersion = JSON.parse(cached);
-                if (Date.now() - timestamp < CACHE_TTL) {
-                    return version;
+                const parsed: CachedVersion = JSON.parse(cached);
+                if (Date.now() - parsed.timestamp < CACHE_TTL) {
+                    setVersion(parsed.version);
+                    return;
                 }
             }
         } catch {
             // Ignore cache errors
         }
-        return fallback;
-    });
 
-    useEffect(() => {
-        const fetchVersion = async () => {
-            try {
-                const res = await fetch(
-                    `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`,
-                    { headers: { Accept: "application/vnd.github.v3+json" } }
-                );
-                if (!res.ok) return;
-
-                const data = await res.json();
-                const tag = data.tag_name as string;
-                if (tag) {
-                    setVersion(tag);
-                    // Cache the result
-                    localStorage.setItem(
-                        CACHE_KEY,
-                        JSON.stringify({ version: tag, timestamp: Date.now() })
-                    );
+        fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
+            headers: { Accept: "application/vnd.github.v3+json" },
+        })
+            .then((res) => (res.ok ? res.json() : null))
+            .then((data: { tag_name?: string } | null) => {
+                const tag = data?.tag_name;
+                if (!tag || cancelled) return;
+                setVersion(tag);
+                try {
+                    localStorage.setItem(CACHE_KEY, JSON.stringify({ version: tag, timestamp: Date.now() }));
+                } catch {
+                    // Ignore storage errors
                 }
-            } catch {
-                // Keep fallback on error
-            }
-        };
+            })
+            .catch(() => {
+                // Keep the placeholder on error
+            });
 
-        fetchVersion();
+        return () => {
+            cancelled = true;
+        };
     }, []);
 
     return version;

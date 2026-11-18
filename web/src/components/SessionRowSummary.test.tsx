@@ -275,6 +275,50 @@ describe('SessionRowSummary background status', () => {
         expect(container.querySelector('[data-testid="session-presence"]')).toHaveAttribute('data-presence', 'waiting')
     })
 
+    it('shows a working spinner for hub-derived open tool work (autonomous rounds)', () => {
+        // thinking=false and no declared background tasks is exactly the
+        // autonomous-round shape the hub sweep covers: the transcript still
+        // holds an unsettled tool call, so the row must render working, not
+        // waiting.
+        const { container } = render(
+            <I18nProvider>
+                <SessionRowSummary
+                    session={makeSummary({
+                        thinking: false,
+                        backgroundTaskCount: 0,
+                        derivedToolWork: true,
+                    })}
+                />
+            </I18nProvider>
+        )
+
+        const badge = container.querySelector('[data-testid="session-presence"]')
+        expect(badge).toHaveAttribute('data-presence', 'working')
+        // The low-rate ticker drives the working pulse now; the static badge
+        // class is the visible contract (animate-pulse no longer exists).
+        expect(badge).toHaveClass('bg-[var(--app-badge-success-text)]')
+        expect(screen.getByTestId('session-activity')).toBeInTheDocument()
+        // Not the background-only dot: this is foreground-style work.
+        expect(screen.queryByTestId('session-background')).toBeNull()
+
+        // Without the derived flag the same shape stays waiting.
+        cleanup()
+        const idle = render(
+            <I18nProvider>
+                <SessionRowSummary
+                    session={makeSummary({
+                        thinking: false,
+                        backgroundTaskCount: 0,
+                        derivedToolWork: false,
+                    })}
+                />
+            </I18nProvider>
+        ).container
+        expect(idle.querySelector('[data-testid="session-presence"]')).toHaveAttribute('data-presence', 'waiting')
+        expect(idle.querySelector('[data-testid="session-presence"]')).not.toHaveClass('animate-pulse')
+        expect(idle.querySelector('[data-testid="session-activity"]')).toBeNull()
+    })
+
     it('shows and clears the unread dot in standard session rows', () => {
         const session = makeSummary({ id: 'standard-unread', backgroundTaskCount: 0, contentRevision: 5 })
         const view = render(<I18nProvider><SessionRowSummary session={session} showDetailedStatus={false} lastSeenVersion={0} /></I18nProvider>)

@@ -705,6 +705,14 @@ export async function claudeRemote(opts: {
             );
             logger.debugLargeJson(`[claudeRemote] Message ${message.type}`, message);
 
+            // Autonomous rounds (background tasks, scheduled follow-ups) stream
+            // assistant messages after the previous result flipped thinking off;
+            // the SDK never re-fires its own thinking signal for them. Re-bump
+            // here so the hub renders the round as working, not waiting.
+            if (message.type === 'assistant') {
+                updateThinking(true);
+            }
+
             if (message.type === 'user' && (message as SDKUserMessage).isReplay === true) {
                 const uuid = (message as SDKUserMessage).uuid;
                 if (uuid && pushedUuids.delete(uuid)) {

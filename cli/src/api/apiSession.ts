@@ -132,6 +132,9 @@ type PendingOutboundEvent = {
     retention: 'lossless' | 'droppable'
 }
 
+import { SESSION_KEEP_ALIVE_INTERVAL_MS } from './keepAlive'
+
+export { SESSION_KEEP_ALIVE_INTERVAL_MS }
 const MAX_PENDING_DROPPABLE_EVENTS = 256
 const MATERIALIZATION_RETRY_MIN_MS = 1_000
 const MATERIALIZATION_RETRY_MAX_MS = 30_000
@@ -1744,6 +1747,11 @@ if (isReconnect) {
         this.materializationRetryAbortController = null
         this.awaitingMaterializedConnection = false
         this.pendingOutboundEvents.length = 0
+        this.pendingMessages.length = 0
+        this.pendingHubPromptEchoes.length = 0
+        this.agentTerminalLocalBuffer = ''
+        this.agentTerminalActive = false
+        this.latestKeepAlive = null
         this.rpcHandlerManager.onSocketDisconnect()
         this.terminalManager.closeAll()
         this.socket.disconnect()

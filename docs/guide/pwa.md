@@ -1,3 +1,7 @@
+---
+description: "Install the free HAPI web app as a Progressive Web App on your phone or desktop, enable push notifications, and sign in with a passkey."
+---
+
 # Progressive Web App (PWA)
 
 HAPI's web interface is a fully-featured PWA that can be installed on your phone for a native app-like experience.
