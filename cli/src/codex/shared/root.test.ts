@@ -69,9 +69,9 @@ afterEach(async () => {
 });
 
 async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; create?: RootHost['create'];
-    attached?: boolean; beforeSubscribe?: RootHost['beforeSubscribe']; validateHistory?: RootHost['validateHistory'] }) {
+    attached?: boolean; beforeSubscribe?: RootHost['beforeSubscribe']; validateHistory?: RootHost['validateHistory']; initialState?: AgentState }) {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-shared-root-'));
-    let state: AgentState = { steeringActive: true };
+    let state: AgentState = opts?.initialState ?? { steeringActive: true };
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex' };
     if (opts?.attached) metadata.codexRuntime = { kind: 'attached', bindingId: '11111111-1111-4111-8111-111111111111', state: 'attached' };
     let reconnect: (() => void) | null = null;
@@ -103,7 +103,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         sendSessionDeath() {}, async flush() {}, close() {}
     } as unknown as ApiSessionClient;
     const end = opts?.end ?? (async () => { throw new Error('Unexpected root archive'); });
-    const root = new SharedCodexRoot({ session, workingDirectory: directory } as SessionBootstrapResult, {
+    const root = new SharedCodexRoot({ session, sessionInfo: { agentState: state }, workingDirectory: directory } as SessionBootstrapResult, {
         directory, generation: 'test', endpoint: 'mock', settingsFor: () => undefined,
         create: opts?.create ?? (async () => { throw new Error('Unexpected root creation'); }),
         attached: opts?.attached, beforeSubscribe: opts?.beforeSubscribe, validateHistory: opts?.validateHistory,
@@ -247,6 +247,21 @@ describe('async question delivery', () => {
             expect(f.state().requests![q.id]).toBeUndefined();
             expect(f.state().completedRequests![q.id]).toMatchObject({ status: 'resolved' });
         } finally { request.mockRestore(); }
+    });
+
+    it('preserves an explicit dismissal when a new root replays the same native thread', async () => {
+        const before = await fixture(); await before.root.activate();
+        before.native.notify('item/completed', { threadId: 'thread', turnId: 'turn', item });
+        await before.drain();
+        const q = asyncQuestionsForItem('thread', item)[0];
+        await before.rpc.get(RPC_METHODS.Permission)!({ id: q.id, approved: false });
+        await before.root.close(false);
+
+        const after = await fixture({ initialState: before.state() });
+        after.native.thread.turns = [{ id: 'turn', status: 'completed', items: [item] }];
+        await after.root.refresh();
+        expect(after.state().requests?.[q.id]).toBeUndefined();
+        expect(after.state().completedRequests?.[q.id]).toMatchObject({ status: 'canceled', decision: 'denied' });
     });
 
     it('retains unanswered questions across turn completion and native reconnect', async () => {
