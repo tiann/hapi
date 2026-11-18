@@ -2032,6 +2032,27 @@ describe('ApiSessionClient runtime heartbeat', () => {
         ])
         client.close()
     })
+
+    it('releases queued messages, latestKeepAlive, and terminal replay buffer on close()', () => {
+        const client = new ApiSessionClient('token', createSession())
+        client.emitAgentTerminalOutput('x'.repeat(4096))
+        client.keepAlive(true, 'remote', { model: 'gpt-5' })
+        const internals = client as unknown as {
+            pendingMessages: unknown[]
+            pendingHubPromptEchoes: unknown[]
+            agentTerminalLocalBuffer: string
+            latestKeepAlive: unknown
+        }
+        internals.pendingMessages.push({ message: { role: 'user', content: { type: 'text', text: 'queued' } } })
+        internals.pendingHubPromptEchoes.push({ text: 'echo', localIds: ['loc-1'] })
+
+        client.close()
+
+        expect(internals.agentTerminalLocalBuffer).toBe('')
+        expect(internals.pendingMessages).toEqual([])
+        expect(internals.pendingHubPromptEchoes).toEqual([])
+        expect(internals.latestKeepAlive).toBeNull()
+    })
 })
 
 
