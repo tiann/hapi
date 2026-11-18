@@ -42,12 +42,14 @@ import app.hapi.protocol.catalog.PermissionMode
 import app.hapi.protocol.catalog.PermissionModes
 import app.hapi.protocol.chat.ChatBlock
 import app.hapi.protocol.chat.NormalizedMessage
+import app.hapi.protocol.chat.SessionStatusData
 import app.hapi.protocol.chat.ToolGroupBlock
 import app.hapi.protocol.chat.ToolCallBlock
 import app.hapi.protocol.chat.ToolGroupingOptions
 import app.hapi.protocol.chat.VisibleChatBlock
 import app.hapi.protocol.chat.aggregateResponseGroups
 import app.hapi.protocol.chat.buildVisibleChatBlocks
+import app.hapi.protocol.chat.buildSessionStatusData
 import app.hapi.protocol.chat.getInputStringAny
 import app.hapi.protocol.chat.normalizeDecryptedMessage
 import app.hapi.protocol.chat.reduceChatBlocks
@@ -170,6 +172,13 @@ data class ChatUiState(
     val messageAggregates: Map<String, AggregatedAssistantMeta> = emptyMap(),
     /** Context-remaining readout for the composer strip; null until usage arrives. */
     val contextUsage: ContextUsageIndicator? = null,
+    /**
+     * Live "what is happening now" snapshot (goal, todos, subagents,
+     * background terminals) or null when the session has none. Derived from
+     * the reduced block tree before projection strips tool results, so the
+     * panel keeps seeing the raw evidence it needs.
+     */
+    val sessionStatus: SessionStatusData? = null,
 )
 
 /** Composer bar state (M3a). */
@@ -2183,6 +2192,15 @@ class ChatViewModel(
 
         val agentState = inputs.detail?.agentState
         val reduced = reduceChatBlocks(normalized, agentState)
+        // Derived before projection: the visible blocks below drop tool
+        // results and children, but the status derivation needs both.
+        val sessionStatus = buildSessionStatusData(
+            goal = reduced.latestGoal,
+            tasks = inputs.detail?.todos,
+            blocks = reduced.blocks,
+            messages = normalized,
+            backgroundTaskCount = inputs.detail?.backgroundTaskCount,
+        )
         val visibleBlocks = buildVisibleChatBlocks(
             filterEmptyReasoning(reduced.blocks),
             ToolGroupingOptions(hasMoreMessages = window.hasMore, previousGroups = previousGroups),
@@ -2240,6 +2258,7 @@ class ChatViewModel(
             readThroughRevision = window.readThroughRevision,
             renderedReadState = SessionReadState.merge(inputs.detail?.readState, inputs.summary?.readState),
             contextUsage = contextUsage,
+            sessionStatus = sessionStatus,
         )
     }
 
