@@ -105,6 +105,7 @@ export function addImportedMessage(
         if (previousHead && stampedAt < previousHead.at) bumpMessageEpoch(db, sessionId)
         const row = prepareCached(db, 'SELECT * FROM messages WHERE id = ?').get(id) as DbMessageRow | undefined
         if (!row) throw new Error('Failed to create imported message')
+        invalidateLiveTail(db, sessionId)
         return { message: toStoredMessage(row), inserted: true }
     })()
 }
@@ -216,6 +217,7 @@ export function addMessage(
         if (previousHead && positionAt < previousHead.at) bumpMessageEpoch(db, sessionId)
         const row = prepareCached(db, 'SELECT * FROM messages WHERE id = ?').get(id) as DbMessageRow | undefined
         if (!row) throw new Error('Failed to create message')
+        updateLiveTailAfterAppend(db, sessionId, row.id, row.seq, canonicalContent)
         return toStoredMessage(row)
     })()
 }
@@ -291,6 +293,173 @@ function isUserMessageRow(value: unknown): boolean {
     return record?.role === 'user'
 }
 
+type TailRowMeta = {
+    id: string
+    seq: number
+    reasoningStreamId: string | null
+    toolCallId: string | null
+    toolResultCallId: string | null
+    isUser: boolean
+}
+
+type SessionLiveTail = {
+    headId: string | null
+    headSeq: number
+    tailRows: TailRowMeta[]
+    liveToolCalls: Map<string, string>
+    reasoningSnapshots: Map<string, Set<string>>
+}
+
+const liveTailByDb = new WeakMap<Database, Map<string, SessionLiveTail>>()
+
+function getCurrentTailHead(db: Database, sessionId: string): { id: string | null; seq: number } {
+    const row = prepareCached(db,
+        'SELECT id, seq FROM messages WHERE session_id = ? ORDER BY seq DESC LIMIT 1'
+    ).get(sessionId) as { id: string; seq: number } | undefined
+    return row ? { id: row.id, seq: row.seq } : { id: null, seq: 0 }
+}
+
+function invalidateLiveTail(db: Database, sessionId: string): void {
+    liveTailByDb.get(db)?.delete(sessionId)
+}
+
+function classifyTailRow(id: string, seq: number, decoded: unknown): TailRowMeta {
+    const reasoningStreamId = getLiveReasoningStreamId(decoded)
+    const callId = getToolCallId(decoded)
+    const resultCallId = callId ? null : toolCallResultCallId(decoded)
+    const isUser = !callId && !resultCallId && isUserMessageRow(decoded)
+    return { id, seq, reasoningStreamId, toolCallId: callId, toolResultCallId: resultCallId, isUser }
+}
+
+function rebuildTailIndexes(entry: SessionLiveTail): void {
+    entry.liveToolCalls.clear()
+    entry.reasoningSnapshots.clear()
+    const closedCallIds = new Set<string>()
+    let toolCallScanStopped = false
+    const total = entry.tailRows.length
+    for (let i = total - 1; i >= 0; i -= 1) {
+        const row = entry.tailRows[i]!
+        const distFromHead = total - 1 - i
+        if (distFromHead < REASONING_SNAPSHOT_LOOKBACK && row.reasoningStreamId) {
+            let ids = entry.reasoningSnapshots.get(row.reasoningStreamId)
+            if (!ids) {
+                ids = new Set()
+                entry.reasoningSnapshots.set(row.reasoningStreamId, ids)
+            }
+            ids.add(row.id)
+        }
+        if (!toolCallScanStopped && distFromHead < TOOL_CALL_UPSERT_LOOKBACK) {
+            if (row.toolCallId) {
+                if (!closedCallIds.has(row.toolCallId) && !entry.liveToolCalls.has(row.toolCallId)) {
+                    entry.liveToolCalls.set(row.toolCallId, row.id)
+                }
+            } else if (row.toolResultCallId) {
+                closedCallIds.add(row.toolResultCallId)
+            } else if (row.isUser) {
+                toolCallScanStopped = true
+            }
+        }
+    }
+}
+
+function warmLiveTail(db: Database, sessionId: string, head: { id: string | null; seq: number }): SessionLiveTail {
+    let sessions = liveTailByDb.get(db)
+    if (!sessions) {
+        sessions = new Map()
+        liveTailByDb.set(db, sessions)
+    }
+
+    const lookback = Math.max(TOOL_CALL_UPSERT_LOOKBACK, REASONING_SNAPSHOT_LOOKBACK)
+    const rows = prepareCached(db, `
+        SELECT id, seq, content FROM messages
+        WHERE session_id = ?
+        ORDER BY seq DESC
+        LIMIT ?
+    `).all(sessionId, lookback) as Array<Pick<DbMessageRow, 'id' | 'seq' | 'content'>>
+
+    const tailRowsAsc: TailRowMeta[] = []
+    for (let i = rows.length - 1; i >= 0; i -= 1) {
+        const row = rows[i]!
+        tailRowsAsc.push(classifyTailRow(row.id, row.seq, decodeMessageContent(row.content)))
+    }
+
+    const entry: SessionLiveTail = {
+        headId: head.id,
+        headSeq: head.seq,
+        tailRows: tailRowsAsc,
+        liveToolCalls: new Map(),
+        reasoningSnapshots: new Map()
+    }
+    rebuildTailIndexes(entry)
+    sessions.set(sessionId, entry)
+    return entry
+}
+
+function getOrWarmLiveTail(db: Database, sessionId: string): SessionLiveTail {
+    const head = getCurrentTailHead(db, sessionId)
+    const cached = liveTailByDb.get(db)?.get(sessionId)
+    if (cached && cached.headId === head.id && cached.headSeq === head.seq) {
+        return cached
+    }
+    return warmLiveTail(db, sessionId, head)
+}
+
+function updateLiveTailAfterAppend(
+    db: Database,
+    sessionId: string,
+    id: string,
+    seq: number,
+    content: unknown
+): void {
+    const entry = liveTailByDb.get(db)?.get(sessionId)
+    if (!entry) return
+    if (seq <= entry.headSeq) {
+        invalidateLiveTail(db, sessionId)
+        return
+    }
+    entry.headId = id
+    entry.headSeq = seq
+
+    const meta = classifyTailRow(id, seq, content)
+    if (meta.reasoningStreamId) {
+        let ids = entry.reasoningSnapshots.get(meta.reasoningStreamId)
+        if (!ids) {
+            ids = new Set()
+            entry.reasoningSnapshots.set(meta.reasoningStreamId, ids)
+        }
+        ids.add(id)
+    }
+
+    if (meta.toolCallId) {
+        entry.liveToolCalls.set(meta.toolCallId, id)
+    } else if (meta.toolResultCallId) {
+        entry.liveToolCalls.delete(meta.toolResultCallId)
+    } else if (meta.isUser) {
+        entry.liveToolCalls.clear()
+    }
+
+    entry.tailRows.push(meta)
+    if (entry.tailRows.length > REASONING_SNAPSHOT_LOOKBACK) {
+        const exitedReasoning = entry.tailRows[entry.tailRows.length - 1 - REASONING_SNAPSHOT_LOOKBACK]
+        if (exitedReasoning?.reasoningStreamId) {
+            const set = entry.reasoningSnapshots.get(exitedReasoning.reasoningStreamId)
+            if (set) {
+                set.delete(exitedReasoning.id)
+                if (set.size === 0) {
+                    entry.reasoningSnapshots.delete(exitedReasoning.reasoningStreamId)
+                }
+            }
+        }
+    }
+    const maxLookback = Math.max(TOOL_CALL_UPSERT_LOOKBACK, REASONING_SNAPSHOT_LOOKBACK)
+    if (entry.tailRows.length > maxLookback) {
+        const evicted = entry.tailRows.shift()
+        if (evicted?.toolCallId && entry.liveToolCalls.get(evicted.toolCallId) === evicted.id) {
+            entry.liveToolCalls.delete(evicted.toolCallId)
+        }
+    }
+}
+
 /** Merge an incoming tool-call snapshot into the stored one.
  *
  *  A non-null new value wins for the payload fields the CLI updates
@@ -326,22 +495,15 @@ function mergeToolCallContent(stored: unknown, incoming: unknown): unknown {
  *  message row: both mean the call has completed or a new turn started, so an
  *  incoming message with that callId is a NEW call, not an update. */
 function findLiveToolCallRow(db: Database, sessionId: string, callId: string): DbMessageRow | null {
-    const rows = prepareCached(db, `
-        SELECT id, content FROM messages
-        WHERE session_id = ?
-        ORDER BY seq DESC
-        LIMIT ?
-    `).all(sessionId, TOOL_CALL_UPSERT_LOOKBACK) as Array<Pick<DbMessageRow, 'id' | 'content'>>
-    for (const row of rows) {
-        const decoded = decodeMessageContent(row.content)
-        if (getToolCallId(decoded) === callId) {
-            const full = prepareCached(db, 'SELECT * FROM messages WHERE id = ?').get(row.id) as DbMessageRow | undefined
-            return full ?? null
-        }
-        if (toolCallResultCallId(decoded) === callId) return null
-        if (isUserMessageRow(decoded)) return null
+    const tail = getOrWarmLiveTail(db, sessionId)
+    const rowId = tail.liveToolCalls.get(callId)
+    if (!rowId) return null
+    const full = prepareCached(db, 'SELECT * FROM messages WHERE id = ? AND session_id = ?').get(rowId, sessionId) as DbMessageRow | undefined
+    if (!full) {
+        invalidateLiveTail(db, sessionId)
+        return null
     }
-    return null
+    return full
 }
 
 /** Store one ACP `tool-call` agent message, updating the call's existing row
@@ -660,23 +822,66 @@ export function deleteLiveReasoningSnapshots(
     streamId: string,
     keepMessageId?: string
 ): number {
-    const rows = prepareCached(db, `
-        SELECT id, content FROM messages
-        WHERE session_id = ?
-        ORDER BY seq DESC
-        LIMIT ?
-    `).all(sessionId, REASONING_SNAPSHOT_LOOKBACK) as Array<Pick<DbMessageRow, 'id' | 'content'>>
+    if (db.inTransaction) {
+        invalidateLiveTail(db, sessionId)
+        const rows = prepareCached(db, `
+            SELECT id, content FROM messages
+            WHERE session_id = ?
+            ORDER BY seq DESC
+            LIMIT ?
+        `).all(sessionId, REASONING_SNAPSHOT_LOOKBACK) as Array<Pick<DbMessageRow, 'id' | 'content'>>
 
-    const staleIds = rows
-        .filter((row) => row.id !== keepMessageId
-            && getLiveReasoningStreamId(decodeMessageContent(row.content)) === streamId)
-        .map((row) => row.id)
+        const staleIds = rows
+            .filter((row) => row.id !== keepMessageId
+                && getLiveReasoningStreamId(decodeMessageContent(row.content)) === streamId)
+            .map((row) => row.id)
+        if (staleIds.length === 0) return 0
+
+        const placeholders = staleIds.map(() => '?').join(', ')
+        const result = prepareCached(db,
+            `DELETE FROM messages WHERE session_id = ? AND id IN (${placeholders})`
+        ).run(sessionId, ...staleIds)
+        return Number(result.changes)
+    }
+
+    const tail = getOrWarmLiveTail(db, sessionId)
+    const streamIds = tail.reasoningSnapshots.get(streamId)
+    if (!streamIds || streamIds.size === 0) return 0
+
+    const staleIds = Array.from(streamIds).filter((id) => id !== keepMessageId)
     if (staleIds.length === 0) return 0
 
     const placeholders = staleIds.map(() => '?').join(', ')
     const result = prepareCached(db,
         `DELETE FROM messages WHERE session_id = ? AND id IN (${placeholders})`
     ).run(sessionId, ...staleIds)
+
+    const staleSet = new Set(staleIds)
+    tail.tailRows = tail.tailRows.filter((row) => !staleSet.has(row.id))
+    const lookback = Math.max(TOOL_CALL_UPSERT_LOOKBACK, REASONING_SNAPSHOT_LOOKBACK)
+    if (tail.tailRows.length < lookback) {
+        const oldestSeq = tail.tailRows[0]?.seq ?? (tail.headSeq + 1)
+        if (oldestSeq > 1) {
+            const olderRows = prepareCached(db, `
+                SELECT id, seq, content FROM messages
+                WHERE session_id = ? AND seq < ?
+                ORDER BY seq DESC
+                LIMIT ?
+            `).all(sessionId, oldestSeq, lookback - tail.tailRows.length) as Array<Pick<DbMessageRow, 'id' | 'seq' | 'content'>>
+            if (olderRows.length > 0) {
+                const prefix: TailRowMeta[] = []
+                for (let i = olderRows.length - 1; i >= 0; i -= 1) {
+                    const row = olderRows[i]!
+                    prefix.push(classifyTailRow(row.id, row.seq, decodeMessageContent(row.content)))
+                }
+                tail.tailRows = [...prefix, ...tail.tailRows]
+            }
+        }
+    }
+    rebuildTailIndexes(tail)
+    if (tail.headId && staleSet.has(tail.headId)) {
+        invalidateLiveTail(db, sessionId)
+    }
     return Number(result.changes)
 }
 
@@ -767,6 +972,7 @@ export function getMessageEpoch(db: Database, sessionId: string): number {
 }
 
 export function bumpMessageEpoch(db: Database, sessionId: string): number {
+    invalidateLiveTail(db, sessionId)
     prepareCached(db, `
         INSERT INTO message_epochs (session_id, epoch)
         VALUES (?, 1)
