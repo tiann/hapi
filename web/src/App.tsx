@@ -40,7 +40,7 @@ import { RunnerVersionSkewBanner } from '@/components/RunnerVersionSkewBanner'
 import { LoadingState } from '@/components/LoadingState'
 import { ToastContainer } from '@/components/ToastContainer'
 import { PwaUpdateProvider } from '@/lib/pwa-update-context'
-import { ToastProvider, useToast } from '@/lib/toast-context'
+import { ToastProvider, useAddToast } from '@/lib/toast-context'
 import { getNotificationClickHref, NOTIFICATION_CLICK_ACK_TYPE } from '@/lib/notificationClick'
 import type { SyncEvent } from '@/types/api'
 
@@ -79,7 +79,7 @@ function AppInner() {
     const pathname = useLocation({ select: (location) => location.pathname })
     const matchRoute = useMatchRoute()
     const router = useRouter()
-    const { addToast } = useToast()
+    const addToast = useAddToast()
 
     useEffect(() => {
         let cancelled = false
