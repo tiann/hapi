@@ -123,6 +123,10 @@ export class NotificationHub {
                 this.sendSessionCompletion(event.sessionId, event.reason).catch((error) => {
                     console.error('[NotificationHub] Failed to send session completion notification:', error)
                 })
+            } else if (event.reason === 'error') {
+                this.sendSessionError(event.sessionId, event.reason).catch((error) => {
+                    console.error('[NotificationHub] Failed to send session error notification:', error)
+                })
             }
             return
         }
@@ -406,6 +410,15 @@ export class NotificationHub {
         await this.notifySessionCompletion(session, reason)
     }
 
+    private async sendSessionError(sessionId: string, reason: SessionEndReason): Promise<void> {
+        const session = this.syncEngine.getSession(sessionId)
+        if (!session) {
+            return
+        }
+
+        await this.notifySessionError(session, reason)
+    }
+
     private async notifyReady(session: Session): Promise<void> {
         const ctx: NotificationSendContext = { nativeGate: { sent: false } }
         for (const channel of this.channels) {
@@ -439,6 +452,20 @@ export class NotificationHub {
                 console.error('[NotificationHub] Failed to send session completion notification:', error)
             }
         }
+    }
+
+    private async notifySessionError(session: Session, reason: SessionEndReason): Promise<void> {
+        for (const channel of this.channels) {
+            if (typeof channel.sendSessionError !== 'function') {
+                continue
+            }
+            try {
+                await channel.sendSessionError(session, reason)
+            } catch (error) {
+                console.error('[NotificationHub] Failed to send session error notification:', error)
+            }
+        }
+
     }
 
     private async notifyModelError(session: Session, notification: ModelErrorNotification): Promise<boolean> {
