@@ -721,7 +721,9 @@ it('fetches one older context page before first paint when the cold page is tool
         }))
         await syncing
 
-        expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual(['latest'])
+        // Cached re-entry keeps the loaded history: the fresh tail upserts
+        // over the persisted rows instead of swapping the window away.
+        expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual(['cached', 'latest'])
         expect(getMessageWindowState(id).hasMore).toBe(true)
         expect('pending' in getMessageWindowState(id)).toBe(false)
         // The catch-up window closes once the authoritative tail lands.
@@ -764,7 +766,7 @@ it('fetches one older context page before first paint when the cold page is tool
             nextBeforeAt: 1_841_000,
             nextBeforeSeq: 1_841
         }))), id)
-        expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual(['latest'])
+        expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual(['cached', 'latest'])
         expect(getMessageWindowState(id).preferLatestOnActivation).toBe(false)
         expect(getMessageWindowState(id).isSyncingTail).toBe(false)
     })
@@ -829,6 +831,7 @@ it('fetches one older context page before first paint when the cold page is tool
 
         expect(getMessages).toHaveBeenCalledWith(id, { limit: 20 })
         expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual([
+            'cached',
             'local-1',
             'latest'
         ])
@@ -838,7 +841,7 @@ it('fetches one older context page before first paint when the cold page is tool
         }))
     })
 
-    it('keeps the latest page cursor available for older history after re-entry', async () => {
+    it('merges the fresh tail over the cached history on re-entry and arms gap recovery when disjoint', async () => {
         const id = sessionId('reentry-older-history')
         const cached = makeAgentMessage({ id: 'cached', seq: 40, at: 40_000 })
         sessionStorage.setItem(`hapi:message-window:v2:${id}`, JSON.stringify({
@@ -856,37 +859,29 @@ it('fetches one older context page before first paint when the cold page is tool
             makeAgentMessage({ id: 'latest-1', seq: 2_039, at: 2_039_000 }),
             makeAgentMessage({ id: 'latest-2', seq: 2_040, at: 2_040_000 })
         ]
-        const older = makeAgentMessage({ id: 'older', seq: 2_038, at: 2_038_000 })
-        const getMessages = vi.fn()
-            .mockResolvedValueOnce(latestResponse(latest, {
-                limit: INITIAL_PAGE_SIZE,
-                epoch: 3,
-                hasMore: true,
-                nextBeforeAt: 2_039_000,
-                nextBeforeSeq: 2_039
-            }))
-            .mockResolvedValueOnce(beforeResponse([older], {
-                epoch: 3,
-                hasMore: false,
-                nextBeforeAt: 2_038_000,
-                nextBeforeSeq: 2_038
-            }))
-        const api = createApi(getMessages)
+        const getMessages = vi.fn().mockResolvedValueOnce(latestResponse(latest, {
+            limit: INITIAL_PAGE_SIZE,
+            epoch: 3,
+            hasMore: true,
+            nextBeforeAt: 2_039_000,
+            nextBeforeSeq: 2_039
+        }))
 
-        await syncTailMessages(api, id)
-        await fetchOlderMessages(api, id)
+        await syncTailMessages(createApi(getMessages), id)
 
-        expect(getMessages.mock.calls[0]?.[1]).toEqual({ limit: INITIAL_PAGE_SIZE })
-        expect(getMessages.mock.calls[1]?.[1]).toEqual({
-            beforeAt: 2_039_000,
-            beforeSeq: 2_039,
-            limit: 200
-        })
+        expect(getMessages).toHaveBeenCalledWith(id, { limit: 20 })
+        // The rich cached history survives the re-entry refresh: the fresh
+        // tail upserts over it instead of swapping the window away.
         expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual([
-            'older',
+            'cached',
             'latest-1',
             'latest-2'
         ])
+        // The fresh page does not reach back into the cached window, so the
+        // interval between them is unknown: gap recovery must be armed so the
+        // next sync walks it instead of leaving a silent hole.
+        expect(getMessageWindowState(id).pendingGapRecovery).toBe(true)
+        expect(getMessageWindowState(id).preferLatestOnActivation).toBe(false)
     })
 
     it('keeps cached messages visible when the re-entry refresh fails', async () => {
@@ -953,6 +948,7 @@ it('fetches one older context page before first paint when the cold page is tool
         await syncing
 
         expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual([
+            'cached',
             'live',
             'local-1',
             'latest'
@@ -1230,7 +1226,7 @@ it('fetches one older context page before first paint when the cold page is tool
         await initialSync
         await reentrySync
 
-        expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual(['latest'])
+        expect(getMessageWindowState(id).messages.map((message) => message.id)).toEqual(['cached', 'latest'])
     })
 
     it('deduplicates SSE and REST delivery while preserving the authoritative invocation timestamp', async () => {

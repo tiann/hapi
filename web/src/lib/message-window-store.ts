@@ -1114,6 +1114,17 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
             if (!isCurrentTailSync(sessionId, generation)) return
             updateState(sessionId, (previous) => {
                 if (previous.syncGeneration !== generation) return previous
+                // Cached re-entry keeps the loaded history: swapping in the
+                // fresh tail alone used to shrink a rich persisted window (~a
+                // full context page) to the newest page, so a single upward
+                // flick hit the top of a tiny window and triggered a giant
+                // older-page prepend — the perceived "jumped to the very top
+                // / flung into distant history" loop. Upsert the fresh tail
+                // over the cached rows instead; when the fresh page does not
+                // reach back into the cached window, arm gap recovery so the
+                // next sync walks the interval.
+                const cachedIds = new Set(initial.messages.map((message) => message.id))
+                const overlapsCached = response.messages.some((message) => cachedIds.has(message.id))
                 const next = applyLatestResponse(previous, response, {
                     // Gap recovery reconciles by id so already-loaded history
                     // outside the latest page survives; only a structural
@@ -1122,11 +1133,13 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                     // missed can have deleted held rows) may replace rows.
                     replaceServerRows: initial.requiresLatestReset
                         || response.page.reset
-                        || (initial.epoch !== null && response.page.epoch !== initial.epoch)
-                        || (preferLatestOnActivation && !pendingGapRecovery),
+                        || (initial.epoch !== null && response.page.epoch !== initial.epoch),
                     requestBaseline
                 })
                 if (!context) {
+                    if (preferLatestOnActivation && !pendingGapRecovery && !overlapsCached && next.hasMore) {
+                        return buildState(next, { preferLatestOnActivation: false, pendingGapRecovery: true })
+                    }
                     return buildState(next, { preferLatestOnActivation: false, pendingGapRecovery: false })
                 }
                 return buildState(mergeIntoWindow(next, context.messages, { mode: 'prepend' }), {
