@@ -8,10 +8,7 @@ const { spawnMock, killMock } = vi.hoisted(() => ({
     killMock: vi.fn(),
 }))
 
-vi.mock('node:child_process', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('node:child_process')>()
-    return { ...actual, spawn: spawnMock }
-})
+vi.mock('cross-spawn', () => ({ default: spawnMock }))
 
 vi.mock('../../utils/process', () => ({
     killProcessByChildProcess: killMock,
@@ -51,6 +48,7 @@ beforeEach(() => {
 
 afterEach(() => {
     vi.useRealTimers()
+    vi.unstubAllEnvs()
 })
 
 describe('runPiModelsProbe spawn', () => {
@@ -124,6 +122,21 @@ describe('runPiModelsProbe spawn', () => {
         const args = spawnMock.mock.calls[0]?.[1] as string[]
         expect(args).not.toContain('--no-extensions')
         expect(args).toEqual(expect.arrayContaining(['--mode', 'rpc', '--no-session']))
+    })
+
+    it('passes a spaced HAPI_PI_PATH directly to the shim-safe launcher', async () => {
+        killMock.mockResolvedValue(true)
+        vi.stubEnv('HAPI_PI_PATH', 'C:\\Program Files\\Pi\\pi.cmd')
+
+        const pending = listPiModelsForMachine()
+        child.emitModelsResponse([{ id: 'm1', provider: 'p1' }])
+        await pending
+
+        expect(spawnMock).toHaveBeenCalledWith(
+            'C:\\Program Files\\Pi\\pi.cmd',
+            expect.any(Array),
+            expect.not.objectContaining({ shell: expect.anything() }),
+        )
     })
 })
 
