@@ -1,3 +1,7 @@
+---
+description: "Coding agents supported by HAPI (Claude Code, Codex, Cursor, Grok Build, OpenCode, Kimi, Copilot, Antigravity, Pi, DeepSeek Harness) and which features each supports."
+---
+
 # Supported Agents
 
 HAPI is a wrapper around AI coding agents. One CLI (`hapi <agent>`) starts any supported agent locally and exposes the same session for remote control from the web app, PWA, and Telegram — with permission prompts, message queueing, and seamless handoff between terminal and phone.
@@ -12,7 +16,7 @@ agent's integration; their supported syntax varies by agent.
 
 | Agent | Command | Integration | Local | Remote | Permission modes | Resume |
 |-------|---------|-------------|:-----:|:------:|------------------|:------:|
-| Claude Code | `hapi claude` | Terminal wrapper (local) + Claude Agent SDK (remote) | ✓ | ✓ | `default` `acceptEdits` `auto` `bypassPermissions` `plan` | ✓ |
+| Claude Code | `hapi claude` | Terminal wrapper (local) + `claude` in stream-json mode (remote) | ✓ | ✓ | `default` `acceptEdits` `auto` `bypassPermissions` `plan` | ✓ |
 | Codex | `hapi codex` | Native terminal + `codex app-server` (Codex 0.154.0+) | ✓ | ✓ | `default` `read-only` `autoReview` `yolo` (+ `plan` collaboration mode) | ✓ |
 | Cursor Agent | `hapi cursor` | ACP (`agent acp`); legacy stream-json resume | ✓ | ✓ | `default` `plan` `ask` `debug` `autoReview` `yolo` | ✓ |
 | Grok Build | `hapi grok` | ACP (`grok agent stdio`) | ✓ | ✓ | `default` `auto` `plan` `bypassPermissions` | ✓ |
@@ -26,6 +30,29 @@ agent's integration; their supported syntax varies by agent.
 
 Gemini is no longer launchable: `hapi gemini` is kept as a tombstone command that prints a clear error, and existing Gemini sessions remain viewable in the web UI but cannot be resumed.
 
+### Feature support
+
+Steer, effort and history controls apply to sessions under remote control. The web UI shows a control only when the running session supports it; "probed" means HAPI checks the installed agent build at runtime and hides the control on builds without it.
+
+| Agent | Steer | Effort switch | Fork / rewind | Branch | Import local history |
+|-------|:-----:|:-------------:|:-------------:|:------:|:--------------------:|
+| Claude Code | ✓ | ✓ | Fork current point | ✓ | ✓ |
+| Codex | ✓ | ✓ (reasoning effort) | Fork (no rewind) | ✓ | ✓ |
+| Cursor Agent | ✓ (ACP sessions) | — | — | — | — |
+| Grok Build | — | ✓ | Probed | — | — |
+| GitHub Copilot | — | ✓ | — | — | — |
+| Kimi | — | ✓ | — | — | — |
+| OpenCode | ✓ | ✓ (reasoning effort) | Probed (OpenCode v2) | — | ✓ |
+| DeepSeek Harness | — | — | — | — | — |
+| Antigravity | ✓ (ACP sessions) | ✓ | — | — | — |
+| Pi | ✓ | ✓ | Probed | — | ✓ |
+
+- **Steer** delivers a queued message into the running turn instead of waiting for it to end. See [Composer](./composer.md).
+- **Fork / rewind** use the agent's native history; **Branch** starts a new Claude Code or Codex session from a Claude Code or Codex conversation's visible history, optionally switching agents. See [Conversation history](./conversation-history.md).
+- **Import local history** brings sessions started outside HAPI into the session list. See [Import local sessions](./import-local-sessions.md).
+
+Source: `STEERING_SUPPORTED_FLAVORS` in `shared/src/modes.ts`, `shared/src/flavors.ts`, and the per-agent history capabilities in `shared/src/conversationHistory.ts`.
+
 ## Common concepts
 
 ### ACP
@@ -34,7 +61,7 @@ Most remote integrations speak the [Agent Client Protocol](https://agentclientpr
 
 ### Permission modes
 
-Permission modes are per-agent — each flavor exposes its own set (see the matrix above). Set the mode at launch with `--permission-mode <mode>` or a shortcut flag (`--yolo`, `--plan`, `--auto-review`, depending on the agent), and switch it mid-session from the web UI. Semantics vary per agent; see the per-agent sections below.
+Permission modes are per-agent — each flavor exposes its own set (see the matrix above). Set the mode at launch with `--permission-mode <mode>` or a shortcut flag (`--yolo`, `--plan`, `--auto-review`, depending on the agent), and switch it mid-session from the web UI or with `hapi set-mode <session-id-or-prefix> <mode>` (active sessions switch immediately; inactive ones use it on their next resume). Semantics vary per agent; see the per-agent sections below.
 
 ### Local and remote mode
 
@@ -208,6 +235,10 @@ Interactive TUI-only commands (`/config`, `/mcp`, `/sandbox`, `/btw`, `/rewind`,
 - **Local mode** - Run `hapi cursor` from terminal. Full interactive experience.
 - **Remote mode** - Spawn from web/phone when no terminal. New Cursor sessions use `agent acp` with HAPI permission approval, plan/question UI, and richer tool updates. Legacy sessions created before the ACP migration may still resume via the old `agent -p` stream-json path temporarily.
 
+### Model errors
+
+Cursor sometimes reports a transient model error inside a turn instead of failing it. HAPI detects these, shows a banner in the chat and an indicator in the session list, and sends a notification. **Bridge & retry** re-sends your last message as a one-shot recovery prompt; a new message from you always takes precedence. The hub owner can opt in to automatic retry (off by default).
+
 ### Limitations
 
 - **Multitask UI** - `/multitask` is slash-driven; HAPI does not yet provide an Agents Window-style fleet pane. Subagent `cursor/task` notifications show as CursorTask cards when the agent emits them.
@@ -380,11 +411,13 @@ the prompt is loaded by DSH through its own `skill` tool and catalog.
 
 ## Other agents
 
-- **Claude Code** (`hapi claude`) — local sessions wrap the native TUI, remote sessions drive the Claude Agent SDK. [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code)
-- **Codex** (`hapi codex`) — OpenAI's Codex CLI, with terminal/Web control and a dedicated `plan` mode. See [Codex usage and limits](./codex-shared-sessions.md) for resume, terminal-exit behavior, and launch options. [openai/codex](https://github.com/openai/codex)
+- **Claude Code** (`hapi claude`) — local sessions wrap the native TUI; remote sessions run the `claude` CLI with stream-json input/output. In remote sessions you can **Steer** a queued message into the running turn (Claude folds it in at the next tool boundary) and change the effort level without restarting Claude. [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code)
+- **Codex** (`hapi codex`) — OpenAI's Codex CLI, with terminal/Web control and a dedicated `plan` mode. See [Codex shared sessions](./codex-shared-sessions.md) for resume, terminal-exit behavior, and launch options. [openai/codex](https://github.com/openai/codex)
+
+  The composer remembers and toggles **fast mode** (Codex's fast service tier) for remote sessions. Remote sessions also load the MCP servers configured in your Codex config alongside HAPI's own tools. To use a custom model catalog, set `HAPI_CODEX_MODEL_CATALOG_JSON` to an absolute path (or `~/…`); HAPI passes it to Codex as `model_catalog_json` unless you already pass that setting with `-c`.
 - **GitHub Copilot** (`hapi copilot`) — Copilot CLI over ACP (`copilot --acp --stdio`). Remote sessions can pick a reasoning effort in the composer when the active model offers one; HAPI applies it before the next turn through ACP `session/set_config_option`. [GitHub Copilot](https://github.com/features/copilot)
 - **Kimi** (`hapi kimi`) — Moonshot AI's Kimi CLI over ACP (`kimi acp`). Remote sessions can pick a thinking level in the composer when the active model offers one; HAPI applies it before the next turn through ACP `session/set_config_option`. [MoonshotAI/kimi-cli](https://github.com/MoonshotAI/kimi-cli)
-- **OpenCode** (`hapi opencode`) — the open-source OpenCode agent over ACP (`opencode acp`). [opencode.ai](https://opencode.ai)
+- **OpenCode** (`hapi opencode`) — the open-source OpenCode agent over ACP (`opencode acp`). Remote sessions support **Steer**; on OpenCode v2, steered messages are delivered at the next step boundary, and HAPI can fork and rewind the conversation through OpenCode's native history. Local OpenCode sessions can be imported into HAPI ([Import local sessions](./import-local-sessions.md)). [opencode.ai](https://opencode.ai)
 - **Antigravity** (`hapi agy`) — Google's Antigravity CLI (`agy`) over ACP
   (`agy acp`, added in agy 1.5.0). HAPI checks `agy --version` when the
   session starts; older agy releases, an agy whose version cannot be read,
@@ -430,6 +463,12 @@ the prompt is loaded by DSH through its own `skill` tool and catalog.
   servers are loaded natively from `~/.gemini/config/mcp_config.json` or
   workspace `.agents/mcp_config.json`; HAPI does not inject its own MCP server.
   [Google Antigravity](https://antigravity.google)
+
+  On ACP, HAPI offers agy's own slash commands in the `/` menu, including
+  `/swarm`. `/swarm board` (optionally `/swarm board #channel`) shows the
+  swarm's members and board posts in the chat. Each response's details show
+  the round's turn count, and running background commands stay visible while
+  agy keeps working on them.
 
   On ACP, agy's questions (`ask_question`) appear as the question card; the
   choice goes back as agy's answer, and no permission mode answers a question
