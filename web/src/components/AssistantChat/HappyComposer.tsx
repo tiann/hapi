@@ -359,6 +359,8 @@ export function HappyComposer(props: {
     onVoiceToggle?: () => void
     onVoiceMicToggle?: () => void
     voiceTranscriptionApi?: ApiClient
+    usageQueryApi?: ApiClient
+    usageQueryMachineId?: string | null
     /**
      * Resolves the target session for a voice dictation direct-send (same
      * contract as `useSendMessage`'s `resolveSessionId`): an inactive
@@ -376,6 +378,7 @@ export function HappyComposer(props: {
      * can navigate/seed the live session (mirrors `onSessionResolved`).
      */
     onVoiceSessionResolved?: (sessionId: string) => void
+
     // Schedule props (lifted from internal state when provided)
     pendingSchedule?: PendingSchedule | null
     onSchedule?: (pending: PendingSchedule) => void
@@ -2371,6 +2374,8 @@ export function HappyComposer(props: {
                         copilotAgentMode={copilotAgentMode}
                         agentFlavor={agentFlavor}
                         voiceStatus={effectiveVoiceStatus}
+                        usageQueryApi={props.usageQueryApi}
+                        usageQueryMachineId={props.usageQueryMachineId}
                     />
 
                     {dictationActive && dictation.partialTranscript ? (
