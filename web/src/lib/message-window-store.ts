@@ -45,6 +45,15 @@ export type MessageWindowState = {
     newestSeq: number | null
     epoch: number | null
     isSyncingTail: boolean
+    /**
+     * Cached re-entry in progress: the window was restored from the
+     * persisted cache and the authoritative latest-page fetch is still in
+     * flight. True only between activation and the first tail sync landing
+     * (never during visibility tickers or reconnect resyncs), so consumers
+     * can surface a "fetching latest messages" affordance over the stale
+     * rows instead of silently swapping them for fresh ones.
+     */
+    preferLatestOnActivation: boolean
     isLoadingMore: boolean
     warning: string | null
     viewMode: MessageViewMode
@@ -96,7 +105,6 @@ type InternalState = MessageWindowState & {
     contextNewestAt: number | null
     contextNewestSeq: number | null
     requiresLatestReset: boolean
-    preferLatestOnActivation: boolean
     // A gap resume asked for an authoritative latest page applied as an
     // upsert: rows the window holds are replaced by id, but already-loaded
     // history outside the latest page and the oldest cursor survive the

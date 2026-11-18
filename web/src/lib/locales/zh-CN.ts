@@ -1387,6 +1387,7 @@ export default {
   'misc.scrollToBottom': '跳到底部',
   'misc.loadingMessages': '加载消息中…',
   'misc.locatingMessage': '定位消息中…',
+  'misc.syncingLatest': '正在拉取最新消息…',
   'misc.searchMatchNavigation': '搜索匹配项导航',
   'misc.searchMatches': '{current}/{total}',
   'misc.previousSearchMatch': '上一个匹配项',

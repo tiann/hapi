@@ -449,6 +449,7 @@ function SessionPage() {
         messages,
         warning: messagesWarning,
         isSyncingTail: messagesSyncingTail,
+        isCatchingUpFromCache: messagesCatchingUpFromCache,
         isLoadingMore: messagesLoadingMore,
         hasMore: messagesHasMore,
         hasMoreNewer: messagesHasMoreNewer,
@@ -959,6 +960,7 @@ function SessionPage() {
             hasMoreMessages={messagesHasMore}
             hasMoreNewerMessages={messagesHasMoreNewer}
             isSyncingTail={messagesSyncingTail}
+            isCatchingUpFromCache={messagesCatchingUpFromCache}
             isLoadingMoreMessages={messagesLoadingMore}
             isSending={isSending}
             viewMode={messagesViewMode}

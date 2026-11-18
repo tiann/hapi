@@ -1556,3 +1556,72 @@ describe('session switch tail anchoring', () => {
         expect(queryByRole('button', { name: /scroll to bottom/i })).toBeNull()
     })
 })
+
+describe('cached re-entry tail-sync indicator', () => {
+    function renderCatchUpThread(options: { isCatchingUpFromCache: boolean; rawMessagesCount: number }) {
+        const queryClient = new QueryClient({
+            defaultOptions: { queries: { retry: false } }
+        })
+        return render(
+            <QueryClientProvider client={queryClient}>
+                <I18nProvider>
+                    <HappyThread
+                        api={{ getHubSettings: vi.fn().mockResolvedValue({ sessionSummaryContract: false, sessionSummaryInChat: false }) } as unknown as ApiClient}
+                        session={{ metadata: {} } as Session}
+                        sessionId="catch-up-session"
+                        metadata={null}
+                        disabled={false}
+                        onRefresh={vi.fn()}
+                        onViewModeChange={vi.fn()}
+                        isSyncingTail={options.isCatchingUpFromCache}
+                        isCatchingUpFromCache={options.isCatchingUpFromCache}
+                        messagesWarning={null}
+                        hasMoreMessages={false}
+                        isLoadingMoreMessages={false}
+                        onLoadMore={vi.fn().mockResolvedValue({ status: 'exhausted' })}
+                        onCancelLoadMore={vi.fn()}
+                        unseenCount={0}
+                        rawMessagesCount={options.rawMessagesCount}
+                        normalizedMessagesCount={options.rawMessagesCount}
+                        messagesVersion={1}
+                        historyVersion={0}
+                        forceScrollToken={0}
+                        outlineOpen={false}
+                        outlineItems={[]}
+                        onOutlineOpenChange={vi.fn()}
+                    />
+                </I18nProvider>
+            </QueryClientProvider>
+        )
+    }
+
+    const queryIndicator = (container: HTMLElement) =>
+        container.querySelector<HTMLElement>('[data-testid="tail-sync-status"]')
+
+    it('shows the fetching-latest pill over stale cached rows during re-entry', () => {
+        const { container } = renderCatchUpThread({ isCatchingUpFromCache: true, rawMessagesCount: 3 })
+        act(() => {
+            vi.advanceTimersByTime(0)
+        })
+        const pill = queryIndicator(container)
+        expect(pill).not.toBeNull()
+        expect(pill?.getAttribute('role')).toBe('status')
+        expect((pill?.textContent ?? '').trim().length).toBeGreaterThan(0)
+    })
+
+    it('hides the pill once the catch-up fetch settles', () => {
+        const { container } = renderCatchUpThread({ isCatchingUpFromCache: false, rawMessagesCount: 3 })
+        act(() => {
+            vi.advanceTimersByTime(0)
+        })
+        expect(queryIndicator(container)).toBeNull()
+    })
+
+    it('never shows the pill for an empty window (the skeleton covers it)', () => {
+        const { container } = renderCatchUpThread({ isCatchingUpFromCache: true, rawMessagesCount: 0 })
+        act(() => {
+            vi.advanceTimersByTime(0)
+        })
+        expect(queryIndicator(container)).toBeNull()
+    })
+})
