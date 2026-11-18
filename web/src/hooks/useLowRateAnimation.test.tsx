@@ -2,6 +2,7 @@ import { render } from '@testing-library/react'
 import { useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LOW_RATE_TICK_MS, subscribeLowRateTicker } from '@/lib/lowRateTicker'
+import { setIndicatorSmoothing } from '@/hooks/useLowRateAnimation'
 import { PING_TOTAL_FRAMES, useLowRateAnimation, type LowRateAnimationKind } from './useLowRateAnimation'
 
 function Indicator({ kind, enabled = true }: { kind: LowRateAnimationKind; enabled?: boolean }) {
@@ -45,25 +46,60 @@ describe('useLowRateAnimation', () => {
         expect(element.style.transform).toBe('rotate(90deg)')
     })
 
-    it('pulses opacity 1 for eight frames then 0.5 for eight', () => {
+    it('breathes opacity in a smooth triangle wave across the cycle', () => {
         const { getByTestId } = render(<Indicator kind="pulse" />)
         const element = getByTestId('indicator')
 
         // Static opacity while no tick has landed.
         expect(element.style.opacity).toBe('1')
-        // Frames 1-8 stay high.
-        vi.advanceTimersByTime(LOW_RATE_TICK_MS * 8)
-        expect(element.style.opacity).toBe('1')
-
-        // Frames 9-16 drop to 0.5.
-        vi.advanceTimersByTime(LOW_RATE_TICK_MS)
-        expect(element.style.opacity).toBe('0.5')
-        vi.advanceTimersByTime(LOW_RATE_TICK_MS * 7)
-        expect(element.style.opacity).toBe('0.5')
-
-        // Frame 17 back to high.
+        // Frame 1: at the peak, starting the descent.
         vi.advanceTimersByTime(LOW_RATE_TICK_MS)
         expect(element.style.opacity).toBe('1')
+        // Mid-descent (frame 5 of 16, phase 0.25): opacity interpolates.
+        vi.advanceTimersByTime(LOW_RATE_TICK_MS * 4)
+        expect(element.style.opacity).toBe('0.75')
+        // Trough (frame 9, phase 0.5): fully dimmed.
+        vi.advanceTimersByTime(LOW_RATE_TICK_MS * 4)
+        expect(element.style.opacity).toBe('0.5')
+        // Mid-ascent (frame 13, phase 0.75): back at 0.75.
+        vi.advanceTimersByTime(LOW_RATE_TICK_MS * 4)
+        expect(element.style.opacity).toBe('0.75')
+        // Cycle wraps (frame 17 = frame 1): peak again.
+        vi.advanceTimersByTime(LOW_RATE_TICK_MS * 4)
+        expect(element.style.opacity).toBe('1')
+        // Compositor transition smooths between ticks.
+        expect(element.style.transition).toContain('opacity 125ms')
+    })
+
+    it('falls back to the square-wave cadence when smoothing is off', () => {
+        setIndicatorSmoothing(false)
+        try {
+            const { getByTestId } = render(<Indicator kind="pulse" />)
+            const element = getByTestId('indicator')
+
+            // Frames 1-8 stay high, 9-16 drop low — the original #2447 shape.
+            vi.advanceTimersByTime(LOW_RATE_TICK_MS * 8)
+            expect(element.style.opacity).toBe('1')
+            expect(element.style.transition).toBe('')
+            vi.advanceTimersByTime(LOW_RATE_TICK_MS)
+            expect(element.style.opacity).toBe('0.5')
+        } finally {
+            setIndicatorSmoothing(true)
+        }
+    })
+
+    it('steps the spinner without a transition when smoothing is off', () => {
+        setIndicatorSmoothing(false)
+        try {
+            const { getByTestId } = render(<Indicator kind="spin" />)
+            const element = getByTestId('indicator')
+
+            vi.advanceTimersByTime(LOW_RATE_TICK_MS)
+            expect(element.style.transform).toBe('rotate(22.5deg)')
+            expect(element.style.transition).toBe('')
+        } finally {
+            setIndicatorSmoothing(true)
+        }
     })
 
     it('drifts stripes by tile/40 per tick, one 8px tile per 5 s', () => {
@@ -143,12 +179,14 @@ describe('useLowRateAnimation', () => {
         const { getByTestId, rerender } = render(<Indicator kind="pulse" />)
         const element = getByTestId('indicator')
 
-        // Frames 1-8 stay high, so frame 9 is the first low one.
+        // Descend into the trough (frame 9, phase 0.5).
         vi.advanceTimersByTime(LOW_RATE_TICK_MS * 9)
         expect(element.style.opacity).toBe('0.5')
 
         rerender(<Indicator kind="pulse" enabled={false} />)
         expect(element.style.opacity).toBe('1')
+        // The smoothing transition is cleared so the reset is instant.
+        expect(element.style.transition).toBe('')
     })
 
     it('stops receiving ticks once unmounted', () => {

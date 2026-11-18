@@ -65,6 +65,11 @@ export type AcpConfigOptionDescriptor = {
     options: Array<{ value: string; name?: string }>;
 };
 
+export type AcpAvailableCommand = {
+    name: string;
+    description?: string;
+};
+
 /**
  * Normalize ACP config-option choices to a flat `{ value, name }` list.
  * Most agents send flat `options: [{ value, name }]`, but Zed-style grouped
@@ -119,8 +124,9 @@ export class AcpSdkBackend implements AgentBackend {
     private readonly sessionModelsMetadata = new Map<string, AcpSessionModelsMetadata>();
     private readonly sessionConfigOptions = new Map<string, AcpConfigOptionDescriptor[]>();
     private readonly sessionInfoRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>();
-    private readonly initialAvailableCommands = new Set<string>();
-    private readonly sessionAvailableCommands = new Map<string, Set<string>>();
+    private readonly initialAvailableCommands = new Map<string, AcpAvailableCommand>();
+    private readonly sessionAvailableCommands = new Map<string, Map<string, AcpAvailableCommand>>();
+    private availableCommandsUpdateListener: ((sessionId: string | null, commands: AcpAvailableCommand[]) => void) | null = null;
     private autoPermissionModeEnabled: boolean | null = null;
     private messageHandler: AcpMessageHandler | null = null;
     private activeSessionId: string | null = null;
@@ -671,6 +677,23 @@ export class AcpSdkBackend implements AgentBackend {
         }
         return this.sessionAvailableCommands.get(sessionId)?.has(command)
             ?? this.initialAvailableCommands.has(command);
+    }
+
+    /**
+     * Returns the slash commands negotiated via ACP `available_commands_update`
+     * (or `initialize` / `session/new` / `session/resume` metadata) for the
+     * given session, falling back to commands advertised during `initialize`.
+     */
+    getAvailableCommands(sessionId?: string | null): AcpAvailableCommand[] {
+        const sessionCommands = sessionId ? this.sessionAvailableCommands.get(sessionId) : undefined;
+        const source = sessionCommands ?? this.initialAvailableCommands;
+        return Array.from(source.values(), (command) => ({ ...command }));
+    }
+
+    setAvailableCommandsUpdateListener(
+        listener: ((sessionId: string | null, commands: AcpAvailableCommand[]) => void) | null
+    ): void {
+        this.availableCommandsUpdateListener = listener;
     }
 
     /** Forwards ACP `usage_update` to the web status bar when no prompt is active (e.g. session resume). */
@@ -1785,21 +1808,32 @@ export class AcpSdkBackend implements AgentBackend {
                 : null;
         if (!rawCommands) return;
 
-        const commands = new Set(
-            rawCommands
-                .filter((entry): entry is Record<string, unknown> => isObject(entry))
-                .map((entry) => asString(entry.name) ?? '')
-                .filter((name) => name.length > 0)
-        );
+        const commands = new Map<string, AcpAvailableCommand>();
+        for (const entry of rawCommands) {
+            if (!isObject(entry)) continue;
+            const rawName = asString(entry.name)?.trim() ?? '';
+            const name = rawName.startsWith('/') ? rawName.slice(1).trim() : rawName;
+            if (!name) continue;
+            const description = asString(entry.description)?.trim() || undefined;
+            commands.set(name, description ? { name, description } : { name });
+        }
         if (sessionId) {
             this.sessionAvailableCommands.set(sessionId, commands);
+            this.availableCommandsUpdateListener?.(
+                sessionId,
+                Array.from(commands.values(), (command) => ({ ...command }))
+            );
             return;
         }
 
         this.initialAvailableCommands.clear();
-        for (const command of commands) {
-            this.initialAvailableCommands.add(command);
+        for (const [name, command] of commands) {
+            this.initialAvailableCommands.set(name, command);
         }
+        this.availableCommandsUpdateListener?.(
+            null,
+            Array.from(commands.values(), (command) => ({ ...command }))
+        );
     }
 
     private captureSessionConfigOptions(sessionId: string, response: unknown): void {

@@ -1869,6 +1869,49 @@ export class SyncEngine {
         for (const session of this.sessionCache.getSessions()) if (this.openCodeRewindPending(session.id)) held.add(session.id)
         this.messageService.releaseMatureScheduledMessages(Date.now(), held)
         void this.reconcileOpenCodeClears()
+        this.reconcileDerivedToolWork()
+    }
+
+    /**
+     * Work-scoped liveness sweep, piggybacked on the 5s inactivity tick.
+     *
+     * `thinking` is turn-scoped: the CLI flips it false at the SDK result
+     * even while autonomous rounds (background tasks, scheduled follow-ups)
+     * keep streaming tool calls. For connected sessions that claim neither
+     * thinking nor background tasks nor an attached job, derive "open tool
+     * work" straight from the transcript tail and broadcast it as
+     * `derivedToolWork`, so the session row shows work instead of a stale
+     * "waiting". Sessions inside the queued-prompt thinking grace are left
+     * alone — their spinner is already accounted for. When a session stops
+     * being eligible while the flag is still set, clear it so the derived
+     * signal never outlives the state it vouched for.
+     */
+    private reconcileDerivedToolWork(): void {
+        const now = Date.now()
+        const candidates: Session[] = []
+        for (const session of this.sessionCache.getSessions()) {
+            if (this.isDerivedToolWorkCandidate(session)) {
+                candidates.push(session)
+            } else if (session.derivedToolWork === true) {
+                this.sessionCache.noteDerivedWork(session.id, false)
+            }
+        }
+        if (candidates.length === 0) return
+        // One batched primary-job read: a session with a running attached
+        // job already renders work; the sweep must not double-report.
+        const primaryJobs = this.getPrimaryAttachedJobsBySessionIds(candidates.map((session) => session.id))
+        for (const session of candidates) {
+            if ((primaryJobs.get(session.id) ?? null) !== null) continue
+            this.sessionCache.noteDerivedWork(session.id, this.store.messages.getLiveToolWork(session.id))
+        }
+    }
+
+    /** Eligibility for the derived-work sweep: connected, no thinking flag,
+     *  and no declared background tasks. */
+    private isDerivedToolWorkCandidate(session: Session): boolean {
+        if (!session.active || session.thinking) return false
+        if ((session.backgroundTaskCount ?? 0) > 0) return false
+        return true
     }
 
     private async reconcileOpenCodeClears(): Promise<void> {

@@ -1,4 +1,4 @@
-import { canonicalPasskeyHub, PASSKEY_DISCOVERY_MESSAGE, PASSKEY_ORIGIN, passkeyBase64url } from '@hapi/protocol/passkey'
+import { PASSKEY_ORIGIN, passkeyBase64url } from '@hapi/protocol/passkey'
 import {
     browserSupportsWebAuthn,
     WebAuthnError
@@ -24,55 +24,11 @@ function cancelled(): Error {
     return new DOMException('Passkey sign-in cancelled', 'NotAllowedError')
 }
 
-function openPasskeyPopup(): Window {
-    const popup = window.open('about:blank', '_blank', 'popup,width=480,height=700')
-    if (!popup) throw new ApiError('Allow popups to use Passkey sign-in', 0, 'passkey_popup_blocked')
-    return popup
-}
-
-/** The address is a locator, not a login. The trusted bridge asks the user to
- * confirm it before any Hub request; then reuse this popup for real auth. */
-export async function discoverAndSignInWithPasskey(): Promise<{ hubUrl: string; passkeySession: string }> {
-    const popup = openPasskeyPopup()
-    const state = passkeyBase64url(crypto.getRandomValues(new Uint8Array(32)))
-    let timer: ReturnType<typeof setInterval> | undefined
-    let listener: ((event: MessageEvent) => void) | undefined
-    try {
-        const hubUrl = await new Promise<string>((resolve, reject) => {
-            listener = (event) => {
-                if (event.origin !== PASSKEY_ORIGIN || event.source !== popup || !event.data
-                    || event.data.type !== PASSKEY_DISCOVERY_MESSAGE || event.data.state !== state) return
-                if (event.data.error) {
-                    reject(event.data.error === 'cancelled' ? cancelled() : new ApiError('Enter the Hub address manually', 0, 'passkey_hub_discovery_unavailable'))
-                    return
-                }
-                try {
-                    if (typeof event.data.hub !== 'string' || canonicalPasskeyHub(event.data.hub) !== event.data.hub) throw new Error('Invalid discovered Hub')
-                    resolve(event.data.hub)
-                } catch (error) { reject(error) }
-            }
-            window.addEventListener('message', listener)
-            const expiresAt = Date.now() + 5 * 60 * 1000
-            timer = setInterval(() => { if (popup.closed || Date.now() >= expiresAt) reject(cancelled()) }, 400)
-            popup.location.replace(`${PASSKEY_ORIGIN}/#${encodeURIComponent(JSON.stringify({
-                operation: 'discover', state, callbackOrigin: window.location.origin
-            }))}`)
-        })
-        clearInterval(timer)
-        window.removeEventListener('message', listener!)
-        const result = await browserCeremony(new ApiClient('', { baseUrl: hubUrl }), 'login', undefined, popup)
-        if (result.operation !== 'login') throw new Error('Passkey operation mismatch')
-        return { hubUrl, passkeySession: result.passkeySession }
-    } finally {
-        if (timer) clearInterval(timer)
-        if (listener) window.removeEventListener('message', listener)
-        popup.close()
-    }
-}
-
 /** Open synchronously in the click handler, before any network/crypto awaits.
  * The verifier remains in the initiating tab; the bridge never receives it. */
-async function browserCeremony(api: ApiClient, operation: 'login' | 'register', name?: string, popup = openPasskeyPopup()) {
+async function browserCeremony(api: ApiClient, operation: 'login' | 'register', name?: string) {
+    const popup = window.open('about:blank', '_blank', 'popup,width=480,height=700')
+    if (!popup) throw new ApiError('Allow popups to use Passkey sign-in', 0, 'passkey_popup_blocked')
     const state = passkeyBase64url(crypto.getRandomValues(new Uint8Array(32)))
     const verifier = passkeyBase64url(crypto.getRandomValues(new Uint8Array(32)))
     let timer: ReturnType<typeof setInterval> | undefined

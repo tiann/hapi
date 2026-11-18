@@ -51,22 +51,14 @@ struct PlatformPasskeyAuthenticator: PasskeyAuthenticating {
             )
             let assertion = provider.createCredentialAssertionRequest(challenge: request.challenge)
             assertion.userVerificationPreference = .required
-            // Restrict the sheet to this hub's passkeys: every hub shares the
-            // RP ID, so an empty list would offer all of them.
-            assertion.allowedCredentials = request.allowedCredentialIDs.map {
-                ASAuthorizationPlatformPublicKeyCredentialDescriptor(credentialID: $0)
-            }
+            // No allow list: sign-in picks a resident credential, and its
+            // user handle names the Hub (the challenge is self-issued).
             // Web-created resident credentials may live on a roaming security
-            // key rather than iCloud. Offer both providers for the same Hub.
+            // key rather than iCloud, so offer both providers.
             let securityKey = ASAuthorizationSecurityKeyPublicKeyCredentialProvider(
                 relyingPartyIdentifier: request.relyingPartyID
             ).createCredentialAssertionRequest(challenge: request.challenge)
             securityKey.userVerificationPreference = .required
-            securityKey.allowedCredentials = request.allowedCredentialIDs.map {
-                ASAuthorizationSecurityKeyPublicKeyCredentialDescriptor(
-                    credentialID: $0, transports: [.usb, .nfc, .bluetooth]
-                )
-            }
             return [assertion, securityKey]
         }
         if let credential = authorization.credential as? ASAuthorizationPlatformPublicKeyCredentialAssertion {

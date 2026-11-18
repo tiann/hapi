@@ -10,6 +10,7 @@ import { startHappyServer } from '@/claude/utils/startHappyServer';
 import { getHappyCliCommand } from '@/utils/spawnHappyCLI';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
 import { bootstrapSession } from '@/agent/sessionFactory';
+import { SESSION_KEEP_ALIVE_INTERVAL_MS } from '@/api/keepAlive';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
 import { getInvokedCwd } from '@/utils/invokedCwd';
 import { PermissionModeSchema } from '@hapi/protocol/schemas';
@@ -133,7 +134,7 @@ export async function runAgentSession(opts: {
     syncKeepAlive();
     const keepAliveInterval = setInterval(() => {
         syncKeepAlive();
-    }, 2000);
+    }, SESSION_KEEP_ALIVE_INTERVAL_MS);
 
     const sendReady = () => {
         session.sendSessionEvent({ type: 'ready' });

@@ -2,7 +2,8 @@ import { describe, expect, it } from 'bun:test'
 import {
     canonicalPasskeyHub, encodePasskeyChallenge, validatePasskeyChallenge, encodePasskeyUserHandle,
     validatePasskeyUserHandle, passkeyBase64url, passkeyDecode, passkeyUserHandleHub,
-    passkeyDiscoveryOptions, type PasskeyChallenge
+    createPasskeyNativeLoginChallenge, parsePasskeyNativeLoginChallenge, PASSKEY_NATIVE_LOGIN_MAX_AGE_MS,
+    PASSKEY_NATIVE_LOGIN_MAX_SKEW_MS, type PasskeyChallenge
 } from './passkey'
 
 const hub = 'https://hub.example.com'
@@ -60,14 +61,25 @@ describe('passkey Hub isolation', () => {
             expect(() => passkeyUserHandleHub(bytes)).toThrow()
         }
     })
-    it('discovery never accepts a caller challenge, extensions or a Hub identity', () => {
-        const a = passkeyDiscoveryOptions('browser')
-        const b = passkeyDiscoveryOptions('native')
-        expect(a.challenge).not.toBe(b.challenge)
-        expect(a).toMatchObject({ rpId: 'auth.hapi.run', userVerification: 'required' })
-        expect(a).not.toHaveProperty('allowCredentials')
-        expect(a).not.toHaveProperty('extensions')
-        expect(JSON.parse(new TextDecoder().decode(passkeyDecode(a.challenge)))).toMatchObject({ operation: 'discover', channel: 'browser' })
-        expect(() => validatePasskeyChallenge(a.challenge, hub, 'login', 'browser')).toThrow()
+    it('accepts only fresh, exact native login challenges that no Hub-bound ceremony can produce', () => {
+        const now = 1_800_000_000_000
+        const encoded = createPasskeyNativeLoginChallenge(now)
+        expect(parsePasskeyNativeLoginChallenge(encoded, now)).toMatchObject({ v: 2, operation: 'login', channel: 'native', iat: now })
+        expect(createPasskeyNativeLoginChallenge(now)).not.toBe(encoded)
+        expect(parsePasskeyNativeLoginChallenge(encoded, now + PASSKEY_NATIVE_LOGIN_MAX_AGE_MS).iat).toBe(now)
+        expect(parsePasskeyNativeLoginChallenge(encoded, now - PASSKEY_NATIVE_LOGIN_MAX_SKEW_MS).iat).toBe(now)
+        expect(() => parsePasskeyNativeLoginChallenge(encoded, now + PASSKEY_NATIVE_LOGIN_MAX_AGE_MS + 1)).toThrow('expired')
+        expect(() => parsePasskeyNativeLoginChallenge(encoded, now - PASSKEY_NATIVE_LOGIN_MAX_SKEW_MS - 1)).toThrow('expired')
+        const base = JSON.parse(new TextDecoder().decode(passkeyDecode(encoded)))
+        const encode = (value: unknown) => passkeyBase64url(new TextEncoder().encode(JSON.stringify(value)))
+        for (const changed of [{ v: 1 }, { operation: 'register' }, { channel: 'browser' }, { iat: '1' }, { iat: now + 0.5 }, { nonce: 'short' }, { hub }, { extra: 1 }]) {
+            expect(() => parsePasskeyNativeLoginChallenge(encode({ ...base, ...changed }), now)).toThrow()
+        }
+        expect(() => parsePasskeyNativeLoginChallenge(encode([base]), now)).toThrow()
+        expect(() => parsePasskeyNativeLoginChallenge(encodePasskeyChallenge({ ...challenge, channel: 'native' }), now)).toThrow()
+        expect(() => validatePasskeyChallenge(encoded, hub, 'login', 'native')).toThrow()
+        // Cross-language vector pinned by Swift and Kotlin tests (key order is irrelevant).
+        const vector = encode({ v: 2, operation: 'login', channel: 'native', iat: now, nonce: 'A'.repeat(43) })
+        expect(parsePasskeyNativeLoginChallenge(vector, now).nonce).toBe('A'.repeat(43))
     })
 })

@@ -241,19 +241,10 @@ class HapiApi internal constructor(
         )
 
     /**
-     * `POST /api/passkey/login/options` (no JWT) — `PublicKeyCredentialRequestOptionsJSON`
-     * with `allowCredentials` limited to this hub's native passkeys.
-     * 404 `no_passkeys` means none are registered: use the access token.
+     * `POST /api/passkey/login/verify` (no JWT) — JWT + passkey session. The
+     * assertion signs a client-generated challenge
+     * (`NativePasskeys.nativeLoginOptions`); there is no options request.
      */
-    suspend fun passkeyLoginOptions(): String =
-        requestText(
-            "POST",
-            url("api", "passkey", "login", "options").build(),
-            PasskeyOptionsRequest.Native.toJsonBody(),
-            authClient,
-        )
-
-    /** `POST /api/passkey/login/verify` (no JWT) — JWT + passkey session. */
     suspend fun passkeyLoginVerify(response: JsonObject): PasskeyLoginResponse =
         request(
             "POST",

@@ -99,7 +99,7 @@ class PasskeysViewModel(
         scope.launch {
             try {
                 val options = gateway.registerOptions()
-                val checkedOptions = NativePasskeys.ceremonyOptions(options, gateway.hubUrl, "register")
+                val checkedOptions = NativePasskeys.registrationOptions(options, gateway.hubUrl)
                 val registration = platform.createPasskey(checkedOptions)
                 gateway.registerVerify(
                     NativePasskeys.credentialResponse(registration),

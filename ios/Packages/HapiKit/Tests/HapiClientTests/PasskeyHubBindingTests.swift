@@ -36,28 +36,12 @@ struct PasskeyHubBindingTests {
 
     }
 
-    @Test func discoveryUsesALocalChallengeAndReturnsOnlyALocator() async throws {
-        let result = PasskeyAssertionResult(credentialID: Data("id".utf8), clientDataJSON: Data(), authenticatorData: Data(), signature: Data(), userID: boundPasskeyUser())
-        let authenticator = ScriptedAuthenticator(assertion: result)
-        #expect(try await NativePasskeys.discoverHub(authenticator: authenticator) == "https://hub.test")
-        let request = try #require(await authenticator.assertions.first)
-        #expect(request.relyingPartyID == "auth.hapi.run")
-        #expect(request.allowedCredentialIDs.isEmpty)
-        let json = try #require(JSONSerialization.jsonObject(with: request.challenge) as? [String: Any])
-        #expect(json["operation"] as? String == "discover")
-        #expect(json["channel"] as? String == "native")
-        #expect(json["hub"] == nil)
-        #expect(request.challenge != PasskeyAssertionRequest.discovery().challenge)
-        #expect(throws: PasskeyError.malformedOptions) {
-            try PasskeyHubBinding.validate(request.challenge, hub: hub, operation: "login")
-        }
-    }
-
-    @Test func discoveryRefusesMissingOrOpaqueHandles() async throws {
-        for handle: Data? in [nil, Data(), Data(repeating: 0, count: 64), Data([2, 0]) + Data(repeating: 1, count: 48)] {
-            let result = PasskeyAssertionResult(credentialID: Data(), clientDataJSON: Data(), authenticatorData: Data(), signature: Data(), userID: handle)
-            await #expect(throws: PasskeyError.hubDiscoveryUnavailable) {
-                try await NativePasskeys.discoverHub(authenticator: ScriptedAuthenticator(assertion: result))
+    @Test func nativeLoginChallengeIsNotHubBound() throws {
+        // A self-issued login challenge can never pass as a Hub-issued one.
+        let challenge = PasskeyAssertionRequest.nativeLogin(now: Date()).challenge
+        for operation in ["login", "register"] {
+            #expect(throws: PasskeyError.malformedOptions) {
+                try PasskeyHubBinding.validate(challenge, hub: hub, operation: operation)
             }
         }
     }

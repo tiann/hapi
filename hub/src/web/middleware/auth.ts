@@ -20,7 +20,6 @@ export function createAuthMiddleware(jwtSecret: Uint8Array): MiddlewareHandler<W
         if (
             path === '/api/auth'
             || path === '/api/bind'
-            || path === '/api/passkey/login/options'
             || path === '/api/passkey/login/verify'
         ) {
             await next()

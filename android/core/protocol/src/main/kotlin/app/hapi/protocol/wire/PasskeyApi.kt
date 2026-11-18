@@ -5,7 +5,6 @@ import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Base64
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -20,13 +19,14 @@ import kotlinx.serialization.json.put
  * `shared/src/apiTypes.ts`).
  *
  * WebAuthn options and credential responses use JSON rather than full wire
- * models. [NativePasskeys.ceremonyOptions] validates Hub/RP binding and selects
- * supported fields before Credential Manager consumes the options and produces
- * `RegistrationResponseJSON` / `AuthenticationResponseJSON`.
+ * models. [NativePasskeys.registrationOptions] validates Hub/RP binding and
+ * selects supported fields of Hub-issued creation options;
+ * [NativePasskeys.nativeLoginOptions] builds sign-in options locally. Credential
+ * Manager then produces `RegistrationResponseJSON` / `AuthenticationResponseJSON`.
  */
 
 /**
- * Body of `POST /api/passkey/{register,login}/options`. [client] has no
+ * Body of `POST /api/passkey/register/options`. [client] has no
  * default on purpose: [HapiJson] does not encode defaults, and direct
  * options endpoints require an explicit native client.
  */
@@ -97,10 +97,6 @@ object NativePasskeys {
     fun creationRpId(optionsJson: String): String? =
         parseObject(optionsJson)?.get("rp").objOrNull?.get("id").stringOrNull
 
-    /** `rpId` of `PublicKeyCredentialRequestOptionsJSON`, or null if absent/unparsable. */
-    fun requestRpId(optionsJson: String): String? =
-        parseObject(optionsJson)?.get("rpId").stringOrNull
-
     /**
      * Throws [PasskeyRpMismatchException] unless the creation options target
      * [expected]. Refusing a mismatch keeps a hub from steering the app into
@@ -111,15 +107,8 @@ object NativePasskeys {
         if (actual != expected) throw PasskeyRpMismatchException(expected, actual)
     }
 
-    /** As [requireCreationRpId], for request (sign-in) options. */
-    fun requireRequestRpId(optionsJson: String, expected: String = RP_ID) {
-        val actual = requestRpId(optionsJson)
-        if (actual != expected) throw PasskeyRpMismatchException(expected, actual)
-    }
-
-    /** Reject a different Hub/operation/channel before invoking Credential Manager. */
-    fun requireHubBinding(optionsJson: String, hubUrl: String, operation: String) {
-        require(operation == "login" || operation == "register")
+    /** Reject registration options for a different Hub/operation/channel before invoking Credential Manager. */
+    fun requireHubBinding(optionsJson: String, hubUrl: String) {
         val options = parseObject(optionsJson) ?: error("Invalid passkey options")
         val hub = canonicalHub(hubUrl)
         val encoded = options["challenge"].stringOrNull ?: error("Missing passkey challenge")
@@ -127,20 +116,23 @@ object NativePasskeys {
         val challenge = parseObject(String(Base64.getUrlDecoder().decode(encoded), Charsets.UTF_8))
             ?: error("Invalid passkey challenge")
         require(challenge["v"].toString() == "1" && challenge["hub"].stringOrNull == hub
-            && challenge["operation"].stringOrNull == operation && challenge["channel"].stringOrNull == "native"
-            && challenge["id"].stringOrNull?.matches(Regex("[A-Za-z0-9_-]{43}")) == true
-            && challenge["nonce"].stringOrNull?.matches(Regex("[A-Za-z0-9_-]{43}")) == true) {
+            && challenge["operation"].stringOrNull == "register" && challenge["channel"].stringOrNull == "native"
+            && challenge["id"].stringOrNull?.matches(NONCE) == true
+            && challenge["nonce"].stringOrNull?.matches(NONCE) == true) {
             "Passkey challenge does not match this Hub or operation"
         }
-        if (operation == "login") require((options["allowCredentials"] as? JsonArray)?.isNotEmpty() == true)
-        if (operation == "register") {
-            val user = options["user"].objOrNull ?: error("Missing passkey account")
-            val handle = Base64.getUrlDecoder().decode(user["id"].stringOrNull ?: error("Missing passkey account"))
-            val prefix = MessageDigest.getInstance("SHA-256").digest(hub.toByteArray(Charsets.UTF_8))
-            val discovered = userHandleHub(handle)
-            require(if (discovered != null) discovered == hub else handle.copyOfRange(2, 34).contentEquals(prefix)) { "Passkey account belongs to another Hub" }
-            require(user["name"].stringOrNull?.endsWith("@${URI(hub).rawAuthority}") == true)
-        }
+        val user = options["user"].objOrNull ?: error("Missing passkey account")
+        val handle = Base64.getUrlDecoder().decode(user["id"].stringOrNull ?: error("Missing passkey account"))
+        require(handleBelongsTo(handle, hub)) { "Passkey account belongs to another Hub" }
+        require(user["name"].stringOrNull?.endsWith("@${URI(hub).rawAuthority}") == true)
+    }
+
+    /** Discoverable handle → equal origin; opaque (long address) → SHA-256(origin) prefix. */
+    private fun handleBelongsTo(handle: ByteArray, hub: String): Boolean {
+        val discovered = userHandleHub(handle)
+        if (discovered != null) return discovered == hub
+        val prefix = MessageDigest.getInstance("SHA-256").digest(hub.toByteArray(Charsets.UTF_8))
+        return handle.copyOfRange(2, 34).contentEquals(prefix)
     }
 
     private fun canonicalHub(hubUrl: String): String {
@@ -165,13 +157,20 @@ object NativePasskeys {
         return hub
     }
 
-    /** Generated locally, without a Hub, caller-supplied challenges or extensions. */
-    fun discoveryOptions(): String {
-        val nonce = ByteArray(32).also { SecureRandom().nextBytes(it) }
+    /**
+     * Native sign-in is one ceremony: the app signs its own fresh challenge
+     * (shared `createPasskeyNativeLoginChallenge`) before it knows the Hub,
+     * then posts the assertion to the Hub named by the credential's user
+     * handle. The Hub accepts it within a short [nowMs] window, once.
+     * Never derived from Hub-supplied options: no `allowCredentials`, no
+     * extensions.
+     */
+    fun nativeLoginOptions(nowMs: Long): String {
         val b64 = Base64.getUrlEncoder().withoutPadding()
+        val nonce = ByteArray(32).also { SecureRandom().nextBytes(it) }
         val challenge = buildJsonObject {
-            put("v", 1); put("operation", "discover"); put("channel", "native")
-            put("nonce", b64.encodeToString(nonce))
+            put("v", NATIVE_LOGIN_VERSION); put("operation", "login"); put("channel", "native")
+            put("iat", nowMs); put("nonce", b64.encodeToString(nonce))
         }
         return buildJsonObject {
             put("challenge", b64.encodeToString(challenge.toString().toByteArray(Charsets.UTF_8)))
@@ -179,48 +178,63 @@ object NativePasskeys {
         }.toString()
     }
 
-    /** The response is used only as a locator and is never posted to any Hub. */
-    fun discoveredHub(responseJson: String): String {
-        try {
+    /**
+     * The Hub an assertion from [nativeLoginOptions] must be posted to, read
+     * from `response.userHandle` (a locator, never evidence — the Hub verifies
+     * the signature). With [expectedHub] (manual entry) the handle must belong
+     * to that Hub, else [PasskeyHubMismatchException]. Without one, a missing,
+     * opaque (long address) or unreadable handle throws
+     * [PasskeyHubAddressRequiredException] so the user can enter the address.
+     */
+    fun loginHub(responseJson: String, expectedHub: String?): String {
+        val handle = try {
             val encoded = parseObject(responseJson)?.get("response").objOrNull?.get("userHandle").stringOrNull
-                ?: throw PasskeyDiscoveryUnavailableException()
-            require(encoded.length <= 88)
-            return userHandleHub(Base64.getUrlDecoder().decode(encoded)) ?: throw PasskeyDiscoveryUnavailableException()
-        } catch (_: Exception) {
-            throw PasskeyDiscoveryUnavailableException()
+            encoded?.takeIf { it.length <= 88 }?.let { Base64.getUrlDecoder().decode(it) }
+        } catch (_: IllegalArgumentException) {
+            null
         }
+        if (expectedHub != null) {
+            val hub = canonicalHub(expectedHub)
+            val belongs = handle != null && try {
+                handleBelongsTo(handle, hub)
+            } catch (_: Exception) {
+                false
+            }
+            if (!belongs) throw PasskeyHubMismatchException(hub)
+            return hub
+        }
+        return try {
+            handle?.let(::userHandleHub)
+        } catch (_: Exception) {
+            null
+        } ?: throw PasskeyHubAddressRequiredException()
     }
 
     /** Only the WebAuthn fields this client supports reach Credential Manager.
      * In particular, an untrusted Hub cannot ask for PRF/largeBlob extensions
-     * on credentials that share this RP with other Hubs. */
-    fun ceremonyOptions(optionsJson: String, hubUrl: String, operation: String): String {
-        if (operation == "register") requireCreationRpId(optionsJson) else requireRequestRpId(optionsJson)
-        requireHubBinding(optionsJson, hubUrl, operation)
+     * on credentials that share this RP with other Hubs. Registration only:
+     * sign-in options are generated locally by [nativeLoginOptions]. */
+    fun registrationOptions(optionsJson: String, hubUrl: String): String {
+        requireCreationRpId(optionsJson)
+        requireHubBinding(optionsJson, hubUrl)
         val input = parseObject(optionsJson)!!
         return buildJsonObject {
             put("challenge", input.getValue("challenge"))
             put("timeout", 120000)
-            if (operation == "login") {
-                put("rpId", RP_ID)
-                put("allowCredentials", input.getValue("allowCredentials"))
-                put("userVerification", "required")
-            } else {
-                put("rp", buildJsonObject { put("id", RP_ID); put("name", "HAPI") })
-                val user = input.getValue("user").objOrNull!!
-                put("user", buildJsonObject {
-                    put("id", user.getValue("id")); put("name", user.getValue("name"))
-                    put("displayName", "HAPI · ${URI(hubUrl).rawAuthority.lowercase()}")
-                })
-                put("pubKeyCredParams", buildJsonArray {
-                    for (alg in listOf(-7, -257)) add(buildJsonObject { put("alg", alg); put("type", "public-key") })
-                })
-                input["excludeCredentials"]?.let { put("excludeCredentials", it) }
-                put("authenticatorSelection", buildJsonObject {
-                    put("residentKey", "required"); put("userVerification", "required")
-                })
-                put("attestation", "none")
-            }
+            put("rp", buildJsonObject { put("id", RP_ID); put("name", "HAPI") })
+            val user = input.getValue("user").objOrNull!!
+            put("user", buildJsonObject {
+                put("id", user.getValue("id")); put("name", user.getValue("name"))
+                put("displayName", "HAPI · ${URI(hubUrl).rawAuthority.lowercase()}")
+            })
+            put("pubKeyCredParams", buildJsonArray {
+                for (alg in listOf(-7, -257)) add(buildJsonObject { put("alg", alg); put("type", "public-key") })
+            })
+            input["excludeCredentials"]?.let { put("excludeCredentials", it) }
+            put("authenticatorSelection", buildJsonObject {
+                put("residentKey", "required"); put("userVerification", "required")
+            })
+            put("attestation", "none")
         }.toString()
     }
 
@@ -240,6 +254,10 @@ object NativePasskeys {
     fun normalizeName(name: String?): String? =
         name?.trim()?.take(MAX_NAME_LENGTH)?.trim()?.takeIf { it.isNotEmpty() }
 
+    /** `PASSKEY_NATIVE_LOGIN_VERSION` in `shared/src/passkey.ts`. */
+    private const val NATIVE_LOGIN_VERSION: Int = 2
+    private val NONCE = Regex("[A-Za-z0-9_-]{43}")
+
     private fun parseObject(json: String): JsonObject? = try {
         HapiJson.parseToJsonElement(json) as? JsonObject
     } catch (_: Exception) {
@@ -253,5 +271,9 @@ class PasskeyRpMismatchException(
     val actual: String?,
 ) : IllegalStateException("Passkey RP ID mismatch: expected $expected, got ${actual ?: "none"}")
 
-/** Enter the Hub manually when the selected passkey cannot locate it. */
-class PasskeyDiscoveryUnavailableException : IllegalStateException("Enter the Hub address manually")
+/** The selected passkey does not name its Hub (long address): enter it manually. */
+class PasskeyHubAddressRequiredException : IllegalStateException("Enter the Hub address manually")
+
+/** The selected passkey belongs to a Hub other than the one entered. */
+class PasskeyHubMismatchException(val expectedHub: String) :
+    IllegalStateException("Passkey account does not belong to $expectedHub")

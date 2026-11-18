@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it, mock } from 'bun:test'
+import { gunzipSync } from 'node:zlib'
 import { Hono } from 'hono'
 import type { SyncEngine } from '../../sync/syncEngine'
 import { createConfiguration, getConfiguration } from '../../configuration'
@@ -462,5 +463,53 @@ describe('cli autoBridgeTransientModelErrors namespace gate', () => {
         expect(tenantGet.status).toBe(200)
         const tenantGetBody = await tenantGet.json() as { autoBridgeTransientModelErrors?: boolean }
         expect(tenantGetBody.autoBridgeTransientModelErrors).toBe(false)
+    })
+})
+
+describe('cli HTTP gzip compression', () => {
+    it('compresses large /cli responses with gzip and honors q=0 refusal', async () => {
+        const sessionId = '33333333-3333-4333-8333-333333333333'
+        const messages = Array.from({ length: 40 }, (_, index) => ({
+            id: `msg-${index + 1}`,
+            sessionId,
+            seq: index + 1,
+            localId: `local-${index + 1}`,
+            createdAt: 1_700_000_000_000 + index,
+            invokedAt: 1_700_000_000_000 + index,
+            content: { role: 'assistant', content: { type: 'text', text: `Repeated backfill payload line ${index} `.repeat(6) } }
+        }))
+        const app = createApp({
+            resolveSessionAccess: () => ({
+                ok: true,
+                session: { id: sessionId },
+                sessionId
+            }),
+            getDeliverableMessagesAfter: () => messages
+        } as never)
+
+        const gzipRes = await app.request(`/cli/sessions/${sessionId}/messages?afterSeq=0`, {
+            headers: {
+                ...authHeaders(),
+                'accept-encoding': 'gzip'
+            }
+        })
+        expect(gzipRes.status).toBe(200)
+        expect(gzipRes.headers.get('content-encoding')).toBe('gzip')
+        expect(gzipRes.headers.get('vary')).toContain('Accept-Encoding')
+        const compressedBytes = new Uint8Array(await gzipRes.arrayBuffer())
+        const decompressed = gunzipSync(compressedBytes).toString('utf8')
+        expect(JSON.parse(decompressed)).toEqual({ messages })
+        expect(compressedBytes.byteLength).toBeLessThan(Buffer.byteLength(decompressed, 'utf8') / 2)
+
+        const refusedRes = await app.request(`/cli/sessions/${sessionId}/messages?afterSeq=0`, {
+            headers: {
+                ...authHeaders(),
+                'accept-encoding': 'gzip;q=0'
+            }
+        })
+        expect(refusedRes.status).toBe(200)
+        expect(refusedRes.headers.get('content-encoding')).toBeNull()
+        expect(refusedRes.headers.get('vary')).toContain('Accept-Encoding')
+        expect(await refusedRes.json()).toEqual({ messages })
     })
 })

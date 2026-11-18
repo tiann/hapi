@@ -221,7 +221,7 @@ struct PasskeysView: View {
                     }
             }
         } footer: {
-            Text("Sign in to \(HubDisplay.host(hubUrl)) from another device with “Sign in with a Passkey” — only the hub URL is needed. Passkeys work in both the web app and this app.")
+            Text("Sign in to \(HubDisplay.host(hubUrl)) from another device with “Sign in with a Passkey” — no access token needed. Passkeys work in both the web app and this app.")
         }
 
         Section {

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { SessionBootstrapResult } from '@/agent/sessionFactory';
 import type { ApiSessionClient } from '@/api/apiSession';
+import { SESSION_KEEP_ALIVE_INTERVAL_MS } from '@/api/keepAlive';
 import { logger } from '@/ui/logger';
 import { listSlashCommands } from '@/modules/common/slashCommands';
 import { normalizeCodexModel } from '@/modules/common/codexModels';
@@ -315,7 +316,7 @@ export class SharedCodexRoot {
         if (!this.host.attached) await this.initialSettings(options);
         if (this.stopping) throw new Error('Codex execution is stopping');
         this.registerControls(); this.ready();
-        this.heartbeat = setInterval(() => this.alive(), 2_000); this.alive(); this.session.emitSessionReady();
+        this.heartbeat = setInterval(() => this.alive(), SESSION_KEEP_ALIVE_INTERVAL_MS); this.alive(); this.session.emitSessionReady();
     }
     private publishSteering(): void {
         this.publishCompaction();

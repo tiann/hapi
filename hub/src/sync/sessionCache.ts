@@ -317,6 +317,8 @@ export class SessionCache {
             activeTurnStartedAt: existing?.activeTurnStartedAt ?? null,
             backgroundTaskCount: existing?.backgroundTaskCount ?? 0,
             backgroundTasks: existing?.backgroundTasks ?? [],
+            // Transient derived flag: survive a cache refresh, never persist.
+            derivedToolWork: existing?.derivedToolWork ?? false,
             todos,
             teamState,
             todosUpdatedAt: stored.todosUpdatedAt ?? 0,
@@ -454,6 +456,7 @@ export class SessionCache {
         if (patch.collaborationMode !== undefined) session.collaborationMode = patch.collaborationMode
         if (patch.backgroundTaskCount !== undefined) session.backgroundTaskCount = patch.backgroundTaskCount
         if (patch.backgroundTasks !== undefined) session.backgroundTasks = patch.backgroundTasks
+        if (patch.derivedToolWork !== undefined) session.derivedToolWork = patch.derivedToolWork
         if (patch.todos !== undefined) {
             session.todos = patch.todos.value
             session.todosUpdatedAt = patch.todos.version
@@ -586,7 +589,7 @@ export class SessionCache {
             || (wasThinking !== session.thinking)
             || turnBoundaryChanged
             || modeChanged
-            || (now - lastBroadcastAt > 10_000)
+            || (now - lastBroadcastAt > 60_000)
 
         if (shouldBroadcast) {
             this.lastBroadcastAtBySessionId.set(session.id, now)
@@ -718,6 +721,30 @@ export class SessionCache {
             type: 'session-updated',
             sessionId,
             data: { backgroundTaskCount: tasks.length, backgroundTasks: tasks } satisfies SessionPatch
+        })
+    }
+
+    /**
+     * Record the transcript-derived "open tool work" flag (work-scoped
+     * liveness). Mirrors setBackgroundTasks: a transient in-memory Session
+     * flag plus a session-updated broadcast, and a no-op when nothing
+     * changed so the sweep's every-tick calls stay quiet.
+     *
+     * Set by the SyncEngine's derived-work sweep for connected sessions
+     * whose `thinking` is false and no background task is declared, yet
+     * whose tail holds a tool call that never settled — the autonomous
+     * round case. Cleared on session end / expiry alongside the other
+     * transient work state.
+     */
+    noteDerivedWork(sessionId: string, open: boolean): void {
+        const session = this.sessions.get(sessionId)
+        if (!session) return
+        if ((session.derivedToolWork ?? false) === open) return
+        session.derivedToolWork = open
+        this.publisher.emit({
+            type: 'session-updated',
+            sessionId,
+            data: { derivedToolWork: open } satisfies SessionPatch
         })
     }
 
@@ -975,12 +1002,20 @@ export class SessionCache {
         this.recordTurn(session, wasThinking, t, 'agent', 'session_end')
         session.backgroundTaskCount = 0
         session.backgroundTasks = []
+        session.derivedToolWork = false
         this.pendingThinkingUntilBySessionId.delete(session.id)
 
         this.publisher.emit({
             type: 'session-updated',
             sessionId: session.id,
-            data: { active: false, thinking: false, activeTurnStartedAt: null, backgroundTaskCount: 0, backgroundTasks: [] } satisfies SessionPatch
+            data: {
+                active: false,
+                thinking: false,
+                activeTurnStartedAt: null,
+                backgroundTaskCount: 0,
+                backgroundTasks: [],
+                derivedToolWork: false
+            } satisfies SessionPatch
         })
     }
 
@@ -1002,6 +1037,14 @@ export class SessionCache {
             session.active = false
             this.store.sessions.setSessionActive(session.id, false, now, session.namespace)
             session.thinking = false
+            // The keepalive died, not the tasks: reset the transient work
+            // state like handleSessionEnd does, or a session that expired
+            // mid-background-work keeps its stale backgroundTaskCount (and
+            // derived flag) forever — the row would render "waiting" for
+            // hours after the process was gone.
+            session.backgroundTaskCount = 0
+            session.backgroundTasks = []
+            session.derivedToolWork = false
             // The last keepalive is the last time the agent was known to be working.
             this.recordTurn(session, wasThinking, session.activeAt, 'agent', 'expired')
             this.pendingThinkingUntilBySessionId.delete(session.id)
@@ -1009,7 +1052,12 @@ export class SessionCache {
             this.publisher.emit({
                 type: 'session-updated',
                 sessionId: session.id,
-                data: { active: false } satisfies SessionPatch
+                data: {
+                    active: false,
+                    backgroundTaskCount: 0,
+                    backgroundTasks: [],
+                    derivedToolWork: false
+                } satisfies SessionPatch
             })
         }
 

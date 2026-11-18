@@ -68,7 +68,7 @@ working connection. Prefer HTTPS on both platforms.
 Camera pairing is optional. Use manual entry on an iOS Simulator or any device
 without a usable scanner.
 
-After you pair a device with the access token, you can add a passkey for that hub in **Settings → Passkeys**. iOS syncs it through iCloud Keychain, and Android 9+ through Google Password Manager. On another device, choose **Sign in with a passkey**, select the credential to find its Hub, confirm the recovered address, and complete a separate sign-in check. Manual Hub entry remains available for long addresses or credentials without a discoverable address.
+After you pair a device with the access token, you can add a passkey for that hub in **Settings → Passkeys**. iOS syncs it through iCloud Keychain, and Android 9+ through Google Password Manager. On another device, choose **Sign in with a passkey** and pick the credential in the system sheet (it shows the Hub address): one check signs you in to that Hub, without typing its URL. Manual Hub entry remains available for long addresses or credentials without a discoverable address.
 
 - Web and App passkeys use the shared `auth.hapi.run` relying party. Register once in either client to sign in to that same Hub from both. Configure the Hub’s `HAPI_PUBLIC_URL` as its canonical HTTPS origin; no association files are needed on your own domain.
 - Rotating the hub's access token, or deleting the passkey, signs out every device that signed in with it.

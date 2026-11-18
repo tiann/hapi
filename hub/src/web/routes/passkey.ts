@@ -12,9 +12,9 @@ import {
     type PasskeyListResponse
 } from '@hapi/protocol'
 import {
-    canonicalPasskeyHub, encodePasskeyChallenge, PASSKEY_CALLBACK_PATH,
-    PASSKEY_MAX_REQUEST_LENGTH, PASSKEY_ORIGIN, PASSKEY_RP_ID,
-    type PasskeyChannel, type PasskeyOperation
+    canonicalPasskeyHub, encodePasskeyChallenge, parsePasskeyNativeLoginChallenge, PASSKEY_CALLBACK_PATH,
+    PASSKEY_MAX_REQUEST_LENGTH, PASSKEY_NATIVE_LOGIN_MAX_AGE_MS, PASSKEY_NATIVE_LOGIN_MAX_SKEW_MS,
+    PASSKEY_ORIGIN, PASSKEY_RP_ID, type PasskeyChannel, type PasskeyOperation
 } from '@hapi/protocol/passkey'
 import { getConfiguration } from '../../configuration'
 import { getOrCreateOwnerId } from '../../config/ownerId'
@@ -46,6 +46,10 @@ type ChallengeEntry = {
     expiresAt: number
     browser?: BrowserBinding
 }
+
+/** What an assertion must match; Hub-issued entries and native self-issued
+ * challenges both reduce to this. */
+type Expectation = Pick<ChallengeEntry, 'rpId' | 'origins' | 'fingerprint' | 'expiresAt'>
 
 type CodeEntry = {
     operation: PasskeyOperation
@@ -80,11 +84,29 @@ class OneTimeStore<T extends { expiresAt: number }> {
     }
 }
 
+/** Native login challenges are self-issued, so the Hub cannot hold them in
+ * advance. Remember each accepted one until it would be stale anyway. Only
+ * verified assertions are recorded, so the set is bounded by real sign-ins. */
+class ReplayGuard {
+    private readonly seen = new Map<string, number>()
+    constructor(private readonly now: () => number) {}
+    /** Synchronous check-and-mark: false when already used. */
+    claim(key: string, expiresAt: number): boolean {
+        const now = this.now()
+        for (const [id, until] of this.seen) if (until <= now) this.seen.delete(id)
+        if (this.seen.has(key)) return false
+        this.seen.set(key, expiresAt)
+        return true
+    }
+}
+
 export class PasskeyChallengeStore extends OneTimeStore<ChallengeEntry> {
     readonly codes: OneTimeStore<CodeEntry>
-    constructor(now: () => number = Date.now) {
-        super(now)
-        this.codes = new OneTimeStore(now)
+    readonly nativeLogins: ReplayGuard
+    constructor(readonly clock: () => number = Date.now) {
+        super(clock)
+        this.codes = new OneTimeStore(clock)
+        this.nativeLogins = new ReplayGuard(clock)
     }
 }
 
@@ -171,7 +193,10 @@ function assertCurrent(deps: PasskeyRouteDeps, entry: { fingerprint: string; exp
     if (!constantTimeEquals(entry.fingerprint, fingerprint(deps))) throw new Error('passkey_revoked')
 }
 
-async function authenticate(deps: PasskeyRouteDeps, entry: ChallengeEntry, challenge: string, response: AuthenticationResponseJSON) {
+async function authenticate(
+    deps: PasskeyRouteDeps, entry: Expectation, challenge: string, response: AuthenticationResponseJSON,
+    claim: () => boolean = () => true
+) {
     const credential = deps.store.passkeys.get(response.id)
     if (!credential || credential.rpId !== entry.rpId) throw new Error('Unknown passkey')
     if (!constantTimeEquals(credential.tokenFingerprint, entry.fingerprint)) throw new Error('passkey_revoked')
@@ -188,6 +213,8 @@ async function authenticate(deps: PasskeyRouteDeps, entry: ChallengeEntry, chall
     if (result.authenticationInfo.newCounter !== 0 && current.counter >= result.authenticationInfo.newCounter) {
         throw new Error('Passkey verification failed')
     }
+    // No await between here and recordUse: concurrent replays cannot both pass.
+    if (!claim()) throw new Error('Passkey challenge expired')
     deps.store.passkeys.recordUse(credential.id, result.authenticationInfo.newCounter, Date.now())
     return { credentialId: credential.id, namespace: credential.namespace }
 }
@@ -277,18 +304,24 @@ async function browserStart(c: Context<WebAppEnv>, deps: PasskeyRouteDeps, opera
 
 export function createPasskeyLoginRoutes(deps: PasskeyRouteDeps): Hono<WebAppEnv> {
     const app = secureRoutes()
-    app.post('/passkey/login/options', async (c) => {
-        if (!PasskeyOptionsRequestSchema.safeParse(await c.req.json().catch(() => null)).success) return c.json({ error: 'Native client required' }, 400)
-        try { return c.json(await optionsFor(deps, 'login', 'native')) }
-        catch (error) { return c.json({ error: message(error) }, message(error) === 'no_passkeys' ? 404 : 400) }
-    })
+    // Native sign-in is a single ceremony: the app signs its own fresh
+    // challenge before it knows the Hub, then posts the assertion to the Hub
+    // named by the credential. Freshness + one-time use replace issuance.
     app.post('/passkey/login/verify', async (c) => {
         const parsed = PasskeyLoginVerifyRequestSchema.safeParse(await c.req.json().catch(() => null))
         if (!parsed.success) return c.json({ error: 'Invalid body' }, 400)
         try {
             const response = parsed.data.response as unknown as AuthenticationResponseJSON
-            const { entry, challenge } = entryFor(deps, response.response.clientDataJSON, 'native', 'login')
-            const result = await authenticate(deps, entry, challenge, response)
+            const challenge = decodeClientDataJSON(response.response.clientDataJSON).challenge
+            const now = deps.challenges.clock()
+            try { parsePasskeyNativeLoginChallenge(challenge, now) } catch { throw new Error('Passkey challenge expired') }
+            const expectation: Expectation = {
+                rpId: PASSKEY_RP_ID, origins: deps.native.origins, fingerprint: fingerprint(deps),
+                expiresAt: Date.now() + CODE_TTL_MS
+            }
+            const replayUntil = now + PASSKEY_NATIVE_LOGIN_MAX_AGE_MS + PASSKEY_NATIVE_LOGIN_MAX_SKEW_MS
+            const result = await authenticate(deps, expectation, challenge, response,
+                () => deps.challenges.nativeLogins.claim(sha256(challenge), replayUntil))
             return c.json(await session(deps, result.credentialId, result.namespace))
         } catch (error) { return c.json({ error: message(error) }, 401) }
     })
@@ -300,8 +333,9 @@ export function createPasskeyLoginRoutes(deps: PasskeyRouteDeps): Hono<WebAppEnv
         // A native challenge can never be exchanged through the browser bridge.
         let entry: ChallengeEntry
         let challenge: string
+        let form: Record<string, string>
         try {
-            const form = Object.fromEntries(new URLSearchParams(await c.req.text()))
+            form = Object.fromEntries(new URLSearchParams(await c.req.text()))
             if (typeof form.challenge !== 'string') throw new Error('Invalid body')
             challenge = form.challenge
             const found = deps.challenges.take(challenge)
@@ -312,7 +346,6 @@ export function createPasskeyLoginRoutes(deps: PasskeyRouteDeps): Hono<WebAppEnv
         const fragment = new URLSearchParams({ state: entry.browser!.state })
         try {
             assertCurrent(deps, entry)
-            const form = Object.fromEntries(new URLSearchParams(await c.req.text()))
             if (form.error === 'cancelled') throw new Error('cancelled')
             const parsed = PasskeyLoginVerifyRequestSchema.safeParse({ response: typeof form.response === 'string' ? JSON.parse(form.response) : null })
             if (!parsed.success) throw new Error('Invalid body')

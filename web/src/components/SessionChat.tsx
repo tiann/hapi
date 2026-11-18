@@ -678,6 +678,8 @@ type SessionChatProps = {
     hasMoreMessages: boolean
     hasMoreNewerMessages?: boolean
     isSyncingTail: boolean
+    /** Cached re-entry: the authoritative latest-page fetch is still in flight. */
+    isCatchingUpFromCache: boolean
     isLoadingMoreMessages: boolean
     isSending: boolean
     viewMode: 'tail' | 'history'
@@ -2480,6 +2482,7 @@ function SessionChatInner(props: SessionChatProps) {
                         onJumpToTail={props.onJumpToTail}
                         readThroughRevision={!terminalVisible && props.viewMode === 'tail' ? props.readThroughRevision : undefined}
                         isSyncingTail={props.isSyncingTail}
+                        isCatchingUpFromCache={props.isCatchingUpFromCache}
                         messagesWarning={props.messagesWarning}
                         hasMoreMessages={props.hasMoreMessages}
                         hasMoreNewerMessages={props.hasMoreNewerMessages}
