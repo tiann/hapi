@@ -1103,9 +1103,14 @@ async function runTailSync(api: ApiClient, sessionId: string): Promise<void> {
                         : PAGE_SIZE
             const response = await api.getMessages(sessionId, { limit: latestPageSize })
             if (!isCurrentTailSync(sessionId, generation)) return
-            const context = isColdWindow
-                ? await fetchInitialContextPage(api, sessionId, response)
-                : null
+            // The tool-only guard runs for every first-paint shape: a
+            // persisted-window re-entry whose freshly fetched latest page is
+            // all tool activity (busy subagent turns) would otherwise swap
+            // the visible conversation for a tool-only window and paint a
+            // blank thread until the user scrolls up to trigger an older-page
+            // load. fetchInitialContextPage gates on hasMore + tool-only, so
+            // ordinary pages pay no extra request.
+            const context = await fetchInitialContextPage(api, sessionId, response)
             if (!isCurrentTailSync(sessionId, generation)) return
             updateState(sessionId, (previous) => {
                 if (previous.syncGeneration !== generation) return previous

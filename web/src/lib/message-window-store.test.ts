@@ -432,7 +432,7 @@ it('fetches one older context page before first paint when the cold page is tool
         expect(getMessageWindowState(id).messages.map((message) => message.id)).toContain('queued')
     })
 
-    it('does not fetch context on cached re-entry with a tool-only latest page', async () => {
+    it('fetches the context page on cached re-entry when the latest page is tool-only, so the thread never paints blank', async () => {
         const id = sessionId('reentry-tool-only')
         sessionStorage.setItem(`hapi:message-window:v2:${id}`, JSON.stringify({
             messages: [makeAgentMessage({ id: 'cached', seq: 5, at: 5_000 })],
@@ -444,17 +444,32 @@ it('fetches one older context page before first paint when the cold page is tool
             epoch: 1
         }))
         activateMessageWindow(id)
+        // Busy subagent turn: the newest rows are all tool activity. The
+        // activation swap would replace the cached conversation with this
+        // tool-only window and render a blank thread; the context page (the
+        // preceding conversation) must be fetched and prepended.
         const getMessages = vi.fn().mockResolvedValueOnce(latestResponse(makeToolMessages(INITIAL_PAGE_SIZE, 10), {
             epoch: 1,
             hasMore: true,
             nextBeforeAt: 10_000,
             nextBeforeSeq: 10
+        })).mockResolvedValueOnce(latestResponse([
+            makeUserMessage({ id: 'ctx-user', seq: 3, createdAt: 3_000, localId: 'l-ctx' }),
+            makeAgentMessage({ id: 'ctx-agent', seq: 4, at: 4_000 })
+        ], {
+            epoch: 1,
+            hasMore: true,
+            nextBeforeAt: 2_000,
+            nextBeforeSeq: 2
         }))
 
         await syncTailMessages(createApi(getMessages), id)
 
-        expect(getMessages).toHaveBeenCalledTimes(1)
-        expect(getMessages).toHaveBeenCalledWith(id, { limit: 20 })
+        expect(getMessages).toHaveBeenCalledTimes(2)
+        expect(getMessages).toHaveBeenNthCalledWith(1, id, { limit: 20 })
+        const ids = getMessageWindowState(id).messages.map((message) => message.id)
+        expect(ids).toContain('ctx-user')
+        expect(ids).toContain('ctx-agent')
     })
 
     it('does not fetch context when the cold page has conversation text', async () => {
