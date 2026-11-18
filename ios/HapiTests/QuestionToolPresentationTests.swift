@@ -50,7 +50,7 @@ final class QuestionToolPresentationTests: XCTestCase {
     }
 
     func testAskFlatNestedAndAliasesShowChoicesAndCustomAnswersWithoutChangingWireData() throws {
-        for name in ["AskUserQuestion", "ask_user_question", "functions.AskUserQuestion"] {
+        for name in ["AskUserQuestion", "ask_user_question", "functions.AskUserQuestion", "mcp__hapi__ask_user_question"] {
             for answers in [#"{"0":[" SQLite ","Postgres","Redis"],"1":["Keep it simple"]}"#,
                             #"{"0":{"answers":[" SQLite ","Postgres","Redis"]},"1":{"answers":["Keep it simple"]}}"#] {
                 let call = try tool(name, input: askInput, answers: answers)
@@ -159,6 +159,8 @@ final class QuestionToolPresentationTests: XCTestCase {
         }
         XCTAssertFalse(isQuestionDetailsTool("request_user_input_async"))
         XCTAssertFalse(isQuestionDetailsTool("mcp__server__request_user_input"))
+        XCTAssertFalse(isQuestionDetailsTool("mcp__server__ask_user_question"))
+        XCTAssertFalse(isQuestionDetailsTool("mcp__hapi__ask_user_questio"))
         let duplicate = #"{"questions":[{"id":"same","question":"First"},{"id":"same","question":"Second"}]}"#
         XCTAssertEqual(questionToolDetails(try tool("request_user_input", input: duplicate)).questions.count, 2)
     }

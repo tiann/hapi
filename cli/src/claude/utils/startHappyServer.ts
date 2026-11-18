@@ -58,7 +58,32 @@ export type HapiMcpToolName =
     | 'inspect_peer'
     | 'spawn_peer'
     | 'session_job'
-    | 'skill_lookup';
+    | 'skill_lookup'
+    | 'ask_user_question';
+
+type AskUserQuestionOption = {
+    label: string;
+    description?: string;
+};
+
+type AskUserQuestionInput = {
+    questions: Array<{
+        id?: string;
+        question: string;
+        header?: string;
+        options?: AskUserQuestionOption[];
+        multi_select?: boolean;
+    }>;
+};
+
+/**
+ * Outcome the MCP `ask_user_question` tool handler resolves with; mirrors
+ * `AcpAskUserOutcome` without importing from the permission module (the
+ * claude-side MCP server stays flavor-agnostic — callers translate).
+ */
+export type HappyAskUserOutcome =
+    | { status: 'answered'; answers: Array<{ id: string; selected: string[]; custom?: string }> }
+    | { status: 'denied' | 'canceled'; reason?: string };
 
 type StartHappyServerOptions = {
     /**
@@ -84,6 +109,19 @@ type StartHappyServerOptions = {
      * the historical behavior where launchers choose through the other flags.
      */
     enabledTools?: readonly HapiMcpToolName[];
+    /**
+     * Register the MCP `ask_user_question` tool for agents whose own flavor
+     * has no native ask-user tool over the wire (DSH's automation-only ACP
+     * profile omits it). The escalate callback surfaces the questions to the
+     * HAPI client as an interactive AskUserQuestion permission card and
+     * resolves with the user's answer batch. The result text follows DSH's
+     * native tool contract ({"answers":[{id,selected,custom?}]}; empty
+     * selected without custom = skipped) so model behavior is identical to
+     * flavors that ship the tool natively.
+     */
+    askUserTool?: {
+        escalate: (input: AskUserQuestionInput) => Promise<HappyAskUserOutcome>;
+    };
 };
 
 /**
@@ -126,6 +164,41 @@ export function toClaudeAllowedHapiMcpTools(toolNames: string[]): string[] {
         .map((toolName) => `mcp__hapi__${toolName}`);
 }
 
+/**
+ * Race an ask_user escalation against the MCP request's cancellation signal
+ * (agents with a per-call MCP timeout, e.g. DSH's 60s, send
+ * notifications/cancelled when it fires). On abort the tool resolves with
+ * skip semantics immediately instead of hanging until turn end; the
+ * underlying escalation promise is left to be superseded by the model's
+ * retry or canceled at 'Prompt finished'.
+ */
+export function raceAskUserEscalation<T extends { status: string }>(
+    escalate: Promise<T>,
+    signal: AbortSignal | undefined
+): Promise<T | { status: 'canceled'; reason: string }> {
+    if (!signal) return escalate;
+    return new Promise((resolve) => {
+        let settled = false;
+        const finish = (value: T | { status: 'canceled'; reason: string }) => {
+            if (settled) return;
+            settled = true;
+            signal.removeEventListener('abort', onAbort);
+            resolve(value);
+        };
+        const onAbort = () => {
+            finish({ status: 'canceled', reason: 'the question was cancelled (agent timeout or retry)' });
+        };
+        if (signal.aborted) {
+            onAbort();
+            return;
+        }
+        signal.addEventListener('abort', onAbort, { once: true });
+        escalate.then(finish, (error) => {
+            finish({ status: 'canceled', reason: error instanceof Error ? error.message : String(error) } as { status: 'canceled'; reason: string });
+        });
+    });
+}
+
 function createHapiMcpServer(
     client: ApiSessionClient,
     emitTitleSummary: boolean,
@@ -133,7 +206,8 @@ function createHapiMcpServer(
     skillLookup: StartHappyServerOptions['skillLookup'],
     workingDirectory: string | undefined,
     enabledTools: ReadonlySet<HapiMcpToolName>,
-    onChangeTitle?: StartHappyServerOptions['onChangeTitle']
+    onChangeTitle?: StartHappyServerOptions['onChangeTitle'],
+    askUserTool?: StartHappyServerOptions['askUserTool']
 ): McpServer {
     const registerTool = (name: HapiMcpToolName, config: any, handler: any): void => {
         if (enabledTools.has(name)) {
@@ -700,6 +774,79 @@ function createHapiMcpServer(
         });
     }
 
+    if (askUserTool) {
+        const askUserInputSchema: z.ZodTypeAny = z.object({
+            questions: z.array(z.object({
+                id: z.string().min(1).max(64).describe('Stable id for this question; echoed in the answer'),
+                question: z.string().min(1).describe('The specific question to ask the user'),
+                header: z.string().min(1).max(64).optional().describe('Optional short heading, such as "Confirm" or "Choose Mode"'),
+                options: z.array(z.object({
+                    label: z.string().min(1).describe('Short user-facing option label'),
+                    description: z.string().optional().describe('One sentence explaining the tradeoff or impact'),
+                })).optional().describe('Optional choices; put the recommended one first and append "(Recommended)"'),
+                multi_select: z.boolean().optional().describe('Whether more than one option may be selected; defaults to false'),
+            })).min(1).max(8).describe('Questions to ask the user before continuing'),
+        });
+
+        registerTool('ask_user_question', {
+            description: 'Ask brief, direct, self-contained questions about missing information, preferences, or decisions when you need a human answer before proceeding. Use user-facing terms; assume no knowledge of background work or internal names. The user answers through the HAPI chat UI (interactive option cards) and may take a while; if this call is cancelled (e.g. a 60s agent-side timeout) the questions may be re-asked. The result is an answer batch with one item per question id; an item with empty selected and no custom means the user skipped that question: continue without it, do not ask it again, and do not treat the skip as permission.',
+            title: 'Ask User Question',
+            inputSchema: askUserInputSchema,
+        }, async (args: AskUserQuestionInput, extra: { signal?: AbortSignal }) => {
+            logger.debug('[hapiMCP] ask_user_question:', JSON.stringify(args.questions?.length ?? 0), 'question(s)');
+            try {
+                // Agents may enforce a per-call MCP timeout they cannot raise
+                // (DSH: 60s; the ACP mcpServers wire schema strips any timeout
+                // override). When the timeout fires the client sends
+                // notifications/cancelled and extra.signal aborts. Without
+                // this race the escalation — and its interactive card — hang
+                // until the turn ends while the model retries with a SECOND
+                // card, stacking dialogs the user already started filling.
+                // On cancel, return skip semantics immediately so the retry
+                // cycle stays clean; the pending card is superseded by the
+                // retry's escalation (AcpPermissionHandler.askUserQuestion)
+                // or canceled at turn end.
+                const outcome = await raceAskUserEscalation(askUserTool.escalate(args), extra?.signal);
+                if (outcome.status === 'answered') {
+                    return {
+                        content: [
+                            {
+                                type: 'text' as const,
+                                text: JSON.stringify({ answers: outcome.answers }),
+                            },
+                        ],
+                        isError: false,
+                    };
+                }
+                // Denied / canceled map onto DSH's skip semantics, not an
+                // error: the model is instructed to continue without
+                // re-asking and never to treat the skip as permission.
+                const detail = outcome.reason ? ` (${outcome.reason})` : '';
+                return {
+                    content: [
+                        {
+                            type: 'text' as const,
+                            text: `User did not answer${detail}. Treat every question as skipped: continue useful work without asking again, and do not treat the skip as permission.`,
+                        },
+                    ],
+                    isError: false,
+                };
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                logger.debug('[hapiMCP] ask_user_question failed:', message);
+                return {
+                    content: [
+                        {
+                            type: 'text' as const,
+                            text: `Failed to surface the questions: ${message}`,
+                        },
+                    ],
+                    isError: true,
+                };
+            }
+        });
+    }
+
     return mcp;
 }
 
@@ -733,6 +880,7 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
     }
     if (includeTool(SESSION_JOB_TOOL_NAME)) toolNames.push(SESSION_JOB_TOOL_NAME);
     if (options.skillLookup && includeTool('skill_lookup')) toolNames.push('skill_lookup');
+    if (options.askUserTool && includeTool('ask_user_question')) toolNames.push('ask_user_question');
     if (toolNames.length === 0) {
         throw new Error('startHappyServer requires at least one enabled tool');
     }
@@ -749,7 +897,8 @@ export async function startHappyServer(client: ApiSessionClient, options: StartH
             options.skillLookup,
             options.workingDirectory,
             enabledTools,
-            options.onChangeTitle
+            options.onChangeTitle,
+            options.askUserTool
         );
         const transport = new StreamableHTTPServerTransport({
             sessionIdGenerator: () => randomUUID(),

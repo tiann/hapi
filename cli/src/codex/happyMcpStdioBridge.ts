@@ -414,6 +414,60 @@ export async function runHappyMcpStdioBridge(argv: string[]): Promise<void> {
       name: z.string().trim().min(1).max(128).describe('Exact skill name shown by HAPI skill autocomplete'),
     });
 
+    const askUserInputSchema: z.ZodTypeAny = z.object({
+      questions: z.array(z.object({
+        id: z.string().min(1).max(64).describe('Stable id for this question; echoed in the answer'),
+        question: z.string().min(1).describe('The specific question to ask the user'),
+        header: z.string().min(1).max(64).optional().describe('Optional short heading, such as "Confirm" or "Choose Mode"'),
+        options: z.array(z.object({
+          label: z.string().min(1).describe('Short user-facing option label'),
+          description: z.string().optional().describe('One sentence explaining the tradeoff or impact'),
+        })).optional().describe('Optional choices; put the recommended one first and append "(Recommended)"'),
+        multi_select: z.boolean().optional().describe('Whether more than one option may be selected; defaults to false'),
+      })).min(1).max(8).describe('Questions to ask the user before continuing'),
+    });
+
+    // Only registered when the launching flavor passed the tool in --tools
+    // (e.g. DSH: its ACP profile ships no native ask-user tool, so the bridge
+    // provides it; the HTTP server escalates to the interactive card).
+    // Human answers are unbounded: the card may sit pending for many minutes
+    // while the user is away. The MCP client's default request timeout is
+    // 60s, which would fail every slow answer at the BRIDGE layer and push
+    // the model into a retry loop (stacking a second card while the first is
+    // still on screen). Raise this one call's lifetime; agents that enforce
+    // their own shorter per-call timeout still cancel through extra.signal,
+    // which is forwarded so the hub-side escalation aborts with it.
+    const ASK_USER_FORWARD_TIMEOUT_MS = 30 * 60 * 1000;
+
+    if (toolNames.has('ask_user_question')) {
+      server.registerTool<any, any>(
+        'ask_user_question',
+        {
+          description: 'Ask brief, direct, self-contained questions about missing information, preferences, or decisions when you need a human answer before proceeding. Use user-facing terms; assume no knowledge of background work or internal names. The user answers through the HAPI chat UI (interactive option cards). The result is an answer batch with one item per question id; an item with empty selected and no custom means the user skipped that question: continue without it, do not ask it again, and do not treat the skip as permission.',
+          title: 'Ask User Question',
+          inputSchema: askUserInputSchema,
+        },
+        async (args: Record<string, unknown>, extra?: { signal?: AbortSignal }) => {
+          try {
+            const client = await ensureHttpClient();
+            const response = await client.callTool(
+              { name: 'ask_user_question', arguments: args },
+              undefined,
+              { timeout: ASK_USER_FORWARD_TIMEOUT_MS, signal: extra?.signal }
+            );
+            return response as any;
+          } catch (error) {
+            return {
+              content: [
+                { type: 'text' as const, text: `Failed to surface the questions: ${error instanceof Error ? error.message : String(error)}` },
+              ],
+              isError: true,
+            };
+          }
+        }
+      );
+    }
+
     if (toolNames.has('skill_lookup')) {
       server.registerTool<any, any>(
         'skill_lookup',

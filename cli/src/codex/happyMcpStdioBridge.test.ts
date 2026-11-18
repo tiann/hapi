@@ -5,7 +5,7 @@ type ToolHandler = (args: Record<string, unknown>) => Promise<unknown>
 const harness = vi.hoisted(() => ({
     tools: new Map<string, ToolHandler>(),
     configs: new Map<string, Record<string, unknown>>(),
-    callTool: vi.fn(async (_request: unknown) => ({
+    callTool: vi.fn(async (..._args: unknown[]) => ({
         content: [{ type: 'text', text: 'forwarded' }],
         isError: false
     }))
@@ -30,8 +30,8 @@ vi.mock('@modelcontextprotocol/sdk/client/index.js', () => ({
     Client: class {
         async connect(): Promise<void> {}
 
-        async callTool(request: unknown): Promise<unknown> {
-            return harness.callTool(request)
+        async callTool(...args: unknown[]): Promise<unknown> {
+            return harness.callTool(...args)
         }
     }
 }))
@@ -121,6 +121,65 @@ describe('runHappyMcpStdioBridge tool forwarding', () => {
         ])
 
         expect([...harness.tools.keys()]).toEqual(['change_title', 'display_image', 'display_video'])
+    })
+
+    it('registers and forwards ask_user_question only when listed in --tools', async () => {
+        // Flavors without a native ask-user tool (DSH's ACP profile) pass the
+        // tool explicitly; flavors that do not list it must not see it.
+        await runHappyMcpStdioBridge([
+            '--url',
+            'http://127.0.0.1:43006',
+            '--tools',
+            'ask_user_question'
+        ])
+
+        expect([...harness.tools.keys()]).toEqual(['ask_user_question'])
+        const handler = harness.tools.get('ask_user_question')
+        await expect(handler?.({
+            questions: [{ id: 'q1', question: 'Proceed?', options: [{ label: 'Yes' }] }]
+        })).resolves.toEqual({
+            content: [{ type: 'text', text: 'forwarded' }],
+            isError: false
+        })
+        expect(harness.callTool).toHaveBeenCalledWith(
+            { name: 'ask_user_question', arguments: { questions: [{ id: 'q1', question: 'Proceed?', options: [{ label: 'Yes' }] }] } },
+            undefined,
+            { timeout: 30 * 60 * 1000, signal: undefined }
+        )
+
+        harness.tools.clear()
+        await runHappyMcpStdioBridge([
+            '--url',
+            'http://127.0.0.1:43006',
+            '--tools',
+            'change_title'
+        ])
+        expect([...harness.tools.keys()]).toEqual(['change_title'])
+    })
+
+    it('gives ask_user_question a long request lifetime and forwards cancellation', async () => {
+        // Human answers are unbounded; the SDK default of 60s would fail the
+        // BRIDGE request while the card is still pending, erroring the model
+        // into a retry loop. The forward must raise the timeout and thread
+        // the agent-side abort signal so a cancelled call stops the escalation.
+        await runHappyMcpStdioBridge([
+            '--url',
+            'http://127.0.0.1:43006',
+            '--tools',
+            'ask_user_question'
+        ])
+        const handler = harness.tools.get('ask_user_question') as unknown as (
+            args: Record<string, unknown>,
+            extra?: { signal?: AbortSignal }
+        ) => Promise<unknown>
+
+        const controller = new AbortController()
+        await handler({ questions: [{ id: 'q1', question: 'Proceed?' }] }, { signal: controller.signal })
+
+        expect(harness.callTool).toHaveBeenCalledTimes(1)
+        const options = (harness.callTool.mock.calls[0] as unknown[])[2] as { timeout?: number; signal?: AbortSignal }
+        expect(options.timeout).toBeGreaterThanOrEqual(30 * 60 * 1000)
+        expect(options.signal).toBe(controller.signal)
     })
 
     it('forwards display_media arguments unchanged', async () => {
