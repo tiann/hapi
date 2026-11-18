@@ -1109,6 +1109,16 @@ export function convertAgyReactiveSteps(
             const resultInfo = action
                 ? buildGenericToolOutput(call.name, action)
                 : { output: '', status: 'completed' as const, backgrounded: false };
+            // agy task ids are unique per session. A backgrounded command whose
+            // task is already open was streamed by a live turn before this slice
+            // was replayed: a second card and a second entry would leave one of
+            // the two open after the task's single completion.
+            const backgroundTaskId = resultInfo.backgrounded && action
+                ? extractAgyBackgroundTaskId(action.content)
+                : undefined;
+            if (backgroundTaskId && openBackgroundCommands.some((entry) => entry.taskId === backgroundTaskId)) {
+                continue;
+            }
             messages.push({
                 type: 'tool_call',
                 id,
@@ -1127,7 +1137,6 @@ export function convertAgyReactiveSteps(
                     status: resultInfo.status
                 });
                 if (resultInfo.backgrounded) {
-                    const taskId = extractAgyBackgroundTaskId(action.content);
                     const commandLine = typeof decodedArgs.CommandLine === 'string'
                         ? decodedArgs.CommandLine
                         : undefined;
@@ -1137,7 +1146,7 @@ export function convertAgyReactiveSteps(
                         synthetic: true,
                         nativeArgs: decodedArgs,
                         ...(commandLine !== undefined ? { commandLine } : {}),
-                        ...(taskId ? { taskId } : {})
+                        ...(backgroundTaskId ? { taskId: backgroundTaskId } : {})
                     });
                 }
             }

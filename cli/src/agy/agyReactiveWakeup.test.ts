@@ -470,6 +470,75 @@ describe('agyReactiveWakeup pure helpers', () => {
         ]);
     });
 
+    it('does not register a replayed background command whose task a live turn already tracks', () => {
+        // A live turn streamed step 37 and registered its command under the live
+        // call id; the reactive slice then replays steps 36-39 from the transcript.
+        const bgCommands: AgyOpenBackgroundCommand[] = [{ callId: 'call-live-37', taskId: 'conv-dup/task-38' }];
+        const replay = convertAgyReactiveSteps('conv-dup', [
+            {
+                step_index: 36,
+                source: 'SYSTEM',
+                type: 'SYSTEM_MESSAGE',
+                status: 'DONE',
+                content: '<SYSTEM_MESSAGE>\nTask id "conv-dup/task-31" finished with result:\nCommand exited with code 0.\n\nCommand output:\nEARLIER\n</SYSTEM_MESSAGE>'
+            },
+            {
+                step_index: 37,
+                source: 'MODEL',
+                type: 'PLANNER_RESPONSE',
+                status: 'DONE',
+                tool_calls: [{ name: 'run_command', args: { CommandLine: '"python3 scan.py"' } }]
+            },
+            {
+                step_index: 38,
+                source: 'MODEL',
+                type: 'RUN_COMMAND',
+                status: 'RUNNING',
+                content: 'Created At: 2026-11-17T22:37:38-05:00\nTool is running as a background task with task id: conv-dup/task-38'
+            },
+            { step_index: 39, source: 'MODEL', type: 'PLANNER_RESPONSE', status: 'DONE', content: 'Comparing the folders.' },
+            {
+                step_index: 40,
+                source: 'MODEL',
+                type: 'PLANNER_RESPONSE',
+                status: 'DONE',
+                tool_calls: [{ name: 'run_command', args: { CommandLine: '"python3 move.py"' } }]
+            },
+            {
+                step_index: 41,
+                source: 'MODEL',
+                type: 'RUN_COMMAND',
+                status: 'RUNNING',
+                content: 'Created At: 2026-11-17T22:39:06-05:00\nTool is running as a background task with task id: conv-dup/task-42'
+            }
+        ], bgCommands);
+
+        // No second card or entry for task-38; a genuinely new background command still registers.
+        expect(replay.messages.some((message) => 'id' in message && message.id === 'agy-wakeup-conv-dup-37-0')).toBe(false)
+        expect(replay.messages.filter((message) => message.type === 'tool_call').map((message) => 'id' in message && message.id))
+            .toEqual(['agy-wakeup-conv-dup-40-0'])
+        expect(bgCommands.map((entry) => [entry.callId, entry.taskId])).toEqual([
+            ['call-live-37', 'conv-dup/task-38'],
+            ['agy-wakeup-conv-dup-40-0', 'conv-dup/task-42']
+        ]);
+
+        // task-38's single completion settles the live card, leaving only task-42 open.
+        const completion = convertAgyReactiveSteps('conv-dup', [{
+            step_index: 42,
+            source: 'SYSTEM',
+            type: 'SYSTEM_MESSAGE',
+            status: 'DONE',
+            content: '<SYSTEM_MESSAGE>\nTask id "conv-dup/task-38" finished with result:\nCommand exited with code 0.\n\nCommand output:\nSCANNED\n</SYSTEM_MESSAGE>'
+        }], bgCommands);
+        expect(completion.messages).toEqual([{
+            type: 'tool_result',
+            id: 'call-live-37',
+            status: 'completed',
+            output: { output: 'Command exited with code 0.\n\nCommand output:\nSCANNED', exit_code: 0 }
+        }]);
+        expect(bgCommands.map((entry) => entry.callId)).toEqual(['agy-wakeup-conv-dup-40-0']);
+    });
+
     it('matches background task completions in reverse order and ignores unmatched task IDs', () => {
         const bgCommands: AgyOpenBackgroundCommand[] = [
             { callId: 'call-first', taskId: 'conv-rev/task-1' },
