@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
 
-import { hasUnreadMessageContent, getLiveReasoningStreamId, getToolCallId, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
+import { hasUnreadMessageContent, getLiveReasoningStreamId, getReasoningStreamId, getTextLiveStreamId, getTextStreamId, getToolCallId, unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 
 import type { StoredMessage } from './types'
@@ -1032,6 +1032,88 @@ export function deleteLiveReasoningSnapshots(
         invalidateLiveTail(db, sessionId)
     }
     return Number(result.changes)
+}
+
+/** Drop the replaceable live snapshots of one text stream.
+ *
+ *  Mirrors the reasoning sweep: the CLI re-sends an open text segment as a
+ *  growing `live` snapshot under a stable id on every typing pause, and the
+ *  boundary flush re-sends the full text under the same id without the live
+ *  marker. Without this sweep every pause >1s left a stale prefix row in the
+ *  transcript forever. Plain text messages (no stream id) never match.
+ *
+ *  This is only called from inside addMessageSweepingLiveSnapshots's
+ *  transaction, so it takes the transactional path everywhere: invalidate the
+ *  live-tail cache (its indexed ids are about to be deleted) and scan the
+ *  same bounded lookback window the reasoning sweep uses. */
+export function deleteLiveTextSnapshots(
+    db: Database,
+    sessionId: string,
+    streamId: string,
+    keepMessageId?: string
+): number {
+    if (db.inTransaction) {
+        invalidateLiveTail(db, sessionId)
+    }
+    const rows = prepareCached(db, `
+        SELECT id, content FROM messages
+        WHERE session_id = ?
+        ORDER BY seq DESC
+        LIMIT ?
+    `).all(sessionId, REASONING_SNAPSHOT_LOOKBACK) as Array<Pick<DbMessageRow, 'id' | 'content'>>
+
+    const staleIds = rows
+        .filter((row) => row.id !== keepMessageId
+            && getTextLiveStreamId(decodeMessageContent(row.content)) === streamId)
+        .map((row) => row.id)
+    if (staleIds.length === 0) return 0
+
+    const placeholders = staleIds.map(() => '?').join(', ')
+    const result = prepareCached(db,
+        `DELETE FROM messages WHERE session_id = ? AND id IN (${placeholders})`
+    ).run(sessionId, ...staleIds)
+    return Number(result.changes)
+}
+
+export type AddMessageSweepResult = {
+    message: StoredMessage
+    /** Discriminates against UpsertToolCallResult at the call site. */
+    updated: false
+    /** Replaceable live snapshot rows retired by the same transaction. */
+    sweptSnapshots: number
+}
+
+/** Store a message and retire the live snapshots its streams supersede, in
+ *  one transaction (INSERT first, then DELETE).
+ *
+ *  The CLI streams reasoning and text as growing `live` snapshots under a
+ *  stable id; every stored stream message makes the earlier snapshots of
+ *  that same id dead weight, and the settled message that closes the stream
+ *  is never live so it always survives. Doing both statements in a single
+ *  transaction is strictly crash-safer than the previous two-commit sequence
+ *  (insert, then sweep): a crash now rolls back both, so the stream cannot
+ *  lose its newest row either. */
+export function addMessageSweepingLiveSnapshots(
+    db: Database,
+    sessionId: string,
+    content: unknown,
+    localId?: string,
+    scheduledAt?: number | null,
+    createdAt?: number
+): AddMessageSweepResult {
+    return db.transaction(() => {
+        const message = addMessage(db, sessionId, content, localId, scheduledAt, createdAt)
+        let sweptSnapshots = 0
+        const reasoningStreamId = getReasoningStreamId(content)
+        if (reasoningStreamId !== null) {
+            sweptSnapshots += deleteLiveReasoningSnapshots(db, sessionId, reasoningStreamId, message.id)
+        }
+        const textStreamId = getTextStreamId(content)
+        if (textStreamId !== null) {
+            sweptSnapshots += deleteLiveTextSnapshots(db, sessionId, textStreamId, message.id)
+        }
+        return { message, updated: false as const, sweptSnapshots }
+    })()
 }
 
 /** Paginate messages by COALESCE(invoked_at, created_at) DESC, seq DESC.

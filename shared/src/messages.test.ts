@@ -11,6 +11,9 @@ import {
     extractNotifySummary,
     getAgyTaskLogId,
     getLiveReasoningStreamId,
+    getTextLiveStreamId,
+    getTextSnapshotStreamId,
+    getTextStreamId,
     getReasoningStreamId,
     getToolCallId,
     isRedundantGoalStatusEventContent,
@@ -1071,5 +1074,70 @@ describe('hasConversationMessageContent', () => {
         { role: 'agent', content: { type: 'codex', data: { type: 'error', message: 'Launch failed' } } },
     ])('rejects bookkeeping and empty content: %j', (content) => {
         expect(hasConversationMessageContent(content)).toBe(false)
+    })
+})
+
+describe('text stream identity', () => {
+    function textContent(overrides: Record<string, unknown> = {}) {
+        return {
+            role: 'agent',
+            content: {
+                type: AGENT_MESSAGE_PAYLOAD_TYPE,
+                data: { type: 'message', message: 'answer', id: 'text-stream-1', ...overrides }
+            }
+        }
+    }
+
+    test('reads the stream id from a live snapshot', () => {
+        const live = textContent({ streamSnapshot: true, live: true })
+        expect(getTextStreamId(live)).toBe('text-stream-1')
+        expect(getTextLiveStreamId(live)).toBe('text-stream-1')
+        expect(getTextSnapshotStreamId(live)).toBe('text-stream-1')
+    })
+
+    test('treats a settled text message as part of the stream but not as live', () => {
+        const settled = textContent({ streamSnapshot: true })
+        expect(getTextStreamId(settled)).toBe('text-stream-1')
+        expect(getTextLiveStreamId(settled)).toBeNull()
+        expect(getTextSnapshotStreamId(settled)).toBe('text-stream-1')
+    })
+
+    test('a snapshot-marked row without the live marker still groups by stream (backfill shape)', () => {
+        // Rows written before the hub learned to sweep text streams: the wire
+        // carried streamSnapshot but never live, so only the snapshot reader
+        // can recognise them as members of a stream.
+        const legacy = textContent({ streamSnapshot: true })
+        expect(getTextSnapshotStreamId(legacy)).toBe('text-stream-1')
+        expect(getTextLiveStreamId(legacy)).toBeNull()
+    })
+
+    test('an id-less text message never reads as a stream', () => {
+        const plain = { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', message: 'answer' } } }
+        expect(getTextStreamId(plain)).toBeNull()
+        expect(getTextLiveStreamId(plain)).toBeNull()
+        expect(getTextSnapshotStreamId(plain)).toBeNull()
+    })
+
+    test('an id-bearing text message without the snapshot marker is not a backfill candidate', () => {
+        const noMarker = textContent()
+        expect(getTextStreamId(noMarker)).toBe('text-stream-1')
+        expect(getTextSnapshotStreamId(noMarker)).toBeNull()
+    })
+
+    test('does not treat a non-boolean live marker as live', () => {
+        expect(getTextLiveStreamId(textContent({ streamSnapshot: true, live: 'yes' }))).toBeNull()
+    })
+
+    test.each([
+        ['a user-role envelope', { role: 'user', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', message: 'hi', id: 's', streamSnapshot: true } } }],
+        ['a different payload type', { role: 'agent', content: { type: 'event', data: { type: 'message', message: 'hi', id: 's', streamSnapshot: true } } }],
+        ['a different data type', { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'reasoning', message: 'hi', id: 's', streamSnapshot: true } } }],
+        ['a blank id', { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', message: 'hi', id: '   ', streamSnapshot: true } } }],
+        ['a non-string id', { role: 'agent', content: { type: AGENT_MESSAGE_PAYLOAD_TYPE, data: { type: 'message', message: 'hi', id: 7, streamSnapshot: true } } }],
+        ['a non-object value', 'text']
+    ])('returns null for %s', (_label, value) => {
+        expect(getTextStreamId(value)).toBeNull()
+        expect(getTextLiveStreamId(value)).toBeNull()
+        expect(getTextSnapshotStreamId(value)).toBeNull()
     })
 })
