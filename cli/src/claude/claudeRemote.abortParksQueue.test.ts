@@ -10,7 +10,7 @@ describe('claude remote abort parks the queue', () => {
             source.indexOf('private async abort(): Promise<void> {'),
             source.indexOf('private async respawnBackoff(')
         )
-        expect(fn).toContain('this.session.queue.reset()')
+        expect(fn).toContain('this.session.queue.reset({ preserveDispatchingReservations: true })')
         // Park BEFORE the controller abort: the reset must land while the
         // current attempt is still unwinding so the next attempt's
         // waitForMessagesAndGetAsString finds an empty queue.

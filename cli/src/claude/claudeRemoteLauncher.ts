@@ -79,8 +79,10 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
         // already resets the queue, and "stop means stop" is the operator
         // expectation. The queued rows stay on the hub (invoked_at IS NULL)
         // and remain cancelable from the queued bar; send-now (#2475) adds
-        // the manual re-delivery affordance.
-        this.session.queue.reset()
+        // the manual re-delivery affordance. Dispatching steer reservations
+        // survive the reset so an aborted steer resolves as indeterminate
+        // through its normal path (mirrors codexRemoteLauncher's abort).
+        this.session.queue.reset({ preserveDispatchingReservations: true })
         if (this.abortController && !this.abortController.signal.aborted) {
             this.abortController.abort();
         }
