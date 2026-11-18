@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { compress } from 'hono/compress'
 import { z } from 'zod'
 import {
     CreateOrLoadMachineRequestSchema,
@@ -17,6 +18,7 @@ import { stripExternalRefsWhenAwarenessDisabled, externalRefsInMetadataValid } f
 import { mapExternalRefRouteError } from '../../sync/externalRefErrors'
 import { constantTimeEquals } from '../../utils/crypto'
 import { parseAccessToken } from '../../utils/accessToken'
+import { acceptsGzip } from '../sseCompression'
 import type { Machine, Session, SyncEngine } from '../../sync/syncEngine'
 import { SessionIdentityConflictError, SessionNotAdoptableError } from '../../store/sessions'
 
@@ -97,6 +99,21 @@ export function createCliRoutes(getSyncEngine: () => SyncEngine | null): Hono<Cl
 
         c.set('namespace', parsedToken.namespace)
         return await next()
+    })
+
+    const gzipCompress = compress({ encoding: 'gzip' })
+    app.use('*', async (c, next) => {
+        if (acceptsGzip(c.req.header('Accept-Encoding'))) {
+            await gzipCompress(c, next)
+        } else {
+            await next()
+        }
+        const vary = c.res.headers.get('Vary')
+        if (!vary) {
+            c.res.headers.set('Vary', 'Accept-Encoding')
+        } else if (!vary.split(',').some((token) => token.trim().toLowerCase() === 'accept-encoding')) {
+            c.res.headers.set('Vary', `${vary}, Accept-Encoding`)
+        }
     })
 
     app.post('/sessions', async (c) => {

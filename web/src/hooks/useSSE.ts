@@ -156,6 +156,7 @@ export function isRenderIrrelevantPatch(current: SessionSummary, next: SessionSu
         && current.updatedAt === next.updatedAt
         && current.lastUserMessageAt === next.lastUserMessageAt
         && current.backgroundTaskCount === next.backgroundTaskCount
+        && current.derivedToolWork === next.derivedToolWork
         && current.attachedJob?.key === next.attachedJob?.key
         && current.attachedJob?.label === next.attachedJob?.label
         && current.attachedJob?.status === next.attachedJob?.status
@@ -553,6 +554,9 @@ export function useSSE(options: {
                     backgroundTaskCount: Object.prototype.hasOwnProperty.call(patch, 'backgroundTaskCount')
                         ? patch.backgroundTaskCount ?? 0
                         : current.backgroundTaskCount,
+                    derivedToolWork: Object.prototype.hasOwnProperty.call(patch, 'derivedToolWork')
+                        ? patch.derivedToolWork === true
+                        : current.derivedToolWork === true,
                     attachedJob: current.attachedJob ?? null,
                     attachedJobUpdatedAt: current.attachedJobUpdatedAt ?? 0,
                     model: Object.prototype.hasOwnProperty.call(patch, 'model') ? patch.model ?? null : current.model,

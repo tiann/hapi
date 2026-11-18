@@ -36,7 +36,9 @@ const ConversationHistoryCapabilitiesSchema = z.object({
     forkCurrent: z.boolean().optional(),
     forkLatestCompleted: z.boolean().optional(),
     forkAtMessage: z.boolean().optional(),
-    rewindToMessage: z.boolean().optional()
+    rewindToMessage: z.boolean().optional(),
+    /** Runner answers fork-preview boundary questions for this session. */
+    forkPreview: z.boolean().optional()
 })
 
 // Written to an archived OpenCode source before the runner is asked to spawn.
@@ -877,6 +879,11 @@ export const SessionSchema = z.object({
     activeTurnStartedAt: z.number().nullable().optional(),
     backgroundTaskCount: z.number().optional(),
     backgroundTasks: z.array(BackgroundTaskSchema).optional(),
+    // Hub-derived "open tool work exists in the transcript tail" signal
+    // (work-scoped liveness). Transient — never persisted, recomputed by the
+    // hub's inactivity tick; covers autonomous rounds the CLI's turn-scoped
+    // `thinking` flag misses.
+    derivedToolWork: z.boolean().optional(),
     todos: TodosSchema.optional(),
     teamState: TeamStateSchema.optional(),
     // Watermarks for structured SSE patches (PR #897). Dual EventSource
@@ -1031,6 +1038,10 @@ export const SessionPatchSchema = z.object({
     copilotAgentMode: CopilotAgentModeSchema.optional(),
     backgroundTaskCount: z.number().optional(),
     backgroundTasks: z.array(BackgroundTaskSchema).optional(),
+    // Hub-derived open-tool-work signal (see SessionSchema). Emitted by the
+    // hub's derived-work sweep so list rows can render a working state for
+    // autonomous rounds that carry no `thinking` flag.
+    derivedToolWork: z.boolean().optional(),
     // tiann/hapi#893 (scratchlist v2). Bumped whenever any entry on the
     // session_scratchlist table mutates. Web client uses the change as a
     // trigger to refetch the entries query - the timestamp itself is the

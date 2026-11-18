@@ -17,6 +17,9 @@ function createGateway() {
                     if (payload.method.endsWith(':cursor-chat-store-status')) {
                         return JSON.stringify({ onDisk: false, store: null })
                     }
+                    if (payload.method.endsWith(':preview-fork-boundary')) {
+                        return JSON.stringify({ nativeTurnId: 'turn-2', cutBeforeLocalId: 'u2' })
+                    }
                     return JSON.stringify({
                         success: true,
                         method: payload.method,
@@ -308,5 +311,39 @@ describe('RpcGateway permission RPC error surfacing (tiann/hapi#1735)', () => {
     it('resolves normally when the CLI accepts the answer', async () => {
         const { gateway } = createGateway()
         await expect(gateway.approvePermission('session-1', 'request-1')).resolves.toBeUndefined()
+    })
+})
+
+describe('RpcGateway preview boundary error surfacing', () => {
+    it('surfaces a resolved CLI error envelope as a rejected preview', async () => {
+        // RpcHandlerManager serializes a thrown handler error as a RESOLVED
+        // {error} envelope; the preview must not mistake it for a cut.
+        const socket = {
+            timeout() {
+                return {
+                    async emitWithAck() {
+                        return JSON.stringify({ error: 'Native history is ambiguous' })
+                    }
+                }
+            }
+        }
+        const io = {
+            of() {
+                return { sockets: { get() { return socket } } }
+            }
+        } as unknown as Server
+        const rpcRegistry = {
+            getSocketIdForMethod() { return 'socket-1' }
+        } as unknown as RpcRegistry
+        const gateway = new RpcGateway(io, rpcRegistry)
+
+        await expect(gateway.previewForkBoundary('session-1', { mode: 'current' }))
+            .rejects.toThrow('Native history is ambiguous')
+    })
+
+    it('answers the boundary when the CLI reports success', async () => {
+        const { gateway } = createGateway()
+        await expect(gateway.previewForkBoundary('session-1', { mode: 'current' }))
+            .resolves.toEqual({ nativeTurnId: 'turn-2', cutBeforeLocalId: 'u2' })
     })
 })
