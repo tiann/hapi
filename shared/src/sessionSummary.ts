@@ -67,6 +67,7 @@ export type SessionSummaryMetadata = {
     flavor?: string | null
     worktree?: WorktreeMetadata
     agentSessionId?: string
+    codexImportedAt?: number | null
     lifecycleState?: string
     /** Structured contribution links (GitHub PRs, …). tiann/hapi#1160. */
     externalRefs?: ExternalRef[]
@@ -267,6 +268,7 @@ export function toSessionSummaryMetadata(metadata: Metadata | null | undefined):
         flavor: metadata.flavor ?? null,
         worktree: metadata.worktree,
         agentSessionId: getSummaryAgentSessionId(metadata),
+        codexImportedAt: metadata.codexImportedAt,
         lifecycleState: metadata.lifecycleState,
         externalRefs: metadata.externalRefs,
         conversationHistory: metadata.capabilities?.conversationHistory,

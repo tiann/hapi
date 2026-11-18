@@ -100,6 +100,10 @@ function buildImportMetadata(options: {
         machineId: machine.id,
         flavor: source.flavor
     }
+    if (source.importTimestampKey) {
+        const importedAt = existing[source.importTimestampKey]
+        metadata[source.importTimestampKey] = typeof importedAt === 'number' ? importedAt : Date.now()
+    }
     // The primary native id follows the transcript only when the session does
     // not carry one yet: Codex fork provenance renames the primary id while
     // keeping the alias, and a re-sync must preserve it. A rotated Claude id
