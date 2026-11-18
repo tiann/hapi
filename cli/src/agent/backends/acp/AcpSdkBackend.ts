@@ -132,6 +132,8 @@ export class AcpSdkBackend implements AgentBackend {
     private activeSessionId: string | null = null;
     private initializeResult: AcpInitializeResult | null = null;
     private initializeInFlight: Promise<void> | null = null;
+    private initializeRetryAbort: AbortController | null = null;
+    private transportOpening: Promise<AcpStdioTransport> | null = null;
     private setModeSupported: boolean | undefined = undefined;
     private isProcessingMessage = false;
     private promptRequestInFlight = false;
@@ -241,23 +243,27 @@ export class AcpSdkBackend implements AgentBackend {
             return;
         }
 
-        this.initializeInFlight = this.bootstrapTransport();
+        this.initializeRetryAbort = new AbortController();
+        this.initializeInFlight = this.bootstrapTransport(this.initializeRetryAbort.signal);
         try {
             await this.initializeInFlight;
         } finally {
             this.initializeInFlight = null;
+            this.transportOpening = null;
+            this.initializeRetryAbort = null;
         }
     }
 
-    private async bootstrapTransport(): Promise<void> {
+    private async bootstrapTransport(signal: AbortSignal): Promise<void> {
         if (this.transport) return;
 
-        const transport = await AcpStdioTransport.create({
+        this.transportOpening = AcpStdioTransport.create({
             command: this.options.command,
             args: this.options.args,
             env: this.options.env,
             cwd: this.options.spawnCwd
         });
+        const transport = await this.transportOpening;
 
         if (this.transport) {
             await transport.close();
@@ -306,6 +312,7 @@ export class AcpSdkBackend implements AgentBackend {
             }),
             {
                 ...AcpSdkBackend.INIT_RETRY_OPTIONS,
+                signal,
                 onRetry: (error, attempt, nextDelayMs) => {
                     logger.debug(`[ACP] Initialize attempt ${attempt} failed, retrying in ${nextDelayMs}ms`, error);
                 }
@@ -1236,7 +1243,14 @@ export class AcpSdkBackend implements AgentBackend {
         });
     }
 
-    async disconnect(): Promise<void> {
+    async disconnect(options?: { waitForTransport?: boolean }): Promise<void> {
+        if (options?.waitForTransport) {
+            this.initializeRetryAbort?.abort();
+            if (!this.transport) {
+                // Wait for process ownership, without waiting for the ACP initialize reply.
+                await this.transportOpening?.catch(() => undefined);
+            }
+        }
         if (!this.transport) return;
         for (const timer of this.sessionInfoRefreshTimers.values()) {
             clearTimeout(timer);

@@ -4,7 +4,7 @@ import type { AgentMessage } from '@/agent/types';
 import { logger } from '@/ui/logger';
 import { AcpSdkBackend } from './AcpSdkBackend';
 import { AcpMessageHandler } from './AcpMessageHandler';
-import { ACP_INDETERMINATE_SYMBOL, buildAcpStdioSpawnOptions } from './AcpStdioTransport';
+import { ACP_INDETERMINATE_SYMBOL, AcpStdioTransport, buildAcpStdioSpawnOptions } from './AcpStdioTransport';
 import { ACP_SESSION_UPDATE_TYPES } from './constants';
 
 function sleep(ms: number): Promise<void> {
@@ -54,6 +54,99 @@ afterEach(() => {
 });
 
 describe('AcpSdkBackend', () => {
+    it('closes an opening transport without sending initialize', async () => {
+        const opening = Promise.withResolvers<AcpStdioTransport>();
+        const transport = {
+            onNotification: vi.fn(),
+            onStderrError: vi.fn(),
+            registerRequestHandler: vi.fn(),
+            sendRequest: vi.fn(),
+            close: vi.fn(async () => {})
+        };
+        const create = vi.spyOn(AcpStdioTransport, 'create').mockReturnValueOnce(opening.promise);
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const initializing = backend.initialize().catch((error: unknown) => error);
+        const settled = vi.fn();
+        try {
+            const disconnect = backend.disconnect({ waitForTransport: true }).then(settled);
+            await Promise.resolve();
+            expect(settled).not.toHaveBeenCalled();
+            opening.resolve(transport as unknown as AcpStdioTransport);
+            await disconnect;
+            expect(transport.sendRequest).not.toHaveBeenCalled();
+            expect(await initializing).toMatchObject({ name: 'AbortError' });
+            expect(transport.close).toHaveBeenCalledOnce();
+        } finally {
+            opening.resolve(transport as unknown as AcpStdioTransport);
+            await initializing;
+            create.mockRestore();
+        }
+    });
+
+    it('retries a transient initialize failure without shutdown', async () => {
+        const transport = {
+            onNotification: vi.fn(),
+            onStderrError: vi.fn(),
+            registerRequestHandler: vi.fn(),
+            sendRequest: vi.fn()
+                .mockRejectedValueOnce(new Error('transient initialize failure'))
+                .mockResolvedValueOnce({ protocolVersion: 1, agentCapabilities: { loadSession: true } }),
+            close: vi.fn(async () => {})
+        };
+        const create = vi.spyOn(AcpStdioTransport, 'create')
+            .mockResolvedValueOnce(transport as unknown as AcpStdioTransport);
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        vi.useFakeTimers();
+        try {
+            const initializing = backend.initialize();
+            void initializing.catch(() => undefined);
+            await vi.advanceTimersByTimeAsync(1_500);
+            await expect(initializing).resolves.toBeUndefined();
+            expect(transport.sendRequest).toHaveBeenCalledTimes(2);
+            expect(backend.supportsLoadSession()).toBe(true);
+            expect(transport.close).not.toHaveBeenCalled();
+        } finally {
+            vi.useRealTimers();
+            await backend.disconnect();
+            create.mockRestore();
+        }
+    });
+
+    it.each([false, true])('cancels initialize retries on shutdown (already backing off: %s)', async (backingOff) => {
+        const reply = Promise.withResolvers<never>();
+        const transport = {
+            onNotification: vi.fn(),
+            onStderrError: vi.fn(),
+            registerRequestHandler: vi.fn(),
+            sendRequest: vi.fn(() => reply.promise),
+            close: vi.fn(async () => { reply.reject(new Error('transport closed')); })
+        };
+        const create = vi.spyOn(AcpStdioTransport, 'create')
+            .mockResolvedValueOnce(transport as unknown as AcpStdioTransport);
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const rejected = vi.fn();
+        vi.useFakeTimers();
+        const initializing = backend.initialize().catch(rejected);
+        try {
+            await vi.advanceTimersByTimeAsync(0);
+            expect(transport.sendRequest).toHaveBeenCalledOnce();
+            if (backingOff) {
+                reply.reject(new Error('initialize failed'));
+                await vi.advanceTimersByTimeAsync(0);
+                expect(rejected).not.toHaveBeenCalled();
+            }
+            await backend.disconnect({ waitForTransport: true });
+            await vi.advanceTimersByTimeAsync(0);
+            expect(rejected).toHaveBeenCalledOnce();
+            expect(transport.sendRequest).toHaveBeenCalledOnce();
+        } finally {
+            await vi.runAllTimersAsync();
+            await initializing;
+            vi.useRealTimers();
+            create.mockRestore();
+        }
+    });
+
     it('forwards ACP session_info_update titles without requiring an active prompt', () => {
         const backend = new AcpSdkBackend({ command: 'agent' });
         const updates: Array<{ sessionId: string | null; title: string | null }> = [];
