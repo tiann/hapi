@@ -9,6 +9,7 @@ import type { DecryptedMessage, MessageContextResponse, MessagesResponse } from 
 import {
     HISTORY_WINDOW_SIZE,
     INITIAL_PAGE_SIZE,
+    MAX_RETAINED_INACTIVE_WINDOWS,
     VISIBLE_WINDOW_SIZE,
     activateMessageWindow,
     appendOptimisticMessage,
@@ -27,6 +28,7 @@ import {
     rewindMessageWindow,
     setMessageWindowTargetLock,
     setMessageViewMode,
+    subscribeMessageWindow,
     syncTailMessages,
     recoverWindowAfterGapResume,
     updateMessageStatus,
@@ -3540,5 +3542,203 @@ describe('gap recovery', () => {
         expect(state.pendingGapRecovery).toBe(false)
         expect(state.warning).toBeNull()
         expect(state.messages).toHaveLength(310)
+    })
+
+    it('bounds retained inactive windows using LRU eviction while protecting active or unconfirmed ones', () => {
+        vi.useFakeTimers()
+        try {
+            const ids = Array.from({ length: MAX_RETAINED_INACTIVE_WINDOWS + 4 }, (_, index) => sessionId(`lru-${index}`))
+            const protectedSendingId = ids[0]!
+            const protectedLockedId = ids[1]!
+            const protectedSubscribedId = ids[2]!
+            const evictableOldestId = ids[3]!
+
+            ingestIncomingMessages(protectedSendingId, [
+                makeUserMessage({ id: 'opt-1', localId: 'loc-1', status: 'sending', createdAt: 100, invokedAt: null })
+            ])
+            ingestIncomingMessages(protectedLockedId, [
+                makeUserMessage({ id: 'msg-locked', seq: 1, createdAt: 200, invokedAt: 200 })
+            ])
+            setMessageWindowTargetLock(protectedLockedId, true)
+
+            const unsubscribeActive = subscribeMessageWindow(protectedSubscribedId, () => {})
+            ingestIncomingMessages(protectedSubscribedId, [
+                makeUserMessage({ id: 'msg-sub', seq: 1, createdAt: 300, invokedAt: 300 })
+            ])
+
+            for (let i = 3; i < ids.length; i += 1) {
+                const id = ids[i]!
+                ingestIncomingMessages(id, [
+                    makeUserMessage({ id: `msg-${i}`, seq: 1, createdAt: (i + 1) * 1_000, invokedAt: (i + 1) * 1_000 })
+                ])
+            }
+
+            vi.advanceTimersByTime(300)
+
+            // Protected windows must survive even though they are oldest.
+            expect(getMessageWindowState(protectedSendingId).messages).toHaveLength(1)
+            expect(getMessageWindowState(protectedLockedId).messages).toHaveLength(1)
+            expect(getMessageWindowState(protectedSubscribedId).messages).toHaveLength(1)
+
+            // Wait until the newest sessions settle so evictableOldestId (ids[3]) was evicted
+            // once inactive count exceeded MAX_RETAINED_INACTIVE_WINDOWS.
+            // Note: calling getMessageWindowState(evictableOldestId) re-creates an empty shell,
+            // so verify both in-memory emptiness and sessionStorage cleanup.
+            expect(sessionStorage.getItem(`hapi:message-window:v2:${evictableOldestId}`)).toBeNull()
+            expect(getMessageWindowState(evictableOldestId).messages).toEqual([])
+            expect(getMessageWindowState(ids.at(-1)!).messages).toHaveLength(1)
+
+            unsubscribeActive()
+            setMessageWindowTargetLock(protectedLockedId, false)
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it('preserves unhydrated persisted windows containing unconfirmed or failed messages across reload pruning', () => {
+        vi.useFakeTimers()
+        try {
+            const unhydratedFailedId = sessionId('reload-failed')
+            const unhydratedIndeterminateId = sessionId('reload-indeterminate')
+            const unhydratedEvictableId = sessionId('reload-evictable')
+            const failedKey = `hapi:message-window:v2:${unhydratedFailedId}`
+            const indeterminateKey = `hapi:message-window:v2:${unhydratedIndeterminateId}`
+            const evictableKey = `hapi:message-window:v2:${unhydratedEvictableId}`
+
+            sessionStorage.setItem(failedKey, JSON.stringify({
+                messages: [
+                    makeUserMessage({ id: 'opt-reload', localId: 'loc-reload', status: 'failed', createdAt: 100, invokedAt: null })
+                ],
+                hasMore: false,
+                oldestPositionAt: 100,
+                oldestPositionSeq: 1,
+                newestPositionAt: 100,
+                newestPositionSeq: 1,
+                contextNewestAt: null,
+                contextNewestSeq: null,
+                epoch: 1,
+                requiresLatestReset: false
+            }))
+            sessionStorage.setItem(indeterminateKey, JSON.stringify({
+                messages: [
+                    {
+                        ...makeUserMessage({ id: 'opt-indet', localId: 'loc-indet', createdAt: 150, invokedAt: null }),
+                        deliveryState: 'indeterminate'
+                    }
+                ],
+                hasMore: false,
+                oldestPositionAt: 150,
+                oldestPositionSeq: 1,
+                newestPositionAt: 150,
+                newestPositionSeq: 1,
+                contextNewestAt: null,
+                contextNewestSeq: null,
+                epoch: 1,
+                requiresLatestReset: false
+            }))
+            sessionStorage.setItem(evictableKey, JSON.stringify({
+                messages: [
+                    makeUserMessage({ id: 'msg-reload-old', seq: 1, createdAt: 200, invokedAt: 200 })
+                ],
+                hasMore: false,
+                oldestPositionAt: 200,
+                oldestPositionSeq: 1,
+                newestPositionAt: 200,
+                newestPositionSeq: 1,
+                contextNewestAt: null,
+                contextNewestSeq: null,
+                epoch: 1,
+                requiresLatestReset: false
+            }))
+
+            for (let i = 0; i < MAX_RETAINED_INACTIVE_WINDOWS + 2; i += 1) {
+                const id = sessionId(`reload-new-${i}`)
+                ingestIncomingMessages(id, [
+                    makeUserMessage({ id: `msg-new-${i}`, seq: 1, createdAt: (i + 1) * 1_000, invokedAt: (i + 1) * 1_000 })
+                ])
+            }
+
+            vi.advanceTimersByTime(300)
+
+            expect(sessionStorage.getItem(evictableKey)).toBeNull()
+            expect(sessionStorage.getItem(failedKey)).not.toBeNull()
+            expect(sessionStorage.getItem(indeterminateKey)).not.toBeNull()
+            expect(getMessageWindowState(unhydratedFailedId).messages).toHaveLength(1)
+            expect(getMessageWindowState(unhydratedIndeterminateId).messages).toHaveLength(1)
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+
+    it('rejects a stale tail response even after the session is evicted and recreated', async () => {
+        const targetId = sessionId('evict-gen-floor')
+        const staleResponse = deferred<MessagesResponse>()
+        const freshMessage = makeUserMessage({ id: 'fresh-msg', seq: 2, createdAt: 2_000, invokedAt: 2_000 })
+        const obsoleteMessage = makeUserMessage({ id: 'obsolete-rewound', seq: 1, createdAt: 1_000, invokedAt: 1_000 })
+
+        let calls = 0
+        const api = createApi(async () => {
+            calls += 1
+            if (calls === 1) {
+                return staleResponse.promise
+            }
+            return latestResponse([freshMessage], { epoch: 2 })
+        })
+
+        // Start a tail sync that remains in flight, invalidate it, then evict targetId under LRU pressure.
+        const firstSync = syncTailMessages(api, targetId)
+        clearMessageWindow(targetId)
+
+        for (let i = 0; i < MAX_RETAINED_INACTIVE_WINDOWS + 2; i += 1) {
+            const fillerId = sessionId(`evict-filler-${i}`)
+            ingestIncomingMessages(fillerId, [
+                makeUserMessage({ id: `filler-msg-${i}`, seq: 1, createdAt: (i + 1) * 1_000, invokedAt: (i + 1) * 1_000 })
+            ])
+        }
+
+        // Recreate targetId after eviction and load fresh state.
+        await syncTailMessages(api, targetId)
+        expect(getMessageWindowState(targetId).messages.map((m) => m.id)).toEqual(['fresh-msg'])
+
+        // Late completion of the pre-eviction request must not overwrite or merge obsolete rows.
+        staleResponse.resolve(latestResponse([obsoleteMessage], { epoch: 1 }))
+        await firstSync
+
+        expect(getMessageWindowState(targetId).messages.map((m) => m.id)).toEqual(['fresh-msg'])
+    })
+
+    it('does not parse unhydrated sessionStorage payloads when inactive storage count is within the limit', () => {
+        vi.useFakeTimers()
+        const parseSpy = vi.spyOn(JSON, 'parse')
+        try {
+            const unhydratedId = sessionId('unhydrated-under-limit')
+            sessionStorage.setItem(`hapi:message-window:v2:${unhydratedId}`, JSON.stringify({
+                messages: [makeUserMessage({ id: 'msg-unhydrated', seq: 1, createdAt: 100, invokedAt: 100 })],
+                hasMore: false,
+                oldestPositionAt: 100,
+                oldestPositionSeq: 1,
+                newestPositionAt: 100,
+                newestPositionSeq: 1,
+                contextNewestAt: null,
+                contextNewestSeq: null,
+                epoch: 1,
+                requiresLatestReset: false
+            }))
+
+            parseSpy.mockClear()
+
+            const activeId = sessionId('active-under-limit')
+            ingestIncomingMessages(activeId, [
+                makeUserMessage({ id: 'msg-active', seq: 1, createdAt: 200, invokedAt: 200 })
+            ])
+
+            vi.advanceTimersByTime(300)
+
+            expect(parseSpy).not.toHaveBeenCalled()
+            expect(sessionStorage.getItem(`hapi:message-window:v2:${unhydratedId}`)).not.toBeNull()
+        } finally {
+            parseSpy.mockRestore()
+            vi.useRealTimers()
+        }
     })
 })
