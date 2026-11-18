@@ -49,7 +49,7 @@ import type { ComposerSendError } from '@/components/AssistantChat/HappyComposer
 import { ApiError } from '@/api/client'
 import type { MessageDeliveryMode } from '@hapi/protocol'
 import { queryKeys } from '@/lib/query-keys'
-import { useToast } from '@/lib/toast-context'
+import { useAddToast } from '@/lib/toast-context'
 import { useTranslation } from '@/lib/use-translation'
 import { seedMessageWindowFromSession, syncTailMessages } from '@/lib/message-window-store'
 import { clearDraftsAfterSend } from '@/lib/clearDraftsAfterSend'
@@ -151,7 +151,7 @@ function SessionsPage() {
     const pathname = useLocation({ select: location => location.pathname })
     const matchRoute = useMatchRoute()
     const { t } = useTranslation()
-    const { addToast } = useToast()
+    const addToast = useAddToast()
     const { sessions, isLoading, error, refetch } = useSessions(api)
     const [initializedHub, setInitializedHub] = useState<string | null>(null)
     const { machines } = useMachines(api, true)
@@ -428,7 +428,7 @@ function SessionPage() {
     const goBack = useAppGoBack()
     const navigate = useNavigate()
     const queryClient = useQueryClient()
-    const { addToast } = useToast()
+    const addToast = useAddToast()
     const { sessionId } = useParams({ from: '/sessions/$sessionId' })
     const { outline, messageId, messageQuery, pendingRequestId } = useSearch({ from: '/sessions/$sessionId' })
     const {
