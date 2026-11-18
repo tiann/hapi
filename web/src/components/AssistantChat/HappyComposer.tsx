@@ -1017,6 +1017,13 @@ export function HappyComposer(props: {
         haptic('light')
     }, [api, suggestions, inputState, autocompletePrefixes, haptic, richMentionsEnabled, handleUserEdit])
 
+    const handleSessionMentionDrop = useCallback((mention: { id: string; title: string }) => {
+        if (mention.id === sessionId) return
+        handleUserEdit()
+        richInputRef.current?.insertSessionMention(mention, [])
+        richInputRef.current?.focus()
+    }, [handleUserEdit, sessionId])
+
     const abortDisabled = controlsDisabled || isAborting || !threadIsRunning
     const switchDisabled = controlsDisabled || isSwitching || !controlledByUser
     const showSwitchButton = Boolean(controlledByUser && onSwitchToRemote)
@@ -2459,6 +2466,8 @@ export function HappyComposer(props: {
                                             onMirrorChange={handleRichMirrorChange}
                                             onKeyDown={handleKeyDown}
                                             onPaste={handlePaste}
+                                            onSessionMentionDrop={handleSessionMentionDrop}
+                                            excludeSessionId={sessionId}
                                             onFocus={() => engageRichComposerFue()}
                                             resolveSessionMentionTooltip={resolveSessionMentionTooltip}
                                             onEdit={handleRichEdit}

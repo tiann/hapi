@@ -7,6 +7,7 @@ import {
     useRef,
     useState,
     type ClipboardEvent as ReactClipboardEvent,
+    type DragEvent as ReactDragEvent,
     type FocusEvent as ReactFocusEvent,
     type FormEvent as ReactFormEvent,
     type KeyboardEvent as ReactKeyboardEvent,
@@ -32,6 +33,7 @@ import {
     type SessionMentionTooltipModel,
 } from '@/lib/sessionReference'
 import { SessionRowSummary } from '@/components/SessionRowSummary'
+import { dragDataHasSessionMention, parseSessionMentionDrag } from '@/lib/sessionMentionDrag'
 import type { SessionSummary } from '@/types/api'
 
 export type RichComposerInputHandle = {
@@ -75,6 +77,13 @@ type Props = {
     onPaste?: (e: ReactClipboardEvent<HTMLDivElement>) => void
     onFocus?: (e: ReactFocusEvent<HTMLDivElement>) => void
     onEdit?: () => void
+    /**
+     * Desktop session-row drop. The editor has already moved the caret to the
+     * drop point; insert with `insertSessionMention(mention, [])`.
+     */
+    onSessionMentionDrop?: (mention: { id: string; title: string }) => void
+    /** Dropping this session is ignored (the composer is already in it). */
+    excludeSessionId?: string
     /** Live session meta for chip hover / aria-label (from useSessions). */
     resolveSessionMentionTooltip?: ResolveSessionMentionTooltip
 }
@@ -550,6 +559,51 @@ export function mirrorSelectionFromPoints(
     return { start: Math.min(start, end), end: Math.max(start, end) }
 }
 
+type CaretHit = { offsetNode: Node; offset: number }
+
+function rangeFromCaretHit(hit: CaretHit | null): Range | null {
+    if (!hit) return null
+    try {
+        const range = document.createRange()
+        range.setStart(hit.offsetNode, hit.offset)
+        range.collapse(true)
+        return range
+    } catch {
+        return null
+    }
+}
+
+function rangeInside(root: HTMLElement, range: Range | null): Range | null {
+    return range && root.contains(range.startContainer) ? range : null
+}
+
+/** Drop point → editor caret. Firefox exposes caretPositionFromPoint, not only caretRangeFromPoint. */
+function caretRangeAtDrop(clientX: number, clientY: number, root: HTMLElement): Range | null {
+    const fromPosition = rangeInside(
+        root,
+        rangeFromCaretHit(document.caretPositionFromPoint?.(clientX, clientY) ?? null)
+    )
+    if (fromPosition) return fromPosition
+    return rangeInside(root, document.caretRangeFromPoint?.(clientX, clientY) ?? null)
+}
+
+function placeEditorCaretAtDrop(root: HTMLElement, clientX: number, clientY: number): void {
+    const hit = caretRangeAtDrop(clientX, clientY, root)
+    root.focus()
+    const selection = window.getSelection()
+    if (!selection) return
+    selection.removeAllRanges()
+    if (hit) {
+        selection.addRange(hit)
+        return
+    }
+    // A miss must not keep the pre-drag selection.
+    const end = document.createRange()
+    end.selectNodeContents(root)
+    end.collapse(false)
+    selection.addRange(end)
+}
+
 function getMirrorSelection(root: HTMLElement): ComposerSelection {
     const sel = window.getSelection()
     if (!sel || sel.rangeCount === 0) {
@@ -686,6 +740,8 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         onPaste,
         onFocus,
         onEdit,
+        onSessionMentionDrop,
+        excludeSessionId,
         resolveSessionMentionTooltip,
     },
     ref
@@ -1027,6 +1083,22 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         insertPlainClipboardText(e.clipboardData?.getData('text/plain') ?? '')
     }, [insertPlainClipboardText, onPaste])
 
+    const handleDragOver = useCallback((e: ReactDragEvent<HTMLDivElement>) => {
+        if (disabled || !dragDataHasSessionMention(e.dataTransfer.types)) return
+        e.preventDefault()
+        e.dataTransfer.dropEffect = 'copy'
+    }, [disabled])
+
+    const handleDrop = useCallback((e: ReactDragEvent<HTMLDivElement>) => {
+        if (disabled || !dragDataHasSessionMention(e.dataTransfer.types)) return
+        e.preventDefault()
+        const mention = parseSessionMentionDrag(e.dataTransfer)
+        if (!mention || mention.id === excludeSessionId) return
+        const root = rootRef.current
+        if (root) placeEditorCaretAtDrop(root, e.clientX, e.clientY)
+        onSessionMentionDrop?.(mention)
+    }, [disabled, excludeSessionId, onSessionMentionDrop])
+
     const applyBackwardDelete = useCallback((
         root: HTMLElement,
         segments: readonly ComposerSegment[],
@@ -1067,8 +1139,7 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
         return () => root.removeEventListener('beforeinput', handleBeforeInput)
     }, [applyBackwardDelete, applyHistory, recordNativeEdit])
 
-    // No onDrop: intercepting without caretRangeFromPoint appends at EOF / no-ops
-    // in-editor moves. Native CE drop + plaintext-only / paste path is enough for #1215.
+    // Session drags are accepted in handleDragOver. File drops stay with DragDropZone.
 
     const placeholderRef = useRef<HTMLDivElement>(null)
 
@@ -1199,6 +1270,8 @@ export const RichComposerInput = forwardRef<RichComposerInputHandle, Props>(func
                 onCopy={(e) => handleCopyOrCut(e, false)}
                 onCut={(e) => handleCopyOrCut(e, true)}
                 onPaste={handlePaste}
+                onDragOver={handleDragOver}
+                onDrop={handleDrop}
                 onCompositionStart={() => {
                     const root = rootRef.current
                     if (root) recordUndo(segmentsFromEditor(root), getMirrorSelection(root))
