@@ -130,22 +130,24 @@ const CLAUDE_MANUAL_APPROVAL_HAPI_TOOLS = new Set([
     'ping_peer',
     'inspect_peer',
     'spawn_peer',
-    // Mutates session metadata — BasePermissionHandler's
+    // Mutate session metadata — BasePermissionHandler's
     // resolveToolAutoApprovalDecision has a dedicated guard that refuses to
-    // auto-approve it in read-only mode, but that guard only runs if the
-    // call actually reaches HAPI's permission handler. Pre-approving it via
+    // auto-approve either in read-only mode, but that guard only runs if the
+    // call actually reaches HAPI's permission handler. Pre-approving them via
     // Claude's own --allowedTools would bypass that guard the same way the
     // Codex bridge's now-fixed `approval_mode: 'approve'` did (bot review,
-    // hapi#2147).
-    'link_pr'
+    // hapi#2147) — link_issue is exactly as unconditionally-registered as
+    // link_pr, so it needs the same exclusion (bot review, hapi#2147, follow-up).
+    'link_pr',
+    'link_issue'
 ]);
 
 /**
  * Map HAPI MCP tool names to Claude `--allowedTools` entries.
  * Keeps `display_media` / `display_video` (arbitrary local-path readers), `ping_peer`,
- * `inspect_peer`, `spawn_peer`, and `link_pr` (mutates session metadata) off the
- * auto-allow list so they still prompt. `list_peers` stays allowed (discovery
- * shortlist only).
+ * `inspect_peer`, `spawn_peer`, `link_pr`, and `link_issue` (both mutate session
+ * metadata) off the auto-allow list so they still prompt. `list_peers` stays
+ * allowed (discovery shortlist only).
  */
 export function toClaudeAllowedHapiMcpTools(toolNames: string[]): string[] {
     return toolNames

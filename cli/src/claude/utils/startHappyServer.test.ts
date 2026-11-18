@@ -1577,7 +1577,6 @@ describe('toClaudeAllowedHapiMcpTools', () => {
             'skill_lookup'
         ])).toEqual([
             'mcp__hapi__change_title',
-            'mcp__hapi__link_issue',
             'mcp__hapi__display_image',
             'mcp__hapi__list_peers',
             'mcp__hapi__session_job',
@@ -1595,6 +1594,14 @@ describe('toClaudeAllowedHapiMcpTools', () => {
     // 'approve'` did.
     it('keeps link_pr off --allowedTools so HAPI\'s read-only guard is reachable', () => {
         expect(toClaudeAllowedHapiMcpTools(['link_pr'])).not.toContain('mcp__hapi__link_pr')
+    })
+
+    // Regression (bot review, hapi#2147, second follow-up): link_issue is
+    // just as unconditionally registered as link_pr, so it needs the same
+    // exclusion — the first fix only closed the ACP-title path, not Claude's
+    // own --allowedTools preapproval.
+    it('keeps link_issue off --allowedTools so HAPI\'s read-only guard is reachable', () => {
+        expect(toClaudeAllowedHapiMcpTools(['link_issue'])).not.toContain('mcp__hapi__link_issue')
     })
 })
 
