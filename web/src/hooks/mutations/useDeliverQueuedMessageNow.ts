@@ -16,8 +16,7 @@ type DeliverQueuedMessageNowInput = {
  * Non-optimistic on purpose: the CLI consumes the row into a fresh turn and
  * the existing `messages-consumed` event flips it to invoked, removing the
  * row from the floating bar. This is the recovery path for rows stranded by
- * an abort (DSH/Codex drop their in-memory queue on stop and the hub's
- * session-alive replay is deduped away by the CLI).
+ * an abort (the hub's session-alive replay is deduped away by the CLI).
  *
  * Failure surfaces as a toast; the row stays queued and can be retried.
  */

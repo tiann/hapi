@@ -408,9 +408,8 @@ export function QueuedMessagesBar({
                         }
 
                         // "Send now" (↑) recovers rows stranded by an abort:
-                        // DSH/Codex drop their in-memory queue when a stop
-                        // begins and the hub's replay is deduped away by the
-                        // CLI, so the row would hang until the session-end
+                        // the hub's session-alive replay is deduped away by
+                        // the CLI, so the row would hang until the session-end
                         // sweep discards it unread. Offered only when no turn
                         // is dispatching (deliveryActive) and Steer cannot run
                         // (canSteerRow covers the mid-turn case).

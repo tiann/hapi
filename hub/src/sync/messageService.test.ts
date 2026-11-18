@@ -2237,7 +2237,7 @@ describe('MessageService deliverQueuedMessageNow', () => {
         const service = new MessageService(store, makeIo(ack => {
             calls += 1
             if (calls === 1) {
-                // Cancel-ack: the abort already cleared the CLI's in-memory queue.
+                // Cancel-ack: the CLI no longer holds the row in memory.
                 ack(null, [{ removed: false }])
             } else {
                 // Forced re-delivery bypasses the message-id dedup.
@@ -2383,7 +2383,7 @@ describe('MessageService deliverQueuedMessageNow', () => {
         store.close()
     })
 
-    it('refuses shared concurrent-client sessions whose worker did not hold the row', async () => {
+    it('rejects shared concurrent-client sessions before any cancel probe leaves the hub', async () => {
         const store = makeStore()
         const session = store.sessions.getOrCreateSession('deliver-shared', { capabilities: { concurrentClients: true } }, null, 'default')
         store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'shared row' } }, 'shared-deliver-q')
@@ -2394,7 +2394,9 @@ describe('MessageService deliverQueuedMessageNow', () => {
         }), makePublisher() as unknown as EventPublisher)
         expect(await service.deliverQueuedMessageNow(session.id, 'shared-deliver-q'))
             .toEqual({ status: 'unavailable', localId: 'shared-deliver-q' })
-        expect(calls).toBe(1)
+        // Zero emits — not even the cancel-ack probe: the worker multiplexes
+        // several clients, and a cancel could disrupt another client's turn.
+        expect(calls).toBe(0)
         expect(store.messages.lookupQueuedMessage(session.id, 'shared-deliver-q').status).toBe('queued')
         store.close()
     })

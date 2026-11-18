@@ -907,11 +907,11 @@ export class MessageService {
     /**
      * Explicit "send now" for a queued row (the queued bar's ↑ affordance).
      *
-     * Recovery path for rows stranded by an abort: DSH and Codex clear their
-     * in-memory queue synchronously when an abort begins, and the hub's
-     * session-alive replay of the still-queued row is dropped by the CLI's
-     * message-id dedup, so the row can hang with invoked_at NULL until the
-     * end-of-session sweep discards it unread. This mirrors
+     * Recovery path for rows stranded by an abort: the hub's session-alive
+     * replay of the still-queued row is dropped by the CLI's message-id dedup,
+     * so the row can hang with invoked_at NULL until the end-of-session sweep
+     * discards it unread — a hub-side recovery gap that is independent of how
+     * each flavor manages its in-memory queue around aborts. This mirrors
      * retryIndeterminateMessage's CLI round-trip — a cancel-ack to release any
      * stale in-memory copy, then a force 'retry-queued-message' emit that
      * bypasses the dedup — but keeps the row in the 'queued' delivery state
@@ -919,6 +919,11 @@ export class MessageService {
      * through the normal messages-consumed ack. Claude-flavor sessions keep
      * their in-memory copy across aborts; there the cancel-ack removes it and
      * the re-emit re-accepts it, so the click is still a no-op reorder at worst.
+     *
+     * Shared-native sessions (capabilities.concurrentClients) multiplex
+     * several clients over one worker, so a cancel-ack here could disrupt a
+     * turn another client is running. They are rejected up front, before any
+     * probe leaves the hub.
      *
      * Every non-invoked outcome leaves the row exactly as it was; concurrent
      * clicks are serialized by the activeDeliverNow guard on top of the web
@@ -934,6 +939,12 @@ export class MessageService {
             return { status: 'invoked', message: toDecryptedMessage(lookup.message) }
         }
         if (!lookup.localId) return { status: 'not-found' }
+        if ((this.store.sessions.getSession(sessionId)?.metadata as Metadata | null)?.capabilities?.concurrentClients) {
+            // Shared-native sessions multiplex several clients over one worker;
+            // the cancel-ack probe could disrupt a turn another client is
+            // running, so reject before anything leaves the hub.
+            return { status: 'unavailable', localId: lookup.localId }
+        }
         if (lookup.status !== 'queued') {
             // dispatching / indeterminate rows are not deliverable through this
             // path; indeterminate rows already own the retry affordance.
@@ -964,10 +975,6 @@ export class MessageService {
                     : { status: 'not-found' }
             }
             if (cancelResult === 'in-flight' || cancelResult === 'timeout' || cancelResult === 'indeterminate') {
-                return { status: 'unavailable', localId: lookup.localId }
-            }
-            if ((this.store.sessions.getSession(sessionId)?.metadata as Metadata | null)?.capabilities?.concurrentClients
-                && cancelResult !== 'removed') {
                 return { status: 'unavailable', localId: lookup.localId }
             }
             const refreshed = this.store.messages.lookupQueuedMessage(sessionId, messageId)
