@@ -14,6 +14,8 @@ import { LOW_RATE_STRIPES_CLASS, useLowRateAnimation } from '@/hooks/useLowRateA
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { useTranslation } from '@/lib/use-translation'
 import { getWorktreeSessionLabel } from '@/lib/sessionWorktreeLabel'
+import { SessionPrChip } from '@/components/SessionPrChip'
+import { getPrimaryGithubPrRef, type PrChipDisplayProfile } from '@hapi/protocol'
 import {
     attachedJobFraction,
     formatAttachedJobProgress,
@@ -107,6 +109,16 @@ export function SessionRowSummary(props: {
     lastSeenVersion?: number
     scheduleTooltipId?: string
     className?: string
+    /** When enabled, show primary GitHub PR chip left of the time column (ADR D8). */
+    githubPrAwarenessEnabled?: boolean
+    /**
+     * When false, omit the inline PR chip (parent renders an interactive chip
+     * beside the row button to avoid nesting `<a>` inside `<button>`).
+     */
+    showPrChip?: boolean
+    prChipDisplay?: PrChipDisplayProfile
+    /** Shared minute clock from the session list (avoids per-row timers). */
+    prNowMs?: number
     /** Rows inside the pinned "in progress" section skip the pending text label. */
     inRunningSection?: boolean
     /** Short project name shown under the title (pinned "in progress" rows). */
@@ -130,6 +142,10 @@ export function SessionRowSummary(props: {
         lastSeenVersion,
         scheduleTooltipId: scheduleTooltipIdProp,
         className,
+        githubPrAwarenessEnabled = false,
+        showPrChip = true,
+        prChipDisplay,
+        prNowMs,
         inRunningSection = false,
         projectLabel,
         machineLabel,
@@ -184,6 +200,9 @@ export function SessionRowSummary(props: {
             running: t('session.item.attachedJob.running'),
             noHeartbeat: t('session.item.attachedJob.noHeartbeat'),
         })
+        : null
+    const primaryPrRef = githubPrAwarenessEnabled
+        ? getPrimaryGithubPrRef(s.metadata?.externalRefs)
         : null
 
     // Presence represents foreground work and connection state on the agent
@@ -361,6 +380,14 @@ export function SessionRowSummary(props: {
                             <span className="shrink-0 text-[var(--app-badge-warning-text)]">
                                 {t('session.item.pending')} {s.pendingRequestsCount}
                             </span>
+                        ) : null}
+                        {primaryPrRef && showPrChip ? (
+                            <SessionPrChip
+                                refs={s.metadata?.externalRefs}
+                                displayProfile={prChipDisplay}
+                                nowMs={prNowMs}
+                                interactive={false}
+                            />
                         ) : null}
                         {timeLabel ? (
                             <span className={`min-w-0 translate-y-[0.5px] truncate whitespace-nowrap tabular-nums ${

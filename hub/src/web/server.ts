@@ -23,6 +23,7 @@ import {
     PasskeyChallengeStore
 } from './routes/passkey'
 import { createEventsRoutes } from './routes/events'
+import { createFeaturesRoutes } from './routes/features'
 import { createSessionsRoutes } from './routes/sessions'
 import { createMessagesRoutes } from './routes/messages'
 import { createPermissionsRoutes } from './routes/permissions'
@@ -377,6 +378,7 @@ export function createWebApp(options: {
     app.route('/api', createPasskeyLoginRoutes(passkeyDeps))
 
     app.use('/api/*', createAuthMiddleware(options.jwtSecret))
+    app.route('/api', createFeaturesRoutes())
     app.route('/api', createPasskeyManagementRoutes(passkeyDeps))
     app.route('/api', createEventsRoutes(options.getSseManager, options.getSyncEngine, options.getVisibilityTracker))
     app.route('/api', createSessionsRoutes(options.getSyncEngine))
