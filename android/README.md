@@ -309,7 +309,7 @@ Dependency direction: `:app` → `:core:data` → `:core:protocol`.
 
 ## Internationalization
 
-The app ships English (default) and Simplified Chinese
+The app ships English (default), Simplified Chinese, Russian and Japanese
 (`app/src/main/res/values-zh-rCN/strings.xml`). App UI strings
 live in resources; both files carry the **same key set** (lint
 `MissingTranslation` is the gate).
@@ -505,7 +505,7 @@ The home holder follows the active connection instance, releasing the previous
 store and filter even when switching back to a previously used hub URL.
 
 Pairing and Settings both link to the [privacy policy](https://hapi.run/docs/privacy).
-These controls and notices ship in English and Simplified Chinese.
+These controls and notices ship in English, Simplified Chinese, Russian and Japanese.
 
 ### Validation status (2026-09-12)
 

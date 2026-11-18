@@ -1,8 +1,8 @@
 import { createContext, useEffect, useState, useCallback, type ReactNode } from 'react'
 import { getTelegramWebApp, isTelegramEnvironment } from '@/hooks/useTelegram'
-import { en, zhCN, ru } from './locales'
+import { en, zhCN, ru, ja } from './locales'
 
-export type Locale = 'en' | 'zh-CN' | 'ru'
+export type Locale = 'en' | 'zh-CN' | 'ru' | 'ja'
 
 export type Translations = Record<string, string>
 
@@ -14,7 +14,7 @@ export type I18nContextValue = {
 
 export const I18nContext = createContext<I18nContextValue | null>(null)
 
-const locales: Record<Locale, Translations> = { en, 'zh-CN': zhCN, ru }
+const locales: Record<Locale, Translations> = { en, 'zh-CN': zhCN, ru, ja }
 
 /**
  * Map a BCP-47-ish language tag (`ru`, `ru-RU`, `zh-Hans`, `en-US`) onto a
@@ -25,6 +25,7 @@ export function normalizeLocaleTag(tag: string | null | undefined): Locale | nul
   const lower = tag.trim().toLowerCase().replace(/_/g, '-')
   if (!lower) return null
   if (lower === 'ru' || lower.startsWith('ru-')) return 'ru'
+  if (lower === 'ja' || lower.startsWith('ja-')) return 'ja'
   if (lower === 'zh' || lower.startsWith('zh-')) return 'zh-CN'
   if (lower === 'en' || lower.startsWith('en-')) return 'en'
   return null
