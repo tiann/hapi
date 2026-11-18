@@ -14,6 +14,7 @@ import { useUnseenBlockCount } from '@/hooks/useUnseenBlockCount'
 type Props = {
     mode: 'tail' | 'history'
     items: VisibleChatBlock[]
+    tailEvictedWhileFollowing?: boolean
 }
 
 // user-role blocks never join with each other, so each one is exactly one
@@ -29,7 +30,7 @@ function blocks(...ids: string[]): VisibleChatBlock[] {
 
 function setup(initialProps: Props) {
     return renderHook(
-        (props: Props) => useUnseenBlockCount(props.mode, props.items),
+        (props: Props) => useUnseenBlockCount(props.mode, props.items, props.tailEvictedWhileFollowing),
         { initialProps }
     )
 }
@@ -107,5 +108,53 @@ describe('useUnseenBlockCount', () => {
         // it must not keep re-entering the setState branch after that.
         expect(renders - afterMount).toBeLessThanOrEqual(3)
         expect(result.current).toBe(0)
+    })
+
+    it('suppresses unseen counting while automatically following after hidden-tail eviction and resumes counting once the user selects history', () => {
+        const { result, rerender } = setup({
+            mode: 'tail',
+            items: [],
+            tailEvictedWhileFollowing: false
+        })
+
+        // Automatic concise coverage enters history mode while auto-following.
+        rerender({
+            mode: 'history',
+            items: [],
+            tailEvictedWhileFollowing: true
+        })
+        expect(result.current).toBe(0)
+
+        // Preceding user messages arrive from older pages while auto-following.
+        rerender({
+            mode: 'history',
+            items: blocks('a', 'b'),
+            tailEvictedWhileFollowing: true
+        })
+        expect(result.current).toBe(0)
+
+        // A live reply arrives while still auto-following: no unseen pill.
+        rerender({
+            mode: 'history',
+            items: blocks('a', 'b', 'c'),
+            tailEvictedWhileFollowing: true
+        })
+        expect(result.current).toBe(0)
+
+        // User scrolls up to select history: captures the watermark at ['a', 'b', 'c'].
+        rerender({
+            mode: 'history',
+            items: blocks('a', 'b', 'c'),
+            tailEvictedWhileFollowing: false
+        })
+        expect(result.current).toBe(0)
+
+        // Subsequent live reply while in user-selected history is counted as unseen.
+        rerender({
+            mode: 'history',
+            items: blocks('a', 'b', 'c', 'd'),
+            tailEvictedWhileFollowing: false
+        })
+        expect(result.current).toBe(1)
     })
 })

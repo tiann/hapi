@@ -10,13 +10,17 @@ import { useMessages } from '../src/hooks/queries/useMessages'
 import { normalizeDecryptedMessage } from '../src/chat/normalize'
 import { reduceChatBlocks } from '../src/chat/reducer'
 import { reconcileChatBlocks } from '../src/chat/reconcile'
+import { filterConciseChatBlocks } from '../src/chat/conciseView'
 import { buildVisibleChatBlocks } from '../src/chat/toolGroups'
 import { isQueuedForInvocation } from '../src/lib/messages'
 import { useHappyRuntime } from '../src/lib/assistant-runtime'
 import { HappyThread } from '../src/components/AssistantChat/HappyThread'
 import type { ChatBlock } from '../src/chat/types'
-import { getMessageWindowState } from '../src/lib/message-window-store'
+import { getMessageWindowState, getRegularPrependBudgetCount, ingestIncomingMessages } from '../src/lib/message-window-store'
 import { buildConversationOutline } from '../src/chat/outline'
+import { useUnseenBlockCount } from '../src/hooks/useUnseenBlockCount'
+import { resolveRenderedReadThroughRevision } from '../src/components/SessionChat'
+import { configureSessionReadState, getSessionLastSeenAt } from '../src/lib/sessionLastSeen'
 
 // Drives the real message-window store + chat pipeline + HappyThread against a
 // fake paginated message API, so e2e tests can exercise older-history loading
@@ -37,11 +41,18 @@ type Probe = {
     releaseLatest: () => void
     holdBefore: () => void
     releaseBefore: () => void
+    setConciseMode: (enabled: boolean) => void
+    switchSession: (nextSessionId: string) => void
+    deliverLiveFinalReply: (text: string) => void
     windowState: () => {
         messageCount: number
         oldestSeq: number | null
         newestSeq: number | null
         isLoadingMore: boolean
+        viewMode: 'tail' | 'history'
+        requiresLatestReset: boolean
+        readThroughRevision: number | null
+        acknowledgedReadRevision: number
     }
 }
 
@@ -56,7 +67,15 @@ let latestResponseGate: Promise<void> | null = null
 let beforeResponseGate: Promise<void> | null = null
 let releaseBeforeResponse = () => {}
 
-let currentActiveSessionId = SESSION_ID
+let activeSessionIdForProbe = SESSION_ID
+
+configureSessionReadState('history-load-fixture-scope', async (_id, request) => ({
+    readState: {
+        readRevision: request.type === 'read' ? request.readRevision : 0,
+        manualUnread: request.type === 'unread',
+        version: request.expectedVersion + 1
+    }
+}))
 
 window.__probe = {
     requests: [],
@@ -72,13 +91,42 @@ window.__probe = {
         beforeResponseGate = null
         releaseBeforeResponse()
     },
+    setConciseMode: () => {},
+    switchSession: () => {},
+    deliverLiveFinalReply: (text: string) => {
+        const seq = allMessages.length + 1
+        const message = {
+            id: `m-${seq}`,
+            seq,
+            contentRevision: seq,
+            localId: null,
+            content: {
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: {
+                        type: 'message',
+                        message: text
+                    }
+                }
+            },
+            createdAt: BASE_AT + seq,
+            invokedAt: BASE_AT + seq
+        } as DecryptedMessage
+        allMessages.push(message)
+        ingestIncomingMessages(activeSessionIdForProbe, [message])
+    },
     windowState: () => {
-        const state = getMessageWindowState(currentActiveSessionId)
+        const state = getMessageWindowState(activeSessionIdForProbe)
         return {
             messageCount: state.messages.length,
             oldestSeq: state.oldestSeq,
             newestSeq: state.newestSeq,
-            isLoadingMore: state.isLoadingMore
+            isLoadingMore: state.isLoadingMore,
+            viewMode: state.viewMode,
+            requiresLatestReset: state.requiresLatestReset,
+            readThroughRevision: state.readThroughRevision ?? null,
+            acknowledgedReadRevision: getSessionLastSeenAt(activeSessionIdForProbe)
         }
     }
 }
@@ -121,8 +169,12 @@ const slowBefore = fixtureParams.has('slowBefore')
 const cachedReentry = fixtureParams.has('cachedReentry')
 const holdLatest = fixtureParams.has('holdLatest')
 if (sessionSwitch) {
-    currentActiveSessionId = SWITCH_OVERFLOW_SESSION_ID
+    activeSessionIdForProbe = SWITCH_OVERFLOW_SESSION_ID
 }
+const initialConcise = fixtureParams.has('concise')
+const conciseFinalReply = fixtureParams.has('conciseFinalReply')
+const queuedTailCount = Number(fixtureParams.get('queuedTail') ?? '0')
+const conciseToolTailCount = Number(fixtureParams.get('conciseToolTail') ?? (initialConcise ? '220' : '0'))
 if (holdLatest) {
     latestResponseGate = new Promise<void>((resolve) => {
         releaseLatestResponse = resolve
@@ -249,9 +301,17 @@ const sessionMessagesById: Record<string, DecryptedMessage[]> = sessionSwitch
 const allMessages: DecryptedMessage[] = Array.from({ length: TOTAL_MESSAGES }, (_, index) => {
     const seq = index + 1
     const filtered = filteredOlder && seq <= TOTAL_MESSAGES - 200
+    const isQueuedPrompt = queuedTailCount > 0 && seq > TOTAL_MESSAGES - queuedTailCount
+    const finalReplySeq = TOTAL_MESSAGES - queuedTailCount
+    const isFinalReply = conciseFinalReply && seq === finalReplySeq
+    const hiddenTailEnd = conciseFinalReply ? finalReplySeq - 1 : finalReplySeq
+    const isConciseHiddenWork = conciseToolTailCount > 0
+        && seq > hiddenTailEnd - conciseToolTailCount
+        && seq <= hiddenTailEnd
     return {
         id: `m-${seq}`,
         seq,
+        contentRevision: seq,
         localId: null,
         content: navigationMedia && seq % 50 === 0 && seq < TOTAL_MESSAGES
             ? {
@@ -261,11 +321,38 @@ const allMessages: DecryptedMessage[] = Array.from({ length: TOTAL_MESSAGES }, (
                     data: { type: 'generated-image', imageId: `img-${seq}`, fileName: `image-${seq}.svg`, mimeType: 'image/svg+xml' },
                 },
             }
+            : isQueuedPrompt
+            ? { role: 'user', content: { type: 'text', text: `Queued prompt ${seq}` } }
+            : isFinalReply
+            ? {
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: {
+                        type: 'message',
+                        message: `Fixture final reply ${seq}`
+                    }
+                }
+            }
+            : isConciseHiddenWork
+            ? {
+                role: 'agent',
+                content: {
+                    type: 'codex',
+                    data: {
+                        type: 'tool-call',
+                        callId: `call-${seq}`,
+                        name: 'Bash',
+                        input: { command: `echo step ${seq}` },
+                        status: 'completed'
+                    }
+                }
+            }
             : filtered
             ? { role: 'agent', content: { type: 'output', data: { isMeta: true } } }
             : { role: 'user', content: { type: 'text', text: `Fixture message ${seq}` } },
         createdAt: BASE_AT + seq,
-        invokedAt: BASE_AT + seq
+        invokedAt: isQueuedPrompt ? null : BASE_AT + seq
     } as DecryptedMessage
 })
 
@@ -415,31 +502,49 @@ const fakeSession = {
 const noopSend = () => {}
 const noopAbort = async () => {}
 
-function FixtureThreadSession(props: { activeSessionId: string }) {
-    const { activeSessionId } = props
+function FixtureThreadSession(props: {
+    activeSessionId: string
+    conciseMode: boolean
+    setConciseMode: (enabled: boolean) => void
+    switchSession: (nextSessionId: string) => void
+}) {
+    const { activeSessionId, conciseMode, setConciseMode, switchSession } = props
     const [outlineOpen, setOutlineOpen] = useState(false)
     const [forceScrollToken, setForceScrollToken] = useState(0)
+    activeSessionIdForProbe = activeSessionId
+    const activeSession = useMemo(() => ({ ...fakeSession, id: activeSessionId } as Session), [activeSessionId])
     const {
         messages,
+        readThroughRevision,
         warning,
         isSyncingTail,
         isLoadingMore,
         hasMore,
+        viewMode,
+        tailEvictedWhileFollowing,
         messagesVersion,
         historyVersion,
         loadMore,
         cancelLoadMore,
         refetch,
-        setViewMode
+        setViewMode,
+        jumpToTail
     } = useMessages(fakeApi, activeSessionId)
 
     window.__probe.loadMore = loadMore
     window.__probe.refetch = refetch
+    window.__probe.setConciseMode = setConciseMode
+    window.__probe.switchSession = switchSession
 
     const blocksByIdRef = useRef<Map<string, ChatBlock>>(new Map())
-    const activeSession = useMemo(
-        () => ({ ...fakeSession, id: activeSessionId } as Session),
-        [activeSessionId]
+
+    const visibleMessages = useMemo(
+        () => messages.filter((message) => !isQueuedForInvocation(message)),
+        [messages]
+    )
+    const retainedMessagesCount = useMemo(
+        () => getRegularPrependBudgetCount(messages),
+        [messages]
     )
 
     const normalizedMessages = useMemo(() => {
@@ -458,10 +563,15 @@ function FixtureThreadSession(props: { activeSessionId: string }) {
         [reduced.blocks]
     )
     blocksByIdRef.current = reconciled.byId
-    const visibleBlocks = useMemo(
-        () => buildVisibleChatBlocks(reconciled.blocks, { hasMoreMessages: hasMore }),
-        [reconciled.blocks, hasMore]
+    const threadBlocks = useMemo(
+        () => conciseMode ? filterConciseChatBlocks(reconciled.blocks) : reconciled.blocks,
+        [conciseMode, reconciled.blocks]
     )
+    const visibleBlocks = useMemo(
+        () => buildVisibleChatBlocks(threadBlocks, { hasMoreMessages: hasMore }),
+        [threadBlocks, hasMore]
+    )
+    const unseenCount = useUnseenBlockCount(viewMode, visibleBlocks, tailEvictedWhileFollowing)
 
     const runtime = useHappyRuntime({
         session: activeSession,
@@ -482,7 +592,7 @@ function FixtureThreadSession(props: { activeSessionId: string }) {
                 </header>
             ) : null}
             <HappyThread
-                key={sessionSwitch ? `thread-${activeSessionId}` : undefined}
+                key={`thread-${activeSessionId}`}
                 api={fakeApi}
                 session={activeSession}
                 sessionId={activeSessionId}
@@ -490,17 +600,25 @@ function FixtureThreadSession(props: { activeSessionId: string }) {
                 disabled={false}
                 onRefresh={() => {}}
                 onViewModeChange={setViewMode}
+                onJumpToTail={jumpToTail}
+                readThroughRevision={resolveRenderedReadThroughRevision({
+                    terminalVisible: false,
+                    viewMode,
+                    tailEvictedWhileFollowing,
+                    readThroughRevision
+                })}
                 isSyncingTail={isSyncingTail}
                 messagesWarning={warning}
                 hasMoreMessages={hasMore}
                 isLoadingMoreMessages={isLoadingMore}
                 onLoadMore={loadMore}
                 onCancelLoadMore={cancelLoadMore}
-                // This fixture drives HappyThread directly, bypassing the
-                // SessionChat block reduction that computes the real count.
-                unseenCount={0}
-                rawMessagesCount={messages.length}
+                unseenCount={unseenCount}
+                rawMessagesCount={visibleMessages.length}
+                retainedMessagesCount={retainedMessagesCount}
                 normalizedMessagesCount={normalizedMessages.length}
+                visibleBlocksCount={visibleBlocks.length}
+                conciseViewActive={conciseMode}
                 messagesVersion={messagesVersion}
                 historyVersion={historyVersion}
                 forceScrollToken={forceScrollToken}
@@ -519,7 +637,8 @@ function FixtureThreadSession(props: { activeSessionId: string }) {
 
 function FixtureThread() {
     const [activeSessionId, setActiveSessionId] = useState(sessionSwitch ? SWITCH_OVERFLOW_SESSION_ID : SESSION_ID)
-    currentActiveSessionId = activeSessionId
+    const [conciseMode, setConciseMode] = useState(initialConcise)
+    activeSessionIdForProbe = activeSessionId
 
     return (
         <div className={navigationShell ? 'flex h-full min-h-0' : 'flex h-screen min-h-0 flex-col'}>
@@ -548,6 +667,9 @@ function FixtureThread() {
                 <FixtureThreadSession
                     key={sessionSwitch ? activeSessionId : 'default'}
                     activeSessionId={activeSessionId}
+                    conciseMode={conciseMode}
+                    setConciseMode={setConciseMode}
+                    switchSession={setActiveSessionId}
                 />
             </div>
         </div>

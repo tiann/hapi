@@ -29,7 +29,7 @@ import { ShareTurnDialog } from '@/components/AssistantChat/ShareTurnDialog'
 import { getSessionModelLabel } from '@/lib/sessionModelLabel'
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { isFastServiceTier } from '@/components/AssistantChat/codexFastMode'
-import type { OlderLoadOutcome } from '@/lib/message-window-store'
+import { OLDER_LOAD_WINDOW_SIZE, PAGE_SIZE, type OlderLoadOutcome } from '@/lib/message-window-store'
 import { useSessionHeaderMetadata } from '@/hooks/useSessionHeaderMetadata'
 import { useMachines } from '@/hooks/queries/useMachines'
 import { useMachineLabels } from '@/hooks/useMachineLabels'
@@ -61,6 +61,9 @@ type PendingScrollRestore = {
     scrollHeight: number
     targetHistoryVersion: number | null
     preserveTail: boolean
+    visibleBlocksCount: number
+    normalizedMessagesCount: number
+    addedRenderableCount: number | null
 }
 
 type HistoryLoadSource = 'coverage' | 'user' | 'consumer'
@@ -160,6 +163,11 @@ const HISTORY_PRELOAD_MARGIN_PX = 200
 // viewport geometry unchanged, so no new scroll/resize signal is guaranteed.
 const COVERAGE_FAILURE_RETRY_DELAY_MS = 1000
 const MAX_COVERAGE_LOAD_RETRIES = 3
+const MAX_CONCISE_COVERAGE_PAGES = 10
+// Prepending a full older page trims the window to OLDER_LOAD_WINDOW_SIZE from
+// the newest end. Stop automatic concise coverage before a prepend would evict
+// an already-visible reply at the session tail.
+const CONCISE_TAIL_PRESERVE_RAW_LIMIT = OLDER_LOAD_WINDOW_SIZE - PAGE_SIZE
 // Show feedback early, but require a deliberate pull before release loads.
 const TOP_PULL_FEEDBACK_PX = 16
 const TOP_PULL_TRIGGER_PX = 64
@@ -732,7 +740,10 @@ export function HappyThread(props: {
     onCancelLoadMore: () => void
     unseenCount: number
     rawMessagesCount: number
+    retainedMessagesCount?: number
     normalizedMessagesCount: number
+    visibleBlocksCount?: number
+    conciseViewActive?: boolean
     messagesVersion: number
     historyVersion: number
     forceScrollToken: number
@@ -853,6 +864,26 @@ export function HappyThread(props: {
     const runtimeExtras = useAuiState((s) => s.thread.extras) as HappyRuntimeExtras | undefined
     const appliedMessagesVersion = runtimeExtras?.messagesVersion ?? props.messagesVersion
     const appliedHistoryVersion = runtimeExtras?.historyVersion ?? props.historyVersion
+    const renderedMessagesCount = props.visibleBlocksCount ?? props.normalizedMessagesCount
+    const retainedMessagesCount = props.retainedMessagesCount ?? props.rawMessagesCount
+    const conciseViewActive = props.conciseViewActive === true
+    const retainedMessagesCountRef = useRef(retainedMessagesCount)
+    retainedMessagesCountRef.current = retainedMessagesCount
+    const renderedMessagesCountRef = useRef(renderedMessagesCount)
+    renderedMessagesCountRef.current = renderedMessagesCount
+    const normalizedMessagesCountRef = useRef(props.normalizedMessagesCount)
+    normalizedMessagesCountRef.current = props.normalizedMessagesCount
+    const conciseViewActiveRef = useRef(conciseViewActive)
+    conciseViewActiveRef.current = conciseViewActive
+    const initialConciseCoverageDoneRef = useRef(!conciseViewActive)
+    const conciseCoveragePagesRef = useRef(0)
+    const conciseTailEvictedRef = useRef(false)
+    const [conciseTailEvicted, setConciseTailEvicted] = useState(false)
+    const updateConciseTailEvicted = useCallback((evicted: boolean) => {
+        conciseTailEvictedRef.current = evicted
+        setConciseTailEvicted(evicted)
+    }, [])
+    const prevConciseViewActiveRef = useRef(conciseViewActive)
     const viewportRef = useRef<HTMLDivElement | null>(null)
     useTransientScrollbar(viewportRef, 'right')
     const contentRef = useRef<HTMLDivElement | null>(null)
@@ -977,12 +1008,15 @@ export function HappyThread(props: {
             window.clearTimeout(pendingRequestTargetCleanupTimerRef.current)
         }
     }, [])
-    useEffect(() => {
+    useLayoutEffect(() => {
         hasMoreMessagesRef.current = props.hasMoreMessages
     }, [props.hasMoreMessages])
     useLayoutEffect(() => {
         isSyncingTailRef.current = props.isSyncingTail
-    }, [props.isSyncingTail])
+        if (props.isSyncingTail && conciseTailEvictedRef.current) {
+            updateConciseTailEvicted(false)
+        }
+    }, [props.isSyncingTail, updateConciseTailEvicted])
     useLayoutEffect(() => {
         isLoadingMoreRef.current = props.isLoadingMoreMessages
     }, [props.isLoadingMoreMessages])
@@ -1063,6 +1097,31 @@ export function HappyThread(props: {
     }, [props.sessionId])
 
     useLayoutEffect(() => {
+        const wasConcise = prevConciseViewActiveRef.current
+        prevConciseViewActiveRef.current = conciseViewActive
+        if (conciseViewActive && !wasConcise) {
+            const wouldEvictVisibleTail = renderedMessagesCountRef.current > 0
+                && retainedMessagesCountRef.current > CONCISE_TAIL_PRESERVE_RAW_LIMIT
+            initialConciseCoverageDoneRef.current = wouldEvictVisibleTail
+            conciseCoveragePagesRef.current = 0
+            if (historyLoaderRef.current.autoPaused && !wouldEvictVisibleTail) {
+                historyLoaderRef.current = {
+                    ...historyLoaderRef.current,
+                    autoPaused: false
+                }
+            }
+        } else if (!conciseViewActive && wasConcise) {
+            const hadEvictedConciseTail = conciseTailEvictedRef.current
+            updateConciseTailEvicted(false)
+            initialConciseCoverageDoneRef.current = true
+            conciseCoveragePagesRef.current = 0
+            if (hadEvictedConciseTail && atBottomRef.current) {
+                onViewModeChangeRef.current('tail')
+            }
+        }
+    }, [conciseViewActive, updateConciseTailEvicted])
+
+    useLayoutEffect(() => {
         const inputKey = hasSearchTarget
             ? `${props.sessionId}\u0000${initialSearchTargetId}\u0000${targetSearchQuery}\u0000${props.searchRequestId ?? 0}`
             : null
@@ -1105,6 +1164,9 @@ export function HappyThread(props: {
     }, [])
 
     const isAwaitingInitialTailCommit = useCallback((): boolean => {
+        if (conciseViewActiveRef.current && !initialConciseCoverageDoneRef.current) {
+            return false
+        }
         return initialScrollSessionRef.current !== sessionIdRef.current
             && !userCancelledInitialTailRef.current
             && !searchTargetHistoryLockRef.current
@@ -1132,6 +1194,23 @@ export function HappyThread(props: {
             && appliedMessagesVersionRef.current === messagesVersionRef.current
             && !(rawMessagesCountRef.current > 0 && isAwaitingInitialTailCommit())
     }, [isAwaitingInitialTailCommit])
+
+    const isCoverageBlockedByInitialSettling = useCallback(() => {
+        if (
+            conciseViewActiveRef.current
+            && !initialConciseCoverageDoneRef.current
+            && (
+                renderedMessagesCountRef.current === 0
+                || appliedMessagesVersionRef.current === messagesVersionRef.current
+            )
+        ) {
+            return false
+        }
+        if (canBypassInitialSettlingForUncoveredTail()) {
+            return false
+        }
+        return isInitialScrollSettling()
+    }, [canBypassInitialSettlingForUncoveredTail, isInitialScrollSettling])
 
     const clearInitialScrollTimers = useCallback(() => {
         for (const timer of initialScrollTimersRef.current) {
@@ -1316,6 +1395,9 @@ export function HappyThread(props: {
                 return
             }
             atBottomRef.current = atBottom
+            if (atBottom && conciseTailEvictedRef.current && conciseViewActiveRef.current) {
+                return
+            }
             onViewModeChangeRef.current(atBottom ? 'tail' : 'history')
         }
 
@@ -1783,6 +1865,7 @@ export function HappyThread(props: {
             scrollToBottomSmooth()
             lastScrollTopRef.current = viewport.scrollTop
         }
+        updateConciseTailEvicted(false)
         autoScrollEnabledRef.current = true
         atBottomRef.current = true
         if (props.onJumpToTail) {
@@ -1794,13 +1877,14 @@ export function HappyThread(props: {
         } else {
             onViewModeChangeRef.current('tail')
         }
-    }, [activeSearchTargetId, dismissSearchTarget, props.onJumpToTail, releaseSearchTargetHistoryLock, scrollToBottomSmooth])
+    }, [activeSearchTargetId, dismissSearchTarget, props.onJumpToTail, releaseSearchTargetHistoryLock, scrollToBottomSmooth, updateConciseTailEvicted])
 
     // Reset state when session changes
     useLayoutEffect(() => {
         const hasInitialSearchTarget = Boolean(props.initialTargetMessageId?.trim())
         userCancelledInitialTailRef.current = false
         searchTargetHistoryLockRef.current = false
+        updateConciseTailEvicted(false)
         setShowScrollToBottom(false)
         autoScrollEnabledRef.current = true
         tailScrollInProgressRef.current = false
@@ -1825,6 +1909,9 @@ export function HappyThread(props: {
         }
         initialScrollSessionRef.current = null
         initialScrollDeadlineRef.current = 0
+        initialConciseCoverageDoneRef.current = !conciseViewActiveRef.current
+        conciseCoveragePagesRef.current = 0
+        prevConciseViewActiveRef.current = conciseViewActiveRef.current
         clearInitialScrollTimers()
         clearSearchTargetMarker()
         clearSearchTargetScrollTimers()
@@ -1844,7 +1931,8 @@ export function HappyThread(props: {
         clearSearchTargetScrollTimers,
         clearCoverageCheckTimer,
         clearFailureRetryTimer,
-        settlePendingLoad
+        settlePendingLoad,
+        updateConciseTailEvicted
     ])
 
     useLayoutEffect(() => {
@@ -1855,8 +1943,14 @@ export function HappyThread(props: {
             || props.isSyncingTail
             || props.rawMessagesCount === 0
             || appliedMessagesVersion !== props.messagesVersion
+            || (conciseViewActive && renderedMessagesCount === 0)
             || hasBlockingScrollRestore()
         ) {
+            return
+        }
+
+        if (!autoScrollEnabledRef.current || !atBottomRef.current) {
+            initialScrollSessionRef.current = props.sessionId
             return
         }
 
@@ -1868,7 +1962,9 @@ export function HappyThread(props: {
         }
         autoScrollEnabledRef.current = true
         atBottomRef.current = true
-        onViewModeChangeRef.current('tail')
+        if (!(conciseTailEvictedRef.current && conciseViewActiveRef.current)) {
+            onViewModeChangeRef.current('tail')
+        }
         scrollToBottomInstant()
 
         initialScrollDeadlineRef.current = Date.now() + INITIAL_SCROLL_SETTLE_MS
@@ -1889,6 +1985,8 @@ export function HappyThread(props: {
         props.initialTargetMessageId,
         props.isSyncingTail,
         props.rawMessagesCount,
+        conciseViewActive,
+        renderedMessagesCount,
         props.messagesVersion,
         appliedMessagesVersion,
         scrollToBottomInstant,
@@ -2184,7 +2282,8 @@ export function HappyThread(props: {
         clearSearchTargetScrollTimers,
         clearCoverageCheckTimer,
         clearFailureRetryTimer,
-        settlePendingLoad
+        settlePendingLoad,
+        updateConciseTailEvicted
     ])
 
     useEffect(() => {
@@ -2196,6 +2295,19 @@ export function HappyThread(props: {
     }, [props.forceScrollToken, scrollToBottom])
 
     const needsViewportCoverage = useCallback((options?: { includePreloadMargin?: boolean }): boolean => {
+        if (
+            conciseViewActiveRef.current
+            && !initialConciseCoverageDoneRef.current
+            && (
+                renderedMessagesCountRef.current === 0
+                || (
+                    renderedMessagesCountRef.current <= 1
+                    && retainedMessagesCountRef.current <= CONCISE_TAIL_PRESERVE_RAW_LIMIT
+                )
+            )
+        ) {
+            return true
+        }
         const viewport = viewportRef.current
         const sentinel = topSentinelRef.current
         if (!viewport || !sentinel || viewport.clientHeight <= 0) {
@@ -2226,7 +2338,9 @@ export function HappyThread(props: {
         if (historyLoaderRef.current.autoPaused) {
             return
         }
-        const delay = getHistoryCoverageRetryDelay(initialScrollDeadlineRef.current, Date.now())
+        const delay = isCoverageBlockedByInitialSettling()
+            ? getHistoryCoverageRetryDelay(initialScrollDeadlineRef.current, Date.now())
+            : 0
         coverageCheckTimerRef.current = window.setTimeout(() => {
             coverageCheckTimerRef.current = null
             if (
@@ -2237,7 +2351,7 @@ export function HappyThread(props: {
                 void requestOlderRef.current('coverage')
             }
         }, delay)
-    }, [clearCoverageCheckTimer, isReadyForAutomaticCoverage, needsViewportCoverage])
+    }, [clearCoverageCheckTimer, isCoverageBlockedByInitialSettling, isReadyForAutomaticCoverage, needsViewportCoverage])
 
     const startHistoryLoadAttempt = useCallback((runId: number): void => {
         const state = historyLoaderRef.current
@@ -2251,6 +2365,9 @@ export function HappyThread(props: {
         ) => {
             clearFailureRetryTimer()
             pendingScrollRef.current = null
+            if (result === 'terminal-stop') {
+                initialConciseCoverageDoneRef.current = true
+            }
             historyLoaderRef.current = {
                 ...current,
                 phase: 'idle',
@@ -2293,12 +2410,36 @@ export function HappyThread(props: {
         }
 
         clearFailureRetryTimer()
+        if (state.source === 'user') {
+            initialConciseCoverageDoneRef.current = true
+            if (conciseTailEvictedRef.current && atBottomRef.current) {
+                atBottomRef.current = false
+                onViewModeChangeRef.current('history')
+            }
+        }
+        if (retainedMessagesCountRef.current > CONCISE_TAIL_PRESERVE_RAW_LIMIT) {
+            if (
+                state.source === 'coverage'
+                && conciseViewActiveRef.current
+                && renderedMessagesCountRef.current === 0
+            ) {
+                updateConciseTailEvicted(true)
+            } else if (atBottomRef.current) {
+                atBottomRef.current = false
+                if (conciseViewActiveRef.current) {
+                    updateConciseTailEvicted(true)
+                }
+                onViewModeChangeRef.current('history')
+            }
+        }
         const distanceFromBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
         const preserveTail = state.source === 'coverage'
-            && autoScrollEnabledRef.current
             && atBottomRef.current
             && !searchTargetHistoryLockRef.current
-            && distanceFromBottom <= AUTO_SCROLL_RESUME_THRESHOLD_PX
+            && (
+                (autoScrollEnabledRef.current && distanceFromBottom <= AUTO_SCROLL_RESUME_THRESHOLD_PX)
+                || (conciseViewActiveRef.current && !initialConciseCoverageDoneRef.current)
+            )
         const anchor = captureScrollAnchor(viewport)
         pendingScrollRef.current = {
             runId,
@@ -2307,7 +2448,10 @@ export function HappyThread(props: {
             scrollTop: viewport.scrollTop,
             scrollHeight: viewport.scrollHeight,
             targetHistoryVersion: null,
-            preserveTail
+            preserveTail,
+            visibleBlocksCount: renderedMessagesCountRef.current,
+            normalizedMessagesCount: normalizedMessagesCountRef.current,
+            addedRenderableCount: null
         }
         if (!preserveTail) {
             autoScrollEnabledRef.current = false
@@ -2327,6 +2471,18 @@ export function HappyThread(props: {
                         || pending.runId !== runId
                     ) {
                         return false
+                    }
+                    if (
+                        current.source === 'coverage'
+                        && conciseViewActiveRef.current
+                        && atBottomRef.current
+                        && retainedMessagesCountRef.current > CONCISE_TAIL_PRESERVE_RAW_LIMIT
+                    ) {
+                        if (renderedMessagesCountRef.current > 0) {
+                            initialConciseCoverageDoneRef.current = true
+                            return false
+                        }
+                        updateConciseTailEvicted(true)
                     }
                     if (
                         current.source !== 'consumer'
@@ -2359,6 +2515,7 @@ export function HappyThread(props: {
                     return
                 }
                 pending.targetHistoryVersion = outcome.historyVersion
+                pending.addedRenderableCount = outcome.addedRenderableCount
                 historyLoaderRef.current = { ...current, phase: 'awaiting-render' }
                 return
             }
@@ -2402,7 +2559,8 @@ export function HappyThread(props: {
         isReadyForAutomaticCoverage,
         needsViewportCoverage,
         scheduleCoverageAfterSettling,
-        settlePendingLoad
+        settlePendingLoad,
+        updateConciseTailEvicted
     ])
     startHistoryLoadAttemptRef.current = startHistoryLoadAttempt
 
@@ -2437,8 +2595,18 @@ export function HappyThread(props: {
                 return Promise.resolve('terminal-stop')
             }
             if (
+                conciseViewActiveRef.current
+                && atBottomRef.current
+                && renderedMessagesCountRef.current > 0
+                && retainedMessagesCountRef.current > CONCISE_TAIL_PRESERVE_RAW_LIMIT
+            ) {
+                initialConciseCoverageDoneRef.current = true
+                historyLoaderRef.current = { ...state, autoPaused: true }
+                return Promise.resolve('terminal-stop')
+            }
+            if (
                 !isReadyForAutomaticCoverage()
-                || (isInitialScrollSettling() && !canBypassInitialSettlingForUncoveredTail())
+                || isCoverageBlockedByInitialSettling()
                 || !needsViewportCoverage()
             ) {
                 return Promise.resolve('transient-stop')
@@ -2447,9 +2615,12 @@ export function HappyThread(props: {
             if (!hasMoreMessagesRef.current) {
                 return Promise.resolve('terminal-stop')
             }
-            if (source === 'user' && state.autoPaused) {
-                state = { ...state, autoPaused: false }
-                historyLoaderRef.current = state
+            if (source === 'user') {
+                conciseCoveragePagesRef.current = 0
+                if (state.autoPaused) {
+                    state = { ...state, autoPaused: false }
+                    historyLoaderRef.current = state
+                }
             }
         }
 
@@ -2496,9 +2667,8 @@ export function HappyThread(props: {
         clearCoverageCheckTimer,
         clearFailureRetryTimer,
         clearInitialScrollTimers,
-        isInitialScrollSettling,
-        canBypassInitialSettlingForUncoveredTail,
         isReadyForAutomaticCoverage,
+        isCoverageBlockedByInitialSettling,
         needsViewportCoverage
     ])
     requestOlderRef.current = requestOlder
@@ -2541,11 +2711,14 @@ export function HappyThread(props: {
             clearCoverageCheckTimer()
             return
         }
-        if (!needsViewportCoverage()) {
+        if (isCoverageBlockedByInitialSettling()) {
+            scheduleCoverageAfterSettling()
             return
         }
-        if (isInitialScrollSettling() && !canBypassInitialSettlingForUncoveredTail()) {
-            scheduleCoverageAfterSettling()
+        if (!needsViewportCoverage()) {
+            if (conciseViewActive && appliedMessagesVersion === props.messagesVersion) {
+                initialConciseCoverageDoneRef.current = true
+            }
             return
         }
         void requestOlderRef.current('coverage')
@@ -2556,9 +2729,11 @@ export function HappyThread(props: {
         props.rawMessagesCount,
         props.messagesVersion,
         appliedMessagesVersion,
+        appliedHistoryVersion,
+        renderedMessagesCount,
+        conciseViewActive,
         isAwaitingInitialTailCommit,
-        isInitialScrollSettling,
-        canBypassInitialSettlingForUncoveredTail,
+        isCoverageBlockedByInitialSettling,
         needsViewportCoverage,
         scheduleCoverageAfterSettling,
         clearCoverageCheckTimer
@@ -2595,7 +2770,7 @@ export function HappyThread(props: {
                 && isReadyForAutomaticCoverage()
                 && needsViewportCoverage()
             ) {
-                if (isInitialScrollSettling() && !canBypassInitialSettlingForUncoveredTail()) {
+                if (isCoverageBlockedByInitialSettling()) {
                     scheduleCoverageAfterSettling()
                 } else {
                     void requestOlderRef.current('coverage')
@@ -2607,10 +2782,9 @@ export function HappyThread(props: {
     }, [
         scrollToBottomInstant,
         scrollToBottomSmooth,
-        isInitialScrollSettling,
-        canBypassInitialSettlingForUncoveredTail,
         hasBlockingScrollRestore,
         isReadyForAutomaticCoverage,
+        isCoverageBlockedByInitialSettling,
         needsViewportCoverage,
         scheduleCoverageAfterSettling
     ])
@@ -2677,17 +2851,41 @@ export function HappyThread(props: {
             lastScrollTopRef.current = viewport.scrollTop
             pendingScrollRef.current = null
             clearFailureRetryTimer()
+            let shouldAutoPause = true
+            if (conciseViewActiveRef.current) {
+                conciseCoveragePagesRef.current += 1
+                const addedRenderable = pending.addedRenderableCount !== null
+                    ? pending.addedRenderableCount > 0
+                    : normalizedMessagesCountRef.current > pending.normalizedMessagesCount
+                const wouldEvictVisibleTail = renderedMessagesCountRef.current > 0
+                    && retainedMessagesCountRef.current > CONCISE_TAIL_PRESERVE_RAW_LIMIT
+                const canContinueConcisePaging = hasMoreMessagesRef.current
+                    && addedRenderable
+                    && !wouldEvictVisibleTail
+                    && conciseCoveragePagesRef.current < MAX_CONCISE_COVERAGE_PAGES
+                const stillNeedsInitialConciseCoverage = !initialConciseCoverageDoneRef.current
+                    && needsViewportCoverage()
+                const pageFilteredByConciseView = renderedMessagesCountRef.current <= pending.visibleBlocksCount
+                    && needsViewportCoverage()
+                if (canContinueConcisePaging && (stillNeedsInitialConciseCoverage || pageFilteredByConciseView)) {
+                    shouldAutoPause = false
+                } else {
+                    initialConciseCoverageDoneRef.current = true
+                }
+            }
             historyLoaderRef.current = {
                 ...loaderState,
                 phase: 'idle',
                 source: null,
                 failureCount: 0,
-                // A completed page always consumes automatic demand. The next
-                // page requires renewed wheel/touch/keyboard/scrollbar intent;
-                // render, resize, and scroll-restoration events cannot chain it.
-                autoPaused: true
+                // A completed page always consumes automatic demand unless concise
+                // view filtered the page out or is still filling initial coverage.
+                autoPaused: shouldAutoPause
             }
             settlePendingLoad('loaded')
+            if (!shouldAutoPause && !searchTargetHistoryLockRef.current && needsViewportCoverage()) {
+                scheduleCoverageAfterSettling()
+            }
             return
         }
         if (
@@ -2704,10 +2902,13 @@ export function HappyThread(props: {
         scrollToBottomInstant,
         hasBlockingScrollRestore,
         settlePendingLoad,
-        clearFailureRetryTimer
+        clearFailureRetryTimer,
+        needsViewportCoverage,
+        scheduleCoverageAfterSettling
     ])
 
-    const showSkeleton = props.isSyncingTail && props.rawMessagesCount === 0
+    const showSkeleton = (props.isSyncingTail && renderedMessagesCount === 0)
+        || (conciseViewActive && renderedMessagesCount === 0 && props.isLoadingMoreMessages)
     const handleShareTurn = useCallback((
         messageTarget: HTMLElement | string | null,
         clientY?: number,
@@ -2928,7 +3129,7 @@ export function HappyThread(props: {
                     </div>
                 </ThreadPrimitive.Viewport>
                 <NewMessagesIndicator count={props.unseenCount} onClick={scrollToBottom} />
-                {shouldRenderScrollToBottomButton(showScrollToBottom, props.unseenCount) ? (
+                {shouldRenderScrollToBottomButton(showScrollToBottom || conciseTailEvicted, props.unseenCount) ? (
                     <ScrollToBottomButton onClick={scrollToBottom} />
                 ) : null}
                 {props.outlineOpen ? (
