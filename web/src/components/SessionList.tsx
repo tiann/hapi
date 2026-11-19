@@ -128,6 +128,15 @@ import { useSessionRowTooltipIds } from '@/components/HoverTooltip'
 import { formatReopenError } from '@/lib/reopenError'
 import { resolveCursorReopenGate } from '@/lib/sessionResume'
 import { getSessionTitle, hasSessionTitleSignal } from '@/lib/sessionTitle'
+import {
+    buildSessionLineage,
+    buildSessionLookup,
+    childDemandsAttention,
+    childIsWorking,
+    isChildLineageExpandedByDefault,
+    type SessionLineageDescendant,
+    type SessionLineageForest
+} from '@/lib/sessionLineage'
 import { getWorktreeSessionLabel } from '@/lib/sessionWorktreeLabel'
 import { getSessionProjectLabel, getSessionProjectPath } from '@/lib/sessionProjectLabel'
 import { retargetSharePendingTransfer } from '@/lib/sharePendingState'
@@ -1194,6 +1203,8 @@ type SessionItemProps = {
     targetMessageId?: string
     targetMessageQuery?: string
     lastSeenVersion: number
+    lineageKindLabel?: string
+    parentLabel?: string
 }
 
 function shallowEqualExcept<T extends object>(previous: T, next: T, ignored: keyof T): boolean {
@@ -1224,7 +1235,9 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
         contentSearchTruncated,
         targetMessageId,
         targetMessageQuery,
-        lastSeenVersion
+        lastSeenVersion,
+        lineageKindLabel,
+        parentLabel
     } = props
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
@@ -1526,6 +1539,8 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                         contentSnippet={contentSnippet}
                         contentSearchTruncated={contentSearchTruncated}
                         trailingClassName={hasQuickAction ? 'session-row-trailing' : undefined}
+                        lineageKindLabel={lineageKindLabel}
+                        parentLabel={parentLabel}
                     />
                 </button>
                 {githubPrAwarenessEnabled && primaryPrRef ? (
@@ -2181,7 +2196,133 @@ export function SessionList(props: {
     )
     const [runningSectionCollapsed, setRunningSectionCollapsed] = useState(false)
     const [pinnedSectionCollapsed, setPinnedSectionCollapsed] = useState(false)
+    const [expandedLineageParentIds, setExpandedLineageParentIds] = useState<Map<string, boolean>>(
+        () => new Map()
+    )
     const autoExpandedSelectedSessionKeyRef = useRef<string | null>(null)
+    const sessionById = useMemo(
+        () => buildSessionLookup(props.sessions),
+        [props.sessions]
+    )
+    const isRankedTextSearch = searchScoreIndex !== null
+    const buildGroupLineage = useCallback(
+        (sessions: SessionSummary[]): SessionLineageForest => isRankedTextSearch
+            ? {
+                roots: sessions,
+                childrenByParentId: new Map(),
+                descendantsByRootId: new Map(),
+                effectiveParentByChildId: new Map(),
+            }
+            : buildSessionLineage(sessions, sessionById),
+        [isRankedTextSearch, sessionById]
+    )
+    const lineageByGroupKey = useMemo(() => {
+        const map = new Map<string, SessionLineageForest>()
+        for (const group of groups) {
+            map.set(group.key, buildGroupLineage(group.sessions))
+        }
+        return map
+    }, [groups, buildGroupLineage])
+    const prevSessionLineageStateRef = useRef<Map<string, { working: boolean; parentSessionId: string | null }> | null>(null)
+    const pendingRevealChildIdsRef = useRef<Set<string>>(new Set())
+    // Track id → { working, parentSessionId } over unfiltered props.sessions so a
+    // collapsed lineage reveals when a descendant starts working, first appears
+    // already working and linked, or gains its parent link while already working —
+    // without clearing explicit collapse when an already-working, already-linked
+    // child leaves and re-enters rendered groups (filters, ranked search, global
+    // pin/unpin, or directory moves). Triggers that happen while lineage nesting is
+    // hidden (e.g. during ranked search or filtering) stay pending until the child
+    // renders under a lineage root or stops being working and linked.
+    useLayoutEffect(() => {
+        const current = new Map<string, { working: boolean; parentSessionId: string | null }>()
+        for (const s of props.sessions) {
+            current.set(s.id, {
+                working: childIsWorking(s),
+                parentSessionId: s.metadata?.parentLink?.parentSessionId || null,
+            })
+        }
+
+        const prev = prevSessionLineageStateRef.current
+        prevSessionLineageStateRef.current = current
+        const pendingRevealChildIds = pendingRevealChildIdsRef.current
+
+        if (prev) {
+            for (const [sessionId, nextState] of current) {
+                if (!nextState.working || !nextState.parentSessionId) continue
+                const prevState = prev.get(sessionId)
+                const becameWorking = !prevState || !prevState.working
+                const firstLinked = prevState !== undefined && prevState.parentSessionId === null
+                if (becameWorking || firstLinked) {
+                    pendingRevealChildIds.add(sessionId)
+                }
+            }
+        }
+
+        for (const sessionId of pendingRevealChildIds) {
+            const state = current.get(sessionId)
+            if (!state || !state.working || !state.parentSessionId) {
+                pendingRevealChildIds.delete(sessionId)
+            }
+        }
+        if (pendingRevealChildIds.size === 0) return
+
+        const rootsToReveal = new Set<string>()
+        const resolvedChildIds = new Set<string>()
+        for (const lineage of lineageByGroupKey.values()) {
+            for (const [rootId, descendants] of lineage.descendantsByRootId) {
+                for (const { session: child } of descendants) {
+                    if (pendingRevealChildIds.has(child.id)) {
+                        rootsToReveal.add(rootId)
+                        resolvedChildIds.add(child.id)
+                    }
+                }
+            }
+        }
+        for (const childId of resolvedChildIds) {
+            pendingRevealChildIds.delete(childId)
+        }
+        if (rootsToReveal.size === 0) return
+
+        setExpandedLineageParentIds((existing) => {
+            let next: Map<string, boolean> | null = null
+            for (const rootId of rootsToReveal) {
+                if (existing.get(rootId) === false) {
+                    next ??= new Map(existing)
+                    next.delete(rootId)
+                }
+            }
+            return next ?? existing
+        })
+    }, [props.sessions, lineageByGroupKey])
+    const lineageAttentionCtx = useMemo(
+        () => ({
+            selectedSessionId,
+            keepUnreadSessionsVisible,
+            isUnread: isSessionUnread,
+        }),
+        [selectedSessionId, keepUnreadSessionsVisible, isSessionUnread]
+    )
+    const sessionTitleById = useMemo(() => {
+        const titles = new Map<string, string>()
+        for (const s of props.sessions) {
+            titles.set(s.id, getSessionTitle(s))
+        }
+        return titles
+    }, [props.sessions])
+    const resolveParentLabelById = useCallback(
+        (parentId: string | undefined): string | undefined => {
+            if (!parentId) return undefined
+            return sessionTitleById.get(parentId) ?? parentId.slice(0, 8)
+        },
+        [sessionTitleById]
+    )
+    const toggleLineageParent = useCallback((parentId: string, currentlyExpanded: boolean) => {
+        setExpandedLineageParentIds((prev) => {
+            const next = new Map(prev)
+            next.set(parentId, !currentlyExpanded)
+            return next
+        })
+    }, [])
     const isGroupCollapsed = (group: SessionGroup): boolean => {
         const override = isFiltering
             ? filterCollapseOverrides.get(group.key)
@@ -2225,33 +2366,33 @@ export function SessionList(props: {
         return sessionVisibleCounts.get(group.key) ?? sessionPreviewLimit
     }
 
-    const showMoreSessions = (group: SessionGroup) => {
+    const showMoreSessions = (group: SessionGroup, pool: SessionSummary[] = group.sessions, isRequired?: (s: SessionSummary) => boolean) => {
         setSessionVisibleCounts(prev => {
             const next = new Map(prev)
             const currentLimit = Math.min(
                 prev.get(group.key) ?? sessionPreviewLimit,
-                group.sessions.length
+                pool.length
             )
-            const currentVisibleCount = getVisibleSessionPreview(group.sessions, {
+            const currentVisibleCount = getVisibleSessionPreview(pool, {
                 selectedSessionId,
                 limit: currentLimit,
-                isUnread: previewIsUnread
+                isUnread: isRequired ?? previewIsUnread
             }).length
             next.set(group.key, getNextSessionVisibleCount(
                 Math.max(currentLimit, currentVisibleCount),
                 sessionPreviewLimit,
-                group.sessions.length
+                pool.length
             ))
             return next
         })
     }
 
-    const showFewerSessions = (group: SessionGroup) => {
+    const showFewerSessions = (group: SessionGroup, pool: SessionSummary[] = group.sessions) => {
         setSessionVisibleCounts(prev => {
             const next = new Map(prev)
             const current = Math.min(
                 prev.get(group.key) ?? sessionPreviewLimit,
-                group.sessions.length
+                pool.length
             )
             const previous = getPreviousSessionVisibleCount(current, sessionPreviewLimit)
             if (previous <= sessionPreviewLimit) {
@@ -2263,16 +2404,41 @@ export function SessionList(props: {
         })
     }
 
-    const getVisibleGroupSessions = (group: SessionGroup): SessionSummary[] => {
-        return getVisibleSessionPreview(
-            group.sessions,
-            {
-                selectedSessionId,
-                limit: getGroupVisibleCount(group),
-                isUnread: previewIsUnread
-            }
-        )
-    }
+    const isLineageRootVisibleRequired = useCallback(
+        (lineage: SessionLineageForest, root: SessionSummary): boolean => {
+            if (previewIsUnread?.(root)) return true
+            const descendants = lineage.descendantsByRootId.get(root.id)
+            if (!descendants || descendants.length === 0) return false
+            return descendants.some(({ session: child }) =>
+                childIsWorking(child) || childDemandsAttention(child, lineageAttentionCtx)
+            )
+        },
+        [previewIsUnread, lineageAttentionCtx]
+    )
+
+    const getVisibleLineageRoots = (group: SessionGroup, lineage: SessionLineageForest): SessionSummary[] => (
+        getVisibleSessionPreview(lineage.roots, {
+            selectedSessionId,
+            limit: Math.min(getGroupVisibleCount(group), lineage.roots.length),
+            isUnread: (root) => isLineageRootVisibleRequired(lineage, root),
+        })
+    )
+
+    const isLineageParentExpanded = (
+        rootId: string,
+        descendants: readonly SessionLineageDescendant[]
+    ): boolean => (
+        expandedLineageParentIds.get(rootId)
+            ?? isChildLineageExpandedByDefault(descendants.map((d) => d.session), lineageAttentionCtx)
+    )
+
+    const isDescendantRowOpen = (
+        child: SessionSummary,
+        groupCollapsed: boolean,
+        parentExpanded: boolean
+    ): boolean => groupCollapsed
+        ? (keepUnreadSessionsVisible && isSessionUnread(child))
+        : (parentExpanded || isFiltering || childDemandsAttention(child, lineageAttentionCtx))
 
     const renderPinnedSection = ({
         sectionKey,
@@ -2363,6 +2529,7 @@ export function SessionList(props: {
                                             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
                                             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
                                             lastSeenVersion={lastSeenVersion}
+                                            parentLabel={resolveParentLabelById(s.metadata?.parentLink?.parentSessionId)}
                                         />
                                     ))}
                                 </div>
@@ -2424,7 +2591,10 @@ export function SessionList(props: {
         )
     }
 
-    const renderGroupSessionItem = (s: SessionSummary) => (
+    const renderGroupSessionItem = (
+        s: SessionSummary,
+        options?: { lineageKindLabel?: string; parentLabel?: string }
+    ) => (
         <SessionItem
             session={s}
             onSelect={props.onSelect}
@@ -2440,30 +2610,40 @@ export function SessionList(props: {
             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
             lastSeenVersion={lastSeenVersion}
+            lineageKindLabel={options?.lineageKindLabel}
+            parentLabel={options?.parentLabel}
         />
     )
 
     const renderDirectoryGroup = (group: SessionGroup) => {
         const isCollapsed = isGroupCollapsed(group)
-        const visibleGroupSessions = getVisibleGroupSessions(group)
+        const lineage = lineageByGroupKey.get(group.key) ?? buildGroupLineage(group.sessions)
+        const rootIsVisibleRequired = (root: SessionSummary): boolean => isLineageRootVisibleRequired(lineage, root)
+        const visibleRoots = getVisibleLineageRoots(group, lineage)
         // A collapsed group still shows its unread rows, so new output in a
         // quiet project is never folded out of sight. Each row folds on its
         // own instead of moving to a separate list, so toggling the group
         // never remounts (and re-animates) the rows that stay visible.
         const isRowOpen = (s: SessionSummary) => !isCollapsed || (keepUnreadSessionsVisible && isSessionUnread(s))
-        const anyRowOpen = visibleGroupSessions.some(isRowOpen)
-        const hiddenSessionCount = group.sessions.length - visibleGroupSessions.length
+        const anyRowOpen = visibleRoots.some((root) => {
+            if (isRowOpen(root)) return true
+            const descendants = lineage.descendantsByRootId.get(root.id)
+            if (!descendants || descendants.length === 0) return false
+            const parentExpanded = isLineageParentExpanded(root.id, descendants)
+            return descendants.some(({ session: child }) => isDescendantRowOpen(child, isCollapsed, parentExpanded))
+        })
+        const hiddenSessionCount = lineage.roots.length - visibleRoots.length
         const currentLimit = Math.min(
             getGroupVisibleCount(group),
-            group.sessions.length
+            lineage.roots.length
         )
         const previousLimit = getPreviousSessionVisibleCount(currentLimit, sessionPreviewLimit)
-        const previousGroupSessions = getVisibleSessionPreview(group.sessions, {
+        const previousRootSessions = getVisibleSessionPreview(lineage.roots, {
             selectedSessionId,
             limit: previousLimit,
-            isUnread: previewIsUnread
+            isUnread: rootIsVisibleRequired
         })
-        const collapseCount = visibleGroupSessions.length - previousGroupSessions.length
+        const collapseCount = visibleRoots.length - previousRootSessions.length
         const canShowFewerSessions = previousLimit < currentLimit && collapseCount > 0
         const expandCount = Math.min(sessionPreviewLimit, hiddenSessionCount)
         // With multiple machines in the unfiltered view, disambiguate
@@ -2499,29 +2679,84 @@ export function SessionList(props: {
                     <CollapsiblePanel open={anyRowOpen}>
                         <div className="h-1" />
                     </CollapsiblePanel>
-                    {visibleGroupSessions.map((s, index) => (
-                        <CollapsiblePanel key={s.id} open={isRowOpen(s)}>
-                            {shouldShowPinnedDivider(visibleGroupSessions, index) ? (
-                                <CollapsiblePanel open={!isCollapsed}>
-                                    <div
-                                        data-testid="session-pin-divider"
-                                        className="ml-2.5 mr-2 mb-1.5 mt-1 border-t border-[var(--app-border)]"
-                                        aria-hidden="true"
-                                    />
+                    {visibleRoots.map((s, index) => {
+                        const descendants = lineage.descendantsByRootId.get(s.id) ?? []
+                        const childSessions = descendants.map((d) => d.session)
+                        const parentExpanded = isLineageParentExpanded(s.id, descendants)
+                        const runningChildCount = childSessions.filter(childIsWorking).length
+                        const rootExternalParentLabel = resolveParentLabelById(s.metadata?.parentLink?.parentSessionId)
+                        const rootLinkKind = s.metadata?.parentLink?.kind
+                        const rootKindLabel = rootLinkKind && rootLinkKind !== 'peer' ? t(`sessions.lineage.kind.${rootLinkKind}`) : undefined
+                        return (
+                            <div key={s.id}>
+                                <CollapsiblePanel open={isRowOpen(s)}>
+                                    {shouldShowPinnedDivider(visibleRoots, index) ? (
+                                        <CollapsiblePanel open={!isCollapsed}>
+                                            <div
+                                                data-testid="session-pin-divider"
+                                                className="ml-2.5 mr-2 mb-1.5 mt-1 border-t border-[var(--app-border)]"
+                                                aria-hidden="true"
+                                            />
+                                        </CollapsiblePanel>
+                                    ) : null}
+                                    <div className="pb-0.5">
+                                        {renderGroupSessionItem(
+                                            s,
+                                            rootExternalParentLabel || rootKindLabel
+                                                ? { lineageKindLabel: rootKindLabel, parentLabel: rootExternalParentLabel }
+                                                : undefined
+                                        )}
+                                    </div>
                                 </CollapsiblePanel>
-                            ) : null}
-                            <div className="pb-0.5">
-                                {renderGroupSessionItem(s)}
+                                {descendants.length > 0 ? (
+                                    <div className="ml-2.5 border-l border-[var(--app-border)] pl-1.5 sm:ml-4 sm:pl-2">
+                                        {!isCollapsed ? (
+                                            <button
+                                                type="button"
+                                                data-testid="session-lineage-toggle"
+                                                aria-expanded={parentExpanded || isFiltering}
+                                                title={parentExpanded ? t('sessions.lineage.collapseChildren') : t('sessions.lineage.expandChildren')}
+                                                onClick={() => toggleLineageParent(s.id, parentExpanded)}
+                                                className="mb-0.5 flex min-h-7 items-center gap-1.5 rounded px-1.5 py-1 text-[11px] text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)] touch-manipulation sm:min-h-0 sm:py-0.5"
+                                            >
+                                                <ChevronIcon className="h-3 w-3 shrink-0" collapsed={!parentExpanded && !isFiltering} />
+                                                <span className="tabular-nums">
+                                                    {runningChildCount > 0
+                                                        ? t('sessions.lineage.childrenRunning', {
+                                                            count: descendants.length,
+                                                            running: runningChildCount,
+                                                        })
+                                                        : t('sessions.lineage.childrenCount', { count: descendants.length })}
+                                                </span>
+                                            </button>
+                                        ) : null}
+                                        {descendants.map(({ session: child, parentId, depth }) => {
+                                            const linkKind = child.metadata?.parentLink?.kind
+                                            const kindLabel = linkKind && linkKind !== 'peer' ? t(`sessions.lineage.kind.${linkKind}`) : undefined
+                                            const nestedParentLabel = depth >= 2 ? resolveParentLabelById(parentId) : undefined
+                                            return (
+                                                <CollapsiblePanel key={child.id} open={isDescendantRowOpen(child, isCollapsed, parentExpanded)}>
+                                                    <div className="pb-0.5">
+                                                        {renderGroupSessionItem(child, {
+                                                            lineageKindLabel: kindLabel,
+                                                            parentLabel: nestedParentLabel,
+                                                        })}
+                                                    </div>
+                                                </CollapsiblePanel>
+                                            )
+                                        })}
+                                    </div>
+                                ) : null}
                             </div>
-                        </CollapsiblePanel>
-                    ))}
-                    {group.sessions.length > sessionPreviewLimit && (hiddenSessionCount > 0 || canShowFewerSessions) ? (
+                        )
+                    })}
+                    {lineage.roots.length > sessionPreviewLimit && (hiddenSessionCount > 0 || canShowFewerSessions) ? (
                         <CollapsiblePanel open={!isCollapsed}>
                             <div className="ml-2.5 mr-2 mt-1 mb-1.5 flex gap-1.5">
                                 {canShowFewerSessions ? (
                                     <button
                                         type="button"
-                                        onClick={() => showFewerSessions(group)}
+                                        onClick={() => showFewerSessions(group, lineage.roots)}
                                         className="flex min-w-0 flex-1 items-center justify-center gap-1 rounded-md border border-dashed border-[var(--app-border)] px-2 py-1 text-center text-xs text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]"
                                     >
                                         <SessionPreviewArrowIcon direction="up" className="h-3 w-3 shrink-0" />
@@ -2531,7 +2766,7 @@ export function SessionList(props: {
                                 {hiddenSessionCount > 0 ? (
                                     <button
                                         type="button"
-                                        onClick={() => showMoreSessions(group)}
+                                        onClick={() => showMoreSessions(group, lineage.roots, rootIsVisibleRequired)}
                                         className="flex min-w-0 flex-1 items-center justify-center gap-1 rounded-md border border-dashed border-[var(--app-border)] px-2 py-1 text-center text-xs text-[var(--app-hint)] transition-colors hover:bg-[var(--app-subtle-bg)] hover:text-[var(--app-fg)]"
                                     >
                                         <SessionPreviewArrowIcon direction="down" className="h-3 w-3 shrink-0" />
@@ -2620,10 +2855,13 @@ export function SessionList(props: {
             group.sessions.some((session) => session.id === target.sessionId)
         )
         if (targetGroup) {
+            const targetSession = targetGroup.sessions.find((session) => session.id === target.sessionId)!
+            const lineage = lineageByGroupKey.get(targetGroup.key)
+                ?? buildGroupLineage(targetGroup.sessions)
             const collapsed = isGroupCollapsed(targetGroup)
             const peekingUnread = collapsed
                 && keepUnreadSessionsVisible
-                && targetGroup.sessions.some((session) => session.id === target.sessionId && isSessionUnread(session))
+                && isSessionUnread(targetSession)
             let expanding = false
             if (collapsed && !peekingUnread) {
                 expanding = true
@@ -2631,23 +2869,48 @@ export function SessionList(props: {
                 setOverrides((prev) => expandSelectedSessionCollapseOverrides(prev, targetGroup))
             }
 
-            const targetIndex = targetGroup.sessions.findIndex((session) => session.id === target.sessionId)
-            if (targetIndex >= 0 && !getVisibleGroupSessions(targetGroup).some((session) => session.id === target.sessionId)) {
+            let targetRootId = target.sessionId
+            while (lineage.effectiveParentByChildId.has(targetRootId)) {
+                targetRootId = lineage.effectiveParentByChildId.get(targetRootId)!
+            }
+            const targetRootIndex = lineage.roots.findIndex((root) => root.id === targetRootId)
+            const visibleRoots = getVisibleLineageRoots(targetGroup, lineage)
+            if (targetRootIndex >= 0 && !visibleRoots.some((root) => root.id === targetRootId)) {
                 expanding = true
-                let neededLimit = targetIndex + 1
-                for (let i = targetIndex + 1; i < targetGroup.sessions.length; i += 1) {
-                    const s = targetGroup.sessions[i]!
-                    if (s.id === selectedSessionId || (s.active && s.pendingRequestsCount > 0) || previewIsUnread?.(s)) {
+                let neededLimit = targetRootIndex + 1
+                for (let i = targetRootIndex + 1; i < lineage.roots.length; i += 1) {
+                    const root = lineage.roots[i]!
+                    if (
+                        root.id === selectedSessionId
+                        || (root.active && root.pendingRequestsCount > 0)
+                        || isLineageRootVisibleRequired(lineage, root)
+                    ) {
                         neededLimit += 1
                     }
                 }
                 setSessionVisibleCounts((prev) => {
                     if (neededLimit <= (prev.get(targetGroup.key) ?? sessionPreviewLimit)) return prev
                     const next = new Map(prev)
-                    next.set(targetGroup.key, Math.min(neededLimit, targetGroup.sessions.length))
+                    next.set(targetGroup.key, Math.min(neededLimit, lineage.roots.length))
                     return next
                 })
             }
+
+            if (targetRootId !== target.sessionId) {
+                const descendants = lineage.descendantsByRootId.get(targetRootId) ?? []
+                const parentExpanded = isLineageParentExpanded(targetRootId, descendants)
+                const effectiveGroupCollapsed = collapsed && peekingUnread
+                if (!isDescendantRowOpen(targetSession, effectiveGroupCollapsed, parentExpanded)) {
+                    expanding = true
+                    setExpandedLineageParentIds((prev) => {
+                        if (prev.get(targetRootId) === true) return prev
+                        const next = new Map(prev)
+                        next.set(targetRootId, true)
+                        return next
+                    })
+                }
+            }
+
             if (!expanding && !target.pending) {
                 quickUnpinFocusRef.current = null
             }
@@ -2667,8 +2930,10 @@ export function SessionList(props: {
     }, [
         globalPinnedSessions, runningSessions, groups, runningSectionCollapsed,
         collapseOverrides, filterCollapseOverrides, sessionVisibleCounts,
+        expandedLineageParentIds, lineageByGroupKey, buildGroupLineage,
         isFiltering, selectedSessionId, keepUnreadSessionsVisible,
-        isSessionUnread, sessionPreviewLimit, previewIsUnread,
+        isSessionUnread, sessionPreviewLimit, isLineageRootVisibleRequired,
+        lineageAttentionCtx,
     ])
 
     // Clean up stale collapse overrides
@@ -3177,6 +3442,7 @@ export function SessionList(props: {
                                             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
                                             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
                                             lastSeenVersion={lastSeenVersion}
+                                            parentLabel={resolveParentLabelById(s.metadata?.parentLink?.parentSessionId)}
                                         />
                                     ))}
                                 </div>

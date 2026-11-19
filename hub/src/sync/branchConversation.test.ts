@@ -88,6 +88,26 @@ describe('portable branch lifecycle', () => {
             expect(await engine.branchConversation(source.id, 'default', { ...request, instruction: 'Different' })).toMatchObject({ type: 'error' })
         } finally { engine.stop() }
     })
+    it('keeps the replacement parent when the branch source is merged during spawn', async () => {
+        const { store, engine, rpc } = fixture()
+        const metadata = { path: '/tmp/work', host: 'test', machineId: 'machine', flavor: 'codex' }
+        const source = engine.getOrCreateSession('old-codex', metadata, null, 'default')
+        const replacement = engine.getOrCreateSession('new-codex', metadata, null, 'default')
+        const message = store.messages.addMessage(source.id, { role: 'user', content: { type: 'text', text: 'Branch here' } })
+        rpc.spawnSession = async (...args) => {
+            await engine['sessionCache'].mergeSessions(source.id, replacement.id, 'default')
+            return { type: 'success', sessionId: args[17]! }
+        }
+        try {
+            const result = await engine.branchConversation(source.id, 'default', {
+                ...request, messageLocalId: undefined, messageId: message.id, boundary: 'after',
+            })
+            if (result.type !== 'success') throw new Error(result.message)
+            expect(store.sessions.getSession(result.sessionId)?.metadata).toMatchObject({
+                forkedFrom: replacement.id, conversationBranch: { sourceSessionId: replacement.id, state: 'started' },
+            })
+        } finally { engine.stop(); store.close() }
+    })
     it('keeps ambiguous children and never respawns an idempotent retry', async () => {
         const { store, engine, source, rpc } = fixture()
         let calls = 0

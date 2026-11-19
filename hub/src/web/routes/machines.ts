@@ -318,6 +318,16 @@ export function createMachinesRoutes(
                 ? resolved.effort
                 : undefined
 
+        const rawParentId = parsed.data.parentSessionId?.trim()
+        const parentAccess = rawParentId
+            ? (typeof engine.resolveSessionAccess === 'function'
+                ? engine.resolveSessionAccess(rawParentId, namespace, { followRedirects: true })
+                : engine.getSessionByNamespace?.(rawParentId, namespace)
+                    ? { ok: true as const, sessionId: rawParentId }
+                    : null)
+            : null
+        const verifiedParentId = parentAccess?.ok ? parentAccess.sessionId : undefined
+
         const result = await engine.spawnSession(
             machineId,
             parsed.data.directory,
@@ -335,7 +345,9 @@ export function createMachinesRoutes(
             parsed.data.collaborationMode,
             parsed.data.copilotAgentMode,
             startingMode,
-            namespace
+            namespace,
+            undefined,
+            verifiedParentId
         )
         return c.json(result)
     })

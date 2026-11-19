@@ -462,4 +462,39 @@ describe('SessionHeader', () => {
 
         expect(await screen.findByText('Could not update pin: Network unavailable')).toBeInTheDocument()
     })
+
+    it('renders upward parent session link in header subtitle only when parent link exists', () => {
+        const { unmount } = renderHeader(baseSession())
+        expect(screen.queryByTestId('session-header-parent-link')).toBeNull()
+        unmount()
+
+        render(
+            <QueryClientProvider client={new QueryClient()}>
+                <ToastProvider>
+                    <I18nProvider>
+                        <SessionHeader
+                            session={baseSession({
+                                id: 'child-1',
+                                metadata: {
+                                    flavor: 'codex',
+                                    path: '/repo',
+                                    host: 'machine',
+                                    parentSessionId: 'parent-99',
+                                }
+                            })}
+                            parentSession={{ id: 'parent-99', title: 'Lead Coordinator' }}
+                            onBack={vi.fn()}
+                            api={null}
+                        />
+                    </I18nProvider>
+                </ToastProvider>
+            </QueryClientProvider>
+        )
+
+        const mobileParent = screen.getByTestId('session-header-parent-link')
+        const desktopParent = screen.getByTestId('session-header-parent-link-desktop')
+        expect(mobileParent.getAttribute('href')).toBe('/sessions/parent-99')
+        expect(desktopParent.getAttribute('href')).toBe('/sessions/parent-99')
+        expect(mobileParent).toHaveTextContent('↑Lead Coordinator')
+    })
 })

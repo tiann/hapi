@@ -15,7 +15,7 @@ import { getInvokedCwd } from '@/utils/invokedCwd'
 import { getProcessStartMarker } from '@/utils/process'
 import { readWorktreeEnv } from '@/utils/worktreeEnv'
 import { CURRENT_MACHINE_CAPABILITIES } from '@hapi/protocol/runnerCapabilities'
-import { exportHapiSessionEnv } from '@/agent/hapiSessionEnv'
+import { HAPI_SESSION_ID_ENV, exportHapiSessionEnv } from '@/agent/hapiSessionEnv'
 import packageJson from '../../package.json'
 
 export { HAPI_SESSION_ID_ENV, exportHapiSessionEnv, exportHapiHubAuthEnv } from '@/agent/hapiSessionEnv'
@@ -60,6 +60,27 @@ export function resolveReservedHubSessionId(reservedSessionId: string | undefine
         )
         return undefined
     }
+    return parsed.data
+}
+
+/**
+ * Resolves an inherited parent session id when a terminal CLI session is
+ * launched inside an active HAPI session (`HAPI_SESSION_ID`).
+ */
+export function resolveInheritedParentSessionId(options: {
+    startedBy: SessionStartedBy
+    reservedSessionId?: string
+    ownSessionId?: string
+    env?: NodeJS.ProcessEnv
+}): string | undefined {
+    if (options.startedBy !== 'terminal' || options.reservedSessionId) {
+        return undefined
+    }
+    const raw = (options.env ?? process.env)[HAPI_SESSION_ID_ENV]?.trim()
+    if (!raw) return undefined
+    const parsed = HubReservedSessionIdSchema.safeParse(raw)
+    if (!parsed.success) return undefined
+    if (options.ownSessionId && parsed.data === options.ownSessionId) return undefined
     return parsed.data
 }
 
@@ -206,6 +227,9 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     if (metadata.conversationHistoryDiverged !== undefined) {
         preserved.conversationHistoryDiverged = metadata.conversationHistoryDiverged
     }
+    if (metadata.parentSessionId !== undefined) {
+        preserved.parentSessionId = metadata.parentSessionId
+    }
     // Durable pending-rewind intent: the hub truncated at rewind-RPC success
     // and the CLI re-arms the native boundary on every start until the dropped
     // turns leave the active chain. Dropping it on reopen/resume would resume
@@ -263,6 +287,14 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
     const sessionTag = options.tag ?? randomUUID()
     const agentState = options.agentState === undefined ? {} : options.agentState
     const reservedHubId = resolveReservedHubSessionId(options.reservedSessionId)
+    const inheritedParentId = options.metadataOverrides?.parentSessionId === undefined
+        && !options.metadataOverrides?.forkedFrom?.trim()
+        && !options.metadataOverrides?.conversationBranch?.sourceSessionId.trim()
+        ? resolveInheritedParentSessionId({ startedBy, reservedSessionId: reservedHubId })
+        : undefined
+    const metadataOverrides = inheritedParentId
+        ? { ...options.metadataOverrides, parentSessionId: inheritedParentId }
+        : options.metadataOverrides
 
     const api = await ApiClient.create()
 
@@ -277,7 +309,7 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
         startedBy,
         workingDirectory,
         machineId,
-        metadataOverrides: options.metadataOverrides
+        metadataOverrides
     })
 
     const sessionInfo = await api.getOrCreateSession({
@@ -325,17 +357,25 @@ export async function bootstrapLazySession(options: SessionBootstrapOptions): Pr
     const api = await ApiClient.create()
     const machineId = await getMachineIdOrExit()
     const machineMetadata = buildMachineMetadata()
+    const now = Date.now()
+    const requestedId = randomUUID()
+    const sessionTag = options.tag ?? randomUUID()
+    const inheritedParentId = options.metadataOverrides?.parentSessionId === undefined
+        && !options.metadataOverrides?.forkedFrom?.trim()
+        && !options.metadataOverrides?.conversationBranch?.sourceSessionId.trim()
+        ? resolveInheritedParentSessionId({ startedBy, ownSessionId: requestedId })
+        : undefined
+    const metadataOverrides = inheritedParentId
+        ? { ...options.metadataOverrides, parentSessionId: inheritedParentId }
+        : options.metadataOverrides
     const metadata = buildSessionMetadata({
         flavor: options.flavor,
         startedBy,
         workingDirectory,
         machineId,
-        metadataOverrides: options.metadataOverrides
+        metadataOverrides
     })
     const agentState = options.agentState === undefined ? {} : options.agentState
-    const now = Date.now()
-    const requestedId = randomUUID()
-    const sessionTag = options.tag ?? randomUUID()
     const sessionInfo: Session = {
         id: requestedId,
         namespace: 'pending',

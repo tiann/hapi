@@ -608,6 +608,10 @@ export async function spawnPeer(options: SpawnPeerOptions): Promise<SpawnPeerRes
         sessionType,
         agent: resolved.agent
     }
+    const parentSessionId = parent?.sessionId?.trim()
+    if (parentSessionId) {
+        spawnBody.parentSessionId = parentSessionId
+    }
     // Pi/DSH have empty launch-permission catalogs — omit permissionMode so the
     // machine route does not 400 invalid_permission_mode on inherited default.
     if (getPermissionModesForFlavor(resolved.agent).length > 0) {

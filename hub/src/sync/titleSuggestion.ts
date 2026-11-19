@@ -118,9 +118,10 @@ function extractChatText(value: unknown): string | null {
     return null
 }
 
-export function extractUserText(content: unknown): string | null {
+export function extractUntrimmedUserText(content: unknown): string | null {
+    if (typeof content === 'string') return content
     if (Array.isArray(content)) {
-        const text = content
+        return content
             .flatMap((part) => {
                 if (!isObject(part)) return []
                 return (part.type === 'text' || part.type === 'input_text') && typeof part.text === 'string'
@@ -128,11 +129,15 @@ export function extractUserText(content: unknown): string | null {
                     : []
             })
             .join('\n')
-            .trim()
-        return text.length > 0 ? text : null
     }
 
-    return extractChatText(content)
+    return isObject(content) && (content.type === 'text' || content.type === 'input_text') && typeof content.text === 'string'
+        ? content.text
+        : null
+}
+
+export function extractUserText(content: unknown): string | null {
+    return extractUntrimmedUserText(content)?.trim() || null
 }
 
 function extractTitleMessage(message: StoredMessage): { role: 'user' | 'assistant'; text: string } | null {

@@ -14,7 +14,10 @@ import { UpdatePlanView } from '@/components/ToolCard/views/UpdatePlanView'
 import { WriteView } from '@/components/ToolCard/views/WriteView'
 import { GoalView } from '@/components/ToolCard/views/GoalView'
 import { canShowGoalPreview, isGoalToolName } from '@/components/ToolCard/goalTools'
+import { extractPeerTargetSessionId, parsePeerToolName } from '@/components/ToolCard/peerTools'
+import { SessionLinkAnchor } from '@/components/SessionLinkAnchor'
 import { getInputStringAny } from '@/lib/toolInputUtils'
+import { useTranslation } from '@/lib/use-translation'
 import {
     getCodexAgentFieldRows,
     getCodexAgentPrompt,
@@ -128,8 +131,34 @@ export const toolFullViewRegistry: Record<string, ToolViewComponent> = {
     request_user_input: RequestUserInputView
 }
 
+const PeerCompactView: ToolViewComponent = ({ block }: ToolViewProps) => {
+    const { t } = useTranslation()
+    const targetSessionId = extractPeerTargetSessionId(block.tool.name, block.tool.input, block.tool.result, block.tool.state)
+    if (!targetSessionId) return null
+    const targetName = getInputStringAny(block.tool.input, ['name'])
+    const label = targetName ?? targetSessionId.slice(0, 8)
+
+    return (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+            <SessionLinkAnchor
+                sessionId={targetSessionId}
+                aria-label={`${t('sessions.lineage.openSession')}: ${label}`}
+                title={label}
+                className="inline-flex min-h-7 max-w-full items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-bg)] px-2.5 py-1 font-medium text-[var(--app-link)] transition-colors hover:border-[var(--app-link)] touch-manipulation sm:min-h-0"
+            >
+                <span aria-hidden="true">↳</span>
+                <span className="max-w-48 truncate sm:max-w-64">{label}</span>
+                <span aria-hidden="true" className="shrink-0 opacity-70">›</span>
+            </SessionLinkAnchor>
+        </div>
+    )
+}
+
 export function getToolViewComponent(toolName: string, tool?: Pick<ChatToolCall, 'input' | 'result' | 'state'>): ToolViewComponent | null {
     if (isGoalToolName(toolName)) return tool && canShowGoalPreview(tool) ? GoalView : null
+    if (parsePeerToolName(toolName) && tool && extractPeerTargetSessionId(toolName, tool.input, tool.result, tool.state)) {
+        return PeerCompactView
+    }
     return toolViewRegistry[toolName] ?? null
 }
 

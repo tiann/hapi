@@ -249,6 +249,8 @@ export function buildSessionCitationSteerInstruction(tools: SessionCitationSteer
         text +=
             ` To spawn a new peer with work attached, call "${tools.spawnTool}" ` +
             `with directory and a required message (the remit). ` +
+            `For multi-agent or multi-model delegation (external research, review, or scoped workers), prefer "${tools.spawnTool}" (waitForReply=true) ` +
+            `and "${tools.pingTool}" (wake=true, waitForReply=true) so delegated agents stay visible as linked HAPI sessions. ` +
             `Do not POST /api/machines/.../spawn with a message/prompt/text field - ` +
             `the hub rejects it (HTTP 400). Use spawn_peer instead. ` +
             `Shell fallback: hapi spawn-peer --dir PATH --name TITLE --message-file -.`

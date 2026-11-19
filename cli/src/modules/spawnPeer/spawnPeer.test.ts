@@ -1817,12 +1817,14 @@ it('resolves relative directory against cwd (MCP session working directory)', as
     it('stamps a durable Parent chip onto the remit before delivery', async () => {
         const PARENT_ID = '4bd4d2b9-e114-4e03-af4c-03e9e4f7439e'
         let deliveredText = ''
+        let spawnedBody: Record<string, unknown> | undefined
         const http = createHttpMock({
             post: (url, body) => {
                 if (url.endsWith('/api/auth')) {
                     return { status: 200, data: { token: 'jwt' } }
                 }
                 if (url.endsWith(`/api/machines/${MACHINE_ID}/spawn`)) {
+                    spawnedBody = body as Record<string, unknown>
                     return { status: 200, data: { type: 'success', sessionId: SESSION_ID } }
                 }
                 if (url.endsWith(`/api/sessions/${SESSION_ID}/messages`)) {
@@ -1870,6 +1872,7 @@ it('resolves relative directory against cwd (MCP session working directory)', as
             http: http as never,
         })
 
+        expect(spawnedBody?.parentSessionId).toBe(PARENT_ID)
         expect(deliveredText).toContain(`## Parent`)
         expect(deliveredText).toContain(`[Producer](/sessions/${PARENT_ID})`)
         expect(deliveredText).toContain('agentSessionId: `cursor-agent-xyz`')

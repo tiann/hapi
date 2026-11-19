@@ -735,6 +735,48 @@ describe('bootstrapSession HAPI_SESSION_ID export', () => {
         expect(process.env[HAPI_SESSION_ID_ENV]).toBe('hub-session-42')
     })
 
+    it('records inherited HAPI_SESSION_ID as metadata.parentSessionId for nested terminal launches', async () => {
+        const parentUuid = '11111111-2222-4333-8444-555555555555'
+        process.env[HAPI_SESSION_ID_ENV] = parentUuid
+        const session = createSession()
+        session.id = '22222222-3333-4444-8555-666666666666'
+        getOrCreateSessionMock.mockResolvedValue(session)
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue({ isPending: () => false })
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        const result = await bootstrapSession({
+            flavor: 'codex',
+            workingDirectory: '/tmp/project',
+            startedBy: 'terminal',
+        })
+
+        expect(result.metadata.parentSessionId).toBe(parentUuid)
+        expect(getOrCreateSessionMock).toHaveBeenCalledWith(
+            expect.objectContaining({
+                metadata: expect.objectContaining({ parentSessionId: parentUuid })
+            })
+        )
+        expect(process.env[HAPI_SESSION_ID_ENV]).toBe(session.id)
+    })
+
+    it('keeps the shared Codex fork source when launched from another session terminal', async () => {
+        process.env[HAPI_SESSION_ID_ENV] = '11111111-2222-4333-8444-555555555555'
+        const source = '22222222-3333-4444-8555-666666666666'
+        getOrCreateSessionMock.mockResolvedValue(createSession())
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' })
+        sessionSyncClientMock.mockReturnValue({ isPending: () => false })
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' })
+
+        const result = await bootstrapSession({
+            flavor: 'codex', startedBy: 'terminal', workingDirectory: '/tmp/project',
+            exportSessionEnv: false, metadataOverrides: { forkedFrom: source },
+        })
+
+        expect(result.metadata.forkedFrom).toBe(source)
+        expect(result.metadata.parentSessionId).toBeUndefined()
+    })
+
     it('passes reservedSessionId as getOrCreateSession id (adopt-stub, #1911)', async () => {
         const session = createSession()
         session.id = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'

@@ -1,6 +1,7 @@
 import type { AgentState, AttachedJob, ExternalRef, Metadata, Session, TodoItem, WorktreeMetadata } from './schemas'
 import type { SessionReadState } from './sessionReadState'
 import type { ConversationHistoryCapabilities } from './conversationHistory'
+import { resolveSessionParentLink, type SessionParentLink } from './sessionLink'
 import { isKnownFlavor } from './flavors'
 import type { AgentFlavor } from './modes'
 
@@ -72,6 +73,7 @@ export type SessionSummaryMetadata = {
     /** Structured contribution links (GitHub PRs, …). tiann/hapi#1160. */
     externalRefs?: ExternalRef[]
     conversationHistory?: ConversationHistoryCapabilities
+    parentLink?: SessionParentLink
     /** Loopback MCP URL when session CLI happy server is running (#956). */
     hapiMcpUrl?: string
     lastModelError?: {
@@ -254,10 +256,14 @@ function getSummaryAgentSessionId(metadata: Metadata): string | undefined {
         ?? undefined
 }
 
-export function toSessionSummaryMetadata(metadata: Metadata | null | undefined): SessionSummaryMetadata | null {
+export function toSessionSummaryMetadata(
+    metadata: Metadata | null | undefined,
+    ownSessionId?: string
+): SessionSummaryMetadata | null {
     if (!metadata) {
         return null
     }
+    const parentLink = resolveSessionParentLink(metadata, ownSessionId)
     return {
         name: metadata.name,
         titleLocked: metadata.titleLocked,
@@ -272,6 +278,7 @@ export function toSessionSummaryMetadata(metadata: Metadata | null | undefined):
         lifecycleState: metadata.lifecycleState,
         externalRefs: metadata.externalRefs,
         conversationHistory: metadata.capabilities?.conversationHistory,
+        ...(parentLink ? { parentLink } : {}),
         hapiMcpUrl: metadata.hapiMcpUrl ?? undefined,
         // Omit lastUserMessage — bridge recovery text stays in full session
         // metadata only; list/SSE summaries must not ship up to 32 KB of prompt.
@@ -310,7 +317,7 @@ export function toSessionSummary(
         lastUserMessageAt: session.lastUserMessageAt,
         pinned: session.pinned ?? false,
         globalPinned: session.globalPinned ?? false,
-        metadata: toSessionSummaryMetadata(session.metadata),
+        metadata: toSessionSummaryMetadata(session.metadata, session.id),
         metadataVersion: session.metadataVersion,
         agentStateVersion: session.agentStateVersion,
         todosUpdatedAt: session.todosUpdatedAt ?? 0,

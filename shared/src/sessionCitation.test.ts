@@ -143,6 +143,7 @@ describe('buildSessionCitationSteerInstruction', () => {
             spawnTool: 'mcp__hapi__spawn_peer',
         })
         expect(text).toContain('mcp__hapi__spawn_peer')
+        expect(text).toContain('waitForReply=true')
         expect(text).toMatch(/spawn-peer|spawn_peer/)
         expect(text.toLowerCase()).toMatch(/400|reject/)
         expect(text.toLowerCase()).not.toMatch(/strip/)

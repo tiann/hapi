@@ -1,4 +1,4 @@
-import { mergeClaudeSessionIdHistory, mergeReadState } from '@hapi/protocol'
+import { isObject, mergeClaudeSessionIdHistory, mergeReadState, resolveSessionParentLink } from '@hapi/protocol'
 import { SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING } from '@hapi/protocol'
 import { AgentStateSchema, ExternalRefsSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
 import type { BackgroundTask, CodexCollaborationMode, CopilotAgentMode, ExternalRef, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
@@ -31,7 +31,8 @@ type RuntimeConfigKey = 'permissionMode' | 'model' | 'modelReasoningEffort' | 'e
  */
 export function mergeSessionMetadataForSessionMerge(
     oldMetadata: unknown | null,
-    newMetadata: unknown | null
+    newMetadata: unknown | null,
+    targetSessionId?: string
 ): unknown | null {
     if (!oldMetadata || typeof oldMetadata !== 'object') {
         return newMetadata
@@ -63,6 +64,15 @@ export function mergeSessionMetadataForSessionMerge(
 
     if (typeof oldObj.promptTitle === 'string' && typeof newObj.promptTitle !== 'string') {
         merged.promptTitle = oldObj.promptTitle
+        changed = true
+    }
+
+    if (
+        typeof oldObj.parentSessionId === 'string'
+        && typeof newObj.parentSessionId !== 'string'
+        && (!targetSessionId || oldObj.parentSessionId !== targetSessionId)
+    ) {
+        merged.parentSessionId = oldObj.parentSessionId
         changed = true
     }
 
@@ -285,6 +295,44 @@ export class SessionCache {
         return this.getSessions().filter((session) => session.active)
     }
 
+    private sanitizeIncomingParentMetadata(
+        metadata: unknown,
+        namespace: string,
+        ownSessionId?: string
+    ): unknown {
+        if (!isObject(metadata) || !Object.prototype.hasOwnProperty.call(metadata, 'parentSessionId')) {
+            return metadata
+        }
+        const rawParentId = typeof metadata.parentSessionId === 'string'
+            ? metadata.parentSessionId.trim()
+            : ''
+        if (!rawParentId) {
+            const copy = { ...metadata }
+            delete copy.parentSessionId
+            return copy
+        }
+        const resolvedParentId = this.store.sessionRedirects.resolve(rawParentId, namespace) || rawParentId
+        if (ownSessionId && resolvedParentId === ownSessionId) {
+            const copy = { ...metadata }
+            delete copy.parentSessionId
+            return copy
+        }
+        const parent = this.getSessionByNamespace(resolvedParentId, namespace)
+            ?? (() => {
+                const stored = this.store.sessions.getSession(resolvedParentId)
+                return stored && stored.namespace === namespace ? stored : undefined
+            })()
+        if (!parent) {
+            const copy = { ...metadata }
+            delete copy.parentSessionId
+            return copy
+        }
+        if (resolvedParentId === metadata.parentSessionId) {
+            return metadata
+        }
+        return { ...metadata, parentSessionId: resolvedParentId }
+    }
+
     getOrCreateSession(
         tag: string,
         metadata: unknown,
@@ -295,9 +343,10 @@ export class SessionCache {
         modelReasoningEffort?: string,
         requestedId?: string
     ): Session {
+        const sanitizedMetadata = this.sanitizeIncomingParentMetadata(metadata, namespace, requestedId)
         const stored = this.store.sessions.getOrCreateSession(
             tag,
-            metadata,
+            sanitizedMetadata,
             agentState,
             namespace,
             model,
@@ -318,10 +367,11 @@ export class SessionCache {
         effort?: string,
         modelReasoningEffort?: string
     ): Session {
+        const sanitizedMetadata = this.sanitizeIncomingParentMetadata(metadata, namespace, id)
         const stored = this.store.sessions.adoptPreallocatedSession(
             id,
             tag,
-            metadata,
+            sanitizedMetadata,
             agentState,
             namespace,
             model,
@@ -1670,6 +1720,103 @@ export class SessionCache {
         return false
     }
 
+    private persistSessionMetadataPatch(
+        sessionId: string,
+        buildNext: (metadata: NonNullable<Session['metadata']>) => Record<string, unknown> | null
+    ): boolean {
+        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
+            const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+            if (!session?.metadata) return false
+
+            const nextMetadata = buildNext(session.metadata)
+            if (!nextMetadata) return false
+
+            const result = this.store.sessions.updateSessionMetadata(
+                sessionId,
+                nextMetadata,
+                session.metadataVersion,
+                session.namespace,
+                { touchUpdatedAt: false, preservePreallocation: true }
+            )
+
+            if (result.result === 'error') return false
+            if (result.result === 'success') {
+                const parsed = MetadataSchema.safeParse(result.value)
+                if (!parsed.success) {
+                    this.refreshSession(sessionId)
+                    return true
+                }
+                session.metadata = parsed.data
+                session.metadataVersion = result.version
+                this.publisher.emit({
+                    type: 'session-updated',
+                    sessionId,
+                    namespace: session.namespace,
+                    data: { metadata: { version: result.version, value: parsed.data } } satisfies SessionPatch
+                })
+                return true
+            }
+
+            this.refreshSession(sessionId)
+        }
+
+        return false
+    }
+
+    /**
+     * Persist a hub-verified parent session id on a child session without
+     * overwriting an existing parent link or creating self-links.
+     */
+    updateParentSessionId(sessionId: string, parentSessionId: string): boolean {
+        const normalizedParentId = parentSessionId.trim()
+        if (!normalizedParentId || normalizedParentId === sessionId) return false
+
+        return this.persistSessionMetadataPatch(sessionId, (metadata) => {
+            if (resolveSessionParentLink(metadata, sessionId) !== null) {
+                return null
+            }
+            return { ...metadata, parentSessionId: normalizedParentId }
+        })
+    }
+
+    /**
+     * Re-point children linked to a session before it was merged/deduped away
+     * so sidebar lineage and parent status panels remain intact under `newParentId`.
+     */
+    retargetChildParentLinks(oldParentId: string, newParentId: string, namespace: string): void {
+        if (oldParentId === newParentId) return
+        for (const candidate of this.getSessionsByNamespace(namespace)) {
+            const meta = candidate.metadata
+            if (!meta) continue
+            const matchesPeer = meta.parentSessionId?.trim() === oldParentId
+            const matchesFork = meta.forkedFrom?.trim() === oldParentId
+            const matchesBranch = meta.conversationBranch?.sourceSessionId?.trim() === oldParentId
+            if (!matchesPeer && !matchesFork && !matchesBranch) continue
+
+            this.persistSessionMetadataPatch(candidate.id, (latest) => {
+                const peerHit = latest.parentSessionId?.trim() === oldParentId
+                const forkHit = latest.forkedFrom?.trim() === oldParentId
+                const branchHit = latest.conversationBranch?.sourceSessionId?.trim() === oldParentId
+                if (!peerHit && !forkHit && !branchHit) return null
+
+                const next: Record<string, unknown> = { ...latest }
+                if (peerHit) {
+                    next.parentSessionId = candidate.id === newParentId ? null : newParentId
+                }
+                if (forkHit) {
+                    next.forkedFrom = candidate.id === newParentId ? null : newParentId
+                }
+                if (branchHit && latest.conversationBranch && candidate.id !== newParentId) {
+                    next.conversationBranch = {
+                        ...latest.conversationBranch,
+                        sourceSessionId: newParentId,
+                    }
+                }
+                return next
+            })
+        }
+    }
+
     async markModelErrorBridged(sessionId: string, eventId: string): Promise<void> {
         const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
         if (!session) {
@@ -2080,7 +2227,7 @@ export class SessionCache {
             if (!source || !latest) break
             const result = this.store.sessions.updateSessionMetadata(
                 newSessionId,
-                this.mergeSessionMetadata(source.metadata, latest.metadata),
+                this.mergeSessionMetadata(source.metadata, latest.metadata, newSessionId),
                 latest.metadataVersion,
                 namespace,
                 { touchUpdatedAt: false, inheritTitleLockFrom: options.deleteOldSession ? oldSessionId : undefined }
@@ -2199,7 +2346,7 @@ export class SessionCache {
         for (let attempt = 0; attempt < 2; attempt += 1) {
             const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
             if (!latest) break
-            const mergedMetadata = this.mergeSessionMetadata(oldStored.metadata, latest.metadata)
+            const mergedMetadata = this.mergeSessionMetadata(oldStored.metadata, latest.metadata, newSessionId)
             if (mergedMetadata === null || mergedMetadata === latest.metadata) break
             const result = this.store.sessions.updateSessionMetadata(
                 newSessionId,
@@ -2350,6 +2497,7 @@ export class SessionCache {
             }
             this.agentProgressAtBySessionId.delete(oldSessionId)
             this.attachedJobEmitVersion.delete(oldSessionId)
+            this.retargetChildParentLinks(oldSessionId, newSessionId, namespace)
             this.hooks.onSessionMergedAway?.(oldSessionId, newSessionId)
         } else {
             this.refreshSession(oldSessionId)
@@ -2759,8 +2907,12 @@ export class SessionCache {
         return allocated
     }
 
-    private mergeSessionMetadata(oldMetadata: unknown | null, newMetadata: unknown | null): unknown | null {
-        return mergeSessionMetadataForSessionMerge(oldMetadata, newMetadata)
+    private mergeSessionMetadata(
+        oldMetadata: unknown | null,
+        newMetadata: unknown | null,
+        targetSessionId?: string
+    ): unknown | null {
+        return mergeSessionMetadataForSessionMerge(oldMetadata, newMetadata, targetSessionId)
     }
 
     private persistPreferredPermissionMode(session: Session, permissionMode: PermissionMode): void {

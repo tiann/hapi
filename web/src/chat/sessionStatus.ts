@@ -1,17 +1,24 @@
-import { isObject } from '@hapi/protocol'
-import type { BackgroundTask, ThreadGoal, TodoItem } from '@/types/api'
+import { isObject, type SessionLinkKind } from '@hapi/protocol'
+import type { BackgroundTask, SessionSummary, ThreadGoal, TodoItem } from '@/types/api'
 import type { ChatBlock, ToolCallBlock } from '@/chat/types'
 import { isSubagentToolName } from '@/chat/subagentTool'
+import { hasUrgentModelError } from '@/components/ModelErrorBanner'
+import { childIsWorking } from '@/lib/sessionLineage'
 import { getCodexAgentActivity, getCodexAgentSummary } from '@/components/ToolCard/codexAgents'
+import { extractSpawnedSessionId, isFailedPeerToolCall, parsePeerToolName } from '@/components/ToolCard/peerTools'
+import { getSessionTitle } from '@/lib/sessionTitle'
 import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
 
 export type SessionStatusSubagent = {
     id: string
+    blockId: string | null
     title: string
     detail: string | null
-    state: 'running' | 'waiting' | 'error'
+    state: 'running' | 'waiting' | 'error' | 'idle'
     startedAt: number | null
     endedAt: number | null
+    linkedSessionId?: string | null
+    linkKind?: SessionLinkKind | null
 }
 
 export type SessionStatusTerminal = {
@@ -89,43 +96,132 @@ function subagentTitle(block: ToolCallBlock): string {
 }
 
 function subagentFromBlock(block: ToolCallBlock): SessionStatusSubagent | null {
-    if (block.tool.name !== 'CodexAgent' && !isSubagentToolName(block.tool.name)) return null
-    if (block.tool.state === 'completed') return null
+    const isPeerSpawn = parsePeerToolName(block.tool.name) === 'spawn_peer'
+    if (block.tool.name !== 'CodexAgent' && !isSubagentToolName(block.tool.name) && !isPeerSpawn) return null
+    const isFailedPeerSpawn = isPeerSpawn && isFailedPeerToolCall(block.tool.result, block.tool.state)
+    if (block.tool.state === 'completed' && !isFailedPeerSpawn) return null
 
     const latestChild = block.children.at(-1)
-    const activity = block.tool.name === 'CodexAgent'
-        ? getCodexAgentActivity(block.tool.input)
-        : latestChild?.kind === 'tool-call'
-            ? latestChild.tool.nativeTitle ?? latestChild.tool.name
-            : null
+    const activity = isPeerSpawn
+        ? getInputStringAny(block.tool.input, ['directory'])
+        : block.tool.name === 'CodexAgent'
+            ? getCodexAgentActivity(block.tool.input)
+            : latestChild?.kind === 'tool-call'
+                ? latestChild.tool.nativeTitle ?? latestChild.tool.name
+                : null
     const waiting = block.tool.state === 'pending'
         || (activity?.toLowerCase().startsWith('waiting') ?? false)
+    const isError = block.tool.state === 'error' || isFailedPeerSpawn
+    const resolvedTitle = isPeerSpawn
+        ? getInputStringAny(block.tool.input, ['name']) ?? subagentTitle(block)
+        : subagentTitle(block)
 
     return {
         id: block.tool.id,
-        title: subagentTitle(block),
+        blockId: block.id,
+        title: resolvedTitle,
         detail: activity,
-        state: block.tool.state === 'error' ? 'error' : waiting ? 'waiting' : 'running',
+        state: isError ? 'error' : waiting ? 'waiting' : 'running',
         startedAt: block.tool.startedAt ?? (block.tool.state === 'pending' ? null : block.createdAt),
-        endedAt: block.tool.state === 'error'
+        endedAt: isError
             ? block.tool.completedAt ?? block.tool.startedAt ?? block.createdAt
-            : null
+            : null,
+        ...(isPeerSpawn ? { linkedSessionId: extractSpawnedSessionId(block.tool.result, block.tool.state) } : {}),
+    }
+}
+
+function classifyLinkedSessionState(session: SessionSummary): SessionStatusSubagent['state'] {
+    if (hasUrgentModelError(session.metadata)) return 'error'
+    if (session.active && (session.pendingRequestsCount ?? 0) > 0) return 'waiting'
+    if (childIsWorking(session)) return 'running'
+    return 'idle'
+}
+
+function linkedSessionSortPriority(
+    session: SessionSummary,
+    state: SessionStatusSubagent['state']
+): number {
+    switch (state) {
+        case 'error': return 0
+        case 'waiting': return 1
+        case 'running': return 2
+        case 'idle': return session.active ? 3 : 4
     }
 }
 
 export function buildSessionStatusData(args: {
+    sessionId?: string
     goal: ThreadGoal | null | undefined
     tasks: readonly TodoItem[] | null | undefined
     blocks: readonly ChatBlock[]
     backgroundTasks?: readonly BackgroundTask[]
+    linkedSessions?: readonly SessionSummary[]
 }): SessionStatusData | null {
     const tools = collectToolBlocks(args.blocks)
+    const subagents: SessionStatusSubagent[] = tools
+        .map(subagentFromBlock)
+        .filter((subagent): subagent is SessionStatusSubagent => subagent !== null)
+
+    if (args.linkedSessions && args.linkedSessions.length > 0) {
+        const byId = new Map<string, SessionSummary>()
+        for (const candidate of args.linkedSessions) {
+            if (args.sessionId && candidate.id === args.sessionId) continue
+            byId.set(candidate.id, candidate)
+        }
+
+        const coveredSessionIds = new Set<string>()
+        for (const subagent of subagents) {
+            const matched = subagent.linkedSessionId ? byId.get(subagent.linkedSessionId) : undefined
+            if (!matched) continue
+            subagent.linkedSessionId = matched.id
+            subagent.linkKind = matched.metadata?.parentLink?.kind ?? subagent.linkKind ?? 'peer'
+            const matchedState = classifyLinkedSessionState(matched)
+            if (matchedState === 'error' || subagent.state === 'error') {
+                subagent.state = 'error'
+            } else if (matchedState === 'waiting' || subagent.state === 'waiting') {
+                subagent.state = 'waiting'
+            }
+            coveredSessionIds.add(matched.id)
+        }
+
+        if (args.sessionId) {
+            const extraChildren = args.linkedSessions
+                .filter((candidate) => candidate.id !== args.sessionId
+                    && candidate.metadata?.parentLink?.parentSessionId === args.sessionId
+                    && !coveredSessionIds.has(candidate.id))
+                .map((session) => {
+                    const state = classifyLinkedSessionState(session)
+                    return {
+                        session,
+                        state,
+                        priority: linkedSessionSortPriority(session, state),
+                    }
+                })
+            extraChildren.sort((a, b) => {
+                if (a.priority !== b.priority) return a.priority - b.priority
+                return b.session.updatedAt - a.session.updatedAt
+            })
+            for (const { session, state } of extraChildren) {
+                const kind = session.metadata?.parentLink?.kind ?? 'peer'
+                subagents.push({
+                    id: `session:${session.id}`,
+                    blockId: null,
+                    title: getSessionTitle(session),
+                    detail: session.metadata?.flavor?.trim() || null,
+                    state,
+                    startedAt: null,
+                    endedAt: null,
+                    linkedSessionId: session.id,
+                    linkKind: kind,
+                })
+            }
+        }
+    }
+
     const data: SessionStatusData = {
         goal: args.goal ?? null,
         tasks: args.tasks ? [...args.tasks] : [],
-        subagents: tools
-            .map(subagentFromBlock)
-            .filter((subagent): subagent is SessionStatusSubagent => subagent !== null),
+        subagents,
         terminals: buildBackgroundTerminals(tools, args.backgroundTasks ?? [])
     }
 

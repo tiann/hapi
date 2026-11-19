@@ -3,6 +3,7 @@ import type { Database } from 'bun:sqlite'
 import { hasConversationMessageContent } from '@hapi/protocol/messages'
 import { decodeMessageContent } from './contentCodec'
 import { prepareCached } from './statementCache'
+import { isUserInputMessage } from './sessionUserActivity'
 
 import type { StoredMessage } from './types'
 import {
@@ -162,6 +163,20 @@ export class MessageStore {
 
     getFirstMessages(sessionId: string, limit: number = 50): StoredMessage[] {
         return getFirstMessages(this.db, sessionId, limit)
+    }
+
+    isFirstUserInputMessage(sessionId: string, messageId: string): boolean {
+        const statement = prepareCached(this.db, `
+            SELECT id, content FROM messages
+            WHERE session_id = ?1
+              AND seq <= (SELECT seq FROM messages WHERE id = ?2 AND session_id = ?1)
+            ORDER BY seq
+        `)
+        const rows = statement.iterate(sessionId, messageId) as Iterable<{ id: string; content: string | Uint8Array }>
+        for (const row of rows) {
+            if (isUserInputMessage(decodeMessageContent(row.content))) return row.id === messageId
+        }
+        return false
     }
 
     getDeliverableMessagesAfter(sessionId: string, afterSeq: number, now: number, limit: number = 200): StoredMessage[] {

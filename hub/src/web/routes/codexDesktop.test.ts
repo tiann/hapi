@@ -1050,6 +1050,7 @@ describe('Codex Desktop import routes', () => {
         store.messages.addMessage(engineSession.id, { type: 'text', text: 'engine-only message' }, 'engine-1')
         const engine = {
             getSessionsByNamespace: () => [engineSession],
+            retargetChildParentLinks: () => {},
             transferAttachedJobs: (fromSessionId: string, toSessionId: string) => {
                 store.sessionJobs.transfer(fromSessionId, toSessionId)
             },
@@ -1082,6 +1083,69 @@ describe('Codex Desktop import routes', () => {
             expect(sessions.map((session) => session.id)).toEqual([storedSession.id])
             expect(store.messages.getAllMessages(storedSession.id)).toHaveLength(3)
         } finally {
+            store.close()
+        }
+    })
+
+    it.each([false, true])('preserves a discarded duplicate’s peer parent (engine online: %s)', async (online) => {
+        const store = new Store(':memory:')
+        const metadata = { path: '/repo', host: 'host' }
+        const parent = store.sessions.getOrCreateSession('coordinator', metadata, null, 'default')
+        const duplicate = { ...metadata, codexSessionId: 'shared-thread' }
+        const survivor = store.sessions.getOrCreateSession('survivor', duplicate, null, 'default')
+        const donor = store.sessions.getOrCreateSession('donor', { ...duplicate, parentSessionId: parent.id }, null, 'default')
+        store.messages.addMessage(survivor.id, codexUserMessage('keep this session'))
+        const engine = online ? new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never) : null
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['shared-thread'] }),
+            })
+            expect(await response.json()).toMatchObject({
+                success: true, merged: [{ canonicalSessionId: survivor.id, removedSessionIds: [donor.id] }],
+            })
+            expect(store.sessions.getSession(survivor.id)?.metadata).toMatchObject({ parentSessionId: parent.id })
+            if (engine) expect(engine.getSession(survivor.id)?.metadata?.parentSessionId).toBe(parent.id)
+        } finally {
+            engine?.stop()
+            store.close()
+        }
+    })
+
+    it('preserves a coordinator and its child until the duplicate merge can retarget the child', async () => {
+        const store = new Store(':memory:')
+        const metadata = { path: '/repo', host: 'host', codexSessionId: 'shared-thread' }
+        const survivor = store.sessions.getOrCreateSession('survivor', metadata, null, 'default')
+        const donor = store.sessions.getOrCreateSession('donor', metadata, null, 'default')
+        const child = store.sessions.getOrCreateSession('child', {
+            path: '/repo', host: 'host', parentSessionId: donor.id,
+        }, null, 'default')
+        store.messages.addMessage(survivor.id, codexUserMessage('keep this session'))
+        let engine: SyncEngine | null = null
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', 'default'); await next() })
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
+        const merge = () => app.request('/api/codex/merge-duplicate-sessions', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ sessionIds: ['shared-thread'] }),
+        })
+
+        try {
+            expect(await (await merge()).json()).toMatchObject({ success: false })
+            expect(store.sessions.getSession(donor.id)).not.toBeNull()
+            engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+            expect(await (await merge()).json()).toMatchObject({
+                success: true, merged: [{ canonicalSessionId: survivor.id, removedSessionIds: [donor.id] }],
+            })
+            expect(store.sessions.getSession(donor.id)).toBeNull()
+            expect(store.sessions.getSession(child.id)?.metadata).toMatchObject({ parentSessionId: survivor.id })
+            expect(engine.getSession(child.id)?.metadata?.parentSessionId).toBe(survivor.id)
+        } finally {
+            engine?.stop()
             store.close()
         }
     })

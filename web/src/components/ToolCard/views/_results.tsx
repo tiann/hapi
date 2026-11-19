@@ -11,6 +11,9 @@ import { isGoalToolName, parseGoalToolResult } from '@/components/ToolCard/goalT
 import { isAskUserQuestionToolName } from '@/components/ToolCard/askUserQuestion'
 import { isRequestUserInputToolName } from '@/components/ToolCard/requestUserInput'
 import { resolveToolNameAlias } from '@/components/ToolCard/toolNameAliases'
+import { extractPeerTargetSessionId, parsePeerToolName } from '@/components/ToolCard/peerTools'
+import { SessionLinkAnchor } from '@/components/SessionLinkAnchor'
+import { useTranslation } from '@/lib/use-translation'
 import { isTerminalToolBlock } from '@/chat/toolGroups'
 import { GoalView } from '@/components/ToolCard/views/GoalView'
 import {
@@ -1110,10 +1113,42 @@ const GoalResultView: ToolViewComponent = (props) => {
         : <GenericResultView {...props} />
 }
 
+const PeerToolResultView: ToolViewComponent = (props) => {
+    const { t } = useTranslation()
+    const targetSessionId = extractPeerTargetSessionId(
+        props.block.tool.name,
+        props.block.tool.input,
+        props.block.tool.result,
+        props.block.tool.state
+    )
+    const targetName = getInputStringAny(props.block.tool.input, ['name'])
+    const label = targetSessionId ? (targetName ?? targetSessionId.slice(0, 8)) : null
+    return (
+        <div className="flex flex-col gap-2">
+            {targetSessionId && label ? (
+                <div className="flex items-center gap-2">
+                    <SessionLinkAnchor
+                        sessionId={targetSessionId}
+                        aria-label={`${t('sessions.lineage.openSession')}: ${label}`}
+                        title={label}
+                        className="inline-flex min-h-7 max-w-full items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-2.5 py-1 text-xs font-medium text-[var(--app-link)] transition-colors hover:border-[var(--app-link)] touch-manipulation sm:min-h-0"
+                    >
+                        <span aria-hidden="true">↳</span>
+                        <span className="max-w-48 truncate sm:max-w-64">{label}</span>
+                        <span aria-hidden="true" className="shrink-0 opacity-70">›</span>
+                    </SessionLinkAnchor>
+                </div>
+            ) : null}
+            <GenericResultView {...props} />
+        </div>
+    )
+}
+
 // Skill, todowrite, patch and question deliberately stay unaliased: their
 // dedicated views read Claude-shaped input or result fields.
 export function getToolResultViewComponent(toolName: string, block?: ToolCallBlock): ToolViewComponent {
     if (isGoalToolName(toolName)) return GoalResultView
+    if (parsePeerToolName(toolName)) return PeerToolResultView
     if (toolName.startsWith('mcp__')) {
         return GenericResultView
     }

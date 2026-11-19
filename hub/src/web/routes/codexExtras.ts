@@ -2,9 +2,10 @@ import { appendFileSync, existsSync, mkdirSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
-import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
+import { AGENT_MESSAGE_PAYLOAD_TYPE, isObject, resolveSessionParentLink } from '@hapi/protocol'
 import type { Store, StoredMessage } from '../../store'
 import { truncateOversizedMessageContent } from '../../store/contentCodec'
+import { mergeSessionMetadataForSessionMerge } from '../../sync/sessionCache'
 import type { SyncEngine } from '../../sync/syncEngine'
 import { collectImportCandidates, type ImportCandidate } from './localSessions/matchContentPrefix'
 
@@ -851,6 +852,15 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
         )
     }
 
+    if (!engine) {
+        const donorIds = new Set(sessionStates.slice(1).map(source => source.sessionId))
+        const hasLinkedChild = collectImportCandidates(options.store, options.namespace).some(candidate => {
+            const parent = resolveSessionParentLink(candidate.metadata, candidate.sessionId)
+            return parent && donorIds.has(parent.parentSessionId)
+        })
+        if (hasLinkedChild) throw new Error('Sync engine unavailable; retry merge so child session links are preserved')
+    }
+
     for (const source of sessionStates.slice(1)) {
         latestActivity = Math.max(latestActivity, source.updatedAt)
         for (const message of source.storedMessages) {
@@ -871,11 +881,24 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
             latestActivity = Math.max(latestActivity, copied.invokedAt ?? copied.createdAt)
         }
 
+        const donorParent = resolveSessionParentLink(source.metadata, source.sessionId)
+        if (donorParent?.kind === 'peer' && !sessionStates.some(row => row.sessionId === donorParent.parentSessionId)) {
+            const target = options.store.sessions.getSessionByNamespace(canonical.sessionId, options.namespace)
+            if (!target) throw new Error('Duplicate merge target no longer exists')
+            if (!resolveSessionParentLink(isObject(target.metadata) ? target.metadata : null, target.id)) {
+                const merged = mergeSessionMetadataForSessionMerge({ parentSessionId: donorParent.parentSessionId }, target.metadata, target.id)
+                const result = options.store.sessions.updateSessionMetadata(target.id, merged, target.metadataVersion,
+                    options.namespace, { touchUpdatedAt: false, preservePreallocation: true })
+                if (result.result !== 'success') throw new Error('Could not preserve the duplicate session’s parent; retry merge')
+            }
+        }
+
         // Transfer outliving jobs before CASCADE delete (store refuses running jobs).
         // Without SyncEngine we cannot persist jobsAcceptedFromSessionIds / key remaps,
         // so refuse rather than orphan a supervisor still holding the source session id.
         if (engine) {
             engine.transferAttachedJobs(source.sessionId, canonical.sessionId, options.namespace)
+            engine.retargetChildParentLinks(source.sessionId, canonical.sessionId, options.namespace)
             await engine.deleteSession(source.sessionId)
         } else {
             const deleted = options.store.sessions.deleteSession(source.sessionId, options.namespace)

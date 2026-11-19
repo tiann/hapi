@@ -132,9 +132,20 @@ export function extractParentSessionIdFromRemit(message: string): string | null 
 }
 
 /**
+ * Extracts a parent session id only from the canonical stamp: an exact
+ * `## Parent` heading followed by the `- Orchestrator chip (mandatory):` line.
+ * Prevents ordinary user prompts that cite `/sessions/<id>` for context from
+ * creating false parent-child session links.
+ */
+export function extractExplicitParentSessionIdFromRemit(message: string): string | null {
+    const stamp = /^\uFEFF?(?:[ \t]*\r?\n)*## Parent[ \t]*\r?\n- Orchestrator chip \(mandatory\): \[(?:\\.|[^\\\]\r\n])*\]\((\/sessions\/[^/?#)\s]+)\)[ \t]*(?=\r?\n|$)/.exec(message)
+    return stamp ? extractSessionCitationIds(stamp[1]!)[0] ?? null : null
+}
+
+/**
  * Ensure an orchestrated remit cites the parent under a `## Parent` chip block.
- * Idempotent when a `## Parent` section already has a markdown chip for this
- * UUID. Bare citations (or an empty Parent heading) do not suppress the stamp.
+ * Idempotent when the canonical stamp for this UUID is already present. Any
+ * other `## Parent` content does not suppress the stamp.
  */
 export function ensureParentStamp(
     message: string,
@@ -155,7 +166,7 @@ export function ensureParentStamp(
         return { message, stamped: false, alreadyPresent: false }
     }
 
-    if (parentSectionHasSessionChip(message, sessionId)) {
+    if (extractExplicitParentSessionIdFromRemit(message) === sessionId) {
         return { message, stamped: false, alreadyPresent: true }
     }
 

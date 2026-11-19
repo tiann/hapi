@@ -1416,6 +1416,16 @@ export default {
 
   // Session shell
   'session.notFound.returning': 'Сессия не найдена. Возвращаемся к списку…',
+  'sessions.lineage.childrenCount': '{count} связ.',
+  'sessions.lineage.childrenRunning': '{count} связ. · {running} актив.',
+  'sessions.lineage.expandChildren': 'Показать связанные сессии',
+  'sessions.lineage.collapseChildren': 'Скрыть связанные сессии',
+  'sessions.lineage.kind.peer': 'пир',
+  'sessions.lineage.kind.fork': 'форк',
+  'sessions.lineage.kind.branch': 'ветка',
+  'sessions.lineage.parentPrefix': 'Родитель',
+  'sessions.lineage.openSession': 'Открыть сессию',
+  'session.status.inspectSubagent': 'Открыть подагента',
   // Native app promo
   'nativeAppPromo.title': 'Поддержите HAPI',
   'nativeAppPromo.pill': 'Приложение',

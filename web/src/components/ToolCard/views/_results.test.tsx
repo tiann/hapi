@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import type { ToolCallBlock } from '@/chat/types'
 import { extractCodexBashDisplay, extractTextFromResult, getMutationResultRenderMode, getToolResultViewComponent, parseNumberedFileLines } from '@/components/ToolCard/views/_results'
+import { extractPeerTargetSessionId, extractSpawnedSessionId } from '@/components/ToolCard/peerTools'
+import { getToolViewComponent } from '@/components/ToolCard/views/_all'
 import { I18nProvider } from '@/lib/i18n-context'
 
 vi.mock('@/components/MarkdownRenderer', () => ({
@@ -727,3 +729,201 @@ function makeShellBlock(): ToolCallBlock {
 function makeReadBlock(): ToolCallBlock {
     return makeResultBlock({ name: 'SomeUnknownTool', input: { file_path: 'src/a.ts' } })
 }
+
+describe('PeerToolResultView', () => {
+    it('renders a clickable session link when spawn_peer or ping_peer resolves a target UUID', () => {
+        const block = makeResultBlock({
+            name: 'mcp__hapi__spawn_peer',
+            input: { directory: '/work/repo', name: 'Worker' },
+            result: [{ type: 'text', text: 'Spawned 33333333-3333-4333-8333-333333333333 (Worker)' }],
+        })
+        const ResultView = getToolResultViewComponent(block.tool.name, block)
+        render(
+            <I18nProvider>
+                <ResultView block={block} metadata={null} surface="dialog" />
+            </I18nProvider>
+        )
+
+        const link = screen.getByRole('link', { name: /Open session/ })
+        expect(link.getAttribute('href')).toBe('/sessions/33333333-3333-4333-8333-333333333333')
+    })
+
+    it('extracts session links from Codex object-wrapped MCP result envelopes and short-prefix calls', () => {
+        const spawnBlock = makeResultBlock({
+            name: 'mcp__hapi__spawn_peer',
+            input: { directory: '/work/repo', name: 'Codex Worker' },
+            result: { content: [{ type: 'text', text: 'Spawned 33333333-3333-4333-8333-333333333333 (Codex Worker)' }] },
+        })
+        const CompactView = getToolViewComponent(spawnBlock.tool.name, spawnBlock.tool)
+        expect(CompactView).not.toBeNull()
+        if (!CompactView) throw new Error('Expected PeerCompactView to be resolved')
+        const { unmount } = render(
+            <I18nProvider>
+                <CompactView block={spawnBlock} metadata={null} surface="inline" />
+            </I18nProvider>
+        )
+        expect(screen.getByRole('link', { name: /Codex Worker/ }).getAttribute('href')).toBe('/sessions/33333333-3333-4333-8333-333333333333')
+        unmount()
+
+        const pingBlock = makeResultBlock({
+            name: 'functions.hapi__ping_peer',
+            input: { sessionIdPrefix: '33333333', message: 'Check status' },
+            result: { content: [{ type: 'text', text: 'Delivered to [Codex Worker](/sessions/33333333-3333-4333-8333-333333333333)' }] },
+        })
+        const PingResultView = getToolResultViewComponent(pingBlock.tool.name, pingBlock)
+        render(
+            <I18nProvider>
+                <PingResultView block={pingBlock} metadata={null} surface="dialog" />
+            </I18nProvider>
+        )
+        expect(screen.getByRole('link', { name: /Open session/ }).getAttribute('href')).toBe('/sessions/33333333-3333-4333-8333-333333333333')
+    })
+
+    it('prefers anchored CLI headers, then structured UUID sessionId, over title citations and ignores non-UUID structured ids', () => {
+        const targetId = '11111111-1111-4111-8111-111111111111'
+        const citedId = '22222222-2222-4222-8222-222222222222'
+        const envelopeId = '99999999-9999-4999-8999-999999999999'
+        const citedTitle = `Review [Other](/sessions/${citedId})`
+
+        const acceptedBlock = makeResultBlock({
+            name: 'mcp__hapi__ping_peer',
+            input: { sessionIdPrefix: '11111111', message: 'Check status' },
+            result: [{
+                type: 'text',
+                text: `Accepted for ${targetId} (${citedTitle}) localId=ping-peer-1 — delivery shows in the recipient chat when its runtime consumes it`,
+            }],
+        })
+        const PingResultView = getToolResultViewComponent(acceptedBlock.tool.name, acceptedBlock)
+        render(
+            <I18nProvider>
+                <PingResultView block={acceptedBlock} metadata={null} surface="dialog" />
+            </I18nProvider>
+        )
+        expect(screen.getByRole('link', { name: /Open session/ }).getAttribute('href')).toBe(`/sessions/${targetId}`)
+
+        expect(extractPeerTargetSessionId(
+            'mcp__hapi__ping_peer',
+            { sessionIdPrefix: '11111111', message: 'Check status' },
+            {
+                sessionId: envelopeId,
+                content: [{ type: 'text', text: `steered to ${targetId} (${citedTitle}) localId=ping-peer-2` }],
+            }
+        )).toBe(targetId)
+
+        expect(extractPeerTargetSessionId(
+            'mcp__hapi__ping_peer',
+            { sessionIdPrefix: '11111111', message: 'Check status' },
+            [{ type: 'text', text: `invoked to ${targetId} (resumed) (${citedTitle}) localId=ping-peer-3` }]
+        )).toBe(targetId)
+
+        expect(extractPeerTargetSessionId(
+            'mcp__hapi__ping_peer',
+            { sessionIdPrefix: '11111111', message: 'Check status' },
+            {
+                structuredContent: { sessionId: targetId },
+                content: [{ type: 'text', text: `Delivered to [Other](/sessions/${citedId})` }],
+            }
+        )).toBe(targetId)
+
+        expect(extractPeerTargetSessionId(
+            'mcp__hapi__ping_peer',
+            { sessionIdPrefix: '11111111', message: 'Check status' },
+            { sessionId: 'ses_abc12345' }
+        )).toBeNull()
+
+        expect(extractPeerTargetSessionId(
+            'mcp__hapi__inspect_peer',
+            { sessionIdPrefix: '11111111' },
+            {
+                sessionId: envelopeId,
+                content: [{ type: 'text', text: `sessionId: ${targetId}\nname: ${citedTitle}\n[user] See [Other](/sessions/${citedId})` }],
+            }
+        )).toBe(targetId)
+
+        expect(extractSpawnedSessionId({
+            sessionId: envelopeId,
+            content: [{ type: 'text', text: `Spawned ${targetId} (${citedTitle})` }],
+        })).toBe(targetId)
+
+        expect(extractSpawnedSessionId({
+            structuredContent: { sessionId: targetId },
+            content: [{ type: 'text', text: `Created peer referencing [Other](/sessions/${citedId})` }],
+        })).toBe(targetId)
+
+        expect(extractSpawnedSessionId({
+            structuredContent: { sessionId: 'ses_abc12345' },
+        })).toBeNull()
+    })
+
+    it('suppresses free-text and input-fallback peer links on failed tool calls', () => {
+        const missingId = '44444444-4444-4444-8444-444444444444'
+        const confirmedId = '55555555-5555-4555-8555-555555555555'
+
+        const failedPingBlock = makeResultBlock({
+            name: 'mcp__hapi__ping_peer',
+            state: 'error',
+            input: { sessionIdPrefix: missingId, message: 'Check status' },
+            result: [{
+                type: 'text',
+                text: `Failed to ping peer: no session matching prefix '${missingId}'`,
+            }],
+        })
+        expect(getToolViewComponent(failedPingBlock.tool.name, failedPingBlock.tool)).toBeNull()
+        const PingResultView = getToolResultViewComponent(failedPingBlock.tool.name, failedPingBlock)
+        render(
+            <I18nProvider>
+                <PingResultView block={failedPingBlock} metadata={null} surface="dialog" />
+            </I18nProvider>
+        )
+        expect(screen.queryByRole('link', { name: /Open session/ })).toBeNull()
+
+        // Generic error state suppresses citations, bare UUIDs, and input fallback.
+        expect(extractPeerTargetSessionId(
+            'mcp__hapi__ping_peer',
+            { sessionIdPrefix: missingId, message: 'Check status' },
+            [{ type: 'text', text: `Target [Deleted](/sessions/${missingId}) not found` }],
+            'error'
+        )).toBeNull()
+
+        // isError envelope and CLI failure prefixes suppress fallbacks even if state is omitted.
+        expect(extractPeerTargetSessionId(
+            'mcp__hapi__ping_peer',
+            { sessionIdPrefix: missingId, message: 'Check status' },
+            { isError: true, content: [{ type: 'text', text: `Could not reach ${missingId}` }] }
+        )).toBeNull()
+        expect(extractPeerTargetSessionId(
+            'mcp__hapi__inspect_peer',
+            { sessionIdPrefix: missingId },
+            [{ type: 'text', text: `Failed to inspect peer: no session matching prefix '${missingId}'` }]
+        )).toBeNull()
+
+        // Failed spawn_peer ignores bare UUIDs (e.g. missing machine UUID) and citations.
+        expect(extractSpawnedSessionId(
+            [{ type: 'text', text: `Failed to spawn peer: no hub machine matched machine=${missingId}` }],
+            'error'
+        )).toBeNull()
+        expect(extractSpawnedSessionId(
+            { isError: true, content: [{ type: 'text', text: `See [Other](/sessions/${missingId})` }] }
+        )).toBeNull()
+
+        // Failed call still resolves if it carries a validated structured UUID or anchored header.
+        expect(extractPeerTargetSessionId(
+            'mcp__hapi__ping_peer',
+            { sessionIdPrefix: missingId, message: 'Check status' },
+            { isError: true, structuredContent: { sessionId: confirmedId }, content: [{ type: 'text', text: 'Failed to ping peer: timeout' }] },
+            'error'
+        )).toBe(confirmedId)
+        expect(extractSpawnedSessionId(
+            [{ type: 'text', text: `Spawned ${confirmedId} (Worker)` }],
+            'error'
+        )).toBe(confirmedId)
+
+        // In-flight call without failure still resolves a full UUID from input.
+        expect(extractPeerTargetSessionId(
+            'mcp__hapi__ping_peer',
+            { sessionIdPrefix: confirmedId, message: 'Check status' },
+            null,
+            'running'
+        )).toBe(confirmedId)
+    })
+})
