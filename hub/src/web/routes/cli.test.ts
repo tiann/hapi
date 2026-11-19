@@ -1,8 +1,11 @@
-import { afterEach, beforeAll, describe, expect, it, mock } from 'bun:test'
+import { afterAll, afterEach, beforeAll, describe, expect, it, mock, spyOn } from 'bun:test'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { gunzipSync } from 'node:zlib'
 import { Hono } from 'hono'
 import type { SyncEngine } from '../../sync/syncEngine'
-import { createConfiguration, getConfiguration } from '../../configuration'
+import * as configuration from '../../configuration'
 import { writeAutoBridgeTransientModelErrorsEnabled } from '../../config/autoBridgeTransientModelErrors'
 import { createCliRoutes } from './cli'
 import { SessionIdentityConflictError } from '../../store/sessions'
@@ -19,10 +22,30 @@ function authHeaders() {
     }
 }
 
+let dataDir: string | undefined
+let restoreConfiguration: (() => void) | undefined
+
 beforeAll(async () => {
-    const config = await createConfiguration()
-    config._setCliApiToken('test-token', 'env', false)
-    await config.setGithubPrAwareness(true)
+    dataDir = await mkdtemp(join(tmpdir(), 'hapi-cli-routes-'))
+    const previousHome = process.env.HAPI_HOME
+    try {
+        // Another test file may have initialized the Hub singleton for a
+        // directory it has since removed. Use a fresh per-file configuration.
+        process.env.HAPI_HOME = dataDir
+        const config = await configuration.Configuration.create()
+        config._setCliApiToken('test-token', 'env', false)
+        config.githubPrAwareness = true
+        const getConfiguration = spyOn(configuration, 'getConfiguration').mockReturnValue(config)
+        restoreConfiguration = () => getConfiguration.mockRestore()
+    } finally {
+        if (previousHome === undefined) delete process.env.HAPI_HOME
+        else process.env.HAPI_HOME = previousHome
+    }
+})
+
+afterAll(async () => {
+    restoreConfiguration?.()
+    if (dataDir) await rm(dataDir, { recursive: true, force: true })
 })
 
 describe('cli shutdown preparation', () => {
@@ -466,11 +489,11 @@ describe('cli features and external-refs read', () => {
 
 describe('cli autoBridgeTransientModelErrors namespace gate', () => {
     afterEach(async () => {
-        await writeAutoBridgeTransientModelErrorsEnabled(getConfiguration().dataDir, false)
+        await writeAutoBridgeTransientModelErrorsEnabled(configuration.getConfiguration().dataDir, false)
     })
 
     it('returns hub auto-bridge only for the default namespace', async () => {
-        await writeAutoBridgeTransientModelErrorsEnabled(getConfiguration().dataDir, true)
+        await writeAutoBridgeTransientModelErrorsEnabled(configuration.getConfiguration().dataDir, true)
         const sessionId = '22222222-2222-4222-8222-222222222222'
         const app = createApp({
             getOrCreateSession: () => ({ id: sessionId }),
