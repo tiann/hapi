@@ -5,6 +5,8 @@ import { dirname } from 'node:path'
 import { MachineStore } from './machineStore'
 import { MessageStore } from './messageStore'
 import { addMessage } from './messages'
+import { decodeMessageContent } from './contentCodec'
+import { isUserInputMessage } from './sessionUserActivity'
 import { clearCachedStatements } from './statementCache'
 import { backfillLastUserMessageAt } from './sessionUserActivity'
 import type { StoredMessage } from './types'
@@ -174,6 +176,21 @@ export class Store {
         namespace: string
     ): { updatedAt: number; consumed: number } {
         return this.db.transaction(() => {
+            // Which of these rows are actually the operator's prompts? Agent
+            // OUTPUT also carries local ids and emits `messages-consumed`
+            // (OpenCode compaction summaries via `sendAgentMessage`), and
+            // counting those as a delivered reply cleared a live blocker.
+            const placeholders = localIds.map(() => '?').join(', ')
+            const pending = localIds.length === 0
+                ? []
+                : this.db.prepare(
+                    `SELECT content FROM messages
+                     WHERE session_id = ? AND local_id IN (${placeholders})
+                       AND invoked_at IS NULL`
+                ).all(sessionId, ...localIds) as Array<{ content: string | Uint8Array }>
+            const operatorPrompts = pending.filter(
+                (row) => isUserInputMessage(decodeMessageContent(row.content))
+            ).length
             const changes = this.messages.markMessagesInvoked(sessionId, localIds, invokedAt)
             if (changes > 0) {
                 this.sessions.touchSessionUpdatedAt(sessionId, invokedAt, namespace)
@@ -190,7 +207,9 @@ export class Store {
             // `consumed` is 0 for a replayed acknowledgement or unknown local
             // ids: nothing reached the agent, so callers must not treat it as
             // a delivery (#1717).
-            return { updatedAt: session.updatedAt, consumed: changes }
+            // `consumed` counts only operator prompts: a replayed ack, unknown
+            // local ids, and agent output all deliver nothing (#1717).
+            return { updatedAt: session.updatedAt, consumed: operatorPrompts }
         })()
     }
 
@@ -452,14 +471,20 @@ export class Store {
         // Keep the individual steps below for databases that resume from an
         // intermediate schema version after an interrupted upgrade.
         if (currentVersion === 26) {
+            // Collapse the three derived-index refinements into one rebuild...
             this.migrateFromV26ToV30()
-            this.migrateFromV29ToV30()
-            this.migrateFromV30ToV31()
-            this.migrateFromV31ToV32()
-            this.migrateFromV32ToV33()
-            this.migrateFromV33ToV34()
-            this.migrateFromV34ToV35()
-            this.migrateFromV35ToV36()
+            // ...then run the REMAINING ladder by index rather than by hand.
+            // This branch used to list each later step explicitly, so a
+            // migration added to `buildStepMigrations` but not copied here was
+            // silently skipped while the database was still stamped at
+            // SCHEMA_VERSION — the row then claimed a version whose columns it
+            // did not have, and the hub failed to start. Driving the ladder
+            // from the same source removes that whole class.
+            for (let v = 29; v < SCHEMA_VERSION; v++) {
+                const step = stepMigrations[v]
+                if (!step) throw this.buildSchemaMismatchError(currentVersion)
+                step()
+            }
             this.ensureUsageScanParserVersion()
             this.setUserVersion(SCHEMA_VERSION)
             return

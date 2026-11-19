@@ -134,6 +134,11 @@ export type SessionSummary = {
      *  was acknowledged" from "the acknowledged ones are merely the only ones
      *  the capped slice carried". */
     pendingRequestsNewestAt?: number
+    /** Every pending request id, uncapped. `pendingRequests` keeps only the
+     *  oldest few, so an overflow prompt had no identity and fell back to a
+     *  synthetic one — a dismissal then stopped matching the moment the real
+     *  request entered the capped slice. Ids are small; the bodies are not. */
+    pendingRequestIds?: string[]
     backgroundTaskCount: number
     /**
      * Hub-derived "open tool work exists in the transcript tail" (work-scoped
@@ -237,6 +242,15 @@ export function computePendingRequestsCount(agentState: AgentState | null | unde
  * is simply absent. Computed from `agentState` like `pendingRequestsCount`,
  * so it costs no storage and needs no migration.
  */
+/** Every pending request id, uncapped and bounded only by a sane ceiling. */
+export function computePendingRequestIds(
+    agentState: AgentState | null | undefined
+): string[] {
+    const requests = agentState?.requests
+    if (!requests) return []
+    return Object.keys(requests).slice(0, 200)
+}
+
 export function computePendingRequestsNewestAt(
     agentState: AgentState | null | undefined,
     fallbackSince: number
@@ -367,6 +381,7 @@ export function toSessionSummary(
         pendingRequestKinds: computePendingRequestKinds(session.agentState),
         pendingRequests: computePendingRequests(session.agentState, session.updatedAt),
         pendingRequestsNewestAt: computePendingRequestsNewestAt(session.agentState, session.updatedAt),
+        pendingRequestIds: computePendingRequestIds(session.agentState),
         backgroundTaskCount: session.backgroundTaskCount ?? 0,
         derivedToolWork: session.derivedToolWork === true,
         lastNotify: session.lastNotify ?? null,

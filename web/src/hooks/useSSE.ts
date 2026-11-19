@@ -498,14 +498,20 @@ export function useSSE(options: {
                 const existingNotifyAt = existing?.notifyUpdatedAt ?? 0
                 const keepExistingNotify = existing !== undefined
                     && existingNotifyAt > incomingNotifyAt
+                // See useSessions: pending requests follow agentStateVersion.
+                const keepExistingPending = existing !== undefined
+                    && (existing.agentStateVersion ?? 0) > (session.agentStateVersion ?? 0)
                 const summary = {
                     ...toSessionSummary(session),
                     ...(keepExistingNotify && existing !== undefined
                         ? {
                             lastNotify: existing.lastNotify ?? null,
                             blockedAck: existing.blockedAck ?? null,
-                            notifyUpdatedAt: existingNotifyAt,
-                            // Same picture, same decision — see useSessions.
+                            notifyUpdatedAt: existingNotifyAt
+                        }
+                        : {}),
+                    ...(keepExistingPending && existing !== undefined
+                        ? {
                             pendingRequestsCount: existing.pendingRequestsCount,
                             pendingRequestKinds: existing.pendingRequestKinds,
                             pendingRequests: existing.pendingRequests,

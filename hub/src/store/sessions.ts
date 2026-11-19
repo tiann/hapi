@@ -1270,8 +1270,11 @@ export function advanceNotifyClearBoundary(
 }
 
 /** Dismissed-blocker identities are stored as a JSON array in one column. */
-export function parseAckKeys(raw: string | null): string[] | null {
-    if (raw === null) return null
+export function parseAckKeys(raw: string | null | undefined): string[] | null {
+    // `undefined` reaches here when the column is absent on a database that
+    // claims a version it never migrated to. Treat it like "no dismissals"
+    // rather than letting `raw.length` throw on every session load.
+    if (raw === null || raw === undefined) return null
     try {
         const parsed: unknown = JSON.parse(raw)
         if (!Array.isArray(parsed)) return null

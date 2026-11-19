@@ -475,6 +475,10 @@ export class SyncEngine {
                 ownerUserId: this.hubOwnerUserId,
                 reason,
                 acknowledgedAt: ack.at,
+                // Carry the identity even when the footer it named has already
+                // been replaced: an event that records the reason with null
+                // prior fields cannot be matched back to what was dismissed.
+                observedKey: observedKey ?? null,
                 priorNotify: priorNotify
             }), { ts: ack.at })
         } catch (error) {
@@ -531,10 +535,12 @@ export class SyncEngine {
     /** Newest eligible footer in the retained transcript, or null. */
     private findNotifySignalInTranscript(
         sessionId: string,
-        scanDepth: number = NOTIFY_BACKFILL_MESSAGE_SCAN
+        scanDepth: number | null = NOTIFY_BACKFILL_MESSAGE_SCAN
     ): { status: string; at: number; note: string | null } | null {
         const now = Date.now()
-        const scanned = this.store.messages.getMessages(sessionId, scanDepth)
+        const scanned = scanDepth === null
+            ? this.store.messages.getAllMessages(sessionId)
+            : this.store.messages.getMessages(sessionId, scanDepth)
         // Re-order by message time before scanning. `getMessages` sorts by
         // insertion `seq`, but replayed transcripts keep their original
         // timestamps, so an older footer can be stored after a newer one.
@@ -589,7 +595,11 @@ export class SyncEngine {
         // truncation the transcript is the truth, not arrival order.
         const session = this.sessionCache.getSession(sessionId)
         if (!session) return
-        const retained = this.findNotifySignalInTranscript(sessionId, NOTIFY_REWIND_MESSAGE_SCAN)
+        // Scan ALL retained history. Any fixed window is wrong here: a miss
+        // does not delay the signal, it writes null and drops the session out
+        // of Blocked while its transcript still ends unanswered. Rewind is
+        // rare, so the full read is affordable.
+        const retained = this.findNotifySignalInTranscript(sessionId, null)
         this.sessionCache.replaceNotifyAfterTruncate(sessionId, retained)
     }
 

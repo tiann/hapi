@@ -39,6 +39,12 @@ export function useSessions(api: ApiClient | null, options: UseSessionsOptions =
                     const priorNotifyAt = prior?.notifyUpdatedAt ?? 0
                     const keepPriorNotify = prior !== undefined
                         && priorNotifyAt > (session.notifyUpdatedAt ?? 0)
+                    // Pending requests move on `agentStateVersion`, which
+                    // advances when a prompt is ANSWERED even though the notify
+                    // revision may not. Governing them by the notify revision
+                    // let a stale snapshot restore an answered prompt.
+                    const keepPriorPending = prior !== undefined
+                        && (prior.agentStateVersion ?? 0) > (session.agentStateVersion ?? 0)
                     return { ...session,
                         // The pending-request fields are part of the same
                         // blocker picture: keeping the newer footer while
@@ -48,7 +54,11 @@ export function useSessions(api: ApiClient | null, options: UseSessionsOptions =
                             ? {
                                 lastNotify: prior.lastNotify ?? null,
                                 blockedAck: prior.blockedAck ?? null,
-                                notifyUpdatedAt: priorNotifyAt,
+                                notifyUpdatedAt: priorNotifyAt
+                            }
+                            : {}),
+                        ...(keepPriorPending && prior !== undefined
+                            ? {
                                 pendingRequestsCount: prior.pendingRequestsCount,
                                 pendingRequestKinds: prior.pendingRequestKinds,
                                 pendingRequests: prior.pendingRequests,

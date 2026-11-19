@@ -1682,7 +1682,10 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     )
     const [reopenError, setReopenError] = useState<string | null>(null)
     const holdPanel = useContext(CollapsiblePanelHoldContext)
-    const overlayOpen = menuOpen || renameOpen || linkPrOpen || exportOpen || archiveOpen || deleteOpen || forkFlowOpen || reopenError !== null
+    // `unblockOpen` belongs here with the other dialogs: without it, a row
+    // revealed by the jump exemption unmounted two seconds later and took the
+    // open Mark-unblocked dialog with it, mid-entry.
+    const overlayOpen = menuOpen || renameOpen || linkPrOpen || exportOpen || archiveOpen || deleteOpen || forkFlowOpen || unblockOpen || reopenError !== null
     useEffect(() => {
         if (!overlayOpen || !holdPanel) return
         holdPanel(true)
@@ -3681,6 +3684,9 @@ export function SessionList(props: {
         if (!flashBlockedSessionId) return
         const timer = setTimeout(() => {
             setFlashBlockedSessionId(null)
+            // Only drop the exemption if no dialog is open against that row.
+            // Expiring it underneath an open Mark-unblocked dialog unmounted
+            // the row mid-entry and took the dialog with it.
             setRevealBlockedSessionId(null)
         }, 2000)
         return () => clearTimeout(timer)

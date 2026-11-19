@@ -1007,9 +1007,11 @@ export class SessionCache {
         // before the agent ever sees it — both erased a live blocker from
         // here. The boundary still advances so a delayed footer cannot slip
         // in behind the reply.
-        if (!wasThinking) {
-            this.store.sessions.advanceNotifyClearBoundary(session.id, session.namespace)
-        }
+        // The boundary is NOT advanced here any more. Queueing is optimistic:
+        // a reply cancelled before delivery would otherwise leave a boundary
+        // that rejects a footer the agent generated before the send, and the
+        // unanswered blocker never reappears. Both the clear and the boundary
+        // now move together on confirmed delivery.
     }
 
     /**
@@ -2549,15 +2551,29 @@ export class SessionCache {
         if (oldAckAt !== null) {
             const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
             const targetAckAt = latest?.blockedAckAt ?? null
-            const targetHasKeyedAck = Boolean(latest?.blockedAckKeys?.length)
-            if (latest && !targetHasKeyedAck
-                && (targetAckAt === null || oldAckAt > targetAckAt)) {
+            // UNION the dismissal sets. Skipping the source entirely whenever
+            // the destination had its own keyed acknowledgement meant each row
+            // having dismissed a DIFFERENT request made the source's request
+            // block again on the merged row — the merge unions the requests, so
+            // it has to union what dismissed them.
+            const mergedKeys = Array.from(new Set([
+                ...(latest?.blockedAckKeys ?? []),
+                ...(oldStored.blockedAckKeys ?? [])
+            ]))
+            // Keyless acknowledgements (written before identities existed)
+            // still carry across on the old watermark rule, so an upgrade does
+            // not resurrect work the operator already dismissed.
+            const transferKeyless = mergedKeys.length === 0
+                && (targetAckAt === null || oldAckAt > targetAckAt)
+            if (latest && (mergedKeys.length > 0 || transferKeyless)) {
                 this.store.sessions.setSessionBlockedAck(
                     newSessionId,
                     {
-                        at: oldAckAt,
-                        reason: oldStored.blockedAckReason ?? '',
-                        keys: oldStored.blockedAckKeys
+                        at: Math.max(oldAckAt, targetAckAt ?? 0),
+                        reason: (targetAckAt !== null && targetAckAt >= oldAckAt)
+                            ? (latest.blockedAckReason ?? '')
+                            : (oldStored.blockedAckReason ?? ''),
+                        keys: mergedKeys.length > 0 ? mergedKeys : null
                     },
                     namespace
                 )

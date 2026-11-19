@@ -728,6 +728,10 @@ export function buildOperatorUnblockEvent(input: {
     ownerUserId: string | number
     reason: string
     acknowledgedAt: number
+    /** Identity of the blocker the operator dismissed. Recorded even when the
+     *  footer it named has since been replaced, so the event can still be
+     *  matched back to what was actually reviewed. */
+    observedKey?: string | null
     priorNotify: NotifySummary | SessionNotifySignal | null
 }): WorkGraphEventCreate {
     const principalId = String(input.ownerUserId)
@@ -744,6 +748,14 @@ export function buildOperatorUnblockEvent(input: {
         payload_json: {
             reason: clampJsonUtf8(input.reason, WORK_GRAPH_MAX_STRING),
             acknowledged_at: input.acknowledgedAt,
+            // The identity is recorded unconditionally. The prior_* fields go
+            // null when the footer named by the key has already been replaced,
+            // and without the key the event could not be matched back to what
+            // the operator actually dismissed — including for a live request,
+            // which has no footer at all.
+            blocker_key: input.observedKey
+                ? clampJsonUtf8(input.observedKey, WORK_GRAPH_MAX_STRING)
+                : null,
             prior_status: prior?.status ?? null,
             prior_note: (prior && 'note' in prior ? prior.note : null) ?? null,
             prior_at: (prior && 'at' in prior ? prior.at : null) ?? null

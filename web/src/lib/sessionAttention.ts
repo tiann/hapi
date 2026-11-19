@@ -177,7 +177,13 @@ function getPendingBlockedState(
     // this question; without it (older hub) fall back to what we can see.
     const newestAt = summary.pendingRequestsNewestAt
         ?? (all.length > 0 ? all[all.length - 1]!.since : 0)
-    const newerBeyondCap = total > all.length && newestAt > (ackAt ?? 0)
+    // Prefer identity over the timestamp heuristic when ids are available.
+    const uncappedIds = summary.pendingRequestIds ?? []
+    const unackedBeyondCap = uncappedIds.length > 0
+        ? uncappedIds.some((id) => !all.some((request) => request.id === id)
+            && !isAcknowledgedBlocker(ack, requestBlockerKey(id), newestAt))
+        : total > all.length && newestAt > (ackAt ?? 0)
+    const newerBeyondCap = unackedBeyondCap
     if (ack !== null && unacked.length === 0 && !newerBeyondCap) {
         return null
     }
@@ -195,8 +201,18 @@ function getPendingBlockedState(
     const oldest = unacked.find(request => request.kind === wantedKind) ?? unacked[0] ?? null
     const at = oldest?.since ?? (newestAt > 0 ? newestAt : summary.updatedAt)
 
+    // Overflow prompts are not in the capped slice, but their ids are carried
+    // uncapped for exactly this. A synthetic notify key stopped matching the
+    // moment the real request entered the slice, so the dismissal was lost.
+    const overflowId = !oldest
+        ? (summary.pendingRequestIds ?? []).find(
+            (id) => !all.some((request) => request.id === id)
+        ) ?? null
+        : null
     return {
-        key: oldest ? requestBlockerKey(oldest.id) : notifyBlockerKey(at),
+        key: oldest
+            ? requestBlockerKey(oldest.id)
+            : (overflowId ? requestBlockerKey(overflowId) : notifyBlockerKey(at)),
         reason,
         at,
         note: oldest?.tool ?? null,

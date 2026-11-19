@@ -1329,6 +1329,9 @@ describe('buildOperatorUnblockEvent (#1717 posterity record)', () => {
         expect(event.payload_json).toEqual({
             reason: 'handled outside HAPI',
             acknowledged_at: 1700,
+            // Null here because this call names no observed blocker; the
+            // identity is recorded whenever the dialog supplies one.
+            blocker_key: null,
             // The agent's claim travels with the dismissal so a reader can tell
             // "operator disagreed" from "resolved elsewhere".
             prior_status: 'blocked',
