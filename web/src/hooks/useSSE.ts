@@ -23,7 +23,7 @@ import type {
     SyncEvent
 } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
-import { applySessionSchedule, type CachedSessionsResponse } from '@/lib/sessionSchedule'
+import { applySessionSchedule, bufferInitialSessionSchedule, type CachedSessionsResponse } from '@/lib/sessionSchedule'
 import { applyAgyCatalogAnnouncement } from '@/lib/agyCatalogAnnouncement'
 import { clearMessageWindow, getMessageWindowState, ingestIncomingMessages, markMessagesConsumed, markMessagesIndeterminate, markMessagesDispatching, markMessagesRequeued, removeOptimisticMessage, updateMessageStatus } from '@/lib/message-window-store'
 import {
@@ -721,7 +721,9 @@ export function useSSE(options: {
                         queryClient.getQueryState(queryKeys.sessions)?.fetchStatus === 'fetching'
                     )
                     if (!next) {
-                        queueSessionListInvalidation()
+                        if (previous || !bufferInitialSessionSchedule(queryClient, event.sessionId, eventId, event.sessionSchedule)) {
+                            queueSessionListInvalidation()
+                        }
                     } else if (next !== previous) {
                         queryClient.setQueryData(queryKeys.sessions, next)
                     }

@@ -1,4 +1,5 @@
-import { SessionScheduleSchema } from '@hapi/protocol/schemas'
+import type { QueryClient } from '@tanstack/react-query'
+import { SessionScheduleSchema, type SessionSchedule } from '@hapi/protocol/schemas'
 import type { SessionsResponse, SessionSummary } from '@/types/api'
 
 type CachedSessionSummary = SessionSummary & {
@@ -7,9 +8,10 @@ type CachedSessionSummary = SessionSummary & {
 }
 export type CachedSessionsResponse = Omit<SessionsResponse, 'sessions'> & { sessions: CachedSessionSummary[] }
 
+const cursorPattern = /^([^:]+):(0|[1-9]\d*):([^:]+)$/
+
 // Positions are comparable only within one hub epoch and namespace.
 function comparePositions(a: string | undefined, b: string | undefined): number | undefined {
-    const cursorPattern = /^([^:]+):(0|[1-9]\d*):([^:]+)$/
     const firstCursor = a?.match(cursorPattern)
     const secondCursor = b?.match(cursorPattern)
     if (!firstCursor || !secondCursor) return undefined
@@ -24,6 +26,47 @@ function comparePositions(a: string | undefined, b: string | undefined): number 
 
 export function isNewerSessionListEvent(eventId: string | undefined, snapshotCursor: string | undefined): boolean {
     return (comparePositions(eventId, snapshotCursor) ?? 0) > 0
+}
+
+type ScheduleUpdate = SessionSchedule & { sessionScheduleEventId?: string }
+const initialSchedules = new WeakMap<QueryClient, Map<string, ScheduleUpdate>>()
+
+function initialScheduleKey(sessionId: string, eventId: string | undefined): string | undefined {
+    const cursor = eventId?.match(cursorPattern)
+    if (!cursor || !Number.isSafeInteger(Number(cursor[2]))) return undefined
+    return JSON.stringify([cursor[1], cursor[3], sessionId])
+}
+
+export function beginInitialSessionSchedules(client: QueryClient) {
+    const updates = new Map<string, ScheduleUpdate>()
+    initialSchedules.set(client, updates)
+    return {
+        take: (id: string, snapshotCursor: string | undefined) => {
+            const key = initialScheduleKey(id, snapshotCursor)
+            if (key === undefined) return undefined
+            const update = updates.get(key)
+            updates.delete(key)
+            return update
+        },
+        hasUnmatched: () => updates.size > 0,
+        close: () => {
+            if (initialSchedules.get(client) === updates) initialSchedules.delete(client)
+        }
+    }
+}
+
+export function bufferInitialSessionSchedule(client: QueryClient, sessionId: string, eventId: string, value: unknown): boolean {
+    const updates = initialSchedules.get(client)
+    const key = initialScheduleKey(sessionId, eventId)
+    if (!updates || key === undefined) return false
+    const schedule = SessionScheduleSchema.safeParse(value)
+    if (!schedule.success) return false
+
+    const previous = updates.get(key)
+    if (!previous || isNewerSessionListEvent(eventId, previous.sessionScheduleEventId)) {
+        updates.set(key, { ...schedule.data, sessionScheduleEventId: eventId })
+    }
+    return true
 }
 
 export function applySessionSchedule(
@@ -59,7 +102,7 @@ export function applySessionSchedule(
 export function reconcileSessionSchedule(
     snapshot: SessionSummary,
     snapshotCursor: string | undefined,
-    cached: CachedSessionSummary | undefined
+    cached: ScheduleUpdate | undefined
 ): CachedSessionSummary {
     if (!cached || !isNewerSessionListEvent(cached.sessionScheduleEventId, snapshotCursor)) {
         return snapshot

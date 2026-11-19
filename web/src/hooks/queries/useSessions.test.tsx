@@ -1,6 +1,6 @@
 import { createElement, type ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, renderHook } from '@testing-library/react'
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import type { ApiClient } from '@/api/client'
 import type { SessionsResponse, SessionSummary } from '@/types/api'
@@ -133,3 +133,69 @@ it.each([false, true])('retains an SSE-inserted row across an older list snapsho
         vi.unstubAllGlobals()
     }
 })
+
+it.each(['matched', 'incomparable', 'absent', 'both'] as const)(
+    'reconciles schedule events from the initial list request (%s)',
+    async (scenario) => {
+        let receive: (event: object, eventId: string) => void = () => { throw new Error('No event stream') }
+        vi.stubGlobal('EventSource', class {
+            onmessage: ((event: MessageEvent<string>) => void) | null = null
+            constructor() {
+                receive = (event, eventId) => this.onmessage?.(new MessageEvent('message', {
+                    data: JSON.stringify(event), lastEventId: eventId
+                }))
+            }
+            close() {}
+        })
+        const client = new QueryClient()
+        let resolve!: (response: SessionsResponse) => void
+        const getSessions = vi.fn(() => new Promise<SessionsResponse>(done => { resolve = done }))
+        const api = { getSessions } as unknown as ApiClient
+        const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children)
+        const { unmount } = renderHook(() => {
+            useSSE({ enabled: true, token: 'test', baseUrl: 'http://hub.test', scope: 'global', subscription: { all: true }, onEvent: () => {} })
+            return useSessions(api)
+        }, { wrapper })
+        try {
+            const pending = client.getQueryCache().find({ queryKey: queryKeys.sessions })!.promise!
+            await act(async () => {
+                const events = [['due', 'epoch:3:ns'], ['stale', 'epoch:1:ns']]
+                if (scenario === 'incomparable' || scenario === 'both') events.push(['due', 'epoch:4:other'])
+                if (scenario === 'absent' || scenario === 'both') events.push(['missing', 'epoch:5:ns'])
+                for (const [id, cursor] of events) {
+                    receive({
+                        type: 'session-schedule-updated', sessionId: id,
+                        sessionSchedule: { futureScheduledMessageCount: 0, nextScheduledAt: null }
+                    }, cursor)
+                }
+                // Give a queued invalidation time to join the still-pending initial request.
+                await new Promise(done => setTimeout(done, 25))
+                resolve({
+                    sessionScheduleCursor: 'epoch:2:ns',
+                    sessions: ['due', 'stale', 'foreign'].map(id => ({
+                        ...row(id, 100), futureScheduledMessageCount: 1, nextScheduledAt: 1_000
+                    }))
+                })
+                await pending
+            })
+            const sessions = client.getQueryData<SessionsResponse>(queryKeys.sessions)!.sessions
+            expect(sessions.find(session => session.id === 'due'))
+                .toMatchObject({ futureScheduledMessageCount: 0, nextScheduledAt: null })
+            expect(sessions.filter(session => session.id !== 'due').map(session => session.futureScheduledMessageCount))
+                .toEqual([1, 1])
+            if (scenario !== 'matched') {
+                await waitFor(() => expect(getSessions).toHaveBeenCalledTimes(2))
+                const recovery = client.getQueryCache().find({ queryKey: queryKeys.sessions })!.promise!
+                await act(async () => {
+                    resolve({ sessions, sessionScheduleCursor: 'epoch:6:ns' })
+                    await recovery
+                })
+            }
+            await act(async () => { await new Promise(done => setTimeout(done, 25)) })
+            expect(getSessions).toHaveBeenCalledTimes(scenario === 'matched' ? 1 : 2)
+        } finally {
+            unmount()
+            vi.unstubAllGlobals()
+        }
+    }
+)
