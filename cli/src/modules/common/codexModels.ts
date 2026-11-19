@@ -55,9 +55,9 @@ function normalizeServiceTiers(value: unknown): string[] | undefined {
             continue;
         }
         const record = entry as { id?: unknown; name?: unknown };
-        const id = asNonEmptyString(record.id);
+        const id = typeof record.id === 'string' ? record.id : undefined;
         const name = asNonEmptyString(record.name);
-        if (id) tokens.add(id.toLowerCase());
+        if (id) tokens.add(id);
         // Ultrafast eligibility requires its native request ID, never a label.
         if (name && name.toLowerCase() !== 'ultrafast') tokens.add(name.toLowerCase());
     }

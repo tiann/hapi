@@ -16,6 +16,8 @@ describe('Codex service tiers', () => {
         expect(codexModelHasUltrafastTier(undefined)).toBe(false)
         expect(codexModelHasUltrafastTier({ serviceTiers: ['priority', 'fast'] })).toBe(false)
         expect(codexModelHasUltrafastTier({ serviceTiers: ['ultrafast'] })).toBe(true)
+        expect(codexModelHasUltrafastTier({ serviceTiers: ['Ultrafast'] })).toBe(false)
+        expect(codexModelHasUltrafastTier({ serviceTiers: [' ultrafast '] })).toBe(false)
     })
 })
 

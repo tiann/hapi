@@ -13,5 +13,5 @@ export function fromCodexServiceTier(tier: unknown): 'standard' | 'fast' | 'ultr
 
 /** Availability belongs to the current account's model catalog, not model-name heuristics. */
 export function codexModelHasUltrafastTier(model: { serviceTiers?: readonly string[] } | undefined): boolean {
-    return Boolean(model?.serviceTiers?.some(tier => tier.trim().toLowerCase() === 'ultrafast'))
+    return Boolean(model?.serviceTiers?.some(tier => tier === 'ultrafast'))
 }

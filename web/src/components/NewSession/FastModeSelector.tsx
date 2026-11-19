@@ -8,9 +8,9 @@ export function FastModeSelector(props: {
     fastAvailable?: boolean
     ultrafastAvailable?: boolean
     visible: boolean
-    value: NewSessionServiceTier
+    value: NewSessionServiceTier | 'default'
     isDisabled: boolean
-    onChange: (value: NewSessionServiceTier) => void
+    onChange: (value: NewSessionServiceTier | 'default') => void
 }) {
     const { t } = useTranslation()
 
@@ -27,10 +27,11 @@ export function FastModeSelector(props: {
             <SelectControl
                 aria-label={t('newSession.fastMode')}
                 value={props.value}
-                onChange={(e) => props.onChange(e.target.value as NewSessionServiceTier)}
+                onChange={(e) => props.onChange(e.target.value as NewSessionServiceTier | 'default')}
                 disabled={props.isDisabled}
                 className="py-2 pl-3 text-sm rounded-lg border border-[var(--app-divider)] bg-[var(--app-bg)] text-[var(--app-text)] focus:outline-none focus:ring-2 focus:ring-[var(--app-link)] disabled:opacity-50"
             >
+                <option value="default">Account default</option>
                 <option value="standard">{t('misc.fastModeStandard')}</option>
                 {props.fastAvailable !== false && <option value="fast">{t('misc.fastModeFast')}</option>}
                 {(props.ultrafastAvailable || props.value === 'ultrafast') && <option value="ultrafast" disabled={!props.ultrafastAvailable}>{t('misc.fastModeUltrafast')}</option>}

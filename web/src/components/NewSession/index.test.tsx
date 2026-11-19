@@ -589,6 +589,31 @@ describe('NewSession launch preferences', () => {
         await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ serviceTier: 'standard' })))
     })
 
+    it('inherits the account tier with a visible untouched picker', async () => {
+        savePreferredAgent('codex')
+        savePreferredLaunchSettings('machine-1', 'codex', { model: 'gpt-6.2-sol', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'high' })
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'inherited-tier' })
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        expect(await screen.findByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue('default')
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalled())
+        expect(mocks.spawnSession.mock.calls[0][0].serviceTier).toBeUndefined()
+        expect(loadPreferredLaunchSettings('machine-1', 'codex')?.serviceTier).toBeUndefined()
+    })
+
+    it('preserves saved Fast through a catalog outage and launch', async () => {
+        savePreferredAgent('codex')
+        savePreferredLaunchSettings('machine-1', 'codex', { model: 'gpt-6.2-sol', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'high', serviceTier: 'fast' })
+        mocks.codexModelsError = 'catalog disconnected'
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'saved-fast' })
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ serviceTier: 'fast' })))
+        expect(loadPreferredLaunchSettings('machine-1', 'codex')?.serviceTier).toBe('fast')
+    })
+
     it('omits an untouched tier when the selected model has no tier control', async () => {
         savePreferredAgent('codex')
         savePreferredLaunchSettings('machine-1', 'codex', { model: 'gpt-5.6-terra', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'max' })
@@ -606,7 +631,7 @@ describe('NewSession launch preferences', () => {
             initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />
         const first = renderWithQuery(form)
         const fast = await screen.findByRole('combobox', { name: 'newSession.fastMode' })
-        expect(fast).toHaveValue('standard')
+        expect(fast).toHaveValue('default')
         fireEvent.change(fast, { target: { value: 'fast' } })
         await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
         fireEvent.click(screen.getByTestId('create'))

@@ -567,7 +567,7 @@ export function NewSession(props: {
         // Wait for the Codex model catalog to settle before clearing Fast;
         // otherwise Browse → remount restores serviceTier: 'fast' and this
         // effect would wipe it while models are still loading.
-        if (agent === 'codex' && (codexModelsState.isLoading || (serviceTier === 'ultrafast' && codexModelsState.error))) {
+        if (agent === 'codex' && (codexModelsState.isLoading || codexModelsState.error)) {
             return
         }
         if (serviceTier === 'fast' && !showCodexFastMode) {
@@ -2053,10 +2053,10 @@ export function NewSession(props: {
                 cursorSelectedBase,
                 effort,
                 modelReasoningEffort,
-                ...(agent === 'codex' && (serviceTierExplicit || showCodexFastMode || showCodexUltrafastMode) ? { serviceTier } : {}),
+                ...(agent === 'codex' && serviceTierExplicit ? { serviceTier } : {}),
                 ...(usesSharedPermissionMode ? { permissionMode: nativePermissionMode } : {})
             }
-            const resolvedServiceTier = agent === 'codex' && (serviceTierExplicit || showCodexFastMode || showCodexUltrafastMode)
+            const resolvedServiceTier = agent === 'codex' && serviceTierExplicit
                 ? serviceTier
                 : undefined
             const resolvedCollaborationMode = agent === 'codex' && collaborationMode !== 'default'
@@ -2604,9 +2604,9 @@ export function NewSession(props: {
                 visible={showCodexFastMode || showCodexUltrafastMode || (agent === 'codex' && serviceTier === 'ultrafast')}
                 fastAvailable={showCodexFastMode}
                 ultrafastAvailable={showCodexUltrafastMode}
-                value={serviceTier}
+                value={serviceTierExplicit ? serviceTier : 'default'}
                 isDisabled={isFormDisabled}
-                onChange={value => { setServiceTier(value); setServiceTierExplicit(true) }}
+                onChange={value => { setServiceTier(value === 'default' ? 'standard' : value); setServiceTierExplicit(value !== 'default') }}
             />
 
             {(error ?? spawnError) ? (

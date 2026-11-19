@@ -227,3 +227,8 @@ it('does not advertise Ultrafast from a display label without the exact native I
     expect(normalizeCodexModel({ id: 'm', serviceTiers: [{ id: 'other', name: 'Ultrafast' }] })?.serviceTiers).toEqual(['other']);
     expect(normalizeCodexModel({ id: 'm', serviceTiers: [{ id: 'ultrafast', name: 'Ultrafast' }] })?.serviceTiers).toEqual(['ultrafast']);
 });
+
+it.each(['Ultrafast', ' ultrafast '])('preserves the raw native tier ID %s', async id => {
+    const { normalizeCodexModel } = await import('./codexModels');
+    expect(normalizeCodexModel({ id: 'm', serviceTiers: [{ id, name: 'Ultrafast' }] })?.serviceTiers).toEqual([id]);
+});
