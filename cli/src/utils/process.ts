@@ -481,7 +481,8 @@ export async function killProcessTreeByPid(
   // 4th arg: stop deadline (signal-lease budget) when numeric, else the Windows
   // report fallback used when the 3rd arg is a signal (#1911).
   deadlineOrFallbackReport?: number | ((report: WindowsStopReport) => void),
-  fallbackReport?: (report: WindowsStopReport) => void
+  fallbackReport?: (report: WindowsStopReport) => void,
+  requiredRootMarker?: string
 ): Promise<boolean> {
   const deadlineMs = typeof deadlineOrFallbackReport === 'number' ? deadlineOrFallbackReport : undefined;
   const onReport = typeof signalOrReport === 'function' ? signalOrReport
@@ -491,8 +492,9 @@ export async function killProcessTreeByPid(
   const n = typeof pid === 'number' ? pid : Number(pid)
   if (!Number.isFinite(n) || n <= 0) return false;
   if (isWindows()) {
-    return stopWindowsProcessTree(n, force, onReport, deadlineMs);
+    return stopWindowsProcessTree(n, force, onReport, deadlineMs, requiredRootMarker);
   }
+  if (requiredRootMarker && getProcessStartMarker(n) !== requiredRootMarker) return false;
   return killProcessTree(n, force, deadlineMs, signal);
 }
 
@@ -541,7 +543,8 @@ export async function killProcessByChildProcess(
   force: boolean = false,
   signalOrReport: NodeJS.Signals | ((report: WindowsStopReport) => void) = 'SIGTERM',
   deadlineOrFallbackReport?: number | ((report: WindowsStopReport) => void),
-  fallbackReport?: (report: WindowsStopReport) => void
+  fallbackReport?: (report: WindowsStopReport) => void,
+  requiredRootMarker?: string
 ): Promise<boolean> {
   const pid = child.pid;
   if (!pid) {
@@ -551,7 +554,7 @@ export async function killProcessByChildProcess(
   // Both platforms: tree-kill + full-tree verify (win32 must not trust
   // root-only). The soft signal rides along on POSIX so job Ctrl-C stays
   // exit 130 (#1424).
-  return killProcessTreeByPid(pid, force, signalOrReport, deadlineOrFallbackReport, fallbackReport);
+  return killProcessTreeByPid(pid, force, signalOrReport, deadlineOrFallbackReport, fallbackReport, requiredRootMarker);
 }
 
 function readProcessGroupId(pid: number): number | null {
@@ -574,6 +577,34 @@ function readProcessGroupId(pid: number): number | null {
   return Number.isSafeInteger(pgid) && pgid > 0 ? pgid : null;
 }
 
+export type GroupMember = { pid: number; identity: string }
+
+function groupMemberIdentity(pid: number, pgid: number): string | null {
+  if (process.platform === 'linux') {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+      const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+      return Number(fields[2]) === pgid && fields[19] ? fields[19] : null;
+    } catch { return null; }
+  }
+  return readProcessGroupId(pid) === pgid ? getProcessStartMarker(pid) : null;
+}
+
+export function captureGroupMembers(rootPid: number, startMarker: string): GroupMember[] {
+  if (isWindows() || rootPid <= 1 || rootPid === readProcessGroupId(process.pid)
+    || getProcessStartMarker(rootPid) !== startMarker || readProcessGroupId(rootPid) !== rootPid) return [];
+  const listing = spawn.sync('ps', ['-A', '-o', 'pid=,pgid='], { encoding: 'utf8', timeout: SPAWN_SYNC_TIMEOUT_MS });
+  if (listing.status !== 0 || !listing.stdout) return [];
+  const members: GroupMember[] = [];
+  for (const row of listing.stdout.trim().split('\n')) {
+    const [pid, pgid] = row.trim().split(/\s+/).map(Number);
+    if (pgid !== rootPid || !pid || pid === rootPid) continue;
+    const identity = groupMemberIdentity(pid, rootPid);
+    if (identity) members.push({ pid, identity });
+  }
+  return getProcessStartMarker(rootPid) === startMarker ? members : [];
+}
+
 export function processGroupGone(pgid: number): boolean {
   try {
     process.kill(-pgid, 0);
@@ -585,7 +616,7 @@ export function processGroupGone(pgid: number): boolean {
 
 export async function sweepProcessGroup(
   rootPid: number,
-  opts: { graceMs?: number; deadlineMs?: number; expectedStartMarker?: string; leaderExited?: boolean } = {}
+  opts: { graceMs?: number; deadlineMs?: number; expectedStartMarker?: string; leaderExited?: boolean; members?: GroupMember[] } = {}
 ): Promise<boolean> {
   if (isWindows()) return true;
   if (!Number.isSafeInteger(rootPid) || rootPid <= 1 || rootPid === process.pid) return false;
@@ -595,7 +626,10 @@ export async function sweepProcessGroup(
 
   const checkOwnership = (): 'verified' | 'gone' | 'unknown' => {
     if (processGroupGone(rootPid)) return 'gone';
-    if (!opts.expectedStartMarker || !isProcessAlive(rootPid)) return 'unknown';
+    if (!opts.expectedStartMarker) return 'unknown';
+    if (!isProcessAlive(rootPid)) {
+      return opts.members?.some(member => groupMemberIdentity(member.pid, rootPid) === member.identity) ? 'verified' : 'unknown';
+    }
     const marker = getProcessStartMarker(rootPid);
     if (!marker) return 'unknown';
     if (marker !== opts.expectedStartMarker) return 'gone';

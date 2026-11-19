@@ -101,7 +101,7 @@ type MachineRpcHandlers = {
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>
     stopSession: (
         sessionId: string,
-        opts?: { processStartMarker?: string; requireProcessGroupCleanup?: boolean }
+        opts?: { expectedPid?: number; processStartMarker?: string; requireProcessGroupCleanup?: boolean }
     ) => Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'>
     requestShutdown: () => void
 }
@@ -598,6 +598,7 @@ export class ApiMachineClient {
                 directory,
                 sessionId,
                 existingSessionId,
+                ...(params.requireSameSessionId === true ? { requireSameSessionId: true } : {}),
                 reservedSessionId,
                 resumeSessionId,
                 machineId,
@@ -636,12 +637,16 @@ export class ApiMachineClient {
         })
 
         this.rpcHandlerManager.registerHandler(RPC_METHODS.StopSession, async (params: any) => {
-            const { sessionId, processStartMarker, requireProcessGroupCleanup } = params || {}
+            const { sessionId, expectedPid, processStartMarker, requireProcessGroupCleanup } = params || {}
             if (!sessionId) {
                 throw new Error('Session ID is required')
             }
 
+            if (expectedPid !== undefined && (!Number.isSafeInteger(expectedPid) || expectedPid <= 1 || !processStartMarker)) {
+                throw new Error('Invalid stop generation')
+            }
             const stopOpts = {
+                ...(expectedPid !== undefined ? { expectedPid } : {}),
                 ...(typeof processStartMarker === 'string' ? { processStartMarker } : {}),
                 ...(requireProcessGroupCleanup === true ? { requireProcessGroupCleanup: true } : {}),
             }

@@ -6,6 +6,7 @@ export type SessionStopPreparationLease = { id: string; expiresAt: number }
 /** Machine-level StopSession request. */
 export type StopSessionRpcRequest = {
     sessionId: string
+    expectedPid?: number
     processStartMarker?: string
     /** Runner must also sweep the session's process group before reporting stopped. */
     requireProcessGroupCleanup?: boolean

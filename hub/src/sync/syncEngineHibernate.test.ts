@@ -53,6 +53,7 @@ describe('SyncEngine hibernation', () => {
     let killCalls: string[]
     let stopImpl: (machineId: string, sessionId: string) => Promise<StopStatus>
 
+    let nextPid = 1000
     function cache(): SessionCache {
         return (engine as unknown as { sessionCache: SessionCache }).sessionCache
     }
@@ -73,6 +74,8 @@ describe('SyncEngine hibernation', () => {
             host: 'localhost',
             flavor: 'claude',
             startedBy: 'runner',
+            hostPid: ++nextPid,
+            hostStartMarker: `gen-${nextPid}`,
             startedFromRunner: true,
             machineId: MACHINE,
             claudeSessionId: `native-${tag}`,
@@ -542,7 +545,51 @@ describe('SyncEngine hibernation', () => {
         })
     })
 
-    it('drops a leftover stopping marker on hub start without settling it to hibernated', () => {
+    it('holds local resume during stop and ignores an acknowledgement for a replaced wrapper', async () => {
+        const id = insertIdleSession('replace-before-ack')
+        let acknowledge!: (value: StopStatus) => void
+        stopImpl = async () => {
+            engine.handleSessionEnd({ sid: id, time: Date.now() })
+            return await new Promise(resolve => { acknowledge = resolve })
+        }
+        const stop = engine.hibernateSession(id, { now: later(), hibernateMs: WINDOW })
+        let prepared = false
+        const local = engine.prepareLocalResume(id, NAMESPACE).then(result => { prepared = true; return result })
+        await Promise.resolve()
+        expect(prepared).toBe(false)
+        const row = cache().getSession(id)!
+        store.sessions.updateSessionMetadata(id, { ...row.metadata, hostPid: 9000, hostStartMarker: 'replacement',
+            startedBy: 'terminal', startedFromRunner: false, lifecycleState: 'running' }, row.metadataVersion, NAMESPACE)
+        cache().refreshSession(id)
+        engine.handleSessionAlive({ sid: id, time: Date.now() })
+        acknowledge('stopped')
+        expect(await stop).toBe('skipped')
+        expect(await local).toMatchObject({ type: 'error', code: 'session_active' })
+        expect(cache().getSession(id)?.active).toBe(true)
+        expect(cache().getSession(id)?.metadata?.hibernation).toBeUndefined()
+    })
+
+    it.each(['already_gone', 'unknown'] as const)('reconciles an interrupted stop by its persisted generation on restart (%s)', async result => {
+        const id = insertIdleSession('restart-generation')
+        const row = cache().getSession(id)!
+        expect(cache().markSessionHibernationStopping(id, row.metadataVersion, 'idle')).toBe(true)
+        const { hostPid, hostStartMarker } = row.metadata!
+        store.sessions.setSessionActive(id, false, Date.now(), NAMESPACE)
+        engine.stop()
+        engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        expect(cache().getSession(id)?.metadata?.hibernation?.state).toBe('stopping')
+        registerMachine()
+        gateway().stopRunnerSession = async (machine: string, target: string, opts: unknown) => {
+            expect(machine).toBe(MACHINE)
+            expect(target).toBe(id)
+            expect(opts).toMatchObject({ expectedPid: hostPid, processStartMarker: hostStartMarker, requireProcessGroupCleanup: true })
+            return result
+        }
+        expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual(result === 'already_gone' ? [id] : [])
+        expect(cache().getSession(id)?.metadata?.lifecycleState).toBe(result === 'already_gone' ? 'hibernated' : 'running')
+    })
+
+    it('drops a legacy stopping marker without a generation on hub start', () => {
         const plainId = insertIdleSession('restart-plain')
         const cliArchivedId = insertIdleSession('restart-cli-archived')
         const activeId = insertIdleSession('restart-active')

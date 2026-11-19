@@ -1,4 +1,6 @@
-export type ExitedProcessGroup = { pgid: number; startMarker: string; confirmed?: boolean }
+import type { GroupMember } from '@/utils/process';
+
+export type ExitedProcessGroup = { pgid: number; startMarker: string; confirmed?: boolean; members?: GroupMember[] }
 
 export class ExitedProcessGroups {
   private readonly bySessionId = new Map<string, ExitedProcessGroup>();
@@ -17,7 +19,8 @@ export class ExitedProcessGroups {
     for (const id of ids) {
       if (!id) continue;
       const prior = this.bySessionId.get(id);
-      if (prior?.confirmed && prior.pgid === group.pgid && prior.startMarker === group.startMarker) continue;
+      if (prior?.pgid === group.pgid && prior.startMarker === group.startMarker
+        && (prior.confirmed || (prior.members?.length && !group.members?.length && !group.confirmed))) continue;
       this.bySessionId.delete(id);
       this.bySessionId.set(id, group);
       if (this.bySessionId.size > this.maxAliases) {

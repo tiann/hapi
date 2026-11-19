@@ -261,13 +261,14 @@ export class RpcGateway {
     async stopRunnerSession(
         machineId: string,
         sessionId: string,
-        opts?: { processStartMarker?: string; timeoutMs?: number; requireProcessGroupCleanup?: boolean }
+        opts?: { expectedPid?: number; processStartMarker?: string; timeoutMs?: number; requireProcessGroupCleanup?: boolean }
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> {
         const timeoutMs = opts?.timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS
         const started = performance.now()
         let result: unknown
         const request: StopSessionRpcRequest = {
             sessionId,
+            ...(opts?.expectedPid !== undefined ? { expectedPid: opts.expectedPid } : {}),
             ...(opts?.processStartMarker ? { processStartMarker: opts.processStartMarker } : {}),
             ...(opts?.requireProcessGroupCleanup ? { requireProcessGroupCleanup: true } : {}),
         }
@@ -334,7 +335,8 @@ export class RpcGateway {
         /** Fresh machine-spawn stub — distinct from reopen existingSessionId. */
         reservedSessionId?: string,
         /** Claude: resume the spawned child truncated to this entry uuid. */
-        resumeSessionAt?: string
+        resumeSessionAt?: string,
+        requireSameSessionId?: boolean
     ): Promise<
         | { type: 'success'; sessionId: string }
         | {
@@ -364,6 +366,7 @@ export class RpcGateway {
                     permissionMode,
                     serviceTier,
                     existingSessionId,
+                    ...(requireSameSessionId ? { requireSameSessionId: true } : {}),
                     reservedSessionId,
                     // Local HTTP / tracking may still read sessionId; prefer
                     // reserved stub id, then reopen id.

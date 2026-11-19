@@ -21,7 +21,7 @@ export function startRunnerControlServer({
   getChildren: () => TrackedSession[];
   stopSession: (
     sessionId: string,
-    opts?: { processStartMarker?: string; requireProcessGroupCleanup?: boolean }
+    opts?: { expectedPid?: number; processStartMarker?: string; requireProcessGroupCleanup?: boolean }
   ) => Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'>;
   spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
   requestShutdown: () => void;

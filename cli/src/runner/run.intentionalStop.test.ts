@@ -1,7 +1,8 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { EventEmitter } from 'node:events'
+import { EventEmitter, once } from 'node:events'
+import { spawn } from 'node:child_process'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CodexRuntimeRecord } from '@/codex/shared/registry'
 import type { startRunnerControlServer } from './controlServer'
@@ -15,7 +16,8 @@ const mocks = vi.hoisted(() => ({
     findRuntime: vi.fn(),
     reapOrphans: vi.fn<typeof import('./orphanReap')['reapRunnerSpawnedOrphans']>(),
     kill: vi.fn(),
-    sweep: vi.fn(async () => true),
+    sweep: vi.fn<typeof import('@/utils/process')['sweepProcessGroup']>(async () => true),
+    marker: vi.fn<(pid: number) => string | null>(() => 'generation'),
     groupGone: vi.fn((_pid: number) => false),
     isProcessAlive: vi.fn<(pid: number) => boolean>(() => true),
     spawnHappyCLI: vi.fn(),
@@ -61,7 +63,7 @@ vi.mock('@/utils/process', async importOriginal => ({
     ...await importOriginal<typeof import('@/utils/process')>(),
     isWindows: () => false,
     isProcessAlive: mocks.isProcessAlive,
-    getProcessStartMarker: () => 'generation',
+    getProcessStartMarker: mocks.marker,
     // The probe reads /proc/<pid>/status on Linux: a busy shared host can have
     // an unrelated non-leader task owning PID_GONE's TID, which would classify
     // the durable record as exited (dropping it without a tombstone) before
@@ -159,6 +161,7 @@ describe('runner intentional-stop marker cleanup', () => {
         mocks.readRuntimes.mockResolvedValue([])
         mocks.findRuntime.mockResolvedValue(undefined)
         mocks.reapOrphans.mockResolvedValue(null)
+        mocks.marker.mockReturnValue('generation')
         mocks.kill.mockResolvedValue(true)
         mocks.sweep.mockResolvedValue(true)
         mocks.groupGone.mockReturnValue(false)
@@ -187,6 +190,18 @@ describe('runner intentional-stop marker cleanup', () => {
         if (!settled) throw new Error(`Spawn ${sessionId} was not confirmed by webhook`)
     }
 
+    it('refuses a mismatched wake webhook and cleans up only its own spawned child', async () => {
+        const child = makeFakeChild(8990)
+        mocks.spawnHappyCLI.mockReturnValue(child)
+        const spawn = handlers.spawnSession({ directory: home, agent: 'claude', existingSessionId: 'original',
+            requireSameSessionId: true })
+        await confirmSpawn(spawn, 'unrelated-row', child.pid)
+        expect(await spawn).toMatchObject({ type: 'error', errorMessage: expect.stringContaining('unexpected session ID') })
+        expect(mocks.kill).toHaveBeenCalledTimes(1)
+        expect(mocks.kill.mock.calls[0][0]).toBe(child)
+        expect(mocks.kill.mock.calls[0].at(-1)).toBe('generation')
+    })
+
     it('reports a reused pid unexpected exit after a stop that returned already_gone', async () => {
         // The process is already dead when the stop runs: the runner reports
         // already_gone without any exit event for it.
@@ -205,6 +220,32 @@ describe('runner intentional-stop marker cleanup', () => {
         expect(mocks.reportChildExit).toHaveBeenCalledWith(
             expect.objectContaining({ sid: 'sess-new', pid: PID_GONE })
         )
+    })
+
+    it.skipIf(process.platform === 'win32')('hibernates a real detached wrapper and its reparented group member', async () => {
+        const real = await vi.importActual<typeof import('@/utils/process')>('@/utils/process')
+        const child = spawn('sh', ['-c', 'sh -c "sleep 60 >/dev/null 2>&1 &"; echo ready; exec sleep 60'],
+            { detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+        const pid = child.pid!
+        try {
+            await once(child.stdout, 'data')
+            const marker = real.getProcessStartMarker(pid)!
+            expect(real.captureGroupMembers(pid, marker).length).toBeGreaterThan(0)
+            mocks.marker.mockImplementation(real.getProcessStartMarker)
+            mocks.isProcessAlive.mockImplementation(real.isProcessAlive)
+            mocks.kill.mockImplementation(real.killProcessTreeByPid)
+            mocks.sweep.mockImplementation(real.sweepProcessGroup)
+            mocks.groupGone.mockImplementation(real.processGroupGone)
+            mocks.spawnHappyCLI.mockReturnValue(child)
+            const id = 'real-reparented'
+            const started = handlers.spawnSession({ directory: home, agent: 'claude', existingSessionId: id })
+            await confirmSpawn(started, id, pid)
+            await expect(started).resolves.toEqual({ type: 'success', sessionId: id })
+            await expect(handlers.stopSession(id, { requireProcessGroupCleanup: true, expectedPid: pid, processStartMarker: marker })).resolves.toBe('stopped')
+            expect(real.processGroupGone(pid)).toBe(true)
+        } finally {
+            if (!real.processGroupGone(pid)) process.kill(-pid, 'SIGKILL')
+        }
     })
 
     it('sweeps the recorded process group of a wrapper that exited on its own', async () => {
@@ -319,7 +360,7 @@ describe('runner intentional-stop marker cleanup', () => {
         await expect(handlers.stopSession(id, { requireProcessGroupCleanup: true })).resolves.toBe('still_alive')
         await expect(handlers.stopSession(id, { requireProcessGroupCleanup: true })).resolves.toBe('already_gone')
         expect(mocks.sweep).toHaveBeenCalledTimes(2)
-        expect(mocks.sweep).toHaveBeenLastCalledWith(6700, { expectedStartMarker: 'generation', leaderExited: true })
+        expect(mocks.sweep).toHaveBeenLastCalledWith(6700, expect.objectContaining({ expectedStartMarker: 'generation', leaderExited: true }))
     })
 
     it('archive kills the tracked tree without signalling the whole process group', async () => {

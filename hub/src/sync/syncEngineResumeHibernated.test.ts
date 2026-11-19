@@ -54,6 +54,7 @@ describe('SyncEngine resume of hibernated sessions', () => {
     let mergeCalls: number
     let spawnImpl: (sessionId: string) => Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string }>
 
+    let nextPid = 1000
     function cache(): SessionCache {
         return (engine as unknown as { sessionCache: SessionCache }).sessionCache
     }
@@ -79,6 +80,8 @@ describe('SyncEngine resume of hibernated sessions', () => {
             host: 'localhost',
             flavor,
             startedBy: 'runner',
+            hostPid: ++nextPid,
+            hostStartMarker: `gen-${nextPid}`,
             startedFromRunner: true,
             machineId: MACHINE,
             [`${flavor}SessionId`]: `native-${tag}`,
