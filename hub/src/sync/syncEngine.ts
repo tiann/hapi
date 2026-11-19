@@ -436,8 +436,13 @@ export class SyncEngine {
      * gap the reason prompt exists to close.
      */
     /** Confirmed prompt delivery cleared the agent's last self-report (#1717). */
-    clearSessionLastNotifyOnDelivery(sessionId: string): void {
-        this.sessionCache.clearSessionLastNotify(sessionId)
+    clearSessionLastNotifyOnDelivery(sessionId: string, deliveredAt?: number): void {
+        // The boundary is stamped with the DELIVERED REPLY's own timestamp, not
+        // hub-now. Footers carry the runner's clock (Claude transcript output
+        // preserves it), so a hub-now boundary on a runner that is 30s behind
+        // rejected a genuinely newer footer. Both sides now come from the same
+        // clock domain — the transcript's.
+        this.sessionCache.clearSessionLastNotify(sessionId, deliveredAt)
     }
 
     acknowledgeSessionBlocked(

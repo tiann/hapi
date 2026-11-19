@@ -614,9 +614,19 @@ export function ingestNotifySummaryFromMessage(input: NotifyIngestInput): Notify
  * that is when the agent saw it.
  */
 export function isDeliveredOperatorReply(
-    message: { content: unknown; scheduledAt: number | null; invokedAt: number | null }
+    message: {
+        content: unknown
+        scheduledAt: number | null
+        invokedAt: number | null
+        sweptAt?: number | null
+    }
 ): boolean {
     if (!isOperatorReplyMessage(message.content)) return false
+    // The session-end sweep stamps `invokedAt` to unpin the floating bar, on
+    // rows the runtime never received. Its own documentation calls that
+    // synthetic. Treating it as a delivered reply let a session end answer a
+    // blocker nobody replied to.
+    if (message.sweptAt != null && message.sweptAt === message.invokedAt) return false
     // Delivery evidence for EVERY queued reply, not just scheduled ones: a
     // prompt still sitting in the queue with a null `invokedAt` has not
     // reached the agent either, and treating it as an answer buries a footer

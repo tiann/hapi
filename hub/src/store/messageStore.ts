@@ -33,6 +33,7 @@ import {
     minFutureScheduledAtBySessionIds,
     countMessages,
     markMessagesInvoked,
+    markMessagesSwept,
     markMessagesIndeterminate,
     markDispatchingMessagesIndeterminate,
     setMessagesDeliveryState,
@@ -289,6 +290,10 @@ export class MessageStore {
 
     claimIndeterminateMessage(sessionId: string, messageId: string): StoredMessage | null {
         return claimIndeterminateMessage(this.db, sessionId, messageId)
+    }
+
+    markMessagesSwept(sessionId: string, localIds: string[], sweptAt: number): number {
+        return markMessagesSwept(this.db, sessionId, localIds, sweptAt)
     }
 
     markMessagesInvoked(sessionId: string, localIds: string[], invokedAt: number): number {

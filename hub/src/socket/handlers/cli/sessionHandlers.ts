@@ -131,7 +131,7 @@ export type SessionHandlersDeps = {
      *  commands) don't leave the spinner stuck for the full grace window. */
     onMessagesConsumed?: (sessionId: string) => void
     /** Fired on CONFIRMED prompt consumption (#1717). */
-    onPromptDelivered?: (sessionId: string) => void
+    onPromptDelivered?: (sessionId: string, deliveredAt: number) => void
 }
 
 export function registerSessionHandlers(socket: CliSocketWithData, deps: SessionHandlersDeps): void {
@@ -526,7 +526,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         // cancelled before it was ever delivered.
         if (newlyDelivered) {
             try {
-                onPromptDelivered?.(data.sid)
+                onPromptDelivered?.(data.sid, invokedAt)
             } catch (err) {
                 console.error('onPromptDelivered failed', err)
             }

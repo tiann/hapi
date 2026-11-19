@@ -1533,6 +1533,16 @@ export function SessionListSearch(props: {
 
 // A row with an open menu or dialog holds its collapsed panel mounted.
 const CollapsiblePanelHoldContext = createContext<((held: boolean) => void) | null>(null)
+/**
+ * Lets a row declare that its dismissal dialog is open.
+ *
+ * `CollapsiblePanelHoldContext` does NOT cover this: it gates whether a panel's
+ * children render while the panel collapses, but a row removed from
+ * `blockedSectionSessions` by a filter is not among those children at all, so
+ * there is nothing for the hold to keep alive. The jump exemption has to be
+ * withheld explicitly instead.
+ */
+const BlockedDialogHoldContext = createContext<((sessionId: string | null) => void) | null>(null)
 const CollapsiblePanelOpenContext = createContext(true)
 
 type QuickUnpinFocusTarget = { sessionId: string; pending: boolean }
@@ -1682,6 +1692,12 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     )
     const [reopenError, setReopenError] = useState<string | null>(null)
     const holdPanel = useContext(CollapsiblePanelHoldContext)
+    const holdBlockedDialog = useContext(BlockedDialogHoldContext)
+    useEffect(() => {
+        if (!unblockOpen || !holdBlockedDialog) return
+        holdBlockedDialog(s.id)
+        return () => holdBlockedDialog(null)
+    }, [unblockOpen, holdBlockedDialog, s.id])
     // `unblockOpen` belongs here with the other dialogs: without it, a row
     // revealed by the jump exemption unmounted two seconds later and took the
     // open Mark-unblocked dialog with it, mid-entry.
@@ -2298,6 +2314,13 @@ export function SessionList(props: {
     /** One row exempted from the saved status / machine / date filters so the
      *  jump can reach it without rewriting the operator's preferences. */
     const [revealBlockedSessionId, setRevealBlockedSessionId] = useState<string | null>(null)
+    /** Set while a row's dismissal dialog is open, so the exemption above is
+     *  not withdrawn mid-entry and take the dialog and its draft with it. */
+    const [blockedDialogSessionId, setBlockedDialogSessionId] = useState<string | null>(null)
+    const holdBlockedDialog = useCallback(
+        (sessionId: string | null) => setBlockedDialogSessionId(sessionId),
+        []
+    )
     const [flashBlockedSessionId, setFlashBlockedSessionId] = useState<string | null>(null)
     const [blockedOffscreen, setBlockedOffscreen] = useState<{ above: number; below: number }>(
         { above: 0, below: 0 }
@@ -2416,6 +2439,12 @@ export function SessionList(props: {
     // The jump target is exempted exactly where the selected session already
     // is, so revealing one row needs no change to saved preferences.
     const filterExemptId = revealBlockedSessionId ?? selectedSessionId
+    useEffect(() => {
+        if (blockedDialogSessionId !== null) return
+        if (revealBlockedSessionId === null) return
+        if (flashBlockedSessionId !== null) return
+        setRevealBlockedSessionId(null)
+    }, [blockedDialogSessionId, revealBlockedSessionId, flashBlockedSessionId])
     const allSessions = useMemo(
         () => filterSessionsForListStatus(sidebarSessions, listView.status, filterExemptId),
         [sidebarSessions, filterExemptId, listView.status]
@@ -3690,7 +3719,7 @@ export function SessionList(props: {
             setRevealBlockedSessionId(null)
         }, 2000)
         return () => clearTimeout(timer)
-    }, [flashBlockedSessionId])
+    }, [flashBlockedSessionId, blockedDialogSessionId])
 
     // Direction hint for the pill: which way the operator would have to scroll
     // to reach blocked rows that are not currently on screen.
@@ -4041,6 +4070,7 @@ export function SessionList(props: {
             ) : null}
             <div ref={scrollContainerRef} className="app-scroll-y session-list-scrollbar-left scrollbar-auto-hide min-h-0 flex-1">
             <QuickUnpinFocusContext.Provider value={quickUnpinFocusRef}>
+            <BlockedDialogHoldContext.Provider value={holdBlockedDialog}>
             <SessionListScrollAnchor sessions={props.sessions} className="mx-auto flex w-full max-w-content flex-col gap-1 pl-1.5 pr-2 pb-2">
                 {props.sessions.length === 0 && !props.isLoading ? (
                     <SessionsEmptyState
@@ -4247,6 +4277,7 @@ export function SessionList(props: {
                 {groups.map(renderDirectoryGroup)}
                 {actionOnlyGroups.map(renderActionOnlyGroupHeader)}
             </SessionListScrollAnchor>
+            </BlockedDialogHoldContext.Provider>
             </QuickUnpinFocusContext.Provider>
             </div>
             {openSessionTickRatio != null ? (

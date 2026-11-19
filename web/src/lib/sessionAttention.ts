@@ -204,9 +204,14 @@ function getPendingBlockedState(
     // Overflow prompts are not in the capped slice, but their ids are carried
     // uncapped for exactly this. A synthetic notify key stopped matching the
     // moment the real request entered the slice, so the dismissal was lost.
+    // Must match the existence check above: pick the first overflow id that is
+    // still UNACKNOWLEDGED. Selecting merely the first id outside the preview
+    // returned an already-dismissed prompt, so the next one could not be
+    // dismissed at all.
     const overflowId = !oldest
         ? (summary.pendingRequestIds ?? []).find(
             (id) => !all.some((request) => request.id === id)
+                && !isAcknowledgedBlocker(ack, requestBlockerKey(id), newestAt)
         ) ?? null
         : null
     return {

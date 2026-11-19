@@ -1102,6 +1102,8 @@ export class MessageService {
             )
         if (localIds.length === 0) return null
         this.store.messages.markMessagesInvoked(sessionId, localIds, invokedAt)
+        // Record that THIS invokedAt came from the sweep, not a runtime ACK.
+        this.store.messages.markMessagesSwept(sessionId, localIds, invokedAt)
         this.forgetScheduledMatureNotified(localIds)
         this.publisher.emit({ type: 'messages-consumed', sessionId, localIds, invokedAt })
         return { localIds, invokedAt }

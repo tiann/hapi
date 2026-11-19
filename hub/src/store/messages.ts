@@ -27,6 +27,7 @@ type DbMessageRow = {
     seq: number
     local_id: string | null
     invoked_at: number | null
+    swept_at?: number | null
     scheduled_at: number | null
     delivery_state: string | null
 }
@@ -119,6 +120,7 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
         seq: row.seq,
         localId: row.local_id,
         invokedAt: row.invoked_at ?? null,
+        sweptAt: row.swept_at ?? null,
         scheduledAt: row.scheduled_at ?? null,
         ...(row.delivery_state && row.delivery_state !== 'queued' ? { deliveryState: 'indeterminate' as const } : {}),
         ...(row.delivery_state === 'dispatching' ? { deliveryPending: true as const } : {})
@@ -1594,6 +1596,21 @@ export function deleteQueuedMessageById(
  *  First-write-wins: rows with a non-NULL invoked_at are not updated.  A duplicate
  *  ack (e.g. a CLI re-emit) would otherwise re-stamp the timestamp and shuffle
  *  the message's position in the byPosition-ordered thread. */
+/** Mark rows invoked by the session-end sweep, not by a runtime ACK (#1717). */
+export function markMessagesSwept(
+    db: Database,
+    sessionId: string,
+    localIds: string[],
+    sweptAt: number
+): number {
+    if (localIds.length === 0) return 0
+    const placeholders = localIds.map(() => '?').join(', ')
+    return prepareCached(db,
+        `UPDATE messages SET swept_at = ?
+         WHERE session_id = ? AND local_id IN (${placeholders})`
+    ).run(sweptAt, sessionId, ...localIds).changes
+}
+
 export function markMessagesInvoked(
     db: Database,
     sessionId: string,

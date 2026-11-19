@@ -592,7 +592,14 @@ export class SessionCache {
         // In place + full-session emit, for the same reason as the notify
         // writes: refreshSession would discard in-memory runtime state.
         session.blockedAck = ack
-        session.notifyUpdatedAt = Math.max((session.notifyUpdatedAt ?? 0) + 1, Date.now())
+        // Read the revision BACK from the row rather than inventing one from
+        // hub-now. SQLite versions the write using the blocker's observed
+        // timestamp; broadcasting a now-based revision made a later refresh
+        // look older than the SSE patch, and the browser rejected a dismissal
+        // a merge had legitimately transferred.
+        session.notifyUpdatedAt = this.store.sessions
+            .getSessionByNamespace(sessionId, session.namespace)?.lastNotifyUpdatedAt
+            ?? ((session.notifyUpdatedAt ?? 0) + 1)
         this.publisher.emit({ type: 'session-updated', sessionId: session.id, data: session })
         return ack
     }
@@ -646,7 +653,7 @@ export class SessionCache {
         }
     }
 
-    clearSessionLastNotify(sessionId: string): void {
+    clearSessionLastNotify(sessionId: string, boundaryAt: number = Date.now()): void {
         const session = this.sessions.get(sessionId)
         if (!session) return
         // The boundary advances even when no footer is cached. A turn that
@@ -654,7 +661,11 @@ export class SessionCache {
         // skip the write entirely, and that delayed pre-reply footer could
         // then arrive after the reply turn ended and be accepted — reviving a
         // blocker the operator had already answered.
-        const cleared = this.store.sessions.clearSessionLastNotify(sessionId, session.namespace)
+        const cleared = this.store.sessions.clearSessionLastNotify(
+            sessionId,
+            session.namespace,
+            boundaryAt
+        )
         if (session.lastNotify && cleared) {
             this.applyLastNotifyToCache(session, null)
         } else if (cleared) {
@@ -2586,6 +2597,29 @@ export class SessionCache {
         // the unanswered footer in its history while dropping out of the
         // Blocked section entirely. Newest wins, matching the monotonic rule
         // the live writes use.
+        // A source with NO footer is not "nothing to say": it may hold a
+        // delivered reply that answered its own footer and, once merged, also
+        // answers the destination's older one. Skipping reconciliation there
+        // left the destination showing a blocker the combined transcript
+        // answers.
+        if (oldStored.lastNotifyStatus === null || oldStored.lastNotifyAt === null) {
+            const target = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
+            const targetAt = target?.lastNotifyAt ?? null
+            if (target && target.lastNotifyStatus !== null && targetAt !== null) {
+                const answered = this.store.messages
+                    .getMessages(newSessionId, NOTIFY_MERGE_MESSAGE_SCAN)
+                    .some((message) => isDeliveredOperatorReply(message)
+                        && deliveredOperatorReplyAt(message) > targetAt)
+                if (answered) {
+                    this.clearSessionLastNotify(newSessionId, deliveredOperatorReplyAt(
+                        this.store.messages.getMessages(newSessionId, NOTIFY_MERGE_MESSAGE_SCAN)
+                            .filter(isDeliveredOperatorReply)
+                            .reduce((a, b) => deliveredOperatorReplyAt(a) > deliveredOperatorReplyAt(b) ? a : b)
+                    ))
+                }
+            }
+        }
+
         const oldNotifyAt = oldStored.lastNotifyAt
         if (oldStored.lastNotifyStatus !== null && oldNotifyAt !== null) {
             const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)

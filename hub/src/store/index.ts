@@ -575,6 +575,7 @@ export class Store {
                 seq INTEGER NOT NULL,
                 local_id TEXT,
                 invoked_at INTEGER,
+                swept_at INTEGER,
                 scheduled_at INTEGER,
                 delivery_state TEXT NOT NULL DEFAULT 'queued',
                 FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
@@ -1376,6 +1377,14 @@ export class Store {
         }
         if (!columns.has('blocked_ack_key')) {
             this.db.exec('ALTER TABLE sessions ADD COLUMN blocked_ack_key TEXT')
+        }
+        // The session-end sweep stamps `invoked_at` on immediate queued rows
+        // the runtime never received, so `invoked_at` alone cannot answer "did
+        // the agent see this reply?". A dedicated marker keeps that distinction
+        // out of `delivery_state`, whose values drive dispatch and replay.
+        const messageColumns = this.getMessageColumnNames()
+        if (messageColumns.size > 0 && !messageColumns.has('swept_at')) {
+            this.db.exec('ALTER TABLE messages ADD COLUMN swept_at INTEGER')
         }
     }
 

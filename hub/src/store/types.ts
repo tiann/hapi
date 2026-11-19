@@ -63,6 +63,9 @@ export type StoredMessage = {
     seq: number
     localId: string | null
     invokedAt: number | null
+    /** Set when the session-end sweep stamped `invokedAt` without a runtime
+     *  ACK, so a reply can be told apart from one the agent actually got. */
+    sweptAt?: number | null
     scheduledAt: number | null
     /** Omitted for ordinary queued/delivered rows; set when steer outcome is unknown. */
     deliveryState?: MessageDeliveryState

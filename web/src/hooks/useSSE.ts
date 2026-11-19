@@ -6,6 +6,7 @@ import {
     computePendingRequestKinds,
     computePendingRequests,
     computePendingRequestsCount,
+    computePendingRequestIds,
     computePendingRequestsNewestAt,
     computeTodoProgress,
     isObject,
@@ -607,6 +608,11 @@ export function useSSE(options: {
                         patch.agentState.value,
                         nextSummary.updatedAt
                     )
+                    // Recomputed with the rest. Leaving the id list at its
+                    // previous value meant a sixth prompt arriving by patch had
+                    // no identity, so the classifier saw nothing unacknowledged
+                    // beyond the already-dismissed five.
+                    nextSummary.pendingRequestIds = computePendingRequestIds(patch.agentState.value)
                     nextSummary.agentStateVersion = patch.agentState.version
                 }
                 if (patch.metadata !== undefined && patch.metadata.version >= current.metadataVersion) {

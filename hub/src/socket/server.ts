@@ -49,7 +49,7 @@ export type SocketServerDeps = {
     onAgentProgress?: (sessionId: string, at: number) => void
     onSweepImmediateQueued?: (sessionId: string, now: number) => void
     onMessagesConsumed?: (sessionId: string) => void
-    onPromptDelivered?: (sessionId: string) => void
+    onPromptDelivered?: (sessionId: string, deliveredAt: number) => void
 }
 
 export function createSocketServer(deps: SocketServerDeps): {
