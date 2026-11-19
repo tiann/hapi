@@ -161,7 +161,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     } catch (error) {
         logger.debug(`[claude] --version probe failed: ${error instanceof Error ? error.message : String(error)}`);
     }
-    let skillsDeferred = Boolean(options.existingSessionId && canReuseCatalog(
+    let skillsDeferred = Boolean(startedBy === 'runner' && !process.stdout.isTTY && options.existingSessionId && canReuseCatalog(
         options.existingSessionId, launch, sessionInfo.metadata, claudeVersionOutput
     ));
     const startupCatalog = skillsDeferred ? undefined : getCatalog().catch(error => {

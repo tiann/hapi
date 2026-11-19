@@ -162,6 +162,25 @@ describe('Query', () => {
         await expect(result.next()).rejects.toThrow('prompt failed')
     })
 
+    it('keeps inline MCP configuration out of spawn diagnostics', async () => {
+        const child = createFakeChild()
+        spawnMock.mockReturnValueOnce(child)
+        const { query } = await import('./query')
+        const debug = vi.spyOn(await import('./utils'), 'logDebug').mockImplementation(() => {})
+        const config = '{"env":{"TOKEN":"dummy-credential"}}'
+        const additionalArgs = ['--mcp-config', config, '--mcp-config=' + config]
+        try {
+            query({ prompt: 'hello', options: { additionalArgs, pathToClaudeCodeExecutable: 'claude' } })
+            expect(spawnMock.mock.calls[0][1]).toEqual(expect.arrayContaining(additionalArgs))
+            expect(debug).toHaveBeenCalledWith(expect.stringContaining('Spawning Claude Code process'))
+            expect(JSON.stringify(debug.mock.calls)).not.toContain('dummy-credential')
+        } finally {
+            debug.mockRestore()
+            child.stdout.end()
+            child.emit('close', 0)
+        }
+    })
+
     it('places additional launch arguments before HAPI settings', async () => {
         const child = createFakeChild()
         spawnMock.mockReturnValueOnce(child)

@@ -45,6 +45,7 @@ export function filterCatalogAffectingClaudeArgs(args: readonly string[] | undef
     const filtered: string[] = []
     for (let i = 0; i < args.length; i++) {
         const arg = args[i]
+        if (arg === '--') break
         const equalsIndex = arg.indexOf('=')
         if (CATALOG_FLAGS.has(arg) || (equalsIndex > 0 && CATALOG_VALUE_FLAGS.has(arg.slice(0, equalsIndex)))) {
             filtered.push(arg)

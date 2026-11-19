@@ -35,7 +35,7 @@ describe('Claude skill catalog', () => {
             '--strict-mcp-config', '--mcp-config', 'one.json', 'two.json',
             '--tools', 'Read', 'Write', '--tools=Bash',
             '--disable-slash-commands',
-            '--model', 'sonnet'
+            '--model', 'sonnet', '--', '--tools', 'Read', '--mcp-config=tail.json'
         ])).toEqual([
             '--plugin-dir', '/tmp/my plugin',
             '--settings=/tmp/settings.json',

@@ -13,6 +13,7 @@ vi.mock('node:child_process', async original => ({
     ...await original<typeof import('node:child_process')>(), execFileSync: versionProbe
 }))
 vi.mock('@/agent/sessionFactory', () => ({ bootstrapExistingSession: bootstrap, bootstrapSession: bootstrap }))
+vi.mock('./claudeLocalLauncher', () => ({ claudeLocalLauncher: async (instance: Session) => { session = instance; return 'exit' } }))
 vi.mock('./catalogCache', { spy: true })
 vi.mock('./claudeRemoteLauncher', () => ({ claudeRemoteLauncher: vi.fn() }))
 vi.mock('./sdk/metadataExtractor', async original => ({
@@ -81,6 +82,12 @@ afterEach(() => {
     session?.stopKeepAlive()
     recordCatalog(id, { cwd: path }, {})
     vi.restoreAllMocks()
+})
+
+it('refreshes removed commands on a terminal local reopen with a valid stamp', async () => {
+    await runClaude({ existingSessionId: id, startedBy: 'terminal', startingMode: 'local', workingDirectory: path })
+    expect(extractSDKMetadata).toHaveBeenCalledOnce()
+    await vi.waitFor(() => expect(metadata.slashCommands).toEqual(['new-command']))
 })
 
 it('reuses a matching catalog until a skill needs expansion and preserves FIFO and cancellation during the probe', async () => {
