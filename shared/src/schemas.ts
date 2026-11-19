@@ -304,10 +304,12 @@ export const MetadataSchema = z.object({
     // sit quiet indefinitely (operator holding pens, sessions owning work the
     // hub cannot see). Never reconciled to 'idle' while true.
     idleReconcileExempt: z.boolean().optional(),
+    replayableRunnerLaunch: z.boolean().optional(),
     hibernation: z.object({
         state: z.enum(['stopping', 'hibernated']),
         since: z.number(),
         reason: z.enum(['idle', 'binary-drift']),
+        localResumeUntil: z.number().optional(),
         wake: z.object({ id: z.string(), machineId: z.string(), nativeId: z.string(), flavor: z.string() }).optional(),
         worker: z.object({ machineId: z.string(), pid: z.number().int().positive(), startMarker: z.string() }).optional()
     }).optional(),

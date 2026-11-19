@@ -1413,6 +1413,18 @@ export class SessionCache {
         return result.result === 'success'
     }
 
+    reserveLocalHibernationResume(session: Session, now: number): boolean {
+        const metadata = session.metadata
+        const marker = metadata?.hibernation
+        if (session.active || marker?.state !== 'hibernated' || marker.wake || metadata?.codexResumePending
+            || metadata?.piResumeAttempt || (marker.localResumeUntil ?? 0) > now) return false
+        const result = this.store.sessions.updateSessionMetadata(session.id,
+            { ...metadata, hibernation: { ...marker, localResumeUntil: now + 60_000 } },
+            session.metadataVersion, session.namespace, { touchUpdatedAt: false })
+        this.refreshSession(session.id)
+        return result.result === 'success'
+    }
+
     recordHibernationWake(session: Session, wake: NonNullable<NonNullable<Metadata['hibernation']>['wake']>): boolean {
         const current = this.sessions.get(session.id)
         if (!current?.metadata || current.active || current.metadata.hibernation?.state !== 'hibernated') return false
@@ -1487,7 +1499,7 @@ export class SessionCache {
                 ...current,
                 lifecycleState: SESSION_LIFECYCLE_HIBERNATED,
                 lifecycleStateSince: since,
-                hibernation: { state: 'hibernated', since, reason, worker: current.hibernation?.worker, wake: current.hibernation?.wake }
+                hibernation: { state: 'hibernated', since, reason, worker: current.hibernation?.worker, wake: current.hibernation?.wake, localResumeUntil: current.hibernation?.localResumeUntil }
             }
             delete next.archivedBy
             delete next.archiveReason

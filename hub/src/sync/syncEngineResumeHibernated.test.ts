@@ -49,7 +49,7 @@ describe('SyncEngine resume of hibernated sessions', () => {
             path: '/tmp/project',
             host: 'localhost',
             flavor,
-            startedBy: 'runner',
+            replayableRunnerLaunch: true, startedBy: 'runner',
             hostPid: ++nextPid,
             hostStartMarker: `gen-${nextPid}`,
             startedFromRunner: true,
@@ -202,6 +202,57 @@ describe('SyncEngine resume of hibernated sessions', () => {
         expect(engine.blocksSessionInput(id)).toBe(false)
         finish()
         await wake
+    })
+
+    it('waits for a remote wake before granting local preparation', async () => {
+        const id = await hibernatedSession('race-local')
+        let finish!: () => void
+        spawnImpl = () => new Promise(resolve => { finish = () => { bootCli(id); resolve({ type: 'success', sessionId: id }) } })
+        const wake = engine.resumeSession(id, NAMESPACE)
+        for (let i = 0; i < 20 && !finish; i++) await Promise.resolve()
+        const local = engine.prepareLocalResume(id, NAMESPACE)
+        finish()
+        expect((await wake).type).toBe('success')
+        expect(await local).toMatchObject({ type: 'error', code: 'session_active' })
+    })
+
+    it('reserves a local hibernation resume through hub restart and releases it at expiry', async () => {
+        const id = await hibernatedSession('local-first')
+        expect((await engine.prepareLocalResume(id, NAMESPACE)).type).toBe('success')
+        engine.stop()
+        engine = new SyncEngine(store, ioStub as never, new RpcRegistry(), { broadcast() {} } as never)
+        expect((await engine.prepareLocalResume(id, NAMESPACE)).type).toBe('error')
+        expect(await engine.resumeSession(id, NAMESPACE)).toMatchObject({ type: 'error', code: 'resume_unavailable' })
+        const row = engine.getSession(id)!
+        store.sessions.updateSessionMetadata(id, { ...row.metadata, hibernation: { ...row.metadata!.hibernation, localResumeUntil: Date.now() - 1 } },
+            row.metadataVersion, NAMESPACE)
+        cache().refreshSession(id)
+        expect((await engine.prepareLocalResume(id, NAMESPACE)).type).toBe('success')
+    })
+
+    it.each(['claude', 'codex'] as const)('keeps a %s session asleep if only a hostname match is online', async flavor => {
+        const id = await hibernatedSession('exact-machine', flavor)
+        engine.getOrCreateMachine('other', { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+            { status: 'running', capabilities: { sessionHibernation: true } }, NAMESPACE)
+        engine.handleMachineAlive({ machineId: 'other', time: Date.now() })
+        engine.getMachine(MACHINE)!.active = false
+        expect(await engine.resumeSession(id, NAMESPACE)).toMatchObject({ type: 'error', code: 'no_machine_online' })
+        expect(cache().getSession(id)?.metadata?.hibernation?.state).toBe('hibernated')
+    })
+
+    it('wakes for an indeterminate retry and honors consumption during wake', async () => {
+        const id = await hibernatedSession('retry-wake')
+        store.messages.addMessage(id, { role: 'user', content: { type: 'text', text: 'retry' } }, 'retry')
+        expect(await engine.retryIndeterminateMessage(id, 'retry')).toMatchObject({ status: 'already-queued' })
+        expect(cache().getSession(id)?.active).toBe(false)
+        store.messages.setMessagesDeliveryState(id, ['retry'], 'indeterminate')
+        spawnImpl = async sid => {
+            bootCli(sid)
+            store.messages.markMessagesInvoked(sid, ['retry'], Date.now())
+            return { type: 'success', sessionId: sid }
+        }
+        expect(await engine.retryIndeterminateMessage(id, 'retry')).toMatchObject({ status: 'invoked' })
+        expect(cache().getSession(id)?.active).toBe(true)
     })
 
     it('keeps the session asleep when a selected runner lacks hibernation support', async () => {

@@ -420,13 +420,14 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     };
     for (const [pid, record] of [...persistedResumeProcesses]) {
       const alive = isProcessAlive(pid);
-      const generation = probeRecoveredProcessGeneration(pid, record);
+      const liveMarker = alive ? getProcessStartMarker(pid) : null;
+      const generation = probeRecoveredProcessGeneration(pid, record, liveMarker, alive);
       if (generation === 'verified') {
         pidToRequestedSessionId.set(pid, record.requestedSessionId);
         if (record.confirmedSessionId) pidToConfirmedSessionId.set(pid, record.confirmedSessionId);
       } else if (generation === 'exited') {
         persistedResumeProcesses.delete(pid);
-        if (!alive) {
+        if (!alive || (liveMarker && liveMarker !== record.processStartMarker)) {
           rememberVerifiedExit(record.requestedSessionId);
           if (record.confirmedSessionId) rememberVerifiedExit(record.confirmedSessionId);
         }
@@ -880,7 +881,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           stdio: ['ignore', 'pipe', 'pipe'],  // Capture stdout/stderr for debugging
           env: {
             ...process.env,
-            ...extraEnv
+            ...extraEnv,
+            HAPI_RUNNER_REPLAYABLE_LAUNCH: options.token ? '0' : '1'
           }
         });
         happyProcess.once('exit', () => {

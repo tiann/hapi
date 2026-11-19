@@ -74,7 +74,7 @@ describe('SyncEngine hibernation', () => {
             path: '/tmp/project',
             host: 'localhost',
             flavor: 'claude',
-            startedBy: 'runner',
+            replayableRunnerLaunch: true, startedBy: 'runner',
             hostPid: ++nextPid,
             hostStartMarker: `gen-${nextPid}`,
             startedFromRunner: true,

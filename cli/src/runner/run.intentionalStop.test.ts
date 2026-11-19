@@ -121,6 +121,7 @@ describe('runner intentional-stop marker cleanup', () => {
         // A runner restart recovers this durable record: PID_GONE once hosted
         // 'sess-gone' and the generation probe verifies it as alive.
         writeFileSync(`${configuration.runnerStateFile}.resume-processes.json`, JSON.stringify([
+            { requestedSessionId: 'reused-at-start', pid: 5101, processStartMarker: 'previous-generation' },
             { requestedSessionId: 'sess-gone', pid: PID_GONE, processStartMarker: 'generation' },
         ]))
         runnerPromise = startRunner()
@@ -165,6 +166,20 @@ describe('runner intentional-stop marker cleanup', () => {
         }
         if (!settled) throw new Error(`Spawn ${sessionId} was not confirmed by webhook`)
     }
+
+    it('remembers the original session exit when restart finds its PID belongs to a different generation', async () => {
+        expect(await handlers.stopSession('reused-at-start')).toBe('already_gone')
+        expect(mocks.kill).not.toHaveBeenCalled()
+    })
+
+    it.each([undefined, 'per-launch'])('advertises whether the launch can be replayed (%s)', async token => {
+        const child = makeFakeChild(6310)
+        mocks.spawnHappyCLI.mockImplementation(() => child)
+        const spawn = handlers.spawnSession({ directory: home, agent: 'claude', existingSessionId: 'launch-context', token })
+        await confirmSpawn(spawn, 'launch-context', child.pid)
+        expect(mocks.spawnHappyCLI.mock.calls[0]?.[1].env.HAPI_RUNNER_REPLAYABLE_LAUNCH).toBe(token ? '0' : '1')
+        child.emit('exit', 0, null)
+    })
 
     it('reports a reused pid unexpected exit after a stop that returned already_gone', async () => {
         // The process is already dead when the stop runs: the runner reports

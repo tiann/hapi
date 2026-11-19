@@ -217,7 +217,7 @@ export function shouldHibernate(
     if (!session.active) return false
     const metadata = session.metadata
     if (!metadata || !isLiveLifecycleState(metadata.lifecycleState)) return false
-    if (metadata.capabilities?.concurrentClients === true || metadata.idleReconcileExempt === true) return false
+    if (metadata.replayableRunnerLaunch !== true || metadata.capabilities?.concurrentClients === true || metadata.idleReconcileExempt === true) return false
     if (metadata.startedBy !== 'runner' && metadata.startedFromRunner !== true) return false
     if (session.agentState?.controlledByUser === true) return false
     if (isPtySession(session)) return false

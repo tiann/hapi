@@ -340,7 +340,7 @@ function hibernatable(overrides: Partial<Session> = {}, metadata: Partial<NonNul
             host: 'h',
             lifecycleState: 'running',
             flavor: 'claude',
-            startedBy: 'runner',
+            replayableRunnerLaunch: true, startedBy: 'runner',
             machineId: 'machine-1',
             claudeSessionId: 'native-1',
             ...metadata
@@ -390,6 +390,8 @@ describe('shouldHibernate', () => {
         expect(ok(hibernatable({}, { lifecycleState: 'archived' }))).toBe(false)
         expect(ok(hibernatable({}, { lifecycleState: 'hibernated' }))).toBe(false)
         expect(ok(hibernatable({}, { idleReconcileExempt: true }))).toBe(false)
+        expect(ok(hibernatable({}, { replayableRunnerLaunch: false }))).toBe(false)
+        expect(ok(hibernatable({}, { replayableRunnerLaunch: undefined }))).toBe(false)
         expect(ok(hibernatable({}, { startedBy: 'terminal' }))).toBe(false)
         expect(ok(hibernatable({}, { startedBy: undefined, startedFromRunner: true }))).toBe(true)
         expect(ok(hibernatable({ agentState: { controlledByUser: true } as Session['agentState'] }))).toBe(false)

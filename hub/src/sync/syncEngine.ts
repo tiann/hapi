@@ -2507,9 +2507,17 @@ export class SyncEngine {
         messageId: string
     ): Promise<RetryIndeterminateMessageResult> {
         if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
+        const session = this.getSession(sessionId)
+        const waking = session?.metadata?.hibernation?.state === 'hibernated'
+            && this.store.messages.lookupQueuedMessage(sessionId, messageId).status === 'indeterminate'
+        if (session && waking) {
+            const pending = this.pendingSessionWake(sessionId, session.namespace)
+            const result = await (pending ?? this.resumeSession(sessionId, session.namespace))
+            if (result.type !== 'success' || result.sessionId !== sessionId) return { status: 'retry-unavailable', localId: messageId }
+        }
         const allowDispatch = !this.blocksSessionInput(sessionId)
         return this.withPendingDelivery(sessionId, () => this.messageService.retryIndeterminateMessage(
-            sessionId, messageId, allowDispatch, files => this.checkMessageUploads(sessionId, files)
+            sessionId, messageId, allowDispatch, files => this.checkMessageUploads(sessionId, files, waking)
         ))
     }
 
@@ -4276,6 +4284,9 @@ export class SyncEngine {
     }
 
     private async archiveSessionUnlocked(sessionId: string): Promise<void> {
+        if ((this.getSession(sessionId)?.metadata?.hibernation?.localResumeUntil ?? 0) > Date.now()) {
+            throw new ArchiveCleanupError('unconfirmed')
+        }
         const hasConfirmedStop = (session: Session | undefined) => session?.active === false
             && isHibernatedLifecycleState(session.metadata?.lifecycleState)
             && session.metadata?.hibernation?.state === 'hibernated'
@@ -5513,6 +5524,8 @@ export class SyncEngine {
             && !await this.reconcileInterruptedStop(sessionId, namespace)) {
             return { type: 'error', message: 'Waiting for runner stop confirmation; retry.', code: 'session_active' }
         }
+        const waking = this.pendingSessionWake(sessionId, namespace)
+        if (waking) await waking
         const access = this.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return access.reason === 'access-denied'
@@ -5523,6 +5536,12 @@ export class SyncEngine {
             return { type: 'error', message: 'Session is active; hand it off before reopening locally', code: 'session_active' }
         }
         const metadata = access.session.metadata
+        if (metadata?.hibernation) {
+            if (this.historyActionsInFlight.has(sessionId) || !this.sessionCache.reserveLocalHibernationResume(access.session, Date.now())) {
+                return { type: 'error', message: 'Another session resume is pending; retry.', code: 'session_active' }
+            }
+            return { type: 'success', revived: false }
+        }
         if (metadata?.lifecycleState !== 'archived' || metadata.archivedBy !== 'hub') {
             return { type: 'success', revived: false }
         }
@@ -5949,6 +5968,9 @@ export class SyncEngine {
         let initialSession = access.session
         const fromHibernation = isHibernatedLifecycleState(initialSession.metadata?.lifecycleState)
             || initialSession.metadata?.hibernation?.state === 'hibernated'
+        if ((initialSession.metadata?.hibernation?.localResumeUntil ?? 0) > Date.now()) {
+            return { type: 'error', message: 'Local terminal resume is pending; retry.', code: 'resume_unavailable' }
+        }
         if (initialSession.active && fromHibernation) return this.recoverActiveWake(initialSession)
         if (fromHibernation && initialSession.metadata?.piResumeAttempt) {
             const childId = initialSession.metadata.piResumeAttempt.childSessionId
@@ -6029,14 +6051,13 @@ export class SyncEngine {
             return targetResult
         }
 
-        const targetMachine = this.resolveOnlineMachineForSession(
-            session,
-            namespace,
-            {
+        const sleepingMachineId = session.metadata?.hibernation?.worker?.machineId ?? session.metadata?.machineId
+        const targetMachine = fromHibernation
+            ? this.getOnlineMachinesByNamespace(namespace).find(machine => machine.id === sleepingMachineId)
+            : this.resolveOnlineMachineForSession(session, namespace, {
                 strictMachineId: flavor === 'cursor'
                     || ((flavor === 'pi' || flavor === 'opencode' || flavor === 'dsh') && resumeToken !== undefined)
-            }
-        )
+            })
         if (!targetMachine) {
             return { type: 'error', message: 'No machine online', code: 'no_machine_online' }
         }
