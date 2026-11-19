@@ -14,14 +14,15 @@ import {
 /**
  * Normalized local-session transcript contract (import registry).
  *
- * Sources (Codex, Pi, OpenCode, Claude) only convert their native history
- * into this shape; the generic hub importer owns target lookup, delta
+ * Sources (Codex, Pi, OpenCode, Claude, Cursor) only convert their native
+ * history into this shape; the generic hub importer owns target lookup, delta
  * computation, persistence and lifecycle. CLI readers and the hub's legacy
  * runner fallbacks both produce these transcripts so both paths converge on
- * the same result.
+ * the same result. Cursor attaches an ACP store (often with an empty message
+ * array here); scrollback comes from ACP resume after prepare/verify.
  */
 
-export const LOCAL_SESSION_FLAVORS = ['codex', 'pi', 'opencode', 'claude'] as const
+export const LOCAL_SESSION_FLAVORS = ['codex', 'pi', 'opencode', 'claude', 'cursor'] as const
 
 export type LocalSessionFlavor = typeof LOCAL_SESSION_FLAVORS[number]
 
