@@ -627,8 +627,8 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         // Shared Codex execution exit is suspension, not consumption. Its native
         // queue ledger proves which messages can be replayed on ordinary resume.
         // Never stamp pending/uncertain input as executed, including on archive.
-        const sharedCodex = (sessionAccess.value.metadata as Metadata | null)?.capabilities?.concurrentClients
-        if (data.reason !== 'cleared' && !sharedCodex) {
+        const metadata = sessionAccess.value.metadata as Metadata | null
+        if (data.reason !== 'cleared' && !metadata?.capabilities?.concurrentClients && !metadata?.hibernation) {
             try {
                 onSweepImmediateQueued?.(data.sid, Date.now())
             } catch (err) {

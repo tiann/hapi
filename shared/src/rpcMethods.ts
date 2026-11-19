@@ -39,6 +39,7 @@ export const RPC_METHODS = {
     StatFiles: 'statFiles',
     GetDirectoryTree: 'getDirectoryTree',
     UploadFile: 'uploadFile',
+    ValidateSessionUploads: 'validate-session-uploads',
     UploadInit: 'uploadInit',
     UploadChunk: 'uploadChunk',
     UploadFinalize: 'uploadFinalize',

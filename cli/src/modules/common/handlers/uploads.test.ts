@@ -60,6 +60,31 @@ describe('isPathWithinUploadDir', () => {
         }
     });
 
+    it('validates only intact uploads registered to the receiving session', async () => {
+        const sessionId = 'upload-validation'
+        let receivingSession = sessionId
+        const handlers = new Map<string, (payload: any) => Promise<any>>()
+        registerUploadHandlers({
+            registerHandler: (name: string, handler: (payload: any) => Promise<any>) => handlers.set(name, handler)
+        } as never, { getSessionId: () => receivingSession })
+        try {
+            const { path } = await handlers.get(RPC_METHODS.UploadFile)!({
+                sessionId, filename: 'input.txt', mimeType: 'text/plain', content: Buffer.from('test').toString('base64')
+            })
+            const check = () => handlers.get(RPC_METHODS.ValidateSessionUploads)!({ files: [{ path, size: 4 }] })
+            expect(await check()).toBe(true)
+            receivingSession = 'other'
+            expect(await check()).toBe(false)
+            receivingSession = sessionId
+            await rename(path, path + '.old')
+            expect(await check()).toBe(false)
+            await writeFile(path, 'fake')
+            expect(await check()).toBe(false)
+        } finally {
+            await cleanupUploadDir(sessionId)
+        }
+    })
+
     it('supports concurrent uploads with the same filename using distinct exclusive paths', async () => {
         const handlers = new Map<string, (payload: any) => Promise<any>>();
         registerUploadHandlers({

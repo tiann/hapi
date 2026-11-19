@@ -588,6 +588,11 @@ export class RpcGateway {
         return await this.sessionRpc(sessionId, RPC_METHODS.UploadAbort, { sessionId, uploadId }) as AbortChunkedUploadResponse
     }
 
+    async validateSessionUploads(sessionId: string, files: { path: string; size: number }[], required: boolean): Promise<boolean> {
+        if (!required && !this.rpcRegistry.getSocketIdForMethod(`${sessionId}:${RPC_METHODS.ValidateSessionUploads}`)) return true
+        return await this.sessionRpc(sessionId, RPC_METHODS.ValidateSessionUploads, { files }) === true
+    }
+
     async deleteUploadFile(sessionId: string, path: string): Promise<RpcDeleteUploadResponse> {
         return await this.sessionRpc(sessionId, RPC_METHODS.DeleteUpload, { sessionId, path }) as RpcDeleteUploadResponse
     }

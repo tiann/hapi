@@ -276,7 +276,7 @@ export class ApiSessionClient extends EventEmitter {
         })
 
         if (this.metadata?.path) {
-            registerCommonHandlers(this.rpcHandlerManager, this.metadata.path)
+            registerCommonHandlers(this.rpcHandlerManager, this.metadata.path, () => this.sessionId)
         }
 
         this.socket = io(`${configuration.apiUrl}/cli`, {

@@ -305,12 +305,29 @@ function buildUniqueUploadFilename(filename: string, reserveSuffixBytes: number 
 
 export function registerUploadHandlers(
     rpcHandlerManager: RpcHandlerManager,
-    options?: { activeUploadTtlMs?: number }
+    options?: { activeUploadTtlMs?: number; getSessionId?: () => string }
 ): void {
     const activeUploadTtlMs = options?.activeUploadTtlMs ?? ACTIVE_UPLOAD_TTL_MS
     if (!cleanupRegistered) {
         cleanupRegistered = true
         process.once('exit', cleanupUploadDirsSync)
+    }
+
+    const getSessionId = options?.getSessionId
+    if (getSessionId) {
+        rpcHandlerManager.registerHandler<{ files: { path: string; size: number }[] }, boolean>(
+            RPC_METHODS.ValidateSessionUploads, async data => {
+                const sessionId = getSessionId()
+                const registered = uploadFileIdentities.get(getSessionKey(sessionId))
+                if (!registered || !Array.isArray(data?.files)) return false
+                for (const file of data.files) {
+                    if (!file || typeof file.path !== 'string' || !registered.has(file.path)) return false
+                    const stats = await lstat(file.path).catch(() => null)
+                    if (!stats?.isFile() || stats.size !== file.size || !isAuthorizedUploadFile(file.path, sessionId, stats)) return false
+                }
+                return true
+            }
+        )
     }
 
     rpcHandlerManager.registerHandler<UploadFileRequest, UploadFileResponse>(RPC_METHODS.UploadFile, async (data) => {

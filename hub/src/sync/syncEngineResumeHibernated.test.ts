@@ -412,6 +412,52 @@ describe('SyncEngine resume of hibernated sessions', () => {
         expect(engine.pendingSessionWake(id, NAMESPACE)).toBeUndefined()
     })
 
+    it('asks the resumed worker about staged attachments before accepting a REST message', async () => {
+        const id = await hibernatedSession('stale-attachment')
+        const checked: string[] = []
+        gateway().validateSessionUploads = async (sid: string, files: { path: string }[], required: boolean) => {
+            expect(sid).toBe(id)
+            expect(cache().getSession(id)?.active).toBe(true)
+            expect(required).toBe(true)
+            checked.push(files[0]!.path)
+            return files[0]!.path === '/fresh-upload'
+        }
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', NAMESPACE); await next() })
+        app.route('/api', createMessagesRoutes(() => engine))
+        const post = (path: string) => app.request(`/api/sessions/${id}/messages`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: 'read it', localId: 'with-file',
+                attachments: [{ id: 'file', filename: 'file.txt', path, size: 4, mimeType: 'text/plain' }] })
+        })
+        const missing = await post('/old-upload')
+        expect(missing.status).toBe(409)
+        expect(await missing.json()).toMatchObject({ code: 'attachment_reupload_required', retryable: true })
+        expect(store.messages.getFirstMessages(id, 10)).toHaveLength(0)
+        expect((await post('/fresh-upload')).status).toBe(200)
+        expect(checked).toEqual(['/old-upload', '/fresh-upload'])
+        expect(store.messages.getFirstMessages(id, 10)).toHaveLength(1)
+        store.messages.setMessagesDeliveryState(id, ['with-file'], 'indeterminate')
+        gateway().validateSessionUploads = async () => false
+        const io = (engine as unknown as { io: { of: () => unknown } }).io
+        const original = io.of
+        io.of = () => ({
+            adapter: { rooms: new Map([[`session:${id}`, new Set(['worker'])]]) },
+            to: () => ({ timeout: () => ({ emit: (_: string, update: { body: { t: string } }, ack: (err: null, replies: { removed: boolean }[]) => void) => {
+                expect(update.body.t).toBe('cancel-queued-message')
+                ack(null, [{ removed: true }])
+            } }) })
+        })
+        try {
+            const retried = await app.request(`/api/sessions/${id}/messages/with-file/retry`, { method: 'POST' })
+            expect(retried.status).toBe(409)
+            expect(await retried.json()).toMatchObject({ code: 'attachment_reupload_required', retryable: true })
+            expect(store.messages.lookupQueuedMessage(id, 'with-file').status).toBe('indeterminate')
+        } finally {
+            io.of = original
+        }
+    })
+
     it.each(['ready', 'ended'] as const)('joins a Pi wake before sending while transport is active (%s)', async readiness => {
         const id = await hibernatedSession('join-wake', 'pi')
         let finish!: (status: typeof readiness) => void

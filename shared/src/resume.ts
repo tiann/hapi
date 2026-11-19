@@ -11,6 +11,7 @@ export const LocalResumeTargetSchema = z.object({
     active: z.boolean(),
     thinking: z.boolean(),
     controlledByUser: z.boolean(),
+    concurrentClients: z.boolean().optional(),
     agentSessionId: z.string().min(1),
     model: z.string().nullable().optional(),
     effort: z.string().nullable().optional(),

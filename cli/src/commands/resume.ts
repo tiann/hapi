@@ -265,7 +265,7 @@ export async function prepareLocalResume(api: ApiClient, target: LocalResumeTarg
     }
 
     // Shared Codex sessions support concurrent clients; no ownership handoff.
-    if (target.flavor === 'codex') {
+    if (target.flavor === 'codex' && target.active && target.concurrentClients !== false) {
         return
     }
 

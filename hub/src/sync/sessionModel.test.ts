@@ -3452,6 +3452,7 @@ describe('session model', () => {
                     active: session.active,
                     thinking: session.thinking,
                     controlledByUser: false,
+                    concurrentClients: false,
                     agentSessionId: 'codex-thread-1',
                     model: 'gpt-5.4',
                     effort: null,

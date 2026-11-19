@@ -153,6 +153,21 @@ describe('cli session handlers', () => {
         expect(store.messages.getAllMessages(session.id)[0]).toMatchObject({ localId: 'pending', invokedAt: null })
         store.close()
     })
+    it.each(['stopping', 'hibernated'])('leaves unconsumed prompts queued at hibernation shutdown (%s)', state => {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('sleep-end', { hibernation: { state, since: 1, reason: 'idle' } }, null, 'default')
+        store.messages.addMessage(session.id, { role: 'user', content: { type: 'text', text: 'pending' } }, 'pending')
+        const socket = new FakeSocket()
+        const sweep = mock()
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {}, onSweepImmediateQueued: sweep
+        })
+        socket.trigger('session-end', { sid: session.id, time: Date.now(), reason: 'terminated' })
+        expect(sweep).not.toHaveBeenCalled()
+        expect(store.messages.getImmediateQueuedLocalMessages(session.id)).toMatchObject([{ localId: 'pending', invokedAt: null }])
+        store.close()
+    })
+
     it('mirrors native queued edits/removal without overwriting or deleting a consumed row', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('shared-queue', { capabilities: { concurrentClients: true } }, null, 'default')

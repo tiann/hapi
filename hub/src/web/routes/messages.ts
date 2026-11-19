@@ -1,8 +1,14 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { MessagesQuerySchema, QueuedStateRequestSchema, SendMessageRequestSchema, isHibernatedLifecycleState } from '@hapi/protocol'
-import { HISTORY_ACTION_IN_PROGRESS_MESSAGE, type ReopenSessionResult, type ResumeSessionResult, type SyncEngine } from '../../sync/syncEngine'
+import { AttachmentCheckError, HISTORY_ACTION_IN_PROGRESS_MESSAGE, type ReopenSessionResult, type ResumeSessionResult, type SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
+
+function attachmentError(c: Context<WebAppEnv>, error: unknown): Response {
+    if (!(error instanceof AttachmentCheckError)) throw error
+    return c.json({ error: error.message, code: error.unavailable ? 'attachment_check_unavailable' : 'attachment_reupload_required',
+        retryable: true }, error.unavailable ? 503 : 409)
+}
 
 export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
@@ -101,10 +107,11 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         if (sessionResult instanceof Response) {
             return sessionResult
         }
-        return c.json(await engine.retryIndeterminateMessage(
-            sessionResult.sessionId,
-            c.req.param('messageId')
-        ))
+        try {
+            return c.json(await engine.retryIndeterminateMessage(sessionResult.sessionId, c.req.param('messageId')))
+        } catch (error) {
+            return attachmentError(c, error)
+        }
     })
 
     app.post('/sessions/:id/messages/queued-state', async (c) => {
@@ -157,6 +164,7 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const namespace = c.get('namespace')
 
         const wakeError = (result: Extract<ResumeSessionResult | ReopenSessionResult, { type: 'error' }>) => {
+            if (result.code === 'cleanup_pending') return c.json({ error: result.message, code: result.code, retryable: true }, 409)
             const status = result.code === 'no_machine_online' ? 503
                 : result.code === 'access_denied' ? 403
                     : result.code === 'session_not_found' ? 404
@@ -168,6 +176,7 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         // Resolve the delivery target: wait out an in-flight hibernation stop
         // (it holds the history lock), re-read, and wake a hibernated session
         // transparently (same id). A future scheduled send waits for its due time.
+        let requireUploadValidation = false
         const resolveTarget = async (sessionId: string): Promise<string | Response> => {
             let current = requireSessionFromParam(c, engine)
             if (current instanceof Response) {
@@ -181,14 +190,15 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             }
             const pending = engine.pendingSessionWake?.(current.sessionId, namespace)
             if (pending) {
+                requireUploadValidation = true
                 const wake = await pending
                 if (wake.type === 'error') return wakeError(wake)
                 if (wake.type === 'incomplete') return c.json({ error: wake.message, code: 'resume_unavailable' }, 409)
                 current = requireSessionFromParam(c, engine)
                 if (current instanceof Response) return current
             }
-            const hibernated = !current.session.active
-                && isHibernatedLifecycleState(current.session.metadata?.lifecycleState)
+            const hibernated = (!current.session.active && isHibernatedLifecycleState(current.session.metadata?.lifecycleState))
+                || current.session.metadata?.hibernation?.state === 'stopping'
             if (!current.session.active && !hibernated) {
                 return c.json({ error: 'Session is inactive', code: 'session_inactive' }, 409)
             }
@@ -196,20 +206,26 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             if (!hibernated || scheduledInFuture) {
                 return current.sessionId
             }
+            requireUploadValidation = true
             const result = await engine.resumeSession(current.sessionId, namespace)
             if (result.type === 'error') return wakeError(result)
             return result.sessionId
         }
 
         const send = async (sessionId: string) => {
-            await engine.sendMessage(sessionId, {
-                text: payload.text,
-                localId: payload.localId,
-                attachments: payload.attachments,
-                sentFrom: 'webapp',
-                scheduledAt: payload.scheduledAt,
-                deliveryMode: payload.deliveryMode
-            })
+            try {
+                await engine.sendMessage(sessionId, {
+                    text: payload.text,
+                    localId: payload.localId,
+                    attachments: payload.attachments,
+                    sentFrom: 'webapp',
+                    scheduledAt: payload.scheduledAt,
+                    deliveryMode: payload.deliveryMode
+                }, requireUploadValidation)
+                return c.json({ ok: true })
+            } catch (error) {
+                return attachmentError(c, error)
+            }
         }
 
         let target = await resolveTarget(initial.sessionId)
@@ -217,7 +233,7 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return target
         }
         try {
-            await send(target)
+            return await send(target)
         } catch (error) {
             // A hibernation sweep can win the race between the read above and
             // the send. Wait it out and retry once through the wake branch.
@@ -226,7 +242,8 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             if (!engine.hibernationInFlight?.(target) && !engine.pendingSessionWake?.(target, namespace)) {
                 const current = requireSessionFromParam(c, engine)
                 if (current instanceof Response) return current
-                if (current.session.active || !isHibernatedLifecycleState(current.session.metadata?.lifecycleState)) {
+                if (current.session.active || (!isHibernatedLifecycleState(current.session.metadata?.lifecycleState)
+                    && current.session.metadata?.hibernation?.state !== 'stopping')) {
                     throw error
                 }
             }
@@ -234,9 +251,8 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             if (target instanceof Response) {
                 return target
             }
-            await send(target)
+            return await send(target)
         }
-        return c.json({ ok: true })
     })
 
     return app

@@ -12,7 +12,7 @@ import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
 } from '@hapi/protocol/runnerCapabilities'
-import type { AbortChunkedUploadResponse, CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, InitChunkedUploadRequest, InitChunkedUploadResponse, MessageContextResponse, MessageDeliveryMode, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse, UploadChunkResponse } from '@hapi/protocol/apiTypes'
+import type { AbortChunkedUploadResponse, CursorChatStoreStatus, CursorMigrateOutcome, CursorMigrateToAcpRequest, InitChunkedUploadRequest, InitChunkedUploadResponse, MessageContextResponse, MessagesResponse, QueuedStateResponse, RewindConversationErrorCode, SlashCommandsResponse, UploadChunkResponse } from '@hapi/protocol/apiTypes'
 import { FORK_PREVIEW_TAIL_ROWS, type ForkBoundary, type ForkBoundaryErrorCode, type ForkPreviewRequest, type ForkPreviewResponse, type ForkPreviewRow } from '@hapi/protocol/forkBoundary'
 import type { UsageQueryAgent, UsageQueryAgentSettings, UsageQueryResult, UsageQuerySettingsResponse, UsageQueryTemplate } from '@hapi/protocol/usageQuery'
 import type { SteerQueuedMessageResponse } from '@hapi/protocol/schemas'
@@ -146,15 +146,22 @@ export type {
 
 export type ResumeSessionResult =
     | { type: 'success'; sessionId: string }
-    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'resume_failed'; rollbackSafe?: boolean }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'cleanup_pending' | 'resume_failed'; rollbackSafe?: boolean }
 
 export type HibernateSessionResult = 'hibernated' | 'skipped' | 'failed'
+
+export class AttachmentCheckError extends Error {
+    constructor(readonly unavailable: boolean) {
+        super(unavailable ? 'Could not verify attachments on the worker. Retry the send.'
+            : 'An attachment is no longer available on this worker. Upload it again and retry.')
+    }
+}
 
 export const HISTORY_ACTION_IN_PROGRESS_MESSAGE = 'Conversation history action already in progress'
 
 export type ReopenSessionResult =
     | { type: 'success'; sessionId: string; resumed: boolean; cursorSessionProtocol?: 'acp' | 'stream-json' }
-    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'resume_failed' | 'metadata_conflict' }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'cleanup_pending' | 'resume_failed' | 'metadata_conflict' }
     | { type: 'incomplete'; message: string; missing: [string, ...string[]] }
 
 export type LocalResumeTargetResult =
@@ -165,13 +172,15 @@ export type LocalResumeTargetByAgentResult =
     | { type: 'success'; target: LocalResumeTarget | null; historical: boolean }
     | { type: 'error'; message: string; code: 'resume_unavailable' }
 
+const CLEANUP_PENDING_MESSAGE = 'Previous wrapper cleanup is unconfirmed. Retry when the runner has finished cleanup.'
+
 export type LocalResumePrepareResult =
     | { type: 'success'; revived: boolean }
-    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'session_active' }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'session_active' | 'cleanup_pending' }
 
 export type LocalHandoffResult =
     | { type: 'success' }
-    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'already_local' | 'handoff_failed' | 'control_mode_not_applicable' }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'already_local' | 'handoff_failed' | 'control_mode_not_applicable' | 'cleanup_pending' }
 
 export type ClearOpencodeSessionResult =
     | { type: 'success'; sessionId: string }
@@ -239,6 +248,7 @@ export class SyncEngine {
     /** Idle-session hibernation (agent-session-orchestration P1). */
     private readonly sessionHibernateMs: number = resolveSessionHibernateMs()
     private hibernateSweepInFlight = false
+    private readonly pendingDeliveries = new Map<string, number>()
     private readonly hibernateTails = new Map<string, Promise<HibernateSessionResult>>()
     private readonly hibernateBackoffUntil = new Map<string, number>()
     /** Failed automatic wakes (scheduled-message maturity) back off per session. */
@@ -883,7 +893,7 @@ export class SyncEngine {
         if (!wasThinking && payload.thinking === true) {
             this.automaticTitleSuggestionService.onTurnStarted(payload.sid)
         }
-        if (!wasActive && before?.metadata?.hibernation?.state === 'stopping' && this.hibernateBackoffUntil.has(payload.sid)) {
+        if (!wasActive && before?.metadata?.hibernation?.state === 'stopping' && before.metadata.startedBy === 'terminal') {
             this.sessionCache.recoverUnconfirmedHibernationStop(payload.sid)
         }
         this.sessionCache.handleSessionAlive(payload)
@@ -903,7 +913,7 @@ export class SyncEngine {
             this.titleTurnCompletedIds.add(payload.sid)
             void this.automaticTitleSuggestionService.onTurnCompleted(payload.sid)
         }
-        this.messageService.replayImmediateQueuedMessages(payload.sid)
+        if (!current?.metadata?.hibernation) this.messageService.replayImmediateQueuedMessages(payload.sid)
         this.triggerDedupIfNeeded(payload.sid)
         // First inactive → active: catch toggles while inactive (fanout is
         // active-only). Also retry sessions whose prior fanout/rollback RPC failed.
@@ -1253,7 +1263,7 @@ export class SyncEngine {
     }
 
     private hibernationOperationInFlight(sessionId: string, holdsHistoryLock = false): boolean {
-        return (!holdsHistoryLock && this.historyActionsInFlight.has(sessionId))
+        return this.pendingDeliveries.has(sessionId) || (!holdsHistoryLock && this.historyActionsInFlight.has(sessionId))
             || this.resumeTails.has(sessionId)
             || this.reopenTails.has(sessionId)
             || this.archiveRequests.has(sessionId)
@@ -1278,11 +1288,11 @@ export class SyncEngine {
         }
     }
 
-    private evaluateHibernation(session: Session, now: number, hibernateMs: number, holdsHistoryLock = false): boolean {
+    private evaluateHibernation(session: Session, now: number, hibernateMs: number, holdsHistoryLock = false, cleanupOnly = false): boolean {
         // Cold cache: progress clocks and signals are only trustworthy once
         // the hub has been up a while and has heard from this session itself.
-        if (now - this.hubStartedAt < SyncEngine.HIBERNATE_STARTUP_GRACE_MS) return false
-        if (!(hibernateMs > 0) || now < (this.hibernateBackoffUntil.get(session.id) ?? 0)) return false
+        if (!cleanupOnly && (now - this.hubStartedAt < SyncEngine.HIBERNATE_STARTUP_GRACE_MS
+            || !(hibernateMs > 0) || now < (this.hibernateBackoffUntil.get(session.id) ?? 0))) return false
         const machine = this.machineCache.getMachine(session.metadata?.machineId ?? '')
         if (machine?.namespace !== session.namespace) return false
         if (!session.active && session.metadata?.hibernation?.state === 'stopping') {
@@ -1290,6 +1300,7 @@ export class SyncEngine {
                 && machine.active && machine.runnerState?.capabilities?.sessionHibernation === true
                 && !this.hibernationOperationInFlight(session.id, holdsHistoryLock)
         }
+        if (cleanupOnly) return false
         if (!this.aliveSinceHubStartIds.has(session.id) || !session.metadata?.hostPid || !session.metadata.hostStartMarker) return false
         // Cheap prefilter before the store-backed signals.
         if (!session.active || !isLiveLifecycleState(session.metadata?.lifecycleState)) return false
@@ -1343,11 +1354,11 @@ export class SyncEngine {
     /**
      * Stop an idle session's wrapper + agent and mark it `hibernated`. Only a
      * runner-confirmed `stopped` / `already_gone` settles the mark; anything
-     * else backs off 10 minutes. A disconnected wrapper gets one cleanup retry.
+     * else backs off 10 minutes. A disconnected wrapper keeps its cleanup reservation.
      */
     async hibernateSession(
         sessionId: string,
-        opts: { now?: number; hibernateMs?: number; reason?: 'idle' | 'binary-drift' } = {}
+        opts: { now?: number; hibernateMs?: number; reason?: 'idle' | 'binary-drift'; cleanupOnly?: boolean } = {}
     ): Promise<HibernateSessionResult> {
         const existing = this.hibernateTails.get(sessionId)
         if (existing) return await existing
@@ -1369,16 +1380,24 @@ export class SyncEngine {
         }
     }
 
+    private pendingCleanupForResume(sessionId: string, namespace: string): Promise<HibernateSessionResult> | undefined {
+        const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
+        if (access.ok && access.session.metadata?.hibernation?.state === 'stopping') {
+            return this.hibernateSession(access.sessionId, { cleanupOnly: true })
+        }
+        return undefined
+    }
+
     private async hibernateSessionUnlocked(
         sessionId: string,
-        opts: { now?: number; hibernateMs?: number; reason?: 'idle' | 'binary-drift' }
+        opts: { now?: number; hibernateMs?: number; reason?: 'idle' | 'binary-drift'; cleanupOnly?: boolean }
     ): Promise<HibernateSessionResult> {
         const now = opts.now ?? Date.now()
         const hibernateMs = opts.hibernateMs ?? this.sessionHibernateMs
         const session = this.sessionCache.getSession(sessionId)
         if (!session?.metadata?.machineId) return 'skipped'
         // Re-validate with fresh signals: state may have moved since the sweep.
-        if (!this.evaluateHibernation(session, now, hibernateMs, true)) return 'skipped'
+        if (!this.evaluateHibernation(session, now, hibernateMs, true, opts.cleanupOnly)) return 'skipped'
         const retry = !session.active && session.metadata.hibernation?.state === 'stopping'
         const reason = session.metadata.hibernation?.reason ?? opts.reason ?? 'idle'
         if (retry && (this.hibernationRunnerCapabilities(session)?.sessionHibernation !== true
@@ -1405,7 +1424,6 @@ export class SyncEngine {
             return 'skipped' as const
         }
         if (!generation || !sameGeneration()) return cancelReplacedStop()
-        let confirmationUnavailable = false
         try {
             const status = await this.rpcGateway.stopRunnerSession(generation.machineId, sessionId, {
                 expectedPid: generation.pid,
@@ -1423,10 +1441,9 @@ export class SyncEngine {
                 }
             }
         } catch (error) {
-            confirmationUnavailable = true
             console.warn('[hibernate] could not confirm or settle stop', { sessionId, error })
         }
-        const retryInactive = (confirmationUnavailable || !retry) && await this.waitForSessionInactive(sessionId).catch(() => false)
+        const retryInactive = retry || await this.waitForSessionInactive(sessionId).catch(() => false)
         if (!sameGeneration()) return cancelReplacedStop()
         this.hibernateBackoffUntil.set(sessionId, now + SyncEngine.HIBERNATE_BACKOFF_MS)
         this.sessionCache.recoverUnconfirmedHibernationStop(sessionId, retryInactive)
@@ -2362,25 +2379,40 @@ export class SyncEngine {
 
     async sendMessage(
         sessionId: string,
-        payload: {
-            text: string
-            localId?: string | null
-            attachments?: Array<{
-                id: string
-                filename: string
-                mimeType: string
-                size: number
-                path: string
-                previewUrl?: string
-            }>
-            sentFrom?: 'telegram-bot' | 'webapp' | 'hapi-system'
-            scheduledAt?: number | null
-            deliveryMode?: MessageDeliveryMode
-        }
+        payload: Parameters<MessageService['sendMessage']>[1],
+        requireUploadValidation = false
     ): Promise<void> {
         if (this.historyActionsInFlight.has(sessionId) || this.openCodeRewindPending(sessionId)) {
             throw new Error(HISTORY_ACTION_IN_PROGRESS_MESSAGE)
         }
+        if (!payload.attachments?.length) return this.deliverMessage(sessionId, payload)
+        const attachments = payload.attachments
+        return this.withPendingDelivery(sessionId, async () => {
+            await this.checkMessageUploads(sessionId, attachments, requireUploadValidation)
+            if (this.historyActionsInFlight.has(sessionId) || this.openCodeRewindPending(sessionId)) {
+                throw new Error(HISTORY_ACTION_IN_PROGRESS_MESSAGE)
+            }
+            await this.deliverMessage(sessionId, payload)
+        })
+    }
+
+    private async checkMessageUploads(sessionId: string, attachments: { path: string; size: number }[], required = false): Promise<void> {
+        const metadata = this.getSession(sessionId)?.metadata
+        const needsCheck = required || this.machineCache.getMachine(metadata?.machineId ?? '')?.metadata
+            ?.capabilities?.includes(MACHINE_CAPABILITIES.ResumeHibernatedSession) === true
+        let valid: boolean
+        try {
+            const files = attachments.map(({ path, size }) => ({ path, size }))
+            valid = await this.rpcGateway.validateSessionUploads(sessionId, files, needsCheck)
+        } catch {
+            throw new AttachmentCheckError(true)
+        }
+        const current = this.getSession(sessionId)
+        if (!valid || !current?.active || current.metadata?.machineId !== metadata?.machineId || current.metadata?.hostPid !== metadata?.hostPid
+            || current.metadata?.hostStartMarker !== metadata?.hostStartMarker) throw new AttachmentCheckError(false)
+    }
+
+    private async deliverMessage(sessionId: string, payload: Parameters<MessageService['sendMessage']>[1]): Promise<void> {
         if (!this.sessionCache.getSession(sessionId)?.thinking) {
             this.automaticTitleSuggestionService.onTurnStarted(sessionId)
         }
@@ -2404,12 +2436,30 @@ export class SyncEngine {
         return this.messageService.cancelQueuedMessage(sessionId, messageId)
     }
 
+    private async withPendingDelivery<T>(sessionId: string, deliver: () => Promise<T>): Promise<T> {
+        this.pendingDeliveries.set(sessionId, (this.pendingDeliveries.get(sessionId) ?? 0) + 1)
+        try {
+            return await deliver()
+        } finally {
+            const remaining = this.pendingDeliveries.get(sessionId)! - 1
+            if (remaining > 0) this.pendingDeliveries.set(sessionId, remaining)
+            else this.pendingDeliveries.delete(sessionId)
+        }
+    }
+
+    private deliveryBlockedByHibernation(sessionId: string): boolean {
+        return this.hibernationInFlight(sessionId) || !!this.getSession(sessionId)?.metadata?.hibernation
+    }
+
     async retryIndeterminateMessage(
         sessionId: string,
         messageId: string
     ): Promise<RetryIndeterminateMessageResult> {
         if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
-        return this.messageService.retryIndeterminateMessage(sessionId, messageId)
+        const allowDispatch = !this.deliveryBlockedByHibernation(sessionId)
+        return this.withPendingDelivery(sessionId, () => this.messageService.retryIndeterminateMessage(
+            sessionId, messageId, allowDispatch, files => this.checkMessageUploads(sessionId, files)
+        ))
     }
 
     /**
@@ -2470,9 +2520,10 @@ export class SyncEngine {
             return { status: 'failed', error: 'Scheduled messages cannot be steered', localId }
         }
 
+        if (this.deliveryBlockedByHibernation(sessionId)) return { status: 'failed', error: 'Session is hibernating', localId }
         let failure: string
         try {
-            const result = await this.rpcGateway.steerQueuedMessage(sessionId, localId)
+            const result = await this.withPendingDelivery(sessionId, () => this.rpcGateway.steerQueuedMessage(sessionId, localId))
             const settled = this.store.messages.lookupQueuedMessage(sessionId, messageId)
             if (settled.status === 'invoked') return { status: 'invoked', message: settled.message }
             if (result.steered) {
@@ -4135,6 +4186,11 @@ export class SyncEngine {
 
     async archiveSession(sessionId: string): Promise<void> {
         if (this.hibernationInFlight(sessionId)) await this.awaitHibernation(sessionId)
+        const row = this.sessionCache.getSession(sessionId)
+        if (row?.metadata?.hibernation?.state === 'stopping') {
+            const cleanup = this.pendingCleanupForResume(sessionId, row.namespace)
+            if (cleanup && await cleanup !== 'hibernated') throw new ArchiveCleanupError('unconfirmed')
+        }
         if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         const existing = this.archiveRequests.get(sessionId)
         if (existing) return existing
@@ -5349,6 +5405,7 @@ export class SyncEngine {
                 active: session.active,
                 thinking: session.thinking,
                 controlledByUser: session.agentState?.controlledByUser === true,
+                concurrentClients: metadata.capabilities?.concurrentClients === true,
                 agentSessionId,
                 model: session.model ?? null,
                 effort: session.effort ?? null,
@@ -5375,6 +5432,7 @@ export class SyncEngine {
                     active: target.active,
                     thinking: target.thinking,
                     controlledByUser: target.controlledByUser,
+                    concurrentClients: target.concurrentClients,
                     agentSessionId: target.agentSessionId,
                     model: target.model,
                     effort: target.effort,
@@ -5401,6 +5459,8 @@ export class SyncEngine {
      */
     async prepareLocalResume(sessionId: string, namespace: string): Promise<LocalResumePrepareResult> {
         if (this.hibernationInFlight(sessionId)) await this.awaitHibernation(sessionId)
+        const cleanup = this.pendingCleanupForResume(sessionId, namespace)
+        if (cleanup && await cleanup !== 'hibernated') return { type: 'error', message: CLEANUP_PENDING_MESSAGE, code: 'cleanup_pending' }
         const access = this.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return access.reason === 'access-denied'
@@ -5409,9 +5469,6 @@ export class SyncEngine {
         }
         if (access.session.active) {
             return { type: 'error', message: 'Session is active; hand it off before reopening locally', code: 'session_active' }
-        }
-        if (access.session.metadata?.hibernation?.state === 'stopping') {
-            this.sessionCache.recoverUnconfirmedHibernationStop(access.sessionId)
         }
         const metadata = this.sessionCache.getSession(access.sessionId)?.metadata
         if (metadata?.lifecycleState !== 'archived' || metadata.archivedBy !== 'hub') {
@@ -5760,6 +5817,8 @@ export class SyncEngine {
 
     async resumeSession(sessionId: string, namespace: string, opts?: { permissionMode?: PermissionMode }): Promise<ResumeSessionResult> {
         if (this.hibernationInFlight(sessionId)) await this.awaitHibernation(sessionId)
+        const cleanup = this.pendingCleanupForResume(sessionId, namespace)
+        if (cleanup && await cleanup !== 'hibernated') return { type: 'error', message: CLEANUP_PENDING_MESSAGE, code: 'cleanup_pending' }
         if (this.archivedForkPending(sessionId, namespace)) {
             return { type: 'error', message: 'Archived fork is in progress; retry the fork before reopening', code: 'resume_failed' }
         }
@@ -5840,7 +5899,6 @@ export class SyncEngine {
             initialSession = this.sessionCache.getSessionByNamespace(access.sessionId, namespace) ?? initialSession
         }
         if (initialSession.active) {
-            if (initialSession.metadata?.hibernation?.state === 'stopping') this.sessionCache.recoverUnconfirmedHibernationStop(access.sessionId)
             // A live CLI behind a settled marker is a confirmed wake.
             if (initialSession.metadata?.hibernation?.state === 'hibernated') {
                 this.sessionCache.clearSessionHibernation(access.sessionId)
@@ -5899,9 +5957,7 @@ export class SyncEngine {
             return { type: 'error', message: 'Pi resume requires an upgraded runner', code: 'resume_failed' }
         }
 
-        if (session.metadata?.hibernation?.state === 'stopping') {
-            this.sessionCache.recoverUnconfirmedHibernationStop(access.sessionId)
-        }
+        if (session.metadata?.hibernation?.state === 'stopping') return { type: 'error', message: CLEANUP_PENDING_MESSAGE, code: 'cleanup_pending' }
         const metadata = this.sessionCache.getSessionByNamespace(access.sessionId, namespace)?.metadata ?? session.metadata!
 
         const requiresPiNativeReady = flavor === 'pi' && resumeToken !== undefined
@@ -6304,6 +6360,8 @@ export class SyncEngine {
      */
     async reopenSession(sessionId: string, namespace: string): Promise<ReopenSessionResult> {
         if (this.hibernationInFlight(sessionId)) await this.awaitHibernation(sessionId)
+        const cleanup = this.pendingCleanupForResume(sessionId, namespace)
+        if (cleanup && await cleanup !== 'hibernated') return { type: 'error', message: CLEANUP_PENDING_MESSAGE, code: 'cleanup_pending' }
         if (this.archivedForkPending(sessionId, namespace)) {
             return { type: 'error', message: 'Archived fork is in progress; retry the fork before reopening', code: 'resume_failed' }
         }
@@ -6484,6 +6542,8 @@ export class SyncEngine {
 
     async handoffSessionToLocal(sessionId: string, namespace: string): Promise<LocalHandoffResult> {
         if (this.hibernationInFlight(sessionId)) await this.awaitHibernation(sessionId)
+        const cleanup = this.pendingCleanupForResume(sessionId, namespace)
+        if (cleanup && await cleanup !== 'hibernated') return { type: 'error', message: CLEANUP_PENDING_MESSAGE, code: 'cleanup_pending' }
         if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {

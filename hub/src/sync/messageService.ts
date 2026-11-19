@@ -5,6 +5,7 @@ import {
     type HapiSessionExport,
     type HapiSessionExportResult
 } from '@hapi/protocol/sessionExport'
+import { AttachmentMetadataSchema } from '@hapi/protocol/schemas'
 import type { AttachmentMetadata, DecryptedMessage, Metadata, Session } from '@hapi/protocol/types'
 import {
     isClaudeChatVisibleMessage,
@@ -789,7 +790,9 @@ export class MessageService {
 
     async retryIndeterminateMessage(
         sessionId: string,
-        messageId: string
+        messageId: string,
+        allowDispatch = true,
+        validateUploads?: (files: AttachmentMetadata[]) => Promise<void>
     ): Promise<RetryIndeterminateMessageResult> {
         const lookup = this.store.messages.lookupQueuedMessage(sessionId, messageId)
         if (lookup.status === 'absent') return { status: 'not-found' }
@@ -804,7 +807,7 @@ export class MessageService {
         }
         if (!lookup.localId) return { status: 'not-found' }
         const retryKey = `${sessionId}:${lookup.localId}`
-        if (this.activeIndeterminateRetries.has(retryKey)) {
+        if (!allowDispatch || this.activeIndeterminateRetries.has(retryKey)) {
             return { status: 'retry-unavailable', localId: lookup.localId }
         }
         this.activeIndeterminateRetries.add(retryKey)
@@ -838,6 +841,16 @@ export class MessageService {
         if (refreshed.status === 'dispatching') {
             const changed = this.store.messages.setMessagesDeliveryState(sessionId, [lookup.localId], 'indeterminate')
             if (changed === 0) return { status: 'retry-unavailable', localId: lookup.localId }
+        }
+
+        if (validateUploads) {
+            const row = this.store.messages.getMessageById(sessionId, lookup.resolvedId)
+            const content = unwrapRoleWrappedRecordEnvelope(row?.content)?.content
+            if (isObject(content) && Array.isArray(content.attachments) && content.attachments.length) {
+                const files = AttachmentMetadataSchema.array().safeParse(content.attachments)
+                if (!files.success) return { status: 'retry-unavailable', localId: lookup.localId }
+                await validateUploads(files.data)
+            }
         }
 
         const message = this.store.messages.claimIndeterminateMessage(sessionId, messageId)

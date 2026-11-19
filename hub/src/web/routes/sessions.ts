@@ -689,6 +689,7 @@ export function createSessionsRoutes(
             permissionMode !== undefined ? { permissionMode } : undefined
         )
         if (result.type === 'error') {
+            if (result.code === 'cleanup_pending') return c.json({ error: result.message, code: result.code, retryable: true }, 409)
             const status = result.code === 'no_machine_online' ? 503
                 : result.code === 'access_denied' ? 403
                     : result.code === 'session_not_found' ? 404
@@ -719,6 +720,7 @@ export function createSessionsRoutes(
         }
 
         if (result.type === 'error') {
+            if (result.code === 'cleanup_pending') return c.json({ error: result.message, code: result.code, retryable: true }, 409)
             const status = result.code === 'no_machine_online' ? 503
                 : result.code === 'access_denied' ? 403
                     : result.code === 'session_not_found' ? 404
@@ -1353,6 +1355,7 @@ export function createSessionsRoutes(
             // the normal Runner lifecycle instead of reimplementing it.
             const result = await engine.resumeSession(sessionId, namespace, { permissionMode: session.session.permissionMode })
             if (result.type === 'error') {
+                if (result.code === 'cleanup_pending') return c.json({ error: result.message, code: result.code, retryable: true }, 409)
                 const status = result.code === 'no_machine_online' ? 503
                     : result.code === 'access_denied' ? 403
                         : result.code === 'session_not_found' ? 404

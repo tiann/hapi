@@ -296,7 +296,7 @@ describe('SyncEngine hibernation', () => {
         expect(session.metadata?.hibernation?.state).toBe('stopping')
         stopImpl = async () => 'unknown'
         expect(await engine.hibernateIdleSessions(later() + 600_000, WINDOW)).toEqual([])
-        expect(cache().getSession(id)?.metadata?.hibernation).toBeUndefined()
+        expect(cache().getSession(id)?.metadata?.hibernation?.state).toBe('stopping')
         expect(cache().getSession(id)?.metadata?.lifecycleState).toBe('running')
     })
 
@@ -366,31 +366,82 @@ describe('SyncEngine hibernation', () => {
             const confirmed = outcome === 'already_gone' || outcome === 'stopped'
             expect(await engine.hibernateIdleSessions(now + 600_000, WINDOW)).toEqual(confirmed ? [id] : [])
             expect(stopCalls).toHaveLength(2)
-            expect(cache().getSession(id)?.metadata?.hibernation?.state).toBe(confirmed ? 'hibernated' : undefined)
+            expect(cache().getSession(id)?.metadata?.hibernation?.state).toBe(confirmed ? 'hibernated' : 'stopping')
             expect(cache().getSession(id)?.metadata?.lifecycleState).toBe(confirmed ? 'hibernated' : 'running')
             expect(await engine.hibernateIdleSessions(now + 1_200_000, WINDOW)).toEqual([])
-            expect(stopCalls).toHaveLength(2)
+            expect(stopCalls).toHaveLength(confirmed ? 2 : 3)
         }
     )
 
-    it('lets resume cancel the pending cleanup retry before the backoff expires', async () => {
-        const id = insertIdleSession('resume-before-cleanup')
-        const now = later()
+    it.each(['resumeSession', 'reopenSession', 'prepareLocalResume', 'handoffSessionToLocal'] as const)(
+        '%s requires old-group cleanup before authorizing a replacement', async method => {
+            const id = insertIdleSession('resume-before-cleanup')
+            stopImpl = async () => {
+                engine.handleSessionEnd({ sid: id, time: Date.now() })
+                return 'still_alive'
+            }
+            expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([])
+            let spawns = 0
+            gateway().spawnSession = async () => {
+                spawns++
+                engine.handleSessionAlive({ sid: id, time: Date.now() })
+                return { type: 'success', sessionId: id }
+            }
+            for (const status of ['still_alive', 'unknown'] as const) {
+                stopImpl = async () => status
+                expect(await engine[method](id, NAMESPACE)).toMatchObject({ type: 'error', code: 'cleanup_pending', message: expect.stringContaining('Retry') })
+                expect(cache().getSession(id)?.metadata?.hibernation?.state).toBe('stopping')
+                expect(spawns).toBe(0)
+            }
+            stopImpl = async () => 'already_gone'
+            expect(await engine[method](id, NAMESPACE)).toMatchObject({ type: 'success' })
+            expect(spawns).toBe(method === 'resumeSession' || method === 'reopenSession' ? 1 : 0)
+            expect(stopCalls).toHaveLength(4)
+        }
+    )
+
+    it('preserves outstanding group cleanup across an unsuccessful archive', async () => {
+        const id = insertIdleSession('archive-during-cleanup')
         stopImpl = async () => {
             engine.handleSessionEnd({ sid: id, time: Date.now() })
-            return 'unknown'
+            return 'still_alive'
         }
-        expect(await engine.hibernateIdleSessions(now, WINDOW)).toEqual([])
+        expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([])
+        await expect(engine.archiveSession(id)).rejects.toThrow()
         expect(cache().getSession(id)?.metadata?.hibernation?.state).toBe('stopping')
-        gateway().spawnSession = async () => {
-            engine.handleSessionAlive({ sid: id, time: Date.now() })
-            return { type: 'success', sessionId: id }
-        }
-        expect(await engine.resumeSession(id, NAMESPACE)).toEqual({ type: 'success', sessionId: id })
-        expect(cache().getSession(id)?.metadata?.hibernation).toBeUndefined()
-        engine.handleSessionEnd({ sid: id, time: Date.now() })
-        expect(await engine.hibernateIdleSessions(now + 600_000, WINDOW)).toEqual([])
-        expect(stopCalls).toHaveLength(1)
+        expect(killCalls).toHaveLength(0)
+    })
+
+    it('excludes hibernation through the CLI retry acknowledgement and refuses a retry once the stop starts', async () => {
+        const id = insertIdleSession('retry-race')
+        const localId = 'retry-me'
+        store.messages.addMessage(id, { role: 'user', content: { type: 'text', text: 'hello' } }, localId)
+        store.messages.setMessagesDeliveryState(id, [localId], 'indeterminate')
+        let accept!: () => void
+        const io = (engine as unknown as { io: { of: () => unknown } }).io
+        io.of = () => ({
+            adapter: { rooms: new Map([[`session:${id}`, new Set(['old-cli'])]]) },
+            to: () => ({ timeout: () => ({ emit: (_: string, update: { body: { t: string } }, ack: (error: null, responses: Array<{ removed?: boolean; accepted?: boolean }>) => void) => {
+                if (update.body.t === 'cancel-queued-message') ack(null, [{ removed: true }])
+                else accept = () => ack(null, [{ accepted: true }])
+            } }) })
+        })
+        const retry = engine.retryIndeterminateMessage(id, localId)
+        await Promise.resolve()
+        expect(store.messages.lookupQueuedMessage(id, localId).status).toBe('dispatching')
+        expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([])
+        expect(stopCalls).toHaveLength(0)
+        accept()
+        expect(await retry).toEqual({ status: 'retried', localId })
+        expect(store.messages.lookupQueuedMessage(id, localId).status).toBe('queued')
+        store.messages.setMessagesDeliveryState(id, [localId], 'indeterminate')
+        let release!: () => void
+        stopImpl = () => new Promise(resolve => { release = () => resolve('still_alive') })
+        const stopping = engine.hibernateSession(id, { now: later(), hibernateMs: WINDOW })
+        expect(await engine.retryIndeterminateMessage(id, localId)).toEqual({ status: 'retry-unavailable', localId })
+        expect(store.messages.lookupQueuedMessage(id, localId).status).toBe('indeterminate')
+        release()
+        expect(await stopping).toBe('failed')
     })
 
     it('backs off 10 minutes after an unconfirmed stop and clears the marker', async () => {
