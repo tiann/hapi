@@ -367,6 +367,10 @@ export class CodexAppServerClient extends JsonLineParser {
         if (!version || !['codex_cli_rs', 'codex', this.initializedClientName].includes(version[1])) return undefined;
         return [Number(version[2]), Number(version[3])];
     }
+    supportsEffectiveUltrafastLaunch(): boolean {
+        const version = this.catalogVersion();
+        return Boolean(version && (version[0] > 0 || version[1] >= 170));
+    }
     supportsProviderScopedModels(): boolean {
         const version = this.catalogVersion();
         return Boolean(version && (version[0] > 0 || version[1] >= 169));

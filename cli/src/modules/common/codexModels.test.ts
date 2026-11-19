@@ -19,6 +19,7 @@ vi.mock('@/codex/codexAppServerClient', () => ({
             constructorOptions.push(options);
         }
 
+        supportsEffectiveUltrafastLaunch() { return true; }
         async connect(): Promise<void> {}
         async initialize(): Promise<void> {}
         async listModels(): Promise<{ data: unknown[] }> {
@@ -231,4 +232,9 @@ it('does not advertise Ultrafast from a display label without the exact native I
 it.each(['Ultrafast', ' ultrafast '])('preserves the raw native tier ID %s', async id => {
     const { normalizeCodexModel } = await import('./codexModels');
     expect(normalizeCodexModel({ id: 'm', serviceTiers: [{ id, name: 'Ultrafast' }] })?.serviceTiers).toEqual([id]);
+});
+
+it('hides Ultrafast when native execution cannot be verified while preserving Fast', async () => {
+    const { normalizeCodexModel } = await import('./codexModels');
+    expect(normalizeCodexModel({ id: 'eligible', serviceTiers: [{ id: 'ultrafast' }, { id: 'priority', name: 'Fast' }] }, false)?.serviceTiers).toEqual(['priority', 'fast']);
 });

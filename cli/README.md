@@ -29,6 +29,8 @@ Codex sessions offer Standard, Fast (`priority`), and Ultrafast (`ultrafast`).
 Ultrafast appears only when the selected model advertises it in the current
 account catalog; model name or subscription alone is not proof of availability.
 Use `/ultrafast [on|off|status]` in chat or `--service-tier ultrafast` on launch.
+HAPI requires Codex 0.170 or newer to verify Ultrafast execution; older or
+unidentified engines do not offer it and reject explicit requests without changing settings.
 When the returned catalog does not advertise Ultrafast, HAPI switches to
 Standard and emits a system notice after native confirmation. Reported catalog
 RPC failures leave settings unchanged and surface the error. Codex can return

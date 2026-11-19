@@ -180,6 +180,24 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             await recoveryClient.request('thread/settings/update', { threadId: child.thread.id, serviceTier: null });
             expect(state.sessions.get(childSid)?.metadata.codexTierConfirmationPending).toBe(false);
             metadataDelay.mockRestore();
+            // Accepted input must not wait for side-client settings reconciliation.
+            let lookupEntered!: () => void;
+            const lookupStarted = new Promise<void>(resolve => { lookupEntered = resolve; });
+            const lookupGate = new Promise<void>(resolve => { releaseLaunch = resolve; });
+            const stalledSnapshot = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
+                if (this !== third.client && method === 'thread/resume' && (params as { threadId?: string })?.threadId === unsupported.thread.id) {
+                    lookupEntered(); return lookupGate.then(() => originalRequest.call(this, method, params)) as Promise<T>;
+                }
+                return originalRequest.call(this, method, params) as Promise<T>;
+            });
+            extraSpies.push(stalledSnapshot);
+            const accepted = third.client.request<{ turn: { id: string } }>('turn/start', { threadId: unsupported.thread.id,
+                serviceTier: 'priority', input: [{ type: 'text', text: 'Local no-network acceptance test', text_elements: [] }] });
+            await lookupStarted;
+            const result = await Promise.race([accepted, new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Accepted turn blocked on snapshot')), 2_000))]);
+            expect(result.turn.id).toBeTruthy();
+            releaseLaunch(); stalledSnapshot.mockRestore();
+            await third.client.request('turn/interrupt', { threadId: unsupported.thread.id, turnId: result.turn.id }).catch(() => {});
             await configure();
             const unset = await start();
             const unsetThread = unset.runtime.sessions[unset.sessionId].threadId;

@@ -357,6 +357,7 @@ it.each([
         await client.initialize({ clientInfo: { name: 'hapi', version: '1' }, capabilities: { experimentalApi: true } });
         expect(client.supportsProviderScopedModels()).toBe(scoped);
         expect(client.usesStartupModelCatalog()).toBe(startup);
+        expect(client.supportsEffectiveUltrafastLaunch()).toBe(Boolean(userAgent && /^(?:hapi|codex_cli_rs)\/(?:0\.170\.|1\.)/.test(userAgent)));
         const minor = userAgent?.match(/\/0\.(\d+)/)?.[1];
         expect(client.retainsResumeModelProvider()).toBe(Boolean(scoped || (minor && Number(minor) >= 166 && userAgent?.startsWith('hapi/'))));
     } finally { await client.disconnect(); }

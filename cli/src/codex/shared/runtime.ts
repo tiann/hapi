@@ -370,7 +370,11 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     });
     const after = (request: Envelope, response: Envelope, connection: string): Promise<void | Envelope[]> => operation(async () => {
         const turn = nativeTurns.get(key(connection, request)); nativeTurns.delete(key(connection, request));
-        if (turn && !response.error) await turn.root.confirmNativeTurn(turn.params, turn.explicitTier, turn.fallbackNotice);
+        if (turn && !response.error) {
+            // Native acceptance must reach the frontend without waiting for a side-client snapshot.
+            void operation(() => turn.root.confirmNativeTurn(turn.params, turn.explicitTier, turn.fallbackNotice))
+                .catch(error => logger.debug('[Codex shared] native tier reconciliation', error));
+        }
         const reservation = reservations.get(key(connection, request)); reservations.delete(key(connection, request));
         if (reservation) {
             if (response.error) {

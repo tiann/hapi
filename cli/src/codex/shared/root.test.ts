@@ -34,6 +34,7 @@ vi.mock('../codexAppServerClient', () => ({
         isInitialized() { return this.initialized; }
         async disconnect() { this.initialized = false; }
         supportsProviderScopedModels() { return false; }
+        supportsEffectiveUltrafastLaunch() { return true; }
         async readConfig() { return { config: { model_provider: 'openai' } }; }
         async listModels() { return { data: [{ id: 'mock', isDefault: true, serviceTiers: [{ id: 'ultrafast' }] }, { id: 'standard-only' }] }; }
         async request(method: string, params: Record<string, unknown> = {}) {
@@ -1618,6 +1619,9 @@ it.each([false, true])('recovers a known thread through settings while input is 
     expect(f.root.needsTierConfirmation).toBe(true);
     expect(f.metadata().codexTierConfirmationPending).toBe(true);
     expect(f.sessionReady).not.toHaveBeenCalled();
+    f.reconnect();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(f.sessionReady).not.toHaveBeenCalled();
     await expect(f.rpc.get(RPC_METHODS.ImplementCodexPlan)!({ planId: 'pending' })).rejects.toThrow('Confirm the service tier');
     f.submit('held until confirmed', 'pending-tier-input');
     expect(f.native.queue).toHaveLength(0);
@@ -1626,6 +1630,8 @@ it.each([false, true])('recovers a known thread through settings while input is 
     expect(f.root.needsTierConfirmation).toBe(false);
     expect(f.sessionReady).toHaveBeenCalledOnce();
     await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+    f.reconnect();
+    await vi.waitFor(() => expect(f.sessionReady).toHaveBeenCalledTimes(2));
 });
 it('reconciles a persisted pending confirmation from an authoritative cold-resume Standard snapshot', async () => {
     const f = await fixture();

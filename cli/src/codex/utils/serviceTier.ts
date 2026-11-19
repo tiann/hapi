@@ -40,13 +40,16 @@ export function resumeTierContext(params: Record<string, unknown>, saved: Record
 }
 
 export async function isUltrafastAvailable(
-    client: Pick<CodexAppServerClient, 'listModels' | 'readConfig'> & Partial<Pick<CodexAppServerClient, 'supportsProviderScopedModels'>>,
+    client: Pick<CodexAppServerClient, 'listModels' | 'readConfig'> & Partial<Pick<CodexAppServerClient, 'supportsProviderScopedModels' | 'supportsEffectiveUltrafastLaunch'>>,
     model: unknown,
     cwd?: string,
     deadline = Date.now() + 10_000,
     modelProvider?: string,
     catalogProvider?: string,
 ): Promise<boolean> {
+    if (client.supportsEffectiveUltrafastLaunch?.() === false) {
+        throw new Error('Ultrafast requires Codex 0.170 or newer to verify execution; settings were not changed');
+    }
     const bounded = async <T>(operation: () => Promise<T>): Promise<T> => {
         const remaining = deadline - Date.now();
         if (remaining <= 0) throw new Error('Codex tier discovery timed out; settings were not changed');

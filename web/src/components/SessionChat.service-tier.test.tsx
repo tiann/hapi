@@ -5,7 +5,8 @@ import type { ReactNode } from 'react'
 import { SessionChat } from './SessionChat'
 import { I18nProvider } from '@/lib/i18n-context'
 import { ToastProvider } from '@/lib/toast-context'
-import type { ApiClient } from '@/api/client'
+import { ApiError, type ApiClient } from '@/api/client'
+import { RPC_TARGET_MISSING_ERROR_CODE } from '@hapi/protocol/rpcMethods'
 import type { Session } from '@/types/api'
 
 vi.mock('@tanstack/react-router', async (importOriginal) => ({
@@ -32,10 +33,10 @@ vi.mock('@/components/AssistantChat/HappyComposer', () => ({ HappyComposer: (pro
     Reset Standard / fast:{String(props.fastAvailable)} / ultra:{String(props.ultrafastAvailable)}
 </button></> }))
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
-    function shell(session: Session, catalog: ReturnType<typeof vi.fn>, setServiceTier: ReturnType<typeof vi.fn>): ReactNode {
+    function shell(session: Session, catalog: ReturnType<typeof vi.fn>, setServiceTier: ReturnType<typeof vi.fn>, sessionCatalog = catalog): ReactNode {
         const api = {
             getMachineCodexModels: catalog,
-            getSessionCodexModels: catalog,
+            getSessionCodexModels: sessionCatalog,
             setServiceTier,
             setModel: vi.fn(async () => { throw new Error('Catalog provider could not be verified. Switch to Standard before changing models.') }),
             fetchTranscriptionProviders: vi.fn(async () => [])
@@ -141,4 +142,17 @@ it('does not offer a tier control solely from an unverified owned Ultrafast cata
     render(shell(session, catalog, vi.fn()));
     await waitFor(() => expect(catalog).toHaveBeenCalled());
     expect(screen.getByRole('button', { name: 'Reset Standard / fast:false / ultra:false' })).toBeDisabled();
+});
+
+it('does not offer Ultrafast from a machine fallback catalog and retains Standard recovery', async () => {
+    const catalog = vi.fn(async () => ({ success: true, models: [{ id: 'gpt-6.2-sol', serviceTiers: ['ultrafast'] }] }));
+    const sessionCatalog = vi.fn(async () => { throw new ApiError('missing', 503, RPC_TARGET_MISSING_ERROR_CODE); });
+    const setTier = vi.fn(async () => ({}));
+    const session = { id: 'tier-session', active: true, model: 'gpt-6.2-sol', serviceTier: 'ultrafast', metadata: {
+        flavor: 'codex', machineId: 'machine', startingMode: 'remote', codexProviderScopedCatalog: true, capabilities: { concurrentClients: true }
+    } } as unknown as Session;
+    render(shell(session, catalog, setTier, sessionCatalog));
+    await waitFor(() => expect(catalog).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: 'Reset Standard / fast:false / ultra:false' }));
+    await waitFor(() => expect(setTier).toHaveBeenCalledWith('tier-session', 'standard'));
 });

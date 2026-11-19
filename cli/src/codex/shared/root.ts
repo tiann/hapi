@@ -200,7 +200,7 @@ export class SharedCodexRoot {
                 .then(() => {
                     // Hub restart loses its ephemeral readiness fence. Replay
                     // it only after native revalidation and completed activation.
-                    if (wasActivated && this.heartbeat && !this.closed && !this.stopping && this.client.isInitialized()) this.session.emitSessionReady();
+                    if (wasActivated && this.heartbeat && !this.needsTierConfirmation && !this.closed && !this.stopping && this.client.isInitialized()) this.session.emitSessionReady();
                 })
                 .catch(error => { logger.debug('[Codex shared] hub resync', error); this.failAttached(); });
         });
@@ -825,7 +825,7 @@ export class SharedCodexRoot {
             const models = []; let cursor: string | undefined;
             do {
                 const response = await this.client.listModels({ includeHidden: record(raw).includeHidden === true, cursor, ...(this.client.supportsProviderScopedModels() && this.modelProvider ? { modelProvider: this.modelProvider } : {}) });
-                models.push(...(response.data ?? []).map(normalizeCodexModel).filter(model => model !== null)); cursor = response.nextCursor ?? undefined;
+                models.push(...(response.data ?? []).map(entry => normalizeCodexModel(entry, this.client.supportsEffectiveUltrafastLaunch())).filter(model => model !== null)); cursor = response.nextCursor ?? undefined;
             } while (cursor);
             return { success: true, models };
         });

@@ -11,6 +11,7 @@ export function useCodexModels(args: {
     preferSession?: boolean
     enabled?: boolean
 }): {
+    catalogSource: 'session' | 'machine' | null
     models: CodexModelSummary[]
     isLoading: boolean
     error: string | null
@@ -26,7 +27,7 @@ export function useCodexModels(args: {
                 throw new Error('API unavailable')
             }
             if (machineId) {
-                return await api.getMachineCodexModels(machineId)
+                return { ...await api.getMachineCodexModels(machineId), catalogSource: 'machine' as const }
             }
             throw new Error('Codex models target unavailable')
         },
@@ -53,11 +54,11 @@ export function useCodexModels(args: {
                 throw new Error('API unavailable')
             }
             try {
-                return await api.getSessionCodexModels(sessionId)
+                return { ...await api.getSessionCodexModels(sessionId), catalogSource: 'session' as const }
             } catch (error) {
                 if (preferSession && machineId && error instanceof ApiError
                     && error.code === RPC_TARGET_MISSING_ERROR_CODE) {
-                    return await api.getMachineCodexModels(machineId)
+                    return { ...await api.getMachineCodexModels(machineId), catalogSource: 'machine' as const }
                 }
                 throw error
             }
@@ -69,6 +70,7 @@ export function useCodexModels(args: {
     const query = preferSession || useLegacySessionFallback ? sessionQuery : machineQuery
 
     return {
+        catalogSource: query.data?.catalogSource ?? null,
         models: query.data?.models ?? [],
         isLoading: query.isLoading,
         error: query.data?.success === false

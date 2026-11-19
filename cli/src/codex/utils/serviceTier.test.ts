@@ -198,3 +198,12 @@ it('uses the explicit execution cwd instead of a saved resume directory for disc
     expect(result.params.cwd).toBe('/requested');
     expect(client.readConfig).toHaveBeenCalledWith({ cwd: '/requested', includeLayers: false });
 });
+
+it.each(['thread/start', 'thread/fork', 'thread/resume'])('rejects unverifiable legacy Ultrafast before native %s', async method => {
+    const client = { retainsResumeModelProvider: () => false, supportsEffectiveUltrafastLaunch: () => false, supportsProviderScopedModels: () => false,
+        readConfig: vi.fn().mockResolvedValue({ config: { model: 'eligible', model_provider: 'openai', service_tier: 'ultrafast' } }),
+        request: vi.fn().mockResolvedValue({ thread: { model: 'eligible', modelProvider: 'openai' } }),
+        listModels: vi.fn().mockResolvedValue({ data: [{ id: 'eligible', serviceTiers: [{ id: 'ultrafast' }] }] }) };
+    await expect(resolveUltrafastLaunch(client, method, { model: 'eligible', serviceTier: 'ultrafast' }, '/project', 'openai')).rejects.toThrow('Codex 0.170');
+    expect(client.listModels).not.toHaveBeenCalled();
+});

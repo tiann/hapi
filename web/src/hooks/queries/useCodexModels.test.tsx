@@ -38,6 +38,7 @@ describe('useCodexModels query scoping', () => {
         }), { wrapper: wrapper(createQueryClient()) })
 
         await waitFor(() => expect(result.result.current.models[0]?.id).toBe('session-model'))
+        expect(result.result.current.catalogSource).toBe('session')
         expect(getSessionCodexModels).toHaveBeenCalledWith('session-1')
         expect(getMachineCodexModels).not.toHaveBeenCalled()
     })
@@ -61,6 +62,7 @@ describe('useCodexModels query scoping', () => {
         }), { wrapper: wrapper(createQueryClient()) })
 
         await waitFor(() => expect(result.result.current.models[0]?.id).toBe('machine-model'))
+        expect(result.result.current.catalogSource).toBe('machine')
         expect(getMachineCodexModels).toHaveBeenCalledTimes(1)
     })
 

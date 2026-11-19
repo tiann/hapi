@@ -65,7 +65,7 @@ function normalizeServiceTiers(value: unknown): string[] | undefined {
     return tokens.size > 0 ? [...tokens] : undefined;
 }
 
-export function normalizeCodexModel(entry: unknown): CodexModelSummary | null {
+export function normalizeCodexModel(entry: unknown, canVerifyUltrafast = true): CodexModelSummary | null {
     if (!entry || typeof entry !== 'object') {
         return null;
     }
@@ -83,7 +83,7 @@ export function normalizeCodexModel(entry: unknown): CodexModelSummary | null {
         defaultReasoningEffort: asNonEmptyString(record.defaultReasoningEffort),
         defaultServiceTier: asNonEmptyString(record.defaultServiceTier),
         supportedReasoningEfforts: normalizeSupportedReasoningEfforts(record.supportedReasoningEfforts),
-        serviceTiers: normalizeServiceTiers(record.serviceTiers)
+        serviceTiers: normalizeServiceTiers(record.serviceTiers)?.filter(tier => canVerifyUltrafast || tier !== 'ultrafast')
     };
 }
 
@@ -181,7 +181,7 @@ async function fetchCodexModelsFromAppServer(includeHidden: boolean): Promise<Co
 
         const response = await client.listModels({ includeHidden });
         return Array.isArray(response.data)
-            ? response.data.map(normalizeCodexModel).filter((model): model is CodexModelSummary => model !== null)
+            ? response.data.map(entry => normalizeCodexModel(entry, client.supportsEffectiveUltrafastLaunch())).filter((model): model is CodexModelSummary => model !== null)
             : [];
     } catch (error) {
         throw new Error(getErrorMessage(error, 'Failed to list Codex models'));
