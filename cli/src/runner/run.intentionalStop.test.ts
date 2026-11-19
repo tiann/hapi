@@ -10,6 +10,7 @@ import type { startRunnerControlServer } from './controlServer'
 // reportSessionChildExited receives after a stop and a later child exit.
 
 const mocks = vi.hoisted(() => ({
+    setRPCHandlers: vi.fn(),
     controlServer: vi.fn(),
     readRuntimes: vi.fn(),
     findRuntime: vi.fn(),
@@ -75,7 +76,7 @@ vi.mock('@/api/api', () => ({
         create: async () => ({
             getOrCreateMachine: async () => ({ id: 'machine-1' }),
             machineSyncClient: () => ({
-                setRPCHandlers: vi.fn(),
+                setRPCHandlers: mocks.setRPCHandlers,
                 connect: vi.fn(),
                 shutdown: vi.fn(),
                 updateRunnerState: async () => {},
@@ -103,6 +104,7 @@ describe('runner intentional-stop marker cleanup', () => {
     let runnerPromise: Promise<void>
     let home: string
     let captured: Error
+    let machineStop: (id: string, opts: { processStartMarker: string }) => Promise<string>
 
     beforeAll(async () => {
         home = mkdtempSync(join(tmpdir(), 'hapi-intentional-stop-'))
@@ -122,10 +124,12 @@ describe('runner intentional-stop marker cleanup', () => {
         // 'sess-gone' and the generation probe verifies it as alive.
         writeFileSync(`${configuration.runnerStateFile}.resume-processes.json`, JSON.stringify([
             { requestedSessionId: 'reused-at-start', pid: 5101, processStartMarker: 'previous-generation' },
+            ...[6110, 6111].map(pid => ({ requestedSessionId: `recovered-${pid}`, confirmedSessionId: `recovered-${pid}`, pid, processStartMarker: 'generation', flavor: 'claude' })),
             { requestedSessionId: 'sess-gone', pid: PID_GONE, processStartMarker: 'generation' },
         ]))
         runnerPromise = startRunner()
-        await vi.waitFor(() => expect(handlers.stopSession).toBeTypeOf('function'))
+        await vi.waitFor(() => expect(mocks.setRPCHandlers).toHaveBeenCalled())
+        machineStop = mocks.setRPCHandlers.mock.calls[0]![0].stopSession
     })
 
     afterAll(async () => {
@@ -179,6 +183,22 @@ describe('runner intentional-stop marker cleanup', () => {
         await confirmSpawn(spawn, 'launch-context', child.pid)
         expect(mocks.spawnHappyCLI.mock.calls[0]?.[1].env.HAPI_RUNNER_REPLAYABLE_LAUNCH).toBe(token ? '0' : '1')
         child.emit('exit', 0, null)
+    })
+
+    it.each([6110, 6111])('can immediately wake a confirmed generation-bound stop of recovered PID %i', async pid => {
+        const id = `recovered-${pid}`
+        const options = { directory: home, agent: 'claude' as const, existingSessionId: id }
+        expect(await handlers.spawnSession(options)).toEqual({ type: 'success', sessionId: id })
+        expect(mocks.spawnHappyCLI).not.toHaveBeenCalled()
+        if (pid === 6111) mocks.isProcessAlive.mockImplementation(candidate => candidate !== pid)
+        expect(await machineStop(`PID-${pid}`, { processStartMarker: 'generation' })).toBe(pid === 6111 ? 'already_gone' : 'stopped')
+        const replacement = makeFakeChild(pid + 100)
+        mocks.spawnHappyCLI.mockReturnValue(replacement)
+        const wake = handlers.spawnSession(options)
+        await confirmSpawn(wake, id, replacement.pid)
+        expect(await wake).toEqual({ type: 'success', sessionId: id })
+        expect(mocks.spawnHappyCLI).toHaveBeenCalledTimes(1)
+        replacement.emit('exit', 0, null)
     })
 
     it('reports a reused pid unexpected exit after a stop that returned already_gone', async () => {

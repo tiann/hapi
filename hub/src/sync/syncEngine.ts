@@ -2455,6 +2455,7 @@ export class SyncEngine {
         const session = this.getSession(sessionId)
         if (!session?.active) throw new AttachmentCheckError(false)
         const metadata = session.metadata
+        if (!required && metadata?.flavor === 'codex' && metadata.capabilities?.concurrentClients === true) return
         let valid: boolean
         try {
             const files = attachments.map(({ path, size }) => ({ path, size }))
@@ -6708,9 +6709,14 @@ export class SyncEngine {
         if (access.session.metadata?.capabilities?.concurrentClients) {
             return { type: 'error', message: 'Shared sessions attach without handoff', code: 'control_mode_not_applicable' }
         }
-        if (!access.session.active) {
+        const finishHandoff = async (): Promise<LocalHandoffResult> => {
+            if (this.getSessionByNamespace(sessionId, namespace)?.metadata?.hibernation) {
+                const preparation = await this.prepareLocalResume(sessionId, namespace)
+                if (preparation.type === 'error') return { type: 'error', message: preparation.message, code: 'handoff_failed' }
+            }
             return { type: 'success' }
         }
+        if (!access.session.active || access.session.metadata?.hibernation) return finishHandoff()
 
         if (access.session.agentState?.controlledByUser === true && !access.session.metadata?.capabilities?.concurrentClients) {
             return {
@@ -6739,7 +6745,7 @@ export class SyncEngine {
             }
         }
 
-        return { type: 'success' }
+        return finishHandoff()
     }
 
     private recoverClaudeSessionIdFromMessages(sessionId: string, namespace: string): string | null {

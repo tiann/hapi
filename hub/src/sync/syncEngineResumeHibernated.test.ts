@@ -204,6 +204,22 @@ describe('SyncEngine resume of hibernated sessions', () => {
         await wake
     })
 
+    it('reserves local bootstrap when an active-snapshot handoff waits for hibernation', async () => {
+        const id = await hibernatedSession('handoff-stop')
+        await engine.resumeSession(id, NAMESPACE)
+        let release!: () => void
+        gateway().stopRunnerSession = () => new Promise(resolve => { release = () => resolve('stopped') })
+        const stop = engine.hibernateSession(id, { now: Date.now() + 3 * HOUR, hibernateMs: WINDOW })
+        expect(engine.getSession(id)?.active).toBe(true)
+        const local = engine.handoffSessionToLocal(id, NAMESPACE)
+        for (let i = 0; !release && i < 20; i++) await Promise.resolve()
+        release()
+        expect(await stop).toBe('hibernated')
+        expect(await local).toEqual({ type: 'success' })
+        expect(await engine.resumeSession(id, NAMESPACE)).toMatchObject({ type: 'error', code: 'resume_unavailable' })
+        expect(engine.getSession(id)?.metadata?.hibernation?.localResumeUntil).toBeGreaterThan(Date.now())
+    })
+
     it('waits for a remote wake before granting local preparation', async () => {
         const id = await hibernatedSession('race-local')
         let finish!: () => void
@@ -582,6 +598,19 @@ describe('SyncEngine resume of hibernated sessions', () => {
             attachments: [{ id: 'a', path: '/staged', filename: 'a', size: 4, mimeType: 'text/plain' }]
         })
         expect(store.messages.getFirstMessages(session.id, 1)[0]?.localId).toBe('existing-worker-upload')
+    })
+
+    it('accepts preserved uploads on an ordinary shared Codex resume', async () => {
+        const { id } = cache().getOrCreateSession('shared-uploads', { path: '/tmp', host: 'localhost',
+            flavor: 'codex', capabilities: { concurrentClients: true } }, null, NAMESPACE)
+        engine.handleSessionAlive({ sid: id, time: Date.now() })
+        gateway().validateSessionUploads = async () => false
+        const payload = { text: 'read', localId: 'preserved', attachments: [
+            { id: 'a', path: '/staged', filename: 'a', size: 4, mimeType: 'text/plain' }
+        ] }
+        await engine.sendMessage(id, payload)
+        expect(store.messages.getFirstMessages(id, 1)[0]?.localId).toBe('preserved')
+        await expect(engine.sendMessage(id, { ...payload, localId: 'required' }, true)).rejects.toThrow()
     })
 
     it('asks the resumed worker about staged attachments before accepting a REST message', async () => {

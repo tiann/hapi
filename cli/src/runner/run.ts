@@ -158,8 +158,8 @@ export function releaseRecoveredSpawnDedupe(
 ): void {
   const existingSessionId = existingSessionIdByChildPid.get(pid);
   if (!existingSessionId) return;
-  spawnSession.onChildExited(existingSessionId);
   existingSessionIdByChildPid.delete(pid);
+  if (![...existingSessionIdByChildPid.values()].includes(existingSessionId)) spawnSession.onChildExited(existingSessionId);
 }
 
 export async function startRunner(options: { workspaceRoots?: string[] } = {}): Promise<void> {
@@ -1756,10 +1756,21 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       sessionId: string,
       opts?: { processStartMarker?: string }
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
+      const pid = opts?.processStartMarker && sessionId.startsWith('PID-') ? Number(sessionId.slice(4)) : undefined;
+      const recovered = pid !== undefined && !pidToTrackedSession.get(pid)?.childProcess
+        ? persistedResumeProcesses.get(pid) : undefined;
       const intentional = markIntentionalStop(sessionId);
       const terminated = new Set<number>();
       try {
-        return await attemptStopSession(sessionId, opts, terminated);
+        const status = await attemptStopSession(sessionId, opts, terminated);
+        if (pid !== undefined && recovered && recovered.processStartMarker === opts?.processStartMarker
+          && persistedResumeProcesses.get(pid) === recovered && existingSessionIdByChildPid.get(pid) === recovered.requestedSessionId
+          && (status === 'already_gone' || (status === 'stopped' && terminated.has(pid)))) {
+          rememberVerifiedExit(recovered.requestedSessionId);
+          if (recovered.confirmedSessionId) rememberVerifiedExit(recovered.confirmedSessionId);
+          discardStaleProcess(pid);
+        }
+        return status;
       } finally {
         for (const pid of intentional.marked) {
           if (!(intentional.withExitListener.has(pid) && terminated.has(pid))) intentionallyStoppedPids.delete(pid);

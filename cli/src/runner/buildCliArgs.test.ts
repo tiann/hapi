@@ -655,8 +655,11 @@ describe('releaseRecoveredSpawnDedupe', () => {
             return { type: 'success' as const, sessionId: 'fresh-hapi-session' }
         })
         dedupe.recoverChild('fresh-hapi-session', { type: 'success', sessionId: 'fresh-hapi-session' })
-        const recovered = new Map([[123, 'fresh-hapi-session']])
+        const recovered = new Map([[122, 'fresh-hapi-session'], [123, 'fresh-hapi-session']])
 
+        releaseRecoveredSpawnDedupe(122, recovered, dedupe)
+        await dedupe({ directory: '/tmp', existingSessionId: 'fresh-hapi-session' })
+        expect(calls).toBe(0)
         releaseRecoveredSpawnDedupe(123, recovered, dedupe)
         await dedupe({ directory: '/tmp', existingSessionId: 'fresh-hapi-session' })
 
