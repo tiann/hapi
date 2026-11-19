@@ -26,8 +26,9 @@ declare const self: ServiceWorkerGlobalScope & {
 
 const precacheManifest = self.__WB_MANIFEST
 const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0'
+const SW_SCOPE = self.registration?.scope
 const STATIC_CACHE_VERSION = computeStaticCacheVersion(APP_VERSION, precacheManifest)
-const SYNTAX_GRAMMARS_CACHE_NAME = getSyntaxGrammarsCacheName(STATIC_CACHE_VERSION)
+const SYNTAX_GRAMMARS_CACHE_NAME = getSyntaxGrammarsCacheName(STATIC_CACHE_VERSION, SW_SCOPE)
 
 type PushPayload = {
     title: string

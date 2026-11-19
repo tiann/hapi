@@ -87,17 +87,24 @@ export function usePwaUpdate() {
     const [needRefresh, setNeedRefresh] = useState(false)
     const updateSWRef = useRef<((reloadPage?: boolean) => Promise<void>) | null>(null)
     const registrationRef = useRef<ServiceWorkerRegistration | null>(null)
-    const pendingUpdateCheckRef = useRef(false)
+    const pendingUpdateResolversRef = useRef<Array<(ok: boolean) => void>>([])
     const cleanupRef = useRef<(() => void) | null>(null)
 
     useEffect(() => {
         if (typeof window !== 'undefined') {
             const appVersion = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0'
+            let scope: string | undefined
+            try {
+                scope = new URL(import.meta.env.BASE_URL || '/', window.location.origin).href
+            } catch {
+                scope = undefined
+            }
             const serviceWorker = typeof navigator !== 'undefined' && 'serviceWorker' in navigator
                 ? navigator.serviceWorker
                 : null
             void cleanupClientStaticCachesOnVersionChange({
                 appVersion,
+                scope,
                 storage: getSafeLocalStorage(),
                 cacheStorage: getSafeCacheStorage(),
                 serviceWorker,
@@ -116,19 +123,29 @@ export function usePwaUpdate() {
                 cleanupRef.current = null
                 registrationRef.current = registration ?? null
 
+                const resolvers = pendingUpdateResolversRef.current.splice(0)
                 if (!registration) {
+                    for (const resolve of resolvers) resolve(false)
                     return
                 }
 
-                if (pendingUpdateCheckRef.current) {
-                    pendingUpdateCheckRef.current = false
-                    void registration.update().catch(() => {})
+                if (resolvers.length > 0) {
+                    void registration.update()
+                        .then(() => {
+                            for (const resolve of resolvers) resolve(true)
+                        })
+                        .catch(() => {
+                            for (const resolve of resolvers) resolve(false)
+                        })
                 }
 
                 cleanupRef.current = setupRegistrationUpdateChecks(registration)
             },
             onRegisterError(error) {
                 console.error('SW registration error:', error)
+                for (const resolve of pendingUpdateResolversRef.current.splice(0)) {
+                    resolve(false)
+                }
             },
         })
 
@@ -138,7 +155,9 @@ export function usePwaUpdate() {
             cleanupRef.current?.()
             cleanupRef.current = null
             registrationRef.current = null
-            pendingUpdateCheckRef.current = false
+            for (const resolve of pendingUpdateResolversRef.current.splice(0)) {
+                resolve(false)
+            }
             updateSWRef.current = null
         }
     }, [])
@@ -147,26 +166,47 @@ export function usePwaUpdate() {
         void requestPwaUpdateReload(updateSWRef.current)
     }, [])
 
-    const checkForUpdates = useCallback(() => {
-        const registration = registrationRef.current
-        if (registration) {
-            pendingUpdateCheckRef.current = false
-            void registration.update().catch(() => {})
-            return
+    const checkForUpdates = useCallback(async (): Promise<boolean> => {
+        if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
+            return false
         }
 
-        pendingUpdateCheckRef.current = true
-        if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator && typeof navigator.serviceWorker.getRegistration === 'function') {
-            void navigator.serviceWorker.getRegistration()
-                .then((existing) => {
-                    if (existing) {
-                        pendingUpdateCheckRef.current = false
-                        return existing.update()
-                    }
-                    return undefined
-                })
-                .catch(() => {})
+        const registration = registrationRef.current
+        if (registration) {
+            try {
+                await registration.update()
+                return true
+            } catch {
+                return false
+            }
         }
+
+        if (typeof navigator.serviceWorker.getRegistration === 'function') {
+            try {
+                const existing = await navigator.serviceWorker.getRegistration()
+                const resolved = existing ?? registrationRef.current
+                if (resolved) {
+                    registrationRef.current = resolved
+                    await resolved.update()
+                    return true
+                }
+            } catch {
+                return false
+            }
+        }
+
+        if (registrationRef.current) {
+            try {
+                await registrationRef.current.update()
+                return true
+            } catch {
+                return false
+            }
+        }
+
+        return await new Promise<boolean>((resolve) => {
+            pendingUpdateResolversRef.current.push(resolve)
+        })
     }, [])
 
     return { needRefresh, reload, checkForUpdates }

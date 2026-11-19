@@ -40,7 +40,7 @@ import { RunnerVersionSkewBanner } from '@/components/RunnerVersionSkewBanner'
 import { LoadingState } from '@/components/LoadingState'
 import { ToastContainer } from '@/components/ToastContainer'
 import { PwaUpdateProvider, usePwaUpdateContext } from '@/lib/pwa-update-context'
-import { getSafeLocalStorage, shouldCheckSwUpdateForHubHealth } from '@/lib/swStaticCache'
+import { getSafeLocalStorage, recordHubWebBuildId, shouldCheckSwUpdateForHubHealth } from '@/lib/swStaticCache'
 import { ToastProvider, useAddToast } from '@/lib/toast-context'
 import { getNotificationClickHref, NOTIFICATION_CLICK_ACK_TYPE } from '@/lib/notificationClick'
 import type { SyncEvent } from '@/types/api'
@@ -101,14 +101,19 @@ function AppInner() {
                 }
                 setTitleSuggestionAvailable(health.capabilities?.titleSuggestion === true)
                 const appVersion = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0'
+                const storage = getSafeLocalStorage()
                 if (shouldCheckSwUpdateForHubHealth({
                     baseUrl,
                     windowOrigin: window.location.origin,
                     appVersion,
                     health,
-                    storage: getSafeLocalStorage(),
+                    storage,
                 })) {
-                    checkForUpdates()
+                    void checkForUpdates().then((succeeded) => {
+                        if (succeeded) {
+                            recordHubWebBuildId(storage, health.webBuildId)
+                        }
+                    })
                 }
             })
             .catch(() => {

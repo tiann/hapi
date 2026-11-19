@@ -7,6 +7,7 @@ import {
     setupRegistrationUpdateChecks,
     usePwaUpdate,
 } from '@/hooks/usePwaUpdate'
+import { getSyntaxGrammarsCacheName } from '@/lib/swStaticCache'
 
 const registerSWMock = vi.fn()
 const serviceWorkerListeners = new Map<string, Set<EventListener>>()
@@ -244,19 +245,27 @@ describe('usePwaUpdate', () => {
     })
 
     it('cleans outdated client static caches on startup when app version changes and triggers registration.update on checkForUpdates', async () => {
+        const scope = new URL(import.meta.env.BASE_URL || '/', window.location.origin).href
+        const oldCache = getSyntaxGrammarsCacheName('0.36.4-deadbeef', scope)
+        const currentCache = getSyntaxGrammarsCacheName(`${__APP_VERSION__}-keep1234`, scope)
         window.localStorage.setItem('hapi:static-cache-version', '0.36.4')
         const deleteMock = vi.fn(async () => true)
         const keysMock = vi.fn(async () => [
             'syntax-grammars',
-            'syntax-grammars-0.36.4-deadbeef',
-            `syntax-grammars-${__APP_VERSION__}-keep1234`,
+            oldCache,
+            currentCache,
             'api-sessions',
         ])
+        const openMock = vi.fn(async () => ({
+            keys: vi.fn(async () => [{ url: `${scope}assets/shiki-old.js` }]),
+            delete: vi.fn(async () => true),
+        }))
         Object.defineProperty(window, 'caches', {
             configurable: true,
             value: {
                 keys: keysMock,
                 delete: deleteMock,
+                open: openMock,
             },
         })
 
@@ -272,31 +281,50 @@ describe('usePwaUpdate', () => {
         })
 
         expect(deleteMock).toHaveBeenCalledWith('syntax-grammars')
-        expect(deleteMock).toHaveBeenCalledWith('syntax-grammars-0.36.4-deadbeef')
-        expect(deleteMock).not.toHaveBeenCalledWith(`syntax-grammars-${__APP_VERSION__}-keep1234`)
+        expect(deleteMock).toHaveBeenCalledWith(oldCache)
+        expect(deleteMock).not.toHaveBeenCalledWith(currentCache)
         expect(deleteMock).not.toHaveBeenCalledWith('api-sessions')
         expect(window.localStorage.getItem('hapi:static-cache-version')).toBe(__APP_VERSION__)
 
-        act(() => {
-            result.current.checkForUpdates()
+        await act(async () => {
+            await expect(result.current.checkForUpdates()).resolves.toBe(true)
         })
         expect(registration.update).toHaveBeenCalledTimes(1)
     })
 
-    it('flushes a pending checkForUpdates call once onRegistered receives the registration', () => {
+    it('returns false from checkForUpdates when registration.update rejects', async () => {
+        const registration = {
+            update: vi.fn().mockRejectedValue(new Error('503')),
+        } as unknown as ServiceWorkerRegistration
+
+        const { result } = renderHook(() => usePwaUpdate())
+
+        act(() => {
+            capturedOptions.onRegistered?.(registration)
+        })
+
+        await act(async () => {
+            await expect(result.current.checkForUpdates()).resolves.toBe(false)
+        })
+    })
+
+    it('flushes a pending checkForUpdates call once onRegistered receives the registration', async () => {
         const registration = {
             update: vi.fn().mockResolvedValue(undefined),
         } as unknown as ServiceWorkerRegistration
 
         const { result } = renderHook(() => usePwaUpdate())
 
-        act(() => {
-            result.current.checkForUpdates()
+        let pendingPromise!: Promise<boolean>
+        await act(async () => {
+            pendingPromise = result.current.checkForUpdates()
+            await Promise.resolve()
         })
         expect(registration.update).not.toHaveBeenCalled()
 
-        act(() => {
+        await act(async () => {
             capturedOptions.onRegistered?.(registration)
+            await expect(pendingPromise).resolves.toBe(true)
         })
         expect(registration.update).toHaveBeenCalledTimes(1)
     })
