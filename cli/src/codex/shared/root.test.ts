@@ -1813,8 +1813,9 @@ it.each(['ultrafast', 'priority'])('rechecks a selected notification during nati
     if (selected === 'ultrafast') expect(f.events).toHaveBeenCalledWith({ type: 'message', message: 'Codex did not apply Ultrafast; changed to Standard.' });
 });
 
-it('bounds discovery, acknowledgement and effective confirmation by one deadline', async () => {
+it.each(['item/tool/requestUserInput', 'item/commandExecution/requestApproval'])('bounds confirmation while keeping running-turn %s visible', async method => {
     const f = await fixture(); await f.root.activate();
+    f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'running' } }); await f.drain();
     const original = f.root.client.request.bind(f.root.client);
     const originalModels = f.root.client.listModels.bind(f.root.client);
     vi.useFakeTimers();
@@ -1831,6 +1832,13 @@ it('bounds discovery, acknowledgement and effective confirmation by one deadline
         expect(await pending).toContain('confirmation is pending');
         expect(f.metadata().codexTierConfirmationPending).toBe(true);
         expect(f.metadata().codexServiceTierExplicit).toBe(false);
+        f.native.serverRequest({ id: 'approval-in-recovery', method, params: { threadId: 'thread', turnId: 'running', itemId: 'pending-tool',
+            command: 'echo hello', cwd: '/tmp', questions: [{ id: 'choice', header: 'Choose', question: 'Which?', options: [{ label: 'A', description: 'A' }] }] } });
+        await vi.waitFor(() => expect(Object.keys(f.state().requests ?? {})).toHaveLength(1));
+        const requestId = Object.keys(f.state().requests!)[0];
+        await f.rpc.get(RPC_METHODS.Permission)!({ id: requestId, approved: true, answers: { choice: ['A'] } });
+        await vi.waitFor(() => expect(f.native.responses.some(r => r.id === 'approval-in-recovery')).toBe(true));
+        expect(f.root.needsTierConfirmation).toBe(true);
         f.submit('held for recovery', 'deadline-held-input');
         await vi.advanceTimersByTimeAsync(10_000);
         expect(f.native.queue).toHaveLength(0);
@@ -1840,6 +1848,38 @@ it('bounds discovery, acknowledgement and effective confirmation by one deadline
         await vi.advanceTimersByTimeAsync(1);
         expect(f.metadata().codexTierConfirmationPending).toBe(false);
         await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+    } finally { vi.useRealTimers(); }
+});
+
+it.each(['initial', 'effective'])('discards a stale %s snapshot failure after a newer Standard confirmation', async phase => {
+    const f = await fixture(); await f.root.activate();
+    const original = f.root.client.request.bind(f.root.client);
+    let pendingSnapshot!: () => void;
+    const entered = new Promise<void>(resolve => { pendingSnapshot = resolve; });
+    let reads = 0;
+    vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/resume') {
+            reads++;
+            if (phase === 'effective' && reads === 1) {
+                f.native.settings = { ...f.native.settings, serviceTier: 'ultrafast' };
+                f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: f.native.settings });
+                return { model: 'mock', serviceTier: null } as never;
+            }
+            if (reads === (phase === 'effective' ? 2 : 1)) { pendingSnapshot(); return await new Promise<never>(() => {}); }
+        }
+        return original(method, params);
+    });
+    vi.useFakeTimers();
+    try {
+        const stale = f.root.confirmNativeTurn({ serviceTier: 'ultrafast' }, true);
+        await entered;
+        await f.root.applySettings({ serviceTier: 'standard' });
+        expect(f.root.hasConfirmedStandardTier).toBe(true);
+        f.events.mockClear();
+        await vi.advanceTimersByTimeAsync(25_000); await stale;
+        expect(f.root.needsTierConfirmation).toBe(false);
+        expect(f.metadata().codexTierConfirmationPending).not.toBe(true);
+        expect(f.events).not.toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('confirmation is pending') }));
     } finally { vi.useRealTimers(); }
 });
 
