@@ -438,6 +438,65 @@ describe('session model', () => {
         expect(refs).toEqual(healthRefs)
     })
 
+    // Regression (bot review, hapi#238): a deleting merge's final metadata
+    // pass re-read the TARGET session fresh but reused a SOURCE snapshot
+    // taken before the scratchlist-attachment transfer step, which can
+    // await real file I/O. An issue/PR link landing on the source session
+    // during that window used to be silently discarded the moment the
+    // source row was deleted right after this merge.
+    it('preserves a source externalRefs link acknowledged while the merge was mid-flight', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const lateRef = [{
+            kind: 'github_issue' as const,
+            repo: 'tiann/hapi',
+            number: 235,
+            url: 'https://github.com/tiann/hapi/issues/235',
+            linkedAt: 1
+        }]
+
+        const oldSession = cache.getOrCreateSession(
+            'session-merge-midflight-old',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+        const newSession = cache.getOrCreateSession(
+            'session-merge-midflight-new',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+
+        // Simulates a link_issue/link_pr write landing on oldSessionId
+        // during the real code's scratchlist-attachment I/O await — the
+        // exact window between the merge's initial snapshot and its final
+        // metadata-merge pass.
+        const originalTransfer = store.scratchlist.transfer.bind(store.scratchlist)
+        store.scratchlist.transfer = (fromSessionId, toSessionId) => {
+            const result = originalTransfer(fromSessionId, toSessionId)
+            const row = store.sessions.getSessionByNamespace(fromSessionId, 'default')
+            if (row) {
+                store.sessions.updateSessionMetadata(
+                    fromSessionId,
+                    { ...(row.metadata as Record<string, unknown>), externalRefs: lateRef },
+                    row.metadataVersion,
+                    'default',
+                    { touchUpdatedAt: false }
+                )
+            }
+            return result
+        }
+
+        await cache.mergeSessions(oldSession.id, newSession.id, 'default')
+
+        const merged = store.sessions.getSessionByNamespace(newSession.id, 'default')
+        const refs = (merged?.metadata as { externalRefs?: unknown })?.externalRefs
+        expect(refs).toEqual(lateRef)
+    })
+
     it('retains source session when metadata merge exhausts version retries', async () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []

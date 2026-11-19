@@ -2269,12 +2269,22 @@ export class SessionCache {
         // source contributes name/summary/path/etc. Recomputing per attempt also
         // picks up a newer lastModelError that landed on newSessionId between the
         // initial read and this write (version-mismatch retry).
+        //
+        // Also re-read the SOURCE session fresh, not the `oldStored` snapshot
+        // taken at the very top of this function (review finding, hapi#238):
+        // oldSessionId's own row is still live here — the scratchlist
+        // transfer above can await real file I/O, and a link_issue/link_pr
+        // write landing on oldSessionId during that wait would otherwise be
+        // silently discarded the moment mergeSessions deletes that row right
+        // after this loop, since nothing would have re-read it since the
+        // pre-I/O snapshot.
         for (let attempt = 0; attempt < 2; attempt += 1) {
             const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
             if (!latest) break
+            const freshOld = this.store.sessions.getSessionByNamespace(oldSessionId, namespace)
             let mergedMetadata: unknown | null
             try {
-                mergedMetadata = this.mergeSessionMetadata(oldStored.metadata, latest.metadata)
+                mergedMetadata = this.mergeSessionMetadata(freshOld?.metadata ?? oldStored.metadata, latest.metadata)
             } catch (error) {
                 if (!(error instanceof ExternalRefsMergeCapExceededError)) throw error
                 // mergeSessions deletes oldSessionId right after this —
