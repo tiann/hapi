@@ -1,8 +1,8 @@
-import { mergeReadState } from '@hapi/protocol'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import type { Session } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
+import { mergeSessionDetailSnapshot } from '@/lib/sessionPatch'
 
 export function isSessionNotFoundError(error: unknown): boolean {
     return error instanceof Error
@@ -37,14 +37,7 @@ export function useSession(api: ApiClient | null, sessionId: string | null): {
             }
             const response = await api.getSession(sessionId)
             const current = queryClient.getQueryData<{ session: Session }>(queryKeys.session(sessionId))?.session
-            // A GET can finish after SSE has already advanced the cached state.
-            const newerAgentState = current && current.agentStateVersion > response.session.agentStateVersion
-                ? { agentState: current.agentState, agentStateVersion: current.agentStateVersion }
-                : undefined
-            return { ...response, session: { ...response.session, ...newerAgentState,
-                contentRevision: Math.max(current?.contentRevision ?? 0, response.session.contentRevision ?? 0),
-                readState: mergeReadState(current?.readState, response.session.readState)
-            } }
+            return { ...response, session: mergeSessionDetailSnapshot(current, response.session) }
         },
         enabled: Boolean(api && sessionId),
         staleTime: SESSION_DETAIL_STALE_TIME_MS,

@@ -28,7 +28,8 @@ import { clearMessageWindow, getMessageWindowState, ingestIncomingMessages, mark
 import {
     applySessionDetailPatch,
     isNewerVersionedPatch,
-    isRenderIrrelevantSessionPatch
+    isRenderIrrelevantSessionPatch,
+    mergeSessionDetailSnapshot
 } from '@/lib/sessionPatch'
 
 // Pure patch-application rules live in @/lib/sessionPatch (React-free, shared
@@ -475,8 +476,17 @@ export function useSSE(options: {
 
                 const existingIndex = previous.sessions.findIndex((item) => item.id === session.id)
                 const existing = existingIndex >= 0 ? previous.sessions[existingIndex] : undefined
+                const newerAgentState = existing && existing.agentStateVersion > session.agentStateVersion
+                    ? {
+                        agentStateVersion: existing.agentStateVersion,
+                        pendingRequestsCount: existing.pendingRequestsCount,
+                        pendingRequestKinds: existing.pendingRequestKinds,
+                        pendingRequests: existing.pendingRequests
+                    }
+                    : undefined
                 const summary = {
                     ...toSessionSummary(session),
+                    ...newerAgentState,
                     attachedJob: existing?.attachedJob ?? null,
                     attachedJobUpdatedAt: existing?.attachedJobUpdatedAt ?? 0,
                     contentRevision: Math.max(existing?.contentRevision ?? 0, session.contentRevision ?? 0),
@@ -759,11 +769,9 @@ export function useSSE(options: {
                     clearMessageWindow(event.sessionId)
                 } else if (isSessionRecord(event.data) && event.data.id === event.sessionId) {
                     const incoming = event.data
-                    queryClient.setQueryData<SessionResponse>(queryKeys.session(event.sessionId), previous => ({ session: {
-                        ...incoming,
-                        contentRevision: Math.max(previous?.session.contentRevision ?? 0, incoming.contentRevision ?? 0),
-                        readState: mergeReadState(previous?.session.readState, incoming.readState)
-                    } }))
+                    queryClient.setQueryData<SessionResponse>(queryKeys.session(event.sessionId), previous => ({
+                        session: mergeSessionDetailSnapshot(previous?.session, incoming)
+                    }))
                     upsertSessionSummary(event.data)
                 } else {
                     const patch = getSessionPatch(event.data)

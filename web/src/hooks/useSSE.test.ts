@@ -446,6 +446,38 @@ describe('useSSE user-activity ordering', () => {
         unmount()
     })
 
+    it('preserves the issued question across an older full snapshot, then accepts its removal', () => {
+        const { queryClient, unmount } = renderUseSSE()
+        const id = 'session-1'
+        const detail = queryKeys.session(id)
+        const initial = {
+            ...makeSummary(), namespace: 'default', seq: 1, createdAt: 1, thinkingAt: 0,
+            agentStateVersion: 1, agentState: {}
+        }
+        const pending = { requests: { question: { tool: 'request_user_input', arguments: {}, instanceId: 'issued' } } }
+        const deliver = (data: unknown) => act(() => {
+            FakeEventSource.instances[0]?.simulateMessage({ type: 'session-updated', sessionId: id, data })
+        })
+        queryClient.setQueryData(queryKeys.sessions, { sessions: [makeSummary()] })
+        deliver(initial)
+        deliver({ agentState: { version: 2, value: pending } })
+        expect(queryClient.getQueryData(detail)).toMatchObject({ session: { agentStateVersion: 2, agentState: pending } })
+
+        deliver({ ...initial, pinned: true })
+        expect(queryClient.getQueryData(detail)).toMatchObject({
+            session: { pinned: true, agentStateVersion: 2, agentState: pending }
+        })
+        expect(queryClient.getQueryData(queryKeys.sessions)).toMatchObject({
+            sessions: [{ pinned: true, agentStateVersion: 2, pendingRequestsCount: 1 }]
+        })
+
+        deliver({ ...initial, agentStateVersion: 3, agentState: { requests: {} } })
+        expect(queryClient.getQueryData(detail)).toMatchObject({
+            session: { agentStateVersion: 3, agentState: { requests: {} } }
+        })
+        unmount()
+    })
+
     it('preserves the user timestamp through a stale full-session event', () => {
         const { queryClient, unmount } = renderUseSSE()
         queryClient.setQueryData(queryKeys.sessions, { sessions: [makeSummary({ id: 'session-1', lastUserMessageAt: 9_000 })] })
