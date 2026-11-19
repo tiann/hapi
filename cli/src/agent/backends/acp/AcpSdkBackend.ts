@@ -317,9 +317,9 @@ export class AcpSdkBackend implements AgentBackend {
         });
 
         if (this.options.elicitationForm) {
-            this.transport.registerRequestHandler('elicitation/create', async (params) => {
-                return await this.handleElicitationRequest(params);
-            });
+            this.transport.registerRequestHandler('elicitation/create', (params, _id, signal) => {
+                return this.handleElicitationRequest(params, signal);
+            }, { cancellable: this.options.flavor === 'opencode' });
         }
 
         const response = await withRetry(
@@ -1121,7 +1121,7 @@ export class AcpSdkBackend implements AgentBackend {
         }
     }
 
-    private async handleElicitationRequest(params: unknown): Promise<FormElicitationResponse> {
+    private async handleElicitationRequest(params: unknown, signal?: AbortSignal): Promise<FormElicitationResponse> {
         const cancel: FormElicitationResponse = { action: 'cancel' };
         if (!isObject(params) || params.mode !== 'form' || !this.formElicitationHandler) {
             return cancel;
@@ -1140,14 +1140,15 @@ export class AcpSdkBackend implements AgentBackend {
             sessionId,
             ...(toolCallId && requestId ? { toolCallId, requestId } : {}),
             message: asString(params.message) ?? '',
-            requestedSchema: params.requestedSchema
+            requestedSchema: params.requestedSchema,
+            ...(signal ? { signal } : {})
         };
 
         return await new Promise<FormElicitationResponse>((resolve) => {
             const pending: PendingElicitation = {
                 sessionId,
                 settle: (response) => {
-                    this.pendingElicitations.delete(pending);
+                    if (!this.pendingElicitations.delete(pending)) return;
                     if (requestId) this.liveRequestIds.delete(requestId);
                     if (toolCallId) this.toolCallLifetimes.settleRequest(toolCallId);
                     resolve(response);

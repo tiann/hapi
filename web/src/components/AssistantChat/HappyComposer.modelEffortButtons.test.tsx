@@ -628,3 +628,14 @@ describe('HappyComposer generic model/effort value buttons', () => {
     })
 
 })
+
+it('lets the user stop an OpenCode session that is waiting on an autonomous question', () => {
+    renderComposer('opencode', {
+        agentState: { requests: { question: { tool: 'AskUserQuestion', arguments: {}, createdAt: 1 } } }
+    })
+
+    const stop = screen.getByRole('button', { name: 'Abort' }) as HTMLButtonElement
+    expect(stop.disabled).toBe(false)
+    fireEvent.click(stop)
+    expect(runtime.cancelRun).toHaveBeenCalledOnce()
+})

@@ -218,8 +218,6 @@ describe('AcpSdkBackend tool call lifetimes', () => {
                 return 'cancelled';
             },
             async () => {
-                // The launcher reopens questions for every prompt.
-                permissions.beginTurn();
                 notify(toolCall('question:0', { kind: 'other', title: 'question' }));
                 reusedForm = internal.handleElicitationRequest(questionForm('question:0'));
                 await sleep(5);

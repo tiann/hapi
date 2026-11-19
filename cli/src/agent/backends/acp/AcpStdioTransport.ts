@@ -5,6 +5,7 @@ import {
 } from '@hapi/protocol/agentCliSpawnLease';
 import { resolveHapiHomeDir } from '@/configuration';
 import { logger } from '@/ui/logger';
+import { ACP_REQUEST_ABORT_REASON } from '@/agent/types';
 import { killProcessByChildProcess } from '@/utils/process';
 import { GEMINI_MODEL_PRESETS } from '@hapi/protocol';
 import {
@@ -54,7 +55,7 @@ interface JsonRpcResponse {
     };
 }
 
-type RequestHandler = (params: unknown, requestId: string | number | null) => Promise<unknown>;
+type RequestHandler = (params: unknown, requestId: string | number | null, signal?: AbortSignal) => Promise<unknown>;
 
 export type AcpStderrErrorType = 'rate_limit' | 'model_not_found' | 'authentication' | 'quota_exceeded' | 'unknown';
 
@@ -85,7 +86,8 @@ export class AcpStdioTransport {
         reject: (error: Error) => void;
         rejectDispatched: (error: Error) => void;
     }>();
-    private readonly requestHandlers = new Map<string, RequestHandler>();
+    private readonly requestHandlers = new Map<string, { handler: RequestHandler; cancellable: boolean }>();
+    private readonly inboundRequests = new Map<string | number, AbortController>();
     private notificationHandler: ((method: string, params: unknown) => void) | null = null;
     private stderrErrorHandler: ((error: AcpStderrError) => void) | null = null;
     private buffer = '';
@@ -268,8 +270,8 @@ export class AcpStdioTransport {
         this.stderrErrorHandler = handler;
     }
 
-    registerRequestHandler(method: string, handler: RequestHandler): void {
-        this.requestHandlers.set(method, handler);
+    registerRequestHandler(method: string, handler: RequestHandler, { cancellable = false } = {}): void {
+        this.requestHandlers.set(method, { handler, cancellable });
     }
 
     /** Default timeout for requests in milliseconds (2 minutes) */
@@ -504,6 +506,13 @@ export class AcpStdioTransport {
                 });
                 return;
             }
+            if (message.method === '$/cancel_request') {
+                const params = message.params as { requestId?: unknown } | null | undefined;
+                const id = params?.requestId;
+                if (typeof id === 'number' || typeof id === 'string') {
+                    this.inboundRequests.get(id)?.abort(ACP_REQUEST_ABORT_REASON.agentCancelled);
+                }
+            }
             this.notificationHandler?.(message.method, message.params ?? null);
             return;
         }
@@ -514,8 +523,12 @@ export class AcpStdioTransport {
     }
 
     private async handleIncomingRequest(request: JsonRpcRequest): Promise<void> {
-        const handler = this.requestHandlers.get(request.method);
-        if (!handler) {
+        if (this.closed) {
+            logger.debug('[ACP] Ignoring inbound request on a closed connection', { id: request.id });
+            return;
+        }
+        const registration = this.requestHandlers.get(request.method);
+        if (!registration) {
             this.writePayload({
                 jsonrpc: '2.0',
                 id: request.id,
@@ -527,14 +540,28 @@ export class AcpStdioTransport {
             return;
         }
 
+        const id = request.id;
+        const controller = registration.cancellable && (typeof id === 'number' || typeof id === 'string')
+            ? new AbortController()
+            : undefined;
+        if (controller && id !== null) {
+            if (this.inboundRequests.has(id)) {
+                logger.debug('[ACP] Ignoring duplicate inbound request id', { id });
+                return;
+            }
+            this.inboundRequests.set(id, controller);
+        }
+
         try {
-            const result = await handler(request.params ?? null, request.id ?? null);
+            const result = await registration.handler(request.params ?? null, id ?? null, controller?.signal);
+            if (controller?.signal.aborted) return;
             this.writePayload({
                 jsonrpc: '2.0',
                 id: request.id,
                 result
             } satisfies JsonRpcResponse);
         } catch (error) {
+            if (controller?.signal.aborted) return;
             this.writePayload({
                 jsonrpc: '2.0',
                 id: request.id,
@@ -543,6 +570,8 @@ export class AcpStdioTransport {
                     message: error instanceof Error ? error.message : 'Internal error'
                 }
             } satisfies JsonRpcResponse);
+        } finally {
+            if (controller && id !== null) this.inboundRequests.delete(id);
         }
     }
 
@@ -592,6 +621,8 @@ export class AcpStdioTransport {
 
         this.closed = true;
         this.closeError = error;
+        for (const request of this.inboundRequests.values()) request.abort(ACP_REQUEST_ABORT_REASON.connectionClosed);
+        this.inboundRequests.clear();
         this.rejectAllPending(error);
     }
 

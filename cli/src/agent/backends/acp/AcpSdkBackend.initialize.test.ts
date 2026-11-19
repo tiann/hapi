@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { AcpStdioTransport } from './AcpStdioTransport';
 
 const transportState = vi.hoisted(() => ({
+    registerRequestHandler: vi.fn<AcpStdioTransport['registerRequestHandler']>(),
     calls: [] as Array<{ method: string; params?: unknown }>
 }));
 
@@ -11,7 +13,7 @@ vi.mock('./AcpStdioTransport', () => {
         }
         onNotification = vi.fn();
         onStderrError = vi.fn();
-        registerRequestHandler = vi.fn();
+        registerRequestHandler = transportState.registerRequestHandler;
         sendRequest = vi.fn(async (method: string, params?: unknown) => {
             transportState.calls.push({ method, params });
             if (method === 'initialize') {
@@ -64,6 +66,22 @@ describe('AcpSdkBackend.initialize', () => {
         expect(metas[0]).not.toHaveProperty(['opencode/child-session-updates']);
         expect(metas[1]).toMatchObject({ 'opencode/child-session-updates': true, parameterizedModelPicker: true });
     });
+    it.each(['opencode', 'agy'] as const)('wires form request lifetime for %s only as supported', async (flavor) => {
+        transportState.registerRequestHandler.mockClear();
+        const backend = new AcpSdkBackend({ command: flavor, flavor, elicitationForm: true });
+        const receiveForm = vi.fn(async () => ({ action: 'cancel' as const }));
+        backend.onFormElicitation(receiveForm);
+        await backend.initialize();
+
+        const registration = transportState.registerRequestHandler.mock.calls.find(([method]) => method === 'elicitation/create');
+        expect(registration?.[2]).toEqual({ cancellable: flavor === 'opencode' });
+        if (flavor === 'opencode') {
+            const { signal } = new AbortController();
+            await registration![1]({ mode: 'form', sessionId: 'session-1', requestedSchema: {} }, 0, signal);
+            expect(receiveForm).toHaveBeenCalledWith(expect.objectContaining({ signal }));
+        }
+    });
+
     it('advertises form elicitation only when enabled', async () => {
         transportState.calls.length = 0;
         await new AcpSdkBackend({ command: 'opencode', args: ['acp'] }).initialize();

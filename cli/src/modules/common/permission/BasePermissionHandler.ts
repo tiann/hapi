@@ -177,7 +177,7 @@ export type CancelPendingRequestOptions = {
      * unscoped behavior every existing caller (session-teardown cancelAll)
      * relies on.
      */
-    filter?: (toolName: string) => boolean;
+    filter?: (toolName: string, id: string) => boolean;
 };
 
 export abstract class BasePermissionHandler<TResponse extends { id: string }, TResult> {
@@ -282,7 +282,7 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
         const { filter } = options;
 
         for (const [id, pending] of this.pendingRequests.entries()) {
-            if (filter && !filter(pending.toolName)) continue;
+            if (filter && !filter(pending.toolName, id)) continue;
             pending.reject(new Error(options.rejectMessage));
             this.pendingRequests.delete(id);
         }
@@ -293,7 +293,7 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
             const nextRequests: typeof pendingRequests = {};
 
             for (const [id, request] of Object.entries(pendingRequests)) {
-                if (filter && !filter(request.tool)) {
+                if (filter && !filter(request.tool, id)) {
                     nextRequests[id] = request;
                     continue;
                 }

@@ -1560,7 +1560,6 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 // false, so a steer arriving during either is rejected rather than
                 // injected into a turn the agent is not running.
                 this.promptInFlight = true;
-                this.permissionHandler?.beginTurn();
                 this.activePromptModeHash = session.queue.modeHasher({ ...batch.mode, model: steeringModel });
                 this.activePromptText = messageText;
                 this.steerTurnEpoch += 1;
@@ -1681,7 +1680,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     }
                     try {
                         session.onThinkingChange(false);
-                        await this.permissionHandler?.cancelAll('Prompt finished');
+                        await this.permissionHandler?.cancelAll('Prompt finished', { preserveQuestions: true });
                         if (session.queue.size() === 0 && !this.shouldExit) {
                             sendReady();
                         }
@@ -3025,6 +3024,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         if (
             !leavingRemote
             && this.roundSummaryPhase === 'settle'
+            && !this.permissionHandler?.hasPendingQuestions()
             && this.pendingSteerOperations.size === 0
             && this.v2Steers.size === 0
             && !Array.from(this.backendSoftSteerOwnership).some(entry =>
