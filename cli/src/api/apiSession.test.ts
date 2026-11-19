@@ -2502,7 +2502,7 @@ describe('ApiSessionClient metadata cancellation and reconnect ordering', () => 
         }
     })
 
-    it('flushes a buffered agent-state write when the socket reconnects before the drain deadline', async () => {
+    it.each([false, true])('flushes an agent-state write on reconnect before the drain deadline (ACK expired: %s)', async (expired) => {
         vi.useFakeTimers()
         const jitter = vi.spyOn(Math, 'random').mockReturnValue(0.8)
         socketHarness.sockets.length = 0
@@ -2518,16 +2518,17 @@ describe('ApiSessionClient metadata cancellation and reconnect ordering', () => 
             return { result: 'success', version: req.expectedVersion + 1, agentState: req.agentState }
         }
         try {
+            socket.connectImmediately = false
             socket.connected = false
             socket.trigger('disconnect', 'transport close')
             client.updateAgentState(state => ({ ...state, steeringActive: false }))
-            const flushed = client.flush({ timeoutMs: 100 })
-            await vi.advanceTimersByTimeAsync(20)
+            const flushed = client.flush({ timeoutMs: expired ? 5_100 : 100 })
+            await vi.advanceTimersByTimeAsync(expired ? 5_050 : 20)
             socket.triggerConnect()
             connected.resolve()
             await vi.advanceTimersByTimeAsync(100)
             expect(await flushed).toBe(true)
-            expect(stateWrites).toHaveBeenCalledOnce()
+            expect(stateWrites).toHaveBeenCalledTimes(expired ? 2 : 1)
         } finally {
             connected.resolve()
             client.close()

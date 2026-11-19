@@ -22,7 +22,8 @@ export function createBackoff(
         onError?: (e: any, failuresCount: number) => void,
         minDelay?: number,
         maxDelay?: number,
-        maxFailureCount?: number
+        maxFailureCount?: number,
+        wait?: (ms: number) => Promise<void>
     }): BackoffFunc {
     return async <T>(callback: () => Promise<T>): Promise<T> => {
         let currentFailureCount = 0;
@@ -40,7 +41,7 @@ export function createBackoff(
                     opts.onError(e, currentFailureCount);
                 }
                 let waitForRequest = exponentialBackoffDelay(currentFailureCount, minDelay, maxDelay, maxFailureCount);
-                await delay(waitForRequest);
+                await (opts?.wait ?? delay)(waitForRequest);
             }
         }
     };

@@ -14,10 +14,12 @@ type ExtensionHandler = (params: unknown, requestId: string | number | null) => 
 function createHarness(options?: { onCreatePlanAccepted?: () => void }) {
     const handlers = new Map<string, ExtensionHandler>();
     let agentState: AgentState = { requests: {}, completedRequests: {} };
+    let update: ((state: AgentState) => AgentState) | undefined;
     const messages: AgentMessage[] = [];
 
     const session = {
         updateAgentState(handler: (state: AgentState) => AgentState) {
+            update = handler;
             agentState = handler(agentState);
         }
     } as unknown as ApiSessionClient;
@@ -44,6 +46,7 @@ function createHarness(options?: { onCreatePlanAccepted?: () => void }) {
         handlers,
         adapter,
         getAgentState: () => agentState,
+        reapply: (state: AgentState) => update!(state),
         getMessages: () => messages
     };
 }
@@ -72,6 +75,17 @@ describe('CursorExtensionAdapter', () => {
         });
 
         void pending;
+    });
+
+    it('preserves a pending Cursor question when an ACK retry sees newer state', async () => {
+        const f = createHarness();
+        const pending = f.handlers.get('cursor/ask_question')!({ toolCallId: 'q-1', questions: [] }, null);
+        const newer = { ...f.getAgentState(), steeringActive: true };
+        vi.mocked(Date.now).mockReturnValue(1_700_000_001_000);
+        expect(f.reapply(newer)).toBe(newer);
+        expect(f.reapply({}).requests?.['q-1']?.createdAt).toBe(1_700_000_000_000);
+        await f.adapter.cancelAll('test cleanup');
+        await pending;
     });
 
     it('resolves ask_question with answered outcome and formatted answers', async () => {

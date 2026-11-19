@@ -6,7 +6,7 @@ import { io, type Socket } from 'socket.io-client'
 import axios from 'axios'
 import type { ZodType } from 'zod'
 import { logger } from '@/ui/logger'
-import { backoff } from '@/utils/time'
+import { backoff, createBackoff } from '@/utils/time'
 import { apiValidationError } from '@/utils/errorUtils'
 import { AsyncLock } from '@/utils/lock'
 import type { RawJSONLines } from '@/claude/types'
@@ -243,6 +243,8 @@ export class ApiSessionClient extends EventEmitter {
     // network gate so a subscribing viewer can be replayed the current screen.
     private agentTerminalLocalBuffer = ''
     private agentStateLock = new AsyncLock()
+    private wakeAgentStateRetry?: () => void
+    private readonly agentStateBackoff = createBackoff({ wait: ms => this.waitForAgentStateRetry(ms) })
     private metadataLock = new AsyncLock()
     private state: ApiSessionClientState
     private readonly materializer?: ApiSessionClientOptions['materialize']
@@ -305,6 +307,7 @@ export class ApiSessionClient extends EventEmitter {
         })
 
         this.socket.on('connect', () => {
+            this.wakeAgentStateRetry?.()
             logger.debug('Socket connected successfully')
             this.emit('connection-start')
             this.awaitingMaterializedConnection = false
@@ -1565,7 +1568,7 @@ if (isReconnect) {
             const alreadyCommitted = () => unconfirmed !== undefined
                 && this.agentStateVersion === unconfirmed.expectedVersion + 1
                 && isDeepStrictEqual(this.agentState, unconfirmed.agentState)
-            await backoff(async () => {
+            await this.agentStateBackoff(async () => {
                 if (this.isClosed() || alreadyCommitted()) return
                 const expectedVersion = this.agentStateVersion
                 const current = this.agentState ?? ({} as AgentState)
@@ -1613,6 +1616,19 @@ if (isReconnect) {
                     if (!alreadyCommitted()) throw error
                 }
             })
+        })
+    }
+
+    private waitForAgentStateRetry(ms: number): Promise<void> {
+        if (this.isClosed()) return Promise.resolve()
+        return new Promise(resolve => {
+            const finish = () => {
+                clearTimeout(timer)
+                this.wakeAgentStateRetry = undefined
+                resolve()
+            }
+            const timer = setTimeout(finish, ms)
+            this.wakeAgentStateRetry = finish
         })
     }
 
@@ -1768,6 +1784,7 @@ if (isReconnect) {
             return
         }
         this.state = 'closed'
+        this.wakeAgentStateRetry?.()
         this.materializationAbortController?.abort()
         this.materializationAbortController = null
         this.materializationRetryAbortController?.abort()

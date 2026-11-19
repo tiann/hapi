@@ -102,18 +102,17 @@ export class CursorExtensionAdapter {
                 respond: resolve
             });
 
-            this.session.updateAgentState((currentState) => ({
-                ...currentState,
-                requests: {
-                    ...currentState.requests,
-                    [requestId]: {
-                        tool,
-                        toolCallId,
-                        arguments: args,
-                        createdAt: Date.now()
+            const createdAt = Date.now();
+            this.session.updateAgentState((currentState) => {
+                if (currentState.requests && Object.hasOwn(currentState.requests, requestId)) return currentState;
+                return {
+                    ...currentState,
+                    requests: {
+                        ...currentState.requests,
+                        [requestId]: { tool, toolCallId, arguments: args, createdAt }
                     }
-                }
-            } satisfies AgentState));
+                } satisfies AgentState;
+            });
 
             logger.debug(`[cursor-acp] Extension request queued: ${tool} (${requestId})`);
         });
