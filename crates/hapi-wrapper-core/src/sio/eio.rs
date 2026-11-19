@@ -182,17 +182,27 @@ impl Transport {
         Ok(())
     }
 
-    pub(super) async fn replay_packet(
+    pub(super) async fn write_receiving(
         &mut self,
         packet: Packet,
         mut receive: impl FnMut(Packet) -> io::Result<bool>,
     ) -> io::Result<bool> {
-        let (mut sink, mut stream) = (&mut self.socket).split();
-        let mut frames = std::collections::VecDeque::from([Message::text(
-            EnginePacket::Message(packet.encode()?).encode(),
-        )]);
+        let mut frames =
+            std::collections::VecDeque::from([Message::text(packet.encode_with_prefix(b"4")?)]);
         while let Some(frame) = frames.pop_front() {
-            let write = sink.send(frame);
+            self.pending_write = Some(frame);
+            timeout_at(
+                self.expires,
+                poll_fn(|cx| Pin::new(&mut self.socket).poll_ready(cx)),
+            )
+            .await
+            .map_err(ping_timeout)?
+            .map_err(io::Error::other)?;
+            Pin::new(&mut self.socket)
+                .start_send(self.pending_write.take().unwrap())
+                .map_err(io::Error::other)?;
+            let (mut sink, mut stream) = (&mut self.socket).split();
+            let write = sink.flush();
             tokio::pin!(write);
             loop {
                 tokio::select! {
@@ -232,7 +242,7 @@ impl Transport {
             .take()
             .into_iter()
             .map(Ok::<_, io::Error>)
-            .chain(packets.map(|p| Ok(Message::text(EnginePacket::Message(p.encode()?).encode()))));
+            .chain(packets.map(|p| Ok(Message::text(p.encode_with_prefix(b"4")?))));
         let (mut sink, mut stream) = (&mut self.socket).split();
         let mut pongs = std::collections::VecDeque::new();
         let mut prefer_pong = true;
@@ -283,8 +293,8 @@ impl Transport {
         Ok(())
     }
 
-    async fn send(&mut self, p: EnginePacket) -> io::Result<()> {
-        self.pending_write = Some(Message::text(p.encode()));
+    async fn send(&mut self, frame: Message) -> io::Result<()> {
+        self.pending_write = Some(frame);
         timeout_at(self.expires, async {
             poll_fn(|cx| Pin::new(&mut self.socket).poll_ready(cx)).await?;
             let frame = self.pending_write.take().expect("pending websocket write");
@@ -297,7 +307,7 @@ impl Transport {
     }
 
     pub async fn write_packet(&mut self, p: &Packet) -> io::Result<()> {
-        self.send(EnginePacket::Message(p.encode()?)).await
+        self.send(Message::text(p.encode_with_prefix(b"4")?)).await
     }
 
     pub(super) async fn read_engine(&mut self) -> io::Result<EnginePacket> {
@@ -313,7 +323,8 @@ impl Transport {
         match packet {
             EnginePacket::Ping(data) => {
                 self.expires = deadline(self.watchdog)?;
-                self.send(EnginePacket::Pong(data)).await?;
+                self.send(Message::text(EnginePacket::Pong(data).encode()))
+                    .await?;
                 Ok(None)
             }
             EnginePacket::Pong(_) | EnginePacket::Noop => Ok(None),

@@ -43,6 +43,7 @@ struct State {
     generation: u64,
     next_id: u64,
     queue: VecDeque<Outgoing>,
+    replies: VecDeque<Payload>,
     pending: HashMap<u64, Reply>,
 }
 impl State {
@@ -55,6 +56,8 @@ impl State {
         true
     }
     fn disconnect(&mut self) {
+        self.generation += 1;
+        self.replies.clear();
         self.connected = false;
         self.writable = false;
         self.queue
@@ -91,12 +94,13 @@ pub struct ServerAck {
 impl ServerAck {
     pub fn send(self, args: Vec<Value>) -> bool {
         let mut s = self.shared.lock();
-        if !s.connected || s.generation != self.generation {
+        if s.stopped || s.generation != self.generation {
             return false;
         }
-        let queued = s.enqueue(Payload::Ack { id: self.id, args }, false);
+        s.writable = false;
+        s.replies.push_back(Payload::Ack { id: self.id, args });
         self.shared.ready.notify_one();
-        queued
+        true
     }
 }
 
@@ -320,9 +324,7 @@ async fn run(
                     (true, true, Ok(())) => {
                         Some(Event::Disconnected("io client disconnect".into()))
                     }
-                    (true, false, Ok(())) => {
-                        Some(Event::Disconnected("io server disconnect".into()))
-                    }
+                    (_, false, Ok(())) => Some(Event::Disconnected("io server disconnect".into())),
                     (true, false, Err(error)) => Some(Event::Disconnected(error.to_string())),
                     (false, false, Err(error)) => Some(Event::ConnectError {
                         message: error.to_string(),
@@ -390,68 +392,27 @@ async fn serve(
     shared: &Arc<Shared>,
     events: &mpsc::UnboundedSender<Event>,
 ) -> io::Result<()> {
-    let mut received = Vec::new();
-    let buffered = shared.lock().queue.len();
-    for _ in 0..buffered {
-        let next = {
-            let mut state = shared.lock();
-            if state.stopped {
-                return Ok(());
-            }
-            transport.check_heartbeat()?;
-            state.queue.pop_front()
-        };
-        if let Some(item) = next {
-            let keep_replaying = transport
-                .replay_packet(cli(item.payload), |packet| {
-                    if packet.namespace == "/cli" {
-                        match packet.payload {
-                            Payload::Ack { id, args } => {
-                                if let Some(reply) = shared.lock().pending.remove(&id) {
-                                    let _ = reply.send(args);
-                                }
-                            }
-                            Payload::Disconnect => return Ok(false),
-                            payload @ Payload::Event { .. } => received.push(payload),
-                            _ => return Err(invalid("unexpected namespace packet")),
-                        }
-                    }
-                    Ok(true)
-                })
-                .await?;
-            if !keep_replaying {
-                return Ok(());
-            }
-        }
-    }
-    let generation = {
-        let mut state = shared.lock();
-        if state.stopped {
-            return Ok(());
-        }
-        state.generation += 1;
-        state.connected = true;
-        state.writable = state.queue.is_empty();
-        let _ = events.send(Event::Connected);
-        for payload in received {
-            dispatch_message(payload, shared, events, state.generation);
-        }
-        state.generation
-    };
     tokio::select! {
         biased;
         _ = shared.stopping.notified() => {}
-        result = exchange(transport, shared, events, generation) => {
+        result = exchange(transport, shared, events) => {
             let failed = result.as_ref().is_err_and(|e| e.kind() != io::ErrorKind::TimedOut);
             if failed || !shared.lock().stopped {
                 return result;
             }
         }
     }
-    let queue = std::mem::take(&mut shared.lock().queue);
-    let packets = queue
+    let (queue, replies) = {
+        let mut state = shared.lock();
+        (
+            std::mem::take(&mut state.queue),
+            std::mem::take(&mut state.replies),
+        )
+    };
+    let packets = replies
         .into_iter()
-        .map(|item| cli(item.payload))
+        .chain(queue.into_iter().map(|item| item.payload))
+        .map(cli)
         .chain(std::iter::once(cli(Payload::Disconnect)));
     transport.drain(packets).await
 }
@@ -460,20 +421,35 @@ async fn exchange(
     transport: &mut Transport,
     shared: &Arc<Shared>,
     events: &mpsc::UnboundedSender<Event>,
-    generation: u64,
 ) -> io::Result<()> {
+    let mut buffered = shared.lock().queue.len();
     loop {
         let queue_empty = {
             let mut state = shared.lock();
-            state.writable = state.queue.is_empty();
+            if state.stopped {
+                return Ok(());
+            }
+            if !state.connected && (buffered == 0 || state.queue.is_empty()) {
+                state.connected = true;
+                let _ = events.send(Event::Connected);
+            }
+            state.writable = state.replies.is_empty() && state.queue.is_empty();
             state.writable
         };
         let frame = tokio::select! {
             _ = async { if queue_empty { shared.ready.notified().await; } } => {
                 transport.check_heartbeat()?;
-                let next = shared.lock().queue.pop_front();
-                if let Some(item) = next {
-                    transport.write_packet(&cli(item.payload)).await?;
+                let next = {
+                    let mut state = shared.lock();
+                    state.replies.pop_front().or_else(|| {
+                        buffered = buffered.saturating_sub(1);
+                        state.queue.pop_front().map(|item| item.payload)
+                    })
+                };
+                if let Some(payload) = next {
+                    if !transport.write_receiving(cli(payload), |p| receive(p, shared, events)).await? {
+                        return Ok(());
+                    }
                 }
                 continue;
             }
@@ -485,46 +461,46 @@ async fn exchange(
         let Some(packet) = transport.handle_engine(frame?).await? else {
             continue;
         };
-        if packet.namespace != "/cli" {
-            continue;
-        }
-        let mut state = shared.lock();
-        if state.stopped {
+        if !receive(packet, shared, events)? {
             return Ok(());
-        }
-        match packet.payload {
-            payload @ Payload::Event { .. } => {
-                dispatch_message(payload, shared, events, generation)
-            }
-            Payload::Ack { id, args } => {
-                if let Some(reply) = state.pending.remove(&id) {
-                    let _ = reply.send(args);
-                }
-            }
-            Payload::Disconnect => return Ok(()),
-            _ => return Err(invalid("unexpected namespace packet")),
         }
     }
 }
 
-fn dispatch_message(
-    payload: Payload,
+fn receive(
+    packet: Packet,
     shared: &Arc<Shared>,
     events: &mpsc::UnboundedSender<Event>,
-    generation: u64,
-) {
-    if let Payload::Event { id, name, args } = payload {
-        let ack = id.map(|id| ServerAck {
-            shared: shared.clone(),
-            generation,
-            id,
-        });
-        let name = name
-            .as_str()
-            .map(str::to_owned)
-            .unwrap_or_else(|| crate::jsjson::stringify(&name));
-        let _ = events.send(Event::Message { name, args, ack });
+) -> io::Result<bool> {
+    if packet.namespace != "/cli" {
+        return Ok(true);
     }
+    let mut state = shared.lock();
+    if state.stopped {
+        return Ok(false);
+    }
+    match packet.payload {
+        Payload::Event { id, name, args } => {
+            let ack = id.map(|id| ServerAck {
+                shared: shared.clone(),
+                generation: state.generation,
+                id,
+            });
+            let name = name
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| crate::jsjson::stringify(&name));
+            let _ = events.send(Event::Message { name, args, ack });
+        }
+        Payload::Ack { id, args } => {
+            if let Some(reply) = state.pending.remove(&id) {
+                let _ = reply.send(args);
+            }
+        }
+        Payload::Disconnect => return Ok(false),
+        _ => return Err(invalid("unexpected namespace packet")),
+    }
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -692,6 +668,64 @@ mod tests {
         assert!(pong);
         assert!(matches!(events.recv().await, Some(Event::Connected)));
         client.stop(Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn established_write_services_inbound_ack_under_backpressure() {
+        let (client, mut events, mut ws) = slow_peer().await;
+        accept_namespace(&mut ws).await;
+        assert!(matches!(events.recv().await, Some(Event::Connected)));
+        let ack = client.emit_with_ack("probe", vec![], None);
+        tokio::pin!(ack);
+        assert!(futures_util::FutureExt::now_or_never(ack.as_mut()).is_none());
+        assert!(client.emit("upload", vec![Value::String("x".repeat(8 << 20))]));
+        assert_eq!(
+            ws.next().await.unwrap().unwrap(),
+            Message::text(r#"42/cli,0["probe"]"#)
+        );
+        ws.send(Message::text("43/cli,0[1]")).await.unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), ack)
+                .await
+                .unwrap()
+                .unwrap(),
+            vec![json!(1)]
+        );
+        client.stop(Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn replay_answers_requests_and_reports_server_disconnect() {
+        let (client, mut events, mut ws) = slow_peer().await;
+        queue_backlog(&client);
+        accept_namespace(&mut ws).await;
+        read_first(&mut ws).await;
+        ws.send(Message::text(r#"42/cli,9["question"]"#))
+            .await
+            .unwrap();
+        let Some(Event::Message { ack: Some(ack), .. }) =
+            tokio::time::timeout(Duration::from_secs(2), events.recv())
+                .await
+                .unwrap()
+        else {
+            panic!("expected question during replay");
+        };
+        assert!(ack.send(vec![json!(true)]));
+        let mut blocks = 0;
+        loop {
+            let text = ws.next().await.unwrap().unwrap().into_text().unwrap();
+            if text == "43/cli,9[true]" {
+                break;
+            }
+            assert!(text.starts_with(r#"42/cli,["block","#));
+            blocks += 1;
+        }
+        assert!(blocks < 128);
+        ws.send(Message::text("41/cli,")).await.unwrap();
+        assert!(
+            matches!(events.recv().await, Some(Event::Disconnected(reason)) if reason == "io server disconnect")
+        );
+        assert!(events.recv().await.is_none());
     }
 
     #[tokio::test]

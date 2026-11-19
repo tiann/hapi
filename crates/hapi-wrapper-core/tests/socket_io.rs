@@ -35,12 +35,24 @@ fn spawn(cmd: &mut Command) -> Option<tokio::process::Child> {
 }
 
 async fn connected(rx: &mut mpsc::UnboundedReceiver<Event>, ordinal: u32) {
-    assert!(matches!(rx.recv().await, Some(Event::Connected)));
+    let mut connected = false;
+    async fn next_message(
+        rx: &mut mpsc::UnboundedReceiver<Event>,
+        connected: &mut bool,
+    ) -> Option<Event> {
+        let event = rx.recv().await;
+        if matches!(event, Some(Event::Connected)) {
+            assert!(!*connected);
+            *connected = true;
+            return rx.recv().await;
+        }
+        event
+    }
     let Some(Event::Message {
         name,
         args,
         ack: Some(ack),
-    }) = rx.recv().await
+    }) = next_message(rx, &mut connected).await
     else {
         panic!("expected server ack request")
     };
@@ -51,12 +63,15 @@ async fn connected(rx: &mut mpsc::UnboundedReceiver<Event>, ordinal: u32) {
         name,
         args,
         ack: None,
-    }) = rx.recv().await
+    }) = next_message(rx, &mut connected).await
     else {
         panic!("expected server confirmation")
     };
     assert_eq!(name, "answered");
     assert_eq!(args, vec![json!("reply"), json!(ordinal)]);
+    if !connected {
+        assert!(matches!(rx.recv().await, Some(Event::Connected)));
+    }
 }
 
 #[tokio::test]

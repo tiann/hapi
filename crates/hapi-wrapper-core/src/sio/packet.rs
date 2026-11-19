@@ -93,37 +93,44 @@ fn valid_name(name: &Value) -> bool {
 
 impl Packet {
     pub fn encode(&self) -> Result<String> {
+        self.encode_with_prefix(b"")
+    }
+
+    pub(super) fn encode_with_prefix(&self, prefix: &[u8]) -> Result<String> {
         if !self.namespace.starts_with('/') || self.namespace.contains(',') {
             return Err(invalid("invalid namespace"));
         }
-        let (kind, id, data) = match &self.payload {
-            Payload::Connect(data) if data.as_ref().is_none_or(Value::is_object) => {
-                ('0', None, data.clone())
-            }
-            Payload::Disconnect => ('1', None, None),
-            Payload::Event { id, name, args } if valid_name(name) => {
-                let mut values = vec![name.clone()];
-                values.extend_from_slice(args);
-                ('2', *id, Some(Value::Array(values)))
-            }
-            Payload::Ack { id, args } => ('3', Some(*id), Some(Value::Array(args.clone()))),
-            Payload::ConnectError(v) if v.is_string() || v.is_object() => {
-                ('4', None, Some(v.clone()))
-            }
+        let (kind, id) = match &self.payload {
+            Payload::Connect(data) if data.as_ref().is_none_or(Value::is_object) => (b'0', None),
+            Payload::Disconnect => (b'1', None),
+            Payload::Event { id, name, .. } if valid_name(name) => (b'2', *id),
+            Payload::Ack { id, .. } => (b'3', Some(*id)),
+            Payload::ConnectError(v) if v.is_string() || v.is_object() => (b'4', None),
             _ => return Err(invalid("invalid socket payload")),
         };
-        let mut wire = kind.to_string();
+        let mut wire = prefix.to_vec();
+        wire.push(kind);
         if self.namespace != "/" {
-            wire.push_str(&self.namespace);
-            wire.push(',');
+            wire.extend_from_slice(self.namespace.as_bytes());
+            wire.push(b',');
         }
         if let Some(id) = id {
-            wire.push_str(&id.to_string());
+            wire.extend_from_slice(id.to_string().as_bytes());
         }
-        if let Some(data) = data {
-            wire.push_str(&data.to_string());
+        match &self.payload {
+            Payload::Connect(Some(v)) | Payload::ConnectError(v) => {
+                serde_json::to_writer(&mut wire, v)?
+            }
+            Payload::Event { name, args, .. } => {
+                serde::Serializer::collect_seq(
+                    &mut serde_json::Serializer::new(&mut wire),
+                    std::iter::once(name).chain(args),
+                )?;
+            }
+            Payload::Ack { args, .. } => serde_json::to_writer(&mut wire, args)?,
+            _ => {}
         }
-        Ok(wire)
+        String::from_utf8(wire).map_err(Error::other)
     }
 
     pub fn decode(raw: &str) -> Result<Self> {
@@ -210,6 +217,21 @@ mod tests {
             ]
         })
     }
+    #[test]
+    fn encode_ack_in_engine_frame() {
+        let data = "xyz".repeat(1024 * 1024);
+        let packet = Packet {
+            namespace: "/cli".into(),
+            payload: Payload::Ack {
+                id: 42,
+                args: vec![Value::String(data)],
+            },
+        };
+        let frame = packet.encode_with_prefix(b"4").unwrap();
+        assert!(frame.starts_with(r#"43/cli,42["xyz"#));
+        assert_eq!(packet, Packet::decode(&frame[1..]).unwrap());
+    }
+
     proptest! {
         #[test]
         fn roundtrip(ns in "/[^,]{0,12}",name in ".*",args in prop::collection::vec(value(),0..4),id in any::<Option<u64>>()){
