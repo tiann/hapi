@@ -1,15 +1,19 @@
-import { afterEach, beforeAll, describe, expect, it, mock } from 'bun:test'
+import { afterAll, afterEach, beforeAll, describe, expect, it, mock } from 'bun:test'
 import { gunzipSync } from 'node:zlib'
 import { Hono } from 'hono'
 import type { SyncEngine } from '../../sync/syncEngine'
-import { createConfiguration, getConfiguration } from '../../configuration'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { writeAutoBridgeTransientModelErrorsEnabled } from '../../config/autoBridgeTransientModelErrors'
 import { createCliRoutes } from './cli'
 import { SessionIdentityConflictError } from '../../store/sessions'
 
 function createApp(engine: Partial<SyncEngine>) {
     const app = new Hono()
-    app.route('/cli', createCliRoutes(() => engine as SyncEngine))
+    app.route('/cli', createCliRoutes(() => engine as SyncEngine, () => ({
+        cliApiToken: 'test-token', dataDir, githubPrAwareness: true, sources: { githubPrAwareness: 'file' }
+    })))
     return app
 }
 
@@ -19,11 +23,9 @@ function authHeaders() {
     }
 }
 
-beforeAll(async () => {
-    const config = await createConfiguration()
-    config._setCliApiToken('test-token', 'env', false)
-    await config.setGithubPrAwareness(true)
-})
+let dataDir: string
+beforeAll(async () => { dataDir = await mkdtemp(join(tmpdir(), 'hapi-cli-routes-')) })
+afterAll(async () => { await rm(dataDir, { recursive: true, force: true }) })
 
 describe('cli shutdown preparation', () => {
     function fixture(machineId = 'machine-1') {
@@ -466,11 +468,11 @@ describe('cli features and external-refs read', () => {
 
 describe('cli autoBridgeTransientModelErrors namespace gate', () => {
     afterEach(async () => {
-        await writeAutoBridgeTransientModelErrorsEnabled(getConfiguration().dataDir, false)
+        await writeAutoBridgeTransientModelErrorsEnabled(dataDir, false)
     })
 
     it('returns hub auto-bridge only for the default namespace', async () => {
-        await writeAutoBridgeTransientModelErrorsEnabled(getConfiguration().dataDir, true)
+        await writeAutoBridgeTransientModelErrorsEnabled(dataDir, true)
         const sessionId = '22222222-2222-4222-8222-222222222222'
         const app = createApp({
             getOrCreateSession: () => ({ id: sessionId }),
