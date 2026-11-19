@@ -1127,13 +1127,21 @@ export class SessionCache {
             return
         }
 
+        this.finishExecution(session, t, 'session_end')
+    }
+
+    private finishExecution(session: Session, observedAt: number, reason: 'session_end' | 'expired'): void {
         const wasThinking = session.thinking
         session.active = false
-        this.store.sessions.setSessionActive(session.id, false, t, session.namespace)
+        this.store.sessions.setSessionActive(session.id, false, observedAt, session.namespace)
         session.thinking = false
-        session.thinkingAt = t
-        session.activeTurnStartedAt = null
-        this.recordTurn(session, wasThinking, t, 'agent', 'session_end')
+        if (reason === 'session_end') {
+            session.thinkingAt = observedAt
+            session.activeTurnStartedAt = null
+        }
+        // For a missed heartbeat, the last known work predates detection by the sweep.
+        const turnEndedAt = reason === 'expired' ? session.activeAt : observedAt
+        this.recordTurn(session, wasThinking, turnEndedAt, 'agent', reason)
         session.backgroundTaskCount = 0
         session.backgroundTasks = []
         session.derivedToolWork = false
@@ -1144,8 +1152,7 @@ export class SessionCache {
             sessionId: session.id,
             data: {
                 active: false,
-                thinking: false,
-                activeTurnStartedAt: null,
+                ...(reason === 'session_end' ? { thinking: false, activeTurnStartedAt: null } : {}),
                 backgroundTaskCount: 0,
                 backgroundTasks: [],
                 derivedToolWork: false
@@ -1167,32 +1174,8 @@ export class SessionCache {
             if (!session.active) continue
             const timeoutMs = session.thinking ? thinkingSessionTimeoutMs : sessionTimeoutMs
             if (now - session.activeAt <= timeoutMs) continue
-            const wasThinking = session.thinking
-            session.active = false
-            this.store.sessions.setSessionActive(session.id, false, now, session.namespace)
-            session.thinking = false
-            // The keepalive died, not the tasks: reset the transient work
-            // state like handleSessionEnd does, or a session that expired
-            // mid-background-work keeps its stale backgroundTaskCount (and
-            // derived flag) forever — the row would render "waiting" for
-            // hours after the process was gone.
-            session.backgroundTaskCount = 0
-            session.backgroundTasks = []
-            session.derivedToolWork = false
-            // The last keepalive is the last time the agent was known to be working.
-            this.recordTurn(session, wasThinking, session.activeAt, 'agent', 'expired')
-            this.pendingThinkingUntilBySessionId.delete(session.id)
+            this.finishExecution(session, now, 'expired')
             expired.push(session.id)
-            this.publisher.emit({
-                type: 'session-updated',
-                sessionId: session.id,
-                data: {
-                    active: false,
-                    backgroundTaskCount: 0,
-                    backgroundTasks: [],
-                    derivedToolWork: false
-                } satisfies SessionPatch
-            })
         }
 
         return expired
