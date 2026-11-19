@@ -1777,7 +1777,9 @@ describe('opencodeRemoteLauncher inline model switch', () => {
                 await hub.call('answer', { operationId: first.operationId });
                 expect(connected).toBeTypeOf('function'); connected!();
             }
-            await vi.waitFor(() => expect(consumptionHeld).toBe(true));
+            // This checkpoint requires a native commit and several round trips
+            // through a separate Hub process, which can take longer under CI load.
+            await vi.waitFor(() => expect(consumptionHeld).toBe(true), { timeout: 5_000 });
             expect((await hub.call('snapshot')).session.metadata.opencodeRewind.phase).toBe('committed');
             expect(gate.isBlocked()).toBe(true);
             await hub.call('restart');
