@@ -153,7 +153,7 @@ test('phone navigation remains reachable below wrapped auth and outage warnings'
     await page.getByText('Offline fixture A', { exact: true }).first().click()
     await page.clock.fastForward(16_000)
     mode = 'auth-unavailable'; closeGlobalOnce = true; disconnect()
-    const refresh = page.getByText(/^Sign-in refresh failed\. Live updates are connected; retrying automatically\./)
+    const refresh = page.getByText(/^Sign-in refresh failed\. Chat updates may be delayed; retrying automatically\./)
     await expect(refresh).toBeVisible()
     await expect.poll(() => refresh.evaluate(element => getComputedStyle(element).paddingTop)).toBe('44px')
     await expect.poll(() => back.evaluate(element => getComputedStyle(element.parentElement!.parentElement!).paddingTop)).toBe('0px')
@@ -178,6 +178,27 @@ test('phone navigation remains reachable below wrapped auth and outage warnings'
     await expect(page.locator('input[type=password]')).toHaveCount(0)
 })
 
+test('refresh warning leaves runner minimize and dismiss controls reachable on a phone', async ({ page }) => {
+    await page.clock.install()
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.route('**/api/machines', route => route.fulfill({ json: { machines: [{
+        id: 'old-fixture-runner', active: true, metadata: { host: 'Fixture runner', capabilities: [] }
+    }] } }))
+    await page.goto('/sessions/network-chat-A')
+    await expect(page.getByText('Cached message A', { exact: true })).toBeVisible()
+    await page.clock.fastForward(16_000)
+    mode = 'auth-unavailable'; closeGlobalOnce = true; disconnect()
+    const refresh = page.getByText(/^Sign-in refresh failed\. Chat updates may be delayed; retrying automatically\./)
+    await expect(refresh).toBeVisible()
+    const runnerWarning = page.getByTestId('runner-version-skew-banner')
+    await expect.poll(async () => (await runnerWarning.boundingBox())!.y - (await refresh.boundingBox())!.y - (await refresh.boundingBox())!.height).toBeGreaterThanOrEqual(8)
+    await page.getByTestId('runner-version-skew-minimize').click()
+    await expect(runnerWarning).toHaveAttribute('data-state', 'minimized')
+    await page.getByTestId('runner-version-skew-expand').click()
+    await page.getByTestId('runner-version-skew-dismiss').click()
+    await expect(runnerWarning).toHaveCount(0)
+})
+
 test('reports a sign-in refresh failure without a hub outage while REST and live updates work', async ({ page }) => {
     await page.clock.install()
     await page.goto('/sessions/network-chat-A')
@@ -186,13 +207,13 @@ test('reports a sign-in refresh failure without a hub outage while REST and live
     await page.clock.fastForward(16_000)
     mode = 'auth-unavailable'; closeGlobalOnce = true; disconnect()
     await expect.poll(() => authAttempts).toBeGreaterThan(1)
-    await expect(page.getByText(/^Sign-in refresh failed\. Live updates are connected; retrying automatically\./)).toBeVisible()
+    await expect(page.getByText(/^Sign-in refresh failed\. Chat updates may be delayed; retrying automatically\./)).toBeVisible()
     await expect(page.getByText(/hub or its gateway is temporarily unavailable/)).toHaveCount(0)
     await expect.poll(() => streams.size).toBeGreaterThanOrEqual(2)
     await page.getByText('Offline fixture B', { exact: true }).first().click()
     await expect(page.getByText('Cached message B', { exact: true })).toBeVisible()
     mode = 'ok'; await page.clock.fastForward(6_000)
-    await expect(page.getByText(/^Sign-in refresh failed\. Live updates are connected; retrying automatically\./)).toHaveCount(0)
+    await expect(page.getByText(/^Sign-in refresh failed\. Chat updates may be delayed; retrying automatically\./)).toHaveCount(0)
 })
 
 test('keeps the active chat after 401 headers when the response body stalls until the auth deadline', async ({ page }) => {
@@ -205,9 +226,9 @@ test('keeps the active chat after 401 headers when the response body stalls unti
     await page.clock.fastForward(15_000)
     await expect(page.getByText('Cached message A', { exact: true })).toBeVisible()
     await expect(page.locator('input[type=password]')).toHaveCount(0)
-    await expect(page.getByText('Sign-in refresh failed. Live updates are connected; retrying automatically.', { exact: true })).toBeVisible()
+    await expect(page.getByText('Sign-in refresh failed. Chat updates may be delayed; retrying automatically.', { exact: true })).toBeVisible()
     mode = 'ok'; await page.clock.fastForward(6_000)
-    await expect(page.getByText('Sign-in refresh failed. Live updates are connected; retrying automatically.', { exact: true })).toHaveCount(0)
+    await expect(page.getByText('Sign-in refresh failed. Chat updates may be delayed; retrying automatically.', { exact: true })).toHaveCount(0)
 })
 
 test('restored sign-in shows connection recovery, identifies offline, and reconnects without a token prompt', async ({ page, context }) => {

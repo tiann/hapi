@@ -595,7 +595,7 @@ function AppInner() {
                 />
                 <ReconnectingBanner
                     isReconnecting={revealAuthRefresh && streamConnected}
-                    message="Sign-in refresh failed. Live updates are connected; retrying automatically."
+                    message="Sign-in refresh failed. Chat updates may be delayed; retrying automatically."
                     onHeightChange={setConnectionBannerHeight}
                     reason={connectionError?.diagnostic ?? (connectionError?.status ? `HTTP ${connectionError.status}` : null)}
                 />
@@ -604,7 +604,7 @@ function AppInner() {
                     isHubConnected={globalSubscriptionId !== null}
                     isReconnecting={showReconnectingBanner}
                 />
-                <RunnerVersionSkewBanner />
+                <RunnerVersionSkewBanner statusHeight={connectionBannerHeight || undefined} />
                 <div className="h-full min-h-0 flex flex-col" style={{
                     paddingTop: connectionBannerHeight,
                     '--route-safe-area-top': connectionBannerHeight ? '0px' : undefined

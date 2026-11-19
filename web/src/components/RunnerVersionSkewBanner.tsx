@@ -34,7 +34,7 @@ export function listSkewedMachines(machines: Machine[]): Machine[] {
  * Manual Restart asks hub to stop-runner (escape hatch when version handoff
  * is stuck or HAPI_DISABLE_VERSION_HANDOFF=1). Normal upgrades self-restart.
  */
-export function RunnerVersionSkewBanner({ topClassName }: { topClassName?: string } = {}) {
+export function RunnerVersionSkewBanner({ topClassName, statusHeight }: { topClassName?: string; statusHeight?: number } = {}) {
     const { api } = useAppContext()
     const { machines } = useMachines(api, true)
     const { t } = useTranslation()
@@ -110,6 +110,7 @@ export function RunnerVersionSkewBanner({ topClassName }: { topClassName?: strin
             <div
                 data-testid="runner-version-skew-banner"
                 data-state="minimized"
+                style={statusHeight ? { top: `calc(${statusHeight}px + 0.5rem)` } : undefined}
                 className={`fixed left-4 right-4 z-40 ${topClass}`}
             >
                 <button
@@ -128,6 +129,7 @@ export function RunnerVersionSkewBanner({ topClassName }: { topClassName?: strin
         <div
             data-testid="runner-version-skew-banner"
             data-state="expanded"
+            style={statusHeight ? { top: `calc(${statusHeight}px + 0.5rem)` } : undefined}
             role="alert"
             className={`fixed left-4 right-4 z-40 max-h-[40vh] overflow-y-auto rounded-lg border-2 border-amber-500 bg-amber-50 p-3 shadow-lg dark:bg-amber-950/90 ${topClass}`}
         >
