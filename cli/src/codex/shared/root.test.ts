@@ -140,6 +140,7 @@ session, root, native, rpc, send, events, consumed, uncertain, sessionReady,
         drain: () => (root as unknown as { notifications: Promise<void> }).notifications,
         drainWork: () => (root as unknown as { work: Promise<unknown> }).work,
         reconnect: () => { replaceSocket(); reconnect?.(); },
+        disconnect: () => socketConnection.abort(),
         replaceSocket,
         finishReconnect: () => reconnect?.(),
         emitHubArchived: () => { for (const listener of hubArchivedListeners) listener(); },
@@ -631,6 +632,21 @@ describe('externally attached root', () => {
         const end = vi.fn(async () => {}); const f = await fixture({ attached: true, end });
         await f.root.activate(); f.native.notify(method, { threadId: 'thread' }); await f.drain();
         expect(end).toHaveBeenCalledWith(f.root, false, 'unavailable');
+    });
+    it.each(['thread/closed', 'thread/deleted', 'thread/archived'])('handles native %s while an offline Hub is blocking live projection', async method => {
+        const end = vi.fn(async () => {});
+        const f = await fixture({ attached: true, end });
+        await f.root.activate();
+        f.disconnect();
+        f.native.notify('item/completed', { threadId: 'thread', turnId: 'turn',
+            item: { id: 'live', type: 'agentMessage', text: 'Waiting for Hub replay' } });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect(f.send).not.toHaveBeenCalled();
+
+        f.native.notify(method, { threadId: 'thread' });
+        expect(end).toHaveBeenCalledWith(f.root, false, method === 'thread/archived' ? 'archived' : 'unavailable');
+        await f.drain();
+        expect(f.send).not.toHaveBeenCalled();
     });
     it('fails closed on unverifiable native history and never reconnects a lost engine', async () => {
         const end = vi.fn(async () => {}); const f = await fixture({ attached: true, end });
@@ -1355,6 +1371,26 @@ describe('shared plan actions', () => {
         await vi.waitFor(() => expect(f.metadata().name).toBe('Terminal title'));
         await f.root.refresh();
         expect(f.metadata().name).toBe('Terminal title');
+    });
+
+    it('applies a deferred live rename even when reconnect history contains the same tool result', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        f.session.updateMetadata(metadata => ({ ...metadata, name: 'Old title' }));
+        const item = { id: 'rename', type: 'mcpToolCall', server: 'hapi', tool: 'change_title',
+            arguments: { title: 'New title' }, status: 'completed', result: { content: [], isError: false } };
+        f.disconnect();
+        f.native.notify('item/completed', { threadId: 'thread', turnId: 'turn', item });
+        f.native.thread.turns = [{ id: 'turn', status: 'completed', items: [item] }];
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect(f.metadata().name).toBe('Old title');
+
+        const titlesAtReady: Array<string | undefined> = [];
+        f.sessionReady.mockImplementation(() => titlesAtReady.push(f.metadata().name));
+        f.reconnect();
+        await f.drain();
+        expect(titlesAtReady).toEqual(['Old title']);
+        expect(f.metadata().name).toBe('New title');
     });
 
     it('preserves content while native turns, mode changes and disconnects withdraw controls', async () => {

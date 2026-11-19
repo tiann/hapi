@@ -107,28 +107,39 @@ export class SharedCodexRoot {
         this.session = bootstrap.session;
         this.client = new CodexAppServerClient({ endpoint: host.endpoint, token: host.token, cwd: bootstrap.workingDirectory });
         this.client.setNotificationHandler((method, params) => {
+            const p = record(params);
+            const eventThread = string(p.threadId) ?? string(record(p.thread).id);
+            if (this.threadId && eventThread === this.threadId && (method === 'thread/archived'
+                || this.host.attached && (method === 'thread/closed' || method === 'thread/deleted'))) {
+                // Native shutdown must never wait for transcript publication.
+                if (!this.closed && !this.stopping) {
+                    this.stopAccepting();
+                    void this.host.end(this, false, method === 'thread/archived' ? 'archived' : 'unavailable')
+                        .catch(error => logger.debug('[Codex shared] native thread ended', error));
+                }
+                return;
+            }
             if (this.host.attached && ['thread/reverted', 'thread/rolledBack'].includes(method)
-                && (record(params).threadId === this.threadId || this.children.has(String(record(params).threadId)))) {
+                && eventThread && (eventThread === this.threadId || this.children.has(eventThread))) {
                 this.invalidateHistory(); return;
             }
             if (method === 'serverRequest/resolved') {
-                this.permissions?.resolved(string(record(params).threadId) ?? '', record(params).requestId); return;
+                this.permissions?.resolved(string(p.threadId) ?? '', p.requestId); return;
             }
-            if (method === 'thread/settings/updated' && record(params).threadId === this.threadId) this.acceptSettings(record(record(params).threadSettings));
-            if (record(params).threadId === this.threadId) {
+            if (method === 'thread/settings/updated' && p.threadId === this.threadId) this.acceptSettings(record(p.threadSettings));
+            if (p.threadId === this.threadId) {
                 if (method === 'turn/started') {
-                    this.turnRevision++; this.currentTurn = string(record(record(params).turn).id); this.interrupted = false;
+                    this.turnRevision++; this.currentTurn = string(record(p.turn).id); this.interrupted = false;
                     if (this.currentTurn) this.latestTurn = { id: this.currentTurn, status: 'inProgress' };
                     this.publishSteering();
                 }
-                if (method === 'turn/completed' && (!this.currentTurn || record(record(params).turn).id === this.currentTurn)) {
-                    this.turnRevision++; this.currentTurn = undefined; this.interrupted = record(record(params).turn).status === 'interrupted';
-                    if (!this.host.attached && record(record(params).turn).status === 'completed') this.session.updateMetadata(metadata => ({ ...metadata,
+                if (method === 'turn/completed' && (!this.currentTurn || record(p.turn).id === this.currentTurn)) {
+                    this.turnRevision++; this.currentTurn = undefined; this.interrupted = record(p.turn).status === 'interrupted';
+                    if (!this.host.attached && record(p.turn).status === 'completed') this.session.updateMetadata(metadata => ({ ...metadata,
                         capabilities: { ...metadata.capabilities, conversationHistory: { ...metadata.capabilities?.conversationHistory,
                             forkLatestCompleted: true } } }));
                     this.publishSteering();
                 }
-                const p = record(params);
                 if (method === 'item/completed' && this.latestTurn && this.latestTurn.id === p.turnId) {
                     const planId = planProposalForItem(this.threadId, this.latestTurn.id, p.item);
                     if (planId) { this.turnRevision++; this.latestTurn.planId = planId; }
@@ -144,7 +155,7 @@ export class SharedCodexRoot {
                 this.publishPlan();
             }
             const receivedAt = Date.now();
-            const modelAtReceipt = record(params).threadId === this.threadId ? this.settings.model ?? undefined : undefined;
+            const modelAtReceipt = p.threadId === this.threadId ? this.settings.model ?? undefined : undefined;
             this.notifications = this.notifications.then(() => this.notification(method, params, modelAtReceipt, receivedAt)).catch(error => {
                 logger.debug('[Codex shared] projection', error);
                 this.failAttached();
@@ -518,10 +529,6 @@ export class SharedCodexRoot {
         if (method === 'turn/completed') this.session.sendSessionEvent({ type: 'ready' });
         if (method === 'thread/name/updated' && (typeof p.threadName === 'string' || p.threadName === null)) {
             const name = p.threadName ?? undefined; this.session.updateMetadata(metadata => ({ ...metadata, name }));
-        }
-        if (method === 'thread/archived') { await this.host.end(this, false, 'archived'); return; }
-        if (this.host.attached && ['thread/closed', 'thread/deleted'].includes(method)) {
-            this.stopAccepting(); await this.host.end(this, false, 'unavailable'); return;
         }
         // Process these in notification order: queue removal can precede turn/started.
         // Older unknown input must not acquire a later turn's compaction status.

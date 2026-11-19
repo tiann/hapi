@@ -412,24 +412,16 @@ export class SharedCodexProjection {
                 for (const item of turn.items) {
                     if (signal?.aborted) return;
                     const params = { threadId: this.threadId, turnId: turn.id, item };
-                    const titleKey = `${string(turn.id) ?? 'thread'}:${record(item).id}`;
-                    const pendingTitle = requestedTitle(record(item));
-                    if (!this.parentThreadId && string(record(item).id) && pendingTitle && !this.completedTitles.has(titleKey)) {
-                        this.pendingTitles.set(titleKey, pendingTitle);
-                    }
                     await this.project('item/started', params, undefined, true, undefined, signal);
                     if (signal?.aborted) return;
                     // Active snapshots can contain partial assistant text. Do not
                     // settle it under the final stable id and suppress completion.
                     if (turn.status !== 'inProgress' || record(item).status === 'completed' || record(item).type === 'userMessage'
                         || asyncQuestionsForItem(this.threadId, item).length > 0) {
-                        if (!this.parentThreadId) {
-                            const title = successfulTitle(record(item));
-                            if (title && string(record(item).id)) {
-                                latestTitle = title;
-                                this.completedTitles.add(titleKey);
-                            }
-                            this.pendingTitles.delete(titleKey);
+                        if (!this.parentThreadId && string(record(item).id)) {
+                            // History can repair a missing title. Live rename
+                            // deduplication belongs to the notification stream.
+                            latestTitle = successfulTitle(record(item)) ?? latestTitle;
                         }
                         await this.project('item/completed', params, undefined, true, undefined, signal);
                     }
