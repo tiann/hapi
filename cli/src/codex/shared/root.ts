@@ -444,6 +444,7 @@ export class SharedCodexRoot {
                 this.children.set(eventThread, projection);
             }
             if (this.host.attached && ['turn/started', 'turn/completed'].includes(method)) {
+                if (!await this.waitForArchiveRecovery()) return;
                 const signal = this.historyReplayAbort.signal;
                 await this.backfillAttachedChild(eventThread, projection, signal);
                 if (signal.aborted && !await this.waitForArchiveRecovery()) return;
@@ -1039,7 +1040,7 @@ export class SharedCodexRoot {
                     const remaining = Math.ceil(deadline - performance.now());
                     // An offline session socket can still be stopped through the Runner
                     // once there is no unconfirmed fork metadata to preserve.
-                    return remaining > 0 && (this.session.hubArchived
+                    return remaining > 0 && (this.host.attached || this.session.hubArchived
                         || !this.projection?.hasUnpublishedHistory()
                         || await this.session.waitForMetadataConfirmation(() => !this.projection?.hasUnpublishedHistory(), remaining));
                 }),

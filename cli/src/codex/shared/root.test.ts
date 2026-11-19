@@ -288,15 +288,13 @@ it('does not archive after waiting too long for active history projection', asyn
 });
 
 it('rejects attached controls and drops a deferred send when archive succeeds', async () => {
-    const end = vi.fn(async () => {});
+    const detach = Promise.withResolvers<void>();
+    const end = vi.fn(() => detach.promise);
     const validateHistory = vi.fn(async () => {});
     const f = await fixture({ attached: true, end, validateHistory });
     await f.root.activate();
     validateHistory.mockClear();
     const read = Promise.withResolvers<{ thread: typeof f.native.thread }>();
-    const ack = Promise.withResolvers<boolean>();
-    const confirmForkMappings = holdForkMappings(f.root);
-    const flush = vi.spyOn(f.session, 'waitForMetadataConfirmation').mockReturnValueOnce(ack.promise);
     const request = vi.spyOn(f.root.client, 'request').mockReturnValueOnce(read.promise);
     const refresh = vi.spyOn(f.root, 'refresh');
     const settings = f.rpc.get(RPC_METHODS.SetSessionConfig)!({ model: 'must-not-apply' });
@@ -305,16 +303,14 @@ it('rejects attached controls and drops a deferred send when archive succeeds', 
     await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
     const archive = f.rpc.get(RPC_METHODS.KillSession)!({});
     try {
-        await vi.waitFor(() => expect(flush).toHaveBeenCalledOnce());
+        await vi.waitFor(() => expect(end).toHaveBeenCalledOnce());
         read.resolve({ thread: f.native.thread });
         await cancelled;
         expect(validateHistory).not.toHaveBeenCalled();
         expect(request.mock.calls.some(([method]) => ['thread/settings/update', 'thread/queue/add', 'turn/start'].includes(method))).toBe(false);
-        expect(end).not.toHaveBeenCalled();
     } finally {
         read.resolve({ thread: f.native.thread });
-        confirmForkMappings();
-        ack.resolve(true);
+        detach.resolve();
         await archive;
         await f.drainWork();
     }
@@ -322,23 +318,22 @@ it('rejects attached controls and drops a deferred send when archive succeeds', 
 });
 
 it('delivers an attached Web prompt once under its original ID after archive fails', async () => {
-    const f = await fixture({ attached: true });
+    const detach = Promise.withResolvers<void>();
+    const end = vi.fn(() => detach.promise);
+    const f = await fixture({ attached: true, end });
     await f.root.activate();
     const read = Promise.withResolvers<{ thread: typeof f.native.thread }>();
-    const ack = Promise.withResolvers<boolean>();
     const request = vi.spyOn(f.root.client, 'request').mockReturnValueOnce(read.promise);
-    holdForkMappings(f.root);
-    const flush = vi.spyOn(f.session, 'waitForMetadataConfirmation').mockReturnValueOnce(ack.promise);
     f.submit('keep this prompt', 'web-message-id');
     await vi.waitFor(() => expect(request).toHaveBeenCalledWith('thread/read', expect.anything()));
-    const archive = expect(f.rpc.get(RPC_METHODS.KillSession)!({})).rejects.toThrow('Could not confirm Codex history metadata');
+    const archive = expect(f.rpc.get(RPC_METHODS.KillSession)!({})).rejects.toThrow('Native detach failed');
     try {
-        await vi.waitFor(() => expect(flush).toHaveBeenCalledOnce());
+        await vi.waitFor(() => expect(end).toHaveBeenCalledOnce());
         read.resolve({ thread: f.native.thread });
         expect(f.native.queue).toHaveLength(0);
     } finally {
         read.resolve({ thread: f.native.thread });
-        ack.resolve(false);
+        detach.reject(new Error('Native detach failed'));
         await archive;
     }
     await f.drainWork();
@@ -499,8 +494,20 @@ it('resumes native child subscriptions when archive interrupts child discovery a
 });
 
 describe('externally attached root', () => {
-    it('restores an interrupted child backfill after archive fails despite an unreadable sibling', async () => {
+    it('detaches through Web without waiting for fork-only metadata', async () => {
         const end = vi.fn(async () => {});
+        const f = await fixture({ attached: true, end });
+        await f.root.activate();
+        holdForkMappings(f.root);
+        const confirm = vi.spyOn(f.session, 'waitForMetadataConfirmation').mockResolvedValue(false);
+        await expect(f.rpc.get(RPC_METHODS.KillSession)!({})).resolves.toEqual({ success: true });
+        expect(confirm).not.toHaveBeenCalled();
+        expect(end).toHaveBeenCalledOnce();
+    });
+
+    it.each([false, true])('restores attached child history after failed archive (event during archive: %s)', async duringArchive => {
+        const detach = Promise.withResolvers<void>();
+        const end = vi.fn(() => detach.promise);
         const f = await fixture({ attached: true, end });
         await f.root.activate();
         const child = { id: 'child', parentThreadId: 'thread', turns: [{
@@ -516,46 +523,48 @@ describe('externally attached root', () => {
             const params = args as Record<string, unknown>;
             if (method === 'thread/read' && params.threadId === 'sibling') return Promise.reject(new Error('sibling offline'));
             if (method === 'thread/read' && params.threadId === 'child') {
-                if (params.includeTurns && ++reads === 1) { entered.resolve(); return oldRead.promise; }
+                if (!duringArchive && params.includeTurns && ++reads === 1) { entered.resolve(); return oldRead.promise; }
                 return Promise.resolve({ thread: child });
             }
             return original(method, args);
         });
         f.native.notify('thread/started', { thread: { id: 'sibling', parentThreadId: 'thread' } });
         f.native.notify('thread/started', { thread: child });
-        f.native.notify('turn/completed', { threadId: 'child', turn: child.turns[0] });
+        const childFinished = () => f.native.notify('turn/completed', { threadId: 'child', turn: child.turns[0] });
         try {
-            await entered.promise;
-            const confirmed = holdForkMappings(f.root);
-            vi.spyOn(f.session, 'waitForMetadataConfirmation').mockResolvedValueOnce(false);
-            await expect(f.rpc.get(RPC_METHODS.KillSession)!({})).rejects.toThrow('Could not confirm Codex history metadata');
-            confirmed();
+            if (!duringArchive) { childFinished(); await entered.promise; }
+            const archive = expect(f.rpc.get(RPC_METHODS.KillSession)!({})).rejects.toThrow('Native detach failed');
+            await vi.waitFor(() => expect(end).toHaveBeenCalledOnce());
+            if (duringArchive) {
+                childFinished();
+                await new Promise<void>(resolve => setImmediate(resolve));
+            }
+            detach.reject(new Error('Native detach failed'));
+            await archive;
             await vi.waitFor(() => expect(f.send).toHaveBeenCalledWith(expect.objectContaining({
                 type: 'agent-run-trace', agentId: 'child',
                 message: expect.objectContaining({ message: 'recovered child trace' })
             }), expect.any(String)));
             expect(request.mock.calls.some(([method, params]) =>
                 method === 'thread/read' && (params as Record<string, unknown>).threadId === 'sibling')).toBe(false);
-            expect(end).not.toHaveBeenCalled();
         } finally {
+            detach.resolve();
             oldRead.resolve({ thread: child });
             await f.drain();
         }
     });
 
     it.each(['pending', 'resolved', 'archived'] as const)('handles a %s native question during a Web archive', async state => {
-        const end = vi.fn(async () => {});
+        const detach = Promise.withResolvers<void>();
+        const end = vi.fn(() => detach.promise);
         const f = await fixture({ attached: true, end });
         await f.root.activate();
-        const ack = Promise.withResolvers<boolean>();
-        const confirmForkMappings = holdForkMappings(f.root);
-        const flush = vi.spyOn(f.session, 'waitForMetadataConfirmation').mockReturnValueOnce(ack.promise);
         const archive = f.rpc.get(RPC_METHODS.KillSession)!({});
         const settled = state === 'archived'
             ? expect(archive).resolves.toEqual({ success: true })
-            : expect(archive).rejects.toThrow('Could not confirm Codex history metadata');
+            : expect(archive).rejects.toThrow('Native detach failed');
         try {
-            await vi.waitFor(() => expect(flush).toHaveBeenCalledOnce());
+            await vi.waitFor(() => expect(end).toHaveBeenCalledOnce());
             f.native.serverRequest({ id: 'archive-question', method: 'item/tool/requestUserInput', params: {
                 threadId: 'thread', turnId: 'turn', itemId: 'question',
                 questions: [{ id: 'choice', header: 'Choose', question: 'Which?', options: [{ label: 'A', description: 'A' }] }]
@@ -564,14 +573,13 @@ describe('externally attached root', () => {
             await new Promise<void>(resolve => setImmediate(resolve));
             expect(f.state().requests ?? {}).toEqual({});
         } finally {
-            confirmForkMappings();
-            ack.resolve(state === 'archived');
+            if (state === 'archived') detach.resolve();
+            else detach.reject(new Error('Native detach failed'));
             await settled;
         }
         if (state === 'pending') {
             await vi.waitFor(() => expect(Object.values(f.state().requests ?? {}))
                 .toEqual([expect.objectContaining({ toolCallId: 'question' })]));
-            expect(end).not.toHaveBeenCalled();
         } else {
             await f.root.refresh();
             expect(f.state().requests ?? {}).toEqual({});
