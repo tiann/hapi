@@ -29,7 +29,7 @@ pub fn invoked_cwd() -> io::Result<PathBuf> {
 fn resolve_cwd(invoked: Option<String>) -> io::Result<PathBuf> {
     invoked
         .map(|s| PathBuf::from(s.trim()))
-        .filter(|p| p.is_absolute())
+        .filter(|p| p.has_root())
         .map_or_else(env::current_dir, Ok)
 }
 pub async fn machine(config: &Config) -> io::Result<Value> {
@@ -38,7 +38,7 @@ pub async fn machine(config: &Config) -> io::Result<Value> {
         None => hostname()?,
     };
     Ok(
-        json!({"host":host,"platform":platform(),"happyCliVersion":required("HAPI_WRAPPER_CLI_VERSION")?,"homeDir":require_home(env::home_dir())?,"happyHomeDir":config.home,"happyLibDir":required("HAPI_WRAPPER_RUNTIME_PATH")?}),
+        json!({"host":host,"platform":platform(),"happyCliVersion":required("HAPI_WRAPPER_CLI_VERSION")?,"homeDir":require_home(env::home_dir())?,"happyHomeDir":wire(&config.home)?,"happyLibDir":required("HAPI_WRAPPER_RUNTIME_PATH")?}),
     )
 }
 #[cfg(unix)]
@@ -62,8 +62,17 @@ fn platform() -> &'static str {
         os => os,
     }
 }
-fn require_home(home: Option<PathBuf>) -> io::Result<PathBuf> {
-    home.ok_or_else(|| io::Error::other("home directory unavailable"))
+fn require_home(home: Option<PathBuf>) -> io::Result<String> {
+    let home = home.ok_or_else(|| io::Error::other("home directory unavailable"))?;
+    Ok(wire(&home)?.to_owned())
+}
+fn wire(path: &Path) -> io::Result<&str> {
+    path.to_str().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("path is not valid UTF-8: {}", path.display()),
+        )
+    })
 }
 fn worktree() -> Option<Value> {
     env_worktree(|key| env::var(key).ok()).or_else(|| git_worktree(&invoked_cwd().ok()?))
@@ -125,7 +134,7 @@ fn git_worktree(cwd: &Path) -> Option<Value> {
         })
         .unwrap_or_else(now);
     Some(
-        json!({"basePath":common.parent()?,"branch":branch,"name":path.file_name()?.to_str()?,"worktreePath":path,"createdAt":time}),
+        json!({"basePath":common.parent()?.to_str()?,"branch":branch,"name":path.file_name()?.to_str()?,"worktreePath":path.to_str()?,"createdAt":time}),
     )
 }
 #[cfg(unix)]
@@ -165,10 +174,10 @@ pub async fn build(
             .ok_or_else(|| io::Error::other("Missing happyLibDir"))?,
     );
     let mut v = json!({
-        "path":cwd, "host":machine["host"], "os":platform(),
+        "path":wire(cwd)?, "host":machine["host"], "os":platform(),
         "version":machine["happyCliVersion"],
         "happyLibDir":lib, "happyHomeDir":machine["happyHomeDir"],
-        "happyToolsDir":std::path::absolute(lib.join("tools/unpacked"))?,
+        "happyToolsDir":wire(&std::path::absolute(lib.join("tools/unpacked"))?)?,
         "machineId":id, "hostPid":std::process::id(), "startedFromRunner":runner,
         "startedBy":if runner {"runner"} else {"terminal"},
         "lifecycleState":"running", "lifecycleStateSince":now(), "flavor":flavor,
@@ -429,6 +438,26 @@ mod tests {
         .unwrap();
         assert!(meta.get("homeDir").is_none());
     }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn non_utf8_paths_are_errors_not_panics() {
+        use std::os::unix::ffi::OsStrExt;
+        let bad = Path::new(std::ffi::OsStr::from_bytes(b"/tmp/\xff"));
+        assert_eq!(
+            require_home(Some(bad.to_path_buf())).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+        let err = build(
+            &json!({"happyLibDir":"/runtime"}),
+            "m",
+            bad,
+            false,
+            "claude",
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+    }
     #[test]
     fn worktree_environment_and_invoked_directory() {
         let vars = std::collections::HashMap::from([
@@ -450,6 +479,18 @@ mod tests {
         assert_eq!(
             resolve_cwd(Some("relative".into())).unwrap(),
             std::env::current_dir().unwrap()
+        );
+        assert_eq!(
+            resolve_cwd(Some("C:tree".into())).unwrap(),
+            std::env::current_dir().unwrap()
+        );
+        assert_eq!(
+            resolve_cwd(Some("\\tree".into())).unwrap(),
+            if cfg!(windows) {
+                PathBuf::from("\\tree")
+            } else {
+                std::env::current_dir().unwrap()
+            }
         );
     }
     #[test]

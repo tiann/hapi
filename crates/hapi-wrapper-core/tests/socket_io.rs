@@ -159,7 +159,7 @@ async fn real_server() {
 async fn link(client: &Client, expected: Connection) {
     client
         .connection()
-        .wait_for(|state| *state == expected)
+        .wait_for(|state| state == expected)
         .await
         .unwrap();
 }
@@ -173,12 +173,12 @@ async fn session_hooks() {
         "s".into(),
         true,
     );
-    assert_eq!(*archived.connection().borrow(), Connection::Stopped);
+    assert_eq!(archived.connection().get(), Connection::Stopped);
     assert!(idle.recv().await.is_none());
     assert!(!archived.is_connected());
     assert!(!archived.emit("late", vec![]));
     archived.request_connect();
-    assert_eq!(*archived.connection().borrow(), Connection::Stopped);
+    assert_eq!(archived.connection().get(), Connection::Stopped);
     let Some(mut child) = spawn(server().stdout(Stdio::piped())) else {
         return;
     };
@@ -191,28 +191,28 @@ async fn session_hooks() {
             Client::start_session(url.clone(), headers.clone(), "rejected".into(), "s".into(), false);
         for _ in 0..2 {
             assert!(matches!(rejected.recv().await, Some(Event::ConnectError {message,fatal:true}) if message=="Invalid token"));
-            assert_eq!(*denied.connection().borrow(), Connection::Offline);
+            assert_eq!(denied.connection().get(), Connection::Offline);
             denied.request_connect();
         }
         assert!(matches!(rejected.recv().await, Some(Event::ConnectError {fatal:true,..})));
         denied.disable_reconnect();
-        assert_eq!(*denied.connection().borrow(), Connection::Stopped);
+        assert_eq!(denied.connection().get(), Connection::Stopped);
         assert!(rejected.recv().await.is_none());
 
         let (client, mut events) =
             Client::start_session(url.clone(), headers.clone(), "fixture-token".into(), "s".into(), false);
         let mut watcher = client.connection();
-        assert_eq!(*watcher.borrow_and_update(), Connection::Offline);
+        assert_eq!(watcher.get_and_update(), Connection::Offline);
         connected(&mut events, 1).await;
         link(&client, Connection::Online(0)).await;
         client.request_connect();
         assert!(client.emit("end", vec![]));
         assert!(matches!(events.recv().await, Some(Event::Disconnected(reason)) if reason=="io server disconnect"));
-        assert_eq!(*client.connection().borrow(), Connection::Offline);
+        assert_eq!(client.connection().get(), Connection::Offline);
         assert!(!client.is_connected());
         assert!(client.emit("record", vec![json!("queued")]));
         assert!(timeout(Duration::from_millis(300), events.recv()).await.is_err());
-        assert_eq!(*client.connection().borrow(), Connection::Offline);
+        assert_eq!(client.connection().get(), Connection::Offline);
         client.request_connect();
         connected(&mut events, 2).await;
         link(&client, Connection::Online(1)).await;
@@ -224,11 +224,11 @@ async fn session_hooks() {
         connected(&mut events, 3).await;
         link(&client, Connection::Online(2)).await;
         client.stop(Duration::from_secs(1));
-        assert_eq!(*client.connection().borrow(), Connection::Stopped);
+        assert_eq!(client.connection().get(), Connection::Stopped);
         assert!(matches!(events.recv().await, Some(Event::Disconnected(reason)) if reason=="io client disconnect"));
         assert!(events.recv().await.is_none());
         client.request_connect();
-        assert_eq!(*client.connection().borrow(), Connection::Stopped);
+        assert_eq!(client.connection().get(), Connection::Stopped);
     })
     .await
     .expect("Socket.IO session hooks timed out");

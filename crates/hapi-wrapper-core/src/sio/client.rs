@@ -42,6 +42,27 @@ pub enum Connection {
     Stopped,
 }
 
+pub struct ConnectionObserver(watch::Receiver<Connection>);
+impl ConnectionObserver {
+    pub fn get(&self) -> Connection {
+        *self.0.borrow()
+    }
+    pub fn get_and_update(&mut self) -> Connection {
+        *self.0.borrow_and_update()
+    }
+    pub async fn changed(&mut self) -> Option<Connection> {
+        self.0.changed().await.ok()?;
+        Some(self.get_and_update())
+    }
+    pub async fn wait_for(&mut self, mut f: impl FnMut(Connection) -> bool) -> Option<Connection> {
+        let mut state = self.get_and_update();
+        while !f(state) {
+            state = self.changed().await?;
+        }
+        Some(state)
+    }
+}
+
 #[derive(Default)]
 struct State {
     link: watch::Sender<Connection>,
@@ -268,8 +289,8 @@ impl Client {
             self.stop(Duration::ZERO);
         }
     }
-    pub fn connection(&self) -> watch::Receiver<Connection> {
-        self.shared.lock().link.subscribe()
+    pub fn connection(&self) -> ConnectionObserver {
+        ConnectionObserver(self.shared.lock().link.subscribe())
     }
     pub fn is_connected(&self) -> bool {
         self.shared.lock().connected
@@ -685,6 +706,43 @@ mod tests {
         client.stop(Duration::from_secs(1));
         assert_eq!(ws.next().await.unwrap().unwrap(), Message::text("41/cli,"));
         assert!(matches!(ws.next().await, Some(Ok(Message::Close(_)))));
+    }
+
+    #[tokio::test]
+    async fn observer_can_stop_the_client_on_an_online_transition() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (client, mut events) = Client::start(url, vec![], "token".into(), "s".into());
+        let mut observer = client.connection();
+        let stopper = client.clone();
+        let (done, observed) = oneshot::channel();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .build()
+                .unwrap();
+            let state = runtime.block_on(observer.wait_for(|state| {
+                if matches!(state, Connection::Online(_)) {
+                    stopper.stop(Duration::from_secs(1));
+                }
+                state == Connection::Stopped
+            }));
+            match observer.get() {
+                Connection::Stopped => stopper.stop(Duration::ZERO),
+                _ => unreachable!(),
+            }
+            let _ = done.send(state);
+        });
+        let mut ws = open(&listener).await;
+        ws.send(Message::text(r#"40/cli,{"sid":"session"}"#))
+            .await
+            .unwrap();
+        assert!(matches!(events.recv().await, Some(Event::Connected)));
+        let observed = tokio::time::timeout(Duration::from_secs(5), observed)
+            .await
+            .expect("stop() from an observer deadlocked")
+            .unwrap();
+        assert_eq!(observed, Some(Connection::Stopped));
+        assert_eq!(ws.next().await.unwrap().unwrap(), Message::text("41/cli,"));
     }
 
     async fn slow_peer() -> (

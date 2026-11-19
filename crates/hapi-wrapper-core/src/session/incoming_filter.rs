@@ -167,6 +167,7 @@ impl IncomingFilter {
     pub fn page_scanned(&mut self, after: i64) {
         if let Some(pending) = &mut self.rewind.pending {
             pending.after = pending.after.max(after);
+            self.cursor = Some(self.cursor.unwrap_or(after).max(after));
         }
         if let Some(progress) = &mut self.backfill {
             progress.after = progress.after.max(after);
@@ -342,6 +343,23 @@ mod tests {
         f.page_scanned(100);
         f.complete_rewind(2);
         assert_eq!(f.backfill_start(Some(0)), Some((100, 2)));
+    }
+    #[test]
+    fn completed_rewind_keeps_scanned_sequence_as_cursor() {
+        let mut f = IncomingFilter::default();
+        assert!(f.accept(Some("a"), Some(10)));
+        assert!(f.accept(Some("b"), Some(20)));
+        f.reconcile_rewind(&json!({"opencodeRewind":{"operationId":"op","phase":"committed"}}));
+        assert_eq!(f.backfill_start(None), Some((0, 1)));
+        assert!(!f.accept_delivery(Some("a"), Some(10), true));
+        assert!(!f.accept_delivery(Some("b"), Some(20), true));
+        f.page_scanned(20);
+        f.complete_rewind(1);
+        f.finish_backfill();
+        assert_eq!(f.cursor(), Some(20));
+        assert_eq!(f.backfill_start(f.cursor()), Some((20, 1)));
+        assert!(!f.accept(None, Some(15)));
+        assert!(f.accept(None, Some(21)));
     }
     #[test]
     fn rewind_schedule_claims_once_and_waits_for_reconnect_sync() {
