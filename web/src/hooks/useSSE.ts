@@ -482,7 +482,7 @@ export function useSSE(options: {
             scheduleInvalidationFlush()
         }
 
-        const upsertSessionSummary = (session: Session) => {
+        const upsertSessionSummary = (session: Session, eventId: string) => {
             queryClient.setQueryData<CachedSessionsResponse | undefined>(queryKeys.sessions, (previous) => {
                 if (!previous) {
                     return previous
@@ -501,7 +501,8 @@ export function useSSE(options: {
                         : Math.max(existing?.lastUserMessageAt ?? 0, session.lastUserMessageAt),
                     futureScheduledMessageCount: existing?.futureScheduledMessageCount ?? 0,
                     nextScheduledAt: existing?.nextScheduledAt ?? null,
-                    sessionScheduleEventId: existing?.sessionScheduleEventId
+                    sessionScheduleEventId: existing?.sessionScheduleEventId,
+                    sessionListInsertionEventId: existing ? existing.sessionListInsertionEventId : eventId || undefined
                 }
                 const nextSessions = previous.sessions.slice()
                 if (existingIndex >= 0) {
@@ -784,7 +785,7 @@ export function useSSE(options: {
                         contentRevision: Math.max(previous?.session.contentRevision ?? 0, incoming.contentRevision ?? 0),
                         readState: mergeReadState(previous?.session.readState, incoming.readState)
                     } }))
-                    upsertSessionSummary(event.data)
+                    upsertSessionSummary(event.data, eventId)
                     if (event.type === 'session-added') {
                         queueScratchlistStatusInvalidation()
                     }

@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import type { ApiClient } from '@/api/client'
 import type { SessionsResponse, SessionSummary } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
+import { useSSE } from '../useSSE'
 import { useSessions } from './useSessions'
 
 afterEach(cleanup)
@@ -70,4 +71,65 @@ it.each([
         futureScheduledMessageCount: expectedCount,
         nextScheduledAt: expectedCount ? 200 : null
     })
+})
+
+it.each([false, true])('retains an SSE-inserted row across an older list snapshot (scheduled: %s)', async (scheduled) => {
+    let receive: (event: object, eventId: string) => void = () => { throw new Error('No event stream') }
+    vi.stubGlobal('EventSource', class {
+        onmessage: ((event: MessageEvent<string>) => void) | null = null
+        constructor() {
+            receive = (event, eventId) => this.onmessage?.(new MessageEvent('message', {
+                data: JSON.stringify(event), lastEventId: eventId
+            }))
+        }
+        close() {}
+    })
+    const client = new QueryClient()
+    const initial = row('existing', 100)
+    client.setQueryData(queryKeys.sessions, {
+        sessions: [initial, row('removed', 50)],
+        sessionScheduleCursor: 'epoch:1:ns'
+    })
+    let resolve!: (response: SessionsResponse) => void
+    const api = { getSessions: () => new Promise<SessionsResponse>(done => { resolve = done }) } as unknown as ApiClient
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children)
+    const { result, unmount } = renderHook(() => {
+        useSSE({ enabled: true, token: 'test', baseUrl: 'http://hub.test', scope: 'global', subscription: { all: true }, onEvent: () => {} })
+        return useSessions(api, { enabled: false })
+    }, { wrapper })
+    const read = () => client.getQueryData<SessionsResponse>(queryKeys.sessions)!.sessions
+    const future = { futureScheduledMessageCount: 1, nextScheduledAt: 1_000 }
+    const added = {
+        ...row('new', 200), namespace: 'default', seq: 0, thinkingAt: 0, agentState: null
+    }
+    try {
+        await act(async () => {
+            const pending = result.current.refetch()
+            receive({ type: 'session-added', sessionId: added.id, data: added }, 'epoch:3:ns')
+            if (scheduled) {
+                receive({
+                    type: 'message-received', sessionId: added.id,
+                    message: { id: 'prompt', seq: 1, localId: 'local-prompt', content: {}, createdAt: 200, invokedAt: null, scheduledAt: 1_000 },
+                    sessionSchedule: future
+                }, 'epoch:4:ns')
+            }
+            expect(read()[0]).toMatchObject({
+                id: added.id, ...(scheduled ? future : { futureScheduledMessageCount: 0, nextScheduledAt: null })
+            })
+            resolve({ sessions: [initial], sessionScheduleCursor: 'epoch:2:ns' })
+            await pending
+        })
+        expect(read().map(session => session.id)).toEqual([added.id, initial.id])
+        expect(read()[0]).toMatchObject(scheduled ? future : { futureScheduledMessageCount: 0, nextScheduledAt: null })
+
+        await act(async () => {
+            const pending = result.current.refetch()
+            resolve({ sessions: [initial], sessionScheduleCursor: 'epoch:5:ns' })
+            await pending
+        })
+        expect(read().map(session => session.id)).toEqual([initial.id])
+    } finally {
+        unmount()
+        vi.unstubAllGlobals()
+    }
 })

@@ -1,7 +1,10 @@
 import { SessionScheduleSchema } from '@hapi/protocol/schemas'
 import type { SessionsResponse, SessionSummary } from '@/types/api'
 
-type CachedSessionSummary = SessionSummary & { sessionScheduleEventId?: string }
+type CachedSessionSummary = SessionSummary & {
+    sessionScheduleEventId?: string
+    sessionListInsertionEventId?: string
+}
 export type CachedSessionsResponse = Omit<SessionsResponse, 'sessions'> & { sessions: CachedSessionSummary[] }
 
 // Positions are comparable only within one hub epoch and namespace.
@@ -17,6 +20,10 @@ function comparePositions(a: string | undefined, b: string | undefined): number 
     const second = Number(otherSeq)
     if (!Number.isSafeInteger(first) || !Number.isSafeInteger(second)) return undefined
     return first - second
+}
+
+export function isNewerSessionListEvent(eventId: string | undefined, snapshotCursor: string | undefined): boolean {
+    return (comparePositions(eventId, snapshotCursor) ?? 0) > 0
 }
 
 export function applySessionSchedule(
@@ -54,7 +61,7 @@ export function reconcileSessionSchedule(
     snapshotCursor: string | undefined,
     cached: CachedSessionSummary | undefined
 ): CachedSessionSummary {
-    if (!cached || (comparePositions(cached.sessionScheduleEventId, snapshotCursor) ?? 0) <= 0) {
+    if (!cached || !isNewerSessionListEvent(cached.sessionScheduleEventId, snapshotCursor)) {
         return snapshot
     }
     return {

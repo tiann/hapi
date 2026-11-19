@@ -165,7 +165,7 @@ Schema: `SyncEventSchema` in `shared/src/schemas.ts` (discriminated on `type`). 
 
 The optional `sessionSchedule` object contains `futureScheduledMessageCount: number` and `nextScheduledAt: number | null` for the affected session. A `message-received` event can carry it when the message has `scheduledAt`.
 
-The web compares the event ID with the list response's `sessionScheduleCursor` and any later schedule event already applied to the row. Compare sequence numbers only within the same hub epoch and namespace. A newer event updates the row. An older or duplicate event in the same scope is ignored. A delayed REST snapshot preserves a newer cached schedule from the same scope. If the epoch or namespace differs, the REST snapshot wins and an incomparable incoming event triggers a list refetch. A missing or invalid schedule patch, missing cursor, or missing row also falls back to a list refetch.
+The web compares the event ID with the list response's `sessionScheduleCursor` and any later schedule event already applied to the row. Compare sequence numbers only within the same hub epoch and namespace. A newer event updates the row. An older or duplicate event in the same scope is ignored. A delayed REST snapshot preserves a newer cached schedule from the same scope. It also preserves any still-cached row inserted by a full session event newer than that snapshot, using the insertion event ID. If the epoch or namespace differs, the REST snapshot wins and an incomparable incoming event triggers a list refetch. A missing or invalid schedule patch, missing cursor, or missing row also falls back to a list refetch.
 
 ## Versioned patch algorithm
 
