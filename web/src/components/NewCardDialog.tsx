@@ -46,7 +46,7 @@ export type NewCardDialogProps = {
     isLoadingTemplates: boolean
     templatesError: string | null
     onRepoChange: (repo: string | null) => void
-    onSubmit: (payload: { repo: string; title: string; body: string; labels: string[]; assignees: string[] }) => Promise<string>
+    onSubmit: (payload: { repo: string; title: string; body: string; templateId: string | null; labels: string[]; assignees: string[] }) => Promise<string>
 }
 
 /**
@@ -174,6 +174,7 @@ export function NewCardDialog(props: NewCardDialogProps) {
                 repo: repoInput.trim(),
                 title: finalTitle,
                 body: formattedBody,
+                templateId: selectedTemplate?.id ?? null,
                 labels: selectedTemplate?.labels ?? [],
                 assignees: selectedTemplate?.assignees ?? []
             })

@@ -92,6 +92,7 @@ describe('NewCardDialog', () => {
                 repo: 'heavygee/hapi',
                 title: '[Bug]: Everything is broken',
                 body: '### Contact\n\nme@example.com',
+                templateId: 'bug_report.yml',
                 labels: ['bug'],
                 assignees: ['octocat']
             })
@@ -205,6 +206,7 @@ describe('NewCardDialog', () => {
                 repo: 'heavygee/hapi',
                 title: 'A plain title',
                 body: 'Plain body text',
+                templateId: null,
                 labels: [],
                 assignees: []
             })

@@ -1696,7 +1696,16 @@ export const CreateBoardItemRequestSchema = z.object({
     title: z.string().min(1),
     body: z.string(),
     labels: z.array(z.string().min(1)).default([]),
-    assignees: z.array(z.string().min(1)).default([])
+    assignees: z.array(z.string().min(1)).default([]),
+    // `null` = the user explicitly chose "blank issue" in the picker, a
+    // template's own `id` otherwise — required (not optional) so the hub can
+    // re-verify the CURRENT template policy right before creating, rather
+    // than trusting a choice made against a possibly-stale fetch from when
+    // the picker opened (review finding, hapi#238: a maintainer disabling
+    // blank issues, or removing a template, between picker-open and submit
+    // left a window where this route filed an issue the repo's current
+    // policy no longer allows).
+    templateId: z.string().nullable()
 })
 export type CreateBoardItemRequest = z.infer<typeof CreateBoardItemRequestSchema>
 

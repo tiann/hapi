@@ -2112,12 +2112,64 @@ describe('POST /api/todo-boards/:id/items (create a card)', () => {
         })
         const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
             method: 'POST',
-            body: JSON.stringify({ repo: 'heavygee/hapi', title: 'New bug', body: '### What\n\nBroke.', labels: ['bug'], assignees: [] })
+            body: JSON.stringify({ repo: 'heavygee/hapi', title: 'New bug', body: '### What\n\nBroke.', templateId: null, labels: ['bug'], assignees: [] })
         })
         expect(response.status).toBe(200)
         const body = await response.json() as { ok: true; url: string }
         expect(body.url).toBe('https://github.com/heavygee/hapi/issues/42')
         expect(calls).toEqual(['createIssue:heavygee/hapi', 'addItemToProject:https://github.com/heavygee/hapi/issues/42'])
+    })
+
+    // Regression (bot review, hapi#238): the route used to trust whatever
+    // the client sent with no re-check against the repo's CURRENT policy —
+    // a maintainer disabling blank issues between picker-open and submit
+    // left a window where this route filed one anyway.
+    it('rejects a blank-issue submission when the repo currently disables blank issues', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined,
+            {
+                ...UNUSED_ACTIONS,
+                createIssue: async () => { calls.push('should-not-be-called'); return 'https://github.com/heavygee/hapi/issues/42' }
+            },
+            ALWAYS_MEMBER, undefined,
+            () => ({
+                data: {
+                    repository: {
+                        issueTemplateDir: {
+                            entries: [
+                                { name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }
+                            ]
+                        }
+                    }
+                }
+            })
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({ repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null })
+        })
+        expect(response.status).toBe(409)
+        expect(calls).toEqual([])
+    })
+
+    it('rejects a submission against a template that no longer exists', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined,
+            {
+                ...UNUSED_ACTIONS,
+                createIssue: async () => { calls.push('should-not-be-called'); return 'https://github.com/heavygee/hapi/issues/42' }
+            },
+            ALWAYS_MEMBER, undefined,
+            () => ({ data: { repository: { issueTemplateDir: { entries: [] } } } })
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({ repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: 'bug_report.yml' })
+        })
+        expect(response.status).toBe(409)
+        expect(calls).toEqual([])
     })
 
     it('404s for an unknown board', async () => {
@@ -2142,12 +2194,12 @@ describe('POST /api/todo-boards/:id/items (create a card)', () => {
         const app = await createApp(() => ({ data: {} }))
         const badRepo = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
             method: 'POST',
-            body: JSON.stringify({ repo: 'not-a-slug', title: 'T', body: 'B' })
+            body: JSON.stringify({ repo: 'not-a-slug', title: 'T', body: 'B', templateId: null })
         })
         expect(badRepo.status).toBe(400)
         const missingTitle = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
             method: 'POST',
-            body: JSON.stringify({ repo: 'heavygee/hapi', body: 'B' })
+            body: JSON.stringify({ repo: 'heavygee/hapi', body: 'B', templateId: null })
         })
         expect(missingTitle.status).toBe(400)
     })
@@ -2161,7 +2213,7 @@ describe('POST /api/todo-boards/:id/items (create a card)', () => {
         })
         const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
             method: 'POST',
-            body: JSON.stringify({ repo: 'heavygee/hapi', title: 'T', body: 'B' })
+            body: JSON.stringify({ repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null })
         })
         expect(response.status).toBe(502)
         expect(calls).toEqual([])
@@ -2175,7 +2227,7 @@ describe('POST /api/todo-boards/:id/items (create a card)', () => {
         })
         const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
             method: 'POST',
-            body: JSON.stringify({ repo: 'heavygee/hapi', title: 'T', body: 'B' })
+            body: JSON.stringify({ repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null })
         })
         expect(response.status).toBe(502)
         const body = await response.json() as { error: string; url: string }

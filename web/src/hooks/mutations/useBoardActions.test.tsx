@@ -81,7 +81,7 @@ describe('useBoardActions', () => {
 
         const { result } = renderHook(() => useBoardActions(api), { wrapper: createWrapper(queryClient) })
 
-        const payload = { repo: 'heavygee/hapi', title: 'New bug', body: 'Broke.', labels: ['bug'], assignees: [] }
+        const payload = { repo: 'heavygee/hapi', title: 'New bug', body: 'Broke.', templateId: null, labels: ['bug'], assignees: [] }
         let url: string | undefined
         await act(async () => {
             url = await result.current.createBoardItem('board-1', payload)
@@ -117,7 +117,7 @@ describe('useBoardActions', () => {
 
             const { result } = renderHook(() => useBoardActions(api), { wrapper: createWrapper(queryClient) })
 
-            const payload = { repo: 'heavygee/hapi', title: 'New bug', body: 'Broke.', labels: ['bug'], assignees: [] }
+            const payload = { repo: 'heavygee/hapi', title: 'New bug', body: 'Broke.', templateId: null, labels: ['bug'], assignees: [] }
             let url: string | undefined
             const pending = result.current.createBoardItem('board-1', payload).then(resolved => { url = resolved })
             await vi.advanceTimersByTimeAsync(2000)
@@ -144,7 +144,7 @@ describe('useBoardActions', () => {
 
             const { result } = renderHook(() => useBoardActions(api), { wrapper: createWrapper(queryClient) })
 
-            const payload = { repo: 'heavygee/hapi', title: 'New bug', body: 'Broke.', labels: ['bug'], assignees: [] }
+            const payload = { repo: 'heavygee/hapi', title: 'New bug', body: 'Broke.', templateId: null, labels: ['bug'], assignees: [] }
             let url: string | undefined
             const pending = result.current.createBoardItem('board-1', payload).then(resolved => { url = resolved })
             for (let i = 0; i < 11; i++) {
@@ -163,7 +163,7 @@ describe('useBoardActions', () => {
         const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
         const { result } = renderHook(() => useBoardActions(null), { wrapper: createWrapper(queryClient) })
 
-        await expect(result.current.createBoardItem('board-1', { repo: 'a/b', title: 'T', body: 'B', labels: [], assignees: [] }))
+        await expect(result.current.createBoardItem('board-1', { repo: 'a/b', title: 'T', body: 'B', templateId: null, labels: [], assignees: [] }))
             .rejects.toThrow('API unavailable')
     })
 
@@ -181,7 +181,7 @@ describe('useBoardActions', () => {
 
         const { result } = renderHook(() => useBoardActions(api), { wrapper: createWrapper(queryClient) })
 
-        const payload = { repo: 'heavygee/hapi', title: 'New bug', body: 'Broke.', labels: ['bug'], assignees: [] }
+        const payload = { repo: 'heavygee/hapi', title: 'New bug', body: 'Broke.', templateId: null, labels: ['bug'], assignees: [] }
         const url = await result.current.createBoardItem('board-1', payload)
 
         expect(url).toBe(createdUrl)
@@ -202,7 +202,7 @@ describe('useBoardActions', () => {
 
             const { result } = renderHook(() => useBoardActions(api), { wrapper: createWrapper(queryClient) })
 
-            const payload = { repo: 'heavygee/hapi', title: 'New bug', body: 'Broke.', labels: ['bug'], assignees: [] }
+            const payload = { repo: 'heavygee/hapi', title: 'New bug', body: 'Broke.', templateId: null, labels: ['bug'], assignees: [] }
             let url: string | undefined
             const pending = result.current.createBoardItem('board-1', payload).then(resolved => { url = resolved })
             await vi.advanceTimersByTimeAsync(2000)

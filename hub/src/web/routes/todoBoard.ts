@@ -19,6 +19,7 @@ import {
     type BoardsResponse,
     type CreateBoardItemResponse,
     type GetIssueTemplatesResponse,
+    isUsableIssueTemplate,
     type IssueTemplate
 } from '@hapi/protocol'
 import { GithubRepoSlugSchema } from '@hapi/protocol/schemas'
@@ -1350,6 +1351,37 @@ export function createBoardRoutes(
 ): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
 
+    // Shared by the GET picker route and the POST creation route's
+    // re-verification (review finding, hapi#238) — both need the exact same
+    // "current policy for this repo" answer, including the `.github`
+    // inheritance fallback, so there is only one place that can disagree
+    // with itself about what's allowed.
+    async function resolveIssueTemplatesForRepo(
+        host: string, owner: string, repo: string
+    ): Promise<{ templates: IssueTemplate[]; blankIssuesEnabled: boolean }> {
+        let response = await runGraphqlIssueTemplateDir({ host, owner, repo })
+        if (response.errors?.length) {
+            throw new Error(response.errors.map(e => e.message).join('; '))
+        }
+        // See the GET route's prior comment for why: GitHub inherits
+        // issue templates (and blank_issues_enabled) from the owner's
+        // `.github` repo when the target repo has none of its own.
+        if (repoHasNoIssueTemplateDir(response) && repo.toLowerCase() !== '.github') {
+            try {
+                const inherited = await runGraphqlIssueTemplateDir({ host, owner, repo: '.github' })
+                if (!inherited.errors?.length && !repoHasNoIssueTemplateDir(inherited) && isEligibleIssueTemplateFallback(inherited)) {
+                    response = inherited
+                }
+            } catch (error) {
+                if (!(error instanceof GhGraphqlNotFoundError)) {
+                    throw error
+                }
+                // No .github repo — fall through with the target repo's own (empty) result.
+            }
+        }
+        return parseIssueTemplateDirResponse(response)
+    }
+
     app.get('/todo-boards', async (c) => {
         if (c.get('namespace') !== 'default') {
             return c.json({ error: OWNER_ONLY_ERROR }, 403)
@@ -1824,62 +1856,7 @@ export function createBoardRoutes(
         const [owner, repo] = repoResult.data.split('/') as [string, string]
 
         try {
-            let response = await runGraphqlIssueTemplateDir({ host: board.host, owner, repo })
-            if (response.errors?.length) {
-                return c.json({ error: response.errors.map(e => e.message).join('; ') }, 502)
-            }
-            // GitHub inherits issue templates — and config.yml's
-            // blank_issues_enabled — from the owner's special `.github`
-            // repo's own ISSUE_TEMPLATE directory when the target repo has
-            // none of its own at all (a directory-level fallback, not a
-            // per-file merge: a repo with its own directory, even an empty
-            // one, never inherits). Without resolving this, Boards' picker
-            // could offer a blank issue a repo's real, inherited policy
-            // disables, or show no templates for a repo that actually has
-            // them via its organization's `.github` repo (review finding).
-            // Best-effort for a genuinely absent `.github` repo only — falls
-            // through to the target repo's own (empty) result, not a hard
-            // error. Most owners have no `.github` repo at all — `gh api
-            // graphql` treats GitHub's resulting NOT_FOUND as a command
-            // failure and rejects rather than resolving with an `errors`
-            // array in the response body (review finding: this reached the
-            // outer 502 handler unguarded, 502ing "New card" for the common
-            // case of a perfectly valid repo with no templates of its own
-            // and an owner with no `.github` repo either).
-            //
-            // Narrowed to specifically NOT_FOUND (review finding, second
-            // pass): a blanket catch-all here would also hide an actual
-            // auth/rate-limit/transport failure on *this* call as if it just
-            // meant "no inherited templates" — silently serving the wrong
-            // (empty) policy for a repo whose `.github` fallback might
-            // really have templates. Any other failure still propagates to
-            // the outer 502.
-            if (repoHasNoIssueTemplateDir(response) && repo.toLowerCase() !== '.github') {
-                try {
-                    const inherited = await runGraphqlIssueTemplateDir({ host: board.host, owner, repo: '.github' })
-                    if (!inherited.errors?.length && !repoHasNoIssueTemplateDir(inherited) && isEligibleIssueTemplateFallback(inherited)) {
-                        response = inherited
-                    }
-                } catch (error) {
-                    if (!(error instanceof GhGraphqlNotFoundError)) {
-                        throw error
-                    }
-                    // No .github repo — fall through with the target repo's
-                    // own (empty) result.
-                }
-            }
-            const { templates, blankIssuesEnabled } = parseIssueTemplateDirResponse(response)
-            // `blank_issues_enabled: false` is honored as-is, even when zero
-            // templates parsed as usable (operator ruling, hapi#238,
-            // reversing an earlier default): that flag is the maintainer's
-            // explicit statement that unstructured issues are unwelcome in
-            // their tracker, and "we found no usable template" is often our
-            // parser's limitation, not evidence the repo lacks structure —
-            // falling back to blank would convert our gap into a policy
-            // violation filed under the user's name, silently, in someone
-            // else's repository. `githubNewIssueUrl` gives the web client an
-            // escape hatch to route the user to GitHub's own chooser instead
-            // of a dead end when this makes every option unavailable.
+            const { templates, blankIssuesEnabled } = await resolveIssueTemplatesForRepo(board.host, owner, repo)
             const body: GetIssueTemplatesResponse = {
                 templates,
                 blankAllowed: blankIssuesEnabled,
@@ -1903,7 +1880,31 @@ export function createBoardRoutes(
         const json = await c.req.json().catch(() => null)
         const parsed = CreateBoardItemRequestSchema.safeParse(json)
         if (!parsed.success) {
-            return c.json({ error: 'Invalid body — expected { repo: string, title: string, body: string, labels?: string[], assignees?: string[] }' }, 400)
+            return c.json({ error: 'Invalid body — expected { repo: string, title: string, body: string, templateId: string | null, labels?: string[], assignees?: string[] }' }, 400)
+        }
+
+        // Re-verify the repo's CURRENT template policy right before writing
+        // (review finding, hapi#238) — the client's choice can be stale: a
+        // maintainer may have disabled blank issues, or removed/changed a
+        // template, in the window between the picker fetching templates and
+        // this submit. A 409 here preserves the client's draft (it never
+        // clears on a failed submit) rather than filing something the repo's
+        // current policy no longer allows.
+        const [repoOwner, repoName] = parsed.data.repo.split('/') as [string, string]
+        try {
+            const { templates, blankIssuesEnabled } = await resolveIssueTemplatesForRepo(board.host, repoOwner, repoName)
+            if (parsed.data.templateId === null) {
+                if (!blankIssuesEnabled) {
+                    return c.json({ error: 'This repository no longer allows blank issues — pick a template and try again' }, 409)
+                }
+            } else {
+                const current = templates.find(t => t.id === parsed.data.templateId)
+                if (!current || !isUsableIssueTemplate(current)) {
+                    return c.json({ error: 'This template is no longer available — pick another and try again' }, 409)
+                }
+            }
+        } catch (error) {
+            return c.json({ error: error instanceof Error ? error.message : 'Failed to verify the current issue template policy' }, 502)
         }
 
         let issueUrl: string
