@@ -34,6 +34,7 @@ export abstract class BaseSessionScanner<TEvent> {
     private readonly processedEventKeys = new Set<string>();
     private readonly fileCursors = new Map<string, number>();
     private intervalId: ReturnType<typeof setInterval> | null = null;
+    private trailingScan: ReturnType<typeof setTimeout> | undefined;
     private stopped = false;
     private scanPromise: Promise<void> | null = null;
 
@@ -63,11 +64,22 @@ export abstract class BaseSessionScanner<TEvent> {
 
     protected shouldWatchFile?(filePath: string): boolean;
 
+    private onFileChange = (): void => {
+        this.sync.invalidate();
+        if (this.pollMs <= this.options.intervalMs) return;
+        clearTimeout(this.trailingScan);
+        const timer = setTimeout(async () => {
+            await this.flush();
+            if (this.trailingScan === timer) this.trailingScan = undefined;
+        }, this.options.intervalMs);
+        this.trailingScan = timer;
+    };
+
     protected ensureWatcher(filePath: string): void {
         if (this.watchers.has(filePath)) {
             return;
         }
-        this.watchers.set(filePath, startFileWatcher(filePath, () => this.sync.invalidate(), (healthy) => {
+        this.watchers.set(filePath, startFileWatcher(filePath, this.onFileChange, (healthy) => {
             if (healthy) {
                 this.healthyWatchers.add(filePath);
                 if (this.watchers.has(filePath)) this.invalidate();
@@ -141,6 +153,12 @@ export abstract class BaseSessionScanner<TEvent> {
     }
 
     public async cleanup(): Promise<void> {
+        if (this.trailingScan) {
+            clearTimeout(this.trailingScan);
+            await this.flush();
+            clearTimeout(this.trailingScan);
+            this.trailingScan = undefined;
+        }
         this.stopped = true;
         if (this.intervalId) {
             clearInterval(this.intervalId);

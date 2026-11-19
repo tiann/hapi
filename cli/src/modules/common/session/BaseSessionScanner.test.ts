@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { BaseSessionScanner } from './BaseSessionScanner';
+import { BaseSessionScanner, type SessionFileScanStats } from './BaseSessionScanner';
 import { startFileWatcher } from '@/modules/watcher/startFileWatcher';
 
 vi.mock('@/modules/watcher/startFileWatcher', () => ({ startFileWatcher: vi.fn() }));
@@ -61,4 +61,39 @@ it.each(['discovery', 'empty', 'pruned'])('keeps the discovery cadence for %s ta
     await vi.advanceTimersByTimeAsync(2000);
     expect(scanner.findSessionFiles).toHaveBeenCalledOnce();
     await scanner.cleanup();
+});
+
+it.each(['timer', 'cleanup'])('delivers a silent final append on %s after watcher activity', async (mode) => {
+    vi.useFakeTimers();
+    vi.mocked(startFileWatcher).mockImplementation((_path, _changed, health) => {
+        health!(true);
+        return Object.assign(() => {}, { verifyIdentity: vi.fn() });
+    });
+    const transcript: string[] = [];
+    const delivered: string[] = [];
+    class TranscriptScanner extends BaseSessionScanner<string> {
+        constructor() { super({ intervalMs: 2000 }); }
+        shouldWatchFile() { return true; }
+        async findSessionFiles() { return ['wire']; }
+        async parseSessionFile(_path: string, cursor: number) {
+            return { events: transcript.slice(cursor).map(event => ({ event })), nextCursor: transcript.length };
+        }
+        generateEventKey(event: string) { return event; }
+        async handleFileScan({ events }: SessionFileScanStats<string>) { delivered.push(...events); }
+    }
+    const scanner = new TranscriptScanner();
+    await scanner.start();
+    const [, changed] = vi.mocked(startFileWatcher).mock.calls[0]!;
+    transcript.push('first');
+    changed('wire');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(delivered).toEqual(['first']);
+    transcript.push('tail');
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(delivered).toEqual(['first']);
+    if (mode === 'timer') await vi.advanceTimersByTimeAsync(1);
+    else await scanner.cleanup();
+    expect(delivered).toEqual(['first', 'tail']);
+    await scanner.cleanup();
+    expect(vi.getTimerCount()).toBe(0);
 });
