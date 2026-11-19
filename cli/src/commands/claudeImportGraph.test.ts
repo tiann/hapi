@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -14,7 +14,7 @@ it('loads the runner-side Claude runtime without terminal UI or other launchers'
             const { mock } = await import('bun:test')
             const { writeFileSync } = await import('node:fs')
             const { resolveCommand } = await import('./src/commands/registry')
-            const { command, context } = await resolveCommand(['claude', '--started-by', 'runner', '--fork-session'])
+            await resolveCommand(process.argv.slice(1))
             const atResolution = Object.keys(require.cache)
             const control = await import('./src/runner/controlClient')
             mock.module('./src/runner/controlClient', () => ({
@@ -29,14 +29,22 @@ it('loads the runner-side Claude runtime without terminal UI or other launchers'
                 }
             }))
             process.env.HAPI_CLAUDE_PATH = process.execPath
-            await command.run(context)
-        `], {
+            const { runCli } = await import('./src/commands/runCli')
+            await runCli()
+        `, '--', 'claude', '--started-by', 'runner', '--fork-session', '--mcp-config',
+            'dummy-credential-one', 'dummy-credential-two', '--mcp-config=dummy-credential-three'], {
             cwd: fileURLToPath(new URL('../../', import.meta.url)),
             env: { ...process.env, HAPI_HOME: home, SNAPSHOT: snapshot },
             encoding: 'utf8',
             timeout: 15_000,
             maxBuffer: 4 * 1024 * 1024
         })
+        const logsDir = join(home, 'logs')
+        const logs = readdirSync(logsDir).filter(file => file.endsWith('.log'))
+            .map(file => readFileSync(join(logsDir, file), 'utf8')).join('\n')
+        expect(logs).toContain('Starting hapi CLI with args')
+        expect(logs).toContain('[redacted]')
+        expect(logs).not.toContain('dummy-credential')
         const [command, runtime] = (JSON.parse(readFileSync(snapshot, 'utf8')) as string[][])
             .map(paths => paths.map(path => path.split('\\').join('/')))
         const otherFlavor = /\/cli\/src\/(?:commands\/)?(?:agy|codex|copilot|cursor|dsh|grok|kimi|opencode|pi)(?:\/|\.ts$)/

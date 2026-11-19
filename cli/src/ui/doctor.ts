@@ -5,6 +5,7 @@
  * for hapi CLI including configuration, runner status, logs, and links
  */
 
+import { redactMcpConfigArgs } from '@/utils/cliArgs'
 import chalk from 'chalk'
 import { configuration } from '@/configuration'
 import { readSettings } from '@/persistence'
@@ -32,7 +33,7 @@ export function getEnvironmentInfo(): Record<string, any> {
         NODE_ENV: process.env.NODE_ENV,
         DEBUG: process.env.DEBUG,
         workingDirectory: getInvokedCwd(),
-        processArgv: process.argv,
+        processArgv: redactMcpConfigArgs(process.argv),
         happyDir: configuration?.happyHomeDir,
         apiUrl: configuration?.apiUrl,
         logsDir: configuration?.logsDir,

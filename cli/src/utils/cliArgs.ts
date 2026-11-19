@@ -56,3 +56,14 @@ export function normalizeCliArgs(rawArgv: string[]): string[] {
 export function getCliArgs(): string[] {
     return normalizeCliArgs(resolveRawArgv());
 }
+
+export function redactMcpConfigArgs(args: readonly string[]): string[] {
+    let redactValues = false;
+    return args.map(arg => {
+        if (arg.startsWith('-')) {
+            redactValues = arg === '--mcp-config' || arg.startsWith('--mcp-config=');
+            return arg.startsWith('--mcp-config=') ? '--mcp-config=[redacted]' : arg;
+        }
+        return redactValues ? '[redacted]' : arg;
+    });
+}

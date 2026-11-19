@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { z } from 'zod'
+import { getAgentConfigDir, type SkillSummary } from '@/modules/common/skills'
 import { configuration } from '@/configuration'
 import { hashObject } from '@/utils/deterministicJson'
 import { filterCatalogAffectingClaudeArgs } from './sdk/metadataExtractor'
@@ -32,19 +34,19 @@ export function catalogFingerprint(launch: CatalogLaunch, lists: CatalogLists): 
             persistentArgs.push(arg)
         }
     }
-    return hashObject([launch.cwd, launch.model ?? null, persistentArgs, lists.tools, lists.slashCommands])
+    return hashObject([getAgentConfigDir('claude'), launch.cwd, launch.model ?? null, persistentArgs, lists.tools, lists.slashCommands])
 }
 
-export function recordCatalog(sessionId: string, launch: CatalogLaunch, lists: CatalogLists, version?: string): void {
+export function recordCatalog(sessionId: string, launch: CatalogLaunch, lists: CatalogLists, version?: string, skills?: SkillSummary[]): void {
     const file = stampPath(sessionId)
     const tmp = file + '.' + randomUUID()
     try {
-        if (!version || !lists.tools?.length || !lists.slashCommands?.length) {
+        if (!version || !skills || !lists.tools?.length || !lists.slashCommands?.length) {
             rmSync(file, { force: true })
             return
         }
         mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
-        const stamp = { fingerprint: catalogFingerprint(launch, lists), version, time: Date.now() }
+        const stamp = { fingerprint: catalogFingerprint(launch, lists), version, skills, time: Date.now() }
         writeFileSync(tmp, JSON.stringify(stamp), { mode: 0o600 })
         renameSync(tmp, file)
     } catch {
@@ -54,22 +56,27 @@ export function recordCatalog(sessionId: string, launch: CatalogLaunch, lists: C
     }
 }
 
-export function canReuseCatalog(
+const stampSchema = z.object({
+    fingerprint: z.string(),
+    version: z.string().min(1),
+    time: z.number(),
+    skills: z.array(z.object({ name: z.string(), description: z.string().optional() }))
+})
+
+export function readCachedCatalog(
     sessionId: string,
     launch: CatalogLaunch,
-    metadata: (CatalogLists & { path: string }) | null | undefined,
-    versionOutput: string | null
-): boolean {
+    metadata: (CatalogLists & { path: string }) | null | undefined
+) {
     if (metadata?.path !== launch.cwd || !metadata.tools?.length || !metadata.slashCommands?.length
-        || filterCatalogAffectingClaudeArgs(launch.args).length) return false
+        || filterCatalogAffectingClaudeArgs(launch.args).length) return null
     try {
-        const stamp = JSON.parse(readFileSync(stampPath(sessionId), 'utf8'))
+        const stamp = stampSchema.parse(JSON.parse(readFileSync(stampPath(sessionId), 'utf8')))
         const age = Date.now() - stamp.time
-        if (typeof stamp.time !== 'number' || age < 0 || age >= 24 * 60 * 60 * 1000
-            || stamp.fingerprint !== catalogFingerprint(launch, metadata)) return false
-        const version = versionOutput?.match(/^(\d+\.\d+\.\d+(?:[-+][\w.+-]+)?)(?:\s|$)/)?.[1]
-        return Boolean(version && version === stamp.version)
+        if (age < 0 || age >= 24 * 60 * 60 * 1000
+            || stamp.fingerprint !== catalogFingerprint(launch, metadata)) return null
+        return { version: stamp.version, skills: stamp.skills, commands: metadata.slashCommands, tools: metadata.tools }
     } catch {
-        return false
+        return null
     }
 }

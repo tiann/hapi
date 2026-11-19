@@ -1,3 +1,4 @@
+import { redactMcpConfigArgs } from '@/utils/cliArgs'
 import { mkdirSync } from "node:fs";
 import { logger } from "@/ui/logger";
 import { claudeCheckSession } from "./utils/claudeCheckSession";
@@ -123,7 +124,7 @@ export async function claudeLocal(opts: {
         ...opts.claudeEnvVars
     }
 
-    logger.debug(`[ClaudeLocal] Spawning claude with args: ${JSON.stringify(args)}`);
+    logger.debug(`[ClaudeLocal] Spawning claude with args: ${JSON.stringify(redactMcpConfigArgs(args))}`);
 
     // Get Claude executable path (absolute path on Windows for shell: false)
     const claudeCommand = getDefaultClaudeCodePath();

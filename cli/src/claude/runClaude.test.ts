@@ -1,3 +1,4 @@
+import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import { randomUUID } from 'node:crypto'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { ApiSessionClient } from '@/api/apiSession'
@@ -22,7 +23,9 @@ vi.mock('./sdk/metadataExtractor', async original => ({
 vi.mock('./sdk/utils', async original => ({
     ...await original<typeof import('./sdk/utils')>(), getDefaultClaudeCodePath: () => 'claude'
 }))
-vi.mock('@/modules/common/skills', () => ({ listSkills: vi.fn(async () => []) }))
+vi.mock('@/modules/common/skills', async original => ({
+    ...await original<typeof import('@/modules/common/skills')>(), listSkills: vi.fn(async () => [])
+}))
 vi.mock('./utils/startHappyServer', () => ({
     startHappyServer: async () => ({ url: 'http://localhost', toolNames: [] }), toClaudeAllowedHapiMcpTools: () => []
 }))
@@ -42,6 +45,7 @@ let receive: Parameters<ApiSessionClient['onUserMessage']>[0]
 let cancel: Parameters<ApiSessionClient['onCancelQueuedMessage']>[0]
 let session: Session
 let liveCatalog: Parameters<typeof claudeRemoteLauncher>[1]
+const registerHandler = vi.fn()
 const discard = vi.fn()
 const updateMetadata = vi.fn((fn: (current: typeof metadata) => typeof metadata) => { metadata = fn(metadata) })
 
@@ -60,12 +64,12 @@ beforeEach(() => {
     vi.clearAllMocks()
     id = randomUUID()
     metadata = { ...initial }
-    recordCatalog(id, { cwd: path }, metadata, catalog.version)
+    recordCatalog(id, { cwd: path }, metadata, catalog.version, [{ name: 'skill', description: 'cached description' }])
     versionProbe.mockReturnValue(catalog.version + ' (Claude Code)')
     vi.mocked(extractSDKMetadata).mockResolvedValue(catalog)
     bootstrap.mockImplementation(async () => ({
         api: {}, sessionInfo: { id, metadata }, session: {
-            rpcHandlerManager: { registerHandler: vi.fn() }, keepAlive: vi.fn(), on: vi.fn(),
+            rpcHandlerManager: { registerHandler }, keepAlive: vi.fn(), on: vi.fn(),
             discardPendingHubPromptEcho: discard,
             updateMetadata, getMetadata: () => metadata, onReconnect: vi.fn(),
             onUserMessage: (fn: typeof receive) => { receive = fn },
@@ -81,45 +85,31 @@ beforeEach(() => {
 afterEach(() => {
     session?.stopKeepAlive()
     recordCatalog(id, { cwd: path }, {})
+    vi.unstubAllEnvs()
     vi.restoreAllMocks()
 })
 
 it('refreshes removed commands on a terminal local reopen with a valid stamp', async () => {
     await runClaude({ existingSessionId: id, startedBy: 'terminal', startingMode: 'local', workingDirectory: path })
     expect(extractSDKMetadata).toHaveBeenCalledOnce()
+    expect(extractSDKMetadata).toHaveBeenCalledBefore(versionProbe)
     await vi.waitFor(() => expect(metadata.slashCommands).toEqual(['new-command']))
 })
 
-it('reuses a matching catalog until a skill needs expansion and preserves FIFO and cancellation during the probe', async () => {
+it('serves ListSkills and expands the first skill prompt from a valid reopen cache', async () => {
     await reopen()
-    expect(extractSDKMetadata).not.toHaveBeenCalled()
-    let finish!: (value: SDKMetadata) => void
-    vi.mocked(extractSDKMetadata).mockReturnValueOnce(new Promise(resolve => { finish = resolve }))
+    const handler = registerHandler.mock.calls.find(([name]) => name === RPC_METHODS.ListSkills)![1]
+    expect(await handler()).toEqual({ success: true, skills: [{ name: 'skill', description: 'cached description' }] })
     send('$skill first', 'a')
-    send('cancel me', 'b')
-    send('$skill second', 'c')
-    send('plain', 'd')
-    expect(cancel('b')).toBe(true)
-    expect(discard).toHaveBeenCalledWith('b')
-    expect(messages()).toEqual(['ready'])
-    finish(catalog)
-    await vi.waitFor(() => expect(messages()).toEqual(['ready', '/skill first', '/skill second', 'plain']))
-    expect(extractSDKMetadata).toHaveBeenCalledTimes(1)
+    expect(messages()).toEqual(['ready', '/skill first'])
+    expect(extractSDKMetadata).not.toHaveBeenCalled()
 })
-it.each(['rejection', 'missing commands'])('releases queued messages after %s', async outcome => {
-    await reopen()
-    if (outcome === 'rejection') vi.mocked(extractSDKMetadata).mockRejectedValueOnce(new Error('probe failed'))
-    else vi.mocked(extractSDKMetadata).mockResolvedValueOnce({ tools: ['Read'] })
-    send('$skill', 'a')
-    send('plain', 'b')
-    await vi.waitFor(() => expect(messages()).toEqual(['ready', '$skill', 'plain']))
-    expect(extractSDKMetadata).toHaveBeenCalledTimes(1)
-})
-it.each(['version', 'model', 'args', 'plugin', 'empty tools', 'empty commands', 'cwd', '24 hours', 'missing stamp'])(
+it.each(['version', 'model', 'args', 'plugin', 'empty tools', 'empty commands', 'cwd', '24 hours', 'missing stamp', 'profile'])(
     'refreshes the startup catalog on %s', async reason => {
         const options: StartOptions = {}
         if (reason === 'version') versionProbe.mockReturnValue('2.2.0')
         if (reason === 'model') options.model = 'sonnet'
+        if (reason === 'profile') vi.stubEnv('CLAUDE_CONFIG_DIR', path + '/other-profile')
         if (reason === 'args') options.claudeArgs = ['--verbose']
         if (reason === 'plugin') options.claudeArgs = ['--plugin-dir', '/tmp/plugin']
         if (reason === 'empty tools') metadata.tools = []
@@ -144,14 +134,15 @@ it('refreshes metadata and native skill names from a real launch callback withou
 })
 
 it('keeps the live catalog when an older skill probe finishes late', async () => {
-    await reopen()
+    recordCatalog(id, { cwd: path }, {})
     let finish!: (value: SDKMetadata) => void
     vi.mocked(extractSDKMetadata).mockReturnValueOnce(new Promise(resolve => { finish = resolve }))
+    await runClaude({ existingSessionId: id, startedBy: 'runner', workingDirectory: path })
     send('$skill', 'a')
     liveCatalog!(catalog)
     await vi.waitFor(() => expect(metadata.tools).toEqual(['Write']))
     finish({ tools: ['Read'], slashCommands: ['old'], skills: [] })
-    await vi.waitFor(() => expect(messages()).toEqual(['ready', '/skill']))
+    await vi.waitFor(() => expect(messages()).toEqual(['/skill']))
     expect(metadata.slashCommands).toEqual(['new-command'])
 })
 
@@ -193,7 +184,7 @@ it('coalesces identical live inits and only publishes a changed catalog or launc
     await new Promise(resolve => setImmediate(resolve))
     send('$other', 'live-skill')
     expect(messages()).toContain('/other')
-    expect(recordCatalog).toHaveBeenCalledOnce()
+    expect(recordCatalog).toHaveBeenCalledTimes(2)
     expect(updateMetadata).toHaveBeenCalledOnce()
 
     liveCatalog!(newSkill, 'sonnet')
@@ -202,6 +193,6 @@ it('coalesces identical live inits and only publishes a changed catalog or launc
     await vi.waitFor(() => expect(updateMetadata).toHaveBeenCalledTimes(3))
     liveCatalog!({ ...newSkill, version: '2.2.0', tools: ['Read'] }, 'sonnet')
     await vi.waitFor(() => expect(metadata.tools).toEqual(['Read']))
-    expect(recordCatalog).toHaveBeenCalledTimes(4)
+    expect(recordCatalog).toHaveBeenCalledTimes(5)
     expect(updateMetadata).toHaveBeenCalledTimes(4)
 })

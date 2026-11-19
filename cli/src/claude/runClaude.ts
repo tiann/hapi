@@ -5,7 +5,7 @@ import { claudeBatchModeHash, EnhancedMode, PermissionMode } from './loop';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
 import { classifyClaudeSlashCatalog, extractSDKMetadata, type SDKMetadata } from '@/claude/sdk/metadataExtractor';
-import { canReuseCatalog, catalogFingerprint, recordCatalog, type CatalogLaunch } from './catalogCache';
+import { readCachedCatalog, catalogFingerprint, recordCatalog, type CatalogLaunch } from './catalogCache';
 import { parseSpecialCommand } from '@/parsers/specialCommands';
 import { getEnvironmentInfo } from '@/ui/doctor';
 import { startHappyServer, toClaudeAllowedHapiMcpTools } from '@/claude/utils/startHappyServer';
@@ -117,8 +117,8 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             }
             const lists = { tools: sdkMetadata.tools, slashCommands: sdkMetadata.slashCommands && catalog.commands };
             const publication = hashObject([catalogFingerprint(context, lists), sdkMetadata.version]);
+            recordCatalog(sessionInfo.id, context, lists, sdkMetadata.version, catalog.skills);
             if (publication === lastPublished) return result;
-            recordCatalog(sessionInfo.id, context, lists, sdkMetadata.version);
             if (lists.tools !== undefined || lists.slashCommands !== undefined) {
                 session.updateMetadata(current => ({
                     ...current,
@@ -146,6 +146,11 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             : { success: true, skills: result.catalog.skills };
     });
 
+    const cached = startedBy === 'runner' && !process.stdout.isTTY && options.existingSessionId
+        ? readCachedCatalog(options.existingSessionId, launch, sessionInfo.metadata) : null;
+    const startCatalog = () => getCatalog().catch(error => logger.debug('[start] Failed to update session metadata:', error));
+    let startupCatalog = cached ? undefined : startCatalog();
+
     // Rewind and fork-at-message need native resume-time truncation
     // (Claude Code v2.1.223+); fork-current works on any version. Detect the
     // actual binary version once at startup so the web UI only shows the
@@ -161,12 +166,17 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     } catch (error) {
         logger.debug(`[claude] --version probe failed: ${error instanceof Error ? error.message : String(error)}`);
     }
-    let skillsDeferred = Boolean(startedBy === 'runner' && !process.stdout.isTTY && options.existingSessionId && canReuseCatalog(
-        options.existingSessionId, launch, sessionInfo.metadata, claudeVersionOutput
-    ));
-    const startupCatalog = skillsDeferred ? undefined : getCatalog().catch(error => {
-        logger.debug('[start] Failed to update session metadata:', error);
-    });
+    if (cached) {
+        if (cached.version === claudeVersionOutput?.split(/\s+/)[0]) {
+            nativeSkills = cached.skills;
+            catalogPromise = Promise.resolve({
+                sdkMetadata: { tools: cached.tools, slashCommands: cached.commands },
+                catalog: { commands: cached.commands, skills: cached.skills }
+            });
+        } else {
+            startupCatalog = startCatalog();
+        }
+    }
 
     // Start HAPI MCP server (pass session cwd so spawn_peer "." anchors here)
     const happyServer = await startHappyServer(session, { workingDirectory });
@@ -1095,7 +1105,6 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         }
         return !unknownRewindIntent;
     };
-    const needsSkillCatalog = (text: string) => skillsDeferred && !nativeSkills && /^\s*\$\S/.test(text);
     let drainingUserMessages = false;
     const flushUserMessages = async () => {
         if (drainingUserMessages || !messagePipelineReady || settleRetryAbort.signal.aborted) return;
@@ -1110,11 +1119,6 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                     return;
                 }
                 if (settleRetryAbort.signal.aborted) return;
-                if (deferredMessages.length && needsSkillCatalog(deferredMessages[0][0].content.text)) {
-                    skillsDeferred = false;
-                    await getCatalog().catch(error => logger.debug('[start] Failed to load skill catalog:', error));
-                    continue;
-                }
                 const next = deferredMessages.shift();
                 if (next) handleUserMessage(...next);
             }
@@ -1123,7 +1127,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         }
     };
     session.onUserMessage((...args) => {
-        if (!messagePipelineReady || needsSkillCatalog(args[0].content.text) || unknownRewindIntent || drainingUserMessages || deferredMessages.length > 0 || settleInFlight !== null || rewindPersistInFlight !== null) {
+        if (!messagePipelineReady || unknownRewindIntent || drainingUserMessages || deferredMessages.length > 0 || settleInFlight !== null || rewindPersistInFlight !== null) {
             deferredMessages.push(args);
             void flushUserMessages();
             return;

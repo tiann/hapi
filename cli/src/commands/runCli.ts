@@ -1,5 +1,5 @@
 import packageJson from '../../package.json'
-import { getCliArgs } from '@/utils/cliArgs'
+import { getCliArgs, redactMcpConfigArgs } from '@/utils/cliArgs'
 import { ensureLoopbackProxyBypass } from '@/utils/proxyEnv'
 import { printCliHelp } from './help'
 
@@ -54,7 +54,7 @@ export async function runCli(): Promise<void> {
         const { ensureRuntimeAssets } = await import('@/runtime/assets')
         await ensureRuntimeAssets()
         const { logger } = await import('@/ui/logger')
-        logger.debug('Starting hapi CLI with args: ', args)
+        logger.debug('Starting hapi CLI with args: ', redactMcpConfigArgs(args))
     }
 
     await command.run(context)
