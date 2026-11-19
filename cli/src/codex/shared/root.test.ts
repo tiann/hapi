@@ -121,6 +121,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     const native = root.client as unknown as {
         initialized: boolean;
         thread: { id: string; turns: NativeTurn[] };
+        settings: Record<string, unknown>;
         queue: Array<{ id: string; clientUserMessageId: string; input: unknown }>;
         notify(method: string, params: unknown): void;
         abandoned(): void;
@@ -1761,4 +1762,27 @@ it('announces fallback confirmed by a newer notification during native reconcili
     f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: { model: 'mock', serviceTier: 'default' } });
     release({ model: 'mock', serviceTier: 'default' }); await pending;
     expect(f.events).toHaveBeenCalledWith({ type: 'message', message: notice });
+});
+
+it.each(['web', 'native', 'turn'])('confirms the loaded effective tier after %s settings selection', async origin => {
+    const f = await fixture(); await f.root.activate();
+    const original = f.root.client.request.bind(f.root.client);
+    vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        // Reloaded config advertises enabled while this loaded thread still
+        // filters the newly selected tier using its original feature state.
+        if (method === 'thread/resume' && f.native.settings.serviceTier === 'ultrafast') {
+            return { ...f.native.settings, serviceTier: null, thread: structuredClone(f.native.thread) } as never;
+        }
+        return original(method, params);
+    });
+    if (origin === 'web') expect((await f.root.applySettings({ serviceTier: 'ultrafast' })).applied.serviceTier).toBe('standard');
+    else if (origin === 'native') await f.root.applyNativeSettings({ serviceTier: 'ultrafast' });
+    else {
+        f.native.settings = { ...f.native.settings, serviceTier: 'ultrafast' };
+        await f.root.confirmNativeTurn({ serviceTier: 'ultrafast' }, true);
+    }
+    expect(f.root.hasConfirmedStandardTier).toBe(true);
+    expect(f.root.freshParams().serviceTier).toBe('default');
+    expect(f.metadata().codexServiceTierExplicit).toBe(true);
+    expect(f.events).toHaveBeenCalledWith({ type: 'message', message: 'Codex did not apply Ultrafast; changed to Standard.' });
 });

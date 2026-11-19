@@ -215,6 +215,10 @@ export class RpcGateway {
         await this.sessionRpc(sessionId, RPC_METHODS.Switch, { to })
     }
 
+    hasSessionConfigHandler(sessionId: string): boolean {
+        return this.rpcRegistry.getSocketIdForMethod(`${sessionId}:${RPC_METHODS.SetSessionConfig}`) !== null
+    }
+
     async requestSessionConfig(
         sessionId: string,
         config: {

@@ -735,6 +735,11 @@ export class SharedCodexRoot {
             this.acceptSettings(snapshot);
             const model = string(record(record(params.collaborationMode).settings).model) ?? string(params.model);
             const expected = { ...(model ? { model } : {}), ...(params.serviceTier !== undefined ? { serviceTier: params.serviceTier } : {}) };
+            if (expected.serviceTier === 'ultrafast' && !this.hasUltrafastTier && this.settings.serviceTier !== 'fast') {
+                await this.writeNativeSettings({ threadId: this.threadId, serviceTier: null });
+                this.notice('Codex did not apply Ultrafast; changed to Standard.');
+                this.alive(); return;
+            }
             if (!settingsMatch(this.settingsNative, expected)) throw new Error('Native turn settings are not confirmed');
             this.alive();
             if (fallbackNotice) this.notice(fallbackNotice);
@@ -752,7 +757,10 @@ export class SharedCodexRoot {
             const revision = this.settingsRevision;
             const snapshot = record(await this.client.request('thread/resume', { threadId: this.threadId, excludeTurns: true }));
             if (this.settingsRevision === revision) this.acceptSettings(snapshot);
-            if (settingsMatch(this.settingsNative, comparable)) return;
+            if (settingsMatch(this.settingsNative, comparable)) {
+                if (expected.serviceTier === 'ultrafast') await this.confirmEffectiveUltrafast();
+                return;
+            }
         }
         const revision = this.settingsRevision;
         let changed!: () => void;
@@ -769,6 +777,24 @@ export class SharedCodexRoot {
             // native notification, not our submitted candidate, establishes state.
             await accepted;
         } finally { clearTimeout(timer); this.settingsListeners.delete(changed); }
+        if (expected.serviceTier === 'ultrafast') await this.confirmEffectiveUltrafast();
+    }
+    private async confirmEffectiveUltrafast(): Promise<void> {
+        // Settings notifications report selection; a loaded thread can still
+        // filter Ultrafast using the feature state captured when it started.
+        for (let attempt = 0; attempt < 3; attempt++) {
+            const revision = this.settingsRevision;
+            const snapshot = record(await this.client.request('thread/resume', { threadId: this.threadId, excludeTurns: true }));
+            if (this.settingsRevision !== revision) continue;
+            this.acceptSettings(snapshot);
+            if (this.hasUltrafastTier) return;
+            // A concurrent native client may have deliberately selected Fast.
+            if (this.settings.serviceTier === 'fast') return;
+            await this.writeNativeSettings({ threadId: this.threadId, serviceTier: null });
+            this.notice('Codex did not apply Ultrafast; changed to Standard.');
+            return;
+        }
+        throw new Error('Codex settings changed during effective tier confirmation; retry after they settle');
     }
     async confirmUltrafastLaunch(explicitTier = true): Promise<void> {
         // Native launch configuration filters a disabled feature before its

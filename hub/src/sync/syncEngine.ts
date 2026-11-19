@@ -2276,7 +2276,8 @@ export class SyncEngine {
         expectedNativeSessionId: string,
         metadataKey: 'grokSessionId' | 'piSessionId' | 'opencodeSessionId' | 'codexSessionId',
         requireSessionReady: boolean,
-        timeoutMs: number = 60_000
+        timeoutMs: number = 60_000,
+        allowCodexTierRecovery: boolean = false
     ): Promise<boolean> {
         const startedAt = Date.now()
         while (Date.now() - startedAt < timeoutMs) {
@@ -2285,7 +2286,8 @@ export class SyncEngine {
             const boundId = child?.metadata?.[metadataKey]
             if (typeof boundId === 'string' && boundId.length > 0) {
                 if (boundId !== expectedNativeSessionId) return false
-                if (!requireSessionReady || this.sessionReadyIds.has(childId)) return true
+                if (!requireSessionReady || this.sessionReadyIds.has(childId)
+                    || allowCodexTierRecovery && this.canRecoverCodexTier(child)) return true
             }
             if (child && !child.active && Date.now() - startedAt > 5_000) {
                 return false
@@ -2293,6 +2295,11 @@ export class SyncEngine {
             await new Promise((resolve) => setTimeout(resolve, 250))
         }
         return false
+    }
+
+    private canRecoverCodexTier(child: Session | undefined): boolean {
+        return child?.active === true && child.metadata?.codexTierConfirmationPending === true
+            && this.rpcGateway.hasSessionConfigHandler(child.id)
     }
 
     /** Drop history locators that no longer have a corresponding message row. */
@@ -2503,7 +2510,7 @@ export class SyncEngine {
             if (child?.active) {
                 if (!attempt.nativeSessionId || child.metadata?.codexSessionId !== attempt.nativeSessionId
                     || child.namespace !== namespace || child.metadata?.forkedFrom !== source.id) throw new Error('Archived fork child binding is unconfirmed')
-                if (!await this.waitForExactNativeForkBound(childId, attempt.nativeSessionId, 'codexSessionId', true, 90_000)
+                if (!await this.waitForExactNativeForkBound(childId, attempt.nativeSessionId, 'codexSessionId', true, 90_000, true)
                     || !this.sessionCache.getSession(childId)?.active) throw new Error('Archived fork child native startup is not confirmed')
                 this.setArchivedForkAttempt(source.id, namespace, undefined)
                 return { type: 'success', sessionId: childId }
@@ -2557,7 +2564,7 @@ export class SyncEngine {
             do {
                 const ready = this.sessionCache.refreshSession(childId)
                 if (!ready || ready.metadata?.codexSessionId !== attempt.nativeSessionId) throw new Error('Fork child native binding changed')
-                bound = ready.active && this.sessionReadyIds.has(childId)
+                bound = ready.active && (this.sessionReadyIds.has(childId) || this.canRecoverCodexTier(ready))
                 if (!bound) await new Promise(resolve => setTimeout(resolve, 250))
             } while (!bound && Date.now() < deadline)
             if (!bound) throw new Error(spawn.type === 'error' ? spawn.message : 'Archived fork child did not become ready')

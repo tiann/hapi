@@ -429,3 +429,45 @@ it.each([false, true])('preserves explicit tier intent %s when launching an arch
         expect(tier).toBe(explicit ? 'ultrafast' : undefined);
     } finally { f.engine.stop(); }
 });
+
+it.each([false, true])('opens the exact paused archived child for tier recovery (retry %s)', async retry => {
+    const f = fixture();
+    try {
+        let childId = '';
+        f.rpc.hasSessionConfigHandler = () => true;
+        f.rpc.spawnSession = async (...args) => {
+            childId = args[12]!;
+            const child = f.store.sessions.getSession(childId)!;
+            f.store.sessions.updateSessionMetadata(childId, { ...child.metadata as object, codexTierConfirmationPending: true }, child.metadataVersion, 'ns');
+            f.engine.handleSessionAlive({ sid: childId, time: Date.now(), mode: 'remote' });
+            return retry ? { type: 'error', message: 'interrupted acknowledgement', childStarted: false } : { type: 'success', sessionId: childId };
+        };
+        const first = await f.engine.forkConversation(f.source.id, 'ns');
+        if (retry) expect(first.type).toBe('error');
+        const result = retry ? await f.engine.forkConversation(f.source.id, 'ns') : first;
+        expect(result).toEqual({ type: 'success', sessionId: childId });
+        expect(f.engine.getSession(childId)?.metadata?.codexTierConfirmationPending).toBe(true);
+        expect((f.engine as unknown as { sessionReadyIds: Set<string> }).sessionReadyIds.has(childId)).toBe(false);
+        expect(f.engine.getSession(f.source.id)?.active).toBe(false);
+    } finally { f.engine.stop(); }
+});
+
+it('waits for the settings RPC before exposing a paused archived child', async () => {
+    const f = fixture();
+    try {
+        let controls = false, childId = '', completed = false;
+        f.rpc.hasSessionConfigHandler = () => controls;
+        f.rpc.spawnSession = async (...args) => {
+            childId = args[12]!;
+            const child = f.store.sessions.getSession(childId)!;
+            f.store.sessions.updateSessionMetadata(childId, { ...child.metadata as object, codexTierConfirmationPending: true }, child.metadataVersion, 'ns');
+            f.engine.handleSessionAlive({ sid: childId, time: Date.now(), mode: 'remote' });
+            return { type: 'success', sessionId: childId };
+        };
+        const pending = f.engine.forkConversation(f.source.id, 'ns').then(result => { completed = true; return result; });
+        await new Promise(resolve => setTimeout(resolve, 20));
+        expect(completed).toBe(false);
+        controls = true;
+        expect(await pending).toEqual({ type: 'success', sessionId: childId });
+    } finally { f.engine.stop(); }
+});
