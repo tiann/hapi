@@ -9,6 +9,11 @@ import { EventPublisher } from './eventPublisher'
 import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
 import { InvalidExternalRefsError } from './externalRefErrors'
 import { resolveSessionIdleTimeoutMs, shouldClearKeepaliveIdle, shouldMarkKeepaliveIdle } from './sessionIdle'
+import { isOperatorReplyMessage } from './workGraphNotifyIngest'
+
+/** Transcript window scanned for a newer operator reply when merging a
+ *  notify signal (#1717). Matches the startup backfill's scan depth. */
+const NOTIFY_MERGE_MESSAGE_SCAN = 6
 
 export { InvalidExternalRefsError } from './externalRefErrors'
 
@@ -2456,7 +2461,19 @@ export class SessionCache {
         if (oldStored.lastNotifyStatus !== null && oldNotifyAt !== null) {
             const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
             const targetNotifyAt = latest?.lastNotifyAt ?? null
-            if (latest && (targetNotifyAt === null || oldNotifyAt > targetNotifyAt)) {
+            // A null on the destination is ambiguous: it can mean "never had a
+            // footer", or "the operator already answered and markMessageQueued
+            // cleared it". Copying in that second case resurrects a blocker
+            // that was dealt with, so check the (already merged) transcript for
+            // a delivered reply newer than the footer before carrying it over.
+            // Mirrors the operator-reply boundary the startup backfill applies.
+            const mergedNow = Date.now()
+            const answeredSince = this.store.messages
+                .getMessages(newSessionId, NOTIFY_MERGE_MESSAGE_SCAN)
+                .some((message) => message.createdAt > oldNotifyAt
+                    && !(message.scheduledAt != null && message.scheduledAt > mergedNow)
+                    && isOperatorReplyMessage(message.content))
+            if (latest && !answeredSince && (targetNotifyAt === null || oldNotifyAt > targetNotifyAt)) {
                 this.setSessionLastNotify(newSessionId, {
                     status: oldStored.lastNotifyStatus,
                     at: oldNotifyAt,

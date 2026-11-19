@@ -113,6 +113,26 @@ describe('blocked acknowledgement across a session merge (#1717)', () => {
         expect(cache.getSession(target)?.lastNotify?.note).toBe('needs a key')
     })
 
+    it('does not resurrect a footer the destination already answered', async () => {
+        // The destination's notify is null because `markMessageQueued` cleared
+        // it when the operator replied — not because it never had one. Copying
+        // the source's older footer over that would un-answer a blocker.
+        const { cache, store } = makeCache()
+        const source = makeSession(cache, 'merge-answered-source')
+        const target = makeSession(cache, 'merge-answered-target')
+        const now = Date.now()
+        cache.setSessionLastNotify(source, { status: 'blocked', at: now - 10_000, note: 'stale' })
+        store.messages.addMessage(target, {
+            role: 'user',
+            content: { type: 'text', text: 'here you go' },
+            meta: { sentFrom: 'webapp' }
+        }, 'reply-1', null, now)
+
+        await cache.mergeSessionHistory(source, target, 'default')
+
+        expect(cache.getSession(target)?.lastNotify ?? null).toBeNull()
+    })
+
     it('keeps the newer footer when both rows have one', async () => {
         const { cache } = makeCache()
         const source = makeSession(cache, 'merge-notify-old')
