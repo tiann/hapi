@@ -192,7 +192,7 @@ describe('Codex question receipts in the session chat', () => {
         expect(panelRow.getByText('Panel answer')).toBeVisible()
     })
 
-    it('submits the displayed issuance and refreshes after the runner reports a replacement', async () => {
+    it('closes a superseded issuance on conflict even when refresh still returns it', async () => {
         const { update, transcript, submit, onRefresh } = setup()
         shell.api.approvePermission.mockRejectedValueOnce(new ApiError('Question was reissued', 409, 'codex_question_reissued'))
         await submit()
@@ -200,7 +200,9 @@ describe('Codex question receipts in the session chat', () => {
         expect(shell.api.approvePermission).toHaveBeenCalledWith('session-1', requestId, {
             instanceId: 'first', answers: { q: { answers: ['user_note: Web'] } }
         })
-        expect(transcript().queryByText('Answer sent. Waiting for the agent.')).not.toBeInTheDocument()
+        update(state('first'))
+        expect(transcript().queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'Awaiting your reply 1' })).not.toBeInTheDocument()
         update(state('replacement'))
         await waitFor(() => expect(transcript().getByRole('textbox')).toHaveValue(''))
         await submit()

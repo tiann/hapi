@@ -104,12 +104,13 @@ function RequestUserInputForm(props: RequestUserInputFooterProps) {
             haptic.notification('success')
             props.onDone()
         } catch (e) {
-            if (recordSubmission && e instanceof ApiError && e.status === 404) {
+            const reissued = e instanceof ApiError && e.status === 409 && e.code === CODEX_QUESTION_REISSUED
+            if (recordSubmission && (reissued || (e instanceof ApiError && e.status === 404))) {
                 recordSubmission({ status: 'missing' })
                 props.onDone()
                 return
             }
-            if (instanceId && e instanceof ApiError && e.status === 409 && e.code === CODEX_QUESTION_REISSUED) {
+            if (instanceId && reissued) {
                 props.onDone()
             }
             haptic.notification('error')
