@@ -1357,7 +1357,7 @@ if (isReconnect) {
     private alivePayload(): Parameters<ClientToServerEvents['session-alive']>[0] {
         return {
             sid: this.sessionId, time: Date.now(), thinking: false, ...this.latestKeepAlive,
-            ...(this.peerReplyWatches > 0 ? { hasPeerReplyWatch: true } : {})
+            hasPeerReplyWatch: this.peerReplyWatches > 0
         }
     }
 

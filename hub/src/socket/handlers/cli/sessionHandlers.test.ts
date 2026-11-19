@@ -664,7 +664,7 @@ it.each([
         try {
             const metadata = { flavor: 'claude', lifecycleState: 'running' }
             const row = store.sessions.getOrCreateSession('idle-wrapper', metadata, null, 'default')
-            const marked = { ...metadata, lifecycleState, lifecycleStateSince: 42,
+            const marked = { ...metadata, hostPid: 42, hostStartMarker: 'generation', machineId: 'runner', lifecycleState, lifecycleStateSince: 42,
                 hibernation: { state, reason: 'idle', since: 42 } }
             store.sessions.updateSessionMetadata(row.id, marked, row.metadataVersion, 'default', { touchUpdatedAt: false })
             const socket = new FakeSocket()

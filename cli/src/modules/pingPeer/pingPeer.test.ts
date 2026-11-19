@@ -572,7 +572,7 @@ describe('pingPeer', () => {
         expect(http.post.mock.calls.map(([url]) => url)).toEqual(['http://hub.test/api/auth'])
     })
 
-    it('auto-resumes a hibernated target without wake', async () => {
+    it.each(['stopping', 'hibernated'] as const)('auto-resumes a %s target without wake', async state => {
         const sessionId = 'hibe0000-1111-1111-1111-111111111111'
         let active = false
         const http = createHttpMock({
@@ -589,7 +589,8 @@ describe('pingPeer', () => {
                 const session = {
                     id: sessionId,
                     active,
-                    metadata: { name: 'Sleeper', flavor: 'claude', lifecycleState: active ? 'running' : 'hibernated' }
+                    metadata: { name: 'Sleeper', flavor: 'claude', lifecycleState: !active && state === 'hibernated' ? 'hibernated' : 'running',
+                        hibernation: active ? undefined : { state } }
                 }
                 return url.endsWith('/api/sessions')
                     ? { status: 200, data: { sessions: [session] } }

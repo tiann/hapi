@@ -83,7 +83,7 @@ describe('SyncEngine hibernation', () => {
             lifecycleState: 'running',
             ...metadata,
         }, null, NAMESPACE)
-        engine.handleSessionAlive({ sid: created.id, time: Date.now() })
+        engine.handleSessionAlive({ hasPeerReplyWatch: false, sid: created.id, time: Date.now() })
         return created.id
     }
 
@@ -147,7 +147,7 @@ describe('SyncEngine hibernation', () => {
         for (const state of ['unregistered', 'stale-registration', 'connected']) {
             if (state === 'stale-registration') registry.register(socket as never, `${MACHINE}:stop-session`)
             if (state === 'connected') sockets.set(socket.id, socket)
-            engine.handleSessionAlive({ sid: id, time: Date.now() })
+            engine.handleSessionAlive({ hasPeerReplyWatch: false, sid: id, time: Date.now() })
             const connected = state === 'connected'
             expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual(connected ? [id] : [])
             expect(killCalls).toEqual(connected ? [id] : [])
@@ -157,6 +157,53 @@ describe('SyncEngine hibernation', () => {
                 expect(cache().getSession(id)?.metadata?.hibernation).toBeUndefined()
             }
         }
+    })
+
+    it('requires explicit watch reporting from the worker even with an upgraded runner', async () => {
+        const id = insertIdleSession('mixed-versions')
+        engine.handleSessionAlive({ sid: id, time: Date.now() })
+        expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([])
+        expect(killCalls).toEqual([])
+        engine.handleSessionAlive({ sid: id, time: Date.now(), hasPeerReplyWatch: false })
+        expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([id])
+    })
+
+    it.each([false, true])('recovers a lost stop reply with a non-signalling PID probe (restart: %s)', async restart => {
+        const id = insertIdleSession('interrupted')
+        const pid = cache().getSession(id)!.metadata!.hostPid
+        gateway().killSession = async () => { engine.handleSessionEnd({ sid: id, time: Date.now() }); return {} }
+        stopImpl = async () => { throw new Error('runner disconnected') }
+        expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([])
+        expect(cache().getSession(id)?.metadata?.hibernation?.state).toBe('stopping')
+        if (restart) {
+            engine.stop()
+            engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+            registerMachine()
+        }
+        let gone = false
+        const probe = spyOn((engine as unknown as { rpcGateway: { stopRunnerSession(machine: string, target: string): Promise<string> } }).rpcGateway,
+            'stopRunnerSession').mockImplementation(async () => gone ? 'already_gone' : 'unknown')
+        expect(await engine.reconcileInterruptedStop(id, NAMESPACE)).toBe(false)
+        expect(engine.blocksSessionInput(id)).toBe(true)
+        expect(cache().getSession(id)?.metadata?.hibernation?.state).toBe('stopping')
+        gone = true
+        if (restart) expect(await engine.hibernateIdleSessions(later() + 600_000, WINDOW)).toEqual([id])
+        else expect(await engine.reconcileInterruptedStop(id, NAMESPACE)).toBe(true)
+        expect(probe).toHaveBeenLastCalledWith(MACHINE, `PID-${pid}`)
+        expect(cache().getSession(id)?.metadata?.lifecycleState).toBe('hibernated')
+    })
+
+    it('restores a still-live original worker after the backoff and an explicit heartbeat', async () => {
+        const id = insertIdleSession('interrupted-before-exit')
+        const row = cache().getSession(id)!
+        expect(cache().markSessionHibernationStopping(id, row.metadataVersion, 'idle', Date.now() - 600_001)).toBe(true)
+        engine.handleSessionAlive({ sid: id, time: Date.now(), hasPeerReplyWatch: false })
+        stopImpl = async () => 'unknown'
+        expect(await engine.reconcileInterruptedStop(id, NAMESPACE)).toBe(true)
+        expect(stopCalls).toEqual([{ machineId: MACHINE, sessionId: `PID-${row.metadata!.hostPid}` }])
+        expect(killCalls).toEqual([])
+        expect(cache().getSession(id)?.metadata?.hibernation).toBeUndefined()
+        expect(cache().getSession(id)?.active).toBe(true)
     })
 
     it('uses the archive stop sequence and accepts its PID fallback confirmation', async () => {
@@ -193,7 +240,7 @@ describe('SyncEngine hibernation', () => {
         engine.handleSessionAlive({ sid: id, time: Date.now(), thinking: false, hasPeerReplyWatch: true })
         expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([])
         expect(stopCalls).toEqual([])
-        engine.handleSessionAlive({ sid: id, time: Date.now(), thinking: false })
+        engine.handleSessionAlive({ hasPeerReplyWatch: false, sid: id, time: Date.now(), thinking: false })
         expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([id])
     })
 
@@ -332,7 +379,7 @@ describe('SyncEngine hibernation', () => {
         expect(session.metadata?.archiveReason).toBeUndefined()
         expect(session.metadata?.hibernation).toBeUndefined()
         gateway().spawnSession = async () => {
-            engine.handleSessionAlive({ sid: id, time: Date.now() })
+            engine.handleSessionAlive({ hasPeerReplyWatch: false, sid: id, time: Date.now() })
             return { type: 'success', sessionId: id }
         }
         expect(await engine.resumeSession(id, NAMESPACE)).toEqual({ type: 'success', sessionId: id })
@@ -365,7 +412,7 @@ describe('SyncEngine hibernation', () => {
             emit: (event: string) => events.push(event)
         } as never, {
             io: { of: () => ({}) } as never, terminalRegistry: registry, maxTerminalsPerSession: 4, maxTerminalsPerSocket: 4,
-            getSession: sid => engine.getSession(sid) ?? null, hibernationInFlight: sid => engine.hibernationInFlight(sid)
+            getSession: sid => engine.getSession(sid) ?? null, hibernationInFlight: sid => engine.blocksSessionInput(sid)
         })
         handlers.get('terminal:create')!({ sessionId: id, terminalId: 'new-terminal', cols: 80, rows: 24 })
         expect(events).toEqual(['terminal:error'])
@@ -492,7 +539,7 @@ describe('SyncEngine hibernation', () => {
             }
             const confirmed = outcome === 'stopped' || outcome === 'already_gone'
             expect(await engine.hibernateSession(id, { now: later(), hibernateMs: WINDOW })).toBe(confirmed ? 'hibernated' : 'failed')
-            expect(cache().getSession(id)?.metadata?.hibernation?.state).toBe(confirmed ? 'hibernated' : undefined)
+            expect(cache().getSession(id)?.metadata?.hibernation?.state).toBe(confirmed ? 'hibernated' : outcome === 'throw' || outcome === 'timeout' ? 'stopping' : undefined)
             expect(cache().getSession(id)?.active).toBe(!confirmed)
         }
     )
@@ -532,7 +579,7 @@ describe('SyncEngine hibernation', () => {
                 store.sessions.updateSessionMetadata(sid, { ...(stored.metadata as object), lifecycleState: 'running', lifecycleStateSince: Date.now() },
                     stored.metadataVersion, NAMESPACE, { touchUpdatedAt: false, allowUnarchive: true })
                 cache().refreshSession(sid)
-                engine.handleSessionAlive({ sid, time: Date.now() })
+                engine.handleSessionAlive({ hasPeerReplyWatch: false, sid, time: Date.now() })
                 return { type: 'success', sessionId: sid }
             } finally { leave() }
         }
@@ -581,7 +628,7 @@ describe('SyncEngine hibernation', () => {
         store.sessions.updateSessionMetadata(id, { ...row.metadata, hostPid: 9000, hostStartMarker: 'replacement',
             startedBy: 'terminal', startedFromRunner: false, lifecycleState: 'running' }, row.metadataVersion, NAMESPACE)
         cache().refreshSession(id)
-        engine.handleSessionAlive({ sid: id, time: Date.now() })
+        engine.handleSessionAlive({ hasPeerReplyWatch: false, sid: id, time: Date.now() })
         acknowledge('stopped')
         expect(await stop).toBe('failed')
         expect(await local).toMatchObject({ type: 'error', code: 'session_active' })
@@ -735,7 +782,7 @@ describe('SyncEngine hibernation', () => {
             expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([])
             expect(stopCalls).toEqual([])
 
-            engine.handleSessionAlive({ sid: id, time: Date.now() })
+            engine.handleSessionAlive({ hasPeerReplyWatch: false, sid: id, time: Date.now() })
             expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([id])
         })
     })

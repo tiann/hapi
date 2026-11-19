@@ -1399,10 +1399,12 @@ export class SessionCache {
     ): boolean {
         const session = this.sessions.get(sessionId)
         const current = session?.metadata
-        if (!session || !current?.machineId || session.metadataVersion !== expectedVersion) return false
+        if (!session || !current?.machineId || !current.hostStartMarker || !current.hostPid || current.hostPid <= 1
+            || session.metadataVersion !== expectedVersion) return false
+        const worker = { machineId: current.machineId, pid: current.hostPid, startMarker: current.hostStartMarker }
         const result = this.store.sessions.updateSessionMetadata(
             sessionId,
-            { ...current, hibernation: { state: 'stopping', since, reason } },
+            { ...current, hibernation: { state: 'stopping', since, reason, worker } },
             expectedVersion,
             session.namespace,
             { touchUpdatedAt: false }

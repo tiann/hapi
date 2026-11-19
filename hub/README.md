@@ -300,9 +300,27 @@ Keep-alives prove a socket, not an agent. A session can therefore heartbeat for 
 - Progress means a message in either direction, a queued prompt, or a background task - never a keep-alive. Sessions that are thinking, running background tasks or holding a pending permission request are never marked.
 - `idle` reverts to `running` on the next progress, within one tick.
 - After `HAPI_SESSION_HIBERNATE_MS` without progress or live work, the hub stops eligible runner sessions. A confirmed stop marks the session `hibernated` and inactive. Hibernation uses the same stop path as archive. Children that detach from the wrapper’s process tree, such as an MCP server that daemonises, may keep running. The next send resumes the same ID.
-- The hub skips hibernation unless the runner has a connected stop handler. If the runner disconnects after worker shutdown begins, the hub clears the attempt and backs off. A worker that exited in that interval can be reopened explicitly.
-- A wake must return the original session ID. A different ID cannot prove ownership of the spawned process. The hub leaves that row untouched and pauses scheduled wakes for the original session until an explicit resume succeeds or the hub restarts. An unexpected child may remain running.
 - `metadata.idleReconcileExempt: true` opts a session out entirely.
+
+### Hibernation transitions
+
+The hub tracks transport liveness separately from the durable hibernation marker. “Waking” below means the original row still carries its settled marker while a resume is in progress or awaiting confirmation.
+
+| Starting state | Event | Outcome |
+|---|---|---|
+| Running or idle | The idle window and hub startup grace have elapsed | Start a stop only for an eligible runner-owned worker with no live work, an explicit negative peer-watch heartbeat for that wrapper, and a connected runner stop handler. Older workers that omit the watch field stay running. |
+| Eligible | Before sending `KillSession` | Reserve the row, persist `stopping` with machine, PID and wrapper start marker, and block terminal creation and competing deliveries. |
+| Stopping | The archive stop path returns `stopped` or `already_gone` and the same wrapper still owns the row | Mark the row inactive and hibernated. Preserve its ID, order, and unconsumed prompts. |
+| Stopping | Runner explicitly returns `still_alive` or `unknown` after the archive fallbacks | Restore the row and back off new idle stops for ten minutes. Inactivity alone never confirms hibernation. |
+| Stopping | A reply is lost, the runner disconnects, or the hub restarts during the stop | Retain the recorded identity. On a sweep or a wake request, ask the original runner about the PID **without** supplying a start marker. This probe cannot signal a live PID. |
+| Interrupted stop | Probe completes | `already_gone` settles the matching row as hibernated. If the runner cannot confirm, keep the attempt retryable. A live original wrapper reporting after the ten-minute grace can return to running after a live PID probe. A replaced owner or an explicit archive retires the old attempt without ending the replacement. Older markers without an identity are cleared on startup. |
+| Hibernated | Immediate send, explicit resume/reopen, implicit peer wake, or due scheduled prompt | Request the original HAPI ID; concurrent sends join the authorized wake. A future scheduled prompt alone leaves the session asleep. |
+| Waking | Same-ID spawn confirms activity and any required native readiness | Clear the marker and backoff, record progress and allow delivery. A local terminal bootstrap and matching late Codex readiness can also confirm a wake. |
+| Waking | Error, timeout, or hub restart with an active but unconfirmed transport | Keep the durable marker. Immediate sends receive a retryable conflict and scheduled delivery stays held. Matching readiness can finish the wake. If the worker exits or expires, restore hibernation; an operator can explicitly archive and reopen an unresponsive worker. |
+| Waking | Spawn returns a different ID | Reject the wake, leave the returned row untouched, and retry a due prompt after ten minutes. The reply contains no proof of child ownership; an unexpected child may remain running. |
+| Hibernated or unconfirmed wake | Hub restarts with the row inactive | Keep the sleeping row or restore it from the surviving marker, including a CLI self-archive during startup. Preserve explicit hub archives and superseded rows. Due messages are reconsidered on the inactivity tick. |
+| Hibernated | Explicit archive | Archive the row and remove the marker. A later reopen follows the ordinary archive flow. |
+| Any | Retry of an already-invoked attachment message | Acknowledge the authorized session's exact local ID without waking, validating deleted uploads, or dispatching a duplicate. New or unconsumed attachment messages still require the applicable worker checks. |
 
 ## Storage
 

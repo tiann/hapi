@@ -196,6 +196,16 @@ describe('deduplicateSessionsByAgentId', () => {
         expect(deduplicateSessionsByAgentId(sessions).map((s) => s.id)).toEqual(['b'])
     })
 
+    it('keeps both the live and hibernated conversation IDs in the Active view', () => {
+        const metadata = { path: '/p', agentSessionId: 'shared', flavor: 'codex' as const }
+        const sessions = [
+            makeSession({ id: 'sleeping', metadata: { ...metadata, lifecycleState: 'hibernated' } }),
+            makeSession({ id: 'live', active: true, metadata }),
+            makeSession({ id: 'archive', metadata: { ...metadata, lifecycleState: 'archived' } })
+        ]
+        expect(filterActiveSessionsOnly(deduplicateSessionsByAgentId(sessions)).map(s => s.id)).toEqual(['live', 'sleeping'])
+    })
+
     it('prefers a hibernated duplicate even when the newer archived row is selected', () => {
         const metadata = { path: '/p', agentSessionId: 'shared' }
         const sessions = [

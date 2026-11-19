@@ -991,8 +991,9 @@ export class MessageService {
         }
 
         const sentFrom = payload.sentFrom ?? 'webapp'
+        const metadata = this.store.sessions.getSession(sessionId)?.metadata as Metadata | null
         const deliveryMode = getNormalizedDeliveryMode(
-            this.store.sessions.getSession(sessionId)?.metadata,
+            metadata,
             payload.deliveryMode,
             payload.scheduledAt
         )
@@ -1038,7 +1039,7 @@ export class MessageService {
         // the pre-insert `now` capture could misclassify a borderline scheduledAt
         // as future when it has already become past by the time we check.
         const isFutureScheduled = msg.scheduledAt !== null && msg.scheduledAt > Date.now()
-        if (shouldEmitToCli && !isFutureScheduled && !this.store.isOpenCodeClearDeliveryGated(actualSessionId)) {
+        if (shouldEmitToCli && !metadata?.hibernation && !isFutureScheduled && !this.store.isOpenCodeClearDeliveryGated(actualSessionId)) {
             const update = {
                 id: msg.id,
                 seq: msg.seq,

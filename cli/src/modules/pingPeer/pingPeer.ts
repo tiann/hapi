@@ -74,6 +74,7 @@ export type PingPeerSessionSummary = {
         path?: string | null
         machineId?: string | null
         lifecycleState?: string | null
+        hibernation?: { state?: string } | null
         piSessionId?: string
         cursorSessionId?: string | null
         cursorSessionProtocol?: 'acp' | 'stream-json' | null
@@ -757,7 +758,7 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
         if (requestedDeliveryMode === 'steer') {
             throw new PingPeerError('bad_args', 'Steering requires an active turn; target is inactive, no message sent. Use queue with wake to resume it')
         }
-        if (!options.wake && session.metadata?.lifecycleState !== 'hibernated') {
+        if (!options.wake && session.metadata?.lifecycleState !== 'hibernated' && session.metadata?.hibernation?.state !== 'stopping') {
             throw new PingPeerError(
                 'inactive',
                 `target ${matched.id} is inactive; no message sent. `

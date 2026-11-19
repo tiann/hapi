@@ -2100,7 +2100,7 @@ describe('ApiSessionClient runtime heartbeat', () => {
         expect(lastAlive()).toMatchObject({ hasPeerReplyWatch: true })
         timeout(new Error('watch expired'))
         await expect(second).rejects.toThrow('watch expired')
-        expect(lastAlive()).not.toHaveProperty('hasPeerReplyWatch')
+        expect(lastAlive()).toMatchObject({ hasPeerReplyWatch: false })
         client.close()
     })
 
@@ -2115,7 +2115,7 @@ describe('ApiSessionClient runtime heartbeat', () => {
 
         socket.triggerConnect()
         expect(socket.emitted.filter((entry) => entry.event === 'session-alive').map((entry) => entry.args[0])).toEqual([
-            { sid: client.sessionId, time: expect.any(Number), thinking: true, mode: 'remote', permissionMode: 'bypassPermissions' }
+            { sid: client.sessionId, time: expect.any(Number), thinking: true, mode: 'remote', permissionMode: 'bypassPermissions', hasPeerReplyWatch: false }
         ])
         client.close()
     })

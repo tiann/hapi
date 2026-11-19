@@ -118,6 +118,9 @@ function preserveHubOwnedMetadata(incoming: unknown, current: unknown): { metada
         || (state === 'stopping' && (existing.lifecycleState === 'running' || existing.lifecycleState === 'idle'))
     )
     if (preserveHibernation) {
+        for (const key of ['machineId', 'hostPid', 'hostStartMarker']) {
+            if (next[key] === undefined && existing[key] !== undefined) next[key] = existing[key]
+        }
         next.lifecycleState = existing.lifecycleState
         next.lifecycleStateSince = existing.lifecycleStateSince
         delete next.archivedBy

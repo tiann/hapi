@@ -161,6 +161,9 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             return c.json({ error: 'Message requires text or attachments' }, 400)
         }
         const payload = parsed.data
+        if (payload.attachments?.length && payload.localId && engine.wasMessageInvoked?.(initial.sessionId, payload.localId)) {
+            return c.json({ ok: true })
+        }
         const namespace = c.get('namespace')
 
         const wakeError = (result: Extract<ResumeSessionResult | ReopenSessionResult, { type: 'error' }>) => {
@@ -195,6 +198,17 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 if (wake.type === 'incomplete') return c.json({ error: wake.message, code: 'resume_unavailable' }, 409)
                 current = requireSessionFromParam(c, engine)
                 if (current instanceof Response) return current
+            }
+            if (current.session.metadata?.hibernation?.state === 'stopping') {
+                if (!await engine.reconcileInterruptedStop(current.sessionId, namespace)) {
+                    return c.json({ error: 'Runner stop is unconfirmed. Retry after the runner reconnects.', code: 'stop_unconfirmed', retryable: true }, 409)
+                }
+                current = requireSessionFromParam(c, engine)
+                if (current instanceof Response) return current
+            }
+            if (current.session.active && current.session.metadata?.hibernation?.state === 'hibernated'
+                && !(typeof payload.scheduledAt === 'number' && payload.scheduledAt > Date.now())) {
+                return c.json({ error: 'Worker wake is unconfirmed. Retry after readiness.', code: 'wake_unconfirmed', retryable: true }, 409)
             }
             const hibernated = !current.session.active && isHibernatedLifecycleState(current.session.metadata?.lifecycleState)
             if (!current.session.active && !hibernated) {
@@ -240,7 +254,7 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             if (!engine.hibernationInFlight?.(target) && !engine.pendingSessionWake?.(target, namespace)) {
                 const current = requireSessionFromParam(c, engine)
                 if (current instanceof Response) return current
-                if (current.session.active || !isHibernatedLifecycleState(current.session.metadata?.lifecycleState)) {
+                if (!current.session.metadata?.hibernation && !isHibernatedLifecycleState(current.session.metadata?.lifecycleState)) {
                     throw error
                 }
             }
