@@ -24,6 +24,19 @@ function fixture(initialState: AgentState = {}) {
 }
 
 describe('Codex queued follow-up questions', () => {
+    it('keeps the merged answer if a Web dismissal was queued before registration ACK recovery', async () => {
+        const f = fixture();
+        f.manager.observeItem('thread', item);
+        const question = questions[0];
+        await expect(f.manager.answer({ id: question.id, approved: false })).resolves.toBe(true);
+        const latest: AgentState = { completedRequests: { [question.id]: {
+            tool: 'request_user_input', arguments: {}, status: 'resolved',
+            answers: { [question.questionItemId]: { answers: ['Web'] } }
+        } } };
+        expect(f.updates[0]!(latest)).toBe(latest);
+        expect(f.updates[questions.length]!(latest)).toBe(latest);
+    });
+
     it.each(['denied', 'resolved'] as const)('keeps a %s question if shutdown queued a cancellation before retry', result => {
         const f = fixture();
         f.manager.observeItem('thread', item);

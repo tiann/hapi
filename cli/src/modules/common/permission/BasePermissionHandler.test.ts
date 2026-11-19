@@ -235,6 +235,10 @@ class GatedPermissionHandler extends BasePermissionHandler<TestResponse, { ok: t
         })
     }
 
+    complete(id: string, completion: PermissionCompletion): void {
+        this.finalizeRequest(id, completion)
+    }
+
     release(): void {
         this.releaseGate?.()
     }
@@ -259,6 +263,27 @@ class GatedPermissionHandler extends BasePermissionHandler<TestResponse, { ok: t
 // tiann/hapi#2415: orphan cleanup must not cancel a request whose first answer
 // is still awaiting handlePermissionResponse.
 describe('BasePermissionHandler overlapping answers', () => {
+    it('keeps the completedAt of a committed cancellation when retrying against newer state', () => {
+        const now = vi.spyOn(Date, 'now').mockReturnValue(300)
+        let update: ((current: AgentState) => AgentState) | undefined
+        try {
+            const handler = new GatedPermissionHandler({
+                rpcHandlerManager: { registerHandler: () => {} },
+                updateAgentState: (fn) => { update = fn }
+            })
+            handler.complete('req-1', { status: 'canceled', decision: 'abort', reason: 'stopped' })
+            const original = update!({ requests: { 'req-1': { tool: 'AskUserQuestion', arguments: {}, createdAt: 100 } } })
+            now.mockReturnValue(900)
+            expect(update!({ ...original, steeringActive: false }).completedRequests?.['req-1'])
+                .toMatchObject({ createdAt: 100, completedAt: 300 })
+            handler.complete('req-1', { status: 'approved', decision: 'approved' })
+            expect(update!(original).completedRequests?.['req-1'])
+                .toMatchObject({ createdAt: 100, completedAt: 900, status: 'approved' })
+        } finally {
+            now.mockRestore()
+        }
+    })
+
     it('keeps the original pending request when an ACK retry rebases onto a newer state', () => {
         let update: ((current: AgentState) => AgentState) | undefined
         const handler = new GatedPermissionHandler({

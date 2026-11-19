@@ -247,6 +247,7 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
     }
 
     protected finalizeRequest(id: string, completion: PermissionCompletion): void {
+        const completedAt = Date.now();
         this.client.updateAgentState((currentState) => {
             const fromPending = currentState.requests?.[id];
             const fromCompleted = currentState.completedRequests?.[id];
@@ -258,6 +259,8 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
             if (!fromPending && fromCompleted && fromCompleted.status !== 'canceled') {
                 return currentState;
             }
+            const sameCancellation = fromCompleted?.status === 'canceled' && completion.status === 'canceled'
+                && fromCompleted.decision === completion.decision && fromCompleted.reason === completion.reason;
 
             const nextRequests = { ...currentState.requests };
             delete nextRequests[id];
@@ -269,7 +272,7 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
                     ...currentState.completedRequests,
                     [id]: {
                         ...request,
-                        completedAt: Date.now(),
+                        completedAt: sameCancellation ? fromCompleted.completedAt ?? completedAt : completedAt,
                         status: completion.status,
                         reason: completion.reason,
                         mode: completion.mode,

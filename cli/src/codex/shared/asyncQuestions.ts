@@ -173,7 +173,8 @@ export class SharedCodexAsyncQuestions {
         } : message, id);
         this.session.updateAgentState(state => {
             const completed = state.completedRequests?.[question.id];
-            if (!emitResult && (completed?.status === 'resolved' || completed?.decision === 'denied')) return state;
+            if (resolution.status === 'canceled'
+                && (completed?.status === 'resolved' || completed?.decision === 'denied')) return state;
             const requests = { ...state.requests };
             const prior = requests[question.id] ?? completed;
             delete requests[question.id];
