@@ -471,3 +471,24 @@ it('waits for the settings RPC before exposing a paused archived child', async (
         expect(await pending).toEqual({ type: 'success', sessionId: childId });
     } finally { f.engine.stop(); }
 });
+
+it.each(['resume', 'reopen'])('preserves the active tier-recovery session on a retried %s', async action => {
+    const f = fixture();
+    try {
+        const current = f.store.sessions.getSession(f.source.id)!;
+        f.store.sessions.updateSessionMetadata(f.source.id, { ...current.metadata as object,
+            lifecycleState: undefined, archivedBy: undefined, codexTierConfirmationPending: true,
+            codexResumePending: { machineId: f.machineId, nativeSessionId: 'native-source' }
+        }, current.metadataVersion, 'ns');
+        (f.engine as unknown as { sessionCache: { refreshSession(id: string): void } }).sessionCache.refreshSession(f.source.id);
+        f.engine.handleSessionAlive({ sid: f.source.id, time: Date.now(), mode: 'remote' });
+        f.rpc.hasSessionConfigHandler = () => true;
+        f.rpc.stopRunnerSession = async () => { throw new Error('Must not stop tier recovery'); };
+        const result = action === 'resume' ? await f.engine.resumeSession(f.source.id, 'ns') : await f.engine.reopenSession(f.source.id, 'ns');
+        expect(result).toMatchObject({ type: 'success', sessionId: f.source.id });
+        expect(f.engine.getSession(f.source.id)?.active).toBe(true);
+        expect(f.engine.getSession(f.source.id)?.metadata?.codexTierConfirmationPending).toBe(true);
+        expect(f.engine.getSession(f.source.id)?.metadata?.codexResumePending).toBeUndefined();
+        expect(f.counts()).toEqual({ forks: 0, spawns: 0 });
+    } finally { f.engine.stop(); }
+});

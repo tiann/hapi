@@ -2463,7 +2463,8 @@ export class SyncEngine {
     private async reconcileCodexResume(session: Session): Promise<boolean> {
         const pending = session.metadata?.codexResumePending
         if (!pending) return true
-        if (session.active && this.sessionReadyIds.has(session.id) && session.metadata?.codexSessionId === pending.nativeSessionId) {
+        if (session.active && (this.sessionReadyIds.has(session.id) || this.canRecoverCodexTier(session))
+            && session.metadata?.codexSessionId === pending.nativeSessionId && session.metadata?.machineId === pending.machineId) {
             this.writeCodexResumePending(session.id, session.namespace, undefined)
             return true
         }

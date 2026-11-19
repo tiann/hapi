@@ -1786,3 +1786,54 @@ it.each(['web', 'native', 'turn'])('confirms the loaded effective tier after %s 
     expect(f.metadata().codexServiceTierExplicit).toBe(true);
     expect(f.events).toHaveBeenCalledWith({ type: 'message', message: 'Codex did not apply Ultrafast; changed to Standard.' });
 });
+
+it.each(['ultrafast', 'priority'])('rechecks a selected notification during native confirmation without replacing newer %s', async selected => {
+    const f = await fixture(); await f.root.activate();
+    const original = f.root.client.request.bind(f.root.client);
+    let release!: (value: unknown) => void;
+    let first = true;
+    vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/resume') {
+            if (first) { first = false; return await new Promise<unknown>(resolve => { release = resolve; }) as never; }
+            return { model: 'mock', serviceTier: null } as never;
+        }
+        return original(method, params);
+    });
+    const pending = f.root.confirmNativeTurn({ serviceTier: 'ultrafast' }, true);
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    f.native.settings = { ...f.native.settings, serviceTier: selected };
+    f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: f.native.settings });
+    release({ model: 'mock', serviceTier: null }); await pending;
+    expect(f.root.freshParams().serviceTier).toBe(selected === 'ultrafast' ? 'default' : 'priority');
+    if (selected === 'ultrafast') expect(f.events).toHaveBeenCalledWith({ type: 'message', message: 'Codex did not apply Ultrafast; changed to Standard.' });
+});
+
+it('bounds discovery, acknowledgement and effective confirmation by one deadline', async () => {
+    const f = await fixture(); await f.root.activate();
+    const original = f.root.client.request.bind(f.root.client);
+    const originalModels = f.root.client.listModels.bind(f.root.client);
+    vi.useFakeTimers();
+    try {
+        const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+        const models = vi.spyOn(f.root.client, 'listModels').mockImplementation(async () => { await delay(9_000); return originalModels(); });
+        const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (method === 'thread/settings/update') await delay(13_000);
+            if (method === 'thread/resume') await delay(10_000);
+            return original(method, params);
+        });
+        const pending = f.root.applySettings({ serviceTier: 'ultrafast' }).then(() => 'success', error => (error as Error).message);
+        await vi.advanceTimersByTimeAsync(25_000);
+        expect(await pending).toContain('confirmation is pending');
+        expect(f.metadata().codexTierConfirmationPending).toBe(true);
+        expect(f.metadata().codexServiceTierExplicit).toBe(false);
+        f.submit('held for recovery', 'deadline-held-input');
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(f.native.queue).toHaveLength(0);
+        expect(f.metadata().codexServiceTierExplicit).toBe(false);
+        request.mockRestore(); models.mockRestore();
+        await f.root.applySettings({ serviceTier: 'standard' });
+        await vi.advanceTimersByTimeAsync(1);
+        expect(f.metadata().codexTierConfirmationPending).toBe(false);
+        await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+    } finally { vi.useRealTimers(); }
+});
