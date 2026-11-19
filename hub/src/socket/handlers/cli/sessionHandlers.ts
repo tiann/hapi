@@ -93,11 +93,12 @@ const HUB_OWNED_METADATA_KEYS = [
     'jobsAcceptedFromSessionIds',
     'jobsTransferredToSessionId',
     'jobKeyRedirects',
-    'promptTitle'
+    'promptTitle',
+    'hibernation'
 ] as const
 
-function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown {
-    if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) return incoming
+function preserveHubOwnedMetadata(incoming: unknown, current: unknown): { metadata: unknown; touchUpdatedAt: boolean } {
+    if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) return { metadata: incoming, touchUpdatedAt: true }
     const next = { ...(incoming as Record<string, unknown>) }
     const existing = current && typeof current === 'object' && !Array.isArray(current)
         ? current as Record<string, unknown>
@@ -110,7 +111,16 @@ function preserveHubOwnedMetadata(incoming: unknown, current: unknown): unknown 
     if (rewind && ['reserved', 'prepared', 'unknown'].includes(rewind.phase ?? '')) {
         for (const key of ['opencodeHistoryCheckpoint', 'conversationHistoryIndexes', 'conversationHistoryPoints']) next[key] = existing[key]
     }
-    return next
+    const preserveHibernation = existing.lifecycleState === 'hibernated'
+        && (existing.hibernation as { state?: string } | undefined)?.state === 'hibernated'
+        && next.lifecycleState === 'archived'
+    if (preserveHibernation) {
+        next.lifecycleState = existing.lifecycleState
+        next.lifecycleStateSince = existing.lifecycleStateSince
+        delete next.archivedBy
+        delete next.archiveReason
+    }
+    return { metadata: next, touchUpdatedAt: !preserveHibernation }
 }
 
 export type SessionHandlersDeps = {
@@ -346,11 +356,13 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
+        const updateMetadata = preserveHubOwnedMetadata(gatedMetadata, sessionAccess.value.metadata)
         const result = store.sessions.updateSessionMetadata(
             sid,
-            preserveHubOwnedMetadata(gatedMetadata, sessionAccess.value.metadata),
+            updateMetadata.metadata,
             expectedVersion,
-            sessionAccess.value.namespace
+            sessionAccess.value.namespace,
+            { touchUpdatedAt: updateMetadata.touchUpdatedAt }
         )
         if (result.result === 'success') {
             cb({ result: 'success', version: result.version, metadata: result.value })

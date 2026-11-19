@@ -69,6 +69,7 @@ request is made without a configured provider.
 - `HAPI_IOS_PUSH` - `relay` (default), `apns`, or `off`.
 - `HAPI_PUSH_RELAY_URL` - Shared Android/iOS push relay (default: `https://push.hapi.run`; persisted as `iosPushRelayUrl`). Independent of the `--relay` network tunnel.
 - `HAPI_SESSION_IDLE_TIMEOUT_MS` - Keep-alive-idle window in ms (default: 43200000 / 12 h; `0` disables). See "Session liveness" below.
+- `HAPI_SESSION_HIBERNATE_MS` - Idle window before stopping eligible runner sessions (default 7200000 ms, or 2 h). Set to `0` to disable. Values from 1 to 59999 are raised to 60000 ms.
 
 Official native apps register their encryption keys automatically; no push
 provider setup is needed on a fresh hub. See the [native companion push
@@ -291,13 +292,14 @@ See `src/sync/syncEngine.ts` for the main session/message manager:
 Two separate signals, deliberately (tiann/hapi#1820):
 
 - **`active` / `activeAt`** - transport. The CLI socket is connected; `session-alive` refreshes it every ~2 s. `sessionCache.expireInactive` drops `active` after 30 s of silence.
-- **`metadata.lifecycleState`** - agent health. `running` -> `idle` -> `running`, plus `archived`.
+- **`metadata.lifecycleState`** - agent health. `running` -> `idle` -> `running`, plus `hibernated` and `archived`.
 
 Keep-alives prove a socket, not an agent. A session can therefore heartbeat for days with no messages, no thinking and no background tasks - `active: true` forever, which `expireInactive` can never catch. `sessionCache.reconcileKeepaliveIdle` (same 5 s tick) closes that gap: after `HAPI_SESSION_IDLE_TIMEOUT_MS` with no agent progress it moves `lifecycleState` `running` -> `idle`.
 
 - `active` is left alone on purpose. The CLI really is reachable, and flipping it would let `resumeSession` spawn a second agent against a live process, and unlock dedup-merge / delete on it.
 - Progress means a message in either direction, a queued prompt, or a background task - never a keep-alive. Sessions that are thinking, running background tasks or holding a pending permission request are never marked.
 - `idle` reverts to `running` on the next progress, within one tick.
+- After `HAPI_SESSION_HIBERNATE_MS` without progress or live work, the hub stops eligible runner sessions. A confirmed stop marks the session `hibernated` and inactive. The next send resumes the same ID.
 - `metadata.idleReconcileExempt: true` opts a session out entirely.
 
 ## Storage

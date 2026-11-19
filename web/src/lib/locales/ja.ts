@@ -287,6 +287,8 @@ export default {
   'session.item.pending': '保留中',
   'session.item.thinking': '思考中',
   'session.item.running': '実行中',
+  'session.item.hibernated': '休止中',
+  'session.composer.waking': 'セッションを復帰中…',
   'session.item.attachedJob': 'ジョブ',
   'session.item.attachedJob.left': '残り',
   'session.item.attachedJob.running': '実行中',

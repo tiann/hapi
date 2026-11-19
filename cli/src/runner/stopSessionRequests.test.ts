@@ -25,3 +25,16 @@ it('does not share stop evidence across PID generations and releases failed oper
     await request('PID-100', { processStartMarker: 'old' }).catch(String)
     expect(stop).toHaveBeenCalledTimes(3)
 })
+
+it('does not let an archive stop join an in-flight hibernation stop', async () => {
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const stop = vi.fn(async () => { await gate; return 'stopped' })
+    const request = coalesceStopRequests(stop)
+    const hibernate = request('session-a', { requireProcessGroupCleanup: true })
+    const archive = request('session-a')
+    expect(stop).toHaveBeenCalledTimes(2)
+    expect(stop).toHaveBeenNthCalledWith(1, 'session-a', { requireProcessGroupCleanup: true })
+    release()
+    await Promise.all([hibernate, archive])
+})

@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
     findRuntime: vi.fn(),
     reapOrphans: vi.fn<typeof import('./orphanReap')['reapRunnerSpawnedOrphans']>(),
     kill: vi.fn(),
+    sweep: vi.fn(async () => true),
     prepare: vi.fn(),
     alive: vi.fn(() => true),
     marker: vi.fn(() => 'generation'),
@@ -48,6 +49,8 @@ vi.mock('@/utils/process', async importOriginal => ({
     killProcess: mocks.kill,
     killProcessTreeByPid: mocks.kill,
     killProcessByChildProcess: mocks.kill,
+    sweepProcessGroup: mocks.sweep,
+    processGroupGone: () => false,
 }))
 
 import { configuration } from '@/configuration'
@@ -89,6 +92,7 @@ describe('runner stop of recovered persisted sessions while the Hub is unavailab
         mocks.reapOrphans.mockResolvedValue(null)
         mocks.prepare.mockRejectedValue(new Error('hub unavailable'))
         mocks.kill.mockResolvedValue(true)
+        mocks.sweep.mockResolvedValue(true)
     })
 
     afterEach(() => rmSync(home, { recursive: true, force: true }))
@@ -101,6 +105,83 @@ describe('runner stop of recovered persisted sessions while the Hub is unavailab
         await expect(stopSession('claude-session')).resolves.toBe('stopped')
         expect(mocks.prepare).not.toHaveBeenCalled()
         expect(mocks.kill).toHaveBeenCalled()
+    })
+
+    it('sweeps the process group after the tree kill succeeds', async () => {
+        await startWith([{
+            requestedSessionId: 'claude-session', confirmedSessionId: 'claude-session',
+            pid: 4242, processStartMarker: 'generation', flavor: 'claude',
+        }])
+        await expect(stopSession('claude-session', { requireProcessGroupCleanup: true })).resolves.toBe('stopped')
+        expect(mocks.sweep).toHaveBeenCalledWith(4242, expect.any(Object))
+        expect(mocks.sweep.mock.invocationCallOrder[0]).toBeGreaterThan(mocks.kill.mock.invocationCallOrder[0]!)
+    })
+
+    it('reports still_alive when a required process-group cleanup fails after the tree kill', async () => {
+        await startWith([{
+            requestedSessionId: 'claude-session', confirmedSessionId: 'claude-session',
+            pid: 4242, processStartMarker: 'generation', flavor: 'claude',
+        }])
+        mocks.sweep.mockResolvedValue(false)
+        await expect(stopSession('claude-session', { requireProcessGroupCleanup: true })).resolves.toBe('still_alive')
+    })
+
+    it('retries the verified group via the confirmed ID after a recovered root dies', async () => {
+        await startWith([{
+            requestedSessionId: 'requested', confirmedSessionId: 'confirmed',
+            pid: 4242, processStartMarker: 'generation', flavor: 'claude',
+        }])
+        mocks.kill.mockImplementationOnce(async () => {
+            mocks.alive.mockReturnValue(false)
+            return true
+        })
+        mocks.sweep.mockResolvedValueOnce(false)
+        await expect(stopSession('requested', { requireProcessGroupCleanup: true })).resolves.toBe('still_alive')
+        await expect(stopSession('confirmed', { requireProcessGroupCleanup: true })).resolves.toBe('already_gone')
+        expect(mocks.kill).toHaveBeenCalledTimes(1)
+        expect(mocks.sweep).toHaveBeenCalledTimes(2)
+        expect(mocks.sweep).toHaveBeenLastCalledWith(4242, { expectedStartMarker: 'generation' })
+    })
+
+    it('does not sweep when the tree kill fails', async () => {
+        await startWith([{
+            requestedSessionId: 'claude-session', confirmedSessionId: 'claude-session',
+            pid: 4242, processStartMarker: 'generation', flavor: 'claude',
+        }])
+        mocks.kill.mockResolvedValue(false)
+        await expect(stopSession('claude-session')).resolves.toBe('still_alive')
+        expect(mocks.sweep).not.toHaveBeenCalled()
+    })
+
+    it('never sweeps a fallback PID whose generation this stop did not verify (archive unchanged)', async () => {
+        await startWith([{
+            requestedSessionId: 'claude-session', confirmedSessionId: 'claude-session',
+            pid: 4242, processStartMarker: 'generation', flavor: 'claude',
+        }])
+        mocks.alive.mockReturnValue(false)
+        await expect(stopSession('claude-session')).resolves.toBe('already_gone')
+        expect(mocks.kill).not.toHaveBeenCalled()
+        expect(mocks.sweep).not.toHaveBeenCalled()
+    })
+
+    it('reports unknown for an unverified dead root when process-group cleanup is required', async () => {
+        await startWith([{
+            requestedSessionId: 'claude-session', confirmedSessionId: 'claude-session',
+            pid: 4242, processStartMarker: 'generation', flavor: 'claude',
+        }])
+        mocks.alive.mockReturnValue(false)
+        await expect(stopSession('claude-session', { requireProcessGroupCleanup: true })).resolves.toBe('unknown')
+        expect(mocks.sweep).not.toHaveBeenCalled()
+    })
+
+    it('blocks a required cleanup when a verified group outlives the tree kill, but not archive', async () => {
+        await startWith([{
+            requestedSessionId: 'claude-session', confirmedSessionId: 'claude-session',
+            pid: 4242, processStartMarker: 'generation', flavor: 'claude',
+        }])
+        mocks.sweep.mockResolvedValue(false)
+        await expect(stopSession('claude-session', { requireProcessGroupCleanup: true })).resolves.toBe('still_alive')
+        await expect(stopSession('claude-session')).resolves.toBe('stopped')
     })
 
     it('keeps the mandatory Hub preparation for a recovered OpenCode process', async () => {
@@ -134,6 +215,7 @@ describe('runner stop of recovered persisted sessions while the Hub is unavailab
         })
         await expect(stopSession('opencode-session')).resolves.toBe('already_gone')
         expect(mocks.kill).not.toHaveBeenCalled()
+        expect(mocks.sweep).not.toHaveBeenCalled()
     })
 
     it('refuses to signal a recycled PID after Hub preparation', async () => {

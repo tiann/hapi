@@ -3,6 +3,14 @@ export const DEFAULT_RPC_TIMEOUT_MS = 30_000
 /** expiresAt uses the Runner/target machine's monotonic milliseconds, not wall time. */
 export type SessionStopPreparationLease = { id: string; expiresAt: number }
 
+/** Machine-level StopSession request. */
+export type StopSessionRpcRequest = {
+    sessionId: string
+    processStartMarker?: string
+    /** Runner must also sweep the session's process group before reporting stopped. */
+    requireProcessGroupCleanup?: boolean
+}
+
 export const RPC_METHODS = {
     Permission: 'permission',
     Abort: 'abort',

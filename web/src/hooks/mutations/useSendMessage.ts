@@ -98,6 +98,7 @@ type UseSendMessageOptions = {
     onBlocked?: (reason: BlockedReason) => void
     onSuccess?: (sessionId: string) => void
     onError?: (info: SendErrorInfo) => void
+    isSessionHibernated?: boolean
     isSessionThinking?: boolean
 }
 
@@ -197,6 +198,7 @@ export function useSendMessage(
     ) => Promise<SendMessageAcceptance | false>
     retryMessage: (localId: string) => boolean
     isSending: boolean
+    isResolving: boolean
 } {
     const { haptic } = usePlatform()
     const [isResolving, setIsResolving] = useState(false)
@@ -289,7 +291,8 @@ export function useSendMessage(
         const createdAt = Date.now()
         let targetSessionId = sessionId
         let sendAttachments = attachments
-        if (options?.resolveSessionId) {
+        const deferWake = options?.isSessionHibernated && typeof scheduledAt === 'number' && scheduledAt > createdAt
+        if (options?.resolveSessionId && !deferWake) {
             resolveGuardRef.current = true
             setIsResolving(true)
             try {
@@ -387,5 +390,6 @@ export function useSendMessage(
         sendMessage,
         retryMessage,
         isSending: mutation.isPending || isResolving,
+        isResolving,
     }
 }

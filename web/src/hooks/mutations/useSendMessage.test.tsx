@@ -628,6 +628,40 @@ describe('useSendMessage', () => {
         await expect(acceptedPromise!).resolves.toEqual({ attemptId: 'local-id-1' })
     })
 
+    it('posts a future scheduled prompt to the hibernated ID without waking it', async () => {
+        const send = vi.fn(async () => {})
+        const resolveSessionId = vi.fn(async () => ({ sessionId: 'sleeping', resumed: true }))
+        const api = createMockApi(send)
+        const scheduledAt = Date.now() + 60_000
+        const { result } = renderHook(() => useSendMessage(api, 'sleeping', { resolveSessionId, isSessionHibernated: true }),
+            { wrapper: createWrapper() })
+        await act(async () => { await result.current.sendMessage('later', undefined, scheduledAt) })
+        await waitFor(() => expect(send).toHaveBeenCalledWith('sleeping', 'later', expect.any(String), undefined, scheduledAt, 'queue'))
+        expect(resolveSessionId).not.toHaveBeenCalled()
+    })
+
+    it('reports isResolving only while the pre-send resume is pending', async () => {
+        const resume = deferred<{ sessionId: string; resumed: boolean }>()
+        const { result } = renderHook(
+            () => useSendMessage(createMockApi(), 'session-hibernated', {
+                resolveSessionId: () => resume.promise,
+                onSessionResolved: vi.fn(),
+            }),
+            { wrapper: createWrapper() },
+        )
+        expect(result.current.isResolving).toBe(false)
+        let acceptedPromise: Promise<SendMessageAcceptance | false> | undefined
+        act(() => {
+            acceptedPromise = result.current.sendMessage('hello')
+        })
+        await waitFor(() => expect(result.current.isResolving).toBe(true))
+        await act(async () => {
+            resume.resolve({ sessionId: 'session-hibernated', resumed: true })
+            await acceptedPromise
+        })
+        await waitFor(() => expect(result.current.isResolving).toBe(false))
+    })
+
     it('awaits onSessionResolved before starting the send mutation', async () => {
         const order: string[] = []
         const gate = deferred<void>()

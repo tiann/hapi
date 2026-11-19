@@ -101,7 +101,7 @@ type MachineRpcHandlers = {
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>
     stopSession: (
         sessionId: string,
-        opts?: { processStartMarker?: string }
+        opts?: { processStartMarker?: string; requireProcessGroupCleanup?: boolean }
     ) => Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'>
     requestShutdown: () => void
 }
@@ -636,14 +636,18 @@ export class ApiMachineClient {
         })
 
         this.rpcHandlerManager.registerHandler(RPC_METHODS.StopSession, async (params: any) => {
-            const { sessionId, processStartMarker } = params || {}
+            const { sessionId, processStartMarker, requireProcessGroupCleanup } = params || {}
             if (!sessionId) {
                 throw new Error('Session ID is required')
             }
 
+            const stopOpts = {
+                ...(typeof processStartMarker === 'string' ? { processStartMarker } : {}),
+                ...(requireProcessGroupCleanup === true ? { requireProcessGroupCleanup: true } : {}),
+            }
             const status = await stopSession(
                 sessionId,
-                typeof processStartMarker === 'string' ? { processStartMarker } : undefined
+                Object.keys(stopOpts).length > 0 ? stopOpts : undefined
             )
             return { status }
         })

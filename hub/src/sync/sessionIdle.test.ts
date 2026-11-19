@@ -9,10 +9,18 @@ import { registerSessionHandlers } from '../socket/handlers/cli/sessionHandlers'
 import type { EventPublisher } from './eventPublisher'
 import { SessionCache } from './sessionCache'
 import {
+    DEFAULT_SESSION_HIBERNATE_MS,
     DEFAULT_SESSION_IDLE_TIMEOUT_MS,
+    HIBERNATE_ELIGIBLE_FLAVORS,
+    hasActiveTeamWork,
+    hasLiveWork,
+    resolveSessionHibernateMs,
     resolveSessionIdleTimeoutMs,
     shouldClearKeepaliveIdle,
+    shouldHibernate,
     shouldMarkKeepaliveIdle,
+    type HibernationRunnerCapabilities,
+    type HibernationSignals,
 } from './sessionIdle'
 
 const HOUR = 60 * 60 * 1000
@@ -280,5 +288,259 @@ describe('SessionCache.reconcileKeepaliveIdle', () => {
 
         expect(cache.reconcileKeepaliveIdle(later, 0)).toEqual([])
         expect(cache.getSession(sessionId)!.metadata?.lifecycleState).toBe('running')
+    })
+})
+
+function mulberry32(seed: number): () => number {
+    let a = seed >>> 0
+    return () => {
+        a = (a + 0x6D2B79F5) >>> 0
+        let t = a
+        t = Math.imul(t ^ (t >>> 15), t | 1)
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+    }
+}
+
+const PBT_ITERATIONS = 500
+const PBT_BASE_SEED = Number.parseInt(process.env.HAPI_PBT_SEED ?? '', 10) || (Date.now() >>> 0)
+
+function forAll(name: string, property: (rand: () => number) => void): void {
+    for (let i = 0; i < PBT_ITERATIONS; i += 1) {
+        const seed = (PBT_BASE_SEED + i) >>> 0
+        try {
+            property(mulberry32(seed))
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            throw new Error(`[pbt] ${name} failed with seed=${seed} (HAPI_PBT_SEED=${seed} to replay): ${message}`)
+        }
+    }
+}
+
+function pick<T>(rand: () => number, items: readonly T[]): T {
+    return items[Math.floor(rand() * items.length)]!
+}
+
+function randomString(rand: () => number, maxLength = 12): string {
+    const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789-_ .'
+    const length = Math.floor(rand() * (maxLength + 1))
+    let out = ''
+    for (let i = 0; i < length; i += 1) out += alphabet[Math.floor(rand() * alphabet.length)]
+    return out
+}
+
+const CAPABLE: HibernationRunnerCapabilities = { sessionHibernation: true, piExistingSessionResume: true }
+const RESUMABLE: HibernationSignals = { resumeId: 'native-1' }
+const WINDOW = DEFAULT_SESSION_HIBERNATE_MS
+
+function hibernatable(overrides: Partial<Session> = {}, metadata: Partial<NonNullable<Session['metadata']>> = {}): Session {
+    return session({
+        metadata: {
+            path: '/tmp/p',
+            host: 'h',
+            lifecycleState: 'running',
+            flavor: 'claude',
+            startedBy: 'runner',
+            machineId: 'machine-1',
+            claudeSessionId: 'native-1',
+            ...metadata
+        },
+        ...overrides
+    })
+}
+
+describe('resolveSessionHibernateMs', () => {
+    it('defaults to two hours when unset or unparseable', () => {
+        expect(DEFAULT_SESSION_HIBERNATE_MS).toBe(7_200_000)
+        expect(resolveSessionHibernateMs({})).toBe(DEFAULT_SESSION_HIBERNATE_MS)
+        expect(resolveSessionHibernateMs({ HAPI_SESSION_HIBERNATE_MS: '' })).toBe(DEFAULT_SESSION_HIBERNATE_MS)
+        expect(resolveSessionHibernateMs({ HAPI_SESSION_HIBERNATE_MS: 'abc' })).toBe(DEFAULT_SESSION_HIBERNATE_MS)
+        expect(resolveSessionHibernateMs({ HAPI_SESSION_HIBERNATE_MS: '-1' })).toBe(DEFAULT_SESSION_HIBERNATE_MS)
+        expect(resolveSessionHibernateMs({ HAPI_SESSION_HIBERNATE_MS: '12abc' })).toBe(DEFAULT_SESSION_HIBERNATE_MS)
+    })
+
+    it('treats 0 as disabled and raises tiny windows to one minute', () => {
+        expect(resolveSessionHibernateMs({ HAPI_SESSION_HIBERNATE_MS: '0' })).toBe(0)
+        expect(resolveSessionHibernateMs({ HAPI_SESSION_HIBERNATE_MS: ' 0 ' })).toBe(0)
+        expect(resolveSessionHibernateMs({ HAPI_SESSION_HIBERNATE_MS: '1' })).toBe(60_000)
+        expect(resolveSessionHibernateMs({ HAPI_SESSION_HIBERNATE_MS: '59999' })).toBe(60_000)
+        expect(resolveSessionHibernateMs({ HAPI_SESSION_HIBERNATE_MS: '60000' })).toBe(60_000)
+        expect(resolveSessionHibernateMs({ HAPI_SESSION_HIBERNATE_MS: '3600000' })).toBe(3_600_000)
+    })
+})
+
+describe('shouldHibernate', () => {
+    const stale = NOW - 3 * HOUR
+
+    it('hibernates a keepalive-only runner session past the window', () => {
+        expect(shouldHibernate(hibernatable(), RESUMABLE, stale, NOW, WINDOW, CAPABLE)).toBe(true)
+        expect(shouldHibernate(hibernatable({}, { lifecycleState: 'idle' }), RESUMABLE, stale, NOW, WINDOW, CAPABLE)).toBe(true)
+    })
+
+    it('waits out the full window', () => {
+        expect(shouldHibernate(hibernatable(), RESUMABLE, NOW - WINDOW, NOW, WINDOW, CAPABLE)).toBe(false)
+        expect(shouldHibernate(hibernatable(), RESUMABLE, NOW - WINDOW - 1, NOW, WINDOW, CAPABLE)).toBe(true)
+    })
+
+    it('applies each admission rule', () => {
+        const ok = (s: Session, signals: HibernationSignals = RESUMABLE, caps: HibernationRunnerCapabilities = CAPABLE) =>
+            shouldHibernate(s, signals, stale, NOW, WINDOW, caps)
+        expect(ok(hibernatable({ derivedToolWork: true }))).toBe(false)
+        expect(ok(hibernatable({ active: false }))).toBe(false)
+        expect(ok(hibernatable({}, { lifecycleState: 'archived' }))).toBe(false)
+        expect(ok(hibernatable({}, { lifecycleState: 'hibernated' }))).toBe(false)
+        expect(ok(hibernatable({}, { idleReconcileExempt: true }))).toBe(false)
+        expect(ok(hibernatable({}, { startedBy: 'terminal' }))).toBe(false)
+        expect(ok(hibernatable({}, { startedBy: undefined, startedFromRunner: true }))).toBe(true)
+        expect(ok(hibernatable({ agentState: { controlledByUser: true } as Session['agentState'] }))).toBe(false)
+        expect(ok(hibernatable({ agentState: { startingMode: 'pty' } as unknown as Session['agentState'] }))).toBe(false)
+        expect(ok(hibernatable({}, { startingMode: 'pty' }))).toBe(false)
+        expect(ok(hibernatable(), { resumeId: null })).toBe(false)
+        expect(ok(hibernatable(), RESUMABLE, { sessionHibernation: false })).toBe(false)
+        expect(ok(hibernatable(), RESUMABLE, null)).toBe(false)
+    })
+
+    it('applies flavor-specific blockers', () => {
+        const ok = (meta: Partial<NonNullable<Session['metadata']>>, caps: HibernationRunnerCapabilities = CAPABLE) =>
+            shouldHibernate(hibernatable({}, meta), RESUMABLE, stale, NOW, WINDOW, caps)
+        expect(ok({ flavor: 'codex' })).toBe(true)
+        expect(ok({ flavor: 'codex', codexRuntime: { kind: 'attached', bindingId: '00000000-0000-4000-8000-000000000000', state: 'attached' } })).toBe(false)
+        expect(ok({ flavor: 'codex', codexResumePending: { machineId: 'machine-1', nativeSessionId: 'n' } })).toBe(false)
+        expect(ok({ flavor: 'codex', codexArchivedFork: { operationId: '00000000-0000-4000-8000-000000000000', childSessionId: '00000000-0000-4000-8000-000000000001' } })).toBe(false)
+        const rewind = { operationId: 'op', nativeSessionId: 'native', workerId: 'worker', requestedLocalId: 'r',
+            nativeMessageId: 'm', cutoffSeq: 1, sourceEpoch: 0, sourceMaxSeq: 1, reservationVersion: 1,
+            sourceTranscriptHash: '0'.repeat(64) }
+        for (const phase of ['reserved', 'prepared', 'unknown', 'committed', 'rejected'] as const) {
+            expect(ok({ flavor: 'opencode', opencodeRewind: { ...rewind, phase } })).toBe(phase === 'committed' || phase === 'rejected')
+        }
+        for (const state of ['aborted', 'reserved'] as const) {
+            expect(ok({ flavor: 'opencode', opencodeClearOperation: { replacementSessionId: 'child', state, updatedAt: 1 } }))
+                .toBe(state === 'aborted')
+        }
+
+        expect(ok({ flavor: 'opencode' })).toBe(true)
+        expect(ok({ flavor: 'opencode', opencodeForkPending: true })).toBe(false)
+        expect(ok({ flavor: 'pi' })).toBe(true)
+        expect(ok({ flavor: 'pi' }, { sessionHibernation: true })).toBe(false)
+        expect(ok({ flavor: 'pi', piResumeAttempt: { state: 'resuming', machineId: 'machine-1', startedAt: 1 } })).toBe(false)
+        expect(ok({ flavor: 'cursor' })).toBe(false)
+        expect(ok({ flavor: 'agy' })).toBe(false)
+    })
+
+    it('reads team state as live work', () => {
+        expect(hasActiveTeamWork(session({ teamState: { teamName: 't', members: [{ name: 'a', status: 'active' }] } }))).toBe(true)
+        expect(hasActiveTeamWork(session({ teamState: { teamName: 't', tasks: [{ id: '1', title: 'x', status: 'in_progress' }] } }))).toBe(true)
+        expect(hasActiveTeamWork(session({ teamState: { teamName: 't', members: [{ name: 'a', status: 'idle' }], tasks: [{ id: '1', title: 'x', status: 'completed' }] } }))).toBe(false)
+    })
+})
+
+describe('hibernation properties (PBT)', () => {
+    type LiveWorkField = (s: Session, signals: HibernationSignals, rand: () => number) => void
+    const LIVE_WORK: Record<string, LiveWorkField> = {
+        thinking: (s) => { s.thinking = true },
+        derivedToolWork: (s) => { s.derivedToolWork = true },
+        backgroundTasks: (s, _signals, rand) => { s.backgroundTaskCount = 1 + Math.floor(rand() * 5) },
+        requests: (s) => { s.agentState = { ...(s.agentState ?? {}), requests: { r: { tool: 'Bash', arguments: {} } } } as Session['agentState'] },
+        pendingThinking: (_s, signals) => { signals.pendingThinking = true },
+        runningJob: (_s, signals) => { signals.runningJob = true },
+        teamWork: (_s, signals) => { signals.activeTeamWork = true },
+        terminals: (_s, signals, rand) => { signals.openTerminals = 1 + Math.floor(rand() * 4) },
+        undelivered: (_s, signals, rand) => { signals.undeliveredMessages = 1 + Math.floor(rand() * 9) },
+        operation: (_s, signals) => { signals.operationInFlight = true },
+        controlledByUser: (s) => { s.agentState = { ...(s.agentState ?? {}), controlledByUser: true } as Session['agentState'] },
+        exempt: (s) => { s.metadata = { ...s.metadata!, idleReconcileExempt: true } },
+    }
+    const LIVE_WORK_KEYS = Object.keys(LIVE_WORK)
+
+    function randomCandidate(rand: () => number): { s: Session; signals: HibernationSignals; caps: HibernationRunnerCapabilities } {
+        const s = hibernatable({}, {
+            flavor: pick(rand, HIBERNATE_ELIGIBLE_FLAVORS),
+            lifecycleState: pick(rand, ['running', 'idle'] as const),
+            ...(rand() < 0.5 ? { startedBy: 'runner' as const } : { startedBy: undefined, startedFromRunner: true }),
+        })
+        return { s, signals: { resumeId: `native-${Math.floor(rand() * 1e6)}` }, caps: { ...CAPABLE } }
+    }
+
+    it('INVARIANT live work never hibernates', () => {
+        forAll('live-work', (rand) => {
+            const { s, signals, caps } = randomCandidate(rand)
+            const chosen = LIVE_WORK_KEYS.filter(() => rand() < 0.3)
+            if (chosen.length === 0) chosen.push(pick(rand, LIVE_WORK_KEYS))
+            for (const key of chosen) LIVE_WORK[key]!(s, signals, rand)
+            const nonFlagFields = chosen.filter((key) => key !== 'controlledByUser' && key !== 'exempt')
+            if (nonFlagFields.length > 0) expect(hasLiveWork(s, signals)).toBe(true)
+            expect(shouldHibernate(s, signals, 0, 1e13, 1 + Math.floor(rand() * WINDOW), caps)).toBe(false)
+        })
+    })
+
+    it('INVARIANT disabled switch never hibernates', () => {
+        const fixed = ['0', '-1', ' 0 ', 'abc', '', '  ', '00', '-0', '1e3', '0x10']
+        forAll('disabled', (rand) => {
+            const raw = rand() < 0.4 ? pick(rand, fixed)
+                : rand() < 0.5 ? String(Math.floor(rand() * 200_000) - 100_000)
+                    : randomString(rand)
+            const resolved = resolveSessionHibernateMs({ HAPI_SESSION_HIBERNATE_MS: raw })
+            expect(resolved === 0 || resolved >= 60_000).toBe(true)
+            if (raw.trim() === '0' || raw.trim() === '00') expect(resolved).toBe(0)
+            const { s, signals, caps } = randomCandidate(rand)
+            const disabled = -Math.floor(rand() * 1e9)
+            expect(shouldHibernate(s, signals, 0, 1e13, disabled, caps)).toBe(false)
+            if (resolved <= 0) expect(shouldHibernate(s, signals, 0, 1e13, resolved, caps)).toBe(false)
+        })
+    })
+
+    it('INVARIANT monotonic in time', () => {
+        forAll('monotonic', (rand) => {
+            const { s, signals, caps } = randomCandidate(rand)
+            if (rand() < 0.3) LIVE_WORK[pick(rand, LIVE_WORK_KEYS)]!(s, signals, rand)
+            if (rand() < 0.2) signals.resumeId = null
+            const hibernateMs = 60_000 + Math.floor(rand() * 10 * HOUR)
+            const progressAt = Math.floor(rand() * NOW)
+            const now1 = progressAt + Math.floor(rand() * 2 * hibernateMs)
+            const now2 = now1 + Math.floor(rand() * 100 * HOUR)
+            if (shouldHibernate(s, signals, progressAt, now1, hibernateMs, caps)) {
+                expect(shouldHibernate(s, signals, progressAt, now2, hibernateMs, caps)).toBe(true)
+            }
+        })
+    })
+
+    it('INVARIANT flavors outside the whitelist never hibernate', () => {
+        const known = ['claude', 'codex', 'opencode', 'pi', 'cursor', 'agy', 'gemini', 'grok', 'kimi', 'copilot', 'dsh']
+        const whitelist = new Set<string>(HIBERNATE_ELIGIBLE_FLAVORS)
+        forAll('flavor-whitelist', (rand) => {
+            const flavor = rand() < 0.5 ? pick(rand, known) : randomString(rand)
+            const { s, signals, caps } = randomCandidate(rand)
+            s.metadata = { ...s.metadata!, flavor }
+            const result = shouldHibernate(s, signals, 0, 1e13, WINDOW, caps)
+            if (!whitelist.has(flavor)) expect(result).toBe(false)
+        })
+    })
+
+    it('INVARIANT idle reconciler never touches hibernated sessions', () => {
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, createPublisher([]))
+        const ids: string[] = []
+        for (let i = 0; i < 4; i += 1) {
+            const id = cache.getOrCreateSession(`hib-${i}`, {
+                path: '/tmp/project', host: 'localhost', flavor: 'claude', lifecycleState: 'hibernated',
+                hibernation: { state: 'hibernated', since: Date.now(), reason: 'idle' },
+            }, null, 'default').id
+            if (i % 2 === 0) cache.handleSessionAlive({ sid: id, time: Date.now() })
+            ids.push(id)
+        }
+        const versions = new Map(ids.map((id) => [id, cache.getSession(id)!.metadataVersion]))
+        forAll('reconciler-hibernated', (rand) => {
+            const id = pick(rand, ids)
+            if (rand() < 0.3) cache.recordAgentProgress(id, Date.now() + Math.floor(rand() * 1000 * HOUR))
+            const clock = Date.now() + Math.floor((rand() * 2 - 0.5) * 1000 * HOUR)
+            const window = rand() < 0.1 ? 0 : 1 + Math.floor(rand() * 100 * HOUR)
+            cache.reconcileKeepaliveIdle(clock, window)
+            for (const sid of ids) {
+                const current = cache.getSession(sid)!
+                expect(current.metadata?.lifecycleState).toBe('hibernated')
+                expect(current.metadataVersion).toBe(versions.get(sid)!)
+            }
+        })
+        store.close()
     })
 })

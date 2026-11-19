@@ -210,6 +210,7 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
     })
 
     syncEngine = new SyncEngine(store, socketServer.io, socketServer.rpcRegistry, sseManager)
+    syncEngine.setTerminalSessionCounter(socketServer.countTerminalsForSession)
     // Accountable principal for A2A work-graph notify ingest (P3).
     syncEngine.setHubOwnerUserId(await getOrCreateOwnerId())
 

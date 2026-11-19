@@ -3,6 +3,7 @@ import { normalizeSearch, prepareSidebarSessions, sessionMatchesQuery } from '@/
 import { truncateGraphemes } from '@/lib/graphemes'
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { SESSION_REFERENCE_STEER_SUFFIX } from '@hapi/protocol/sessionCitation'
+import { isHibernatedLifecycleState } from '@hapi/protocol'
 
 export function buildSessionReferencePath(sessionId: string): string {
     const base = import.meta.env.BASE_URL ?? '/'
@@ -157,6 +158,7 @@ export function formatSessionMentionTooltip(
     let status: string | null = null
     if (session) {
         if (session.lifecycleState === 'archived') status = 'Archived'
+        else if (!session.active && isHibernatedLifecycleState(session.lifecycleState)) status = 'Hibernated'
         else if (session.thinking) status = 'Thinking'
         else if (session.attentionLabel) status = session.attentionLabel
         else status = session.active ? 'Active' : 'Inactive'

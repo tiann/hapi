@@ -1,4 +1,5 @@
 import { useMemo, useRef, useSyncExternalStore } from 'react'
+import { isHibernatedLifecycleState } from '@hapi/protocol'
 import type { SessionSummary } from '@/types/api'
 import { AgentFlavorIcon } from '@/components/AgentFlavorIcon'
 import { InfoIcon, LoaderIcon, ScheduleIcon, StoppedBadgeIcon } from '@/components/icons'
@@ -82,6 +83,7 @@ const PRESENCE_BADGE_CLASS = {
     working: 'bg-[var(--app-badge-success-text)]',
     waiting: 'border-2 border-[var(--app-badge-success-text)] bg-[var(--app-bg)]',
     stopped: 'bg-[var(--app-bg)] text-[var(--app-hint)]',
+    hibernated: 'border-2 border-[var(--app-hint)] bg-[var(--app-bg)]',
 } as const
 
 /**
@@ -213,11 +215,15 @@ export function SessionRowSummary(props: {
     const derivedWork = s.derivedToolWork === true
     const isRunning = s.active && s.thinking
     const isBackgroundOnly = s.active && !s.thinking && (s.backgroundTaskCount ?? 0) > 0
-    const presence: 'working' | 'waiting' | 'stopped' = isRunning || attachedJob || derivedWork || isBackgroundOnly
+    const isHibernated = !s.active && isHibernatedLifecycleState(s.metadata?.lifecycleState)
+    const presence: 'working' | 'waiting' | 'stopped' | 'hibernated' = isRunning || attachedJob || derivedWork || isBackgroundOnly
         ? 'working'
         : s.active
             ? 'waiting'
-            : 'stopped'
+            : isHibernated
+                ? 'hibernated'
+                : 'stopped'
+    const hibernatedLabel = isHibernated ? t('session.item.hibernated') : undefined
     const isUnread = sessionIsUnread(s, {
         lastSeenAt: getSessionLastSeenAt(s.id),
         manualUnreadAt: getSessionManualUnreadAt(s.id, s.readState),
@@ -271,6 +277,9 @@ export function SessionRowSummary(props: {
                 ref={presenceRef}
                 data-testid="session-presence"
                 data-presence={presence}
+                role={hibernatedLabel ? 'img' : undefined}
+                aria-label={hibernatedLabel}
+                title={hibernatedLabel}
                 className={`absolute -bottom-0.5 -right-0.5 box-border flex h-2.5 w-2.5 items-center justify-center rounded-full ring-2 ring-[var(--app-bg)] ${PRESENCE_BADGE_CLASS[presence]}`}
             >
                 {presence === 'stopped' ? <StoppedBadgeIcon className="h-2.5 w-2.5" /> : null}
@@ -295,7 +304,7 @@ export function SessionRowSummary(props: {
                 <div className="session-row-header grid grid-cols-[minmax(9rem,1fr)_minmax(0,max-content)] items-center gap-2">
                     <div className="flex min-w-0 items-center gap-2">
                         <div
-                            className={`min-w-0 flex-1 truncate text-sm text-[var(--app-fg)] ${emphasizeUnread ? 'font-semibold' : 'font-normal'} ${!s.active ? 'opacity-50' : ''}`}
+                            className={`min-w-0 flex-1 truncate text-sm text-[var(--app-fg)] ${emphasizeUnread ? 'font-semibold' : 'font-normal'} ${isHibernated ? 'opacity-75' : !s.active ? 'opacity-50' : ''}`}
                             title={sessionName}
                         >
                             {sessionName}

@@ -306,6 +306,8 @@ export function HappyComposer(props: {
     modelReasoningEffort?: string | null
     effort?: string | null
     active?: boolean
+    lifecycleState?: string | null
+    waking?: boolean
     allowSendWhenInactive?: boolean
     thinking?: boolean
     agentState?: AgentState | null
@@ -431,6 +433,8 @@ export function HappyComposer(props: {
         modelReasoningEffort: rawModelReasoningEffort,
         effort: rawEffort,
         active = true,
+        lifecycleState,
+        waking = false,
         allowSendWhenInactive = false,
         thinking = false,
         agentState,
@@ -2353,6 +2357,8 @@ export function HappyComposer(props: {
 
                     <StatusBar
                         active={active}
+                        lifecycleState={lifecycleState}
+                        waking={waking}
                         machineId={machineId}
                         thinking={thinking}
                         agentState={agentState}

@@ -1,5 +1,5 @@
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, PermissionMode } from '@hapi/protocol/types'
-import { DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
+import { DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease, type StopSessionRpcRequest } from '@hapi/protocol/rpcMethods'
 import {
     UsageQueryResultSchema,
     UsageQuerySettingsResponseSchema,
@@ -261,16 +261,18 @@ export class RpcGateway {
     async stopRunnerSession(
         machineId: string,
         sessionId: string,
-        opts?: { processStartMarker?: string; timeoutMs?: number }
+        opts?: { processStartMarker?: string; timeoutMs?: number; requireProcessGroupCleanup?: boolean }
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> {
         const timeoutMs = opts?.timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS
         const started = performance.now()
         let result: unknown
+        const request: StopSessionRpcRequest = {
+            sessionId,
+            ...(opts?.processStartMarker ? { processStartMarker: opts.processStartMarker } : {}),
+            ...(opts?.requireProcessGroupCleanup ? { requireProcessGroupCleanup: true } : {}),
+        }
         try {
-            result = await this.machineRpc(machineId, RPC_METHODS.StopSession, {
-                sessionId,
-                ...(opts?.processStartMarker ? { processStartMarker: opts.processStartMarker } : {}),
-            }, timeoutMs)
+            result = await this.machineRpc(machineId, RPC_METHODS.StopSession, request, timeoutMs)
         } catch (error) {
             if (error instanceof RpcTargetMissingError) throw error
             // Ack timeout does not cancel the remote stop. Preserve uncertainty

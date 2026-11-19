@@ -55,6 +55,7 @@ export function createSocketServer(deps: SocketServerDeps): {
     io: SocketServer
     engine: Engine
     rpcRegistry: RpcRegistry
+    countTerminalsForSession: (sessionId: string) => number
 } {
     const configuration = getConfiguration()
     const corsOrigins = deps.corsOrigins ?? configuration.corsOrigins
@@ -172,5 +173,10 @@ export function createSocketServer(deps: SocketServerDeps): {
         maxTerminalsPerSession
     }))
 
-    return { io, engine, rpcRegistry }
+    return {
+        io,
+        engine,
+        rpcRegistry,
+        countTerminalsForSession: (sessionId) => terminalRegistry.countForSession(sessionId)
+    }
 }

@@ -157,6 +157,7 @@ before.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `HAPI_SESSION_IDLE_TIMEOUT_MS` | `43200000` (12 h) | A session that sends only keep-alives for this long, with no visible work or pending request, is shown as idle. `0` disables. |
+| `HAPI_SESSION_HIBERNATE_MS` | `7200000` (2 h) | After this long without agent progress or live work, the hub stops eligible runner sessions and marks them `hibernated`. The hub excludes shared Codex runtimes from hibernation. The next send to a hibernated session resumes the same session ID. `0` disables hibernation. Values from 1 to 59999 are raised to 60000 ms. |
 | `HAPI_MAX_UPLOAD_BYTES` | `536870912` (512 MiB) | Maximum size of one uploaded file; capped at 10 GiB. The machine that receives the file checks the same variable, so set it on the hub and the CLI/runner. |
 | `HAPI_SCRATCHLIST_MAX_ATTACHMENT_BYTES_PER_FILE` | `10485760` (10 MiB) | Scratchlist attachment limit per file. |
 | `HAPI_SCRATCHLIST_MAX_ATTACHMENTS_PER_ENTRY` | `4` | Attachments per scratchlist entry. |

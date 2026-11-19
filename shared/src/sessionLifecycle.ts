@@ -33,3 +33,14 @@ export const SESSION_LIFECYCLE_ARCHIVED = 'archived'
 export function isLiveLifecycleState(value: unknown): boolean {
     return value === SESSION_LIFECYCLE_RUNNING || value === SESSION_LIFECYCLE_IDLE
 }
+
+/**
+ * Hub-authored: the session's wrapper and agent were stopped after a long
+ * keepalive-only stretch. The row is inactive but still belongs to the Active
+ * view and is transparently resumed (same HAPI id) on the next send.
+ */
+export const SESSION_LIFECYCLE_HIBERNATED = 'hibernated'
+
+export function isHibernatedLifecycleState(value: unknown): boolean {
+    return value === SESSION_LIFECYCLE_HIBERNATED
+}

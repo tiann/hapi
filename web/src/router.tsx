@@ -48,6 +48,7 @@ import { useSendMessage, type SendErrorInfo } from '@/hooks/mutations/useSendMes
 import type { ComposerSendError } from '@/components/AssistantChat/HappyComposer'
 import { ApiError } from '@/api/client'
 import type { MessageDeliveryMode } from '@hapi/protocol'
+import { isHibernatedLifecycleState } from '@hapi/protocol'
 import { queryKeys } from '@/lib/query-keys'
 import { useAddToast } from '@/lib/toast-context'
 import { useTranslation } from '@/lib/use-translation'
@@ -716,7 +717,9 @@ function SessionPage() {
         sendMessage,
         retryMessage,
         isSending,
+        isResolving,
     } = useSendMessage(api, sessionId, {
+        isSessionHibernated: !session?.active && isHibernatedLifecycleState(session?.metadata?.lifecycleState),
         isSessionThinking: session?.thinking ?? false,
         onSuccess: (sentSessionId) => {
             clearDraftsAfterSend(sentSessionId, sessionId)
@@ -970,6 +973,10 @@ function SessionPage() {
             isCatchingUpFromCache={messagesCatchingUpFromCache}
             isLoadingMoreMessages={messagesLoadingMore}
             isSending={isSending}
+            isWaking={
+                !session.active && isHibernatedLifecycleState(session.metadata?.lifecycleState)
+                && (isResolving || reopeningSessionId === sessionId)
+            }
             viewMode={messagesViewMode}
             messagesVersion={messagesVersion}
             historyVersion={historyVersion}

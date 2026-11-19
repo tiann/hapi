@@ -553,3 +553,108 @@ export async function killProcessByChildProcess(
   // exit 130 (#1424).
   return killProcessTreeByPid(pid, force, signalOrReport, deadlineOrFallbackReport, fallbackReport);
 }
+
+function readOwnProcessGroupId(): number | null {
+  if (process.platform === 'linux') {
+    try {
+      const stat = readFileSync('/proc/self/stat', 'utf8');
+      const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+      const pgid = Number(fields[2]);
+      if (Number.isSafeInteger(pgid) && pgid > 0) return pgid;
+    } catch {
+      // fall through to ps
+    }
+  }
+  const result = spawn.sync('ps', ['-o', 'pgid=', '-p', String(process.pid)], {
+    stdio: 'pipe',
+    timeout: SPAWN_SYNC_TIMEOUT_MS,
+  });
+  if (result.error || result.status !== 0) return null;
+  const pgid = Number(result.stdout?.toString().trim());
+  return Number.isSafeInteger(pgid) && pgid > 0 ? pgid : null;
+}
+
+export function processGroupGone(pgid: number): boolean {
+  try {
+    process.kill(-pgid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === 'ESRCH';
+  }
+}
+
+/**
+ * Reap stragglers left in a detached session's process group once its root
+ * has exited: SIGTERM the group, wait up to `graceMs`, then SIGKILL. Resolves
+ * true only once `kill(-pgid, 0)` reports ESRCH. Win32 has no process groups.
+ *
+ * The kernel never hands out a PID still in use as a process-group id, so a
+ * live process at `rootPid` that is not the original leader proves the
+ * original group is gone; the sweep then stops without signalling the new
+ * group. A live leader at start must match `expectedStartMarker`.
+ */
+export async function sweepProcessGroup(
+  rootPid: number,
+  opts: { graceMs?: number; deadlineMs?: number; expectedStartMarker?: string } = {}
+): Promise<boolean> {
+  if (isWindows()) return true;
+  if (!Number.isSafeInteger(rootPid) || rootPid <= 1 || rootPid === process.pid) return false;
+  if (processGroupGone(rootPid)) return true;
+  const ownPgid = readOwnProcessGroupId();
+  if (ownPgid === null || ownPgid === rootPid) return false;
+
+  let leaderGone = !isProcessAlive(rootPid);
+  let leaderMarker: string | null = null;
+  if (!leaderGone) {
+    leaderMarker = getProcessStartMarker(rootPid);
+    if (leaderMarker === null && !isProcessAlive(rootPid)) {
+      leaderGone = true;
+    } else if (opts.expectedStartMarker === undefined || leaderMarker === null) {
+      return false;
+    } else if (leaderMarker !== opts.expectedStartMarker) {
+      return true;
+    }
+  }
+  const leaderRecycled = (): boolean => {
+    if (!isProcessAlive(rootPid)) {
+      leaderGone = true;
+      return false;
+    }
+    return leaderGone;
+  };
+  const waitGone = async (waitMs: number): Promise<'gone' | 'recycled' | 'timeout'> => {
+    const deadline = Date.now() + waitMs;
+    for (;;) {
+      if (processGroupGone(rootPid)) return 'gone';
+      if (leaderRecycled()) return 'recycled';
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return 'timeout';
+      await new Promise(r => setTimeout(r, Math.min(50, remaining)));
+    }
+  };
+  const signalGroup = (signal: NodeJS.Signals): void => {
+    try {
+      process.kill(-rootPid, signal);
+    } catch {
+      // group may have emptied between probe and signal
+    }
+  };
+
+  if (!signalAllowed(opts.deadlineMs)) return false;
+  signalGroup('SIGTERM');
+  const soft = await waitGone(opts.graceMs ?? 5_000);
+  if (soft !== 'timeout') return true;
+  if (leaderRecycled()) return true;
+  if (!leaderGone) {
+    const currentMarker = getProcessStartMarker(rootPid);
+    if (currentMarker === null) {
+      if (isProcessAlive(rootPid)) return false;
+      leaderGone = true;
+    } else if (currentMarker !== leaderMarker) {
+      return true;
+    }
+  }
+  if (!signalAllowed(opts.deadlineMs)) return processGroupGone(rootPid);
+  signalGroup('SIGKILL');
+  return (await waitGone(1_000)) !== 'timeout';
+}

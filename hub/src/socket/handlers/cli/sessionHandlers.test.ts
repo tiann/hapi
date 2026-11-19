@@ -644,6 +644,33 @@ it.each([
         }
     })
 
+    it('preserves settled shared Codex hibernation across a late CLI archive retry', async () => {
+        const store = new Store(':memory:')
+        try {
+            const metadata = { flavor: 'codex', capabilities: { concurrentClients: true }, lifecycleState: 'running' }
+            const row = store.sessions.getOrCreateSession('shared-codex-root', metadata, null, 'default')
+            const settled = { ...metadata, lifecycleState: 'hibernated', lifecycleStateSince: 42,
+                hibernation: { state: 'hibernated', reason: 'idle', since: 42 } }
+            store.sessions.updateSessionMetadata(row.id, settled, row.metadataVersion, 'default', { touchUpdatedAt: false })
+            const socket = new FakeSocket()
+            registerSessionHandlers(socket as unknown as CliSocketWithData, {
+                store, resolveSessionAccess: () => ({ ok: true, value: store.sessions.getSession(row.id)! }), emitAccessError() {}
+            })
+            await Bun.sleep(2)
+            const retry = (version: number, ack: (response: unknown) => void) => socket.trigger('update-metadata', {
+                sid: row.id, expectedVersion: version,
+                metadata: { ...metadata, lifecycleState: 'archived', lifecycleStateSince: 99, archiveReason: 'shutdown' }
+            }, ack)
+            retry(row.metadataVersion, ack => expect(ack).toMatchObject({ result: 'version-mismatch' }))
+            retry(row.metadataVersion + 1, ack => expect(ack).toMatchObject({ result: 'success' }))
+            const stored = store.sessions.getSession(row.id)!
+            expect(stored.metadata).toEqual(settled)
+            expect(stored.updatedAt).toBe(row.updatedAt)
+        } finally {
+            store.close()
+        }
+    })
+
     it('preserves existing hub-owned clear and job-redirect metadata across CLI metadata updates', () => {
         const store = new Store(':memory:')
         const operation = { replacementSessionId: 'owned-target', state: 'completed', updatedAt: Date.now() }

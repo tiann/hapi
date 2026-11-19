@@ -757,7 +757,7 @@ export async function pingPeer(options: PingPeerOptions): Promise<PingPeerResult
         if (requestedDeliveryMode === 'steer') {
             throw new PingPeerError('bad_args', 'Steering requires an active turn; target is inactive, no message sent. Use queue with wake to resume it')
         }
-        if (!options.wake) {
+        if (!options.wake && session.metadata?.lifecycleState !== 'hibernated') {
             throw new PingPeerError(
                 'inactive',
                 `target ${matched.id} is inactive; no message sent. `

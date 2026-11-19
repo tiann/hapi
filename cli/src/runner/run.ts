@@ -16,7 +16,7 @@ import { isBunCompiled } from '@/projectPath';
 import { describeChildFatalContext } from './childFatalDiagnostics';
 import { writeRunnerState, RunnerLocallyPersistedState, readRunnerState, acquireRunnerLock, releaseRunnerLock } from '@/persistence';
 import { getCliArgs } from '@/utils/cliArgs';
-import { getProcessStartMarker, getSystemBootId, getProcessThreadGroupId, normalizeBootId, isProcessAlive, isWindows, killProcess, killProcessByChildProcess, killProcessTreeByPid } from '@/utils/process';
+import { getProcessStartMarker, getSystemBootId, getProcessThreadGroupId, normalizeBootId, isProcessAlive, isWindows, killProcess, killProcessByChildProcess, killProcessTreeByPid, processGroupGone, sweepProcessGroup } from '@/utils/process';
 import { findStopSessionOrphanTargets, listWindowsProcessesWithCommandLine, reapRunnerSpawnedOrphans } from '@/runner/orphanReap';
 import { decideUntrackedRunnerWebhook } from '@/runner/lateRunnerWebhook';
 import { cleanupFailedStartupAfterExit, sessionStartupTimeout, waitForRecoverableStartup } from './sessionStartup';
@@ -47,7 +47,8 @@ import { resolveWorkspaceRoots } from '@/utils/workspaceRoot';
 import { hashRunnerCliApiToken, hashRunnerExtraHeaders } from './runnerIdentity';
 import { readRuntimes, runtimeMayBeAlive, runtimeAuthHash } from '@/codex/shared/registry';
 import { readWindowsProcessTable } from '@/utils/windowsProcessStop';
-import { coalesceStopRequests } from './stopSessionRequests';
+import { ExitedProcessGroups } from './exitedProcessGroups';
+import { coalesceStopRequests, type StopSessionOptions } from './stopSessionRequests';
 import { scheduleCursorModelsPrewarm } from '@/modules/common/cursorModelsPrewarm';
 import { isLinkedGitWorktree } from '@/utils/isLinkedGitWorktree';
 import { agentUnavailableMessage, getAgentAvailability } from '@/agent/agentAvailability';
@@ -313,6 +314,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
     // Setup state - key by PID
     const pidToTrackedSession = new Map<number, TrackedSession>();
+    const exitedProcessGroups = new ExitedProcessGroups();
     // Retained until actual child exit even if webhook timeout removes normal
     // tracking, so confirmed exit can be attributed to the requested HAPI row.
     const pidToRequestedSessionId = new Map<number, string>();
@@ -363,6 +365,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         : verifiedExitTombstones.has(id);
     };
     const invalidateVerifiedExit = (id: string) => {
+      exitedProcessGroups.delete(id);
       if (id.startsWith('PID-')) {
         verifiedPidExitTombstones.delete(id);
       } else if (verifiedExitTombstones.delete(id)) {
@@ -1236,8 +1239,9 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // suppression only while their own exit event is still pending.
     const attemptStopSession = async (
       sessionId: string,
-      opts?: { processStartMarker?: string },
-      terminated: Set<number> = new Set<number>()
+      opts?: StopSessionOptions,
+      terminated: Set<number> = new Set<number>(),
+      groupCleanup = { verified: false, keepSharedWrapper: false }
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
       logger.debug(`[RUNNER RUN] Attempting to stop session ${sessionId}`);
       const signalDeadlines = new Map<number, number>();
@@ -1361,9 +1365,35 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         }
         if (orphanStatus === 'stopped') {
           rememberVerifiedExit(sessionId);
+          if (opts?.requireProcessGroupCleanup && !isWindows()) return 'still_alive';
           return 'stopped';
         }
         return base;
+      };
+
+      // Only for a PID whose generation this stop verified: its detached
+      // process group can still hold agent grandchildren reparented to init.
+      // A failed sweep blocks the stop only when the caller (hibernation)
+      // requires process-group cleanup; archive keeps its prior outcome.
+      const sweepVerifiedGroup = async (pid: number, expectedStartMarker?: string): Promise<boolean> => {
+        if (opts?.requireProcessGroupCleanup !== true) return true;
+        if (await sweepProcessGroup(pid, { deadlineMs: signalDeadlines.get(pid), expectedStartMarker })) {
+          groupCleanup.verified = true;
+          if (expectedStartMarker) exitedProcessGroups.forget({ pgid: pid, startMarker: expectedStartMarker });
+          return true;
+        }
+        if (expectedStartMarker && !isProcessAlive(pid)) {
+          rememberExitedProcessGroup(pid, pidToTrackedSession.get(pid), expectedStartMarker, sessionId);
+        }
+        logger.debug(`[RUNNER RUN] Process group ${pid} for session ${sessionId} outlived its root`);
+        return false;
+      };
+      const finishGoneWithGroupSweep = async (
+        pid: number,
+        expectedStartMarker?: string
+      ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
+        if (!(await sweepVerifiedGroup(pid, expectedStartMarker))) return 'still_alive';
+        return await finishWithOrphanSweep('already_gone');
       };
 
       const { findRuntime } = await import('@/codex/shared/registry');
@@ -1381,6 +1411,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
               logger.debug(
                 `[RUNNER RUN] Shared runtime stopped root ${sessionId}; wrapper PID ${sharedRuntime.pid} kept`
               );
+              groupCleanup.keepSharedWrapper = true;
               return await finishWithOrphanSweep('stopped');
             }
           }
@@ -1391,6 +1422,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             logger.debug(
               `[RUNNER RUN] Shared runtime stopped root ${sessionId}; registry siblings keep PID ${sharedRuntime.pid}`
             );
+            groupCleanup.keepSharedWrapper = true;
             return await finishWithOrphanSweep('stopped');
           }
           return await finishWithOrphanSweep('stopped');
@@ -1449,9 +1481,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             && !await prepareSessionStop(logicalId, pid, opts?.processStartMarker)) return 'still_alive';
           // Preparation can outlive the target generation. Recheck after that
           // await before signalling a raw PID that the OS may have reused.
-          if (!isProcessAlive(pid)) return await finishWithOrphanSweep('already_gone');
+          if (!isProcessAlive(pid)) return await finishGoneWithGroupSweep(pid, opts?.processStartMarker);
           if (getProcessStartMarker(pid) !== opts?.processStartMarker) return 'unknown';
           if (!(await killProcessTreeByPid(pid, false, undefined, signalDeadlines.get(pid)))) return 'still_alive';
+          if (!(await sweepVerifiedGroup(pid, opts?.processStartMarker))) return 'still_alive';
           terminated.add(pid);
           rememberVerifiedExit(sessionId);
           return await finishWithOrphanSweep('stopped');
@@ -1475,6 +1508,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         if (orphan === 'stopped') return 'stopped';
         const decision = decideKeepWrapperArchive(binding);
         if (decision === 'stopped') {
+          groupCleanup.keepSharedWrapper = true;
           logger.debug(
             `[RUNNER RUN] Detached shared root ${sessionId}; inactive registry binding confirms stop; PID ${pid} kept`
           );
@@ -1521,6 +1555,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
           let treeTerminationVerified = false;
           if (session.startedBy === 'runner') {
+            const child = session.childProcess;
+            const generationVerified = !child || (child.exitCode === null && child.signalCode === null);
             // Adopted post-restart sessions have no ChildProcess handle — still
             // tree-kill so agent grandchildren cannot outlive the wrapper.
             // Require a persisted start marker; without it (or on mismatch), do
@@ -1547,11 +1583,15 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
               }
             }
             try {
-              if (!await prepareSessionStop(sessionId, pid, persistedResumeProcesses.get(pid)?.processStartMarker)) return 'still_alive';
+              const trackedMarker = persistedResumeProcesses.get(pid)?.processStartMarker;
+              if (!await prepareSessionStop(sessionId, pid, trackedMarker)) return 'still_alive';
               // Preparation can outlive the target generation (same recheck as
               // the raw-PID path): never signal a dead or recycled PID.
-              if (!isProcessAlive(pid)) return await finishWithOrphanSweep('already_gone');
-              const trackedMarker = persistedResumeProcesses.get(pid)?.processStartMarker;
+              if (!isProcessAlive(pid)) {
+                return generationVerified
+                  ? await finishGoneWithGroupSweep(pid, trackedMarker)
+                  : await finishWithOrphanSweep('already_gone');
+              }
               if (trackedMarker && getProcessStartMarker(pid) !== trackedMarker) return 'unknown';
               const reportStop: Parameters<typeof killProcessTreeByPid>[2] = report => {
                 logger.debug('[RUNNER RUN] Windows tree stop confirmation', { sessionId, pid, ...report });
@@ -1563,8 +1603,9 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
                 logger.debug(`[RUNNER RUN] Process tree for session ${sessionId} is still alive after stop request`);
                 return 'still_alive';
               }
-              treeTerminationVerified = true;
               terminated.add(pid);
+              if (!(await sweepVerifiedGroup(pid, trackedMarker))) return 'still_alive';
+              treeTerminationVerified = true;
               logger.debug(`[RUNNER RUN] Requested termination for runner-spawned session ${sessionId}`);
             } catch (error) {
               logger.debug(`[RUNNER RUN] Failed to kill session ${sessionId}:`, error);
@@ -1648,6 +1689,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             if (orphan === 'still_alive') return 'still_alive';
             if (orphan === 'stopped') return 'stopped';
             const decision = decideKeepWrapperArchive(binding);
+            groupCleanup.keepSharedWrapper = decision === 'stopped';
             logger.debug(
               `[RUNNER RUN] Persisted PID ${pid} hosts active shared siblings for ${sessionId}; archive=${decision}`
             );
@@ -1656,9 +1698,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           if (!await prepareSessionStop(sessionId, pid, persisted.processStartMarker)) return 'still_alive';
           // Preparation can outlive the target generation (same recheck as
           // the raw-PID path): never signal a dead or recycled PID.
-          if (!isProcessAlive(pid)) return await finishWithOrphanSweep('already_gone');
+          if (!isProcessAlive(pid)) return await finishGoneWithGroupSweep(pid, persisted.processStartMarker);
           if (persisted.processStartMarker && getProcessStartMarker(pid) !== persisted.processStartMarker) return 'unknown';
           if (!(await killProcessTreeByPid(pid, false, undefined, signalDeadlines.get(pid)))) return 'still_alive';
+          if (!(await sweepVerifiedGroup(pid, persisted.processStartMarker))) return 'still_alive';
           terminated.add(pid);
           if (requestedSessionId) rememberVerifiedExit(requestedSessionId);
           if (confirmedSessionId) rememberVerifiedExit(confirmedSessionId);
@@ -1705,6 +1748,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         }
         if (orphanStatus === 'stopped') {
           rememberVerifiedExit(sessionId);
+          if (opts?.requireProcessGroupCleanup && !isWindows()) return 'unknown';
           logger.debug(`[RUNNER RUN] Reaped argv-orphan PID(s) for session ${sessionId}`);
           return 'stopped';
         }
@@ -1717,6 +1761,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         if (binding !== 'absent' || sessionRuntimeHasActiveSiblings(liveRuntimes, sessionId)
             || (protectedTrackedPids.size > 0 && !hasVerifiedExit(sessionId))) {
           const decision = decideKeepWrapperArchive(binding);
+          groupCleanup.keepSharedWrapper = decision === 'stopped' && sessionRuntimeHasActiveSiblings(liveRuntimes, sessionId);
           logger.debug(
             `[RUNNER RUN] Session ${sessionId}; shared binding=${binding}; archive=${decision}`
           );
@@ -1745,18 +1790,62 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     // must not suppress its later real unexpected exit.
     const stopSession = coalesceStopRequests(async (
       sessionId: string,
-      opts?: { processStartMarker?: string }
+      opts?: StopSessionOptions
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
+      exitedProcessGroups.prune(processGroupGone);
       const intentional = markIntentionalStop(sessionId);
       const terminated = new Set<number>();
+      const groupCleanup = { verified: false, keepSharedWrapper: false };
       try {
-        return await attemptStopSession(sessionId, opts, terminated);
+        const status = await attemptStopSession(sessionId, opts, terminated, groupCleanup);
+        if (status !== 'stopped' && status !== 'already_gone') return status;
+        const requireCleanup = opts?.requireProcessGroupCleanup === true;
+        const exited = exitedProcessGroups.get(sessionId);
+        if (requireCleanup && exited && !groupCleanup.verified) {
+          // Recorded when this runner saw the wrapper exit: the group id and
+          // leader generation are verified even though the root is long gone.
+          const swept = await sweepProcessGroup(exited.pgid, { expectedStartMarker: exited.startMarker });
+          if (!swept) {
+            logger.debug(`[RUNNER RUN] Exited process group ${exited.pgid} for session ${sessionId} still alive`);
+            return 'still_alive';
+          }
+          exitedProcessGroups.forget(exited);
+          groupCleanup.verified = true;
+        }
+        if (requireCleanup && !groupCleanup.verified && !groupCleanup.keepSharedWrapper && !isWindows()) {
+          logger.debug(`[RUNNER RUN] Session ${sessionId} root is gone but its process group generation is unverified`);
+          return 'unknown';
+        }
+        return status;
       } finally {
         for (const pid of intentional.marked) {
           if (!(intentional.withExitListener.has(pid) && terminated.has(pid))) intentionallyStoppedPids.delete(pid);
         }
       }
     });
+
+    // Runner-spawned wrappers are detached group leaders. When one exits on
+    // its own, keep {pgid, leader marker} so a later stop can still reap
+    // grandchildren left in that group; dropped once the session is stopped.
+    function rememberExitedProcessGroup(
+      pid: number, session: TrackedSession | undefined, verifiedMarker?: string, stopId?: string
+    ): void {
+      const persisted = persistedResumeProcesses.get(pid);
+      if (isWindows() || (!verifiedMarker && processGroupGone(pid))) return;
+      if (!verifiedMarker && !persisted && session?.startedBy !== 'runner') return;
+      const startMarker = verifiedMarker ?? persisted?.processStartMarker;
+      if (!startMarker) return;
+      const ids = [
+        stopId,
+        ...Object.keys(session?.sharedSessions ?? {}),
+        session?.requestedHappySessionId ?? pidToRequestedSessionId.get(pid) ?? persisted?.requestedSessionId,
+        session?.happySessionId ?? pidToConfirmedSessionId.get(pid) ?? persisted?.confirmedSessionId,
+      ];
+      exitedProcessGroups.remember({ pgid: pid, startMarker }, ids);
+      if (verifiedMarker) {
+        for (const id of new Set(ids)) if (id) rememberVerifiedExit(id);
+      }
+    }
 
     // A reused PID invalidates a binding, not every runtime for that session.
     const discardStaleProcess = (pid: number) => {
@@ -1774,6 +1863,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     const onChildExited = (pid: number) => {
       pidToErrorAwaiter.get(pid)?.(`Session process PID ${pid} exited before startup was confirmed`);
       const session = pidToTrackedSession.get(pid);
+      rememberExitedProcessGroup(pid, session);
       for (const id of Object.keys(session?.sharedSessions ?? {})) rememberVerifiedExit(id);
       const requestedSessionId = session?.requestedHappySessionId ?? pidToRequestedSessionId.get(pid);
       if (requestedSessionId) rememberVerifiedExit(requestedSessionId);
@@ -1997,6 +2087,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         return;
       }
       heartbeatRunning = true;
+      exitedProcessGroups.prune(processGroupGone);
 
       if (process.env.DEBUG) {
         logger.debug(`[RUNNER RUN] Health check started at ${new Date().toLocaleString()}`);
