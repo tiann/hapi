@@ -96,6 +96,36 @@ describe('blocked acknowledgement across a session merge (#1717)', () => {
         expect(cache.getSession(target)?.blockedAck?.reason).toBe('handled out of band')
     })
 
+    it('carries the blocked footer onto the merged row', async () => {
+        // `mergeSessionMessages` moves the blocked turn across but replays no
+        // `message-added`, so nothing re-derives the signal on the target: the
+        // conversation would keep the unanswered footer in its transcript and
+        // still vanish from the Blocked section.
+        const { cache } = makeCache()
+        const source = makeSession(cache, 'merge-notify-source')
+        const target = makeSession(cache, 'merge-notify-target')
+        const at = Date.now()
+        cache.setSessionLastNotify(source, { status: 'blocked', at, note: 'needs a key' })
+
+        await cache.mergeSessionHistory(source, target, 'default')
+
+        expect(cache.getSession(target)?.lastNotify?.status).toBe('blocked')
+        expect(cache.getSession(target)?.lastNotify?.note).toBe('needs a key')
+    })
+
+    it('keeps the newer footer when both rows have one', async () => {
+        const { cache } = makeCache()
+        const source = makeSession(cache, 'merge-notify-old')
+        const target = makeSession(cache, 'merge-notify-new')
+        const now = Date.now()
+        cache.setSessionLastNotify(source, { status: 'blocked', at: now - 10_000, note: 'older' })
+        cache.setSessionLastNotify(target, { status: 'blocked', at: now, note: 'newer' })
+
+        await cache.mergeSessionHistory(source, target, 'default')
+
+        expect(cache.getSession(target)?.lastNotify?.note).toBe('newer')
+    })
+
     it('keeps the newer acknowledgement when both rows have one', async () => {
         const { cache } = makeCache()
         const source = makeSession(cache, 'merge-ack-older-source')

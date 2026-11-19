@@ -2533,6 +2533,17 @@ export function SessionList(props: {
             if (isScratchlistStatusLoading || scratchlistStatusError) return []
             filtered = filterScratchlistSessionsOnly(filtered, selectedSessionId, scratchlistSessionIds)
         }
+        // The blocked lens has to narrow the candidate ids too, not just the
+        // rendered rows. `searchMessageContent` keeps only the 100 most
+        // recently updated matching sessions, so submitting unblocked
+        // candidates lets them consume the budget and drop an older blocked
+        // match the lens is specifically asking for.
+        if (showBlockedOnly) {
+            const now = Date.now()
+            filtered = filtered.filter(session =>
+                session.id === selectedSessionId || sessionIsBlocked(session, { now })
+            )
+        }
         return activeMachineFilter === null
             ? filtered
             : filtered.filter(session =>
@@ -2549,6 +2560,7 @@ export function SessionList(props: {
         showScratchlistOnly,
         showActiveOnly,
         showWorkingOnly,
+        showBlockedOnly,
         listView.unreadOnly,
         timeRange?.start,
         timeRange?.end

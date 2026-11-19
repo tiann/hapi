@@ -2446,6 +2446,25 @@ export class SessionCache {
             }
         }
 
+        // The footer has to follow its transcript. `mergeSessionMessages` moves
+        // the blocked turn onto the destination but replays no `message-added`,
+        // so nothing re-derives the signal there — the conversation would keep
+        // the unanswered footer in its history while dropping out of the
+        // Blocked section entirely. Newest wins, matching the monotonic rule
+        // the live writes use.
+        const oldNotifyAt = oldStored.lastNotifyAt
+        if (oldStored.lastNotifyStatus !== null && oldNotifyAt !== null) {
+            const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
+            const targetNotifyAt = latest?.lastNotifyAt ?? null
+            if (latest && (targetNotifyAt === null || oldNotifyAt > targetNotifyAt)) {
+                this.setSessionLastNotify(newSessionId, {
+                    status: oldStored.lastNotifyStatus,
+                    at: oldNotifyAt,
+                    note: oldStored.lastNotifyNote
+                })
+            }
+        }
+
         if (oldStored.teamState !== null && oldStored.teamStateUpdatedAt !== null) {
             this.store.sessions.setSessionTeamState(
                 newSessionId,
