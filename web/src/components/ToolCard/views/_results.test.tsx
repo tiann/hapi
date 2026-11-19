@@ -854,4 +854,76 @@ describe('PeerToolResultView', () => {
             structuredContent: { sessionId: 'ses_abc12345' },
         })).toBeNull()
     })
+
+    it('suppresses free-text and input-fallback peer links on failed tool calls', () => {
+        const missingId = '44444444-4444-4444-8444-444444444444'
+        const confirmedId = '55555555-5555-4555-8555-555555555555'
+
+        const failedPingBlock = makeResultBlock({
+            name: 'mcp__hapi__ping_peer',
+            state: 'error',
+            input: { sessionIdPrefix: missingId, message: 'Check status' },
+            result: [{
+                type: 'text',
+                text: `Failed to ping peer: no session matching prefix '${missingId}'`,
+            }],
+        })
+        expect(getToolViewComponent(failedPingBlock.tool.name, failedPingBlock.tool)).toBeNull()
+        const PingResultView = getToolResultViewComponent(failedPingBlock.tool.name, failedPingBlock)
+        render(
+            <I18nProvider>
+                <PingResultView block={failedPingBlock} metadata={null} surface="dialog" />
+            </I18nProvider>
+        )
+        expect(screen.queryByRole('link', { name: /Open session/ })).toBeNull()
+
+        // Generic error state suppresses citations, bare UUIDs, and input fallback.
+        expect(extractPeerTargetSessionId(
+            'mcp__hapi__ping_peer',
+            { sessionIdPrefix: missingId, message: 'Check status' },
+            [{ type: 'text', text: `Target [Deleted](/sessions/${missingId}) not found` }],
+            'error'
+        )).toBeNull()
+
+        // isError envelope and CLI failure prefixes suppress fallbacks even if state is omitted.
+        expect(extractPeerTargetSessionId(
+            'mcp__hapi__ping_peer',
+            { sessionIdPrefix: missingId, message: 'Check status' },
+            { isError: true, content: [{ type: 'text', text: `Could not reach ${missingId}` }] }
+        )).toBeNull()
+        expect(extractPeerTargetSessionId(
+            'mcp__hapi__inspect_peer',
+            { sessionIdPrefix: missingId },
+            [{ type: 'text', text: `Failed to inspect peer: no session matching prefix '${missingId}'` }]
+        )).toBeNull()
+
+        // Failed spawn_peer ignores bare UUIDs (e.g. missing machine UUID) and citations.
+        expect(extractSpawnedSessionId(
+            [{ type: 'text', text: `Failed to spawn peer: no hub machine matched machine=${missingId}` }],
+            'error'
+        )).toBeNull()
+        expect(extractSpawnedSessionId(
+            { isError: true, content: [{ type: 'text', text: `See [Other](/sessions/${missingId})` }] }
+        )).toBeNull()
+
+        // Failed call still resolves if it carries a validated structured UUID or anchored header.
+        expect(extractPeerTargetSessionId(
+            'mcp__hapi__ping_peer',
+            { sessionIdPrefix: missingId, message: 'Check status' },
+            { isError: true, structuredContent: { sessionId: confirmedId }, content: [{ type: 'text', text: 'Failed to ping peer: timeout' }] },
+            'error'
+        )).toBe(confirmedId)
+        expect(extractSpawnedSessionId(
+            [{ type: 'text', text: `Spawned ${confirmedId} (Worker)` }],
+            'error'
+        )).toBe(confirmedId)
+
+        // In-flight call without failure still resolves a full UUID from input.
+        expect(extractPeerTargetSessionId(
+            'mcp__hapi__ping_peer',
+            { sessionIdPrefix: confirmedId, message: 'Check status' },
+            null,
+            'running'
+        )).toBe(confirmedId)
+    })
 })

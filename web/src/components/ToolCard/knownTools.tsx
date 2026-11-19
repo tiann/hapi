@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import type { ChatToolCall } from '@/chat/types'
 import type { SessionMetadataSummary } from '@/types/api'
 import { isObject } from '@hapi/protocol'
 import { AlertTriangleIcon, BulbIcon, ClipboardIcon, EyeIcon, FileDiffIcon, GlobeIcon, MessageSquareIcon, PuzzleIcon, QuestionIcon, RocketIcon, SearchIcon, TerminalIcon, UsersIcon, WrenchIcon } from '@/components/ToolCard/icons'
@@ -127,6 +128,7 @@ type ToolOpts = {
     toolName: string
     input: unknown
     result: unknown
+    state?: ChatToolCall['state']
     childrenCount: number
     description: string | null
     metadata: SessionMetadataSummary | null
@@ -614,19 +616,19 @@ export const knownTools: Record<string, {
             const dir = getInputStringAny(opts.input, ['directory'])
             return name && dir ? `${name} · ${basename(dir)}` : name ?? dir
         },
-        minimal: (opts) => extractPeerTargetSessionId(opts.toolName, opts.input, opts.result) === null
+        minimal: (opts) => extractPeerTargetSessionId(opts.toolName, opts.input, opts.result, opts.state) === null
     },
     ping_peer: {
         icon: () => <MessageSquareIcon className={DEFAULT_ICON_CLASS} />,
         title: () => 'Ping peer',
         subtitle: (opts) => getInputStringAny(opts.input, ['sessionIdPrefix', 'sessionId']),
-        minimal: (opts) => extractPeerTargetSessionId(opts.toolName, opts.input, opts.result) === null
+        minimal: (opts) => extractPeerTargetSessionId(opts.toolName, opts.input, opts.result, opts.state) === null
     },
     inspect_peer: {
         icon: () => <EyeIcon className={DEFAULT_ICON_CLASS} />,
         title: () => 'Inspect peer',
         subtitle: (opts) => getInputStringAny(opts.input, ['sessionIdPrefix', 'sessionId']),
-        minimal: (opts) => extractPeerTargetSessionId(opts.toolName, opts.input, opts.result) === null
+        minimal: (opts) => extractPeerTargetSessionId(opts.toolName, opts.input, opts.result, opts.state) === null
     },
     list_peers: {
         icon: () => <UsersIcon className={DEFAULT_ICON_CLASS} />,

@@ -1,5 +1,6 @@
 import { isObject } from '@hapi/protocol'
 import { extractSessionCitationIds, normalizeSessionIdPrefix } from '@hapi/protocol/sessionCitation'
+import type { ChatToolCall } from '@/chat/types'
 import { getInputStringAny } from '@/lib/toolInputUtils'
 
 export const HAPI_PEER_TOOL_NAMES = ['spawn_peer', 'ping_peer', 'inspect_peer', 'list_peers'] as const
@@ -10,6 +11,7 @@ const EXACT_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 const SPAWNED_SESSION_RE = /^\s*Spawned\s+([A-Za-z0-9_-]{8,})(?=\s|$)/
 const PING_PEER_HEADER_RE = /^\s*(?:Accepted\s+for|(?:steered|invoked)\s+to)\s+([A-Za-z0-9_-]{8,})(?=\s|$)/i
 const INSPECT_PEER_HEADER_RE = /^\s*sessionId:\s+([A-Za-z0-9_-]{8,})(?=\s|$)/
+const PEER_ERROR_PREFIX_RE = /^\s*Failed\s+to\s+(?:ping|inspect|spawn)\s+peer:/i
 
 export function parsePeerToolName(toolName: string): HapiPeerToolName | null {
     const normalized = toolName.trim()
@@ -65,7 +67,36 @@ function flattenResultText(result: unknown, depth: number = 0): string {
     return ''
 }
 
-export function extractSpawnedSessionId(result: unknown): string | null {
+function isErrorResultEnvelope(result: unknown, depth: number = 0): boolean {
+    if (depth > 5 || result === null || result === undefined) return false
+    if (Array.isArray(result)) {
+        return result.some((item) => isErrorResultEnvelope(item, depth + 1))
+    }
+    if (isObject(result)) {
+        if (result.isError === true || result.is_error === true) return true
+        if (typeof result.error === 'string' && result.error.trim().length > 0) return true
+        if (isObject(result.error)) return true
+        for (const key of ['result', 'output', 'data'] as const) {
+            if (isErrorResultEnvelope(result[key], depth + 1)) return true
+        }
+    }
+    return false
+}
+
+function isFailedPeerToolCall(
+    result: unknown,
+    resultText: string,
+    state?: ChatToolCall['state']
+): boolean {
+    return state === 'error'
+        || isErrorResultEnvelope(result)
+        || (resultText.length > 0 && PEER_ERROR_PREFIX_RE.test(resultText))
+}
+
+export function extractSpawnedSessionId(
+    result: unknown,
+    state?: ChatToolCall['state']
+): string | null {
     const text = flattenResultText(result)
     if (text) {
         const spawned = SPAWNED_SESSION_RE.exec(text)
@@ -73,6 +104,7 @@ export function extractSpawnedSessionId(result: unknown): string | null {
     }
     const structured = extractStructuredSessionId(result)
     if (structured) return structured
+    if (isFailedPeerToolCall(result, text, state)) return null
     if (!text) return null
     const cited = extractSessionCitationIds(text)[0]
     if (cited) return cited
@@ -83,13 +115,14 @@ export function extractSpawnedSessionId(result: unknown): string | null {
 export function extractPeerTargetSessionId(
     toolName: string,
     input: unknown,
-    result: unknown
+    result: unknown,
+    state?: ChatToolCall['state']
 ): string | null {
     const peerTool = parsePeerToolName(toolName)
     if (!peerTool || peerTool === 'list_peers') return null
 
     if (peerTool === 'spawn_peer') {
-        return extractSpawnedSessionId(result)
+        return extractSpawnedSessionId(result, state)
     }
 
     const resultText = flattenResultText(result)
@@ -101,6 +134,8 @@ export function extractPeerTargetSessionId(
 
     const structured = extractStructuredSessionId(result)
     if (structured) return structured
+
+    if (isFailedPeerToolCall(result, resultText, state)) return null
 
     if (resultText) {
         const cited = extractSessionCitationIds(resultText)[0]

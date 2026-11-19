@@ -133,7 +133,7 @@ export const toolFullViewRegistry: Record<string, ToolViewComponent> = {
 
 const PeerCompactView: ToolViewComponent = ({ block }: ToolViewProps) => {
     const { t } = useTranslation()
-    const targetSessionId = extractPeerTargetSessionId(block.tool.name, block.tool.input, block.tool.result)
+    const targetSessionId = extractPeerTargetSessionId(block.tool.name, block.tool.input, block.tool.result, block.tool.state)
     if (!targetSessionId) return null
     const targetName = getInputStringAny(block.tool.input, ['name'])
     const label = targetName ?? targetSessionId.slice(0, 8)
@@ -156,7 +156,7 @@ const PeerCompactView: ToolViewComponent = ({ block }: ToolViewProps) => {
 
 export function getToolViewComponent(toolName: string, tool?: Pick<ChatToolCall, 'input' | 'result' | 'state'>): ToolViewComponent | null {
     if (isGoalToolName(toolName)) return tool && canShowGoalPreview(tool) ? GoalView : null
-    if (parsePeerToolName(toolName) && tool && extractPeerTargetSessionId(toolName, tool.input, tool.result)) {
+    if (parsePeerToolName(toolName) && tool && extractPeerTargetSessionId(toolName, tool.input, tool.result, tool.state)) {
         return PeerCompactView
     }
     return toolViewRegistry[toolName] ?? null

@@ -124,7 +124,7 @@ function subagentFromBlock(block: ToolCallBlock): SessionStatusSubagent | null {
         endedAt: block.tool.state === 'error'
             ? block.tool.completedAt ?? block.tool.startedAt ?? block.createdAt
             : null,
-        ...(isPeerSpawn ? { linkedSessionId: extractSpawnedSessionId(block.tool.result) } : {}),
+        ...(isPeerSpawn ? { linkedSessionId: extractSpawnedSessionId(block.tool.result, block.tool.state) } : {}),
     }
 }
 

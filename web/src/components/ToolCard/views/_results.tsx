@@ -1118,7 +1118,8 @@ const PeerToolResultView: ToolViewComponent = (props) => {
     const targetSessionId = extractPeerTargetSessionId(
         props.block.tool.name,
         props.block.tool.input,
-        props.block.tool.result
+        props.block.tool.result,
+        props.block.tool.state
     )
     const targetName = getInputStringAny(props.block.tool.input, ['name'])
     const label = targetSessionId ? (targetName ?? targetSessionId.slice(0, 8)) : null

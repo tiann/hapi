@@ -136,6 +136,30 @@ describe('buildSessionStatusData', () => {
         ])
     })
 
+    it('does not attach a linkedSessionId from bare UUIDs in failed spawn_peer error output', () => {
+        const blocks: ChatBlock[] = [
+            toolBlock({
+                id: 'block-peer-failed',
+                name: 'mcp__hapi__spawn_peer',
+                tool: {
+                    id: 'call-peer-failed',
+                    state: 'error',
+                    input: { name: 'Bad machine peer', directory: '/work/app' },
+                    result: 'Failed to spawn peer: no hub machine matched machine=44444444-4444-4444-8444-444444444444'
+                }
+            })
+        ]
+
+        expect(buildSessionStatusData({ goal: null, tasks: [], blocks })?.subagents).toEqual([
+            expect.objectContaining({
+                id: 'call-peer-failed',
+                blockId: 'block-peer-failed',
+                state: 'error',
+                linkedSessionId: null,
+            })
+        ])
+    })
+
     it('lists a linked child with only derived tool work as running', () => {
         const child = makeSummary({
             id: 'child',
