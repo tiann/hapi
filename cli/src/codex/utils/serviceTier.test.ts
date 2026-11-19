@@ -55,4 +55,12 @@ describe('Ultrafast model/account availability', () => {
             await rejected;
         } finally { vi.useRealTimers(); }
     });
+
+    it('does not start an unobserved request after its discovery budget expires', async () => {
+        const readConfig = vi.fn();
+        const listModels = vi.fn();
+        await expect(isUltrafastAvailable({ readConfig, listModels }, 'gpt-6.2-sol', '/project', Date.now() - 1)).rejects.toThrow('timed out');
+        expect(readConfig).not.toHaveBeenCalled();
+        expect(listModels).not.toHaveBeenCalled();
+    });
 });

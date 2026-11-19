@@ -220,3 +220,10 @@ describe('listCodexModels cwd', () => {
         expect(constructorOptions).toHaveLength(4);
     });
 });
+
+
+it('does not advertise Ultrafast from a display label without the exact native ID', async () => {
+    const { normalizeCodexModel } = await import('./codexModels');
+    expect(normalizeCodexModel({ id: 'm', serviceTiers: [{ id: 'other', name: 'Ultrafast' }] })?.serviceTiers).toEqual(['other']);
+    expect(normalizeCodexModel({ id: 'm', serviceTiers: [{ id: 'ultrafast', name: 'Ultrafast' }] })?.serviceTiers).toEqual(['ultrafast']);
+});

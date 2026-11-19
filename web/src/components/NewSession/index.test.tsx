@@ -589,6 +589,17 @@ describe('NewSession launch preferences', () => {
         await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ serviceTier: 'standard' })))
     })
 
+    it('omits an untouched tier when the selected model has no tier control', async () => {
+        savePreferredAgent('codex')
+        savePreferredLaunchSettings('machine-1', 'codex', { model: 'gpt-5.6-terra', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'max' })
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'untouched-tier' })
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalled())
+        expect(mocks.spawnSession.mock.calls[0][0].serviceTier).toBeUndefined()
+    })
+
     it('remembers fast mode after a successful Codex launch and restores it on the same machine', async () => {
         mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'fast-session' })
         const form = <NewSession api={api} machines={[machine]} initialMachineId="machine-1"
@@ -1033,7 +1044,6 @@ describe('NewSession launch preferences', () => {
             cursorSelectedBase: 'auto',
             effort: 'auto',
             modelReasoningEffort: 'max',
-            serviceTier: 'standard',
             permissionMode: 'yolo'
         })
     })

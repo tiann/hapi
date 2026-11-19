@@ -753,6 +753,7 @@ export function SessionChat(props: SessionChatProps) {
 function SessionChatInner(props: SessionChatProps) {
     const { haptic } = usePlatform()
     const { t } = useTranslation()
+    const [serviceTierError, setServiceTierError] = useState<string | null>(null)
     const { codexExplorationCollapsed } = useCodexExplorationCollapse()
     const navigate = useNavigate()
     const { toolCardDisplayMode } = useToolCardDisplayMode()
@@ -2077,6 +2078,7 @@ function SessionChatInner(props: SessionChatProps) {
     }, [agentFlavor, agyCurrentModel, setModel, setEffort, props.onRefresh, haptic])
 
     const handleServiceTierChange = useCallback(async (serviceTier: string | null) => {
+        setServiceTierError(null)
         try {
             await setServiceTier(serviceTier)
             haptic.notification('success')
@@ -2084,6 +2086,7 @@ function SessionChatInner(props: SessionChatProps) {
         } catch (e) {
             haptic.notification('error')
             console.error('Failed to set service tier:', e)
+            setServiceTierError(e instanceof Error ? e.message : 'Could not verify model availability. Try again.')
         }
     }, [setServiceTier, props.onRefresh, haptic])
 
@@ -2510,6 +2513,7 @@ function SessionChatInner(props: SessionChatProps) {
                     </div>
 
                     <div className={outlineOpen ? 'max-sm:hidden' : undefined}>
+                        {serviceTierError ? <div role="alert" className="px-3 py-2 text-sm text-red-600">Could not change service tier: {serviceTierError}</div> : null}
                         {codexCollaborationModeSupported && codexModelsState.error ? (
                             <div className="px-3 pb-2">
                                 <div className="mx-auto w-full max-w-content rounded-md bg-[var(--app-subtle-bg)] p-3 text-sm text-red-600">

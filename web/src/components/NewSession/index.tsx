@@ -175,6 +175,7 @@ export function NewSession(props: {
     const [modelReasoningEffort, setModelReasoningEffort] = useState<CodexReasoningEffort>('default')
     const [opencodeSelectedModel, setOpencodeSelectedModel] = useState<string | null | undefined>(undefined)
     const [serviceTier, setServiceTier] = useState<NewSessionServiceTier>('standard')
+    const [serviceTierExplicit, setServiceTierExplicit] = useState(false)
     const [collaborationMode, setCollaborationMode] = useState<CodexCollaborationMode>('default')
     const [copilotAgentMode, setCopilotAgentMode] = useState<CopilotAgentMode>('interactive')
     const [yoloMode, setYoloMode] = useState(loadPreferredYoloMode)
@@ -347,6 +348,7 @@ export function NewSession(props: {
             draft.agent === 'dsh' && draft.model !== 'auto' ? draft.model : null
         )
         setServiceTier(draft.serviceTier)
+        setServiceTierExplicit(draft.serviceTierExplicit === true)
         setCollaborationMode(draft.collaborationMode)
         setCopilotAgentMode(draft.copilotAgentMode)
         setYoloMode(draft.yoloMode)
@@ -568,7 +570,7 @@ export function NewSession(props: {
         if (agent === 'codex' && (codexModelsState.isLoading || (serviceTier === 'ultrafast' && codexModelsState.error))) {
             return
         }
-        if ((serviceTier === 'fast' && !showCodexFastMode) || (serviceTier === 'ultrafast' && !showCodexUltrafastMode)) {
+        if (serviceTier === 'fast' && !showCodexFastMode) {
             setServiceTier('standard')
         }
     }, [agent, codexModelsState.isLoading, showCodexFastMode, showCodexUltrafastMode, codexModelsState.error, serviceTier])
@@ -1158,6 +1160,7 @@ export function NewSession(props: {
         setEffort(preferred.effort)
         setModelReasoningEffort(preferred.modelReasoningEffort)
         setServiceTier(agent === 'codex' ? preferred.serviceTier ?? 'standard' : 'standard')
+        setServiceTierExplicit(agent === 'codex' && preferred.serviceTier !== undefined)
         if (usesSharedPermissionMode) {
             setNativePermissionMode(preferred.permissionMode ?? resolvePermissionModeForFlavor('default', agent))
         }
@@ -1871,6 +1874,7 @@ export function NewSession(props: {
             effort,
             modelReasoningEffort,
             serviceTier,
+            serviceTierExplicit,
             collaborationMode,
             copilotAgentMode,
             yoloMode,
@@ -1892,6 +1896,7 @@ export function NewSession(props: {
         effort,
         modelReasoningEffort,
         serviceTier,
+        serviceTierExplicit,
         collaborationMode,
         copilotAgentMode,
         yoloMode,
@@ -2048,10 +2053,10 @@ export function NewSession(props: {
                 cursorSelectedBase,
                 effort,
                 modelReasoningEffort,
-                ...(agent === 'codex' ? { serviceTier } : {}),
+                ...(agent === 'codex' && (serviceTierExplicit || showCodexFastMode || showCodexUltrafastMode) ? { serviceTier } : {}),
                 ...(usesSharedPermissionMode ? { permissionMode: nativePermissionMode } : {})
             }
-            const resolvedServiceTier = agent === 'codex'
+            const resolvedServiceTier = agent === 'codex' && (serviceTierExplicit || showCodexFastMode || showCodexUltrafastMode)
                 ? serviceTier
                 : undefined
             const resolvedCollaborationMode = agent === 'codex' && collaborationMode !== 'default'
@@ -2601,7 +2606,7 @@ export function NewSession(props: {
                 ultrafastAvailable={showCodexUltrafastMode}
                 value={serviceTier}
                 isDisabled={isFormDisabled}
-                onChange={setServiceTier}
+                onChange={value => { setServiceTier(value); setServiceTierExplicit(true) }}
             />
 
             {(error ?? spawnError) ? (
