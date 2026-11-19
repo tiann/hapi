@@ -23,7 +23,7 @@ import {
 import { generationTimeMs } from '@/agent/generationClock';
 
 vi.mock('@/ui/ink/RemoteModeDisplay', () => ({ RemoteModeDisplay: () => null }));
-const bridge = vi.hoisted(() => ({ stop: vi.fn(), build: vi.fn(async () => ({ server: { stop: bridge.stop }, mcpServers: { hapi: { command: 'hapi', args: ['mcp'] } } })) }));
+const bridge = vi.hoisted(() => ({ stop: vi.fn(), build: vi.fn(async () => ({ server: { url: 'http://bridge/', stop: bridge.stop }, mcpServers: { hapi: { command: 'hapi', args: ['mcp'] } } })) }));
 vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({ buildHapiMcpBridge: bridge.build }));
 vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
 
@@ -338,6 +338,25 @@ describe('AgyAcpRemoteLauncher', () => {
         expect(sessionEvents(client)).toContainEqual({ type: 'ready' });
         expect(backend.disconnected).toBe(true);
     });
+
+    it.each([['http://bridge/', undefined], ['http://newer/', 'http://newer/']])(
+        'cleans up its MCP URL on startup failure without removing a replacement',
+        async (storedUrl, expectedUrl) => {
+            const { session, queue, client } = makeSession();
+            const backend = new FakeAgyBackend();
+            bridge.build.mockImplementationOnce(async () => {
+                client.updateMetadata((metadata: object) => ({ ...metadata, hapiMcpUrl: storedUrl }));
+                return { server: { url: 'http://bridge/', stop: bridge.stop }, mcpServers: { hapi: { command: 'hapi', args: ['mcp'] } } };
+            });
+            backend.initialize = async () => { throw new Error('startup failed'); };
+            await expect(launch(session, [backend]).run).rejects.toThrow('startup failed');
+            const metadata = client.updateMetadata.mock.calls
+                .reduce((current, [update]) => (update as (m: object) => object)(current), {}) as { hapiMcpUrl?: string };
+            expect(metadata.hapiMcpUrl).toBe(expectedUrl);
+            expect(bridge.stop).toHaveBeenCalledOnce();
+            queue.close();
+        }
+    );
 
     it('tells the user why agy could not start', async () => {
         const { session, queue, client } = makeSession();

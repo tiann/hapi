@@ -246,7 +246,7 @@ type AgyTurn = {
 export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly session: AgySession;
     private readonly titleSync: ReturnType<typeof createAcpSessionTitleSync>;
-    private happyServer: { stop: () => void } | null = null;
+    private happyServer: { url: string; stop: () => void } | null = null;
     private acpMcpServers: ReturnType<typeof toAcpMcpServers> = [];
     private readonly createBackend: () => AcpSdkBackend;
     private readonly steerCancelGraceMs: number;
@@ -2018,8 +2018,17 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         try {
             await backend?.disconnect();
         } finally {
-            this.happyServer?.stop();
+            const server = this.happyServer;
             this.happyServer = null;
+            if (server) {
+                try {
+                    server.stop();
+                } finally {
+                    this.session.client.updateMetadata((metadata) => metadata.hapiMcpUrl === server.url
+                        ? { ...metadata, hapiMcpUrl: undefined }
+                        : metadata);
+                }
+            }
         }
         logger.debug('[agy-acp] cleanup done');
     }
