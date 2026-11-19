@@ -24,6 +24,18 @@ function fixture(initialState: AgentState = {}) {
 }
 
 describe('Codex queued follow-up questions', () => {
+    it('does not reopen a question dismissed in the newer Hub state', async () => {
+        const f = fixture();
+        f.manager.observeItem('thread', item);
+        const id = questions[0].id;
+        const denied: AgentState = { completedRequests: { [id]: {
+            tool: 'request_user_input', arguments: {}, status: 'canceled', decision: 'denied'
+        } } };
+        expect(f.updates[0]!(denied)).toBe(denied);
+        await expect(f.manager.answer({ id, approved: true })).resolves.toBe(false);
+        expect(f.submit).not.toHaveBeenCalled();
+    });
+
     it('preserves a pending async question and its wait time when an ACK retry rebases', () => {
         const now = vi.spyOn(Date, 'now').mockReturnValue(100);
         try {

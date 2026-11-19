@@ -30,6 +30,20 @@ function createHarness() {
 describe('PiExtensionUiHandler', () => {
     beforeEach(() => vi.useRealTimers());
 
+    it('preserves the timestamp of a Pi dialog when its state update is retried', () => {
+        const now = vi.spyOn(Date, 'now').mockReturnValue(100);
+        try {
+            const f = createHarness();
+            f.handler.handle({ type: 'extension_ui_request', id: 'dialog', method: 'select', title: 'Pick', options: ['one'] });
+            const [update] = f.session.updateAgentState.mock.calls[0]!;
+            now.mockReturnValue(500);
+            expect(update(f.state() as never)).toMatchObject({ requests: { dialog: { createdAt: 100 } } });
+            expect(update({ requests: {} } as never)).toMatchObject({ requests: { dialog: { createdAt: 100 } } });
+        } finally {
+            now.mockRestore();
+        }
+    });
+
     it('applies setTitle as metadata.name rename (overrides spawn name)', () => {
         let metadata = {
             path: '/tmp',

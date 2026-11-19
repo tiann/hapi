@@ -547,6 +547,7 @@ async function launchLocal(
                     ?? getString(metadata?.toolCallId)
                     ?? getString(metadata?.tool_call_id);
 
+            const createdAt = Date.now();
             session.client.updateAgentState((currentState) => ({
                 ...currentState,
                 requests: {
@@ -555,7 +556,7 @@ async function launchLocal(
                         tool: toolName,
                         ...(toolCallId ? { toolCallId } : {}),
                         arguments: toolInput,
-                        createdAt: Date.now()
+                        createdAt: currentState.requests?.[id]?.createdAt ?? createdAt
                     }
                 }
             }));

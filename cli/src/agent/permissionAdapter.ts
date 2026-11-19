@@ -77,6 +77,7 @@ export class PermissionAdapter {
 
         this.pendingRequests.set(request.id, request);
 
+        const createdAt = Date.now();
         this.session.updateAgentState((currentState) => ({
             ...currentState,
             requests: {
@@ -85,7 +86,7 @@ export class PermissionAdapter {
                     tool: toolName,
                     toolCallId: request.toolCallId,
                     arguments: input,
-                    createdAt: Date.now()
+                    createdAt: currentState.requests?.[request.id]?.createdAt ?? createdAt
                 }
             }
         }));

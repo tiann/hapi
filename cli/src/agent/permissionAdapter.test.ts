@@ -11,6 +11,7 @@ type FakeAgentState = {
 type Harness = ReturnType<typeof createHarness>;
 
 function createHarness() {
+    let update: ((state: FakeAgentState) => FakeAgentState) | undefined;
     let agentState: FakeAgentState = {
         requests: {},
         completedRequests: {}
@@ -31,6 +32,7 @@ function createHarness() {
             }
         },
         updateAgentState(handler: (state: FakeAgentState) => FakeAgentState) {
+            update = handler;
             agentState = handler(agentState);
         }
     } as unknown as ApiSessionClient;
@@ -57,6 +59,7 @@ function createHarness() {
         rpcHandlers,
         respondCalls,
         getAgentState: () => agentState,
+        reapply: (state: FakeAgentState) => update!(state),
         emitPermissionRequest(request: PermissionRequest) {
             if (!permissionHandler) {
                 throw new Error('Permission handler was not registered');
@@ -209,6 +212,19 @@ function buildRequest(overrides?: Partial<PermissionRequest>): PermissionRequest
 }
 
 describe('PermissionAdapter', () => {
+    it('preserves an ACP request timestamp across a state retry', () => {
+        const now = vi.spyOn(Date, 'now').mockReturnValue(100);
+        try {
+            const f = createHarness();
+            f.emitPermissionRequest(buildRequest());
+            now.mockReturnValue(500);
+            expect(f.reapply(f.getAgentState()).requests['perm-1']).toMatchObject({ createdAt: 100 });
+            expect(f.reapply({ requests: {}, completedRequests: {} }).requests['perm-1']).toMatchObject({ createdAt: 100 });
+        } finally {
+            now.mockRestore();
+        }
+    });
+
     it('auto-approves change_title permissions without queueing them', async () => {
         const harness = createHarness();
 

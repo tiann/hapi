@@ -219,6 +219,7 @@ export class PiExtensionUiHandler {
             input: argumentsValue,
             status: 'in_progress',
         });
+        const createdAt = Date.now();
         this.options.session.updateAgentState((currentState) => ({
             ...currentState,
             requests: {
@@ -226,7 +227,7 @@ export class PiExtensionUiHandler {
                 [request.id]: {
                     tool,
                     arguments: argumentsValue,
-                    createdAt: Date.now(),
+                    createdAt: currentState.requests?.[request.id]?.createdAt ?? createdAt,
                 },
             },
         } satisfies AgentState));

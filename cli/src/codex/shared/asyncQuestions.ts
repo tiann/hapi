@@ -95,6 +95,11 @@ export class SharedCodexAsyncQuestions {
             this.pending.set(question.id, { question, submitted: false });
             const createdAt = typeof item.completedAtMs === 'number' ? item.completedAtMs : Date.now();
             this.session.updateAgentState(state => {
+                if (state.completedRequests?.[question.id]?.decision === 'denied') {
+                    this.pending.delete(question.id);
+                    this.completed.set(question.id, { status: 'canceled', decision: 'denied' });
+                    return state;
+                }
                 const completedRequests = { ...state.completedRequests };
                 delete completedRequests[question.id];
                 return { ...state, completedRequests, requests: { ...state.requests, [question.id]: state.requests?.[question.id] ?? {
