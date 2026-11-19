@@ -89,7 +89,7 @@ export class SharedCodexRoot {
     private tierConfirmationPending = false;
     get hasUltrafastTier(): boolean { return this.settings.serviceTier === 'ultrafast'; }
     private tierAdmissionPending = false;
-    beginTierConfirmation(): void { this.tierAdmissionPending = true; }
+    beginTierConfirmation(): void { this.tierAdmissionPending = true; this.publishSteering(); }
     get needsTierConfirmation(): boolean { return this.tierAdmissionPending || this.tierConfirmationPending; }
     get hasConfirmedStandardTier(): boolean { return this.settingsNative.serviceTier === 'default'; }
     private settingsNotification?: Record<string, unknown>;
@@ -102,6 +102,7 @@ export class SharedCodexRoot {
     private tierOperationCounter = 0;
     private confirmedTierOperation = 0;
     private pendingTierOperation = 0;
+    private pendingLaunchCollaborationMode?: SharedLaunchOptions['collaborationMode'];
 
     constructor(readonly bootstrap: SessionBootstrapResult, private readonly host: RootHost) {
         this.session = bootstrap.session;
@@ -181,6 +182,7 @@ export class SharedCodexRoot {
                     disallowedTools: message.meta?.disallowedTools ?? null
                 });
                 if (this.needsTierConfirmation) await this.inputGate;
+                if (this.closed || this.stopping) return;
                 await this.queue.enqueue(id, buildUserInputFromMessage(resolved), this.interrupted,
                     text.trim().startsWith('/') || message.meta?.isNativeQueuedMessage ? undefined : batchKey);
             }).catch(error => this.notice(`Message not confirmed: ${error instanceof Error ? error.message : error}. Inspect the queue before retrying.`));
@@ -301,7 +303,12 @@ export class SharedCodexRoot {
     async bind(threadId: string, response: Record<string, unknown>, subscribe: boolean): Promise<void> {
         if (this.threadId && this.threadId !== threadId) throw new Error('Cannot retarget a shared HAPI session');
         this.threadId = threadId;
-        this.queue = new SharedCodexQueue(this.client, threadId, join(this.host.directory, `${this.session.sessionId}.queue.json`),
+        this.queue = new SharedCodexQueue({ request: <T = unknown>(method: string, params?: unknown): Promise<T> => {
+            if (method === 'turn/steer' && (this.closed || this.stopping || this.needsTierConfirmation)) {
+                return Promise.reject(new Error('Service tier confirmation is pending or execution is stopping; input was not steered.'));
+            }
+            return this.client.request<T>(method, params);
+        } }, threadId, join(this.host.directory, `${this.session.sessionId}.queue.json`),
             (ids, steered) => {
                 this.session.emitMessagesConsumed(ids, { steered });
                 for (const id of ids) this.dequeuedInputs.delete(id);
@@ -342,7 +349,8 @@ export class SharedCodexRoot {
         this.serviceTierExplicit = serviceTierExplicit ?? (options.serviceTier !== undefined || this.session.getMetadata()?.codexServiceTierExplicit === true);
         this.session.updateMetadata(metadata => ({ ...metadata, codexServiceTierExplicit: this.serviceTierExplicit, codexTierConfirmationPending: this.tierConfirmationPending }));
         // Restored input cannot run before the cold-resume settings are applied.
-        if (!this.host.attached) await this.initialSettings(options);
+        if (!this.host.attached && this.tierConfirmationPending) this.pendingLaunchCollaborationMode = options.collaborationMode;
+        else if (!this.host.attached) await this.initialSettings(options);
         if (this.stopping) throw new Error('Codex execution is stopping');
         this.registerControls();
         this.ready();
@@ -352,7 +360,7 @@ export class SharedCodexRoot {
     }
     private publishSteering(): void {
         this.publishCompaction();
-        const active = Boolean(this.currentTurn) && !this.stopping && !this.closed && !this.reconnecting && this.client.isInitialized();
+        const active = Boolean(this.currentTurn) && !this.stopping && !this.closed && !this.reconnecting && !this.needsTierConfirmation && this.client.isInitialized();
         if (this.steeringActive === active) return;
         this.steeringActive = active;
         this.session.updateAgentState(state => ({ ...state, steeringActive: active }));
@@ -616,6 +624,7 @@ export class SharedCodexRoot {
     private async applySettingsNow(raw: unknown, deadline: number, operationId: number): Promise<{ applied: RuntimeSettings }> {
         if (Date.now() >= deadline) throw new Error('Settings update timed out before execution; settings were not changed');
         const config = SettingsSchema.parse(raw);
+        if (this.pendingLaunchCollaborationMode && config.collaborationMode === undefined) config.collaborationMode = this.pendingLaunchCollaborationMode;
         const explicitTier = config.serviceTier !== undefined;
         // The existing live-settings API accepts null as a Standard reset.
         if (config.serviceTier === null) config.serviceTier = 'standard';
@@ -672,21 +681,25 @@ export class SharedCodexRoot {
         await this.writeNativeSettings(params, params, deadline, operationId);
         if (explicitTier) this.markTierExplicit();
         if (fallbackNotice) this.notice(fallbackNotice);
-        if (confirmsTier) this.completeTierConfirmation(operationId);
+        if (confirmsTier) this.completeTierConfirmation();
         this.alive(); return { applied: this.settings };
     }
     private markTierExplicit(): void {
         this.serviceTierExplicit = true;
         this.session.updateMetadata(metadata => ({ ...metadata, codexServiceTierExplicit: true }));
     }
-    private completeTierConfirmation(operationId = ++this.tierOperationCounter): void {
-        if (operationId < this.confirmedTierOperation) return;
+    private completeTierConfirmation(): void {
+        // Completion observes native state after dispatch, independently of
+        // when this request entered the local settings queue.
+        const operationId = ++this.tierOperationCounter;
         this.confirmedTierOperation = operationId;
         if (operationId < this.pendingTierOperation) return;
         const paused = this.tierConfirmationPending;
         if (!paused && this.session.getMetadata()?.codexTierConfirmationPending !== true) return;
         this.tierConfirmationPending = false;
+        this.pendingLaunchCollaborationMode = undefined;
         this.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: false }));
+        this.publishSteering();
         if (paused) { this.alive(); this.inputReady(); this.session.emitSessionReady(); }
     }
     /** Resolve native intent without committing settings before input is accepted. */
@@ -720,16 +733,21 @@ export class SharedCodexRoot {
         const deadline = Date.now() + 25_000;
         const operationId = ++this.tierOperationCounter;
         const operation = this.settingsWrites.catch(() => {}).then(async () => {
+            if (this.pendingLaunchCollaborationMode && params.collaborationMode === undefined) params = { ...params, collaborationMode: {
+                mode: this.pendingLaunchCollaborationMode, settings: { model: string(params.model) ?? this.settings.model,
+                    reasoning_effort: params.effort ?? this.settings.modelReasoningEffort, developer_instructions: null }
+            } };
             const explicitTier = params.serviceTier !== undefined;
             const resolved = await this.resolveNativeSettings(params, deadline);
             const effectiveModel = string(record(record(resolved.params.collaborationMode).settings).model) ?? string(resolved.params.model);
             const confirmsTier = resolved.params.serviceTier !== undefined || this.hasUltrafastTier;
             await this.writeNativeSettings(resolved.params, {
                 ...(resolved.params.serviceTier !== undefined ? { serviceTier: resolved.params.serviceTier } : {}),
+                ...(resolved.params.collaborationMode ? { collaborationMode: resolved.params.collaborationMode } : {}),
                 ...(effectiveModel ? { model: effectiveModel } : {})
             }, deadline, operationId);
             if (explicitTier) this.markTierExplicit();
-            if (confirmsTier) this.completeTierConfirmation(operationId);
+            if (confirmsTier) this.completeTierConfirmation();
             this.alive();
             if (resolved.fallbackNotice) this.notice(resolved.fallbackNotice);
         });
@@ -755,7 +773,7 @@ export class SharedCodexRoot {
             if (this.settingsRevision !== revision) {
                 if (verifyUltrafast && this.hasUltrafastTier) {
                     await this.confirmEffectiveUltrafast(deadline, operationId);
-                    this.confirmedTierOperation = Math.max(this.confirmedTierOperation, operationId);
+                    if (current()) this.confirmedTierOperation = ++this.tierOperationCounter;
                 }
                 else if (fallbackNotice && this.hasConfirmedStandardTier) this.notice(fallbackNotice);
                 return;
@@ -765,12 +783,12 @@ export class SharedCodexRoot {
             const expected = { ...(model ? { model } : {}), ...(params.serviceTier !== undefined ? { serviceTier: params.serviceTier } : {}) };
             if (verifyUltrafast && !this.hasUltrafastTier && this.settings.serviceTier !== 'fast') {
                 await this.writeNativeSettings({ threadId: this.threadId, serviceTier: null }, { serviceTier: null }, deadline, operationId);
-                this.confirmedTierOperation = Math.max(this.confirmedTierOperation, operationId);
+                if (current()) this.confirmedTierOperation = ++this.tierOperationCounter;
                 this.notice('Codex did not apply Ultrafast; changed to Standard.');
                 this.alive(); return;
             }
             if (!settingsMatch(this.settingsNative, expected)) throw new Error('Native turn settings are not confirmed');
-            if (verifyUltrafast || params.serviceTier !== undefined) this.confirmedTierOperation = Math.max(this.confirmedTierOperation, operationId);
+            if (verifyUltrafast || params.serviceTier !== undefined) this.confirmedTierOperation = ++this.tierOperationCounter;
             this.alive();
             if (fallbackNotice) this.notice(fallbackNotice);
         } catch {
@@ -789,6 +807,7 @@ export class SharedCodexRoot {
                 this.inputGate = new Promise<void>(resolve => { this.inputReady = () => { this.inputGateResolved = true; resolve(); }; });
             }
             this.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: true }));
+            this.publishSteering();
             this.notice('Codex settings confirmation is pending. Confirm Standard in settings before sending more input.');
         }
     }
@@ -823,7 +842,7 @@ export class SharedCodexRoot {
             const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline));
             if (this.settingsRevision === revision) this.acceptSettings(snapshot);
             if (settingsMatch(this.settingsNative, comparable)) {
-                if (verifyUltrafast) await this.confirmEffectiveUltrafast(deadline, operationId);
+                if (verifyUltrafast) await this.confirmEffectiveUltrafast(deadline, ++this.tierOperationCounter);
                 return;
             }
         }
@@ -837,6 +856,7 @@ export class SharedCodexRoot {
         });
         void accepted.catch(() => {});
         try {
+            operationId = ++this.tierOperationCounter;
             await this.settingsRequest('thread/settings/update', params, deadline, true, () => changesTier && operationId >= this.confirmedTierOperation, operationId);
             // The RPC only acknowledges queueing the settings operation. The
             // native notification, not our submitted candidate, establishes state.
@@ -850,7 +870,7 @@ export class SharedCodexRoot {
         for (let attempt = 0; attempt < 3; attempt++) {
             const revision = this.settingsRevision;
             const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline, true, () => operationId >= this.confirmedTierOperation, operationId));
-            if (operationId < this.confirmedTierOperation) return;
+            if (operationId < this.confirmedTierOperation) throw new Error('Codex settings were superseded by a newer confirmed tier; refresh before retrying');
             if (this.settingsRevision !== revision) continue;
             this.acceptSettings(snapshot);
             if (this.hasUltrafastTier) return;
@@ -911,8 +931,8 @@ export class SharedCodexRoot {
         const rpc = { registerHandler: (method: string, handler: (raw: unknown) => Promise<unknown>) => {
             this.session.rpcHandlerManager.registerHandler(method, async (raw: unknown) => {
                 if (this.stopping) throw new Error('Codex execution is stopping; resume when inactive');
-                if (this.tierConfirmationPending && ([RPC_METHODS.ClearConversation, RPC_METHODS.ForkConversation, RPC_METHODS.ImplementCodexPlan] as string[]).includes(method)) {
-                    throw new Error('Confirm the service tier in settings before creating, forking, or running a plan.');
+                if (this.needsTierConfirmation && ([RPC_METHODS.ClearConversation, RPC_METHODS.ForkConversation, RPC_METHODS.ImplementCodexPlan, RPC_METHODS.SteerQueuedMessage] as string[]).includes(method)) {
+                    throw new Error('Confirm the service tier in settings before creating, forking, running a plan, or steering input.');
                 }
                 if (this.host.attached && ([RPC_METHODS.ClearConversation, RPC_METHODS.ForkConversation, RPC_METHODS.RewindConversation] as string[]).includes(method)) {
                     throw new Error('Create/fork/revert this external thread in its owning desktop; HAPI only attaches');

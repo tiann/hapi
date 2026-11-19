@@ -1908,3 +1908,92 @@ it.each(['suspend', 'close'])('releases held input without submitting it when a 
     await (action === 'suspend' ? f.root.suspend() : f.root.close(false));
     expect(f.native.queue).toHaveLength(0);
 });
+
+it.each(['web', 'native'])('keeps Plan launch recovery controls available through %s settings', async origin => {
+    const f = await fixture();
+    const original = f.root.client.request.bind(f.root.client);
+    let available = false;
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/settings/update' && !available) throw new Error('settings endpoint unavailable');
+        return original(method, params);
+    });
+    await f.root.activate({ collaborationMode: 'plan' }, true, true);
+    expect(f.rpc.has(RPC_METHODS.SetSessionConfig)).toBe(true);
+    expect(request.mock.calls.some(([method]) => method === 'thread/settings/update')).toBe(false);
+    f.submit('held until Plan and Standard are applied', 'plan-recovery-input');
+    const recover = () => origin === 'web' ? f.rpc.get(RPC_METHODS.SetSessionConfig)!({ serviceTier: 'standard' }) : f.root.applyNativeSettings({ serviceTier: null });
+    await expect(recover()).rejects.toThrow('settings endpoint unavailable');
+    expect(f.root.needsTierConfirmation).toBe(true);
+    available = true; await recover();
+    expect(f.root.hasConfirmedStandardTier).toBe(true);
+    expect(f.native.settings.collaborationMode).toMatchObject({ mode: 'plan' });
+    expect(f.root.needsTierConfirmation).toBe(false);
+    await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+});
+
+it('orders a queued Standard confirmation after native snapshots begun while it waits', async () => {
+    const f = await fixture(); await f.root.activate();
+    const original = f.root.client.request.bind(f.root.client);
+    let enterWrite!: () => void, releaseWrite!: () => void, enterSnapshot!: () => void;
+    const writing = new Promise<void>(resolve => { enterWrite = resolve; });
+    const release = new Promise<void>(resolve => { releaseWrite = resolve; });
+    const snapshot = new Promise<void>(resolve => { enterSnapshot = resolve; });
+    vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/settings/update' && (params as { model?: string })?.model === 'blocking-model') { enterWrite(); await release; }
+        if (method === 'thread/resume') { enterSnapshot(); return await new Promise<never>(() => {}); }
+        return original(method, params);
+    });
+    vi.useFakeTimers();
+    try {
+        const blocker = f.root.applySettings({ model: 'blocking-model' }); await writing;
+        const standard = f.root.applySettings({ serviceTier: 'standard' });
+        const stale = f.root.confirmNativeTurn({ serviceTier: 'ultrafast' }, true); await snapshot;
+        releaseWrite(); await blocker; await standard;
+        expect(f.root.hasConfirmedStandardTier).toBe(true);
+        await vi.advanceTimersByTimeAsync(25_000); await stale;
+        expect(f.root.needsTierConfirmation).toBe(false);
+    } finally { releaseWrite(); vi.useRealTimers(); }
+});
+
+it.each([false, true])('rejects steering when tier admission pauses (during queue mutation %s)', async late => {
+    const f = await fixture(); await f.root.activate();
+    f.submit('queued for steering', 'paused-steer');
+    await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+    f.native.notify('turn/started', { threadId: 'thread', turn: { id: 'running' } }); await f.drain();
+    const original = f.root.client.request.bind(f.root.client);
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (late && method === 'thread/queue/delete') f.root.beginTierConfirmation();
+        return original(method, params);
+    });
+    if (!late) f.root.beginTierConfirmation();
+    const steer = f.rpc.get(RPC_METHODS.SteerQueuedMessage)!;
+    if (late) expect((await steer({ localId: 'paused-steer' }) as { steered: boolean }).steered).toBe(false);
+    else await expect(steer({ localId: 'paused-steer' })).rejects.toThrow('Confirm the service tier');
+    expect(request.mock.calls.some(([method]) => method === 'turn/steer')).toBe(false);
+    expect(f.native.queue).toHaveLength(1);
+    expect(f.state().steeringActive).toBe(false);
+});
+
+it.each(['suspend', 'close'])('does not submit input released from the second gate during %s', async action => {
+    const f = await fixture({ attached: action === 'close' }); await f.root.activate();
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(f.root as unknown as { command(text: string): Promise<string | null> }, 'command').mockImplementation(async () => { entered(); await gate; return 'must not submit'; });
+    vi.spyOn(f.root.client, 'supportsProviderScopedModels').mockReturnValue(true);
+    const original = f.root.client.request.bind(f.root.client);
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/settings/update') return await new Promise<never>(() => {});
+        return original(method, params);
+    });
+    vi.useFakeTimers();
+    try {
+        f.submit('/deferred message', 'second-gate-input'); await started;
+        const failure = f.root.applySettings({ serviceTier: 'ultrafast' }).catch(() => {});
+        await vi.advanceTimersByTimeAsync(25_000); await failure;
+        expect(f.root.needsTierConfirmation).toBe(true);
+        release(); await (action === 'suspend' ? f.root.suspend() : f.root.close(false));
+        expect(request.mock.calls.some(([method]) => method === 'thread/queue/add')).toBe(false);
+        expect(f.native.queue).toHaveLength(0);
+    } finally { release(); vi.useRealTimers(); }
+});

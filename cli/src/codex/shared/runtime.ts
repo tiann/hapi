@@ -296,13 +296,14 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         const queueRoot = roots.get(string(params.threadId) ?? '');
         const queueMutation = ['thread/queue/add', 'thread/queue/update', 'thread/queue/delete', 'thread/queue/reorder', 'thread/queue/start'].includes(request.method ?? '');
         const tierPending = pendingAdmission.has(string(params.threadId) ?? '') || queueRoot?.needsTierConfirmation;
-        if (tierPending && (request.method === 'turn/start' || queueMutation)) throw new Error('Service tier confirmation is pending. Select a service tier in settings before sending input.');
+        if (tierPending && (request.method === 'turn/start' || request.method === 'turn/steer' || queueMutation)) throw new Error('Service tier confirmation is pending. Select a service tier in settings before sending input.');
         if (tierPending && request.method === 'thread/fork') throw new Error('Confirm the service tier in settings before forking this conversation.');
         if (tierPending && !queueRoot && request.method === 'thread/settings/update') throw new Error('Codex thread initialization is pending. Retry settings when the thread is ready.');
         if (queueRoot && request.method === 'turn/start') {
             if (params.serviceTier === undefined && !((params.model || record(record(params.collaborationMode).settings).model) && queueRoot.hasUltrafastTier)) return request;
             if (request.id === undefined) throw new Error('Turn mutations require a JSON-RPC request ID');
             const resolved = await queueRoot.prepareNativeTurn(params);
+            if (queueRoot.needsTierConfirmation || pendingAdmission.has(string(params.threadId) ?? '')) throw new Error('Service tier confirmation is pending. Select a service tier in settings before sending input.');
             nativeTurns.set(key(connection, request), { root: queueRoot, ...resolved, explicitTier: params.serviceTier !== undefined });
             return { ...request, params: resolved.params };
         }
