@@ -341,7 +341,7 @@ export class ApiClient {
         })
 
         if (!res.ok) {
-            const body = await res.text().catch(() => '')
+            const body = await res.text()
             const code = parseErrorCode(body)
             const detail = body ? `: ${body}` : ''
             throw new ApiError(`Auth failed: HTTP ${res.status} ${res.statusText}${detail}`, res.status, code, body || undefined)

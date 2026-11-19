@@ -426,10 +426,6 @@ function AppInner() {
         [selectedSessionId]
     )
     const sseEnabled = Boolean(api && token)
-    const showReconnectingBanner = Boolean(connectionError) || sseDisconnected && !isSyncing
-    // Transient states wait before showing; quick reconnects never flash.
-    const revealReconnecting = useDelayedFlag(showReconnectingBanner, CONNECTION_STATUS_DELAY_MS)
-    const revealSyncing = useDelayedFlag(isSyncing && !connectionError, CONNECTION_STATUS_DELAY_MS)
 
     const { subscriptionId: globalSubscriptionId } = useSSE({
         enabled: sseEnabled,
@@ -452,6 +448,14 @@ function AppInner() {
         onConnect: handleSessionSseConnect,
         onEvent: handleSseEvent
     })
+
+    const streamConnected = globalSubscriptionId !== null
+    const showReconnectingBanner = !streamConnected && !isSyncing && (Boolean(connectionError) || sseDisconnected || !isOnline)
+    const showAuthRefreshBanner = streamConnected && !isSyncing && isOnline && Boolean(connectionError)
+    // Transient states wait before showing; quick reconnects never flash.
+    const revealReconnecting = useDelayedFlag(showReconnectingBanner, CONNECTION_STATUS_DELAY_MS)
+    const revealAuthRefresh = useDelayedFlag(showAuthRefreshBanner, CONNECTION_STATUS_DELAY_MS)
+    const revealSyncing = useDelayedFlag(isSyncing, CONNECTION_STATUS_DELAY_MS)
 
     useVisibilityReporter({
         api,
@@ -569,8 +573,13 @@ function AppInner() {
                 />
                 <SyncingBanner isSyncing={revealSyncing} />
                 <ReconnectingBanner
-                    isReconnecting={revealReconnecting}
+                    isReconnecting={revealReconnecting && !streamConnected}
                     reason={!isOnline ? authConnectionMessage({}, false) : connectionMessage ?? sseDisconnectReason}
+                />
+                <ReconnectingBanner
+                    isReconnecting={revealAuthRefresh && streamConnected}
+                    message="Sign-in refresh failed. Live updates are connected; retrying automatically."
+                    reason={connectionError?.diagnostic ?? (connectionError?.status ? `HTTP ${connectionError.status}` : null)}
                 />
                 <VoiceErrorBanner />
                 <OfflineBanner

@@ -12,6 +12,17 @@ describe('ApiClient error mapping', () => {
         globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
     })
 
+    it('propagates an aborted 401 authentication body instead of treating it as rejected credentials', async () => {
+        const controller = new AbortController()
+        const body = new ReadableStream({ start(stream) {
+            controller.signal.addEventListener('abort', () => stream.error(controller.signal.reason), { once: true })
+        } })
+        fetchMock.mockResolvedValueOnce(new Response(body, { status: 401 }))
+        const pending = new ApiClient('').authenticate({ accessToken: 'fixture' }, { signal: controller.signal })
+        controller.abort()
+        await expect(pending).rejects.toHaveProperty('name', 'AbortError')
+    })
+
     it('apiErrorMessage unwraps the hub error string and falls back cleanly', () => {
         const body = '{"success":false,"error":"No online machine available for Pi history import"}'
         const error = new ApiError(`HTTP 503 Service Unavailable: ${body}`, 503, 'No online machine available for Pi history import', body)

@@ -608,3 +608,48 @@ it('keeps the explicit Telegram-disabled diagnostic actionable', async () => {
     const { result } = renderHook(() => useAuth(source, 'https://hub.test'))
     await waitFor(() => expect(result.current.connectionError?.diagnostic).toBe(diagnostic))
 })
+
+it('preserves the active session when a deadline abort is reported as an incomplete 401', async () => {
+    vi.useFakeTimers()
+    const token = makeJwtWithExp(Math.floor(Date.now() / 1000) + 3600)
+    h.setAuthenticateImpl((count, signal) => count === 1 ? Promise.resolve({ token, user: { id: 'u1' } }) : new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new h.MockApiError('body aborted', 401)), { once: true })
+    }))
+    const source = { type: 'accessToken' as const, token: 'fixture' }
+    const { result, unmount } = renderHook(() => useAuth(source, 'https://hub.test'))
+    await flushMicrotasks()
+    const api = result.current.api as unknown as ApiWithOptions
+    let refresh!: Promise<unknown>
+    act(() => { refresh = Promise.resolve(api.options?.onUnauthorized?.()) })
+    await flushMicrotasks()
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000); await refresh })
+    expect(result.current.token).toBe(token)
+    expect(result.current.connectionError).toEqual({})
+    expect(result.current.error).toBeNull()
+    unmount()
+})
+
+it('ignores a rejected result from an authentication attempt canceled by Retry now', async () => {
+    vi.useFakeTimers()
+    const token = makeJwtWithExp(Math.floor(Date.now() / 1000) + 3600)
+    let finish!: (value: { token: string; user: { id: string } }) => void
+    h.setAuthenticateImpl((count, signal) => {
+        if (count === 1) return Promise.resolve({ token, user: { id: 'u1' } })
+        if (count === 2) return new Promise((_resolve, reject) => signal?.addEventListener('abort', () => reject(new h.MockApiError('canceled body', 401)), { once: true }))
+        return new Promise(resolve => { finish = resolve })
+    })
+    const source = { type: 'accessToken' as const, token: 'fixture' }
+    const { result, unmount } = renderHook(() => useAuth(source, 'https://hub.test'))
+    await flushMicrotasks()
+    const api = result.current.api as unknown as ApiWithOptions
+    act(() => { void api.options?.onUnauthorized?.() })
+    await flushMicrotasks()
+    act(() => result.current.retryConnection())
+    await flushMicrotasks()
+    expect(h.getAuthCount()).toBe(3)
+    expect(result.current.token).toBe(token)
+    expect(result.current.error).toBeNull()
+    await act(async () => { finish({ token: 'fresh', user: { id: 'u1' } }) })
+    expect(result.current.token).toBe('fresh')
+    unmount()
+})

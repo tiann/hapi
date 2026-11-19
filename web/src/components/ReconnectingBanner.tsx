@@ -25,10 +25,12 @@ function getReasonLabel(reason: string, t: (key: string) => string): string {
 
 export function ReconnectingBanner({
     isReconnecting,
-    reason
+    reason,
+    message
 }: {
     isReconnecting: boolean
     reason?: string | null
+    message?: string
 }) {
     const { t } = useTranslation()
     const reasonLabel = reason ? getReasonLabel(reason, t) : null
@@ -42,7 +44,7 @@ export function ReconnectingBanner({
     return (
         <div className="fixed top-0 left-0 right-0 bg-[var(--app-banner-bg)] text-[var(--app-banner-text)] text-center pb-2 pt-[calc(env(safe-area-inset-top)+0.5rem)] text-sm font-medium z-50 flex items-center justify-center gap-2 border-b border-[var(--app-divider)]">
             <Spinner size="sm" label={null} className="text-[var(--app-banner-text)]" />
-            {t('reconnecting.message')}
+            {message ?? t('reconnecting.message')}
             {reasonLabel ? <span className="text-[var(--app-hint)]">({reasonLabel})</span> : null}
         </div>
     )

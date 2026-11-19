@@ -159,10 +159,12 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
             lastRefreshAttemptRef.current = now
             const controller = new AbortController()
             authAbortRef.current = controller
-            const timeout = setTimeout(() => controller.abort(), AUTH_REQUEST_TIMEOUT_MS)
+            let timedOut = false
+            const timeout = setTimeout(() => { timedOut = true; controller.abort() }, AUTH_REQUEST_TIMEOUT_MS)
             try {
                 const client = new ApiClient('', { baseUrl })
                 const auth = await client.authenticate(getAuthPayload(currentSource), { signal: controller.signal })
+                if (controller.signal.aborted) throw controller.signal.reason
                 if (authEpochRef.current !== epoch) {
                     return null
                 }
@@ -180,8 +182,9 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
                 if (authEpochRef.current !== epoch) {
                     return null
                 }
+                if (controller.signal.aborted && !timedOut) return tokenRef.current
                 setConnectionFailure(null)
-                const kind = classifyAuthError(error)
+                const kind = controller.signal.aborted ? 'transient' : classifyAuthError(error)
                 lastErrorKindRef.current = kind
 
                 if (currentSource.type === 'telegram' && kind === 'not_bound') {
@@ -229,7 +232,7 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
                 // Transient network / gateway failure: schedule bounded retries.
                 // Preserve an active session even past JWT expMs so flaky networks
                 // do not dump authenticated users onto the login prompt.
-                setConnectionFailure({ source: currentSource, baseUrl, failure: error instanceof ApiError ? { status: error.status,
+                setConnectionFailure({ source: currentSource, baseUrl, failure: !controller.signal.aborted && error instanceof ApiError ? { status: error.status,
                     ...(error.status === 503 && error.code === TELEGRAM_AUTH_DISABLED_MESSAGE ? { diagnostic: TELEGRAM_AUTH_DISABLED_MESSAGE } : {}) } : {} })
                 const attempt = transientFailureCountRef.current + 1
                 transientFailureCountRef.current = attempt
