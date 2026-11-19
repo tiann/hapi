@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer } from 'node:http';
 import { EventEmitter } from 'node:events';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { AgentState, Metadata } from '@/api/types';
@@ -11,19 +12,20 @@ import { initializeSharedClient } from './launch';
 import { record } from './gateway';
 import { isProcessAlive } from '@/utils/process';
 import { notifyRunnerSessionStarted } from '@/runner/controlClient';
+import { bootstrapExistingSession } from '@/agent/sessionFactory';
 import { asyncQuestionsForItem } from './asyncQuestions';
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
 const state = vi.hoisted(() => ({ home: '', sessions: new Map<string, MockSession>(), beforeBootstrap: undefined as (() => Promise<void>) | undefined }));
 const BOOTSTRAP_START_MARKER = vi.hoisted(() => 'Tue Sep 29 09:00:00 2026');
 class MockSession extends EventEmitter {
-    readonly sessionId = randomUUID();
+    readonly sessionId: string;
     state: AgentState = { requests: { 'old-worker': { tool: 'request_user_input', arguments: {}, createdAt: 0 } } }; metadata: Metadata;
     messages: unknown[] = []; consumed: string[] = []; dead = false;
     user?: (message: { content: { text: string } }, id?: string) => void;
     rpc = new Map<string, (params: unknown) => Promise<unknown>>();
     rpcHandlerManager = { registerHandler: (name: string, fn: (params: unknown) => Promise<unknown>) => { this.rpc.set(name, fn); } };
-    constructor(cwd: string) { super(); this.metadata = { path: cwd, host: 'test', hostPid: process.pid, machineId: 'test', flavor: 'codex', capabilities: { concurrentClients: true } }; }
+    constructor(cwd: string, id: string = randomUUID()) { super(); this.sessionId = id; this.metadata = { path: cwd, host: 'test', hostPid: process.pid, machineId: 'test', flavor: 'codex', capabilities: { concurrentClients: true } }; }
     getMetadata() { return this.metadata; }
     updateMetadata(fn: (m: Metadata) => Metadata) { this.metadata = fn(this.metadata); }
     updateAgentState(fn: (s: AgentState) => AgentState) { this.state = fn(this.state); }
@@ -55,6 +57,55 @@ vi.mock('../utils/buildHapiMcpBridge', () => ({ buildHapiMcpBridge: async () => 
 // Explicit opt-in: installed official binary, entirely isolated CODEX_HOME, mock Responses API only.
 describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Codex shared runtime', () => {
     afterEach(() => { vi.unstubAllEnvs(); state.sessions.clear(); state.beforeBootstrap = undefined; });
+    it('releases a failed gateway cold resume for retry from another runtime without pinning inherited tier', async () => {
+        const home = await mkdtemp(join(tmpdir(), 'hapi-shared-tier-retry-')); state.home = home;
+        const ch = join(home, 'codex'), cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
+        vi.stubEnv('CODEX_HOME', ch);
+        const configure = (tier: string) => writeFile(join(ch, 'config.toml'), `model = "gpt-6-astra"\nmodel_provider = "mock"\nservice_tier = "${tier}"\n[features]\nfast_mode = true\n[model_providers.mock]\nname = "No model calls"\nbase_url = "http://127.0.0.1:1/v1"\nwire_api = "responses"\nrequires_openai_auth = false\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n`);
+        const running: Array<{ abort: AbortController; done: Promise<void> }> = [];
+        const clients: CodexAppServerClient[] = [];
+        const { runSharedRuntime } = await import('./runtime');
+        const start = async () => {
+            const abort = new AbortController(); let ready!: (value: import('./runtime').RuntimeReady) => void;
+            const pending = new Promise<import('./runtime').RuntimeReady>(resolve => { ready = resolve; });
+            const done = runSharedRuntime({ workingDirectory: cwd }, ready, abort.signal);
+            running.push({ abort, done });
+            const value = await Promise.race([pending, done.then(() => { throw new Error('Runtime stopped before ready'); })]);
+            const client = new CodexAppServerClient({ endpoint: value.runtime.endpoint, token: value.runtime.token });
+            clients.push(client); await initializeSharedClient(client);
+            return { ...value, client, abort, done };
+        };
+        let failConfig: ReturnType<typeof vi.spyOn> | undefined;
+        try {
+            vi.mocked(bootstrapExistingSession).mockImplementation(async options => {
+                const previous = state.sessions.get(options.sessionId)!;
+                const session = new MockSession(cwd, previous.sessionId); session.metadata = { ...previous.metadata };
+                state.sessions.set(session.sessionId, session);
+                return { session: session as unknown as ApiSessionClient, sessionInfo: { id: session.sessionId, namespace: 'test' }, metadata: session.metadata,
+                    workingDirectory: cwd, machineId: 'test', startedBy: 'terminal', api: {} } as never;
+            });
+            await configure('priority');
+            const original = await start(); const threadId = original.runtime.sessions[original.sessionId].threadId;
+            original.abort.abort(); await original.done;
+            await configure('default');
+            const second = await start();
+            failConfig = vi.spyOn(CodexAppServerClient.prototype, 'readConfig').mockRejectedValueOnce(new Error('fixture config unavailable'));
+            await expect(second.client.request('thread/resume', { threadId, excludeTurns: true })).rejects.toThrow('fixture config unavailable');
+            failConfig.mockRestore(); failConfig = undefined;
+            expect(second.runtime.sessions[original.sessionId].active).toBe(false);
+            expect(state.sessions.get(original.sessionId)?.metadata.lifecycleState).not.toBe('archived');
+            const third = await start();
+            const response = await third.client.request<{ serviceTier: string }>('thread/resume', { threadId, excludeTurns: true });
+            expect(response.serviceTier).toBe('default');
+            expect(state.sessions.get(original.sessionId)?.metadata.codexServiceTierExplicit).toBe(false);
+        } finally {
+            failConfig?.mockRestore(); vi.mocked(bootstrapExistingSession).mockReset();
+            for (const item of running) item.abort.abort();
+            await Promise.allSettled(running.map(item => item.done));
+            await Promise.allSettled(clients.map(client => client.disconnect()));
+            await rm(home, { recursive: true, force: true, maxRetries: 3 });
+        }
+    }, 90_000);
     it('projects native async questions and delivers answers during generation and after completion', async () => {
         const home = await mkdtemp('/tmp/hapi-shared-async-'); state.home = home;
         const ch = join(home, 'codex'); const cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);

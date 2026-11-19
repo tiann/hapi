@@ -4284,7 +4284,7 @@ export class SyncEngine {
             // For inactive sessions, update the in-memory cache directly without
             // an RPC call — the CLI is not running yet. The updated value will be
             // passed to the spawned process when the session is resumed.
-            this.sessionCache.applySessionConfig(sessionId, config)
+            this.sessionCache.applySessionConfig(sessionId, config, { explicitCodexTier: config.serviceTier !== undefined })
             return
         }
 

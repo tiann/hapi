@@ -1208,7 +1208,8 @@ export class SessionCache {
             serviceTier?: string | null
             collaborationMode?: CodexCollaborationMode
             copilotAgentMode?: CopilotAgentMode
-        }
+        },
+        options?: { explicitCodexTier?: boolean }
     ): void {
         const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
         if (!session) {
@@ -1270,12 +1271,20 @@ export class SessionCache {
             this.markRuntimeConfigUpdated(sessionId, 'effort', appliedAt)
         }
         if (config.serviceTier !== undefined) {
-            if (config.serviceTier !== session.serviceTier) {
+            const explicitCodexTier = options?.explicitCodexTier === true && session.metadata?.flavor === 'codex'
+            if (config.serviceTier !== session.serviceTier || explicitCodexTier) {
                 const updated = this.store.sessions.setSessionServiceTier(sessionId, config.serviceTier, session.namespace, {
-                    touchUpdatedAt: false
+                    touchUpdatedAt: false, explicitCodexTier
                 })
                 if (!updated) {
                     throw new Error('Failed to update session service tier')
+                }
+                if (explicitCodexTier) {
+                    const stored = this.store.sessions.getSession(sessionId)
+                    const parsed = MetadataSchema.safeParse(stored?.metadata)
+                    if (!stored || !parsed.success) throw new Error('Failed to load explicit Codex tier intent')
+                    session.metadata = parsed.data
+                    session.metadataVersion = stored.metadataVersion
                 }
             }
             session.serviceTier = config.serviceTier

@@ -591,6 +591,7 @@ export class SharedCodexRoot {
     private async applySettingsNow(raw: unknown, deadline: number): Promise<{ applied: RuntimeSettings }> {
         if (Date.now() >= deadline) throw new Error('Settings update timed out before execution; settings were not changed');
         const config = SettingsSchema.parse(raw);
+        const explicitTier = config.serviceTier !== undefined;
         // The existing live-settings API accepts null as a Standard reset.
         if (config.serviceTier === null) config.serviceTier = 'standard';
         let fallbackNotice: string | undefined;
@@ -604,12 +605,12 @@ export class SharedCodexRoot {
                 }
                 const available = await isUltrafastAvailable(this.client, model, this.bootstrap.workingDirectory, discoveryDeadline, provider, this.host.catalogProvider);
                 if ((!config.model && model !== this.settings.model) || provider !== this.modelProvider) continue;
-                // Include the validated model in the write and its native confirmation.
+                const enabled = available && await isUltrafastEnabled(this.client, this.threadId, discoveryDeadline);
+                if ((!config.model && model !== this.settings.model) || provider !== this.modelProvider) continue;
+                // Pin only after every asynchronous discovery step has settled.
                 if (typeof model === 'string') config.model = model;
                 if (!available) { config.serviceTier = 'standard'; fallbackNotice = ULTRAFAST_FALLBACK_NOTICE; }
-                else if (!await isUltrafastEnabled(this.client, this.threadId)) {
-                    config.serviceTier = 'standard'; fallbackNotice = ULTRAFAST_DISABLED_NOTICE;
-                }
+                else if (!enabled) { config.serviceTier = 'standard'; fallbackNotice = ULTRAFAST_DISABLED_NOTICE; }
                 break;
             }
         }
@@ -642,7 +643,7 @@ export class SharedCodexRoot {
             } } } : {})
         };
         await this.writeNativeSettings(params);
-        if (config.serviceTier !== undefined) this.markTierExplicit();
+        if (explicitTier) this.markTierExplicit();
         if (fallbackNotice) this.notice(fallbackNotice);
         this.alive(); return { applied: this.settings };
     }
@@ -653,15 +654,28 @@ export class SharedCodexRoot {
     /** Native frontends share the same confirmation and explicit-intent rules. */
     applyNativeSettings(params: Record<string, unknown>): Promise<void> {
         const operation = this.settingsWrites.catch(() => {}).then(async () => {
-            let disabled = false;
-            if (params.serviceTier === 'ultrafast' && !await isUltrafastEnabled(this.client, this.threadId)) {
-                params = { ...params, serviceTier: null }; disabled = true;
+            let fallbackNotice: string | undefined;
+            if (params.serviceTier === 'ultrafast') {
+                const deadline = Date.now() + 10_000;
+                for (;;) {
+                    const model = string(params.model) ?? this.settings.model;
+                    const provider = this.modelProvider;
+                    const available = await isUltrafastAvailable(this.client, model, this.bootstrap.workingDirectory, deadline, provider, this.host.catalogProvider);
+                    const enabled = available && await isUltrafastEnabled(this.client, this.threadId, deadline);
+                    if ((!params.model && model !== this.settings.model) || provider !== this.modelProvider) continue;
+                    params = { ...params, ...(typeof model === 'string' ? { model } : {}) };
+                    if (!available || !enabled) {
+                        params.serviceTier = null;
+                        fallbackNotice = !available ? ULTRAFAST_FALLBACK_NOTICE : ULTRAFAST_DISABLED_NOTICE;
+                    }
+                    break;
+                }
             }
             // Other native fields may use public null-as-unchanged semantics.
             // Only this request's tier is relevant to HAPI's inherited intent.
-            await this.writeNativeSettings(params, { serviceTier: params.serviceTier });
+            await this.writeNativeSettings(params, { serviceTier: params.serviceTier, ...(typeof params.model === 'string' ? { model: params.model } : {}) });
             this.markTierExplicit();
-            if (disabled) this.notice(ULTRAFAST_DISABLED_NOTICE);
+            if (fallbackNotice) this.notice(fallbackNotice);
         });
         this.settingsWrites = operation;
         return operation;
@@ -693,7 +707,10 @@ export class SharedCodexRoot {
         } finally { clearTimeout(timer); this.settingsListeners.delete(changed); }
     }
     async confirmUltrafastLaunch(): Promise<void> {
-        if (this.settings.serviceTier === 'ultrafast' && await isUltrafastEnabled(this.client, this.threadId)) return;
+        // Native launch configuration filters a disabled feature before its
+        // response. Unlike live updates, it does not require another discovery
+        // RPC after creation that could strand a known, unactivated child.
+        if (this.settings.serviceTier === 'ultrafast') return;
         await this.applySettings({ serviceTier: 'standard' });
         this.notice('Codex did not apply Ultrafast; changed to Standard.');
     }

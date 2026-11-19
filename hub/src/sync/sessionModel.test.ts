@@ -5532,3 +5532,25 @@ it.each([false, true, undefined])('resumes effective Ultrafast with explicit HAP
         expect(tier as string | undefined).toBe(explicit === false ? undefined : 'ultrafast')
     } finally { engine.stop() }
 })
+
+it.each(['ultrafast', 'standard'])('retains explicit %s on re-import of an inherited inactive Codex session', async selected => {
+    const store = new Store(':memory:')
+    const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+    try {
+        const session = engine.getOrCreateSession('tier-reimport', {
+            path: '/tmp/project', host: 'localhost', machineId: 'machine-1', flavor: 'codex',
+            codexSessionId: 'native-reimport', codexServiceTierExplicit: false,
+        }, null, 'default')
+        engine.getOrCreateMachine('machine-1', { host: 'localhost', platform: 'linux', happyCliVersion: '0.36.5' }, null, 'default')
+        engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
+        engine.handleSessionAlive({ sid: session.id, time: Date.now(), serviceTier: selected })
+        engine.handleSessionEnd({ sid: session.id, time: Date.now() })
+        await engine.applySessionConfig(session.id, { serviceTier: selected })
+        expect(store.sessions.getSession(session.id)?.metadata).toMatchObject({ codexServiceTierExplicit: true })
+        let tier: unknown
+        ;(engine as any).rpcGateway.spawnSession = async (...args: unknown[]) => { tier = args[11]; return { type: 'success', sessionId: session.id } }
+        ;(engine as any).waitForSessionActive = async () => true
+        expect(await engine.resumeSession(session.id, 'default')).toEqual({ type: 'success', sessionId: session.id })
+        expect(tier).toBe(selected)
+    } finally { engine.stop() }
+})

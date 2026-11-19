@@ -1568,3 +1568,36 @@ it('does not pin a native tier when its write is rejected', async () => {
     await expect(f.root.applyNativeSettings({ threadId: 'thread', serviceTier: 'priority' })).rejects.toThrow('write rejected');
     expect(f.metadata().codexServiceTierExplicit).toBe(false);
 });
+it('falls back from a native Ultrafast selection on an unsupported model', async () => {
+    const f = await fixture(); await f.root.activate();
+    await f.root.applyNativeSettings({ threadId: 'thread', model: 'standard-only', serviceTier: 'ultrafast' });
+    expect(f.root.freshParams()).toMatchObject({ model: 'standard-only', serviceTier: 'default' });
+    expect(f.events).toHaveBeenCalledWith({ type: 'message', message: 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.' });
+});
+it('preserves inherited intent when only a model change requires Standard fallback', async () => {
+    const f = await fixture(); f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' });
+    await f.root.activate();
+    await f.root.applySettings({ model: 'standard-only' });
+    expect(f.metadata().codexServiceTierExplicit).toBe(false);
+    expect(f.root.freshParams().serviceTier).toBeUndefined();
+});
+it('rechecks a tier-only model after asynchronous feature discovery', async () => {
+    const f = await fixture();
+    const original = f.root.client.request.bind(f.root.client);
+    let release!: (value: unknown) => void;
+    vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'experimentalFeature/list') return await new Promise<unknown>(resolve => { release = resolve; }) as never;
+        return original(method, params);
+    });
+    const pending = f.root.applySettings({ serviceTier: 'ultrafast' });
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
+    f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: { model: 'standard-only', serviceTier: 'default' } });
+    release({ data: [{ name: 'ultrafast_mode', enabled: true }] });
+    expect((await pending).applied).toMatchObject({ model: 'standard-only', serviceTier: 'standard' });
+});
+it('does not add a fallible feature RPC after a native launch already confirmed Ultrafast', async () => {
+    const f = await fixture(); f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' });
+    const request = vi.spyOn(f.root.client, 'request').mockRejectedValue(new Error('feature discovery disconnected'));
+    await f.root.confirmUltrafastLaunch();
+    expect(request).not.toHaveBeenCalled();
+});

@@ -872,7 +872,7 @@ export function setSessionServiceTier(
     id: string,
     serviceTier: string | null,
     namespace: string,
-    options?: { touchUpdatedAt?: boolean }
+    options?: { touchUpdatedAt?: boolean; explicitCodexTier?: boolean }
 ): boolean {
     const now = Date.now()
     const touchUpdatedAt = options?.touchUpdatedAt === true
@@ -881,15 +881,18 @@ export function setSessionServiceTier(
         const result = prepareCached(db, `
             UPDATE sessions
             SET service_tier = @service_tier,
+                metadata = CASE WHEN @explicit_tier = 1 THEN json_set(metadata, '$.codexServiceTierExplicit', json('true')) ELSE metadata END,
+                metadata_version = metadata_version + @explicit_tier,
                 updated_at = CASE WHEN @touch_updated_at = 1 THEN @updated_at ELSE updated_at END,
                 seq = seq + 1
             WHERE id = @id
               AND namespace = @namespace
-              AND service_tier IS NOT @service_tier
+              AND (service_tier IS NOT @service_tier OR @explicit_tier = 1)
         `).run({
             id,
             namespace,
             service_tier: serviceTier,
+            explicit_tier: options?.explicitCodexTier === true ? 1 : 0,
             updated_at: now,
             touch_updated_at: touchUpdatedAt ? 1 : 0
         })

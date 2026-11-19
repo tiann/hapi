@@ -327,7 +327,12 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             reservations.set(key(connection, request), { root, resumeId: request.method === 'thread/resume' ? threadId : undefined,
                 serviceTierExplicit: params.serviceTier !== undefined ? true : request.method === 'thread/resume' ? undefined : false });
             return { ...request, params: root.config({ ...resolved, ...(request.method === 'thread/fork' ? { deferGoalContinuation: true } : {}) }) };
-        } catch (error) { prepared.delete(root); await root.close(true); throw error; }
+        } catch (error) {
+            const binding = runtime.sessions[root.session.sessionId];
+            if (binding) binding.active = false;
+            runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== root.session.sessionId);
+            await persist(); prepared.delete(root); await root.close(false); throw error;
+        }
     });
     const after = (request: Envelope, response: Envelope, connection: string): Promise<void | Envelope[]> => operation(async () => {
         const reservation = reservations.get(key(connection, request)); reservations.delete(key(connection, request));

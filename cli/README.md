@@ -38,9 +38,10 @@ check. A detected thread/catalog provider mismatch is an error, not a downgrade.
 An untouched tier continues to inherit the native account default, including
 after cold resume. HAPI stores explicit tier intent separately from the effective
 tier displayed by Codex. Cold resume explicitly re-resolves an inherited tier from
-current configuration instead of keeping a native settings snapshot. Codex 0.170+
-uses provider-scoped model discovery and retains the saved provider independently
-of model/reasoning overrides; older versions use the startup catalog context.
+current configuration instead of keeping a native settings snapshot. Codex 0.169+
+uses provider-scoped model discovery; 0.166+ retains the saved provider independently
+of model/reasoning overrides. Versions before 0.164 use the startup catalog context.
+Reloading unscoped catalogs on 0.164–0.168 cannot be verified from that snapshot.
 An unknown native version or catalog identity leaves eligibility unverified.
 If native launch configuration discards explicit Ultrafast, HAPI confirms Standard
 and reports that outcome as well.

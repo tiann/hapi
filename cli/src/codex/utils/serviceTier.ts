@@ -5,10 +5,9 @@ export const ULTRAFAST_FALLBACK_NOTICE = 'Ultrafast was not advertised by the cu
 export const ULTRAFAST_DISABLED_NOTICE = 'Ultrafast is disabled in the current Codex configuration; changed to Standard.';
 
 /** Selected tier notifications do not prove the native execution feature is enabled. */
-export async function isUltrafastEnabled(client: Pick<CodexAppServerClient, 'request'>, threadId: string): Promise<boolean> {
+export async function isUltrafastEnabled(client: Pick<CodexAppServerClient, 'request'>, threadId: string, deadline = Date.now() + 10_000): Promise<boolean> {
     const seen = new Set<string>();
     let cursor: string | undefined;
-    const deadline = Date.now() + 10_000;
     do {
         const remaining = deadline - Date.now();
         if (remaining <= 0) throw new Error('Codex feature discovery timed out; settings were not changed');
