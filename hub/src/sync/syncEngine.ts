@@ -2180,7 +2180,17 @@ export class SyncEngine {
                 { touchUpdatedAt: false })
             this.sessionCache.refreshSession(actualSessionId)
         }
-        this.sessionCache.markMessageQueued(actualSessionId, Date.now(), activeTurnStartedAt)
+        // A future-scheduled message is deliberately withheld from the CLI by
+        // `MessageService.sendMessage`, so the agent has not been given the
+        // reply yet. Marking it queued would start a thinking turn that nothing
+        // ends, and (#1717) clear the blocked footer for a blocker the operator
+        // has not actually answered — cancelling the schedule would leave it
+        // erased. The matured-scheduled path marks it queued when it really is.
+        const futureScheduled = typeof payload.scheduledAt === 'number'
+            && payload.scheduledAt > Date.now()
+        if (!futureScheduled) {
+            this.sessionCache.markMessageQueued(actualSessionId, Date.now(), activeTurnStartedAt)
+        }
         this.sessionCache.recordSessionActivity(actualSessionId, Date.now())
     }
 

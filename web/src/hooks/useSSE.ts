@@ -6,6 +6,7 @@ import {
     computePendingRequestKinds,
     computePendingRequests,
     computePendingRequestsCount,
+    computePendingRequestsNewestAt,
     computeTodoProgress,
     isObject,
     toSessionSummary,
@@ -571,6 +572,13 @@ export function useSSE(options: {
                     nextSummary.pendingRequestsCount = computePendingRequestsCount(patch.agentState.value)
                     nextSummary.pendingRequestKinds = computePendingRequestKinds(patch.agentState.value)
                     nextSummary.pendingRequests = computePendingRequests(patch.agentState.value, nextSummary.updatedAt)
+                    // Recomputed with the rest: `pendingRequests` is capped, so a
+                    // stale watermark would keep a prompt that arrived after an
+                    // acknowledgement suppressed until the next full refresh.
+                    nextSummary.pendingRequestsNewestAt = computePendingRequestsNewestAt(
+                        patch.agentState.value,
+                        nextSummary.updatedAt
+                    )
                     nextSummary.agentStateVersion = patch.agentState.version
                 }
                 if (patch.metadata !== undefined && patch.metadata.version >= current.metadataVersion) {

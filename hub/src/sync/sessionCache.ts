@@ -2427,6 +2427,25 @@ export class SessionCache {
             }
         }
 
+        // #1717: the acknowledgement has to follow the requests it silences.
+        // The merge above moves the source's pending requests onto the target
+        // with their original `createdAt`, so without the watermark a prompt
+        // the operator already dismissed reads as newer-than-nothing and goes
+        // straight back to blocking. Keep the later of the two acks, so a
+        // genuinely newer request on either side still blocks.
+        const oldAckAt = oldStored.blockedAckAt
+        if (oldAckAt !== null) {
+            const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
+            const targetAckAt = latest?.blockedAckAt ?? null
+            if (latest && (targetAckAt === null || oldAckAt > targetAckAt)) {
+                this.store.sessions.setSessionBlockedAck(
+                    newSessionId,
+                    { at: oldAckAt, reason: oldStored.blockedAckReason ?? '' },
+                    namespace
+                )
+            }
+        }
+
         if (oldStored.teamState !== null && oldStored.teamStateUpdatedAt !== null) {
             this.store.sessions.setSessionTeamState(
                 newSessionId,

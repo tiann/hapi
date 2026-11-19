@@ -3585,6 +3585,14 @@ export function SessionList(props: {
             setSearchQuery('')
             setMachineFilter(null)
             setListView({ status: 'all', unreadOnly: false })
+            // The transient lenses (#2376) and the date range narrow
+            // `sessionFilteredSessions` too, so a blocked row they exclude never
+            // mounts and the pending-scroll effect has nothing to travel to.
+            setShowActiveOnly(false)
+            setShowWorkingOnly(false)
+            setShowScratchlistOnly(false)
+            setCustomStart('')
+            setCustomEnd('')
         }
         // A globally pinned blocked row lives in the Pinned section, not the
         // Blocked one — expand both or the jump lands on a zero-height row
