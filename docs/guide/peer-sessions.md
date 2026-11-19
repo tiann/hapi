@@ -17,6 +17,8 @@ The agent does this through four MCP tools that HAPI adds to the session. The sa
 | `ping_peer` | `hapi ping-peer <id> <message>` | Send a message to another session. |
 | `spawn_peer` | `hapi spawn-peer --dir PATH --name TITLE <message>` | Create a new session and deliver its first message (the remit). |
 
+Scripts and non-Node hosts can also call the MCP tools directly with `hapi peer-tool <tool>`: JSON arguments on stdin, the MCP tool result as JSON on stdout. See [CLI reference](./cli-reference.md#peer-sessions).
+
 Sessions are addressed by id or a unique id prefix (8 characters is usually enough; the full UUID is best). Titles are only labels — the tools and the agent's instructions treat the UUID as the identity, so renaming a session never breaks a reference.
 
 Inside a session, prefer the MCP tools. The shell commands use the CLI's own hub URL and token (`HAPI_API_URL` / `CLI_API_TOKEN`, or `~/.hapi/settings.json` from `hapi auth login`); on a runner that talks to a hub on another host, `list_peers` already works with the session's credentials while `hapi ping-peer --list` needs that configuration. See [Installation → Split hub + remote runner](./installation.md#split-hub-remote-runner-peer-discovery).
