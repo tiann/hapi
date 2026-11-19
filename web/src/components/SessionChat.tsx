@@ -44,7 +44,7 @@ import {
     isDictateHotkeyBlockedTarget,
     isDictateToggleHotkey,
 } from '@/lib/composerDictateShortcut'
-import { codexModelAdvertisesFastTier, getEffectiveCodexServiceTier } from '@/components/AssistantChat/codexFastMode'
+import { codexModelAdvertisesFastTier, codexModelAdvertisesUltrafastTier, getEffectiveCodexServiceTier } from '@/components/AssistantChat/codexFastMode'
 import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { resolvePendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
@@ -2771,6 +2771,7 @@ function SessionChatInner(props: SessionChatProps) {
                                 : handleEffortChange
                         }
                         serviceTier={effectiveCodexServiceTier}
+                        ultrafastAvailable={codexModelAdvertisesUltrafastTier(props.session.model, codexModelsState.models)}
                         onServiceTierChange={
                             agentFlavor === 'codex'
                                 && props.session.active

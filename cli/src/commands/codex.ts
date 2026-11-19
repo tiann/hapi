@@ -12,9 +12,9 @@ import { resolveSharedCodex } from '@/codex/shared/launch'
 
 // Mirror the web /service-tier endpoint's enum so the internal resume spawn
 // path can never seed/persist an unsupported tier string.
-function parseServiceTier(value: string): 'fast' | 'standard' {
+function parseServiceTier(value: string): 'fast' | 'standard' | 'ultrafast' {
     const normalized = value.trim().toLowerCase()
-    if (normalized === 'fast' || normalized === 'standard') {
+    if (normalized === 'fast' || normalized === 'standard' || normalized === 'ultrafast') {
         return normalized
     }
     throw new Error('Invalid --service-tier value')

@@ -15,7 +15,7 @@ type SpawnInput = {
     permissionMode?: PermissionMode
     sessionType?: 'simple' | 'worktree'
     worktreeName?: string
-    serviceTier?: 'fast' | 'standard'
+    serviceTier?: 'fast' | 'standard' | 'ultrafast'
     collaborationMode?: CodexCollaborationMode
     copilotAgentMode?: CopilotAgentMode
     startingMode?: 'remote' | 'pty'

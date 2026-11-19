@@ -1,3 +1,5 @@
+import { fromCodexServiceTier, toCodexServiceTier } from '@hapi/protocol';
+import { assertUltrafastAvailable } from '../utils/serviceTier';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -40,7 +42,7 @@ const SettingsSchema = z.object({
     permissionMode: z.enum(['default', 'read-only', 'autoReview', 'yolo']).optional(),
     model: z.string().min(1).optional(), modelReasoningEffort: z.string().nullable().optional(),
     collaborationMode: z.enum(['default', 'plan']).optional(),
-    serviceTier: z.enum(['fast', 'standard']).nullable().optional(),
+    serviceTier: z.enum(['fast', 'standard', 'ultrafast']).nullable().optional(),
     personality: z.enum(['friendly', 'pragmatic', 'none']).optional()
 });
 
@@ -363,7 +365,7 @@ export class SharedCodexRoot {
             modelReasoningEffort: string(value.effort ?? value.reasoningEffort) ?? null,
             ...(sandbox ? { permissionMode: sandbox === 'dangerFullAccess' ? 'yolo' : sandbox === 'readOnly' ? 'read-only'
                 : this.settingsNative.approvalsReviewer === 'auto_review' ? 'autoReview' : 'default' } : {}),
-            ...('serviceTier' in value ? { serviceTier: value.serviceTier === 'priority' ? 'fast' : 'standard' } : {}),
+            ...('serviceTier' in value ? { serviceTier: fromCodexServiceTier(value.serviceTier) } : {}),
             ...('collaborationMode' in value ? { collaborationMode: record(value.collaborationMode).mode === 'plan' ? 'plan' as const : 'default' as const } : {})
         };
         for (const listener of this.settingsListeners) listener();
@@ -572,6 +574,9 @@ export class SharedCodexRoot {
     }
     async applySettings(raw: unknown): Promise<{ applied: RuntimeSettings }> {
         const config = SettingsSchema.parse(raw);
+        if (config.serviceTier === 'ultrafast' || config.model && this.settings.serviceTier === 'ultrafast' && config.serviceTier === undefined) {
+            await assertUltrafastAvailable(this.client, config.model ?? this.settings.model);
+        }
         if (Object.keys(config).length === 0) return { applied: this.settings };
         if (typeof config.modelReasoningEffort === 'string') config.modelReasoningEffort = parseReasoningEffortValue(config.modelReasoningEffort);
         if (config.modelReasoningEffort === null) {
@@ -592,7 +597,7 @@ export class SharedCodexRoot {
             ...(config.model ? { model: config.model } : {}),
             ...(config.personality ? { personality: config.personality } : {}),
             ...(config.modelReasoningEffort !== undefined ? { effort: config.modelReasoningEffort } : {}),
-            ...(config.serviceTier !== undefined ? { serviceTier: config.serviceTier === 'fast' ? 'priority' : null } : {}),
+            ...(config.serviceTier !== undefined ? { serviceTier: toCodexServiceTier(config.serviceTier) ?? null } : {}),
             ...(permission ? { approvalPolicy: permission.approvalPolicy, sandboxPolicy: permission.sandboxPolicy,
                 approvalsReviewer: config.permissionMode === 'autoReview' ? 'auto_review' : 'user' } : {}),
             ...(config.collaborationMode ? { collaborationMode: { mode: config.collaborationMode, settings: {

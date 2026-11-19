@@ -5,7 +5,7 @@ import { apiErrorMessage } from '@/api/client'
 import type { CodexDuplicateSessionGroup, CodexLocalSessionSummary, Machine, OpencodeLocalSessionSummary, PiLocalSessionSummary } from '@/types/api'
 import { CREATABLE_AGENT_FLAVORS, resolveHapiYoloPermissionMode, getAgyModelChoices, splitAgyModelSelection, getClaudeEffortLevelsForModel, resolveClaudeEffortForModel } from '@hapi/protocol'
 import type { AgentAvailabilityEntry, CodexCollaborationMode, GrokPermissionMode, PermissionMode, CopilotAgentMode } from '@hapi/protocol'
-import { codexModelAdvertisesFastTier } from '@/components/AssistantChat/codexFastMode'
+import { codexModelAdvertisesFastTier, codexModelAdvertisesUltrafastTier } from '@/components/AssistantChat/codexFastMode'
 import { usePlatform } from '@/hooks/usePlatform'
 import { useMachinePathsExists } from '@/hooks/useMachinePathsExists'
 import { useSpawnSession } from '@/hooks/mutations/useSpawnSession'
@@ -555,6 +555,8 @@ export function NewSession(props: {
             setModel('auto')
         }
     }, [agent, codexModelsState.error, codexModelsState.isLoading, codexModelsState.models, model])
+    const showCodexUltrafastMode = agent === 'codex' && !codexModelsState.error
+        && codexModelAdvertisesUltrafastTier(model === 'auto' ? null : model, codexModelsState.models)
     const showCodexFastMode = agent === 'codex'
         && !codexModelsState.error
         && codexModelAdvertisesFastTier(model === 'auto' ? null : model, codexModelsState.models)
@@ -566,10 +568,10 @@ export function NewSession(props: {
         if (agent === 'codex' && codexModelsState.isLoading) {
             return
         }
-        if (!showCodexFastMode && serviceTier !== 'standard') {
+        if ((!showCodexFastMode && serviceTier !== 'standard') || (serviceTier === 'ultrafast' && !showCodexUltrafastMode)) {
             setServiceTier('standard')
         }
-    }, [agent, codexModelsState.isLoading, showCodexFastMode, serviceTier])
+    }, [agent, codexModelsState.isLoading, showCodexFastMode, showCodexUltrafastMode, serviceTier])
     const cursorModelsState = useCursorModelsForMachine({
         api: props.api,
         machineId,
@@ -2270,7 +2272,7 @@ export function NewSession(props: {
             && model !== 'auto'
             && piModelsState.isLoading)
     const fastModeSelectionPending = agent === 'codex'
-        && serviceTier === 'fast'
+        && serviceTier !== 'standard'
         && codexModelsState.isLoading
     const canCreate = Boolean(
         machineId
@@ -2595,6 +2597,7 @@ export function NewSession(props: {
             />
             <FastModeSelector
                 visible={showCodexFastMode}
+                ultrafastAvailable={showCodexUltrafastMode}
                 value={serviceTier}
                 isDisabled={isFormDisabled}
                 onChange={setServiceTier}

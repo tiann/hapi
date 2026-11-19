@@ -32,6 +32,7 @@ describe('shared launch configuration', () => {
         expect(sharedLaunchConfig({}, '/tmp').threadParams.config).not.toHaveProperty('model_reasoning_effort');
         expect(sharedLaunchConfig({ serviceTier: 'standard' }, '/tmp').threadParams.serviceTier).toBeNull();
         expect(sharedLaunchConfig({ serviceTier: 'fast' }, '/tmp').threadParams.serviceTier).toBe('priority');
+        expect(sharedLaunchConfig({ serviceTier: 'ultrafast' }, '/tmp').threadParams.serviceTier).toBe('ultrafast');
     });
     it('normalizes short flags, forwards configuration and resolves cwd exactly once', () => {
         const result = sharedLaunchConfig({ codexArgs: ['-C', 'project', '-mcustom', '-a', 'never', '--search', '--add-dir', '../extra', '-c', 'model_reasoning_effort="high"'] }, '/tmp');

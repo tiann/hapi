@@ -1,3 +1,4 @@
+import { toCodexServiceTier } from '@hapi/protocol';
 import type { EnhancedMode } from '../loop';
 import type { CodexCliOverrides } from './codexCliOverrides';
 import type { CodexMcpServersConfig } from './codexMcpServers';
@@ -71,29 +72,8 @@ function resolveSandboxPolicyOverride(value: CodexCliOverrides['sandbox'] | unde
     }
 }
 
-// The Codex model catalog advertises the Fast tier with request id `'priority'`
-// (display name "Fast"); OpenAI's docs confirm the legacy `service_tier = "fast"`
-// maps to the request value `priority`. The app-server `serviceTier` override is
-// a raw request value and does not validate unknown strings, so sending `'fast'`
-// would be silently ignored — we must send the advertised `'priority'` id.
-const APP_SERVER_FAST_TIER = 'priority';
-
-/**
- * Translate HAPI's stored service-tier representation into the Codex
- * app-server `serviceTier` field for thread/turn params:
- * - `'fast'`     → `'priority'`  (the advertised Fast tier request value)
- * - `'standard'` → `null`        (explicit Standard tier)
- * - anything else / untouched → `undefined` (omit; use account default)
- */
-function toAppServerServiceTier(stored: string | null | undefined): string | null | undefined {
-    if (stored === 'fast') {
-        return APP_SERVER_FAST_TIER;
-    }
-    if (stored === 'standard') {
-        return null;
-    }
-    return undefined;
-}
+// Preserve the native Ultrafast id and HAPI's explicit Standard/default semantics.
+const toAppServerServiceTier = toCodexServiceTier;
 
 export function supportsReasoningSummary(model: string | undefined): boolean {
     const normalized = model?.trim().toLowerCase();

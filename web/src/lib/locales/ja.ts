@@ -1380,6 +1380,7 @@ export default {
   'misc.effort': '推論強度',
   'misc.fastMode': '高速モード',
   'misc.fastModeStandard': '標準',
+  'misc.fastModeUltrafast': 'Ultrafast',
   'misc.fastModeFast': '高速',
   'misc.variant': 'バリアント',
   'misc.changeModel': 'モデルを変更…',

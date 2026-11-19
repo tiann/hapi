@@ -510,7 +510,7 @@ export function SessionHeader(props: {
                             ) : null}
                             {headerMetadata.fastMode && showFastBadge ? (
                                 <span data-testid="session-header-fast" className="text-[#34C759]">
-                                    fast
+                                    {(props.serviceTier ?? session.serviceTier) === 'ultrafast' ? 'ultrafast' : 'fast'}
                                 </span>
                             ) : null}
                             {createdAtLabel ? <span>{headerMetadata.showLabels ? `${t('session.header.createdAt')}: ` : ''}{createdAtLabel}</span> : null}

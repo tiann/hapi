@@ -1266,7 +1266,7 @@ export class ApiClient {
         worktreeName?: string,
         effort?: string,
         permissionMode?: PermissionMode,
-        serviceTier?: 'fast' | 'standard',
+        serviceTier?: 'fast' | 'standard' | 'ultrafast',
         collaborationMode?: CodexCollaborationMode,
         copilotAgentMode?: CopilotAgentMode,
         startingMode?: 'remote' | 'pty'

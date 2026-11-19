@@ -347,6 +347,7 @@ export function HappyComposer(props: {
     /** Codex Fast mode (service tier): current value ('fast' or null/standard). */
     serviceTier?: string | null
     /** When provided, a Fast-mode toggle renders (Codex GPT-5.5 / GPT-5.4 only). */
+    ultrafastAvailable?: boolean
     onServiceTierChange?: (serviceTier: string | null) => void
     onSwitchToRemote?: () => void
     onTerminal?: () => void
@@ -461,6 +462,7 @@ export function HappyComposer(props: {
         onEffortChange,
         serviceTier: rawServiceTier,
         onServiceTierChange,
+        ultrafastAvailable = false,
         onSwitchToRemote,
         onTerminal,
         terminalUnsupported = false,
@@ -1710,8 +1712,9 @@ export function HappyComposer(props: {
     // distinctly from an untouched/account-default session.
     const fastModeOptions: Array<{ value: string; label: string }> = useMemo(() => [
         { value: 'standard', label: t('misc.fastModeStandard') },
-        { value: 'fast', label: t('misc.fastModeFast') }
-    ], [t])
+        { value: 'fast', label: t('misc.fastModeFast') },
+        ...(ultrafastAvailable ? [{ value: 'ultrafast', label: t('misc.fastModeUltrafast') }] : [])
+    ], [t, ultrafastAvailable])
 
     const showCollaborationSettings = Boolean(onCollaborationModeChange && collaborationModeOptions.length > 0)
     const showCopilotAgentModeSettings = Boolean(onCopilotAgentModeChange && copilotAgentModeOptions.length > 0)

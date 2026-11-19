@@ -1,3 +1,4 @@
+import { assertUltrafastAvailable } from '../utils/serviceTier';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdir, mkdtemp, chmod, rm, realpath } from 'node:fs/promises';
@@ -246,6 +247,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         await notifyRunnerSessionStarted(root.session.sessionId, { ...(root.session.getMetadata() ?? root.bootstrap.metadata), hostStartMarker: root.bootstrap.metadata.hostStartMarker });
     };
     const create = (method: 'thread/start' | 'thread/fork', params: Record<string, unknown>, parent?: SharedCodexRoot, initialOptions?: SharedLaunchOptions): Promise<SharedCodexRoot> => operation(async () => {
+        if (params.serviceTier === 'ultrafast') await assertUltrafastAvailable(control, params.model);
         const root = await prepare(string(params.cwd) ?? launch.cwd, undefined, parent);
         let nativeSucceeded = false;
         try {
@@ -397,6 +399,9 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 const root = await prepare(launch.cwd, existing);
                 await reserveRecord(root, threadId); return root;
             });
+            if (launch.threadParams.serviceTier === 'ultrafast') {
+                await assertUltrafastAvailable(control, launch.threadParams.model ?? thread.model);
+            }
             const params = root.config({ ...launch.threadParams, threadId, excludeTurns: true });
             let response: Record<string, unknown>;
             try {

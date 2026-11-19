@@ -1435,6 +1435,7 @@ export default {
   'misc.effort': 'Effort',
   'misc.fastMode': 'Fast Mode',
   'misc.fastModeStandard': 'Standard',
+  'misc.fastModeUltrafast': 'Ultrafast',
   'misc.fastModeFast': 'Fast',
   'misc.variant': 'Variant',
   'misc.changeModel': 'Change model…',

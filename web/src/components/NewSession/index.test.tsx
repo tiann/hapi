@@ -109,6 +109,7 @@ vi.mock('@/hooks/queries/useCodexModels', () => ({
                 serviceTiers: ['fast'],
                 supportedReasoningEfforts: ['low', 'high', 'xhigh']
             },
+            { id: 'gpt-6.2-sol', displayName: 'GPT-6.2 Sol', isDefault: false, serviceTiers: ['priority', 'ultrafast'], supportedReasoningEfforts: ['high'] },
             {
                 id: 'gpt-5.6-terra',
                 displayName: 'GPT-5.6 Terra',
@@ -548,6 +549,20 @@ describe('NewSession launch preferences', () => {
             expect(screen.getByTestId('reasoning')).toHaveTextContent('xhigh')
             expect(screen.getByTestId('permission-mode')).toHaveTextContent('default')
         })
+    })
+
+    it('launches an advertised Ultrafast model and remembers its distinct tier', async () => {
+        savePreferredAgent('codex')
+        savePreferredLaunchSettings('machine-1', 'codex', { model: 'gpt-6.2-sol', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'high', serviceTier: 'ultrafast' })
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'ultra-session' })
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        const tier = await screen.findByRole('combobox', { name: 'newSession.fastMode' })
+        expect(tier).toHaveValue('ultrafast')
+        expect(screen.getByRole('option', { name: 'misc.fastModeUltrafast' })).toBeInTheDocument()
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-6.2-sol', serviceTier: 'ultrafast' })))
+        expect(loadPreferredLaunchSettings('machine-1', 'codex')?.serviceTier).toBe('ultrafast')
     })
 
     it('remembers fast mode after a successful Codex launch and restores it on the same machine', async () => {

@@ -1,3 +1,4 @@
+import { toCodexServiceTier } from '@hapi/protocol';
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import { z } from 'zod';
@@ -142,7 +143,7 @@ export function sharedLaunchConfig(options: SharedLaunchOptions, cwd: string): {
         threadParams: {
             ...(model ? { model } : {}),
             ...(provider ? { modelProvider: provider } : {}),
-            ...(options.serviceTier ? { serviceTier: options.serviceTier === 'fast' ? 'priority' : null } : {}),
+            ...(options.serviceTier ? { serviceTier: toCodexServiceTier(options.serviceTier) } : {}),
             ...(overrides.approvalPolicy ? { approvalPolicy: overrides.approvalPolicy } : {}),
             ...(overrides.sandbox ? { sandbox: overrides.sandbox } : {}),
             ...(autoReview ? { approvalPolicy: 'on-request', approvalsReviewer: 'auto_review', sandbox: 'workspace-write' } : {}),

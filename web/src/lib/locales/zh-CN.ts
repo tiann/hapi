@@ -1433,6 +1433,7 @@ export default {
   'misc.effort': '推理强度',
   'misc.fastMode': '快速模式',
   'misc.fastModeStandard': '标准',
+  'misc.fastModeUltrafast': 'Ultrafast',
   'misc.fastModeFast': '快速',
   'misc.variant': '变体',
   'misc.changeModel': '更换模型…',

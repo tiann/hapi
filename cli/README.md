@@ -23,6 +23,16 @@ Choose a supported coding agent from your terminal and control its sessions remo
 
 ## Commands
 
+### Codex service tiers
+
+Codex sessions offer Standard, Fast (`priority`), and Ultrafast (`ultrafast`).
+Ultrafast appears only when the selected model advertises it in the current
+account catalog; model name or subscription alone is not proof of availability.
+Use `/ultrafast [on|off|status]` in chat or `--service-tier ultrafast` on launch.
+Unsupported model/account combinations are rejected before native settings or
+thread creation; switch to Standard or Fast before selecting an unsupported model.
+An untouched tier continues to inherit the native account default.
+
 ### Session commands
 
 - `hapi` - Choose an agent interactively. Unavailable agents are shown with a reason and cannot be selected.

@@ -156,7 +156,7 @@ export function loadPreferredLaunchSettings(
             modelReasoningEffort: typeof parsed.modelReasoningEffort === 'string'
                 ? parsed.modelReasoningEffort
                 : 'default',
-            ...(agent === 'codex' && (parsed.serviceTier === 'fast' || parsed.serviceTier === 'standard')
+            ...(agent === 'codex' && (parsed.serviceTier === 'fast' || parsed.serviceTier === 'standard' || parsed.serviceTier === 'ultrafast')
                 ? { serviceTier: parsed.serviceTier } : {}),
             ...(permissionMode ? { permissionMode } : {})
         }

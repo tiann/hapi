@@ -1262,6 +1262,7 @@ export default {
   'misc.effort': 'Уровень рассуждений',
   'misc.fastMode': 'Быстрый режим',
   'misc.fastModeStandard': 'Стандартный',
+  'misc.fastModeUltrafast': 'Ultrafast',
   'misc.fastModeFast': 'Быстрый',
   'misc.variant': 'Вариант',
   'misc.changeModel': 'Сменить модель…',

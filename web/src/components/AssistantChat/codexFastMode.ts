@@ -1,3 +1,4 @@
+import { codexModelHasUltrafastTier } from '@hapi/protocol'
 // Codex Fast mode (service tier) availability is advertised per-model by the
 // Codex app-server `model/list` catalog, which is resolved server-side from the
 // user's account/auth/plan. An API-key session (no Fast credits) or a model
@@ -13,7 +14,7 @@ type CodexModelCatalogEntry = {
 }
 
 function isFastTierId(tierId: string): boolean {
-    return /fast/i.test(tierId.trim())
+    return /^(fast|priority|ultrafast)$/i.test(tierId.trim())
 }
 
 /**
@@ -47,8 +48,15 @@ export function codexModelAdvertisesFastTier(
     return Boolean(active?.serviceTiers?.some(isFastTierId))
 }
 
+export function codexModelAdvertisesUltrafastTier(
+    sessionModel: string | null | undefined,
+    models: ReadonlyArray<CodexModelCatalogEntry>
+): boolean {
+    return codexModelHasUltrafastTier(findActiveModel(sessionModel, models))
+}
+
 export function isFastServiceTier(serviceTier?: string | null): boolean {
-    return /^(fast|priority)$/i.test(serviceTier?.trim() ?? '')
+    return /^(fast|priority|ultrafast)$/i.test(serviceTier?.trim() ?? '')
 }
 
 export function getEffectiveCodexServiceTier(
@@ -64,6 +72,7 @@ export function getEffectiveCodexServiceTier(
  * current two-option control still needs a visible selection, so display that
  * untouched state as Standard without changing the value sent to the backend.
  */
-export function getDisplayedCodexServiceTier(serviceTier?: string | null): 'standard' | 'fast' {
+export function getDisplayedCodexServiceTier(serviceTier?: string | null): 'standard' | 'fast' | 'ultrafast' {
+    if (serviceTier?.trim().toLowerCase() === 'ultrafast') return 'ultrafast'
     return isFastServiceTier(serviceTier) ? 'fast' : 'standard'
 }

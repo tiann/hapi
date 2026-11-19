@@ -33,6 +33,7 @@ vi.mock('../codexAppServerClient', () => ({
         async initialize() { this.initialized = true; }
         isInitialized() { return this.initialized; }
         async disconnect() { this.initialized = false; }
+        async listModels() { return { data: [{ id: 'mock', isDefault: true, serviceTiers: [{ id: 'ultrafast' }] }, { id: 'standard-only' }] }; }
         async request(method: string, params: Record<string, unknown> = {}) {
             if (method === 'thread/read' || method === 'thread/resume') return { ...this.settings, thread: structuredClone(this.thread) };
             if (method === 'thread/list') return { data: [] };
@@ -1391,4 +1392,16 @@ it('splits queued user messages across a settings-changing slash command', async
     expect(texts[0]).not.toContain('done');
     expect(texts[0]).toContain('hello');
     expect(texts[1]).toContain('done');
+});
+
+
+describe('Ultrafast native settings', () => {
+    it('preserves the native tier, permits explicit Standard and refuses unsupported model switches', async () => {
+        const f = await fixture();
+        expect((await f.root.applySettings({ serviceTier: 'ultrafast' })).applied.serviceTier).toBe('ultrafast');
+        expect(f.root.client).toMatchObject({ settings: { serviceTier: 'ultrafast' } });
+        await expect(f.root.applySettings({ model: 'standard-only' })).rejects.toThrow('not available');
+        expect((await f.root.applySettings({ model: 'standard-only', serviceTier: 'standard' })).applied.serviceTier).toBe('standard');
+        expect(f.root.client).toMatchObject({ settings: { serviceTier: null } });
+    });
 });

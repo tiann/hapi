@@ -69,7 +69,7 @@ export function loadNewSessionFormDraft(): NewSessionFormDraft | null {
             modelReasoningEffort: agentPreserved
                 ? ((parsed.modelReasoningEffort as CodexReasoningEffort | undefined) ?? 'default')
                 : 'default',
-            serviceTier: agentPreserved && parsed.serviceTier === 'fast' ? 'fast' : 'standard',
+            serviceTier: agentPreserved && (parsed.serviceTier === 'fast' || parsed.serviceTier === 'ultrafast') ? parsed.serviceTier : 'standard',
             collaborationMode: agentPreserved && parsed.collaborationMode === 'plan' ? 'plan' : 'default',
             copilotAgentMode: agentPreserved
                 ? normalizeCopilotAgentMode(parsed.copilotAgentMode)
