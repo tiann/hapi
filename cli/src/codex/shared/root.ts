@@ -79,6 +79,9 @@ export class SharedCodexRoot {
     private archiveAttempt?: Promise<void>;
     private archiveRecovery?: Promise<boolean>;
     private readonly projectingHistory = new Set<Promise<void>>();
+    private readonly attachedChildBackfills = new Set<{
+        threadId: string; projection: SharedCodexProjection; signal: AbortSignal;
+    }>();
     private interrupted = false;
     private closed = false;
     private stopping = false;
@@ -262,6 +265,19 @@ export class SharedCodexRoot {
         this.projectingHistory.add(pending);
         try { await pending; } finally { this.projectingHistory.delete(pending); }
     }
+
+    private async backfillAttachedChild(threadId: string, projection: SharedCodexProjection, signal: AbortSignal): Promise<void> {
+        if (signal.aborted) return;
+        const backfill = { threadId, projection, signal };
+        this.attachedChildBackfills.add(backfill);
+        try {
+            await this.projectHistory(projection, await this.readThread(threadId, false, signal), signal);
+        } catch (error) {
+            if (!signal.aborted) throw error;
+        } finally {
+            this.attachedChildBackfills.delete(backfill);
+        }
+    }
     private async receiveRequest(request: { id: string | number; method: string; params: unknown }): Promise<void> {
         await this.bound;
         if (this.closed || this.stopping) return;
@@ -429,11 +445,7 @@ export class SharedCodexRoot {
             }
             if (this.host.attached && ['turn/started', 'turn/completed'].includes(method)) {
                 const signal = this.historyReplayAbort.signal;
-                try {
-                    await this.projectHistory(projection, await this.readThread(eventThread, false, signal), signal);
-                } catch (error) {
-                    if (!signal.aborted) throw error;
-                }
+                await this.backfillAttachedChild(eventThread, projection, signal);
                 if (signal.aborted && !await this.waitForArchiveRecovery()) return;
             }
             await projection.notification(method, params); return;
@@ -1012,6 +1024,9 @@ export class SharedCodexRoot {
         this.archiveRecovery = recovery.promise;
         let recovered = false;
         const replay = this.historyReplayAbort;
+        const interruptedChildren = new Map([...this.attachedChildBackfills]
+            .filter(backfill => backfill.signal === replay.signal)
+            .map(backfill => [backfill.threadId, backfill.projection]));
         replay.abort();
         const projected = Promise.allSettled(this.projectingHistory);
         const deadline = performance.now() + ARCHIVE_HISTORY_BUDGET_MS;
@@ -1044,10 +1059,12 @@ export class SharedCodexRoot {
                 void projected
                     .then(async () => {
                         if (retrySignal.aborted) return;
-                        if (!this.hubResyncRequired) {
-                            await this.refresh();
-                            if (this.host.attached && this.children.size) await this.refreshChildren(false, retrySignal);
-                        }
+                        await Promise.all([...interruptedChildren].map(([threadId, projection]) =>
+                            this.backfillAttachedChild(threadId, projection, retrySignal).catch(error => {
+                                logger.debug('[Codex shared] child history unavailable after archive failure', { threadId, error });
+                            })));
+                        if (retrySignal.aborted) return;
+                        if (!this.hubResyncRequired) await this.refresh();
                         else if (this.hubResync?.signal !== retrySignal) this.resyncHub();
                     })
                     .catch(error => logger.debug('[Codex shared] history refresh after archive failure', error));

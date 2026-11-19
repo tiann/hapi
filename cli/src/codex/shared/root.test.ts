@@ -499,7 +499,7 @@ it('resumes native child subscriptions when archive interrupts child discovery a
 });
 
 describe('externally attached root', () => {
-    it('restores an interrupted child backfill after Web archive fails without reconnecting', async () => {
+    it('restores an interrupted child backfill after archive fails despite an unreadable sibling', async () => {
         const end = vi.fn(async () => {});
         const f = await fixture({ attached: true, end });
         await f.root.activate();
@@ -512,14 +512,16 @@ describe('externally attached root', () => {
         const entered = Promise.withResolvers<void>();
         const original = f.root.client.request.bind(f.root.client);
         let reads = 0;
-        vi.spyOn(f.root.client, 'request').mockImplementation((method, args) => {
+        const request = vi.spyOn(f.root.client, 'request').mockImplementation((method, args) => {
             const params = args as Record<string, unknown>;
+            if (method === 'thread/read' && params.threadId === 'sibling') return Promise.reject(new Error('sibling offline'));
             if (method === 'thread/read' && params.threadId === 'child') {
                 if (params.includeTurns && ++reads === 1) { entered.resolve(); return oldRead.promise; }
                 return Promise.resolve({ thread: child });
             }
             return original(method, args);
         });
+        f.native.notify('thread/started', { thread: { id: 'sibling', parentThreadId: 'thread' } });
         f.native.notify('thread/started', { thread: child });
         f.native.notify('turn/completed', { threadId: 'child', turn: child.turns[0] });
         try {
@@ -532,6 +534,8 @@ describe('externally attached root', () => {
                 type: 'agent-run-trace', agentId: 'child',
                 message: expect.objectContaining({ message: 'recovered child trace' })
             }), expect.any(String)));
+            expect(request.mock.calls.some(([method, params]) =>
+                method === 'thread/read' && (params as Record<string, unknown>).threadId === 'sibling')).toBe(false);
             expect(end).not.toHaveBeenCalled();
         } finally {
             oldRead.resolve({ thread: child });
