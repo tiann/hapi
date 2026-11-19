@@ -76,6 +76,20 @@ describe('session parent link recording and persistence', () => {
         }
     })
 
+    it('ignores an indented parent heading in the first user message', () => {
+        const { store, engine, receive } = setup()
+        try {
+            const metadata = { path: '/tmp/repo', host: 'mac' }
+            const parent = engine.getOrCreateSession('parent', metadata, null, 'default')
+            const child = engine.getOrCreateSession('child', metadata, null, 'default')
+            receive(child.id, userText(`    ## Parent\n- Orchestrator chip (mandatory): [Lead](/sessions/${parent.id})`))
+            expect(engine.getSession(child.id)?.metadata?.parentSessionId).toBeUndefined()
+        } finally {
+            engine.stop()
+            store.close()
+        }
+    })
+
     it('ignores quoted and leading parent stamps in later user messages', () => {
         const { store, engine, receive } = setup()
         try {

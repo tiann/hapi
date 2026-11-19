@@ -48,7 +48,7 @@ import { isUserInputMessage } from '../store/sessionUserActivity'
 import { EventPublisher, type SyncEventListener } from './eventPublisher'
 import { MachineCache, type Machine } from './machineCache'
 import { MessageService, type RetryIndeterminateMessageResult } from './messageService'
-import { createTitleSuggestionService, extractUserText, type TitleSuggestionService } from './titleSuggestion'
+import { createTitleSuggestionService, extractUntrimmedUserText, type TitleSuggestionService } from './titleSuggestion'
 import { createPromptTitle } from './promptTitle'
 import { resolveForkBoundary, resolveRewindBoundary, invokedTailSeq, type ResolvedBoundary } from './forkBoundary'
 import { buildForkSessionSummary } from './forkSessionSummary'
@@ -2669,9 +2669,9 @@ export class SyncEngine {
             // Merge with CLI metadata using version checks; never overwrite a native binding.
             for (let attempt = 0; attempt < 3; attempt++) {
                 const child = this.sessionCache.refreshSession(childId)
-                if (!child?.metadata) break
+                if (!child?.metadata || child.metadata.conversationBranch?.requestFingerprint !== fingerprint) break
                 const result = this.store.sessions.updateSessionMetadata(childId, {
-                    ...child.metadata, conversationBranch: { ...branch, state: warning ? 'uncertain' : 'started' }
+                    ...child.metadata, conversationBranch: { ...child.metadata.conversationBranch, state: warning ? 'uncertain' : 'started' }
                 }, child.metadataVersion, namespace, { touchUpdatedAt: false })
                 if (result.result !== 'version-mismatch') break
             }
@@ -6539,7 +6539,7 @@ export class SyncEngine {
         if (!session?.metadata || resolveSessionParentLink(session.metadata, sessionId) !== null) return
         const record = unwrapRoleWrappedRecordEnvelope(message.content)
         if (record?.role !== 'user') return
-        const text = extractUserText(record.content)
+        const text = extractUntrimmedUserText(record.content)
         if (!text) return
         const candidateId = extractExplicitParentSessionIdFromRemit(text)
         if (!candidateId || candidateId === sessionId) return

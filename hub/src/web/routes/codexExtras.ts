@@ -2,9 +2,10 @@ import { appendFileSync, existsSync, mkdirSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
-import { AGENT_MESSAGE_PAYLOAD_TYPE, resolveSessionParentLink } from '@hapi/protocol'
+import { AGENT_MESSAGE_PAYLOAD_TYPE, isObject, resolveSessionParentLink } from '@hapi/protocol'
 import type { Store, StoredMessage } from '../../store'
 import { truncateOversizedMessageContent } from '../../store/contentCodec'
+import { mergeSessionMetadataForSessionMerge } from '../../sync/sessionCache'
 import type { SyncEngine } from '../../sync/syncEngine'
 import { collectImportCandidates, type ImportCandidate } from './localSessions/matchContentPrefix'
 
@@ -878,6 +879,18 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
             knownKeys.add(comparableKey)
             appendedMessages.push(copied)
             latestActivity = Math.max(latestActivity, copied.invokedAt ?? copied.createdAt)
+        }
+
+        const donorParent = resolveSessionParentLink(source.metadata, source.sessionId)
+        if (donorParent?.kind === 'peer' && !sessionStates.some(row => row.sessionId === donorParent.parentSessionId)) {
+            const target = options.store.sessions.getSessionByNamespace(canonical.sessionId, options.namespace)
+            if (!target) throw new Error('Duplicate merge target no longer exists')
+            if (!resolveSessionParentLink(isObject(target.metadata) ? target.metadata : null, target.id)) {
+                const merged = mergeSessionMetadataForSessionMerge({ parentSessionId: donorParent.parentSessionId }, target.metadata, target.id)
+                const result = options.store.sessions.updateSessionMetadata(target.id, merged, target.metadataVersion,
+                    options.namespace, { touchUpdatedAt: false, preservePreallocation: true })
+                if (result.result !== 'success') throw new Error('Could not preserve the duplicate session’s parent; retry merge')
+            }
         }
 
         // Transfer outliving jobs before CASCADE delete (store refuses running jobs).
