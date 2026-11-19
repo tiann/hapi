@@ -146,9 +146,12 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             const planThread = plan.runtime.sessions[plan.sessionId].threadId;
             expect(state.sessions.get(plan.sessionId)?.metadata.codexTierConfirmationPending).toBe(true);
             failSettings.mockRestore();
+            await plan.client.request('thread/settings/update', { threadId: planThread, collaborationMode: { mode: 'default', settings: {
+                model: 'gpt-6-astra', reasoning_effort: null, developer_instructions: null
+            } } });
             await plan.client.request('thread/settings/update', { threadId: planThread, serviceTier: null });
             const planSettings = await plan.client.request<{ serviceTier: string; collaborationMode: { mode: string } }>('thread/resume', { threadId: planThread, excludeTurns: true });
-            expect(planSettings.serviceTier).toBe('default'); expect(planSettings.collaborationMode.mode).toBe('plan');
+            expect(planSettings.serviceTier).toBe('default'); expect(planSettings.collaborationMode.mode).toBe('default');
             expect(state.sessions.get(plan.sessionId)?.metadata.codexTierConfirmationPending).toBe(false);
             await observer.request('thread/settings/update', { threadId: child.thread.id, serviceTier: null });
             expect(childSession.metadata.codexTierConfirmationPending).toBe(false);

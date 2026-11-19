@@ -74,16 +74,47 @@ afterEach(async () => {
     finally { vi.useRealTimers(); }
 });
 
+it('registers recovery controls when initial Plan confirmation times out after a confirmed Ultrafast launch', async () => {
+    const f = await fixture();
+    f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' }, true);
+    f.native.settings.serviceTier = 'ultrafast';
+    const original = f.root.client.request.bind(f.root.client);
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/settings/update') return await new Promise<never>(() => {});
+        return original(method, params);
+    });
+    vi.useFakeTimers();
+    try {
+        const activating = f.root.activate({ collaborationMode: 'plan' });
+        await vi.advanceTimersByTimeAsync(25_000); await activating;
+        expect(f.root.needsTierConfirmation).toBe(true);
+        expect(f.rpc.has(RPC_METHODS.SetSessionConfig)).toBe(true);
+        request.mockRestore();
+        await f.rpc.get(RPC_METHODS.SetSessionConfig)!({ serviceTier: 'standard' });
+        expect(f.root.needsTierConfirmation).toBe(false);
+        expect(f.native.settings.collaborationMode).toMatchObject({ mode: 'plan' });
+    } finally { vi.useRealTimers(); }
+});
+
+it('keeps an async question answer retryable while tier admission is paused', async () => {
+    const f = await fixture(); await f.root.activate();
+    f.root.beginTierConfirmation();
+    const request = vi.spyOn(f.root.client, 'request');
+    await expect((f.root as unknown as { submitQuestionAnswer(thread: string, text: string, id: string): Promise<void> })
+        .submitQuestionAnswer('thread', 'answer', 'answer-id')).rejects.toThrow('Retry this answer after recovery');
+    expect(request.mock.calls.some(([method]) => method === 'turn/start' || method === 'turn/steer')).toBe(false);
+});
+
 it('publishes Ultrafast only after an effective snapshot, not a selected-settings notification', async () => {
     const f = await fixture(); await f.root.activate();
-    f.root.acceptSettings({ model: 'mock', serviceTier: 'default' });
+    f.root.acceptSettings({ model: 'mock', serviceTier: 'default' }, true);
     const keepAlive = vi.spyOn(f.session, 'keepAlive');
     f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: { model: 'mock', serviceTier: 'ultrafast' } });
     await f.drain();
     (f.root as unknown as { alive(): void }).alive();
     expect(keepAlive.mock.lastCall?.[2]?.serviceTier).toBe('standard');
     expect(f.root.hasUltrafastTier).toBe(true);
-    f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' });
+    f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' }, true);
     (f.root as unknown as { alive(): void }).alive();
     expect(keepAlive.mock.lastCall?.[2]?.serviceTier).toBe('ultrafast');
 });
@@ -1522,7 +1553,7 @@ describe('Ultrafast native settings', () => {
 it.each([[null, null], ['default', 'standard'], ['priority', 'fast'], ['ultrafast', 'ultrafast']] as const)('keeps inherited native tier %s for display without pinning it on resume or clear', async (nativeTier, hapiTier) => {
     const f = await fixture();
     const heartbeat = vi.spyOn(f.session, 'keepAlive');
-    f.root.acceptSettings({ model: 'mock', serviceTier: nativeTier });
+    f.root.acceptSettings({ model: 'mock', serviceTier: nativeTier }, true);
     await f.root.activate();
     expect(heartbeat.mock.calls.at(-1)?.[2]?.serviceTier).toBe(hapiTier);
     expect(f.metadata().codexServiceTierExplicit).toBe(false);
@@ -1543,7 +1574,7 @@ it('accepts null as an explicit Standard reset rather than account inheritance',
 
 it('preserves settings when an active thread provider differs from the startup catalog', async () => {
     const f = await fixture();
-    f.root.acceptSettings({ model: 'mock', modelProvider: 'other-provider' });
+    f.root.acceptSettings({ model: 'mock', modelProvider: 'other-provider' }, true);
     const request = vi.spyOn(f.root.client, 'request');
     await expect(f.root.applySettings({ serviceTier: 'ultrafast' })).rejects.toThrow('different Codex model provider');
     expect(request.mock.calls.some(([method]) => method === 'thread/settings/update')).toBe(false);
@@ -1551,7 +1582,7 @@ it('preserves settings when an active thread provider differs from the startup c
 
 it('provides Standard recovery before an attached Ultrafast model change with unknown catalog identity', async () => {
     const f = await fixture({ attached: true }); await f.root.activate();
-    f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' });
+    f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' }, true);
     const request = vi.spyOn(f.root.client, 'request');
     await expect(f.root.applySettings({ model: 'standard-only' })).rejects.toThrow('Switch to Standard before changing models');
     expect(request.mock.calls.some(([method]) => method === 'thread/settings/update')).toBe(false);
@@ -1560,19 +1591,19 @@ it('provides Standard recovery before an attached Ultrafast model change with un
 });
 
 it('announces native launch configuration discarding Ultrafast only after confirmed Standard', async () => {
-    const f = await fixture(); f.root.acceptSettings({ model: 'mock', serviceTier: null });
+    const f = await fixture(); f.root.acceptSettings({ model: 'mock', serviceTier: null }, true);
     f.events.mockClear(); await f.root.confirmUltrafastLaunch();
     expect(f.events).toHaveBeenCalledWith({ type: 'message', message: 'Codex did not apply Ultrafast; changed to Standard.' });
     expect(f.root.freshParams().serviceTier).toBe('default');
 });
 it('keeps an actually applied Ultrafast launch without a fallback notice', async () => {
-    const f = await fixture(); f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' });
+    const f = await fixture(); f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' }, true);
     f.events.mockClear(); await f.root.confirmUltrafastLaunch(); expect(f.events).not.toHaveBeenCalled();
 });
 it('uses provider-scoped native discovery for an attached modern engine', async () => {
     const f = await fixture({ attached: true });
     vi.spyOn(f.root.client, 'supportsProviderScopedModels').mockReturnValue(true);
-    f.root.acceptSettings({ model: 'mock', modelProvider: 'provider-a', serviceTier: 'ultrafast' });
+    f.root.acceptSettings({ model: 'mock', modelProvider: 'provider-a', serviceTier: 'ultrafast' }, true);
     const catalog = vi.spyOn(f.root.client, 'listModels');
     expect((await f.root.applySettings({ model: 'mock' })).applied.serviceTier).toBe('ultrafast');
     expect(catalog).toHaveBeenCalledWith({ includeHidden: true, modelProvider: 'provider-a' });
@@ -1631,7 +1662,7 @@ it('falls back from a native Ultrafast selection on an unsupported model', async
     expect(f.events).toHaveBeenCalledWith({ type: 'message', message: 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.' });
 });
 it('preserves inherited intent when only a model change requires Standard fallback', async () => {
-    const f = await fixture(); f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' });
+    const f = await fixture(); f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' }, true);
     await f.root.activate();
     await f.root.applySettings({ model: 'standard-only' });
     expect(f.metadata().codexServiceTierExplicit).toBe(false);
@@ -1652,7 +1683,7 @@ it('rechecks a tier-only model after asynchronous feature discovery', async () =
     expect((await pending).applied).toMatchObject({ model: 'standard-only', serviceTier: 'standard' });
 });
 it('does not add a fallible feature RPC after a native launch already confirmed Ultrafast', async () => {
-    const f = await fixture(); f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' });
+    const f = await fixture(); f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' }, true);
     const request = vi.spyOn(f.root.client, 'request').mockRejectedValue(new Error('feature discovery disconnected'));
     await f.root.confirmUltrafastLaunch();
     expect(request).not.toHaveBeenCalled();
@@ -1700,7 +1731,7 @@ it('reconciles a persisted pending confirmation from an authoritative cold-resum
 it.each([null, 'ultrafast'])('clears restored pending state after successful launch confirmation (%s)', async tier => {
     const f = await fixture();
     f.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: true }));
-    f.root.acceptSettings({ model: 'mock', serviceTier: tier });
+    f.root.acceptSettings({ model: 'mock', serviceTier: tier }, true);
     await f.root.confirmUltrafastLaunch();
     expect(f.metadata().codexTierConfirmationPending).toBe(false);
     expect(f.sessionReady).not.toHaveBeenCalled();
@@ -1767,7 +1798,7 @@ it('preserves accepted explicit tier intent across a later model-only change', a
 });
 it('does not reset a newer Fast choice during model-only native turn discovery', async () => {
     const f = await fixture(); await f.root.activate();
-    f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' });
+    f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' }, true);
     let release!: (value: unknown) => void;
     const catalog = new Promise(resolve => { release = resolve; });
     const models = vi.spyOn(f.root.client, 'listModels').mockImplementationOnce(() => catalog as never);
@@ -1785,7 +1816,7 @@ it('does not overwrite a newer tier notification with a delayed native snapshot'
     const snapshot = new Promise(resolve => { release = resolve; });
     vi.spyOn(f.root.client, 'request').mockImplementationOnce(() => snapshot as never);
     const pending = f.root.confirmNativeTurn({ serviceTier: 'priority' }, true);
-    f.root.acceptSettings({ model: 'mock', serviceTier: 'default' });
+    f.root.acceptSettings({ model: 'mock', serviceTier: 'default' }, true);
     release({ model: 'mock', serviceTier: 'priority' }); await pending;
     expect(f.root.freshParams().serviceTier).toBe('default');
     expect(f.metadata().codexServiceTierExplicit).toBe(true);
@@ -1793,7 +1824,7 @@ it('does not overwrite a newer tier notification with a delayed native snapshot'
 
 it('writes the requested tier instead of confirming an obsolete idempotent snapshot', async () => {
     const f = await fixture(); await f.root.activate();
-    f.root.acceptSettings({ model: 'mock', serviceTier: 'default' });
+    f.root.acceptSettings({ model: 'mock', serviceTier: 'default' }, true);
     let release!: (value: unknown) => void;
     const snapshot = new Promise(resolve => { release = resolve; });
     const original = f.root.client.request.bind(f.root.client);
@@ -1822,7 +1853,7 @@ it.each(['web', 'native', 'turn', 'web-model', 'native-model', 'turn-model'])('c
     const f = await fixture(); await f.root.activate();
     const modelOnly = origin.endsWith('-model');
     if (modelOnly) {
-        f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' });
+        f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' }, true);
         f.native.settings = { ...f.native.settings, serviceTier: 'ultrafast' };
     }
     const original = f.root.client.request.bind(f.root.client);

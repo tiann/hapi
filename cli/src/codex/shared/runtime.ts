@@ -98,7 +98,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         // Never interleave unversioned streams while the root is healthy:
         // an older control packet must not replace a newer root notification.
         const root = roots.get(threadId);
-        if (root && !root.client.isInitialized()) root.acceptSettings(settings);
+        if (root && !root.client.isInitialized()) root.acceptSettings(settings, false);
     });
     let reconnectingControl = false;
     const reconnectControl = () => {
@@ -307,7 +307,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             nativeTurns.set(key(connection, request), { root: queueRoot, ...resolved, explicitTier: params.serviceTier !== undefined });
             return { ...request, params: resolved.params };
         }
-        if (queueRoot && request.method === 'thread/settings/update' && (params.serviceTier !== undefined || (params.model || record(record(params.collaborationMode).settings).model) && queueRoot.hasUltrafastTier)) {
+        if (queueRoot && request.method === 'thread/settings/update' && (params.serviceTier !== undefined || params.collaborationMode !== undefined && queueRoot.needsTierConfirmation || (params.model || record(record(params.collaborationMode).settings).model) && queueRoot.hasUltrafastTier)) {
             if (request.id === undefined) throw new Error('Settings mutations require a JSON-RPC request ID');
             await queueRoot.applyNativeSettings(params);
             return { id: request.id, result: {} };

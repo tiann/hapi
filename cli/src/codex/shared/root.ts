@@ -254,6 +254,7 @@ export class SharedCodexRoot {
             const turnId = threadId === this.threadId ? this.currentTurn
                 : string((Array.isArray(thread?.turns) ? thread.turns.map(record) : []).find(turn => turn.status === 'inProgress')?.id);
             const params = { threadId, clientUserMessageId, input: buildUserInputFromMessage(text) };
+            if (this.closed || this.stopping || this.needsTierConfirmation) throw new Error('Service tier confirmation is pending or execution is stopping. Retry this answer after recovery.');
             await this.client.request(turnId ? 'turn/steer' : 'turn/start', { ...params, ...(turnId ? { expectedTurnId: turnId } : {}) });
         })();
         this.controls.add(operation);
@@ -338,7 +339,7 @@ export class SharedCodexRoot {
             response = record(await this.client.request('thread/resume', { threadId }));
         }
         this.modelProvider = string(response.modelProvider) ?? string(record(response.thread).modelProvider);
-        this.acceptSettings(response); this.acceptSettings(this.host.settingsFor(threadId) ?? {}, false);
+        this.acceptSettings(response, true); this.acceptSettings(this.host.settingsFor(threadId) ?? {}, false);
         if (this.hasConfirmedStandardTier && this.session.getMetadata()?.codexTierConfirmationPending) {
             this.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: false }));
         }
@@ -352,7 +353,14 @@ export class SharedCodexRoot {
         this.session.updateMetadata(metadata => ({ ...metadata, codexServiceTierExplicit: this.serviceTierExplicit, codexTierConfirmationPending: this.tierConfirmationPending }));
         // Restored input cannot run before the cold-resume settings are applied.
         if (!this.host.attached && this.tierConfirmationPending) this.pendingLaunchCollaborationMode = options.collaborationMode;
-        else if (!this.host.attached) await this.initialSettings(options);
+        else if (!this.host.attached) {
+            this.pendingLaunchCollaborationMode = options.collaborationMode;
+            try { await this.initialSettings(options); }
+            catch (error) {
+                if (!this.tierConfirmationPending) throw error;
+                this.notice('Initial settings confirmation is pending. Select a service tier in settings to recover this conversation.');
+            }
+        }
         if (this.stopping) throw new Error('Codex execution is stopping');
         this.registerControls();
         this.ready();
@@ -394,7 +402,7 @@ export class SharedCodexRoot {
         this.publishedPlanId = id;
         this.session.updateAgentState(state => ({ ...state, codexPlanProposalId: id }));
     }
-    acceptSettings(value: Record<string, unknown>, effective = true): void {
+    acceptSettings(value: Record<string, unknown>, effective: boolean): void {
         if (typeof value.model !== 'string') return;
         this.settingsRevision++;
         if ('collaborationMode' in value && 'sandboxPolicy' in value) this.settingsNotification = value;
@@ -606,7 +614,7 @@ export class SharedCodexRoot {
                     const settingsRevision = this.settingsRevision;
                     const response = record(await this.client.request('thread/resume', { threadId: this.threadId, excludeTurns: true }));
                     const observedSettings = this.settingsRevision !== settingsRevision;
-                    this.acceptSettings(response);
+                    this.acceptSettings(response, true);
                     if (!observedSettings) this.acceptSettings(this.host.settingsFor(this.threadId) ?? {}, false);
                     this.projection.reset(); await this.refresh(); this.queue.replay(); await this.refreshChildren(true);
                     return;
@@ -784,7 +792,7 @@ export class SharedCodexRoot {
                 else if (fallbackNotice && this.hasConfirmedStandardTier) this.notice(fallbackNotice);
                 return;
             }
-            this.acceptSettings(snapshot);
+            this.acceptSettings(snapshot, true);
             const model = string(record(record(params.collaborationMode).settings).model) ?? string(params.model);
             const expected = { ...(model ? { model } : {}), ...(params.serviceTier !== undefined ? { serviceTier: params.serviceTier } : {}) };
             if (verifyUltrafast && !this.hasUltrafastTier && this.settings.serviceTier !== 'fast') {
@@ -846,7 +854,7 @@ export class SharedCodexRoot {
         if (settingsMatch(this.settingsNative, comparable)) {
             const revision = this.settingsRevision;
             const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline));
-            if (this.settingsRevision === revision) this.acceptSettings(snapshot);
+            if (this.settingsRevision === revision) this.acceptSettings(snapshot, true);
             if (settingsMatch(this.settingsNative, comparable)) {
                 if (verifyUltrafast) await this.confirmEffectiveUltrafast(deadline, ++this.tierOperationCounter);
                 return;
@@ -878,7 +886,7 @@ export class SharedCodexRoot {
             const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline, true, () => operationId >= this.confirmedTierOperation, operationId));
             if (operationId < this.confirmedTierOperation) throw new Error('Codex settings were superseded by a newer confirmed tier; refresh before retrying');
             if (this.settingsRevision !== revision) continue;
-            this.acceptSettings(snapshot);
+            this.acceptSettings(snapshot, true);
             if (this.hasUltrafastTier) return;
             // A concurrent native client may have deliberately selected Fast.
             if (this.settings.serviceTier === 'fast') return;
