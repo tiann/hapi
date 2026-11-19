@@ -12,7 +12,7 @@ export type ScriptStep =
     | { sendUpdate: Record<string, any> }
     | { rpc: string; params: unknown }
     | { dropConnection: true; backfill?: Record<string, any> }
-    | { forceVersionMismatch: { event: 'update-state' | 'update-metadata'; count: number } }
+    | { forceVersionMismatch: { event: 'update-state' | 'update-metadata'; patch: Record<string, unknown> } }
     | { delayAck: number }
     | { signal: 'SIGTERM' }
 
@@ -31,7 +31,7 @@ export async function fakeHub(out: string, changed: () => void = () => {}) {
     const rows: Row[] = []
     let connection = 0
     let step = 0
-    const mismatches = { 'update-state': 0, 'update-metadata': 0 }
+    const competingWrites = new Map<string, Record<string, unknown>>()
     let latestAlive: Record<string, unknown> | undefined
     let delay = 0
     const pendingAcks = new Set<NodeJS.Timeout>()
@@ -94,9 +94,11 @@ export async function fakeHub(out: string, changed: () => void = () => {}) {
             if (event === 'update-metadata' || event === 'update-state') {
                 const key = event === 'update-metadata' ? 'metadata' : 'agentState'
                 const version = key === 'metadata' ? 'metadataVersion' : 'agentStateVersion'
-                if (mismatches[event] > 0) {
+                const patch = competingWrites.get(event)
+                if (patch) {
+                    Object.assign(session, { [key]: { ...session[key] as object | null, ...patch } })
                     session[version]++
-                    mismatches[event]--
+                    competingWrites.delete(event)
                 }
                 const success = args[0].expectedVersion === session[version]
                 if (success) {
@@ -161,8 +163,9 @@ export async function fakeHub(out: string, changed: () => void = () => {}) {
             } else if ('dropConnection' in action) {
                 socket.conn.close()
                 if (action.backfill) messages.push(action.backfill)
-            } else if ('forceVersionMismatch' in action) mismatches[action.forceVersionMismatch.event] = action.forceVersionMismatch.count
-            else if ('delayAck' in action) delay = action.delayAck
+            } else if ('forceVersionMismatch' in action) {
+                competingWrites.set(action.forceVersionMismatch.event, action.forceVersionMismatch.patch)
+            } else if ('delayAck' in action) delay = action.delayAck
             else kill()
         },
         close: () => {

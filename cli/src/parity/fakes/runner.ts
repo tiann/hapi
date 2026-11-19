@@ -7,6 +7,6 @@ const server = createServer(async (req, res) => {
     else console.log(JSON.stringify({ webhook: await body(req) }))
     await connected
     res.setHeader('Content-Type', 'application/json')
-    res.end('{}')
+    res.end(res.statusCode === 200 ? JSON.stringify({ status: 'ok' }) : '{}')
 })
 console.log(JSON.stringify({ port: await listen(server) }))

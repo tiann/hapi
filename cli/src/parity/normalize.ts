@@ -5,6 +5,7 @@ import pkg from '../../package.json'
 
 interface ProcessFacts {
     out: string
+    runtimeDir?: string
     cli: string
     marker: string
     pid: number
@@ -24,6 +25,7 @@ function channel(event: string) {
 }
 
 export function normalize(rows: Row[], facts: ProcessFacts, launches: unknown[], decoded: unknown[]) {
+    const runtimeDir = facts.runtimeDir ?? facts.cli
     const ids = new Map<string, string>()
     const requests = new Map<string, string>()
     const ports = new Map<string, string>()
@@ -69,8 +71,8 @@ export function normalize(rows: Row[], facts: ProcessFacts, launches: unknown[],
             assert.equal(value, pkg.version)
             return '<version>'
         }
-        if (key === 'happyLibDir') { assert.equal(value, facts.cli); return '<lib>' }
-        if (key === 'happyToolsDir') { assert.equal(value, join(facts.cli, 'tools/unpacked')); return '<tools>' }
+        if (key === 'happyLibDir') { assert.equal(value, runtimeDir); return '<lib>' }
+        if (key === 'happyToolsDir') { assert.equal(value, join(runtimeDir, 'tools/unpacked')); return '<tools>' }
         if (typeof value !== 'string') return value
         if (key === 'request_id') return token(requests, value, 'req')
         if (key === 'PATH') { assert.equal(value, process.env.PATH); return '<path>' }

@@ -56,6 +56,12 @@ export async function run(name: string, binary?: string) {
         else hub.record('POST /session-started', [data.webhook], false, 0)
     })
     let child: ReturnType<typeof spawn> | undefined
+    function cleanup() {
+        if (child?.pid) { try { process.kill(-child.pid, 'SIGKILL') } catch {} }
+        runner.kill('SIGKILL')
+        if (!process.env.PARITY_KEEP_OUTPUT) rmSync(out, { recursive: true, force: true })
+    }
+    process.once('exit', cleanup)
     let output = ''
     let runnerFailure: string | undefined
     runner.on('error', error => { runnerFailure = error.message; changed() })
@@ -93,7 +99,7 @@ export async function run(name: string, binary?: string) {
             pid: runner.pid, httpPort: port, startedWithCliVersion: pkg.version, startedWithApiUrl: apiUrl,
             startedWithMachineId: machineId, startedWithCliApiTokenHash: createHash('sha256').update(token).digest('hex')
         }))
-        child = spawn(binary ?? bun, [...(binary ? [] : [join(cli, 'src/index.ts')]), ...scenario.argv],
+        child = spawn(binary ?? bun, [...(binary ? [] : [join(cli, 'src/bootstrap.ts')]), ...scenario.argv],
             { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
         child.stdout!.on('data', part => output += part)
         child.stderr!.on('data', part => output += part)
@@ -147,12 +153,17 @@ export async function run(name: string, binary?: string) {
             input: JSON.stringify(hub.rows), encoding: 'utf8', cwd
         }))
         const logs = readLaunches(out)
-        return normalize(hub.rows, { pid, marker, cli, out, apiUrl, startedAt, mcpPort, endedAt: Date.now(), leaseExpiry: hub.leaseExpiry }, logs, decoded)
+        const compiledRuntime = join(home, 'runtime', pkg.version)
+        const runtimeDir = binary && (hub.session.metadata as { happyLibDir?: string } | null)?.happyLibDir === compiledRuntime
+            ? compiledRuntime : cli
+        return normalize(hub.rows, { pid, marker, cli, runtimeDir, out, apiUrl, startedAt, mcpPort, endedAt: Date.now(), leaseExpiry: hub.leaseExpiry }, logs, decoded)
     } finally {
-        if (child?.pid) { try { process.kill(-child.pid, 'SIGKILL') } catch {} }
         watcher.close()
-        runner.kill()
-        await hub.close()
-        if (!process.env.PARITY_KEEP_OUTPUT) rmSync(out, { recursive: true, force: true })
+        try {
+            await hub.close()
+        } finally {
+            process.off('exit', cleanup)
+            cleanup()
+        }
     }
 }

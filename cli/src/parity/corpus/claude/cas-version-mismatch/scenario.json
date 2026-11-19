@@ -14,13 +14,17 @@
     {
       "forceVersionMismatch": {
         "event": "update-state",
-        "count": 1
+        "patch": {
+          "completedRequests": {}
+        }
       }
     },
     {
       "forceVersionMismatch": {
         "event": "update-metadata",
-        "count": 1
+        "patch": {
+          "forkedFrom": "parent-session"
+        }
       }
     },
     {
@@ -75,6 +79,16 @@
         {
           "event": "update-metadata",
           "result": "version-mismatch"
+        },
+        {
+          "event": "update-state",
+          "contains": "\"completedRequests\":{}",
+          "result": "success"
+        },
+        {
+          "event": "update-metadata",
+          "contains": "\"forkedFrom\":\"parent-session\"",
+          "result": "success"
         }
       ],
       "release": [

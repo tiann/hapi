@@ -1,3 +1,7 @@
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { createInterface } from 'node:readline'
+import { fileURLToPath } from 'node:url'
 import { io } from 'socket.io-client'
 import { monotonicTimeMs } from '../utils/time'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -58,5 +62,24 @@ it('sends a preparation lease valid across a one-second host clock difference', 
         socket.close()
         await hub.close()
         rmSync(dir, { recursive: true, force: true })
+    }
+})
+
+it('acknowledges the runner webhook', async () => {
+    const script = fileURLToPath(new URL('./fakes/runner.ts', import.meta.url))
+    const runner = spawn('bun', [script], { stdio: ['pipe', 'pipe', 'inherit'] })
+    const lines = createInterface({ input: runner.stdout })
+    try {
+        const [line] = await once(lines, 'line')
+        const { port } = JSON.parse(line)
+        runner.stdin.end('connected\n')
+        const response = await fetch('http://127.0.0.1:' + port + '/session-started', {
+            method: 'POST', body: JSON.stringify({ sessionId: 'test', metadata: {} })
+        })
+        expect(response.status).toBe(200)
+        expect(await response.json()).toEqual({ status: 'ok' })
+    } finally {
+        lines.close()
+        runner.kill()
     }
 })

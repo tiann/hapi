@@ -494,8 +494,10 @@
         "args": [
           {
             "forceVersionMismatch": {
-              "count": 1,
-              "event": "update-state"
+              "event": "update-state",
+              "patch": {
+                "completedRequests": {}
+              }
             }
           }
         ]
@@ -509,8 +511,10 @@
         "args": [
           {
             "forceVersionMismatch": {
-              "count": 1,
-              "event": "update-metadata"
+              "event": "update-metadata",
+              "patch": {
+                "forkedFrom": "parent-session"
+              }
             }
           }
         ]
@@ -718,6 +722,16 @@
               {
                 "event": "update-metadata",
                 "result": "version-mismatch"
+              },
+              {
+                "contains": "\"completedRequests\":{}",
+                "event": "update-state",
+                "result": "success"
+              },
+              {
+                "contains": "\"forkedFrom\":\"parent-session\"",
+                "event": "update-metadata",
+                "result": "success"
               }
             ]
           }
@@ -740,6 +754,7 @@
                 "terminal": true
               },
               "flavor": "claude",
+              "forkedFrom": "parent-session",
               "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
               "happyHomeDir": "<tmp>/hapi",
               "happyLibDir": "<lib>",
@@ -837,6 +852,7 @@
                 "local-1": true
               },
               "flavor": "claude",
+              "forkedFrom": "parent-session",
               "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
               "happyHomeDir": "<tmp>/hapi",
               "happyLibDir": "<lib>",
@@ -885,6 +901,7 @@
                 "local-1": true
               },
               "flavor": "claude",
+              "forkedFrom": "parent-session",
               "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
               "happyHomeDir": "<tmp>/hapi",
               "happyLibDir": "<lib>",
@@ -935,6 +952,7 @@
                 "local-1": true
               },
               "flavor": "claude",
+              "forkedFrom": "parent-session",
               "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
               "happyHomeDir": "<tmp>/hapi",
               "happyLibDir": "<lib>",
@@ -984,6 +1002,7 @@
                 "local-1": true
               },
               "flavor": "claude",
+              "forkedFrom": "parent-session",
               "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
               "happyHomeDir": "<tmp>/hapi",
               "happyLibDir": "<lib>",
@@ -1034,6 +1053,7 @@
                 "local-1": true
               },
               "flavor": "claude",
+              "forkedFrom": "parent-session",
               "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
               "happyHomeDir": "<tmp>/hapi",
               "happyLibDir": "<lib>",
@@ -1087,6 +1107,7 @@
                 "local-1": true
               },
               "flavor": "claude",
+              "forkedFrom": "parent-session",
               "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
               "happyHomeDir": "<tmp>/hapi",
               "happyLibDir": "<lib>",
@@ -1127,6 +1148,7 @@
         "ack": [
           {
             "agentState": {
+              "completedRequests": {},
               "controlledByUser": false,
               "startingMode": "remote"
             },
@@ -1153,6 +1175,7 @@
         "ack": [
           {
             "agentState": {
+              "completedRequests": {},
               "controlledByUser": false,
               "startingMode": "remote",
               "steeringActive": true
@@ -1165,6 +1188,7 @@
         "args": [
           {
             "agentState": {
+              "completedRequests": {},
               "controlledByUser": false,
               "startingMode": "remote",
               "steeringActive": true
@@ -1180,6 +1204,7 @@
         "ack": [
           {
             "agentState": {
+              "completedRequests": {},
               "controlledByUser": false,
               "startingMode": "remote",
               "steeringActive": false
@@ -1192,6 +1217,7 @@
         "args": [
           {
             "agentState": {
+              "completedRequests": {},
               "controlledByUser": false,
               "startingMode": "remote",
               "steeringActive": false
@@ -1269,6 +1295,7 @@
                 "local-1": true
               },
               "flavor": "claude",
+              "forkedFrom": "parent-session",
               "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
               "happyHomeDir": "<tmp>/hapi",
               "happyLibDir": "<lib>",
@@ -1324,6 +1351,7 @@
                 "local-1": true
               },
               "flavor": "claude",
+              "forkedFrom": "parent-session",
               "hapiMcpUrl": "http://127.0.0.1:<port:1>/",
               "happyHomeDir": "<tmp>/hapi",
               "happyLibDir": "<lib>",
@@ -1367,6 +1395,7 @@
       "env": {
         "CLAUDE_CODE_ENTRYPOINT": "sdk-ts",
         "CLI_API_TOKEN": "parity-token",
+        "DEV": "false",
         "HAPI_API_URL": "<hub>",
         "HAPI_CLAUDE_PATH": "<lib>/src/parity/fakes/fake-claude.ts",
         "HAPI_CLI_EXECUTABLE": "<lib>/bin/hapi.cjs",
@@ -1404,6 +1433,7 @@
       "env": {
         "CLAUDE_CODE_ENTRYPOINT": "sdk-ts",
         "CLI_API_TOKEN": "parity-token",
+        "DEV": "false",
         "HAPI_API_URL": "<hub>",
         "HAPI_CLAUDE_PATH": "<lib>/src/parity/fakes/fake-claude.ts",
         "HAPI_CLI_EXECUTABLE": "<lib>/bin/hapi.cjs",
@@ -1450,6 +1480,7 @@
       "env": {
         "CLAUDE_CODE_ENTRYPOINT": "sdk-ts",
         "CLI_API_TOKEN": "parity-token",
+        "DEV": "false",
         "DISABLE_AUTOUPDATER": "1",
         "HAPI_API_URL": "<hub>",
         "HAPI_CLAUDE_PATH": "<lib>/src/parity/fakes/fake-claude.ts",

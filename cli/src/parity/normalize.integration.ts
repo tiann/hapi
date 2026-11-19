@@ -33,6 +33,16 @@ describe('transcript normalization', () => {
         expect(() => clean([row('message', arg)])).toThrow()
     })
 
+    it('maps the compiled runtime and its tools to the source layout', () => {
+        const runtimeDir = '/tmp/parity/hapi/runtime/0.36.5'
+        const layout = (dir: string, tools = dir) => [row('update-metadata', {
+            happyLibDir: dir, happyToolsDir: tools + '/tools/unpacked'
+        })]
+        expect(normalize(layout(runtimeDir), { ...facts, runtimeDir }, [], [])).toEqual(clean(layout(facts.cli)))
+        expect(() => clean(layout(runtimeDir))).toThrow()
+        expect(() => normalize(layout(runtimeDir, facts.cli), { ...facts, runtimeDir }, [], [])).toThrow()
+    })
+
     it('preserves user date values', () => {
         expect(JSON.stringify(clean([row('message', { arguments: { date: 'tomorrow' } })]))).toContain('tomorrow')
     })

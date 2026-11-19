@@ -1413,6 +1413,7 @@
       "env": {
         "CLAUDE_CODE_ENTRYPOINT": "sdk-ts",
         "CLI_API_TOKEN": "parity-token",
+        "DEV": "false",
         "HAPI_API_URL": "<hub>",
         "HAPI_CLAUDE_PATH": "<lib>/src/parity/fakes/fake-claude.ts",
         "HAPI_CLI_EXECUTABLE": "<lib>/bin/hapi.cjs",
@@ -1450,6 +1451,7 @@
       "env": {
         "CLAUDE_CODE_ENTRYPOINT": "sdk-ts",
         "CLI_API_TOKEN": "parity-token",
+        "DEV": "false",
         "HAPI_API_URL": "<hub>",
         "HAPI_CLAUDE_PATH": "<lib>/src/parity/fakes/fake-claude.ts",
         "HAPI_CLI_EXECUTABLE": "<lib>/bin/hapi.cjs",
@@ -1496,6 +1498,7 @@
       "env": {
         "CLAUDE_CODE_ENTRYPOINT": "sdk-ts",
         "CLI_API_TOKEN": "parity-token",
+        "DEV": "false",
         "DISABLE_AUTOUPDATER": "1",
         "HAPI_API_URL": "<hub>",
         "HAPI_CLAUDE_PATH": "<lib>/src/parity/fakes/fake-claude.ts",
