@@ -55,6 +55,26 @@ describe('session parent link recording and persistence', () => {
         }
     })
 
+    it('ignores same-namespace citations without a canonical parent stamp', () => {
+        const { store, engine, receive } = setup()
+        try {
+            const metadata = { path: '/tmp/repo', host: 'mac' }
+            const parent = engine.getOrCreateSession('parent', metadata, null, 'default')
+            const child = engine.getOrCreateSession('child', metadata, null, 'default')
+            const chip = `[Lead](/sessions/${parent.id})`
+            for (const prompt of [
+                `## Parent branch notes\n- Orchestrator chip (mandatory): ${chip}`,
+                `## Parent\nSee ${chip} for context`,
+            ]) {
+                receive(child.id, userText(prompt))
+                expect(engine.getSession(child.id)?.metadata?.parentSessionId).toBeUndefined()
+            }
+        } finally {
+            engine.stop()
+            store.close()
+        }
+    })
+
     it('ignores casual /sessions/<id> citations, unknown targets, and cross-namespace parents', () => {
         const { store, engine, receive } = setup()
         try {
@@ -232,6 +252,89 @@ describe('session parent link recording and persistence', () => {
                 'default'
             )
             expect(engine.getSession(laterImportedAgy.id)?.metadata?.parentSessionId).toBe(parent.id)
+        } finally {
+            engine.stop()
+            store.close()
+        }
+    })
+
+    it('links both workers from a command with two wrapper backends', () => {
+        const { store, engine, receive } = setup()
+        try {
+            const metadata = { path: '/r', host: 'mac', machineId: 'machine-1' }
+            const parent = engine.getOrCreateSession('lead', metadata, null, 'default')
+            const workers = ['codex', 'claude'].map(flavor => engine.getOrCreateSession(
+                flavor, { ...metadata, flavor, [`${flavor}SessionId`]: `${flavor}-worker` }, null, 'default'
+            ))
+            receive(parent.id, {
+                role: 'agent', content: { type: 'output', data: {
+                    type: 'agy_tool_action',
+                    input: { command: 'codeagent-wrapper --backend codex - /r & codeagent-wrapper --backend claude - /r; wait' },
+                    content: '---\nSESSION_ID: codex-worker\n---\nSESSION_ID: claude-worker',
+                } },
+            })
+            for (const worker of workers) expect(engine.getSession(worker.id)?.metadata?.parentSessionId).toBe(parent.id)
+        } finally {
+            engine.stop()
+            store.close()
+        }
+    })
+
+    it.each([false, true])('links an attached Codex worker unless an owned row exists (owned: %s)', (hasOwned) => {
+        const { store, engine, receive } = setup()
+        try {
+            const metadata = { path: '/r', host: 'mac', machineId: 'machine-1' }
+            const parent = engine.getOrCreateSession('lead', metadata, null, 'default')
+            const worker = { ...metadata, flavor: 'codex', codexSessionId: 'codex-worker' }
+            const attached = engine.getOrCreateSession('attached', {
+                ...worker, codexRuntime: { kind: 'attached', state: 'attached', bindingId: crypto.randomUUID() },
+            }, null, 'default')
+            const owned = hasOwned ? engine.getOrCreateSession('owned', worker, null, 'default') : null
+            receive(parent.id, {
+                role: 'agent', content: { type: 'output', data: {
+                    type: 'agy_tool_action', input: { command: 'codeagent-wrapper --backend codex - /r' },
+                    content: '---\nSESSION_ID: codex-worker',
+                } },
+            })
+            expect(engine.getSession(attached.id)?.metadata?.parentSessionId).toBe(owned ? undefined : parent.id)
+            if (owned) expect(engine.getSession(owned.id)?.metadata?.parentSessionId).toBe(parent.id)
+        } finally {
+            engine.stop()
+            store.close()
+        }
+    })
+
+    it.each(['opencode', 'pi'])('scopes immediate and late %s wrapper results to a single worker', (flavor) => {
+        const { store, engine, receive } = setup()
+        try {
+            const metadata = { path: '/tmp/repo', host: 'mac', machineId: 'machine-1' }
+            const parent = engine.getOrCreateSession('lead', metadata, null, 'default')
+            const worker = (tag: string, machineId: string, nativeId: string) => engine.getOrCreateSession(
+                tag, { ...metadata, machineId, flavor, [`${flavor}SessionId`]: nativeId }, null, 'default'
+            )
+            const local = worker('local', 'machine-1', 'immediate-id')
+            const remote = worker('remote', 'machine-2', 'immediate-id')
+            const duplicateA = worker('dup-a', 'machine-1', 'duplicate-id')
+            const duplicateB = worker('dup-b', 'machine-1', 'duplicate-id')
+            receive(parent.id, {
+                role: 'agent', content: { type: 'codex', data: {
+                    type: 'tool-call', callId: 'call', input: { command: `codeagent-wrapper --backend ${flavor} -` },
+                } },
+            })
+            receive(parent.id, {
+                role: 'agent', content: { type: 'codex', data: {
+                    type: 'tool-call-result', callId: 'call',
+                    output: ['immediate-id', 'late-native-id', 'duplicate-id'].map(id => `---\nSESSION_ID: ${id}`).join('\n'),
+                } },
+            })
+            const lateRemote = worker('late-remote', 'machine-2', 'late-native-id')
+            const lateLocal = worker('late-local', 'machine-1', 'late-native-id')
+            for (const child of [local, lateLocal]) {
+                expect(engine.getSession(child.id)?.metadata?.parentSessionId).toBe(parent.id)
+            }
+            for (const child of [remote, lateRemote, duplicateA, duplicateB]) {
+                expect(engine.getSession(child.id)?.metadata?.parentSessionId).toBeUndefined()
+            }
         } finally {
             engine.stop()
             store.close()

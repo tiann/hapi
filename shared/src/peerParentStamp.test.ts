@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import {
     ParentStampError,
     ensureParentStamp,
+    extractExplicitParentSessionIdFromRemit,
     extractParentSessionIdFromRemit,
     formatParentStampBlock,
     formatSessionChip,
@@ -54,7 +55,7 @@ describe('ensureParentStamp', () => {
     })
 
     it('is a no-op when the remit already has a ## Parent markdown chip for this UUID', () => {
-        const body = `## Parent\n- Orchestrator chip: [Old Title](/sessions/${PARENT_ID})\n\nGo.`
+        const body = `## Parent\n- Orchestrator chip (mandatory): [Old Title](/sessions/${PARENT_ID})\n\nGo.`
         const result = ensureParentStamp(body, {
             sessionId: PARENT_ID,
             name: 'Renamed',
@@ -62,6 +63,19 @@ describe('ensureParentStamp', () => {
         expect(result.stamped).toBe(false)
         expect(result.alreadyPresent).toBe(true)
         expect(result.message).toBe(body)
+    })
+
+    it.each([
+        `[Main](/sessions/${PARENT_ID})`,
+        `- Orchestrator chip (mandatory): [Main](https://hub.example/sessions/${PARENT_ID})`,
+    ])('prepends a canonical stamp to a noncanonical Parent section containing %s', (chip) => {
+        const body = `## Parent\n${chip}\n\ndo it`
+        const identity = { sessionId: PARENT_ID, name: 'Main' }
+        const result = ensureParentStamp(body, identity)
+        expect(result).toEqual({
+            message: `${formatParentStampBlock(identity)}\n\n${body}`, stamped: true, alreadyPresent: false,
+        })
+        expect(extractExplicitParentSessionIdFromRemit(result.message)).toBe(PARENT_ID)
     })
 
     it('stays idempotent when the parent title contains brackets (escaped in the chip label)', () => {
