@@ -19,6 +19,23 @@ function fixture() {
     return { permissions, request, respond, handlers, send, state: () => state, reapply: (newer: AgentState) => update!(newer) };
 }
 describe('shared request arbitration', () => {
+    it('uses the native resolution time if a state retry finds the same blocking question still pending', () => {
+        const f = fixture();
+        const clock = vi.spyOn(Date, 'now').mockReturnValue(100);
+        try {
+            f.permissions.receive(f.request);
+            const pending = f.state();
+            const id = Object.keys(pending.requests!)[0];
+            clock.mockReturnValue(500);
+            f.permissions.resolved('thread', f.request.id);
+            clock.mockReturnValue(6_100);
+            expect(f.reapply({ ...pending, steeringActive: true }).completedRequests?.[id])
+                .toMatchObject({ completedAt: 500, status: 'resolved' });
+        } finally {
+            clock.mockRestore();
+        }
+    });
+
     it('preserves a previously committed question when a later Hub version is used for retry', () => {
         const f = fixture();
         f.permissions.receive(f.request);

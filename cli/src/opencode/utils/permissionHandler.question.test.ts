@@ -105,6 +105,24 @@ async function settled(promise: Promise<unknown>): Promise<boolean> {
 }
 
 describe('OpencodePermissionHandler question forms', () => {
+    it('publishes replacement choices when OpenCode reuses the same form request ID', async () => {
+        const harness = createHarness();
+        const requestId = 'same-question';
+        const first = harness.ask(elicitation({ requestId }));
+        const replacement = harness.ask(elicitation({ requestId, requestedSchema: {
+            ...schema, properties: { ...schema.properties, q0: {
+                ...schema.properties.q0,
+                oneOf: [{ const: 'Retry', title: 'Retry' }, { const: 'Skip', title: 'Skip' }]
+            } }
+        } }));
+        await expect(first).resolves.toEqual({ action: 'cancel' });
+        expect(harness.getAgentState().requests[requestId]?.arguments).toMatchObject({
+            questions: [{ options: [{ label: 'Retry' }, { label: 'Skip' }] }]
+        });
+        await harness.respond({ id: requestId, approved: true, answers: { '0': ['Retry'] } });
+        await expect(replacement).resolves.toEqual({ action: 'accept', content: { q0: 'Retry' } });
+    });
+
     it('queues the form as an AskUserQuestion request keyed by the tool call id', async () => {
         const harness = createHarness();
 

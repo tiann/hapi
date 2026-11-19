@@ -120,6 +120,7 @@ export class SharedCodexPermissions {
 
     resolved(threadId: string, nativeId: unknown, status: 'resolved' | 'canceled' = 'resolved'): void {
         this.retired.add(`${this.generation}:${threadId}:${typeof nativeId}:${nativeId}`);
+        const completedAt = Date.now();
         for (const [key, request] of this.pending) {
             if (request.threadId !== threadId || request.nativeId !== nativeId) continue;
             this.pending.delete(key);
@@ -128,8 +129,10 @@ export class SharedCodexPermissions {
             this.session.updateAgentState(state => {
                 const requests = { ...state.requests };
                 const prior = requests[key]; delete requests[key];
+                const settled = state.completedRequests?.[key];
                 return { ...state, requests, completedRequests: { ...state.completedRequests,
-                    ...(prior ? { [key]: { ...prior, completedAt: Date.now(), status } } : {})
+                    ...(prior ? { [key]: { ...prior, completedAt: settled?.status === status
+                        ? settled.completedAt ?? completedAt : completedAt, status } } : {})
                 } };
             });
         }

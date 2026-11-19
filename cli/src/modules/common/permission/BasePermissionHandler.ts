@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util';
 import type { AgentState } from "@/api/types";
 import type { PermissionMode } from "@hapi/protocol/types";
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
@@ -230,7 +231,9 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
         this.onRequestRegistered(id, toolName, input);
         const createdAt = Date.now();
         this.client.updateAgentState((currentState) => {
-            if (currentState.requests && Object.hasOwn(currentState.requests, id)) return currentState;
+            const current = currentState.requests?.[id];
+            if (current?.tool === toolName && current.toolCallId === toolCallId
+                && isDeepStrictEqual(current.arguments, input)) return currentState;
             return {
                 ...currentState,
                 requests: {
@@ -287,6 +290,7 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
 
     protected cancelPendingRequests(options: CancelPendingRequestOptions): void {
         const { filter } = options;
+        const completedAt = Date.now();
 
         for (const [id, pending] of this.pendingRequests.entries()) {
             if (filter && !filter(pending.toolName)) continue;
@@ -306,7 +310,7 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
                 }
                 completedRequests[id] = {
                     ...request,
-                    completedAt: Date.now(),
+                    completedAt,
                     status: 'canceled',
                     reason: options.completedReason,
                     decision: options.decision
@@ -328,6 +332,7 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
      * processed so overlapping answers cannot cancel a successful finalize.
      */
     protected finalizeOrphanedAgentStateRequests(reason: string, onlyId?: string): void {
+        const completedAt = Date.now();
         this.client.updateAgentState((currentState) => {
             const pendingIds = this.pendingRequests;
             const inFlight = this.inFlightResponses;
@@ -348,7 +353,7 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
                 changed = true;
                 completedRequests[id] = {
                     ...request,
-                    completedAt: Date.now(),
+                    completedAt,
                     status: 'canceled',
                     reason,
                     decision: 'abort'

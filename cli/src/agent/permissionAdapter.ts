@@ -224,6 +224,7 @@ export class PermissionAdapter {
             await this.backend.respondToPermission(request.sessionId, request, { outcome: 'cancelled' });
         }
 
+        const completedAt = Date.now();
         this.session.updateAgentState((currentState) => {
             const pendingRequests = currentState.requests ?? {};
             const completedRequests = { ...currentState.completedRequests };
@@ -231,7 +232,7 @@ export class PermissionAdapter {
             for (const [id, request] of Object.entries(pendingRequests)) {
                 completedRequests[id] = {
                     ...request,
-                    completedAt: Date.now(),
+                    completedAt,
                     status: 'canceled',
                     reason,
                     decision: 'abort'
