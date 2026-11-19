@@ -6,7 +6,7 @@ import { fetchVoiceToken } from '@/api/voice'
 import { buildElevenLabsSessionOverrides, capElevenLabsInitialContext } from '@/lib/voicePersonalitySession'
 import { deliverVoiceSessionContextAfterConnect, isVoiceProactiveSummaryEnabled } from '@/lib/voiceContextStream'
 import { readStoredVoiceSelection } from '@/lib/voicePickerPreferences'
-import type { VoiceSession, VoiceSessionConfig, ConversationStatus, StatusCallback } from './types'
+import type { VoiceSession, VoiceSessionConfig, StatusCallback } from './types'
 import type { ApiClient } from '@/api/client'
 import type { Session } from '@/types/api'
 
@@ -22,33 +22,107 @@ let conversationInstance: ReturnType<typeof useConversation> | null = null
 let ensureConversationInstance: (() => Promise<ReturnType<typeof useConversation>>) | null = null
 let voiceSessionGeneration = 0
 
-// Store reference for status updates
-let statusCallback: StatusCallback | null = null
-
 function assertActiveGeneration(generation: number): void {
     if (generation !== voiceSessionGeneration) {
         throw new Error('Realtime voice session cancelled')
     }
 }
 
-// Global voice session implementation
-class RealtimeVoiceSessionImpl implements VoiceSession {
-    private api: ApiClient
+const START_TIMEOUT_MS = 15_000
+const END_TIMEOUT_MS = 5_000
+type Conversation = ReturnType<typeof useConversation>
 
-    constructor(api: ApiClient) {
-        this.api = api
+async function withTimeout<T>(operation: Promise<T>, ms: number, onTimeout?: () => void): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+            reject(new Error(`Voice operation timed out after ${ms} ms`))
+            onTimeout?.()
+        }, ms)
+    })
+    try {
+        return await Promise.race([operation, timeout])
+    } finally {
+        clearTimeout(timer)
+    }
+}
+
+class RealtimeVoiceSessionImpl implements VoiceSession {
+    private conversationQueue = Promise.resolve()
+    private open = false
+    private active = false
+    private mounted = true
+    private bridgeVersion = 0
+    private attempt = 0
+
+    constructor(
+        private getApi: () => ApiClient,
+        private setStatus: StatusCallback,
+        private remountBridge: () => void
+    ) {}
+
+    unmount() {
+        this.mounted = false
+        if (this.active || this.open) {
+            this.active = false
+            resetRealtimeSessionState()
+            this.setStatus('disconnected')
+        }
+    }
+
+    private retireBridge() {
+        this.bridgeVersion += 1
+        this.open = false
+        if (this.mounted) this.remountBridge()
+    }
+
+    private async closeConversation(conversation: Conversation) {
+        this.open = false
+        const version = this.bridgeVersion
+        try {
+            await withTimeout(conversation.endSession(), END_TIMEOUT_MS)
+        } catch (error) {
+            if (version === this.bridgeVersion) this.retireBridge()
+            throw error
+        }
+    }
+
+    private enqueueConversationOperation<T>(kind: 'start' | 'end', operation: (checkPending: () => void) => Promise<T>): Promise<T> {
+        let expired = false
+        let version = this.bridgeVersion
+        const checkPending = () => {
+            if (expired || version !== this.bridgeVersion) throw new Error('Voice operation cancelled')
+        }
+        const onTimeout = () => {
+            expired = true
+            if (version === this.bridgeVersion) this.retireBridge()
+        }
+        const queued = this.conversationQueue.then(() => {
+            version = this.bridgeVersion
+            checkPending()
+            const running = operation(checkPending)
+            return kind === 'start' ? withTimeout(running, START_TIMEOUT_MS, onTimeout) : running
+        })
+        const result = kind === 'end' ? withTimeout(queued, END_TIMEOUT_MS, onTimeout) : queued
+        this.conversationQueue = result.then(() => {}, () => {})
+        return result
     }
 
     async startSession(config: VoiceSessionConfig): Promise<void> {
+        if (!this.mounted) throw new Error('Realtime voice session unmounted')
         if (!conversationInstance && !ensureConversationInstance) {
             const error = new Error('Realtime voice session not initialized')
             console.warn('[Voice] Realtime voice session not initialized')
-            statusCallback?.('error', 'Voice session not initialized')
+            this.setStatus('error', 'Voice session not initialized')
             throw error
         }
 
-        const generation = ++voiceSessionGeneration
-        statusCallback?.('connecting')
+        const attempt = ++this.attempt
+        const assertCurrentAttempt = () => {
+            if (!this.mounted || attempt !== this.attempt) throw new Error('Realtime voice session cancelled')
+        }
+        this.active = true
+        this.setStatus('connecting')
 
         // Load and mount the @elevenlabs/react bridge in parallel with mic
         // permission + token fetch so idle chat opens pay zero bundle cost.
@@ -56,92 +130,99 @@ class RealtimeVoiceSessionImpl implements VoiceSession {
             ? Promise.resolve(conversationInstance)
             : ensureConversationInstance!()
 
-        // Request microphone permission first
-        let permissionStream: MediaStream | null = null
+        void conversationPromise.catch(() => {})
+        let generation = voiceSessionGeneration
+        let failureMessage: string | undefined = 'Microphone permission denied'
         try {
-            permissionStream = await navigator.mediaDevices.getUserMedia({ audio: true })
-        } catch (error) {
-            void conversationPromise.catch(() => {})
-            assertActiveGeneration(generation)
-            console.error('[Voice] Failed to get microphone permission:', error)
-            statusCallback?.('error', 'Microphone permission denied')
-            throw error
-        } finally {
-            permissionStream?.getTracks().forEach((track) => track.stop())
-        }
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+            stream.getTracks().forEach((track) => track.stop())
+            assertCurrentAttempt()
 
-        try {
-            assertActiveGeneration(generation)
-        } catch (error) {
-            void conversationPromise.catch(() => {})
-            throw error
-        }
-
-        // Fetch conversation token from server
-        let tokenResponse: Awaited<ReturnType<typeof fetchVoiceToken>>
-        try {
-            tokenResponse = await fetchVoiceToken(this.api, {
+            failureMessage = 'Network error'
+            const tokenResponse = await fetchVoiceToken(this.getApi(), {
                 voiceId: config.voiceId ?? readStoredVoiceSelection('elevenlabs') ?? undefined
             })
-        } catch (error) {
-            void conversationPromise.catch(() => {})
-            assertActiveGeneration(generation)
-            console.error('[Voice] Failed to fetch voice token:', error)
-            statusCallback?.('error', 'Network error')
-            throw error
-        }
-        try {
-            assertActiveGeneration(generation)
-        } catch (error) {
-            void conversationPromise.catch(() => {})
-            throw error
-        }
-        if (!tokenResponse.allowed || !tokenResponse.token) {
-            const error = new Error(tokenResponse.error ?? 'Voice not allowed or no token')
-            console.error('[Voice] Voice not allowed or no token:', tokenResponse.error)
-            statusCallback?.('error', tokenResponse.error ?? 'Voice not allowed')
-            void conversationPromise.catch(() => {})
-            throw error
-        }
-
-        const initialConversationContext = capElevenLabsInitialContext(config.initialContext)
-        if (
-            import.meta.env.DEV
-            && config.initialContext
-            && initialConversationContext.length < config.initialContext.length
-        ) {
-            console.warn(
-                '[Voice] Session context truncated for ElevenLabs WebRTC limit (65KB/message)'
-            )
-        }
-
-        const personalityOverrides = buildElevenLabsSessionOverrides({
-            language: config.language,
-            voiceId: config.voiceId ?? readStoredVoiceSelection('elevenlabs') ?? undefined
-        })
-
-        const baseSessionConfig = {
-            conversationToken: tokenResponse.token,
-            connectionType: 'webrtc' as const,
-            dynamicVariables: {
-                sessionId: config.sessionId,
-                initialConversationContext
-            },
-            overrides: personalityOverrides
-        }
-
-        // Use conversation token from server (private agent flow)
-        try {
-            const conversation = await conversationPromise
-            assertActiveGeneration(generation)
-            if (!conversationInstance) {
-                throw new Error('Realtime voice session cancelled')
+            assertCurrentAttempt()
+            if (!tokenResponse.allowed || !tokenResponse.token) {
+                failureMessage = tokenResponse.error ?? 'Voice not allowed'
+                throw new Error(tokenResponse.error ?? 'Voice not allowed or no token')
             }
-            const conversationId = await conversation.startSession(baseSessionConfig)
-            if (generation !== voiceSessionGeneration) {
-                await conversation.endSession().catch(() => {})
+            failureMessage = 'Failed to initialize voice session'
+            await conversationPromise
+            assertCurrentAttempt()
+
+            const initialConversationContext = capElevenLabsInitialContext(config.initialContext)
+            if (
+                import.meta.env.DEV
+                && config.initialContext
+                && initialConversationContext.length < config.initialContext.length
+            ) {
+                console.warn(
+                    '[Voice] Session context truncated for ElevenLabs WebRTC limit (65KB/message)'
+                )
+            }
+
+            const personalityOverrides = buildElevenLabsSessionOverrides({
+                language: config.language,
+                voiceId: config.voiceId ?? readStoredVoiceSelection('elevenlabs') ?? undefined
+            })
+
+            const baseSessionConfig = {
+                conversationToken: tokenResponse.token,
+                connectionType: 'webrtc' as const,
+                dynamicVariables: {
+                    sessionId: config.sessionId,
+                    initialConversationContext
+                },
+                overrides: personalityOverrides
+            }
+
+            // Use conversation token from server (private agent flow)
+            generation = ++voiceSessionGeneration
+            failureMessage = undefined
+            const conversationId = await this.enqueueConversationOperation('start', async (checkPending) => {
                 assertActiveGeneration(generation)
-            }
+                if (this.open && conversationInstance) {
+                    await this.closeConversation(conversationInstance)
+                    checkPending()
+                    assertActiveGeneration(generation)
+                }
+                const conversation = conversationInstance ?? await ensureConversationInstance!()
+                checkPending()
+                assertActiveGeneration(generation)
+                const version = this.bridgeVersion
+                const isCurrent = () => generation === voiceSessionGeneration
+                    && version === this.bridgeVersion
+                    && (this.open || attempt === this.attempt)
+                const id = await conversation.startSession({
+                    ...baseSessionConfig,
+                    onConnect: () => {
+                        if (isCurrent()) this.setStatus('connected')
+                    },
+                    onError: (message) => {
+                        if (isCurrent()) this.setStatus('error', message)
+                    },
+                    onDisconnect: () => {
+                        if (!isCurrent()) return
+                        ++voiceSessionGeneration
+                        this.open = false
+                        if (attempt === this.attempt) {
+                            this.active = false
+                            resetRealtimeSessionState()
+                        }
+                        this.setStatus('disconnected')
+                    }
+                })
+                checkPending()
+                if (generation !== voiceSessionGeneration || attempt !== this.attempt) {
+                    await this.closeConversation(conversation)
+                    assertCurrentAttempt()
+                    assertActiveGeneration(generation)
+                }
+                this.open = true
+                return id
+            })
+            assertActiveGeneration(generation)
 
             if (DEBUG) {
                 console.log('[Voice] Started conversation with ID:', conversationId)
@@ -152,7 +233,7 @@ class RealtimeVoiceSessionImpl implements VoiceSession {
                 initialContext: config.initialContext,
                 sendChunk: (chunk) => {
                     assertActiveGeneration(generation)
-                    return (conversationInstance ?? conversation).sendContextualUpdate(chunk)
+                    return conversationInstance?.sendContextualUpdate(chunk)
                 }
             })
             assertActiveGeneration(generation)
@@ -163,7 +244,19 @@ class RealtimeVoiceSessionImpl implements VoiceSession {
                 )
             }
         } catch (error) {
+            assertCurrentAttempt()
+            if (failureMessage !== undefined) {
+                if (this.open) {
+                    await this.stopConversation(attempt)
+                    assertCurrentAttempt()
+                }
+                this.active = false
+                this.setStatus('error', failureMessage)
+                throw error
+            }
             assertActiveGeneration(generation)
+            ++voiceSessionGeneration
+            this.active = false
             const errorMessage = error instanceof Error ? error.message : String(error)
             console.error('[Voice] Failed to start realtime session:', {
                 error: errorMessage,
@@ -171,23 +264,28 @@ class RealtimeVoiceSessionImpl implements VoiceSession {
                 language: config.language,
                 voiceId: config.voiceId
             })
-            statusCallback?.('error', `Failed to start voice session: ${errorMessage}`)
+            this.setStatus('error', `Failed to start voice session: ${errorMessage}`)
             throw error
         }
     }
 
     async endSession(): Promise<void> {
-        voiceSessionGeneration += 1
-        if (!conversationInstance) {
-            statusCallback?.('disconnected')
-            return
-        }
+        if (!this.mounted) return
+        await this.stopConversation(++this.attempt)
+    }
 
+    private async stopConversation(attempt: number) {
+        const generation = ++voiceSessionGeneration
         try {
-            await conversationInstance.endSession()
-            statusCallback?.('disconnected')
-        } catch (error) {
-            console.error('[Voice] Failed to end realtime session:', error)
+            await this.enqueueConversationOperation('end', async () => {
+                if (this.mounted && this.open && conversationInstance) await this.closeConversation(conversationInstance)
+            })
+        } finally {
+            if (generation === voiceSessionGeneration && attempt === this.attempt) {
+                this.active = false
+                resetRealtimeSessionState()
+                this.setStatus('disconnected')
+            }
         }
     }
 
@@ -231,7 +329,10 @@ export function RealtimeVoiceSession({
     approvePermission,
     denyPermission
 }: RealtimeVoiceSessionProps) {
-    const hasRegistered = useRef(false)
+    const apiRef = useRef(api)
+    apiRef.current = api
+    const onStatusChangeRef = useRef(onStatusChange)
+    onStatusChangeRef.current = onStatusChange
 
     // Use local state for micMuted that syncs with prop
     // This is recommended by ElevenLabs SDK docs
@@ -241,14 +342,6 @@ export function RealtimeVoiceSession({
     useEffect(() => {
         setMicMuted(micMutedProp)
     }, [micMutedProp])
-
-    // Store status callback
-    useEffect(() => {
-        statusCallback = onStatusChange || null
-        return () => {
-            statusCallback = null
-        }
-    }, [onStatusChange])
 
     // Register session store for client tools
     useEffect(() => {
@@ -261,23 +354,6 @@ export function RealtimeVoiceSession({
             })
         }
     }, [getSession, sendMessage, approvePermission, denyPermission])
-
-    const handleConnect = useCallback(() => {
-        if (DEBUG) console.log('[Voice] Realtime session connected')
-        onStatusChange?.('connected')
-    }, [onStatusChange])
-
-    const handleDisconnect = useCallback(() => {
-        if (DEBUG) console.log('[Voice] Realtime session disconnected')
-        resetRealtimeSessionState()
-        onStatusChange?.('disconnected')
-    }, [onStatusChange])
-
-    const handleError = useCallback((error: unknown) => {
-        if (DEBUG) console.error('[Voice] Realtime error:', error)
-        const errorMessage = error instanceof Error ? error.message : 'Connection error'
-        onStatusChange?.('error', errorMessage)
-    }, [onStatusChange])
 
     const handleMessage = useCallback((data: unknown) => {
         if (DEBUG) console.log('[Voice] Realtime message:', data)
@@ -300,6 +376,7 @@ export function RealtimeVoiceSession({
         if (DEBUG) console.log('[Voice] micMuted changed to:', micMuted)
     }, [micMuted])
 
+    const [bridgeKey, setBridgeKey] = useState(0)
     const [bridgeMounted, setBridgeMounted] = useState(false)
     const onRegisteredRef = useRef(onRegistered)
     onRegisteredRef.current = onRegistered
@@ -328,20 +405,17 @@ export function RealtimeVoiceSession({
             })
         }
 
-        // Register the voice session once
-        if (!hasRegistered.current) {
-            try {
-                registerVoiceSession(new RealtimeVoiceSessionImpl(api))
-                hasRegistered.current = true
-                onRegisteredRef.current?.()
-            } catch (error) {
-                console.error('[Voice] Failed to register voice session:', error)
-            }
-        }
+        const setStatus: StatusCallback = (...args) => onStatusChangeRef.current?.(...args)
+        const session = new RealtimeVoiceSessionImpl(() => apiRef.current, setStatus, () => {
+            conversationInstance = null
+            setBridgeKey((key) => key + 1)
+        })
+        registerVoiceSession(session)
+        onRegisteredRef.current?.()
 
         return () => {
-            // Clean up on unmount
             voiceSessionGeneration += 1
+            session.unmount()
             conversationInstance = null
             ensureConversationInstance = null
             const waiters = conversationWaitersRef.current.splice(0)
@@ -349,7 +423,7 @@ export function RealtimeVoiceSession({
                 waiter.reject(new Error('Realtime voice session unmounted'))
             }
         }
-    }, [api])
+    }, [])
 
     if (!bridgeMounted) {
         return null
@@ -358,11 +432,9 @@ export function RealtimeVoiceSession({
     return (
         <Suspense fallback={null}>
             <ElevenLabsConversationBridge
+                key={bridgeKey}
                 micMuted={micMuted}
-                onConnect={handleConnect}
-                onDisconnect={handleDisconnect}
                 onMessage={handleMessage}
-                onError={handleError}
                 onStatusChange={handleStatusChange}
                 onModeChange={handleModeChange}
                 onDebug={handleDebug}
