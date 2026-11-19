@@ -230,8 +230,10 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
         this.pendingRequests.set(id, { ...handlers, toolName, input });
         this.onRequestRegistered(id, toolName, input);
         const createdAt = Date.now();
+        let attempted = false;
         this.client.updateAgentState((currentState) => {
-            const current = currentState.requests?.[id];
+            const current = currentState.requests?.[id] ?? (attempted ? currentState.completedRequests?.[id] : undefined);
+            attempted = true;
             if (current?.tool === toolName && current.toolCallId === toolCallId
                 && isDeepStrictEqual(current.arguments, input)) return currentState;
             return {

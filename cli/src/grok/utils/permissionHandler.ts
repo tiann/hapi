@@ -102,6 +102,7 @@ export class GrokPermissionHandler extends BasePermissionHandler<PermissionRespo
         decision: AutoApprovalDecision
     ): Promise<void> {
         await this.backend.respondToPermission(request.sessionId, request, mapDecisionToOutcome(request, decision))
+        const timestamp = Date.now()
         this.client.updateAgentState((currentState) => ({
             ...currentState,
             completedRequests: {
@@ -110,8 +111,8 @@ export class GrokPermissionHandler extends BasePermissionHandler<PermissionRespo
                     tool: toolName,
                     toolCallId: request.toolCallId,
                     arguments: toolInput,
-                    createdAt: Date.now(),
-                    completedAt: Date.now(),
+                    createdAt: timestamp,
+                    completedAt: timestamp,
                     status: 'approved',
                     decision
                 }

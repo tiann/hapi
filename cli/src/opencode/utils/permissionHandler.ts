@@ -201,6 +201,7 @@ export class OpencodePermissionHandler extends BasePermissionHandler<PermissionR
     ): Promise<void> {
         const outcome = mapDecisionToOutcome(request, decision);
         await this.backend.respondToPermission(request.sessionId, request, outcome);
+        const timestamp = Date.now();
 
         this.client.updateAgentState((currentState) => ({
             ...currentState,
@@ -210,8 +211,8 @@ export class OpencodePermissionHandler extends BasePermissionHandler<PermissionR
                     tool: toolName,
                     toolCallId: request.toolCallId,
                     arguments: toolInput,
-                    createdAt: Date.now(),
-                    completedAt: Date.now(),
+                    createdAt: timestamp,
+                    completedAt: timestamp,
                     status: 'approved',
                     decision
                 }

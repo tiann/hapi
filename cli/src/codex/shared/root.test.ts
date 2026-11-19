@@ -1392,3 +1392,13 @@ it('splits queued user messages across a settings-changing slash command', async
     expect(texts[0]).toContain('hello');
     expect(texts[1]).toContain('done');
 });
+
+it('preserves the Shared Codex startup cancellation time when the Hub retries the state write', async () => {
+    const pending = { tool: 'request_user_input', arguments: {}, createdAt: 100 };
+    const f = await fixture({ initialState: { requests: { stale: pending } } });
+    const cleanup = f.updateState.mock.calls[0]![0];
+    const completedAt = f.state().completedRequests!.stale.completedAt!;
+    await vi.waitFor(() => expect(Date.now()).toBeGreaterThan(completedAt));
+    expect(cleanup({ requests: { stale: pending }, steeringActive: true }).completedRequests?.stale)
+        .toMatchObject({ createdAt: 100, completedAt, status: 'canceled' });
+});

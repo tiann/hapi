@@ -112,6 +112,7 @@ export class CopilotPermissionHandler extends BasePermissionHandler<PermissionRe
     ): Promise<void> {
         const outcome = mapCopilotPermissionDecision(request, decision);
         await this.backend.respondToPermission(request.sessionId, request, outcome);
+        const timestamp = Date.now();
 
         this.client.updateAgentState((currentState) => ({
             ...currentState,
@@ -121,8 +122,8 @@ export class CopilotPermissionHandler extends BasePermissionHandler<PermissionRe
                     tool: toolName,
                     toolCallId: request.toolCallId,
                     arguments: toolInput,
-                    createdAt: Date.now(),
-                    completedAt: Date.now(),
+                    createdAt: timestamp,
+                    completedAt: timestamp,
                     status: 'approved',
                     decision
                 }

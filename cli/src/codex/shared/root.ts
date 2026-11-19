@@ -299,9 +299,10 @@ export class SharedCodexRoot {
             // advertise a destructive operation we cannot make atomic yet.
             conversationHistory: { forkCurrent: !this.host.attached, forkAtMessage: !this.host.attached, forkLatestCompleted: false, rewindToMessage: false, forkPreview: true }
         } }));
+        const completedAt = Date.now();
         this.session.updateAgentState(state => ({ ...state, controlledByUser: false, startingMode: undefined, codexPlanProposalId: null, codexCompactionPendingMessageIds: [], requests: {},
             completedRequests: { ...state.completedRequests, ...Object.fromEntries(Object.entries(state.requests ?? {}).map(([id, request]) =>
-                [id, { ...request, completedAt: Date.now(), status: 'canceled' as const }])) }
+                [id, { ...request, completedAt, status: 'canceled' as const }])) }
         }));
         // 空会话的首次订阅保留完整响应，以兼容原生历史源文件的初始化。
         if (subscribe) {

@@ -296,6 +296,12 @@ describe('BasePermissionHandler overlapping answers', () => {
         const newer = { ...written, steeringActive: true }
         expect(update!(newer)).toBe(newer)
         expect(update!({ requests: {} }).requests?.['req-1']?.createdAt).toBe(written.requests?.['req-1']?.createdAt)
+        const settled: AgentState = { requests: {}, completedRequests: {
+            'req-1': { ...written.requests!['req-1']!, status: 'approved', completedAt: 500 }
+        } }
+        expect(update!(settled)).toBe(settled)
+        handler.register('req-1', 'AskUserQuestion', { questions: ['Replacement'] })
+        expect(update!(settled).requests?.['req-1']?.arguments).toEqual({ questions: ['Replacement'] })
     })
 
     it('preserves the first answer completion when a second answer arrives mid-flight', async () => {
