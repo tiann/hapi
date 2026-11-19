@@ -6,6 +6,7 @@ import { startHappyServer } from '@/claude/utils/startHappyServer'
 import * as peerMessages from '@/modules/pingPeer/pingPeer'
 import * as peerSpawn from '@/modules/spawnPeer/spawnPeer'
 import { initializeToken } from '@/ui/tokenInit'
+import { spawnHappyCLI } from '@/utils/spawnHappyCLI'
 import { peerToolCommand, runPeerToolCommand } from './peerTool'
 import { resolveCommand } from './registry'
 
@@ -17,7 +18,12 @@ vi.mock('@/api/fetchGithubPrAwareness', () => ({
     fetchGithubPrAwarenessEnabled: vi.fn(async () => false)
 }))
 
+vi.mock('@/utils/spawnHappyCLI', () => ({
+    spawnHappyCLI: vi.fn(() => ({ on: vi.fn(), unref: vi.fn() }))
+}))
+
 const mockInitializeToken = vi.mocked(initializeToken)
+const mockSpawnHappyCLI = vi.mocked(spawnHappyCLI)
 
 const input = (value: unknown) => async () => typeof value === 'string' ? value : JSON.stringify(value)
 
@@ -26,6 +32,7 @@ describe('hapi peer-tool', () => {
         vi.stubEnv('HAPI_DISABLE_PEER_TOOLS', '')
         vi.stubEnv('HAPI_SESSION_ID', 'parent-id')
         mockInitializeToken.mockClear()
+        mockSpawnHappyCLI.mockClear()
     })
 
     afterEach(() => {
@@ -100,6 +107,41 @@ describe('hapi peer-tool', () => {
         } finally {
             process.exitCode = previousExitCode
         }
+    })
+
+    it('returns a JSON tool error when hub credentials are missing', async () => {
+        mockInitializeToken.mockRejectedValueOnce(new Error('CLI_API_TOKEN is required. Set it via environment variable or run `hapi auth login`.'))
+        const list = vi.spyOn(peerMessages, 'listPeerSessions')
+        const result = await runPeerToolCommand(['list_peers'], input({}))
+        expect(result).toEqual({
+            content: [{ type: 'text', text: 'Failed to run list_peers: CLI_API_TOKEN is required. Set it via environment variable or run `hapi auth login`.' }],
+            isError: true,
+        })
+        expect(list).not.toHaveBeenCalled()
+    })
+
+    it('hands waitForReply forwarding to a detached process and returns at once', async () => {
+        vi.spyOn(peerMessages, 'pingPeer').mockResolvedValue({
+            sessionId: 'peer-id', name: 'Peer', resumed: false, localId: 'ping-peer-1', delivery: 'invoked'
+        })
+        const forward = vi.spyOn(peerMessages, 'forwardPeerReply').mockResolvedValue()
+        const result = await runPeerToolCommand(['ping_peer'], input({ sessionIdPrefix: 'peer-id', message: 'hi', waitForReply: true }))
+        expect(result?.content[0]?.text).toContain('its reply will be posted here')
+        expect(forward).not.toHaveBeenCalled()
+        expect(mockSpawnHappyCLI).toHaveBeenCalledWith(
+            ['peer-tool', '__forward_reply', 'peer-id', 'ping-peer-1', 'parent-id'],
+            { detached: true, stdio: 'ignore' }
+        )
+        const child = mockSpawnHappyCLI.mock.results[0]!.value as { unref: ReturnType<typeof vi.fn> }
+        expect(child.unref).toHaveBeenCalledOnce()
+    })
+
+    it('runs the detached reply forwarder in-process', async () => {
+        const forward = vi.spyOn(peerMessages, 'forwardPeerReply').mockResolvedValue()
+        await expect(runPeerToolCommand(['__forward_reply', 'peer-id', 'ping-peer-1', 'parent-id'], input(''))).resolves.toBeNull()
+        expect(mockInitializeToken).toHaveBeenCalledOnce()
+        expect(forward).toHaveBeenCalledWith({ peerSessionId: 'peer-id', taskLocalId: 'ping-peer-1', callerSessionId: 'parent-id' })
+        await expect(runPeerToolCommand(['__forward_reply', 'peer-id'], input(''))).rejects.toThrow('usage: hapi peer-tool __forward_reply')
     })
 
     it('exits 2 on usage errors', async () => {

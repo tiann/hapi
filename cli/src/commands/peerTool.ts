@@ -7,12 +7,17 @@ import {
     isPeerToolName,
     type PeerToolResult,
 } from '@/modules/pingPeer/peerToolDefinitions'
+import { forwardPeerReply } from '@/modules/pingPeer/pingPeer'
 import { initializeToken } from '@/ui/tokenInit'
+import { spawnHappyCLI } from '@/utils/spawnHappyCLI'
 import type { CommandDefinition } from './types'
 
 const USAGE_EXIT_CODE = 2
 
 const PEER_TOOL_NAMES = Object.keys(PEER_TOOL_DEFINITIONS)
+
+/** Hidden mode: the detached reply forwarder started by ping_peer/spawn_peer waitForReply. */
+const FORWARD_REPLY_MODE = '__forward_reply'
 
 class PeerToolUsageError extends Error {}
 
@@ -31,7 +36,9 @@ ${chalk.bold('Notes:')}
   (unknown tool, invalid JSON or arguments) or when HAPI_DISABLE_PEER_TOOLS is set.
   HAPI_SESSION_ID (set inside HAPI sessions) identifies the caller: it is
   excluded from list_peers, stamped as Parent by spawn_peer, and receives
-  waitForReply replies (the process then stays alive until the reply is forwarded).
+  waitForReply replies (forwarded by a detached background process, so this
+  command returns immediately). Relative spawn_peer directories resolve against
+  the current directory, like \`hapi spawn-peer\`.
 
 ${chalk.bold('Env:')}
   HAPI_API_URL / CLI_API_TOKEN (or ~/.hapi/settings.json via \`hapi auth login\`)
@@ -55,9 +62,28 @@ function parseJsonArgs(raw: string): unknown {
     }
 }
 
+function startDetachedReplyForwarder(options: { peerSessionId: string; taskLocalId: string; callerSessionId: string }): void {
+    const child = spawnHappyCLI(
+        ['peer-tool', FORWARD_REPLY_MODE, options.peerSessionId, options.taskLocalId, options.callerSessionId],
+        { detached: true, stdio: 'ignore' }
+    )
+    child.on('error', () => {})
+    child.unref()
+}
+
+async function runReplyForwarder(args: string[]): Promise<null> {
+    const [peerSessionId, taskLocalId, callerSessionId, ...rest] = args
+    if (!peerSessionId || !taskLocalId || !callerSessionId || rest.length > 0) {
+        throw new PeerToolUsageError(`usage: hapi peer-tool ${FORWARD_REPLY_MODE} <peerSessionId> <taskLocalId> <callerSessionId>`)
+    }
+    await initializeToken()
+    await forwardPeerReply({ peerSessionId, taskLocalId, callerSessionId })
+    return null
+}
+
 /**
  * Runs `hapi peer-tool <name>` with the given raw stdin. Returns null when
- * help was printed; throws PeerToolUsageError on usage errors.
+ * help was printed or the reply forwarder finished; throws PeerToolUsageError on usage errors.
  */
 export async function runPeerToolCommand(commandArgs: string[], readInput: () => Promise<string> = readStdin): Promise<PeerToolResult | null> {
     const [name, ...rest] = commandArgs
@@ -67,6 +93,9 @@ export async function runPeerToolCommand(commandArgs: string[], readInput: () =>
     }
     if (!name) {
         throw new PeerToolUsageError(`missing tool name; usage: hapi peer-tool <${PEER_TOOL_NAMES.join('|')}>`)
+    }
+    if (name === FORWARD_REPLY_MODE) {
+        return await runReplyForwarder(rest)
     }
     if (rest.length > 0) {
         throw new PeerToolUsageError(`unexpected arg: ${rest[0]} (pass tool arguments as JSON on stdin)`)
@@ -86,13 +115,19 @@ export async function runPeerToolCommand(commandArgs: string[], readInput: () =>
         throw new PeerToolUsageError(`invalid arguments for ${name}: ${issues}`)
     }
 
-    await initializeToken()
+    try {
+        await initializeToken()
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        return { content: [{ type: 'text', text: `Failed to run ${name}: ${message}` }], isError: true }
+    }
 
     const callerSessionId = process.env[HAPI_SESSION_ID_ENV]?.trim() || undefined
     const handlers = createPeerToolHandlers({
         callerSessionId,
         // Parent identity falls back to HAPI_SESSION_* env, like `hapi spawn-peer`.
         spawnContext: () => ({ requireParent: false }),
+        forwardReply: startDetachedReplyForwarder,
     })
     const handler = handlers[name] as (args: unknown) => Promise<PeerToolResult>
     return await handler(parsed.data)

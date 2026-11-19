@@ -129,6 +129,8 @@ export type PeerToolContext = {
         parent?: PeerParentIdentity | null
         requireParent: boolean
     }
+    /** Starts reply forwarding; defaults to polling in this process. */
+    forwardReply?: (options: { peerSessionId: string; taskLocalId: string; callerSessionId: string }) => void
 }
 
 export type PeerToolHandlers = {
@@ -161,7 +163,13 @@ function textResult(text: string, isError: boolean): PeerToolResult {
     return { content: [{ type: 'text' as const, text }], isError }
 }
 
+export function forwardPeerReplyInProcess(options: { peerSessionId: string; taskLocalId: string; callerSessionId: string }): void {
+    forwardPeerReply(options)
+        .catch((error) => logger.debug('[hapiMCP] peer reply forwarding failed:', error))
+}
+
 export function createPeerToolHandlers(ctx: PeerToolContext): PeerToolHandlers {
+    const forwardReply = ctx.forwardReply ?? forwardPeerReplyInProcess
     /** Start reply forwarding when asked; returns the note for the tool result. */
     const forwardReplyIfRequested = (
         waitForReply: boolean | undefined,
@@ -171,8 +179,7 @@ export function createPeerToolHandlers(ctx: PeerToolContext): PeerToolHandlers {
         if (!task.localId) return '; the delivered message could not be identified, so check the reply with inspect_peer'
         if (!supportsPeerReply(task.flavor)) return `; ${task.flavor} peers do not report turn ends, so check the reply with inspect_peer`
         if (!ctx.callerSessionId) return '; no calling session (HAPI_SESSION_ID is unset), so check the reply with inspect_peer'
-        forwardPeerReply({ peerSessionId: task.sessionId, taskLocalId: task.localId, callerSessionId: ctx.callerSessionId })
-            .catch((error) => logger.debug('[hapiMCP] peer reply forwarding failed:', error))
+        forwardReply({ peerSessionId: task.sessionId, taskLocalId: task.localId, callerSessionId: ctx.callerSessionId })
         return '; its reply will be posted here'
     }
 

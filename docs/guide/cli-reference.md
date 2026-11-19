@@ -237,7 +237,9 @@ Exit code `0` on success, `1` when the result has `isError`, `2` on usage
 errors (unknown tool, invalid JSON or arguments) or when
 `HAPI_DISABLE_PEER_TOOLS` is set. `HAPI_SESSION_ID` identifies the calling
 session (excluded from `list_peers`, Parent of `spawn_peer`, receiver of
-`waitForReply` replies).
+`waitForReply` replies, which a detached background process forwards so the
+command returns at once). Relative `spawn_peer` directories resolve against the
+current directory, like `hapi spawn-peer`.
 
 ## Jobs
 

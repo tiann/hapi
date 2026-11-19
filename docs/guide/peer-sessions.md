@@ -66,7 +66,7 @@ Pass `waitForReply: true` to `ping_peer` or `spawn_peer` and the calling agent c
 - If the task is canceled before it runs, or the peer stops without replying, the caller is told so.
 - HAPI stops waiting after 6 hours and tells the caller to check the peer with `inspect_peer`.
 
-Reply forwarding is MCP-only (no shell flag) and runs inside the calling session's HAPI process: if that process exits first, the reply stays only in the peer session. Pi peers do not report the end of a turn, so the tool returns immediately and asks the caller to check with `inspect_peer` instead.
+Reply forwarding has no `hapi ping-peer` / `hapi spawn-peer` flag. Through MCP it runs inside the calling session's HAPI process: if that process exits first, the reply stays only in the peer session. `hapi peer-tool` hands it to a detached background process and returns at once. Pi peers do not report the end of a turn, so the tool returns immediately and asks the caller to check with `inspect_peer` instead.
 
 ## Spawning peers
 
