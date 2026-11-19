@@ -99,7 +99,7 @@ fn unicode_escape(input: &[u8]) -> Option<u16> {
     u16::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok()
 }
 
-fn decode_json<T: serde::de::DeserializeOwned>(data: &str) -> serde_json::Result<T> {
+pub(crate) fn decode_json<T: serde::de::DeserializeOwned>(data: &str) -> serde_json::Result<T> {
     serde_json::from_str(data).or_else(|error| {
         let bytes = data.as_bytes();
         let mut normalized = None;
