@@ -1742,19 +1742,41 @@ describe('setSessionLastNotify / clearSessionLastNotify (#1717)', () => {
         expect(store.sessions.getSession(session.id)?.updatedAt).toBe(before!)
     })
 
-    it('clears on a new turn, and reports no-op when nothing was stored', () => {
+    it('clears on a new turn, and still advances the boundary with nothing stored', () => {
         const store = makeStore()
         const session = seed(store)
 
-        expect(store.sessions.clearSessionLastNotify(session.id, 'default')).toBe(false)
+        // Previously a no-op. It must not be: a turn can start BEFORE the
+        // previous footer reaches the hub, and if that start writes nothing
+        // the delayed footer slips past the boundary later and revives an
+        // answered blocker. The write moves the watermark even with no footer.
+        expect(store.sessions.clearSessionLastNotify(session.id, 'default', 1000)).toBe(true)
+        expect(store.sessions.getSession(session.id)?.lastNotifyClearedAt).toBe(1000)
+
+        // Genuinely idempotent once the boundary is already at or past it.
+        expect(store.sessions.clearSessionLastNotify(session.id, 'default', 500)).toBe(false)
 
         store.sessions.setSessionLastNotify(session.id, { status: 'blocked', at: 2000, note: 'x' }, 'default')
-        expect(store.sessions.clearSessionLastNotify(session.id, 'default')).toBe(true)
+        expect(store.sessions.clearSessionLastNotify(session.id, 'default', 3000)).toBe(true)
 
         const row = store.sessions.getSession(session.id)
         expect(row?.lastNotifyStatus).toBeNull()
         expect(row?.lastNotifyAt).toBeNull()
         expect(row?.lastNotifyNote).toBeNull()
+        expect(row?.lastNotifyClearedAt).toBe(3000)
+    })
+
+    it('rejects a footer stamped before the clear boundary', () => {
+        const store = makeStore()
+        const session = seed(store)
+
+        store.sessions.clearSessionLastNotify(session.id, 'default', 5000)
+        // Delayed Claude replay carrying its original pre-reply timestamp.
+        store.sessions.setSessionLastNotify(session.id, { status: 'blocked', at: 4000, note: 'stale' }, 'default')
+        expect(store.sessions.getSession(session.id)?.lastNotifyStatus).toBeNull()
+
+        store.sessions.setSessionLastNotify(session.id, { status: 'blocked', at: 6000, note: 'fresh' }, 'default')
+        expect(store.sessions.getSession(session.id)?.lastNotifyStatus).toBe('blocked')
     })
 
     it('is namespace scoped', () => {

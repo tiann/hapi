@@ -617,17 +617,21 @@ export function isDeliveredOperatorReply(
     message: { content: unknown; scheduledAt: number | null; invokedAt: number | null }
 ): boolean {
     if (!isOperatorReplyMessage(message.content)) return false
-    if (message.scheduledAt != null) return message.invokedAt !== null
-    return true
+    // Delivery evidence for EVERY queued reply, not just scheduled ones: a
+    // prompt still sitting in the queue with a null `invokedAt` has not
+    // reached the agent either, and treating it as an answer buries a footer
+    // the agent never saw.
+    return message.invokedAt !== null
 }
 
 /** When the agent actually saw a delivered reply. */
 export function deliveredOperatorReplyAt(
     message: { createdAt: number; scheduledAt: number | null; invokedAt: number | null }
 ): number {
-    return message.scheduledAt != null
-        ? (message.invokedAt ?? message.createdAt)
-        : message.createdAt
+    // Invocation time, always. A reply composed before a footer can be
+    // invoked after it; ordering on `createdAt` would let that reply "answer"
+    // a footer written while it was still queued.
+    return message.invokedAt ?? message.createdAt
 }
 
 /**

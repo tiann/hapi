@@ -174,6 +174,9 @@ describe('blocked acknowledgement across a session merge (#1717)', () => {
             content: { type: 'text', text: 'here you go' },
             meta: { sentFrom: 'webapp' }
         }, 'reply-1', null, now)
+        // Delivered, not merely queued: an uninvoked prompt has not reached
+        // the agent and must not count as an answer.
+        store.messages.markMessagesInvoked(target, ['reply-1'], now)
 
         await cache.mergeSessionHistory(source, target, 'default')
 

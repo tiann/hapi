@@ -1647,7 +1647,9 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     const [unblockOpen, setUnblockOpen] = useState(false)
     // Pinned when the dialog opens so the watermark covers the blocker the
     // operator reviewed, not whatever arrived while they were typing.
-    const [unblockObservedAt, setUnblockObservedAt] = useState<number | null>(null)
+    const [unblockObserved, setUnblockObserved] = useState<
+        { at: number; label: string | null; note: string | null } | null
+    >(null)
     const {
         status: cursorChatStoreStatus,
         isApplicable: cursorChatStoreApplicable,
@@ -2019,7 +2021,20 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                     ? () => forkFlow.openFork()
                     : undefined}
                 forkDisabledReason={forkDisabledReason}
-                onMarkUnblocked={blocked ? () => { setUnblockObservedAt(blocked.at); setUnblockOpen(true) } : undefined}
+                onMarkUnblocked={blocked
+                    ? () => {
+                        // Freeze identity AND copy together. Freezing only the
+                        // timestamp let the dialog keep rendering a newer
+                        // footer while confirming against the older one, so
+                        // the operator read one blocker and dismissed another.
+                        setUnblockObserved({
+                            at: blocked.at,
+                            label: t(getSessionBlockedLabelKey(blocked)),
+                            note: blocked.note ?? null
+                        })
+                        setUnblockOpen(true)
+                    }
+                    : undefined}
                 onArchive={() => setArchiveOpen(true)}
                 onReopen={cursorReopenDisabledReason ? undefined : () => void handleReopen()}
                 reopenDisabledReason={cursorReopenDisabledReason}
@@ -2078,13 +2093,13 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                 <UnblockReasonDialog
                     isOpen
                     sessionTitle={sessionName}
-                    blockedLabel={blocked ? t(getSessionBlockedLabelKey(blocked)) : null}
-                    blockedNote={blocked?.note ?? null}
+                    blockedLabel={unblockObserved?.label ?? null}
+                    blockedNote={unblockObserved?.note ?? null}
                     isPending={isPending}
-                    onClose={() => { setUnblockOpen(false); setUnblockObservedAt(null) }}
+                    onClose={() => { setUnblockOpen(false); setUnblockObserved(null) }}
                     onConfirm={(reason) => acknowledgeBlocked({
                         reason,
-                        ...(unblockObservedAt !== null ? { observedAt: unblockObservedAt } : {})
+                        ...(unblockObserved ? { observedAt: unblockObserved.at } : {})
                     })}
                 />
             ) : null}
@@ -2273,6 +2288,9 @@ export function SessionList(props: {
     const [showBlockedOnly, setShowBlockedOnly] = useState(false)
     const [blockedSectionCollapsed, setBlockedSectionCollapsed] = useState(false)
     const [pendingBlockedScrollId, setPendingBlockedScrollId] = useState<string | null>(null)
+    /** One row exempted from the saved status / machine / date filters so the
+     *  jump can reach it without rewriting the operator's preferences. */
+    const [revealBlockedSessionId, setRevealBlockedSessionId] = useState<string | null>(null)
     const [flashBlockedSessionId, setFlashBlockedSessionId] = useState<string | null>(null)
     const [blockedOffscreen, setBlockedOffscreen] = useState<{ above: number; below: number }>(
         { above: 0, below: 0 }
@@ -2520,24 +2538,27 @@ export function SessionList(props: {
         ? machineFilter
         : null
 
+    // The jump target is exempted exactly where the selected session already
+    // is, so revealing one row needs no change to saved preferences.
+    const filterExemptId = revealBlockedSessionId ?? selectedSessionId
     const contentSearchCandidateSessions = useMemo(() => {
-        let filtered = allSessions.filter(session => sessionMatchesTimeRange(session, timeRange, selectedSessionId))
+        let filtered = allSessions.filter(session => sessionMatchesTimeRange(session, timeRange, filterExemptId))
         if (listView.unreadOnly) {
             filtered = filterUnreadSessionsOnly(
                 filtered,
                 isSessionUnread,
-                selectedSessionId
+                filterExemptId
             )
         }
         if (showActiveOnly) {
-            filtered = filterActiveSessionsOnly(filtered, selectedSessionId)
+            filtered = filterActiveSessionsOnly(filtered, filterExemptId)
         }
         if (showWorkingOnly) {
-            filtered = filterWorkingSessionsOnly(filtered, selectedSessionId)
+            filtered = filterWorkingSessionsOnly(filtered, filterExemptId)
         }
         if (showScratchlistOnly) {
             if (isScratchlistStatusLoading || scratchlistStatusError) return []
-            filtered = filterScratchlistSessionsOnly(filtered, selectedSessionId, scratchlistSessionIds)
+            filtered = filterScratchlistSessionsOnly(filtered, filterExemptId, scratchlistSessionIds)
         }
         // The blocked lens has to narrow the candidate ids too, not just the
         // rendered rows. `searchMessageContent` keeps only the 100 most
@@ -2547,7 +2568,7 @@ export function SessionList(props: {
         if (showBlockedOnly) {
             const now = Date.now()
             filtered = filtered.filter(session =>
-                session.id === selectedSessionId || sessionIsBlocked(session, { now })
+                session.id === filterExemptId || sessionIsBlocked(session, { now })
             )
         }
         return activeMachineFilter === null
@@ -2562,7 +2583,7 @@ export function SessionList(props: {
         lastSeenVersion,
         scratchlistSessionIds,
         scratchlistStatusError,
-        selectedSessionId,
+        filterExemptId,
         showScratchlistOnly,
         showActiveOnly,
         showWorkingOnly,
@@ -2632,17 +2653,17 @@ export function SessionList(props: {
     // machine selection.
     const sessionFilteredSessions = useMemo(() => {
         let filtered = listView.unreadOnly
-            ? filterUnreadSessionsOnly(visibleSessions, isSessionUnread, selectedSessionId)
+            ? filterUnreadSessionsOnly(visibleSessions, isSessionUnread, filterExemptId)
             : visibleSessions
         // Active and Working are AND-composed with the other lenses (#2002).
         // Both are ephemeral, independent of the persisted listView.status
         // ("Active sessions only" in Settings) — a temporary scan should not
         // read or write that saved preference.
         if (showActiveOnly) {
-            filtered = filterActiveSessionsOnly(filtered, selectedSessionId)
+            filtered = filterActiveSessionsOnly(filtered, filterExemptId)
         }
         if (showWorkingOnly) {
-            filtered = filterWorkingSessionsOnly(filtered, selectedSessionId)
+            filtered = filterWorkingSessionsOnly(filtered, filterExemptId)
         }
         if (showScratchlistOnly) {
             if (isScratchlistStatusLoading || scratchlistStatusError) {
@@ -2650,7 +2671,7 @@ export function SessionList(props: {
             }
             filtered = filterScratchlistSessionsOnly(
                 filtered,
-                selectedSessionId,
+                filterExemptId,
                 scratchlistSessionIds
             )
         }
@@ -2661,7 +2682,7 @@ export function SessionList(props: {
         if (showBlockedOnly) {
             const now = Date.now()
             filtered = filtered.filter(session =>
-                session.id === selectedSessionId || sessionIsBlocked(session, { now })
+                session.id === filterExemptId || sessionIsBlocked(session, { now })
             )
         }
         return filtered
@@ -2671,7 +2692,7 @@ export function SessionList(props: {
         lastSeenVersion,
         scratchlistSessionIds,
         scratchlistStatusError,
-        selectedSessionId,
+        filterExemptId,
         showScratchlistOnly,
         showActiveOnly,
         showWorkingOnly,
@@ -2682,9 +2703,10 @@ export function SessionList(props: {
         () => activeMachineFilter === null
             ? sessionFilteredSessions
             : sessionFilteredSessions.filter(session =>
-                (session.metadata?.machineId ?? UNKNOWN_MACHINE_ID) === activeMachineFilter
+                session.id === filterExemptId
+                || (session.metadata?.machineId ?? UNKNOWN_MACHINE_ID) === activeMachineFilter
             ),
-        [sessionFilteredSessions, activeMachineFilter]
+        [sessionFilteredSessions, activeMachineFilter, filterExemptId]
 
     )
     const globalPinnedSessions = useMemo(() => {
@@ -3605,19 +3627,18 @@ export function SessionList(props: {
         blockedJumpCursorRef.current = cursor + 1
         const target = blockedSessions[cursor]!
         if (!renderedIds.has(target.id)) {
-            // The pill counts blocked work the active filters hide. Travelling
-            // without clearing them would skip rows the count promised.
+            // Reveal the target through transient state only. Writing
+            // `listView` / `machineFilter` persists to local storage, so a
+            // navigation action silently destroyed preferences the operator
+            // had set — the pill's job is to take them to the row, not to
+            // reset their list. Only the ephemeral lenses and the live search
+            // box are dropped, and `revealBlockedSessionId` exempts this one
+            // row from the rest.
             setSearchQuery('')
-            setMachineFilter(null)
-            setListView({ status: 'all', unreadOnly: false })
-            // The transient lenses (#2376) and the date range narrow
-            // `sessionFilteredSessions` too, so a blocked row they exclude never
-            // mounts and the pending-scroll effect has nothing to travel to.
             setShowActiveOnly(false)
             setShowWorkingOnly(false)
             setShowScratchlistOnly(false)
-            setCustomStart('')
-            setCustomEnd('')
+            setRevealBlockedSessionId(target.id)
         }
         // A globally pinned blocked row lives in the Pinned section, not the
         // Blocked one — expand both or the jump lands on a zero-height row
@@ -3646,6 +3667,7 @@ export function SessionList(props: {
         row.scrollIntoView({ block: 'center', behavior: 'smooth' })
         setFlashBlockedSessionId(pendingBlockedScrollId)
         setPendingBlockedScrollId(null)
+        setRevealBlockedSessionId(null)
     }, [pendingBlockedScrollId, blockedSessions, blockedSectionSessions, blockedSectionCollapsed, machineFilteredSessions])
 
     useEffect(() => {

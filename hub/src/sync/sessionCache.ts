@@ -2,7 +2,7 @@ import { mergeClaudeSessionIdHistory, mergeReadState } from '@hapi/protocol'
 import { SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING } from '@hapi/protocol'
 import { AgentStateSchema, ExternalRefsSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
 import type { BackgroundTask, CodexCollaborationMode, CopilotAgentMode, ExternalRef, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
-import type { SessionTurnEndReason, SessionTurnTrigger, Store } from '../store'
+import type { SessionTurnEndReason, SessionTurnTrigger, Store, StoredSession } from '../store'
 import type { TransferSessionJobsResult } from '../store/sessionJobs'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
@@ -465,6 +465,7 @@ export class SessionCache {
             blockedAck: stored.blockedAckAt !== null
                 ? { at: stored.blockedAckAt, reason: stored.blockedAckReason ?? '' }
                 : null,
+            notifyUpdatedAt: stored.lastNotifyUpdatedAt ?? 0,
             lastNotify: stored.lastNotifyStatus !== null && stored.lastNotifyAt !== null
                 ? {
                     status: stored.lastNotifyStatus,
@@ -580,13 +581,64 @@ export class SessionCache {
      * Forget the stored footer — a new turn started, so the agent's last
      * self-report no longer describes the present.
      */
+    /**
+     * Replace the notify signal and its clear boundary in one write.
+     *
+     * Only for post-truncation reconciliation: after a rewind the retained
+     * transcript is the truth, so this bypasses the monotonic and boundary
+     * guards that protect the live path from out-of-order arrivals.
+     */
+    /**
+     * True when the destination holds a blocker older than `ackAt` that its own
+     * acknowledgement does not already cover — i.e. one a transferred watermark
+     * would silence without the operator ever having seen it.
+     */
+    private hasUnacknowledgedBlockerBefore(
+        stored: StoredSession,
+        ackAt: number,
+        namespace: string
+    ): boolean {
+        const ownAckAt = stored.blockedAckAt ?? null
+        const covered = (at: number): boolean => ownAckAt !== null && at <= ownAckAt
+        const notifyAt = stored.lastNotifyAt
+        if (stored.lastNotifyStatus !== null && notifyAt !== null
+            && notifyAt < ackAt && !covered(notifyAt)) {
+            return true
+        }
+        const session = this.sessions.get(stored.id)
+        const requests = session?.agentState?.requests
+        if (!requests) return false
+        for (const request of Object.values(requests)) {
+            const since = typeof request.createdAt === 'number' ? request.createdAt : null
+            if (since !== null && since < ackAt && !covered(since)) return true
+        }
+        return false
+    }
+
+    replaceNotifyAfterTruncate(
+        sessionId: string,
+        signal: { status: string; at: number; note: string | null } | null
+    ): void {
+        const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+        if (!session) return
+        if (this.store.sessions.replaceNotifyAfterTruncate(sessionId, session.namespace, signal)) {
+            this.applyLastNotifyToCache(session, signal)
+        }
+    }
+
     clearSessionLastNotify(sessionId: string): void {
         const session = this.sessions.get(sessionId)
-        // Guard on the cached value so the common (nothing stored) case costs
-        // no SQL: this runs on every thinking transition.
-        if (!session?.lastNotify) return
-        if (this.store.sessions.clearSessionLastNotify(sessionId, session.namespace)) {
+        if (!session) return
+        // The boundary advances even when no footer is cached. A turn that
+        // starts BEFORE the previous footer reaches the hub would otherwise
+        // skip the write entirely, and that delayed pre-reply footer could
+        // then arrive after the reply turn ended and be accepted — reviving a
+        // blocker the operator had already answered.
+        const cleared = this.store.sessions.clearSessionLastNotify(sessionId, session.namespace)
+        if (session.lastNotify && cleared) {
             this.applyLastNotifyToCache(session, null)
+        } else if (cleared) {
+            session.notifyUpdatedAt = Math.max((session.notifyUpdatedAt ?? 0) + 1, Date.now())
         }
     }
 
@@ -2464,7 +2516,17 @@ export class SessionCache {
         if (oldAckAt !== null) {
             const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
             const targetAckAt = latest?.blockedAckAt ?? null
-            if (latest && (targetAckAt === null || oldAckAt > targetAckAt)) {
+            // The ack is a timestamp watermark, so carrying it across silences
+            // EVERY destination blocker older than it — including ones the
+            // operator never saw. Dismissing a 12:05 blocker on the source must
+            // not hide an unanswered 12:00 permission that belongs to the
+            // destination. Only transfer when the destination has nothing
+            // unacknowledged that the watermark would swallow; erring toward
+            // showing a blocker is the whole point of this feature.
+            const destinationWouldBeSilenced = latest !== null && latest !== undefined
+                && this.hasUnacknowledgedBlockerBefore(latest, oldAckAt, namespace)
+            if (latest && !destinationWouldBeSilenced
+                && (targetAckAt === null || oldAckAt > targetAckAt)) {
                 this.store.sessions.setSessionBlockedAck(
                     newSessionId,
                     { at: oldAckAt, reason: oldStored.blockedAckReason ?? '' },

@@ -31,6 +31,14 @@ export function UnblockReasonDialog(props: {
     const [reason, setReason] = useState('')
     const [error, setError] = useState<string | null>(null)
     const inputRef = useRef<HTMLTextAreaElement>(null)
+    const dialogRef = useRef<HTMLDivElement>(null)
+    // Restore focus to whatever opened the dialog, so dismissing does not dump
+    // the keyboard user back at the top of the document.
+    useEffect(() => {
+        if (!props.isOpen) return
+        const opener = document.activeElement as HTMLElement | null
+        return () => opener?.focus?.()
+    }, [props.isOpen])
 
     useEffect(() => {
         if (props.isOpen) {
@@ -64,12 +72,39 @@ export function UnblockReasonDialog(props: {
             onClick={props.onClose}
         >
             <div
+                ref={dialogRef}
                 role="dialog"
                 aria-modal="true"
                 aria-label={t('sessions.unblock.title')}
                 data-testid="unblock-reason-dialog"
                 className="w-full max-w-md rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)] p-4 shadow-lg"
                 onClick={(event) => event.stopPropagation()}
+                // `aria-modal` promises the background is inert, but nothing
+                // enforced it: tabbing past Confirm reached the session
+                // controls underneath, which stayed actionable. Trap the ring
+                // and honour Escape so the promise is real.
+                onKeyDown={(event) => {
+                    if (event.key === 'Escape') {
+                        event.stopPropagation()
+                        props.onClose()
+                        return
+                    }
+                    if (event.key !== 'Tab') return
+                    const focusables = dialogRef.current?.querySelectorAll<HTMLElement>(
+                        'button:not([disabled]), textarea:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex="-1"])'
+                    )
+                    if (!focusables || focusables.length === 0) return
+                    const first = focusables[0]!
+                    const last = focusables[focusables.length - 1]!
+                    const active = document.activeElement
+                    if (!event.shiftKey && active === last) {
+                        event.preventDefault()
+                        first.focus()
+                    } else if (event.shiftKey && active === first) {
+                        event.preventDefault()
+                        last.focus()
+                    }
+                }}
             >
                 <div className="text-sm font-semibold text-[var(--app-fg)]">
                     {t('sessions.unblock.title')}

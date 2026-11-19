@@ -92,7 +92,7 @@ import { ArchiveCleanupError } from './archiveCleanupError'
 import { AutomaticTitleSuggestionService } from './automaticTitleSuggestion'
 import { extractMessageEventType } from '../notifications/eventParsing'
 import { SessionEnumerationCache } from './sessionEnumerationCache'
-import { buildOperatorUnblockEvent, extractSessionNotifySignal, ingestNotifySummaryFromMessage, isDeliveredOperatorReply } from './workGraphNotifyIngest'
+import { buildOperatorUnblockEvent, deliveredOperatorReplyAt, extractSessionNotifySignal, ingestNotifySummaryFromMessage, isDeliveredOperatorReply, isOperatorReplyMessage } from './workGraphNotifyIngest'
 import { MetadataSchema, type OpenCodeRewindOperation } from '@hapi/protocol/schemas'
 import type { OpenCodeRewindReport } from '@hapi/protocol/apiTypes'
 import { extractTodoWriteTodosFromMessageContent } from './todos'
@@ -504,6 +504,16 @@ export class SyncEngine {
      * Returns true when a footer was found and stamped.
      */
     private restoreNotifySignalFromTranscript(sessionId: string): boolean {
+        const signal = this.findNotifySignalInTranscript(sessionId)
+        if (!signal) return false
+        this.sessionCache.setSessionLastNotify(sessionId, signal)
+        return true
+    }
+
+    /** Newest eligible footer in the retained transcript, or null. */
+    private findNotifySignalInTranscript(
+        sessionId: string
+    ): { status: string; at: number; note: string | null } | null {
         const now = Date.now()
         const scanned = this.store.messages.getMessages(sessionId, NOTIFY_BACKFILL_MESSAGE_SCAN)
         // Re-order by message time before scanning. `getMessages` sorts by
@@ -513,9 +523,19 @@ export class SyncEngine {
         // them rather than resurrect a superseded blocker. The operator-reply
         // boundary moves with it, or the stop point would be chosen in a
         // different order than the footer it guards.
-        const messages = [...scanned].sort((a, b) => (
-            a.createdAt !== b.createdAt ? a.createdAt - b.createdAt : a.seq - b.seq
-        ))
+        // Order by when the agent actually SAW each message, not when it was
+        // written. A reply composed before a footer can be invoked after it;
+        // sorting on `createdAt` would place that reply earlier in the walk and
+        // let the already-answered footer be restored.
+        const effectiveAt = (message: StoredMessage): number =>
+            isOperatorReplyMessage(message.content)
+                ? deliveredOperatorReplyAt(message)
+                : message.createdAt
+        const messages = [...scanned].sort((a, b) => {
+            const ea = effectiveAt(a)
+            const eb = effectiveAt(b)
+            return ea !== eb ? ea - eb : a.seq - b.seq
+        })
         // Newest first: the most recent footer is the session's current
         // self-report, and older ones have already been superseded.
         for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -523,17 +543,13 @@ export class SyncEngine {
             // Stop at the newest operator prompt. Anything older was already
             // answered, and clear-on-new-turn deliberately erased it — a
             // restart must not resurrect a blocker the operator dealt with.
-            // Only a reply the agent was actually given ends the scan. A
-            // scheduled message that passed its due time but was never invoked
-            // has still answered nothing, so stopping on it would bury an
-            // unanswered footer on restart.
+            // Only a reply the agent was actually given ends the scan.
             if (isDeliveredOperatorReply(message)) break
             const signal = extractSessionNotifySignal(message.content, message.createdAt)
             if (!signal) continue
-            this.sessionCache.setSessionLastNotify(sessionId, signal)
-            return true
+            return signal
         }
-        return false
+        return null
     }
 
     /**
@@ -545,11 +561,17 @@ export class SyncEngine {
      * refresh simply re-reads the stale columns.
      */
     private reconcileNotifySignalAfterTruncate(sessionId: string): void {
-        // Clear before re-deriving. Any surviving footer is necessarily older
-        // than the one just dropped, and `setSessionLastNotify` is deliberately
-        // timestamp-monotonic, so it would refuse to move the signal backwards.
-        this.sessionCache.clearSessionLastNotify(sessionId)
-        this.restoreNotifySignalFromTranscript(sessionId)
+        // Derive FIRST, then write the signal and its boundary together.
+        //
+        // Clearing and restoring as two steps made the restore fail its own
+        // check: the clear stamps the boundary at `now`, and the retained
+        // footer predates that, so a session whose retained history still ends
+        // blocked dropped out of the Blocked section entirely. After a
+        // truncation the transcript is the truth, not arrival order.
+        const session = this.sessionCache.getSession(sessionId)
+        if (!session) return
+        const retained = this.findNotifySignalInTranscript(sessionId)
+        this.sessionCache.replaceNotifyAfterTruncate(sessionId, retained)
     }
 
     private resolveOnlineMachineForSession(

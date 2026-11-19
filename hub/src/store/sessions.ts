@@ -289,6 +289,7 @@ type DbSessionRow = {
     blocked_ack_at: number | null
     blocked_ack_reason: string | null
     last_notify_cleared_at: number | null
+    last_notify_updated_at: number | null
     active: number
     active_at: number | null
     seq: number
@@ -325,6 +326,7 @@ function toStoredSession(row: DbSessionRow): StoredSession {
         blockedAckAt: row.blocked_ack_at,
         blockedAckReason: row.blocked_ack_reason,
         lastNotifyClearedAt: row.last_notify_cleared_at,
+        lastNotifyUpdatedAt: row.last_notify_updated_at,
         active: row.active === 1,
         activeAt: row.active_at,
         seq: row.seq
@@ -728,6 +730,7 @@ export function setSessionLastNotify(
             SET last_notify_status = @status,
                 last_notify_at = @at,
                 last_notify_note = @note,
+                last_notify_updated_at = MAX(COALESCE(last_notify_updated_at, 0) + 1, @rev),
                 seq = seq + 1
             WHERE id = @id
               AND namespace = @namespace
@@ -738,8 +741,7 @@ export function setSessionLastNotify(
             status: signal.status,
             at: signal.at,
             note: signal.note,
-            namespace
-        })
+            namespace, rev: Date.now() })
         return result.changes === 1
     } catch {
         return false
@@ -764,6 +766,7 @@ export function setSessionBlockedAck(
             UPDATE sessions
             SET blocked_ack_at = @at,
                 blocked_ack_reason = @reason,
+                last_notify_updated_at = MAX(COALESCE(last_notify_updated_at, 0) + 1, @at),
                 seq = seq + 1
             WHERE id = @id
               AND namespace = @namespace
@@ -793,10 +796,17 @@ export function clearSessionLastNotify(
                 last_notify_at = NULL,
                 last_notify_note = NULL,
                 last_notify_cleared_at = MAX(COALESCE(last_notify_cleared_at, 0), @clearedAt),
+                last_notify_updated_at = MAX(COALESCE(last_notify_updated_at, 0) + 1, @clearedAt),
                 seq = seq + 1
             WHERE id = @id
               AND namespace = @namespace
-              AND last_notify_status IS NOT NULL
+              -- No last_notify_status IS NOT NULL guard: the clear boundary
+              -- has to advance on a qualifying turn start even when no footer
+              -- is stored yet, or a footer still in flight at turn start slips
+              -- past it later. Still a no-op write when neither would move.
+              AND (last_notify_status IS NOT NULL
+                   OR last_notify_cleared_at IS NULL
+                   OR last_notify_cleared_at < @clearedAt)
         `).run({ id, namespace, clearedAt })
         return result.changes === 1
     } catch {
@@ -1174,4 +1184,47 @@ export function deleteSession(db: Database, id: string, namespace: string): bool
         }
         return result.changes > 0
     })
+}
+
+/**
+ * Replace the notify signal and its clear boundary in ONE write.
+ *
+ * Rewind needs this: clearing (which stamps the boundary at now) and then
+ * restoring the retained footer separately makes the restore fail its own
+ * boundary check, so a session whose retained history still ends blocked
+ * dropped out of the Blocked section. Bypasses the monotonic guards on
+ * purpose — the transcript, not arrival order, is the truth after a truncation.
+ */
+export function replaceSessionNotifyAfterTruncate(
+    db: Database,
+    id: string,
+    namespace: string,
+    signal: { status: string; at: number; note: string | null } | null,
+    clearedAt: number
+): boolean {
+    try {
+        const result = db.prepare(`
+            UPDATE sessions
+            SET last_notify_status = @status,
+                last_notify_at = @at,
+                last_notify_note = @note,
+                last_notify_cleared_at = @clearedAt,
+                last_notify_updated_at = MAX(COALESCE(last_notify_updated_at, 0) + 1, @rev),
+                seq = seq + 1
+            WHERE id = @id AND namespace = @namespace
+        `).run({
+            id,
+            namespace,
+            status: signal?.status ?? null,
+            at: signal?.at ?? null,
+            note: signal?.note ?? null,
+            // A retained footer must survive its own boundary check, so the
+            // boundary sits just below it rather than at `now`.
+            clearedAt: signal ? Math.min(clearedAt, signal.at) : clearedAt,
+            rev: Date.now()
+        })
+        return result.changes === 1
+    } catch {
+        return false
+    }
 }

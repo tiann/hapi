@@ -512,6 +512,7 @@ export class Store {
                 last_notify_at INTEGER,
                 last_notify_note TEXT,
                 last_notify_cleared_at INTEGER,
+                last_notify_updated_at INTEGER,
                 blocked_ack_at INTEGER,
                 blocked_ack_reason TEXT,
                 active INTEGER DEFAULT 0,
@@ -1340,6 +1341,9 @@ export class Store {
         if (columns.size === 0) return
         if (!columns.has('last_notify_cleared_at')) {
             this.db.exec('ALTER TABLE sessions ADD COLUMN last_notify_cleared_at INTEGER')
+        }
+        if (!columns.has('last_notify_updated_at')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN last_notify_updated_at INTEGER')
         }
     }
 

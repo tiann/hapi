@@ -27,7 +27,8 @@ import {
     replaceSessionTodos,
     touchSessionUpdatedAt,
     updateSessionAgentState,
-    updateSessionMetadata
+    updateSessionMetadata,
+    replaceSessionNotifyAfterTruncate
 } from './sessions'
 
 export class SessionStore {
@@ -123,8 +124,17 @@ export class SessionStore {
         return setSessionBlockedAck(this.db, id, ack, namespace)
     }
 
-    clearSessionLastNotify(id: string, namespace: string): boolean {
-        return clearSessionLastNotify(this.db, id, namespace)
+    clearSessionLastNotify(id: string, namespace: string, clearedAt: number = Date.now()): boolean {
+        return clearSessionLastNotify(this.db, id, namespace, clearedAt)
+    }
+
+    replaceNotifyAfterTruncate(
+        id: string,
+        namespace: string,
+        signal: { status: string; at: number; note: string | null } | null,
+        clearedAt: number = Date.now()
+    ): boolean {
+        return replaceSessionNotifyAfterTruncate(this.db, id, namespace, signal, clearedAt)
     }
 
     setSessionTeamState(id: string, teamState: unknown, updatedAt: number, namespace: string): boolean {
