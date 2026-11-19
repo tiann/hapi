@@ -59,6 +59,7 @@ export class SharedCodexProjection {
     // Unlike transcript emission, title side effects survive reset/replay.
     private readonly pendingTitles = new Map<string, string>();
     private readonly completedTitles = new Set<string>();
+    private readonly replayedTitles = new Map<string, string>();
     private titleRevision = 0;
     private readonly compactionSummaries: CodexCompactionSummaryLookup;
     private summaryThread: unknown;
@@ -148,17 +149,19 @@ export class SharedCodexProjection {
         });
     }
 
-    async notification(method: string, params: unknown, modelAtReceipt?: string, receivedAt = Date.now(), signal?: AbortSignal): Promise<void> {
+    async notification(method: string, params: unknown, modelAtReceipt?: string, receivedAt = Date.now(),
+        { signal, deferredLiveTitle }: { signal?: AbortSignal; deferredLiveTitle?: boolean } = {}): Promise<void> {
         if (signal?.aborted) return;
         const p = record(params);
         const item = record(p.item);
         if (!this.parentThreadId && p.threadId === this.threadId && string(item.id)) {
             const key = `${string(p.turnId) ?? 'thread'}:${item.id}`;
-            if (!this.completedTitles.has(key)) {
+            if (!this.completedTitles.has(key) && (deferredLiveTitle || !this.replayedTitles.has(key))) {
                 const title = requestedTitle(item);
                 if (method === 'item/started' && title) this.pendingTitles.set(key, title);
                 if (method === 'item/completed') {
-                    const completedTitle = successfulTitle(item, this.pendingTitles.get(key));
+                    const completedTitle = successfulTitle(item,
+                        this.pendingTitles.get(key) ?? (deferredLiveTitle ? this.replayedTitles.get(key) : undefined));
                     this.pendingTitles.delete(key);
                     if (completedTitle) {
                         this.completedTitles.add(key);
@@ -412,16 +415,25 @@ export class SharedCodexProjection {
                 for (const item of turn.items) {
                     if (signal?.aborted) return;
                     const params = { threadId: this.threadId, turnId: turn.id, item };
+                    const titleKey = !this.parentThreadId && string(record(item).id)
+                        ? `${string(turn.id) ?? 'thread'}:${record(item).id}` : undefined;
+                    const pendingTitle = titleKey && requestedTitle(record(item));
+                    if (titleKey && pendingTitle && !this.completedTitles.has(titleKey) && !this.replayedTitles.has(titleKey)) {
+                        this.pendingTitles.set(titleKey, pendingTitle);
+                    }
                     await this.project('item/started', params, undefined, true, undefined, signal);
                     if (signal?.aborted) return;
                     // Active snapshots can contain partial assistant text. Do not
                     // settle it under the final stable id and suppress completion.
                     if (turn.status !== 'inProgress' || record(item).status === 'completed' || record(item).type === 'userMessage'
                         || asyncQuestionsForItem(this.threadId, item).length > 0) {
-                        if (!this.parentThreadId && string(record(item).id)) {
-                            // History can repair a missing title. Live rename
-                            // deduplication belongs to the notification stream.
-                            latestTitle = successfulTitle(record(item)) ?? latestTitle;
+                        if (titleKey) {
+                            const title = successfulTitle(record(item));
+                            if (title) {
+                                latestTitle = title;
+                                this.replayedTitles.set(titleKey, title);
+                            }
+                            this.pendingTitles.delete(titleKey);
                         }
                         await this.project('item/completed', params, undefined, true, undefined, signal);
                     }

@@ -156,7 +156,10 @@ export class SharedCodexRoot {
             }
             const receivedAt = Date.now();
             const modelAtReceipt = p.threadId === this.threadId ? this.settings.model ?? undefined : undefined;
-            this.notifications = this.notifications.then(() => this.notification(method, params, modelAtReceipt, receivedAt)).catch(error => {
+            const connection = this.session.getSocketConnectionSignal();
+            const deferredLiveTitle = this.replayedConnection !== undefined
+                && (connection.aborted || this.replayedConnection !== connection);
+            this.notifications = this.notifications.then(() => this.notification(method, params, modelAtReceipt, receivedAt, deferredLiveTitle)).catch(error => {
                 logger.debug('[Codex shared] projection', error);
                 this.failAttached();
             });
@@ -436,12 +439,12 @@ export class SharedCodexRoot {
         return undefined;
     }
     private async publishLiveNotification(projection: SharedCodexProjection, method: string,
-        params: unknown, modelAtReceipt?: string, receivedAt?: number): Promise<void> {
+        params: unknown, modelAtReceipt?: string, receivedAt?: number, deferredLiveTitle = false): Promise<void> {
         for (;;) {
             const connection = await this.waitForReplayedConnection();
             if (!connection) return;
             if (connection.aborted) continue;
-            await projection.notification(method, params, modelAtReceipt, receivedAt, connection);
+            await projection.notification(method, params, modelAtReceipt, receivedAt, { signal: connection, deferredLiveTitle });
             if (!connection.aborted) return;
         }
     }
@@ -495,7 +498,8 @@ export class SharedCodexRoot {
         for (const listener of this.settingsListeners) listener();
         this.publishPlan();
     }
-    private async notification(method: string, params: unknown, modelAtReceipt?: string, receivedAt = Date.now()): Promise<void> {
+    private async notification(method: string, params: unknown, modelAtReceipt?: string, receivedAt = Date.now(),
+        deferredLiveTitle = false): Promise<void> {
         // Native broadcasts can arrive while bind() is loading the local
         // ledger, before a projection exists. bind's full read reconciles them.
         if (!this.threadId || !this.projection || this.closed || this.host.attached && this.stopping) return;
@@ -553,7 +557,7 @@ export class SharedCodexRoot {
             if (!connection) return;
             await this.refresh(connection);
         }
-        await this.publishLiveNotification(this.projection, method, params, modelAtReceipt, receivedAt);
+        await this.publishLiveNotification(this.projection, method, params, modelAtReceipt, receivedAt, deferredLiveTitle);
         if (this.host.attached && method === 'turn/completed' && !this.stopping) await this.refresh();
         this.publishCompaction(); this.alive();
     }
