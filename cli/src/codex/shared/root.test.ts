@@ -630,8 +630,21 @@ describe('externally attached root', () => {
     });
     it.each(['thread/deleted', 'thread/closed'])('detaches on native %s without archiving the engine', async method => {
         const end = vi.fn(async () => {}); const f = await fixture({ attached: true, end });
-        await f.root.activate(); f.native.notify(method, { threadId: 'thread' }); await f.drain();
-        expect(end).toHaveBeenCalledWith(f.root, false, 'unavailable');
+        await f.root.activate(); f.native.notify(method, { threadId: 'thread' });
+        await vi.waitFor(() => expect(end).toHaveBeenCalledWith(f.root, false, 'unavailable'));
+    });
+    it.each(['thread/closed', 'thread/archived'])('drains the final online message before native %s', async method => {
+        const order: string[] = [];
+        const end = vi.fn(async () => { order.push('end'); });
+        const f = await fixture({ attached: true, end });
+        await f.root.activate();
+        f.send.mockImplementation(body => { if (body.type === 'message') order.push(body.message); });
+        f.native.notify('item/completed', { threadId: 'thread', turnId: 'turn',
+            item: { id: 'final', type: 'agentMessage', text: 'Final reply' } });
+        f.native.notify(method, { threadId: 'thread' });
+        await expect(f.rpc.get(RPC_METHODS.SetSessionConfig)!({ model: 'cannot-apply' })).rejects.toThrow('stopping');
+        await vi.waitFor(() => expect(end).toHaveBeenCalledOnce());
+        expect(order).toEqual(['Final reply', 'end']);
     });
     it.each(['thread/closed', 'thread/deleted', 'thread/archived'])('handles native %s while an offline Hub is blocking live projection', async method => {
         const end = vi.fn(async () => {});
@@ -1373,14 +1386,30 @@ describe('shared plan actions', () => {
         expect(f.metadata().name).toBe('Terminal title');
     });
 
-    it('applies a deferred live rename even when reconnect history contains the same tool result', async () => {
+    it.each([false, true])('applies a live rename deferred through replay (received online: %s)', async receivedOnline => {
         const f = await fixture();
         await f.root.activate();
         f.session.updateMetadata(metadata => ({ ...metadata, name: 'Old title' }));
         const item = { id: 'rename', type: 'mcpToolCall', server: 'hapi', tool: 'change_title',
             arguments: { title: 'New title' }, status: 'completed', result: { content: [], isError: false } };
-        f.disconnect();
+        const writing = Promise.withResolvers<void>();
+        const release = Promise.withResolvers<void>();
+        if (receivedOnline) {
+            const queue = (f.root as unknown as { queue: { save(): Promise<void> } }).queue;
+            const originalSave = queue.save.bind(queue);
+            vi.spyOn(queue, 'save').mockImplementationOnce(async () => {
+                const write = originalSave();
+                writing.resolve();
+                await release.promise;
+                await write;
+            });
+            f.native.notify('item/completed', { threadId: 'thread', turnId: 'turn',
+                item: { id: 'prior', type: 'userMessage', clientId: 'prior', content: [{ type: 'text', text: 'Prior message' }] } });
+            await writing.promise;
+        } else f.disconnect();
         f.native.notify('item/completed', { threadId: 'thread', turnId: 'turn', item });
+        if (receivedOnline) f.disconnect();
+        release.resolve();
         f.native.thread.turns = [{ id: 'turn', status: 'completed', items: [item] }];
         await new Promise<void>(resolve => setImmediate(resolve));
         expect(f.metadata().name).toBe('Old title');

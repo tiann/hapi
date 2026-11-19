@@ -149,6 +149,14 @@ export class SharedCodexProjection {
         });
     }
 
+    isUnreplayedTitleCompletion(params: Record<string, unknown>): boolean {
+        if (this.parentThreadId || params.threadId !== this.threadId) return false;
+        const item = record(params.item);
+        if (!string(item.id) || item.type !== 'mcpToolCall' || item.server !== 'hapi' || item.tool !== 'change_title') return false;
+        const key = `${string(params.turnId) ?? 'thread'}:${item.id}`;
+        return !this.completedTitles.has(key) && !this.replayedTitles.has(key);
+    }
+
     async notification(method: string, params: unknown, modelAtReceipt?: string, receivedAt = Date.now(),
         { signal, deferredLiveTitle }: { signal?: AbortSignal; deferredLiveTitle?: boolean } = {}): Promise<void> {
         if (signal?.aborted) return;

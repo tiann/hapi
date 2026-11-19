@@ -29,6 +29,7 @@ import { planImplementationMessageId, planProposalForItem, planProposalForTurn }
 
 type RuntimeSettings = NonNullable<Parameters<ApiSessionClient['keepAlive']>[2]>;
 const ARCHIVE_HISTORY_BUDGET_MS = 5_000;
+const NATIVE_SHUTDOWN_DRAIN_MS = 2_000;
 class HistoryArchiveTimeoutError extends Error {
     constructor() { super('Could not confirm Codex history metadata before archiving'); }
 }
@@ -93,6 +94,8 @@ export class SharedCodexRoot {
     private interrupted = false;
     private closed = false;
     private stopping = false;
+    private drainingNativeNotifications?: AbortSignal;
+    private readonly liveProjectionAbort = new AbortController();
     private closing?: Promise<void>;
     private readonly controls = new Set<Promise<unknown>>();
     private reconnecting = false;
@@ -111,14 +114,11 @@ export class SharedCodexRoot {
             const eventThread = string(p.threadId) ?? string(record(p.thread).id);
             if (this.threadId && eventThread === this.threadId && (method === 'thread/archived'
                 || this.host.attached && (method === 'thread/closed' || method === 'thread/deleted'))) {
-                // Native shutdown must never wait for transcript publication.
-                if (!this.closed && !this.stopping) {
-                    this.stopAccepting();
-                    void this.host.end(this, false, method === 'thread/archived' ? 'archived' : 'unavailable')
-                        .catch(error => logger.debug('[Codex shared] native thread ended', error));
-                }
+                void this.endNativeThread(method === 'thread/archived' ? 'archived' : 'unavailable')
+                    .catch(error => logger.debug('[Codex shared] native thread ended', error));
                 return;
             }
+            if (this.drainingNativeNotifications) return;
             if (this.host.attached && ['thread/reverted', 'thread/rolledBack'].includes(method)
                 && eventThread && (eventThread === this.threadId || this.children.has(eventThread))) {
                 this.invalidateHistory(); return;
@@ -156,10 +156,9 @@ export class SharedCodexRoot {
             }
             const receivedAt = Date.now();
             const modelAtReceipt = p.threadId === this.threadId ? this.settings.model ?? undefined : undefined;
-            const connection = this.session.getSocketConnectionSignal();
-            const deferredLiveTitle = this.replayedConnection !== undefined
-                && (connection.aborted || this.replayedConnection !== connection);
-            this.notifications = this.notifications.then(() => this.notification(method, params, modelAtReceipt, receivedAt, deferredLiveTitle)).catch(error => {
+            const titleReceipt = method === 'item/completed' && this.projection?.isUnreplayedTitleCompletion(p)
+                ? { lastReplay: this.replayedConnection } : undefined;
+            this.notifications = this.notifications.then(() => this.notification(method, params, modelAtReceipt, receivedAt, titleReceipt)).catch(error => {
                 logger.debug('[Codex shared] projection', error);
                 this.failAttached();
             });
@@ -429,9 +428,10 @@ export class SharedCodexRoot {
         this.replayProgress = Promise.withResolvers<void>();
         this.emitReadyWhenReplayed();
     }
-    private async waitForReplayedConnection(): Promise<AbortSignal | undefined> {
-        while (!this.closed && !this.stopping) {
+    private async waitForReplayedConnection(drainNative = false): Promise<AbortSignal | undefined> {
+        while (!this.closed) {
             const connection = this.session.getSocketConnectionSignal();
+            if (this.stopping && (!drainNative || this.drainingNativeNotifications !== connection || connection.aborted)) return undefined;
             if (!connection.aborted && this.replayedConnection === connection) return connection;
             // Keep live deliveries ordered while this socket restores history.
             await this.replayProgress.promise;
@@ -439,12 +439,14 @@ export class SharedCodexRoot {
         return undefined;
     }
     private async publishLiveNotification(projection: SharedCodexProjection, method: string,
-        params: unknown, modelAtReceipt?: string, receivedAt?: number, deferredLiveTitle = false): Promise<void> {
+        params: unknown, modelAtReceipt?: string, receivedAt?: number, titleReceipt?: { lastReplay?: AbortSignal }): Promise<void> {
         for (;;) {
-            const connection = await this.waitForReplayedConnection();
+            const connection = await this.waitForReplayedConnection(true);
             if (!connection) return;
             if (connection.aborted) continue;
-            await projection.notification(method, params, modelAtReceipt, receivedAt, { signal: connection, deferredLiveTitle });
+            const deferredLiveTitle = titleReceipt !== undefined && titleReceipt.lastReplay !== connection;
+            await projection.notification(method, params, modelAtReceipt, receivedAt,
+                { signal: AbortSignal.any([connection, this.liveProjectionAbort.signal]), deferredLiveTitle });
             if (!connection.aborted) return;
         }
     }
@@ -499,10 +501,11 @@ export class SharedCodexRoot {
         this.publishPlan();
     }
     private async notification(method: string, params: unknown, modelAtReceipt?: string, receivedAt = Date.now(),
-        deferredLiveTitle = false): Promise<void> {
+        titleReceipt?: { lastReplay?: AbortSignal }): Promise<void> {
         // Native broadcasts can arrive while bind() is loading the local
         // ledger, before a projection exists. bind's full read reconciles them.
-        if (!this.threadId || !this.projection || this.closed || this.host.attached && this.stopping) return;
+        if (!this.threadId || !this.projection || this.closed
+            || this.host.attached && this.stopping && this.drainingNativeNotifications?.aborted !== false) return;
         const p = record(params);
         if (method === 'thread/started') {
             const thread = record(p.thread); const id = string(thread.id);
@@ -520,7 +523,7 @@ export class SharedCodexRoot {
                     (threadId, item) => this.asyncQuestions.observeItem(threadId, item));
                 this.children.set(eventThread, projection);
             }
-            if (this.host.attached && ['turn/started', 'turn/completed'].includes(method)) {
+            if (this.host.attached && !this.stopping && ['turn/started', 'turn/completed'].includes(method)) {
                 if (!await this.waitForArchiveRecovery()) return;
                 const connection = await this.waitForReplayedConnection();
                 if (!connection) return;
@@ -557,7 +560,7 @@ export class SharedCodexRoot {
             if (!connection) return;
             await this.refresh(connection);
         }
-        await this.publishLiveNotification(this.projection, method, params, modelAtReceipt, receivedAt, deferredLiveTitle);
+        await this.publishLiveNotification(this.projection, method, params, modelAtReceipt, receivedAt, titleReceipt);
         if (this.host.attached && method === 'turn/completed' && !this.stopping) await this.refresh();
         this.publishCompaction(); this.alive();
     }
@@ -1113,10 +1116,32 @@ export class SharedCodexRoot {
     }
     stopAccepting(): void {
         this.stopping = true; this.ready();
+        if (!this.drainingNativeNotifications) this.liveProjectionAbort.abort();
         this.replayProgress.resolve();
         this.publishSteering();
         this.publishPlan();
         this.session.onReconnect(null); this.client.setTransportAbandonedHandler(null);
+    }
+    private async endNativeThread(reason: 'archived' | 'unavailable'): Promise<void> {
+        if (this.closed || this.stopping) return;
+        const connection = this.session.getSocketConnectionSignal();
+        const canDrain = !connection.aborted && this.replayedConnection === connection;
+        if (canDrain) this.drainingNativeNotifications = connection;
+        this.stopAccepting();
+        if (canDrain) {
+            // Refuse new controls immediately. A healthy socket can still
+            // publish the native events received just before shutdown.
+            const drain = new AbortController();
+            const signal = AbortSignal.any([drain.signal, connection]);
+            try {
+                await Promise.race([this.notifications, delay(NATIVE_SHUTDOWN_DRAIN_MS, undefined, { signal, ref: false }).catch(() => {})]);
+            } finally {
+                drain.abort();
+                this.drainingNativeNotifications = undefined;
+                this.liveProjectionAbort.abort();
+            }
+        }
+        await this.host.end(this, false, reason);
     }
     private async waitForArchiveRecovery(): Promise<boolean> {
         while (this.archiveRecovery) {

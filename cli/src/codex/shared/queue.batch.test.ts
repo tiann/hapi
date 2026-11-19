@@ -600,7 +600,7 @@ it('mirrors accepted native edits before the consumed ACK when the event precede
     expect(queue.state('original-B')).toBe('canceled');
 });
 
-it('restores a consumed edit mirror after its first publication was interrupted by disconnect', async () => {
+it.each([false, true])('restores consumed edit and removal mirrors after interrupted publication (restart: %s)', async restart => {
     const f = await fixture();
     await f.queue.enqueue('original-A', text('A'), false, 'same');
     await f.queue.enqueue('original-B', text('B'), false, 'same');
@@ -620,10 +620,12 @@ it('restores a consumed edit mirror after its first publication was interrupted 
     expect(f.mirror).not.toHaveBeenCalled();
     expect(f.consumed).not.toHaveBeenCalled();
 
-    const restarted = new SharedCodexQueue(f.client, 'thread', join(f.directory, 'ledger.json'), f.consumed, f.uncertain, f.mirror);
-    await restarted.load();
-    await restarted.committed(batch.clientUserMessageId, edited);
-    expect(f.mirror).toHaveBeenCalledWith('original-A', edited);
+    const queue = restart
+        ? new SharedCodexQueue(f.client, 'thread', join(f.directory, 'ledger.json'), f.consumed, f.uncertain, f.mirror)
+        : f.queue;
+    if (restart) await queue.load();
+    await queue.committed(batch.clientUserMessageId, edited);
+    expect(f.mirror.mock.calls).toEqual([['original-B', null], ['original-A', edited]]);
     expect(f.consumed).toHaveBeenCalledWith(['original-A']);
     expect(f.mirror.mock.invocationCallOrder[0]).toBeLessThan(f.consumed.mock.invocationCallOrder[0]);
 });
