@@ -1,6 +1,7 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { SessionScheduleSchema, type SessionSchedule } from '@hapi/protocol/schemas'
 import type { SessionsResponse, SessionSummary } from '@/types/api'
+import { queryKeys } from './query-keys'
 
 type CachedSessionSummary = SessionSummary & {
     sessionScheduleEventId?: string
@@ -29,7 +30,10 @@ export function isNewerSessionListEvent(eventId: string | undefined, snapshotCur
 }
 
 type ScheduleUpdate = SessionSchedule & { sessionScheduleEventId?: string }
-const initialSchedules = new WeakMap<QueryClient, Map<string, ScheduleUpdate>>()
+const initialSchedules = new WeakMap<QueryClient, {
+    updates: Map<string, ScheduleUpdate>
+    invalidated: boolean
+}>()
 
 function initialScheduleKey(sessionId: string, eventId: string | undefined): string | undefined {
     const cursor = eventId?.match(cursorPattern)
@@ -39,7 +43,8 @@ function initialScheduleKey(sessionId: string, eventId: string | undefined): str
 
 export function beginInitialSessionSchedules(client: QueryClient) {
     const updates = new Map<string, ScheduleUpdate>()
-    initialSchedules.set(client, updates)
+    const initial = { updates, invalidated: false }
+    initialSchedules.set(client, initial)
     return {
         take: (id: string, snapshotCursor: string | undefined) => {
             const key = initialScheduleKey(id, snapshotCursor)
@@ -48,15 +53,22 @@ export function beginInitialSessionSchedules(client: QueryClient) {
             updates.delete(key)
             return update
         },
-        hasUnmatched: () => updates.size > 0,
+        needsRecovery: () => initial.invalidated || updates.size > 0,
         close: () => {
-            if (initialSchedules.get(client) === updates) initialSchedules.delete(client)
+            if (initialSchedules.get(client) === initial) initialSchedules.delete(client)
         }
     }
 }
 
+export function deferInitialSessionListInvalidation(client: QueryClient): boolean {
+    const initial = initialSchedules.get(client)
+    if (!initial || client.getQueryData(queryKeys.sessions) !== undefined) return false
+    initial.invalidated = true
+    return true
+}
+
 export function bufferInitialSessionSchedule(client: QueryClient, sessionId: string, eventId: string, value: unknown): boolean {
-    const updates = initialSchedules.get(client)
+    const updates = initialSchedules.get(client)?.updates
     const key = initialScheduleKey(sessionId, eventId)
     if (!updates || key === undefined) return false
     const schedule = SessionScheduleSchema.safeParse(value)

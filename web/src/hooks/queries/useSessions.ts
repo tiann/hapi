@@ -51,7 +51,7 @@ export function useSessions(api: ApiClient | null, options: UseSessionsOptions =
                 }
             }
             sessions.sort(compareSessionSummaries)
-            if (initialSchedules?.hasUnmatched()) {
+            if (initialSchedules?.needsRecovery()) {
                 const initialQuery = queryClient.getQueryCache().find({ queryKey: queryKeys.sessions, exact: true })
                 // Wait for TanStack to commit this response before recovering, or it joins the initial GET.
                 setTimeout(() => {

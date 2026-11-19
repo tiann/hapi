@@ -134,7 +134,7 @@ it.each([false, true])('retains an SSE-inserted row across an older list snapsho
     }
 })
 
-it.each(['matched', 'incomparable', 'absent', 'both'] as const)(
+it.each(['matched', 'incomparable', 'absent', 'both', 'missing patch', 'mixed invalidations'] as const)(
     'reconciles schedule events from the initial list request (%s)',
     async (scenario) => {
         let receive: (event: object, eventId: string) => void = () => { throw new Error('No event stream') }
@@ -168,6 +168,18 @@ it.each(['matched', 'incomparable', 'absent', 'both'] as const)(
                         sessionSchedule: { futureScheduledMessageCount: 0, nextScheduledAt: null }
                     }, cursor)
                 }
+                if (scenario === 'missing patch' || scenario === 'mixed invalidations') {
+                    receive({ type: 'session-schedule-updated', sessionId: 'stale' }, 'epoch:6:ns')
+                }
+                if (scenario === 'mixed invalidations') {
+                    receive({ type: 'messages-invalidated', sessionId: 'stale' }, 'epoch:7:ns')
+                    receive({ type: 'session-updated', sessionId: 'stale', data: { active: true } }, 'epoch:8:ns')
+                    receive({ type: 'session-updated', sessionId: 'stale' }, 'epoch:9:ns')
+                    receive({
+                        type: 'session-schedule-updated', sessionId: 'missing',
+                        sessionSchedule: { futureScheduledMessageCount: 0, nextScheduledAt: null }
+                    }, 'epoch:10:ns')
+                }
                 // Give a queued invalidation time to join the still-pending initial request.
                 await new Promise(done => setTimeout(done, 25))
                 resolve({
@@ -187,9 +199,16 @@ it.each(['matched', 'incomparable', 'absent', 'both'] as const)(
                 await waitFor(() => expect(getSessions).toHaveBeenCalledTimes(2))
                 const recovery = client.getQueryCache().find({ queryKey: queryKeys.sessions })!.promise!
                 await act(async () => {
-                    resolve({ sessions, sessionScheduleCursor: 'epoch:6:ns' })
+                    resolve({
+                        sessions: sessions.map(session => session.id === 'stale'
+                            ? { ...session, futureScheduledMessageCount: 0, nextScheduledAt: null }
+                            : session),
+                        sessionScheduleCursor: 'epoch:11:ns'
+                    })
                     await recovery
                 })
+                expect(client.getQueryData<SessionsResponse>(queryKeys.sessions)?.sessions.find(session => session.id === 'stale'))
+                    .toMatchObject({ futureScheduledMessageCount: 0, nextScheduledAt: null })
             }
             await act(async () => { await new Promise(done => setTimeout(done, 25)) })
             expect(getSessions).toHaveBeenCalledTimes(scenario === 'matched' ? 1 : 2)
