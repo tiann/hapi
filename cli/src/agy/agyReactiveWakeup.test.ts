@@ -26,6 +26,7 @@ import {
 } from './agyReactiveWakeup';
 
 vi.mock('@/ui/ink/RemoteModeDisplay', () => ({ RemoteModeDisplay: () => null }));
+vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({ buildHapiMcpBridge: async () => ({ server: { stop: () => {} }, mcpServers: {} }) }));
 vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
 
 const TIMINGS: AgyReactiveTimingConfig = {

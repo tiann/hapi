@@ -461,7 +461,7 @@ the prompt is loaded by DSH through its own `skill` tool and catalog.
 
   Remote-only — there is no local terminal input path or PTY/TUI wrapper. MCP
   servers are loaded natively from `~/.gemini/config/mcp_config.json` or
-  workspace `.agents/mcp_config.json`; HAPI does not inject its own MCP server.
+  workspace `.agents/mcp_config.json`; HAPI also supplies its own MCP server.
   [Google Antigravity](https://antigravity.google)
 
   On ACP, HAPI offers agy's own slash commands in the `/` menu, including

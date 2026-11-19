@@ -23,6 +23,8 @@ import {
 import { generationTimeMs } from '@/agent/generationClock';
 
 vi.mock('@/ui/ink/RemoteModeDisplay', () => ({ RemoteModeDisplay: () => null }));
+const bridge = vi.hoisted(() => ({ stop: vi.fn(), build: vi.fn(async () => ({ server: { stop: bridge.stop }, mcpServers: { hapi: { command: 'hapi', args: ['mcp'] } } })) }));
+vi.mock('@/codex/utils/buildHapiMcpBridge', () => ({ buildHapiMcpBridge: bridge.build }));
 vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
 
 type PromptScript = (onUpdate: (message: AgentMessage) => void) => Promise<void>;
@@ -53,12 +55,15 @@ class FakeAgyBackend {
         return true;
     }
     newSessionError: Error | null = null;
-    async newSession(): Promise<string> {
+    mcpConfigs: unknown[] = [];
+    async newSession(config: { mcpServers: unknown }): Promise<string> {
+        this.mcpConfigs.push(config.mcpServers);
         this.calls.push('newSession');
         if (this.newSessionError) throw this.newSessionError;
         return 'agy-conv-new';
     }
-    async resumeSession(config: { sessionId: string }): Promise<string> {
+    async resumeSession(config: { sessionId: string; mcpServers: unknown }): Promise<string> {
+        this.mcpConfigs.push(config.mcpServers);
         this.resumeCalls.push(config.sessionId);
         if (this.resumeError) throw this.resumeError;
         return config.sessionId;
@@ -303,6 +308,15 @@ describe('AgyAcpRemoteLauncher', () => {
 
     afterEach(() => {
         vi.clearAllMocks();
+    });
+
+    it.each([null, 'agy-conv-old'])('passes the HAPI MCP bridge on new or resumed sessions and stops it', async (id) => {
+        const { session, queue } = makeSession(id);
+        const backend = new FakeAgyBackend();
+        queue.close();
+        await launch(session, [backend]).run;
+        expect(backend.mcpConfigs).toEqual([[{ name: 'hapi', command: 'hapi', args: ['mcp'], env: [] }]]);
+        expect(bridge.stop).toHaveBeenCalledOnce();
     });
 
     it('opens a new conversation, sends text prompts, and reports ready', async () => {
