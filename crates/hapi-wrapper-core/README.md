@@ -18,6 +18,11 @@ builds on:
 - `lifecycle::start_marker`: the `ps lstart` marker that identifies a live
   process across PID reuse.
 - `rpc::manager`: session-scoped RPC handler registration and dispatch.
+- `session::metadata`: machine and session metadata, worktree discovery, and the
+  fields kept when a session is reopened, including the Claude rewind intent.
+- `session::incoming_filter`: incoming message dedup by id and sequence cursor,
+  backfill and rewind bookkeeping, and the typed user message check.
+- `session::echo`: bookkeeping for prompts that the agent may echo back.
 - `schemas`: the session metadata checks of `shared/src/schemas.ts`, including
   the full OpenCode rewind record.
 

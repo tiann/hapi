@@ -4,4 +4,5 @@ pub mod lifecycle;
 pub mod rest;
 pub mod rpc;
 pub mod schemas;
+pub mod session;
 pub mod sio;
