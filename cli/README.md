@@ -445,8 +445,12 @@ The pushed tag triggers `.github/workflows/release.yml`, which builds all binari
 runs `bun run --cwd cli publish-npm`, and creates the GitHub Release. npm publishing
 uses [Trusted Publishing](https://docs.npmjs.com/trusted-publishers) (OIDC), so no npm
 token is involved; each `@twsxtd/hapi*` package must list `tiann/hapi` /
-`release.yml` as its trusted publisher on npmjs.com. Packages already on npm are
-skipped, so a failed release can be retried by re-running the workflow.
+`release.yml` as its trusted publisher on npmjs.com. The main npm package is
+published only once every platform version is visible in the public npm registry.
+The visibility check waits up to 30 minutes by default; set the repository Actions
+variable `NPM_PUBLISH_WAIT_TIMEOUT_SECONDS` to override it. If it times out, wait
+until the listed versions are visible and re-run the same workflow. Already
+published packages are skipped.
 
 `setup-bun` reads the build version from the root `package.json`'s `packageManager`.
 Keep local release builds on that version too. Bun 1.4.0 produces invalid

@@ -3,6 +3,7 @@ import type {
     CopilotAgentMode,
     DecryptedMessage as ProtocolDecryptedMessage,
     Machine,
+    Metadata,
     RunnerState,
     Session,
     SessionSummary,
@@ -81,6 +82,11 @@ export type {
     AttachmentMetadata,
     BackgroundTask,
     CodexCollaborationMode,
+    ExternalRef,
+    GithubPrChecks,
+    GithubPrExternalRef,
+    GithubPrMerge,
+    GithubPrOpenState,
     CopilotAgentMode,
     Metadata,
     PermissionMode,
@@ -109,6 +115,8 @@ export type {
     HapiSessionExportWarning
 } from '@hapi/protocol/sessionExport'
 
+export type { ForkBoundary, ForkPreviewResponse } from '@hapi/protocol/forkBoundary'
+
 export type SessionMetadataSummary = {
     path: string
     host: string
@@ -133,6 +141,7 @@ export type SessionMetadataSummary = {
     conversationHistoryIndexes?: Record<string, number>
     conversationHistoryTurns?: Record<string, string>
     conversationHistoryEntryIds?: Record<string, string>
+    claudeRewind?: Metadata['claudeRewind']
     conversationHistoryDiverged?: boolean
     worktree?: WorktreeMetadata
 }

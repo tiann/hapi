@@ -346,6 +346,7 @@ export function createMachinesRoutes(
             parsed.data.copilotAgentMode,
             startingMode,
             namespace,
+            undefined,
             verifiedParentId
         )
         return c.json(result)

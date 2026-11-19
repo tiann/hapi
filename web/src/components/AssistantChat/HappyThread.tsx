@@ -311,13 +311,6 @@ export function restoreScrollAnchor(viewport: HTMLElement, anchor: ScrollAnchor)
     return true
 }
 
-export function hasAppliedHistoryVersion(
-    pendingHistoryVersion: number,
-    appliedHistoryVersion: number
-): boolean {
-    return appliedHistoryVersion > pendingHistoryVersion
-}
-
 export async function locateOutlineTargetMessage(options: LocateOutlineTargetOptions): Promise<HTMLElement | null> {
     const anchorId = getConversationMessageAnchorId(options.targetMessageId)
     let target = options.findTarget(anchorId)
@@ -726,6 +719,8 @@ export function HappyThread(props: {
     onJumpToTail?: () => void
     readThroughRevision?: number
     isSyncingTail: boolean
+    /** Cached re-entry: rendering the persisted window while the authoritative latest-page fetch is in flight. */
+    isCatchingUpFromCache?: boolean
     messagesWarning: string | null
     hasMoreMessages: boolean
     /** A context window still has messages between it and the session head. */
@@ -2864,6 +2859,16 @@ export function HappyThread(props: {
                     >
                         <Spinner size="sm" label={null} className="text-current" />
                         <span>{t('misc.locatingMessage')}</span>
+                    </div>
+                ) : props.isCatchingUpFromCache && props.rawMessagesCount > 0 ? (
+                    <div
+                        data-testid="tail-sync-status"
+                        role="status"
+                        aria-live="polite"
+                        className={`pointer-events-none absolute left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-bg)]/90 px-2.5 py-1 text-xs text-[var(--app-hint)] shadow-sm backdrop-blur ${hasSearchTarget ? 'top-12' : 'top-3'}`}
+                    >
+                        <Spinner size="sm" label={null} className="text-current" />
+                        <span>{t('misc.syncingLatest')}</span>
                     </div>
                 ) : !props.isSyncingTail && (
                     props.isLoadingMoreMessages || pullToLoadState !== 'idle'

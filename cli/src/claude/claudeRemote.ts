@@ -38,9 +38,10 @@ export interface ClaudeSteerTarget {
     /**
      * Null when the turn can no longer accept a message. `delivered` resolves
      * true once Claude echoes the message (it is processing it), false when the
-     * stream closes first.
+     * stream closes first. `uuid` is the native transcript entry id assigned to
+     * the injected user message.
      */
-    steer(message: string): { delivered: Promise<boolean> } | null;
+    steer(message: string): { delivered: Promise<boolean>; uuid: string } | null;
 }
 
 interface ActiveCompact {
@@ -98,6 +99,8 @@ export async function claudeRemote(opts: {
      * still deferred (compact summary lookup, or a steer follow-up turn).
      */
     onResultAccepted?: () => void,
+    /** The native prompt uuid of a just-submitted user message (queue batches only). */
+    onInputSubmitted?: (nativePromptUuid: string) => void,
     onCompletionEvent?: (message: string) => void,
     onSessionReset?: () => void,
     /** Open while a plain (non-command) turn runs; null otherwise. */
@@ -152,6 +155,21 @@ export async function claudeRemote(opts: {
     }
     const forkedFrom = forkSession ? startFrom : null;
 
+    // Spawn-derived rewind/fork-at-message boundary passes through claudeArgs;
+    // filterCatalogAffectingClaudeArgs strips it from additionalArgs, so it is
+    // parsed here into the first-class SDK option.
+    let resumeSessionAt: string | undefined;
+    if (opts.claudeArgs) {
+        for (let i = 0; i < opts.claudeArgs.length; i++) {
+            if (opts.claudeArgs[i] === '--resume-session-at' && i + 1 < opts.claudeArgs.length) {
+                resumeSessionAt = opts.claudeArgs[++i];
+            }
+        }
+    }
+    if (resumeSessionAt) {
+        logger.debug(`[claudeRemote] --resume-session-at ${resumeSessionAt}`);
+    }
+
     // Mode starts from the persisted session for fork bootstrap; updated when
     // the first child prompt arrives. plan/auto must be present at process start.
     const bootstrapMode: EnhancedMode = opts.bootstrapMode ?? { permissionMode: 'default' };
@@ -165,6 +183,14 @@ export async function claudeRemote(opts: {
     // not opts.sessionId which can be stale for forked sessions.
     let currentSessionId = startFrom;
     let awaitingForkInit = forkSession;
+    // A resume-at spawn (fork-at-message child, or a rewind restart) must start
+    // query() immediately: the native truncation materializes once the new
+    // process starts with the resume flags. Like --fork-session, stream-json
+    // input stays open for later turns.
+    let awaitingResumeAtInit = resumeSessionAt !== undefined;
+    if (awaitingResumeAtInit && !startFrom) {
+        throw new Error('Pending resume-at request has no native session to resume');
+    }
 
     const messages = new PushableAsyncIterable<SDKUserMessage>();
     // Every stdin message carries a uuid that `--replay-user-messages` echoes
@@ -173,6 +199,7 @@ export async function claudeRemote(opts: {
     const pushUserMessage = (content: string, uuid: string = randomUUID()) => {
         pushedUuids.add(uuid);
         messages.push({ type: 'user', uuid, message: { role: 'user', content } });
+        return uuid;
     };
     // Steered messages Claude has not echoed yet. A result while any is
     // pending is not the end of the turn: Claude runs a follow-up turn for it.
@@ -194,7 +221,7 @@ export async function claudeRemote(opts: {
                 const delivered = new Promise<boolean>((resolve) => pendingSteers.set(uuid, resolve));
                 pushUserMessage(message, uuid);
                 logger.debug(`${debugPrefix} steered message pushed uuid=${uuid} length=${message.length}`);
-                return { delivered };
+                return { delivered, uuid };
             }
         };
         steerTarget = target;
@@ -283,6 +310,19 @@ export async function claudeRemote(opts: {
         }
     };
 
+    // Track thinking state. Declared before applyInitialTurn, which asserts
+    // the busy signal at the dequeue point.
+    let thinking = false;
+    const updateThinking = (newThinking: boolean) => {
+        if (thinking !== newThinking) {
+            thinking = newThinking;
+            logger.debug(`[claudeRemote] Thinking state changed to: ${thinking}`);
+            if (opts.onThinkingChange) {
+                opts.onThinkingChange(thinking);
+            }
+        }
+    };
+
     const applyInitialTurn = async (): Promise<{ message: string; mode: EnhancedMode } | null> => {
         let next: { message: string; mode: EnhancedMode } | null;
         try {
@@ -318,10 +358,52 @@ export async function claudeRemote(opts: {
         }
 
         mode = next.mode;
-        pushUserMessage(next.message);
+        // Push first: an optional call would short-circuit its argument when
+        // no hook is set, and the message must reach the prompt regardless.
+        const submittedUuid = pushUserMessage(next.message);
+        // Only a plain prompt becomes a resolvable native history point:
+        // command turns (/compact) write XML the transcript classifier
+        // filters out, so advertising them sends rewind/fork at a boundary
+        // that can never resolve.
+        if (specialCommand.type === null) {
+            opts.onInputSubmitted?.(submittedUuid);
+        }
         setSteerable(specialCommand.type === null);
+        // A turn is now actually in flight: the dequeue, not the query()
+        // spawn, is what makes the session busy. On a resume-at/fork spawn
+        // this only runs once the unlock delivered a prompt, so the idle
+        // wait before it reports thinking:false.
+        updateThinking(true);
         return next;
     };
+
+    // One shared unlock for spawn-gated first delivery: a --fork-session child
+    // or a --resume-at respawn starts query() before any prompt exists, and the
+    // SDK only emits `init` after the first prompt is sent. The SessionStart
+    // hooks (fork / resume) are the boot signal that the native state
+    // (fork branch or resume-at truncation) materialized, so the first queued
+    // prompt is accepted there instead of deadlocking on an `init` that will
+    // not arrive until the prompt below is sent. Clears BOTH waits so a spawn
+    // carrying both flags consumes the queue exactly once.
+    const unlockInitialDelivery = async (): Promise<boolean> => {
+        if (!awaitingForkInit && !awaitingResumeAtInit) {
+            return true;
+        }
+        awaitingForkInit = false;
+        awaitingResumeAtInit = false;
+        const first = await applyInitialTurn();
+        if (!first) {
+            return false;
+        }
+        initial = first;
+        return true;
+    };
+
+    // The resume-at boundary is decided at SPAWN TIME by
+    // deriveSpawnArgs (see conversationHistory): the durable rewind intent
+    // plus a fresh transcript evaluation, or a fork-at-message request while
+    // the child is unbuilt. Nothing consumes or re-arms the flag here —
+    // claudeRemote just parses the args the launcher derived (below).
 
     // Prepare SDK options. For --fork-session, start query() before waiting for the
     // first child prompt so the native fork materializes at the clicked source state.
@@ -331,6 +413,7 @@ export async function claudeRemote(opts: {
         cwd: opts.path,
         resume: startFrom ?? undefined,
         forkSession,
+        ...(resumeSessionAt ? { resumeSessionAt } : {}),
         mcpServers: opts.mcpServers,
         permissionMode: nativePermissionMode(bootstrapMode.permissionMode),
         model: bootstrapMode.model,
@@ -355,7 +438,7 @@ export async function claudeRemote(opts: {
         replayUserMessages: true,
     }
 
-    if (!awaitingForkInit) {
+    if (!awaitingForkInit && !awaitingResumeAtInit) {
         const first = await applyInitialTurn();
         if (!first) {
             return;
@@ -377,18 +460,6 @@ export async function claudeRemote(opts: {
         sdkOptions.disallowedTools = first.mode.disallowedTools;
     }
 
-    // Track thinking state
-    let thinking = false;
-    const updateThinking = (newThinking: boolean) => {
-        if (thinking !== newThinking) {
-            thinking = newThinking;
-            logger.debug(`[claudeRemote] Thinking state changed to: ${thinking}`);
-            if (opts.onThinkingChange) {
-                opts.onThinkingChange(thinking);
-            }
-        }
-    };
-
     // Start the loop
     let response: ReturnType<typeof query>;
     try {
@@ -397,7 +468,8 @@ export async function claudeRemote(opts: {
             options: sdkOptions,
         });
     } catch (e) {
-        // The initial prompt already opened the steer target.
+        // The initial prompt already flipped thinking on and opened the steer target.
+        updateThinking(false);
         closeSteering();
         throw e;
     }
@@ -508,7 +580,12 @@ export async function claudeRemote(opts: {
                 }
                 mode = next.mode;
                 specialCommand = nextSpecialCommand;
-                pushUserMessage(next.message);
+                const followUpUuid = pushUserMessage(next.message);
+                // See applyInitialTurn: only plain prompts are resolvable
+                // history points.
+                if (nextSpecialCommand.type === null) {
+                    opts.onInputSubmitted?.(followUpUuid);
+                }
                 setSteerable(nextSpecialCommand.type === null);
                 // A follow-up prompt starts a new turn; only the first turn gets system/init.
                 updateThinking(true);
@@ -532,7 +609,11 @@ export async function claudeRemote(opts: {
         })();
     };
 
-    updateThinking(true);
+    // Thinking is asserted at the dequeue points (applyInitialTurn above and
+    // the follow-up branch of scheduleNextMessage), not here: a resume-at or
+    // fork spawn starts query() before any prompt exists, and asserting here
+    // reported a busy session while it idled waiting for the user's first
+    // prompt.
     try {
         logger.debug(`[claudeRemote] Starting to iterate over response`);
 
@@ -624,6 +705,14 @@ export async function claudeRemote(opts: {
             );
             logger.debugLargeJson(`[claudeRemote] Message ${message.type}`, message);
 
+            // Autonomous rounds (background tasks, scheduled follow-ups) stream
+            // assistant messages after the previous result flipped thinking off;
+            // the SDK never re-fires its own thinking signal for them. Re-bump
+            // here so the hub renders the round as working, not waiting.
+            if (message.type === 'assistant') {
+                updateThinking(true);
+            }
+
             if (message.type === 'user' && (message as SDKUserMessage).isReplay === true) {
                 const uuid = (message as SDKUserMessage).uuid;
                 if (uuid && pushedUuids.delete(uuid)) {
@@ -659,25 +748,20 @@ export async function claudeRemote(opts: {
             if (
                 message.type === 'system'
                 && message.subtype === 'hook_response'
-                && (message as { hook_name?: string }).hook_name === 'SessionStart:fork'
-                && awaitingForkInit
+                && typeof (message as { hook_name?: string }).hook_name === 'string'
+                && ((message as { hook_name?: string }).hook_name ?? '').startsWith('SessionStart:')
             ) {
-                // A forked child starts query() before any prompt exists, and the
-                // SDK only emits `init` after the first prompt is sent. The fork
-                // itself materializes on the SessionStart:fork hook, so accept the
-                // first child prompt from that signal instead of deadlocking on
-                // an `init` that will not arrive until the prompt below is sent.
-                awaitingForkInit = false;
-                const first = await applyInitialTurn();
-                if (!first) {
+                if (!(await unlockInitialDelivery())) {
                     return;
                 }
-                initial = first;
             }
 
             if (message.type === 'system' && message.subtype === 'init') {
-                // Start thinking when session initializes
-                updateThinking(true);
+                // Keep the busy signal only when a turn is actually in flight
+                // (a normal attempt dequeued its first prompt before the
+                // spawn). A resume-at/fork spawn reaches init while still
+                // waiting for the unlock to dequeue anything.
+                if (initial) updateThinking(true);
 
                 const systemInit = message as SDKSystemMessage;
 
@@ -712,6 +796,14 @@ export async function claudeRemote(opts: {
                     opts.onPermissionModeRejected?.('default', `Claude could not start in ${requested} mode, so it is running in default mode`);
                 }
 
+                // Fallback unlock when no SessionStart hook ran: only accept
+                // the first prompt once the native branch exists (init). No
+                // flag consumption happens here at all - the boundary is
+                // re-derived at every spawn from the durable state.
+                if (!(await unlockInitialDelivery())) {
+                    return;
+                }
+
                 // Session id is still in memory, wait until session file is written to disk
                 // Start a watcher for to detect the session id
                 if (systemInit.session_id) {
@@ -724,16 +816,6 @@ export async function claudeRemote(opts: {
                         ? { forkedFrom }
                         : undefined;
                     opts.onSessionFound(systemInit.session_id, extras);
-                }
-
-                // Fork: only accept the first child prompt after the native branch exists.
-                if (awaitingForkInit) {
-                    awaitingForkInit = false;
-                    const first = await applyInitialTurn();
-                    if (!first) {
-                        return;
-                    }
-                    initial = first;
                 }
             }
 

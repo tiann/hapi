@@ -44,6 +44,10 @@ function runInTransaction<T>(db: Database, operation: () => T): T {
 //     write-once-keep semantics. Mirror of pickExistingSessionMetadata
 //     in cli/src/agent/sessionFactory.ts.
 //
+//   - CONTRIBUTION_FIELDS: structured session↔PR links (externalRefs).
+//     Sparse resume/bootstrap writes must not wipe a prior primary PR
+//     association. tiann/hapi#1160 / PR #1161.
+//
 //   - ALERT_STATE_FIELDS: durable operator-facing alert state that must
 //     survive sparse metadata writes (e.g. archive). Without this,
 //     lastModelError (banner / amber dot / ack) vanishes when a write
@@ -92,6 +96,7 @@ const HUB_OWNED_METADATA_FIELDS = [
     'conversationBranch'
 ] as const
 
+const CONTRIBUTION_FIELDS = ['externalRefs'] as const
 const ALERT_STATE_FIELDS = ['lastModelError'] as const
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -237,6 +242,7 @@ export function mergeSessionMetadata(prior: unknown, next: unknown): unknown {
     merged = carryForwardIfMissing(prior, next, merged, PARSE_IDENTITY_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, ROUTING_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, SIMPLE_RESUME_TOKENS)
+    merged = carryForwardIfMissing(prior, next, merged, CONTRIBUTION_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, ALERT_STATE_FIELDS)
     merged = carryForwardIfMissing(prior, next, merged, HUB_OWNED_METADATA_FIELDS)
     merged = preserveForkSummary(prior, next, merged)
@@ -540,7 +546,15 @@ export function updateSessionMetadata(
     metadata: unknown,
     expectedVersion: number,
     namespace: string,
-    options?: { touchUpdatedAt?: boolean; allowUnarchive?: boolean; allowTitleUpdate?: boolean; titleLocked?: boolean; inheritTitleLockFrom?: string }
+    options?: {
+        touchUpdatedAt?: boolean
+        allowUnarchive?: boolean
+        allowTitleUpdate?: boolean
+        /** Keep machine-spawn stub tag so adoptPreallocatedSession can still bind. */
+        preservePreallocation?: boolean
+        titleLocked?: boolean
+        inheritTitleLockFrom?: string
+    }
 ): VersionedUpdateResult<unknown | null> {
     const now = Date.now()
     const touchUpdatedAt = options?.touchUpdatedAt !== false
@@ -606,6 +620,7 @@ export function updateSessionMetadata(
             if (
                 result.result === 'success'
                 && !options?.allowTitleUpdate
+                && !options?.preservePreallocation
                 && isMachineSpawnPreallocatedStub(existing)
                 && !isHubArchivedSessionMetadata(merged)
             ) {

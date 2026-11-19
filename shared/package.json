@@ -10,6 +10,7 @@
         "./passkey": "./src/passkey.ts",
         "./apiTypes": "./src/apiTypes.ts",
         "./codeagentWrapper": "./src/codeagentWrapper.ts",
+        "./forkBoundary": "./src/forkBoundary.ts",
         "./localTranscript": "./src/localTranscript.ts",
         "./messages": "./src/messages.ts",
         "./slashCommands": "./src/slashCommands.ts",

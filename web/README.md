@@ -55,7 +55,7 @@ See `src/router.tsx` for route definitions.
 ### Session list (`src/components/SessionList.tsx`)
 
 - Active/inactive status indicator.
-- Title-side activity/unread indicator: grey spinner while a foreground turn runs with all output read, blue spinner while it runs with unread output, a blue static dot while only background tasks remain, and a theme-foreground dot for unread content when no work is running. Reading clears the unread state without stopping the spinner. Permission/input requests keep their own symbols; the title indicator does not certify a successful turn outcome, and background work is owned by the title rather than duplicated on the agent icon.
+- Title-side activity/unread indicator: grey spinner while work runs with all output read, blue spinner while it runs with unread output, and a theme-foreground dot for unread content when no work is running. Work includes a foreground turn and background-only tasks (such as a background subagent); the spinner's label says which. Reading clears the unread state without stopping the spinner. Permission/input requests keep their own symbols; the title indicator does not certify a successful turn outcome, and background work is owned by the title rather than duplicated on the agent icon.
 - Session title from name, summary, or path.
 - Todo progress display.
 - Pending permission request count.

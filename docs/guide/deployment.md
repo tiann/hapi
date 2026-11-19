@@ -1,3 +1,7 @@
+---
+description: "Run the HAPI hub and runner as persistent background services and expose the hub through the relay, a tunnel or a reverse proxy."
+---
+
 # Deployment
 
 Run the hub and runner as persistent background services, and configure remote access tunnels.
@@ -81,6 +85,13 @@ Keep the hub on its default `127.0.0.1:3006` and put an HTTPS reverse proxy
 (Nginx, Caddy, etc.) in front of it. A public IP alone does not make the
 loopback listener remotely accessible. Set `HAPI_LISTEN_HOST` only when you
 need another bind address, and restrict direct access with your firewall.
+
+Set `HAPI_PUBLIC_URL` to the proxy's HTTPS origin (for example
+`https://hapi.example.com`, without a path). Passkeys, the Telegram Mini App
+and the default CORS origin depend on it; see
+[Authentication](./authentication.md#passkeys). Proxy the hub at the root of
+that origin, not under a path prefix, and keep long-lived SSE and WebSocket
+connections open (no response buffering).
 
 **Self-signed certificates (HTTPS)**
 

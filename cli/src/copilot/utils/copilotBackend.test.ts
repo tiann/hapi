@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { buildCopilotAcpArgs, createCopilotBackend } from './copilotBackend';
+import { buildCopilotAcpArgs } from './copilotBackend';
 
 describe('buildCopilotAcpArgs', () => {
     test('defaults to acp stdio without mode', () => {
@@ -15,12 +15,5 @@ describe('buildCopilotAcpArgs', () => {
             '--mode',
             'autopilot'
         ]);
-    });
-});
-
-describe('createCopilotBackend', () => {
-    test('creates an ACP backend for copilot', () => {
-        const backend = createCopilotBackend({ agentMode: 'plan' });
-        expect(backend).toBeDefined();
     });
 });

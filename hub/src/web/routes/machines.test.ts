@@ -1425,7 +1425,7 @@ describe('machines routes', () => {
             body: JSON.stringify({ directory: '/tmp/x', parentSessionId: 'parent-in-ns' })
         })
         expect(okResp.status).toBe(200)
-        expect(capturedCalls[0]?.[17]).toBe('parent-in-ns')
+        expect(capturedCalls[0]?.[18]).toBe('parent-in-ns')
 
         const foreignResp = await app.request('/api/machines/machine-1/spawn', {
             method: 'POST',
@@ -1433,6 +1433,6 @@ describe('machines routes', () => {
             body: JSON.stringify({ directory: '/tmp/x', parentSessionId: 'foreign-parent' })
         })
         expect(foreignResp.status).toBe(200)
-        expect(capturedCalls[1]?.[17]).toBeUndefined()
+        expect(capturedCalls[1]?.[18]).toBeUndefined()
     })
 })

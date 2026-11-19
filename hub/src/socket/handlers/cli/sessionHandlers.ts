@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { randomUUID } from 'node:crypto'
 import type { CopilotAgentMode } from '@hapi/protocol'
 import type { AgentState, BackgroundTask, CodexCollaborationMode, Metadata, PermissionMode } from '@hapi/protocol/types'
-import { getReasoningStreamId, getToolCallId, isRedundantGoalStatusEventContent } from '@hapi/protocol/messages'
+import { getToolCallId, isRedundantGoalStatusEventContent } from '@hapi/protocol/messages'
 import type { Store, StoredSession } from '../../../store'
 import type { SyncEvent } from '../../../sync/syncEngine'
 import { extractTodoWriteTodosFromMessageContent } from '../../../sync/todos'
@@ -13,6 +13,18 @@ import { shouldRecordSessionActivity } from '../../../sync/sessionActivity'
 import type { CliSocketWithData } from '../../socketTypes'
 import type { SessionEndReason } from '@hapi/protocol'
 import type { AccessErrorReason, AccessResult } from './types'
+import { getConfiguration } from '../../../configuration'
+import { stripExternalRefsWhenAwarenessDisabled, externalRefsInMetadataValid } from '../../../sync/externalRefsPolicy'
+
+function gateExternalRefs(metadata: unknown): unknown {
+    let awarenessEnabled = false
+    try {
+        awarenessEnabled = getConfiguration().githubPrAwareness
+    } catch {
+        awarenessEnabled = false
+    }
+    return stripExternalRefsWhenAwarenessDisabled(metadata, awarenessEnabled)
+}
 
 type SessionAlivePayload = {
     sid: string
@@ -71,6 +83,7 @@ const updateStateSchema = z.object({
 // Hub-only merge/clear/title links. CLI update-metadata must not forge or erase them
 // (same strip/restore as supersededBySessionId — see sessionHandlers.test.ts).
 const HUB_OWNED_METADATA_KEYS = [
+    'codexImportedAt',
     'opencodeRewind',
     'supersededBySessionId',
     'opencodeClearOperation',
@@ -196,7 +209,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         const callId = getToolCallId(content)
         const stored = callId !== null && !wasStored
             ? store.messages.upsertToolCallMessage(sid, content, callId, localId, createdAt)
-            : { message: store.messages.addMessage(sid, content, localId, undefined, createdAt), updated: false }
+            : store.messages.addMessageSweepingLiveSnapshots(sid, content, localId, undefined, createdAt)
         const msg = stored.message
         // A merged row keeps its first snapshot's createdAt for stable
         // ordering, but derived todo/team versions must strictly advance
@@ -215,15 +228,14 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
 
         // A reasoning stream arrives as a series of growing snapshots under one
         // stable id, so a stream should cost one row rather than one per
-        // interval. Retire the earlier snapshots only once their replacement is
-        // stored: these are separate transactions, and clearing first would let
-        // a crash in between take the whole stream. Only rows marked live are
-        // eligible, so the settled message that closes a stream survives and
-        // also sweeps up its own leftovers.
-        const reasoningStreamId = getReasoningStreamId(content)
-        if (reasoningStreamId) {
-            store.messages.deleteLiveReasoningSnapshots(sid, reasoningStreamId, msg.id)
-        }
+        // interval. The addMessageSweepingLiveSnapshots call above already
+        // retired the earlier live snapshots of the incoming message's own
+        // reasoning/text streams in the same transaction (INSERT first, then
+        // DELETE — a crash rolls back both, so the stream never loses its
+        // newest row). Tool-call content never carries a stream id, so the
+        // upsert branch needs no sweep. Only rows marked live are eligible;
+        // the settled message that closes a stream survives and also sweeps
+        // up its own leftovers.
 
         // tiann/hapi#1820: every stored message proves the agent is doing
         // something, so it refreshes the keepalive-idle clock. Only human
@@ -329,9 +341,15 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             return
         }
 
+        const gatedMetadata = gateExternalRefs(metadata)
+        if (!externalRefsInMetadataValid(gatedMetadata)) {
+            cb({ result: 'error' })
+            return
+        }
+
         const result = store.sessions.updateSessionMetadata(
             sid,
-            preserveHubOwnedMetadata(metadata, sessionAccess.value.metadata),
+            preserveHubOwnedMetadata(gatedMetadata, sessionAccess.value.metadata),
             expectedVersion,
             sessionAccess.value.namespace
         )

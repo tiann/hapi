@@ -1,3 +1,7 @@
+---
+description: "Share one Codex app-server between the official Codex terminal UI and HAPI web and native clients, including usage limits and attaching to desktop runtimes."
+---
+
 # Codex shared sessions
 
 Codex **0.154.0 or newer**: the official terminal UI and HAPI Web / native

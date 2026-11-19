@@ -1,4 +1,5 @@
 import React from 'react';
+import { settleAcpLauncherShutdown } from '@/modules/common/remote/settleAcpLauncherShutdown';
 import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
 import { logger } from '@/ui/logger';
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
@@ -22,6 +23,8 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
     private readonly onEffortRollback?: (effort: string | null) => void;
     private readonly getQueuedModel?: () => string | null;
     private backend: ReturnType<typeof createCopilotBackend> | null = null;
+    private shutdownRequested = false;
+    private disconnectPromise: Promise<void> | undefined;
     private permissionHandler: CopilotPermissionHandler | null = null;
     private happyServer: { stop: () => void } | null = null;
     private abortController = new AbortController();
@@ -53,10 +56,31 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
     }
 
     public async launch(): Promise<RemoteLauncherExitReason> {
-        return this.start({
+        let shutdown: Promise<void> | undefined;
+        const running = this.start({
             onExit: () => this.handleExitFromUi(),
             onSwitchToLocal: () => this.handleSwitchFromUi()
+        }).catch((error) => {
+            if (!this.shutdownRequested) throw error;
+            logger.debug('[copilot-remote] Launcher failed during shutdown', error);
+            return 'exit' as const;
         });
+        this.session.setKillHandler(() => shutdown ??= settleAcpLauncherShutdown({
+            logTag: 'copilot-remote',
+            cancel: () => {
+                this.shutdownRequested = true;
+                this.exitReason = 'exit';
+                return this.requestExit('exit', () => this.handleAbort(true));
+            },
+            disconnect: () => this.backend ? this.disconnectBackend() : undefined,
+            running
+        }));
+        try {
+            const reason = await running;
+            return this.shutdownRequested ? 'exit' : reason;
+        } finally {
+            this.session.setKillHandler(() => {});
+        }
     }
 
     protected createDisplay(context: RemoteLauncherDisplayContext): React.ReactElement {
@@ -73,6 +97,7 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
             skillLookup: { workingDirectory: session.path, flavor: 'copilot' }
         });
         this.happyServer = happyServer;
+        if (this.shouldExit) return;
 
         const runtimeConfig = resolveCopilotRuntimeConfig({ model: this.model });
 
@@ -88,6 +113,7 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
         });
 
         await backend.initialize();
+        if (this.shouldExit) return;
 
         const resumeSessionId = session.sessionId;
         const acpMcpServers = toAcpMcpServers(mcpServers);
@@ -100,6 +126,7 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
                     mcpServers: acpMcpServers
                 });
             } catch (error) {
+                if (this.shouldExit) return;
                 logger.warn('[copilot-remote] resume failed, starting new session', error);
                 session.sendSessionEvent({
                     type: 'message',
@@ -116,6 +143,7 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
                 mcpServers: acpMcpServers
             });
         }
+        if (this.shouldExit) return;
         session.onSessionFound(acpSessionId);
         this.activeSessionId = acpSessionId;
         session.setRemoteAgentModeApplier((agentMode) => this.applyAgentMode(agentMode));
@@ -288,6 +316,7 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
                 });
                 void backend.refreshSessionInfo(acpSessionId, session.path);
             } catch (error) {
+                if (this.shouldExit) break;
                 const errorMessage = error instanceof Error ? error.message : String(error);
                 logger.warn('[copilot-remote] prompt failed', { message: errorMessage });
                 session.sendSessionEvent({
@@ -305,24 +334,34 @@ export class CopilotRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
+    private async disconnectBackend(): Promise<void> {
+        this.disconnectPromise ??= this.backend?.disconnect({ waitForTransport: true });
+        await this.disconnectPromise;
+    }
+
     protected async cleanup(): Promise<void> {
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
         this.session.setRemoteAgentModeApplier(null);
         this.activeSessionId = null;
 
-        if (this.permissionHandler) {
-            await this.permissionHandler.cancelAll('Session ended');
-            this.permissionHandler = null;
-        }
-
-        if (this.backend) {
-            await this.backend.disconnect();
+        try {
+            try {
+                if (this.permissionHandler) {
+                    await this.permissionHandler.cancelAll('Session ended');
+                    this.permissionHandler = null;
+                }
+            } finally {
+                await this.disconnectBackend();
+            }
+        } catch (error) {
+            if (!this.shutdownRequested) throw error;
+            logger.debug('[copilot-remote] Error during launcher cleanup', error);
+        } finally {
             this.backend = null;
-        }
-
-        if (this.happyServer) {
-            this.happyServer.stop();
-            this.happyServer = null;
+            if (this.happyServer) {
+                this.happyServer.stop();
+                this.happyServer = null;
+            }
         }
     }
 
