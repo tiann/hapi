@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
+import type { ApiClient } from '@/api/client'
 import type { ToolCallBlock } from '@/chat/types'
+import { ToolCard } from '@/components/ToolCard/ToolCard'
 import { extractCodexBashDisplay, extractTextFromResult, getMutationResultRenderMode, getToolResultViewComponent, parseNumberedFileLines } from '@/components/ToolCard/views/_results'
 import { getToolViewComponent } from '@/components/ToolCard/views/_all'
 import { I18nProvider } from '@/lib/i18n-context'
@@ -837,6 +839,37 @@ describe('PeerToolResultView', () => {
     })
 
     it('detects shell-wrapped argv command arrays for codeagent-wrapper cards', () => {
+        const queryClient = new QueryClient()
+        queryClient.setQueryData(['sessions'], {
+            sessions: [{
+                id: 'linked-wrapper-hapi-argv',
+                active: true,
+                thinking: false,
+                activeAt: 100,
+                updatedAt: 100,
+                metadataVersion: 1,
+                agentStateVersion: 0,
+                todosUpdatedAt: 0,
+                todoProgress: null,
+                pendingRequestsCount: 0,
+                pendingRequestKinds: [],
+                pendingRequests: [],
+                backgroundTaskCount: 0,
+                futureScheduledMessageCount: 0,
+                nextScheduledAt: null,
+                model: null,
+                effort: null,
+                attachedJob: null,
+                attachedJobUpdatedAt: 0,
+                metadata: {
+                    path: '/work/repo',
+                    name: 'Codex Reviewer',
+                    flavor: 'codex',
+                    agentSessionId: '019a0000-1111-7222-8333-444455556666',
+                },
+            }],
+        })
+
         const block = makeResultBlock({
             name: 'exec_command',
             input: {
@@ -844,7 +877,137 @@ describe('PeerToolResultView', () => {
             },
             result: ['Done', '---', 'SESSION_ID: 019a0000-1111-7222-8333-444455556666'].join('\n'),
         })
-        const CompactView = getToolViewComponent(block.tool.name, block.tool)
-        expect(CompactView).not.toBeNull()
+        expect(getToolViewComponent(block.tool.name, block.tool)).toBeNull()
+
+        const WrapperResultView = getToolResultViewComponent(block.tool.name, block)
+        render(
+            <QueryClientProvider client={queryClient}>
+                <I18nProvider>
+                    <WrapperResultView block={block} metadata={null} surface="dialog" />
+                </I18nProvider>
+            </QueryClientProvider>
+        )
+        expect(screen.getByRole('link', { name: /Codex Reviewer/ }).getAttribute('href')).toBe('/sessions/linked-wrapper-hapi-argv')
+    })
+
+    it('preserves detailed command and output on ToolCard for wrapper Bash calls with or without a matching HAPI session', () => {
+        const wrapperBlock = makeResultBlock({
+            name: 'Bash',
+            input: {
+                command: 'codeagent-wrapper --backend codex - "/work/repo"',
+                description: 'Run Codex review',
+            },
+            result: [
+                'Approved',
+                '---',
+                'SESSION_ID: 019a0000-1111-7222-8333-444455556666',
+            ].join('\n'),
+        })
+
+        const unmatchedQueryClient = new QueryClient()
+        unmatchedQueryClient.setQueryData(['sessions'], { sessions: [] })
+        const unmatchedRender = render(
+            <QueryClientProvider client={unmatchedQueryClient}>
+                <I18nProvider>
+                    <ToolCard
+                        api={{} as ApiClient}
+                        sessionId="session-1"
+                        metadata={null}
+                        terminalToolDisplayMode="detailed"
+                        disabled={false}
+                        onDone={() => {}}
+                        block={wrapperBlock}
+                    />
+                </I18nProvider>
+            </QueryClientProvider>
+        )
+
+        expect(unmatchedRender.container.querySelector('pre[data-language="bash"]')?.textContent)
+            .toBe('codeagent-wrapper --backend codex - "/work/repo"')
+        expect(unmatchedRender.container.querySelector('pre[data-language="text"]')?.textContent)
+            .toContain('Approved')
+        expect(unmatchedRender.container.querySelector('pre[data-language="text"]')?.textContent)
+            .toContain('SESSION_ID: 019a0000-1111-7222-8333-444455556666')
+        expect(screen.queryByRole('link')).toBeNull()
+        unmatchedRender.unmount()
+
+        const matchedQueryClient = new QueryClient()
+        matchedQueryClient.setQueryData(['sessions'], {
+            sessions: [{
+                id: 'linked-wrapper-hapi-1',
+                active: true,
+                thinking: false,
+                activeAt: 100,
+                updatedAt: 100,
+                metadataVersion: 1,
+                agentStateVersion: 0,
+                todosUpdatedAt: 0,
+                todoProgress: null,
+                pendingRequestsCount: 0,
+                pendingRequestKinds: [],
+                pendingRequests: [],
+                backgroundTaskCount: 0,
+                futureScheduledMessageCount: 0,
+                nextScheduledAt: null,
+                model: null,
+                effort: null,
+                attachedJob: null,
+                attachedJobUpdatedAt: 0,
+                metadata: {
+                    path: '/work/repo',
+                    name: 'Codex Reviewer',
+                    flavor: 'codex',
+                    agentSessionId: '019a0000-1111-7222-8333-444455556666',
+                },
+            }],
+        })
+
+        const matchedRender = render(
+            <QueryClientProvider client={matchedQueryClient}>
+                <I18nProvider>
+                    <ToolCard
+                        api={{} as ApiClient}
+                        sessionId="session-1"
+                        metadata={null}
+                        terminalToolDisplayMode="detailed"
+                        disabled={false}
+                        onDone={() => {}}
+                        block={wrapperBlock}
+                    />
+                </I18nProvider>
+            </QueryClientProvider>
+        )
+
+        expect(matchedRender.container.querySelector('pre[data-language="bash"]')?.textContent)
+            .toBe('codeagent-wrapper --backend codex - "/work/repo"')
+        expect(matchedRender.container.querySelector('pre[data-language="text"]')?.textContent)
+            .toContain('Approved')
+        expect(matchedRender.container.querySelector('pre[data-language="text"]')?.textContent)
+            .toContain('SESSION_ID: 019a0000-1111-7222-8333-444455556666')
+        const link = screen.getByRole('link', { name: /Codex Reviewer/ })
+        expect(link.getAttribute('href')).toBe('/sessions/linked-wrapper-hapi-1')
+        link.addEventListener('click', (event) => event.preventDefault(), { once: true })
+        fireEvent.click(link)
+        expect(screen.queryByRole('dialog')).toBeNull()
+        matchedRender.unmount()
+
+        const compactRender = render(
+            <QueryClientProvider client={matchedQueryClient}>
+                <I18nProvider>
+                    <ToolCard
+                        api={{} as ApiClient}
+                        sessionId="session-1"
+                        metadata={null}
+                        terminalToolDisplayMode="compact"
+                        disabled={false}
+                        onDone={() => {}}
+                        block={wrapperBlock}
+                    />
+                </I18nProvider>
+            </QueryClientProvider>
+        )
+        expect(compactRender.container.querySelector('pre[data-language="bash"]')).toBeNull()
+        expect(compactRender.container.querySelector('pre[data-language="text"]')).toBeNull()
+        expect(screen.queryByRole('link')).toBeNull()
     })
 })
