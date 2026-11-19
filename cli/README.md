@@ -45,6 +45,10 @@ Reloading unscoped catalogs on 0.164–0.168 cannot be verified from that snapsh
 An unknown native version or catalog identity leaves eligibility unverified.
 If native launch configuration discards explicit Ultrafast, HAPI confirms Standard
 and reports that outcome as well.
+If Standard confirmation fails after a thread was created, that same conversation
+keeps its settings controls while input is paused. Select a tier in settings to
+retry confirmation without creating another thread. The pending state survives
+cold resume; it is cleared only after a confirmed tier update.
 
 An optional persistence probe runs against an installed Codex 0.170 executable:
 `node scripts/dev/probe-codex-tier-resume.mjs /path/to/codex` (Node 24+).

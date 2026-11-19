@@ -1601,3 +1601,47 @@ it('does not add a fallible feature RPC after a native launch already confirmed 
     await f.root.confirmUltrafastLaunch();
     expect(request).not.toHaveBeenCalled();
 });
+it('revalidates a native model-only change without pinning inherited tier intent', async () => {
+    const f = await fixture(); await f.root.activate();
+    await f.root.client.request('thread/settings/update', { threadId: 'thread', model: 'mock', serviceTier: 'ultrafast' });
+    expect(f.metadata().codexServiceTierExplicit).toBe(false);
+    await f.root.applyNativeSettings({ threadId: 'thread', model: 'standard-only' });
+    expect(f.metadata().codexServiceTierExplicit).toBe(false);
+    expect(f.root.freshParams()).toMatchObject({ model: 'standard-only' });
+    expect(f.root.freshParams().serviceTier).toBeUndefined();
+    expect(f.events).toHaveBeenCalledWith({ type: 'message', message: 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.' });
+});
+it.each([false, true])('recovers a known thread through settings while input is paused (restored=%s)', async restored => {
+    const f = await fixture();
+    if (restored) f.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: true }));
+    await f.root.activate({}, true, !restored);
+    expect(f.root.needsTierConfirmation).toBe(true);
+    expect(f.metadata().codexTierConfirmationPending).toBe(true);
+    expect(f.sessionReady).not.toHaveBeenCalled();
+    await expect(f.rpc.get(RPC_METHODS.ImplementCodexPlan)!({ planId: 'pending' })).rejects.toThrow('Confirm the service tier');
+    f.submit('held until confirmed', 'pending-tier-input');
+    expect(f.native.queue).toHaveLength(0);
+    await f.rpc.get(RPC_METHODS.SetSessionConfig)!({ serviceTier: 'standard' });
+    expect(f.metadata().codexTierConfirmationPending).toBe(false);
+    expect(f.root.needsTierConfirmation).toBe(false);
+    expect(f.sessionReady).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+});
+it('reconciles a persisted pending confirmation from an authoritative cold-resume Standard snapshot', async () => {
+    const f = await fixture();
+    f.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: true }));
+    await f.root.bind('thread', { model: 'mock', serviceTier: 'default', thread: { turns: [] } }, false);
+    await f.root.activate();
+    expect(f.root.needsTierConfirmation).toBe(false);
+    expect(f.metadata().codexTierConfirmationPending).toBe(false);
+    expect(f.sessionReady).toHaveBeenCalledOnce();
+});
+it.each([null, 'ultrafast'])('clears restored pending state after successful launch confirmation (%s)', async tier => {
+    const f = await fixture();
+    f.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: true }));
+    f.root.acceptSettings({ model: 'mock', serviceTier: tier });
+    await f.root.confirmUltrafastLaunch();
+    expect(f.metadata().codexTierConfirmationPending).toBe(false);
+    expect(f.sessionReady).not.toHaveBeenCalled();
+    await f.root.activate(); expect(f.sessionReady).toHaveBeenCalledOnce();
+});

@@ -7,6 +7,7 @@ export type { NewSessionServiceTier }
 export function FastModeSelector(props: {
     fastAvailable?: boolean
     ultrafastAvailable?: boolean
+    availabilityUnverified?: boolean
     visible: boolean
     value: NewSessionServiceTier | 'default'
     isDisabled: boolean
@@ -33,9 +34,10 @@ export function FastModeSelector(props: {
             >
                 <option value="default">Account default</option>
                 <option value="standard">{t('misc.fastModeStandard')}</option>
-                {props.fastAvailable !== false && <option value="fast">{t('misc.fastModeFast')}</option>}
+                {(props.fastAvailable !== false || props.value === 'fast') && <option value="fast" disabled={props.fastAvailable === false}>{t('misc.fastModeFast')}</option>}
                 {(props.ultrafastAvailable || props.value === 'ultrafast') && <option value="ultrafast" disabled={!props.ultrafastAvailable}>{t('misc.fastModeUltrafast')}</option>}
             </SelectControl>
+            {props.availabilityUnverified ? <p role="status" className="text-xs text-[var(--app-hint)]">Service tier availability could not be verified. You can choose Standard or Account default.</p> : null}
         </div>
     )
 }

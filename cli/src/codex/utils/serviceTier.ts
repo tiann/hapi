@@ -87,3 +87,23 @@ export async function inheritedResumeTier(client: Pick<CodexAppServerClient, 're
     const configured = (await client.readConfig({ cwd, includeLayers: false })).config.service_tier;
     return { ...params, serviceTier: typeof configured === 'string' && configured !== 'default' ? configured : null };
 }
+
+/** One eligibility resolver for HAPI launches and native gateway lifecycle requests. */
+export async function resolveUltrafastLaunch(
+    client: Pick<CodexAppServerClient, 'request' | 'listModels' | 'readConfig' | 'retainsResumeModelProvider' | 'supportsProviderScopedModels'>,
+    method: string, params: Record<string, unknown>, cwd: string, catalogProvider?: string,
+    savedThread?: Record<string, unknown>,
+): Promise<{ params: Record<string, unknown>; downgraded: boolean }> {
+    if (params.serviceTier !== 'ultrafast') return { params, downgraded: false };
+    const deadline = Date.now() + 10_000;
+    const response = !savedThread && method !== 'thread/start'
+        ? await client.request<{ thread: Record<string, unknown> }>('thread/read', { threadId: params.threadId, includeTurns: false }) : undefined;
+    const saved = savedThread ?? response?.thread ?? {};
+    const config = params.config && typeof params.config === 'object' ? params.config as Record<string, unknown> : {};
+    const provider = params.modelProvider ?? config.model_provider ?? saved.modelProvider;
+    const context = method === 'thread/resume'
+        ? resumeTierContext(params, saved, client.retainsResumeModelProvider())
+        : { model: params.model ?? config.model ?? saved.model, modelProvider: typeof provider === 'string' ? provider : undefined };
+    const available = await isUltrafastAvailable(client, context.model, cwd, deadline, context.modelProvider, catalogProvider);
+    return { params: available ? params : { ...params, serviceTier: null }, downgraded: !available };
+}

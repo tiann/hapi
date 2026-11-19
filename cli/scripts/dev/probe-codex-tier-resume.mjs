@@ -76,6 +76,10 @@ try {
     await request('thread/metadata/update', { threadId: thread, gitInfo: { sha: null, branch: null, originUrl: null } });
     await request('thread/settings/update', { threadId: thread, model: 'gpt-6-astra' });
     await new Promise(r => setTimeout(r, 500));
+    const loaded = await request('thread/resume', { threadId: thread, excludeTurns: true, serviceTier: null });
+    if (loaded.serviceTier !== 'priority')
+        throw Error('Loaded resume unexpectedly changed settings; update the gateway protocol assumption');
+    console.log(JSON.stringify({ loadedResumeOverride: 'ignored', tier: loaded.serviceTier }));
     await stop();
     await start('default');
     const resumed = await request('thread/resume', { threadId: thread, excludeTurns: true, model: 'gpt-6-astra' });

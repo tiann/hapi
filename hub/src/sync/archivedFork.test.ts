@@ -41,6 +41,16 @@ function fixture() {
 }
 
 describe('archived Codex fork coordination', () => {
+    it('requires recovery before forking a source with unconfirmed tier settings', async () => {
+        const f = fixture();
+        try {
+            const current = f.store.sessions.getSession(f.source.id)!;
+            f.store.sessions.updateSessionMetadata(f.source.id, { ...current.metadata as object, codexTierConfirmationPending: true }, current.metadataVersion, 'ns');
+            (f.engine as unknown as { sessionCache: { refreshSession(id: string): void } }).sessionCache.refreshSession(f.source.id);
+            expect(await f.engine.forkConversation(f.source.id, 'ns')).toMatchObject({ type: 'error', message: expect.stringContaining('confirm its service tier') });
+            expect(f.counts()).toEqual({ forks: 0, spawns: 0 });
+        } finally { f.engine.stop(); }
+    });
     it('refuses local resume discovery of a CLI-archived source while its fork child is starting', async () => {
         const f = fixture()
         let entered!: () => void

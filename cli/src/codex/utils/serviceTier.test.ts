@@ -1,5 +1,34 @@
 import { describe, expect, it, vi } from 'vitest';
-import { isUltrafastAvailable, isUltrafastEnabled, inheritedResumeTier, resumeTierContext } from './serviceTier';
+import { isUltrafastAvailable, isUltrafastEnabled, inheritedResumeTier, resumeTierContext, resolveUltrafastLaunch } from './serviceTier';
+
+it.each(['thread/start', 'thread/fork', 'thread/resume'])('applies the same catalog fallback before native %s', async method => {
+    const client = {
+        request: vi.fn().mockResolvedValue({ thread: { model: 'unsupported', modelProvider: 'saved-provider' } }),
+        readConfig: vi.fn().mockResolvedValue({ config: { model_provider: 'configured-provider' } }),
+        listModels: vi.fn().mockResolvedValue({ data: [{ id: 'unsupported', serviceTiers: [{ id: 'priority' }] }] }),
+        supportsProviderScopedModels: () => true, retainsResumeModelProvider: () => true,
+    };
+    const original = { threadId: 'source', model: 'unsupported', serviceTier: 'ultrafast' };
+    expect(await resolveUltrafastLaunch(client, method, original, '/project')).toEqual({ params: { ...original, serviceTier: null }, downgraded: true });
+    expect(original.serviceTier).toBe('ultrafast');
+    expect(client.listModels).toHaveBeenCalledWith({ includeHidden: true, modelProvider: method === 'thread/start' ? 'configured-provider' : 'saved-provider' });
+});
+it('does not run lifecycle discovery for Standard or an omitted override', async () => {
+    const client = { request: vi.fn(), readConfig: vi.fn(), listModels: vi.fn(), supportsProviderScopedModels: () => true, retainsResumeModelProvider: () => true };
+    for (const params of [{ serviceTier: null }, {}]) expect(await resolveUltrafastLaunch(client, 'thread/start', params, '/project')).toEqual({ params, downgraded: false });
+    expect(client.listModels).not.toHaveBeenCalled(); expect(client.request).not.toHaveBeenCalled();
+});
+it.each(['thread/start', 'thread/fork', 'thread/resume'])('honors explicit native config model/provider overrides on %s', async method => {
+    const client = {
+        request: vi.fn().mockResolvedValue({ thread: { model: 'eligible', modelProvider: 'saved-provider' } }),
+        readConfig: vi.fn(), listModels: vi.fn().mockResolvedValue({ data: [{ id: 'unsupported', serviceTiers: [] }] }),
+        supportsProviderScopedModels: () => true, retainsResumeModelProvider: () => true,
+    };
+    const params = { threadId: 'source', serviceTier: 'ultrafast', config: { model: 'unsupported', model_provider: 'override-provider' } };
+    expect((await resolveUltrafastLaunch(client, method, params, '/project')).downgraded).toBe(true);
+    expect(client.listModels).toHaveBeenCalledWith({ includeHidden: true, modelProvider: 'override-provider' });
+    expect(client.readConfig).not.toHaveBeenCalled();
+});
 
 it('reads effective thread feature state across native pagination', async () => {
     const request = vi.fn().mockResolvedValueOnce({ data: [{ name: 'fast_mode', enabled: true }], nextCursor: 'next' })

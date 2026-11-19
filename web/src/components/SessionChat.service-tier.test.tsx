@@ -119,3 +119,16 @@ it('offers attached Ultrafast when native provider-scoped discovery is verified'
     render(shell(session, catalog, vi.fn()));
     expect(await screen.findByRole('button', { name: 'Reset Standard / fast:false / ultra:true' })).toBeTruthy();
 });
+
+it('keeps Standard recovery available for a paused launch without a usable tier catalog', async () => {
+    const catalog = vi.fn(async () => ({ success: true, models: [] }));
+    const setServiceTier = vi.fn(async () => ({}));
+    const session = { id: 'tier-session', active: true, model: 'mock', serviceTier: null, metadata: {
+        flavor: 'codex', machineId: 'machine', startingMode: 'remote', codexTierConfirmationPending: true,
+        capabilities: { concurrentClients: true }
+    } } as unknown as Session;
+    render(shell(session, catalog, setServiceTier));
+    const button = await screen.findByRole('button', { name: 'Reset Standard / fast:false / ultra:false' });
+    expect(button).toBeEnabled(); fireEvent.click(button);
+    await waitFor(() => expect(setServiceTier).toHaveBeenCalledWith('tier-session', 'standard'));
+});

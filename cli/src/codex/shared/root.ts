@@ -86,6 +86,10 @@ export class SharedCodexRoot {
     private settingsNative: Record<string, unknown> = {};
     private modelProvider?: string;
     private serviceTierExplicit = false;
+    private tierConfirmationPending = false;
+    get hasUltrafastTier(): boolean { return this.settings.serviceTier === 'ultrafast'; }
+    get needsTierConfirmation(): boolean { return this.tierConfirmationPending; }
+    get hasConfirmedStandardTier(): boolean { return this.settingsNative.serviceTier === 'default'; }
     private settingsNotification?: Record<string, unknown>;
     private readonly settingsListeners = new Set<() => void>();
     private ready!: () => void;
@@ -316,17 +320,23 @@ export class SharedCodexRoot {
         }
         this.modelProvider = string(response.modelProvider) ?? string(record(response.thread).modelProvider);
         this.acceptSettings(response); this.acceptSettings(this.host.settingsFor(threadId) ?? {});
+        if (this.hasConfirmedStandardTier && this.session.getMetadata()?.codexTierConfirmationPending) {
+            this.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: false }));
+        }
         if (!this.host.attached) await this.projectHistory(this.projection, response.thread);
         await this.refresh(); await this.refreshChildren(true);
     }
-    async activate(options: SharedLaunchOptions = {}, serviceTierExplicit?: boolean): Promise<void> {
+    async activate(options: SharedLaunchOptions = {}, serviceTierExplicit?: boolean, deferInput = false): Promise<void> {
+        this.tierConfirmationPending = deferInput || this.session.getMetadata()?.codexTierConfirmationPending === true;
         this.serviceTierExplicit = serviceTierExplicit ?? (options.serviceTier !== undefined || this.session.getMetadata()?.codexServiceTierExplicit === true);
-        this.session.updateMetadata(metadata => ({ ...metadata, codexServiceTierExplicit: this.serviceTierExplicit }));
+        this.session.updateMetadata(metadata => ({ ...metadata, codexServiceTierExplicit: this.serviceTierExplicit, codexTierConfirmationPending: this.tierConfirmationPending }));
         // Restored input cannot run before the cold-resume settings are applied.
         if (!this.host.attached) await this.initialSettings(options);
         if (this.stopping) throw new Error('Codex execution is stopping');
-        this.registerControls(); this.ready();
-        this.heartbeat = setInterval(() => this.alive(), SESSION_KEEP_ALIVE_INTERVAL_MS); this.alive(); this.session.emitSessionReady();
+        this.registerControls();
+        if (!this.tierConfirmationPending) this.ready();
+        this.heartbeat = setInterval(() => this.alive(), SESSION_KEEP_ALIVE_INTERVAL_MS); this.alive();
+        if (!this.tierConfirmationPending) this.session.emitSessionReady();
     }
     private publishSteering(): void {
         this.publishCompaction();
@@ -645,17 +655,26 @@ export class SharedCodexRoot {
         await this.writeNativeSettings(params);
         if (explicitTier) this.markTierExplicit();
         if (fallbackNotice) this.notice(fallbackNotice);
+        if (config.serviceTier !== undefined) this.completeTierConfirmation();
         this.alive(); return { applied: this.settings };
     }
     private markTierExplicit(): void {
         this.serviceTierExplicit = true;
         this.session.updateMetadata(metadata => ({ ...metadata, codexServiceTierExplicit: true }));
     }
+    private completeTierConfirmation(): void {
+        const paused = this.tierConfirmationPending;
+        if (!paused && this.session.getMetadata()?.codexTierConfirmationPending !== true) return;
+        this.tierConfirmationPending = false;
+        this.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: false }));
+        if (paused) { this.alive(); this.ready(); this.session.emitSessionReady(); }
+    }
     /** Native frontends share the same confirmation and explicit-intent rules. */
     applyNativeSettings(params: Record<string, unknown>): Promise<void> {
         const operation = this.settingsWrites.catch(() => {}).then(async () => {
+            const explicitTier = params.serviceTier !== undefined;
             let fallbackNotice: string | undefined;
-            if (params.serviceTier === 'ultrafast') {
+            if (params.serviceTier === 'ultrafast' || params.model && params.serviceTier === undefined && this.hasUltrafastTier) {
                 const deadline = Date.now() + 10_000;
                 for (;;) {
                     const model = string(params.model) ?? this.settings.model;
@@ -673,8 +692,10 @@ export class SharedCodexRoot {
             }
             // Other native fields may use public null-as-unchanged semantics.
             // Only this request's tier is relevant to HAPI's inherited intent.
-            await this.writeNativeSettings(params, { serviceTier: params.serviceTier, ...(typeof params.model === 'string' ? { model: params.model } : {}) });
-            this.markTierExplicit();
+            await this.writeNativeSettings(params, { ...(params.serviceTier !== undefined ? { serviceTier: params.serviceTier } : {}), ...(typeof params.model === 'string' ? { model: params.model } : {}) });
+            if (explicitTier) this.markTierExplicit();
+            if (params.serviceTier !== undefined) this.completeTierConfirmation();
+            this.alive();
             if (fallbackNotice) this.notice(fallbackNotice);
         });
         this.settingsWrites = operation;
@@ -706,12 +727,16 @@ export class SharedCodexRoot {
             await accepted;
         } finally { clearTimeout(timer); this.settingsListeners.delete(changed); }
     }
-    async confirmUltrafastLaunch(): Promise<void> {
+    async confirmUltrafastLaunch(explicitTier = true): Promise<void> {
         // Native launch configuration filters a disabled feature before its
         // response. Unlike live updates, it does not require another discovery
         // RPC after creation that could strand a known, unactivated child.
-        if (this.settings.serviceTier === 'ultrafast') return;
+        if (this.settings.serviceTier === 'ultrafast') { this.completeTierConfirmation(); return; }
         await this.applySettings({ serviceTier: 'standard' });
+        if (!explicitTier) {
+            this.serviceTierExplicit = false;
+            this.session.updateMetadata(metadata => ({ ...metadata, codexServiceTierExplicit: false }));
+        }
         this.notice('Codex did not apply Ultrafast; changed to Standard.');
     }
     async initialSettings(options: SharedLaunchOptions): Promise<void> {
@@ -750,6 +775,9 @@ export class SharedCodexRoot {
         const rpc = { registerHandler: (method: string, handler: (raw: unknown) => Promise<unknown>) => {
             this.session.rpcHandlerManager.registerHandler(method, async (raw: unknown) => {
                 if (this.stopping) throw new Error('Codex execution is stopping; resume when inactive');
+                if (this.tierConfirmationPending && ([RPC_METHODS.ClearConversation, RPC_METHODS.ForkConversation, RPC_METHODS.ImplementCodexPlan] as string[]).includes(method)) {
+                    throw new Error('Confirm the service tier in settings before creating, forking, or running a plan.');
+                }
                 if (this.host.attached && ([RPC_METHODS.ClearConversation, RPC_METHODS.ForkConversation, RPC_METHODS.RewindConversation] as string[]).includes(method)) {
                     throw new Error('Create/fork/revert this external thread in its owning desktop; HAPI only attaches');
                 }

@@ -608,6 +608,8 @@ describe('NewSession launch preferences', () => {
         mocks.codexModelsError = 'catalog disconnected'
         mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'saved-fast' })
         renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        expect(await screen.findByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue('fast')
+        expect(screen.getByText(/Service tier availability could not be verified/)).toBeInTheDocument()
         await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
         fireEvent.click(screen.getByTestId('create'))
         await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ serviceTier: 'fast' })))

@@ -2687,6 +2687,9 @@ export class SyncEngine {
         boundary?: ForkBoundary
     ): Promise<{ type: 'success'; sessionId: string } | { type: 'error'; message: string; code?: ForkBoundaryErrorCode }> {
         const candidate = this.sessionCache.getSessionByNamespace(sessionId, namespace)
+        if (candidate?.metadata?.codexTierConfirmationPending) {
+            return { type: 'error', message: 'Resume the source and confirm its service tier in settings before forking.' }
+        }
         if (candidate?.metadata?.codexResumePending) {
             return { type: 'error', message: 'Codex resume startup is unconfirmed; retry resume or archive to confirm its process stopped before forking' }
         }

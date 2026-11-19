@@ -1,4 +1,4 @@
-import { isUltrafastAvailable, inheritedResumeTier, resumeTierContext, ULTRAFAST_FALLBACK_NOTICE } from '../utils/serviceTier';
+import { inheritedResumeTier, resolveUltrafastLaunch, ULTRAFAST_FALLBACK_NOTICE } from '../utils/serviceTier';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdir, mkdtemp, chmod, rm, realpath } from 'node:fs/promises';
@@ -18,7 +18,7 @@ import { SharedCodexRoot } from './root';
 import { buildForkSessionSummary } from '@hapi/protocol';
 
 export type RuntimeReady = { sessionId: string; runtime: CodexRuntimeRecord };
-type Reservation = { root: SharedCodexRoot; resumeId?: string; serviceTierExplicit?: boolean };
+type Reservation = { root: SharedCodexRoot; resumeId?: string; serviceTierExplicit?: boolean; requestedUltrafast?: boolean; downgraded?: boolean };
 
 function gitInfo(cwd: string): { sha: string | null; branch: string | null; originUrl: string | null } {
     const git = (...args: string[]) => {
@@ -238,8 +238,18 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         // Cold-resumed threads predate the control connection's automatic
         // new-thread subscription. Subscribe once without changing settings.
         await control.request('thread/resume', { threadId, excludeTurns: true });
-        if (requestedUltrafast) await root.confirmUltrafastLaunch();
-        await root.activate(initialOptions, serviceTierExplicit);
+        let tierConfirmationPending = false;
+        if (requestedUltrafast) {
+            try { await root.confirmUltrafastLaunch(serviceTierExplicit ?? root.session.getMetadata()?.codexServiceTierExplicit === true); }
+            catch (error) {
+                tierConfirmationPending = !root.hasConfirmedStandardTier;
+                root.session.sendSessionEvent({ type: 'message', message: tierConfirmationPending
+                    ? 'Ultrafast was not applied and Standard could not be confirmed. Input is paused. Select a service tier in settings to retry on this conversation.'
+                    : 'Ultrafast was not applied; Standard is active.' });
+                logger.debug('[Codex shared] tier confirmation pending', error);
+            }
+        }
+        await root.activate(initialOptions, serviceTierExplicit, tierConfirmationPending);
         await root.session.flush();
         await persist();
         // The hub's view of the metadata is what the hub kept of it: a hub
@@ -250,11 +260,8 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     };
     const create = (method: 'thread/start' | 'thread/fork', params: Record<string, unknown>, parent?: SharedCodexRoot, initialOptions?: SharedLaunchOptions): Promise<SharedCodexRoot> => operation(async () => {
         const serviceTierExplicit = params.serviceTier !== undefined;
-        const source = params.serviceTier === 'ultrafast' && method === 'thread/fork'
-            ? record(record(await control.request('thread/read', { threadId: params.threadId, includeTurns: false })).thread) : {};
-        const downgraded = params.serviceTier === 'ultrafast' && !await isUltrafastAvailable(control, params.model ?? source.model,
-            string(params.cwd) ?? launch.cwd, Date.now() + 10_000, string(params.modelProvider ?? source.modelProvider), catalogProvider);
-        if (downgraded) params = { ...params, serviceTier: null };
+        const resolved = await resolveUltrafastLaunch(control, method, params, string(params.cwd) ?? launch.cwd, catalogProvider);
+        const downgraded = resolved.downgraded; params = resolved.params;
         const root = await prepare(string(params.cwd) ?? launch.cwd, undefined, parent);
         let nativeSucceeded = false;
         try {
@@ -278,7 +285,9 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     const before = (request: Envelope, connection: string): Promise<Envelope> => operation(async () => {
         const params = record(request.params);
         const queueRoot = roots.get(string(params.threadId) ?? '');
-        if (queueRoot && request.method === 'thread/settings/update' && params.serviceTier !== undefined) {
+        if (queueRoot?.needsTierConfirmation && request.method === 'turn/start') throw new Error('Service tier confirmation is pending. Select a service tier in settings before sending input.');
+        if (queueRoot?.needsTierConfirmation && request.method === 'thread/fork') throw new Error('Confirm the service tier in settings before forking this conversation.');
+        if (queueRoot && request.method === 'thread/settings/update' && (params.serviceTier !== undefined || params.model && queueRoot.hasUltrafastTier)) {
             if (request.id === undefined) throw new Error('Settings mutations require a JSON-RPC request ID');
             await queueRoot.applyNativeSettings(params);
             return { id: request.id, result: {} };
@@ -310,9 +319,11 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             }
             if (candidate !== threadId && !existing) throw new Error('Resume the parent HAPI session before attaching a child agent');
         }
+        const cwd = string(params.cwd) ?? existing?.bootstrap.workingDirectory ?? launch.cwd;
+        // Loaded native resume rejoins a thread and ignores setting overrides.
+        // Actual live changes go through thread/settings/update above.
         if (request.method === 'thread/resume' && existing) return { ...request, params: existing.config(params) };
         if (threadId) await withThreadOwnership(home, threadId, id, async () => {});
-        const cwd = string(params.cwd) ?? existing?.bootstrap.workingDirectory ?? launch.cwd;
         const root = request.method === 'thread/resume' && threadId
             ? await withThreadOwnership(home, threadId, id, async () => {
                 const root = await prepare(cwd, await findColdBinding(home, threadId));
@@ -324,14 +335,16 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             }
             const resolved = request.method === 'thread/resume'
                 ? await inheritedResumeTier(control, params, root.session.getMetadata()?.codexServiceTierExplicit, cwd) : params;
+            const tier = await resolveUltrafastLaunch(control, request.method!, resolved, cwd, catalogProvider);
             reservations.set(key(connection, request), { root, resumeId: request.method === 'thread/resume' ? threadId : undefined,
-                serviceTierExplicit: params.serviceTier !== undefined ? true : request.method === 'thread/resume' ? undefined : false });
-            return { ...request, params: root.config({ ...resolved, ...(request.method === 'thread/fork' ? { deferGoalContinuation: true } : {}) }) };
+                serviceTierExplicit: params.serviceTier !== undefined ? true : request.method === 'thread/resume' ? undefined : false,
+                requestedUltrafast: tier.params.serviceTier === 'ultrafast', downgraded: tier.downgraded });
+            return { ...request, params: root.config({ ...tier.params, ...(request.method === 'thread/fork' ? { deferGoalContinuation: true } : {}) }) };
         } catch (error) {
             const binding = runtime.sessions[root.session.sessionId];
             if (binding) binding.active = false;
             runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== root.session.sessionId);
-            await persist(); prepared.delete(root); await root.close(false); throw error;
+            await persist(); prepared.delete(root); await root.close(request.method !== 'thread/resume'); throw error;
         }
     });
     const after = (request: Envelope, response: Envelope, connection: string): Promise<void | Envelope[]> => operation(async () => {
@@ -340,9 +353,10 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             if (response.error) {
                 const binding = runtime.sessions[reservation.root.session.sessionId]; if (binding) binding.active = false;
                 runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== reservation.root.session.sessionId);
-                await persist(); prepared.delete(reservation.root); await reservation.root.close(true); return;
+                await persist(); prepared.delete(reservation.root); await reservation.root.close(!reservation.resumeId); return;
             }
-            await bind(reservation.root, record(response.result), true, undefined, request.method === 'thread/start', reservation.serviceTierExplicit);
+            await bind(reservation.root, record(response.result), true, undefined, request.method === 'thread/start', reservation.serviceTierExplicit, reservation.requestedUltrafast);
+            if (reservation.downgraded) reservation.root.session.sendSessionEvent({ type: 'message', message: ULTRAFAST_FALLBACK_NOTICE });
         } else if (request.method === 'thread/archive' && !response.error) {
             const root = roots.get(string(record(request.params).threadId) ?? ''); if (root) await end(root, false);
         } else if (request.method === 'thread/queue/delete' && !response.error && record(response.result).deleted === true) {
@@ -426,10 +440,9 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 await reserveRecord(root, threadId); return root;
             });
             const resumeParams = await inheritedResumeTier(control, launch.threadParams, root.session.getMetadata()?.codexServiceTierExplicit, launch.cwd);
-            const tierContext = resumeTierContext(resumeParams, thread, control.retainsResumeModelProvider());
-            const downgraded = launch.threadParams.serviceTier === 'ultrafast'
-                && !await isUltrafastAvailable(control, tierContext.model, launch.cwd, Date.now() + 10_000, tierContext.modelProvider, catalogProvider);
-            const params = root.config({ ...resumeParams, ...(downgraded ? { serviceTier: null } : {}), threadId, excludeTurns: true });
+            const resolved = await resolveUltrafastLaunch(control, 'thread/resume', resumeParams, launch.cwd, catalogProvider, thread);
+            const downgraded = resolved.downgraded;
+            const params = root.config({ ...resolved.params, threadId, excludeTurns: true });
             let response: Record<string, unknown>;
             try {
                 response = record(await root.client.request('thread/resume', params));
@@ -442,7 +455,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 await root.client.request('thread/unarchive', { threadId });
                 response = record(await root.client.request('thread/resume', params));
             }
-            await bind(root, response, false, options, false, launch.threadParams.serviceTier !== undefined ? true : undefined, launch.threadParams.serviceTier === 'ultrafast' && !downgraded);
+            await bind(root, response, false, options, false, launch.threadParams.serviceTier !== undefined ? true : undefined, resolved.params.serviceTier === 'ultrafast');
             if (downgraded) root.session.sendSessionEvent({ type: 'message', message: ULTRAFAST_FALLBACK_NOTICE });
         } else root = await create('thread/start', { ...launch.threadParams, cwd: launch.cwd }, undefined, options);
         assertRunning();
