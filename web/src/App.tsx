@@ -513,7 +513,6 @@ function AppInner() {
         return withPwaBanner(
             <LoginPrompt
                 mode="reconnect"
-                allowHubSwitch={authSource.type !== 'telegram'}
                 onReconnect={retryConnection}
                 error={connectionMessage}
                 baseUrl={baseUrl}

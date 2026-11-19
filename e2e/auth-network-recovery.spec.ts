@@ -71,14 +71,41 @@ test.beforeAll(async () => {
     origin = 'http://127.0.0.1:' + (hub.address() as { port: number }).port
 })
 test.afterAll(async () => { disconnect(); hub.closeAllConnections(); await new Promise<void>(resolve => hub.close(() => resolve())) })
-test.beforeEach(async ({ page }) => {
+test.beforeEach(async ({ page }, testInfo) => {
     mode = 'ok'; disconnect()
     for (const response of stalledAuth) response.destroy()
     stalledAuth.clear(); authAttempts = 0; closeGlobalOnce = false
-    await page.addInitScript(server => {
+    await page.addInitScript(({ server, passkey }) => {
         localStorage.setItem('hapi_hub_url', server)
-        localStorage.setItem('hapi_access_token::' + server, 'fixture-credential')
-    }, origin)
+        if (passkey) localStorage.setItem('hapi_passkey_session::' + server, 'fixture-passkey')
+        else localStorage.setItem('hapi_access_token::' + server, 'fixture-credential')
+    }, { server: origin, passkey: testInfo.title.includes('passkey recovery') })
+})
+
+for (const credential of ['pairing-link', 'passkey']) test(`${credential} recovery cannot forward its credential to another hub`, async ({ page }) => {
+    let otherAuth = 0
+    const other = createServer((req, res) => { if (req.url === '/api/auth') otherAuth++; res.writeHead(401); res.end() })
+    await new Promise<void>(resolve => other.listen(0, '127.0.0.1', resolve))
+    const otherOrigin = 'http://127.0.0.1:' + (other.address() as { port: number }).port
+    const requests: Array<{ origin: string; body: Record<string, unknown> }> = []
+    page.on('request', request => {
+        if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/auth') requests.push({ origin: new URL(request.url()).origin, body: request.postDataJSON() })
+    })
+    try {
+        mode = 'unavailable'
+        await page.goto('/sessions' + (credential === 'pairing-link' ? '?token=fixture-pairing' : ''))
+        await expect(page.getByText('Reconnecting to hub', { exact: true })).toBeVisible()
+        if (credential === 'pairing-link') expect(new URL(page.url()).searchParams.get('token')).toBe('fixture-pairing')
+        await expect(page.getByRole('button', { name: /^Hub / })).toHaveCount(0)
+        await expect(page.locator('input[type=url]')).toHaveCount(0)
+        await page.getByRole('button', { name: 'Retry now' }).click()
+        await expect.poll(() => authAttempts).toBeGreaterThan(1)
+        expect(requests.length).toBeGreaterThan(1)
+        expect(requests.every(r => r.origin === origin && (credential === 'pairing-link'
+            ? r.body.accessToken === 'fixture-pairing' : r.body.passkeySession === 'fixture-passkey'))).toBe(true)
+        expect(otherAuth).toBe(0)
+        expect(await page.evaluate(server => localStorage.getItem('hapi_access_token::' + server), otherOrigin)).toBeNull()
+    } finally { other.closeAllConnections(); await new Promise<void>(resolve => other.close(() => resolve())) }
 })
 
 test('phone navigation remains reachable below wrapped auth and outage warnings', async ({ page }) => {
@@ -198,12 +225,20 @@ test('a confirmed 401 still requires authentication', async ({ page }) => {
 test('preserves the actionable Telegram-disabled diagnostic', async ({ page }) => {
     mode = 'telegram-disabled'
     const authOrigins: string[] = []
-    page.on('request', request => { if (new URL(request.url()).pathname === '/api/auth') authOrigins.push(new URL(request.url()).origin) })
+    const authPayloads: Array<Record<string, unknown>> = []
+    page.on('request', request => {
+        if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/auth') {
+            authOrigins.push(new URL(request.url()).origin)
+            authPayloads.push(request.postDataJSON())
+        }
+    })
     await page.goto('/sessions?initData=fixture-telegram')
     await expect(page.getByRole('status')).toHaveText('Telegram authentication is disabled. Configure TELEGRAM_BOT_TOKEN.')
     await expect(page.getByText(/temporarily unavailable/)).toHaveCount(0)
     await expect(page.getByRole('button', { name: /^Hub / })).toHaveCount(0)
     await page.getByRole('button', { name: 'Retry now' }).click()
     await expect.poll(() => authAttempts).toBeGreaterThan(1)
+    expect(authOrigins.length).toBeGreaterThan(1)
     expect(authOrigins.every(value => value === origin)).toBe(true)
+    expect(authPayloads.every(value => value.initData === 'fixture-telegram' && !('accessToken' in value))).toBe(true)
 })

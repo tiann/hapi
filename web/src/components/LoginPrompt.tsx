@@ -12,7 +12,6 @@ import type { ServerUrlResult } from '@/hooks/useServerUrl'
 type LoginPromptProps = {
     mode?: 'login' | 'bind' | 'reconnect'
     onReconnect?: () => void
-    allowHubSwitch?: boolean
     onLogin?: (token: string) => void
     onBind?: (token: string) => Promise<void>
     onPasskeyLogin?: (passkeySession: string) => void
@@ -244,7 +243,7 @@ export function LoginPrompt(props: LoginPromptProps) {
                         <a href="https://hapi.run/docs" target="_blank" rel="noopener noreferrer" className="underline hover:text-[var(--app-fg)]">
                             {t('login.help')}
                         </a>
-                        {props.allowHubSwitch !== false && <Dialog open={isServerDialogOpen} onOpenChange={handleServerDialogOpenChange}>
+                        {!isReconnecting && <Dialog open={isServerDialogOpen} onOpenChange={handleServerDialogOpenChange}>
                             <DialogTrigger asChild>
                                 <button type="button" className="underline hover:text-[var(--app-fg)]">
                                     Hub {props.serverUrl ? `${t('login.server.custom')}` : `${t('login.server.default')}`}
