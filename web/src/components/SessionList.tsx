@@ -2445,6 +2445,9 @@ export function SessionList(props: {
         }
         return bucketRunningSessions(machineFilteredSessions, effectivePinInProgressMode, byRelevanceOrRecent)
     }, [machineFilteredSessions, effectivePinInProgressMode, searchScoreIndex, hasTextQuery, listComparator])
+    // Stopped rows show their stop time only where the list orders them by it:
+    // Active first, and not while a text search orders rows by relevance.
+    const stoppedTimeShown = listView.activeFirst && !(searchScoreIndex && hasTextQuery)
     const runningSessionTotal = runningSessions.jobs.length
         + runningSessions.working.length
         + runningSessions.pending.length
@@ -2687,7 +2690,7 @@ export function SessionList(props: {
                                             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
                                             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
                                             lastSeenVersion={lastSeenVersion}
-                                            showStoppedTime={listView.activeFirst}
+                                            showStoppedTime={stoppedTimeShown}
                                         />
                                     ))}
                                 </div>
@@ -2765,7 +2768,7 @@ export function SessionList(props: {
             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
             lastSeenVersion={lastSeenVersion}
-            showStoppedTime={listView.activeFirst}
+            showStoppedTime={stoppedTimeShown}
         />
     )
 
@@ -3639,7 +3642,7 @@ export function SessionList(props: {
                                             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
                                             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
                                             lastSeenVersion={lastSeenVersion}
-                                            showStoppedTime={listView.activeFirst}
+                                            showStoppedTime={stoppedTimeShown}
                                         />
                                     ))}
                                 </div>
