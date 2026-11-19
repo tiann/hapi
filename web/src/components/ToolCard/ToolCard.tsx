@@ -493,7 +493,8 @@ function ToolCardInner(props: ToolCardProps) {
     const inlineBodySpacing = props.block.tool.state === 'pending'
         ? 'mt-3'
         : (subtitle ? 'mt-1' : 'mt-0')
-    const stateColor = toolStatusColorClass(props.block.tool.state)
+    const headerState = permission?.answerSubmitted && props.block.tool.state === 'pending' ? 'running' : props.block.tool.state
+    const stateColor = toolStatusColorClass(headerState)
     const { suppressFocusRing, onTriggerPointerDown, onTriggerKeyDown, onTriggerBlur } = usePointerFocusRing()
     const inlineDetailInvokerRef = useRef<HTMLElement | null>(null)
     const openDetails = () => setDetailsOpen(true)
@@ -550,7 +551,7 @@ function ToolCardInner(props: ToolCardProps) {
                     </span>
                 ) : null}
                 <span className={stateColor}>
-                    <ToolStatusIcon state={props.block.tool.state} />
+                    <ToolStatusIcon state={headerState} />
                 </span>
                 <span className="text-[var(--app-hint)]">
                     <DetailsIcon />

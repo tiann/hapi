@@ -39,6 +39,28 @@ function card(block: ToolCallBlock) {
 }
 
 describe('async question transcript status', () => {
+    it('shows processing in the header after an answer is acknowledged, then shows completion', () => {
+        const block = question('pending')
+        block.tool.state = 'pending'
+        const { rerender } = render(card(block))
+        const header = () => screen.getByRole('button', { expanded: false })
+        expect(header().querySelector('.text-amber-600 svg rect')).toBeInTheDocument()
+
+        rerender(card({
+            ...block,
+            tool: { ...block.tool, permission: {
+                ...block.tool.permission!, status: 'resolved', answerSubmitted: true, answers: { q: { answers: ['Web'] } }
+            } }
+        }))
+        expect(screen.getByText('Answer sent. Waiting for the agent.')).toBeVisible()
+        expect(header().querySelector('svg.animate-spin')).toBeInTheDocument()
+        expect(header().querySelector('.text-amber-600')).not.toBeInTheDocument()
+
+        rerender(card(question('resolved')))
+        expect(header().querySelector('.text-emerald-600')).toBeInTheDocument()
+        expect(header().querySelector('svg.animate-spin')).not.toBeInTheDocument()
+    })
+
     it('shows Canceled and removes reply controls once a dismissal settles without a reason', () => {
         const { rerender } = render(card(question('pending')))
         expect(screen.getByRole('button', { name: 'Dismiss' })).toBeVisible()
