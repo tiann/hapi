@@ -78,7 +78,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     const reservations = new Map<string, Reservation>();
     const pendingAdmission = new Set<string>();
     const resumingThreads = new Set<string>();
-    const retryableBindings = new Set<string>();
+    const retryableBindings = new Map<string, Pick<Reservation, 'root' | 'serviceTierExplicit' | 'requestedUltrafast' | 'downgraded'>>();
     const nativeTurns = new Map<string, { root: SharedCodexRoot; params: Record<string, unknown>; explicitTier: boolean; fallbackNotice?: string }>();
     const runtime: CodexRuntimeRecord = { id, pid: process.pid, marker: getProcessStartMarker(process.pid) ?? '',
         endpoint: '', command: command.command, args: command.args, codexHome: home, hub: configuration.apiUrl, authHash: runtimeAuthHash(), sessions: {} };
@@ -304,7 +304,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         const queueRoot = roots.get(string(params.threadId) ?? '');
         const queueMutation = ['thread/queue/add', 'thread/queue/update', 'thread/queue/delete', 'thread/queue/reorder', 'thread/queue/start'].includes(request.method ?? '');
         const tierPending = pendingAdmission.has(string(params.threadId) ?? '') || queueRoot?.needsTierConfirmation;
-        if (tierPending && (request.method === 'turn/start' || request.method === 'turn/steer' || queueMutation)) throw new Error('Service tier confirmation is pending. Select a service tier in settings before sending input.');
+        if (tierPending && (request.method === 'turn/start' || request.method === 'turn/steer' || queueMutation && !(request.method === 'thread/queue/delete' && queueRoot))) throw new Error('Service tier confirmation is pending. Select a service tier in settings before sending input.');
         if (tierPending && request.method === 'thread/fork') throw new Error('Confirm the service tier in settings before forking this conversation.');
         if (pendingAdmission.has(string(params.threadId) ?? '') && request.method === 'thread/settings/update') throw new Error('Codex thread initialization is pending. Retry settings when the thread is ready.');
         if (queueRoot && request.method === 'turn/start') {
@@ -358,11 +358,19 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 if (resumingThreads.has(threadId) || roots.has(threadId)) throw new Error('Thread is already being attached in this runtime; retry after it is ready');
                 resumingThreads.add(threadId);
                 try {
-                    const root = await prepare(cwd, await findColdBinding(home, threadId));
+                    const root = retryableBindings.get(threadId)?.root ?? await prepare(cwd, await findColdBinding(home, threadId));
                     await reserveRecord(root, threadId); return root;
                 } catch (error) { resumingThreads.delete(threadId); throw error; }
             }) : await prepare(cwd, undefined, request.method === 'thread/fork' ? existing : undefined);
         try {
+            const accepted = request.method === 'thread/resume' && threadId ? retryableBindings.get(threadId) : undefined;
+            if (accepted) {
+                // Rejoin the already accepted native resume, retaining its MCP
+                // bridge and explicit intent. Loaded native threads ignore new
+                // resume overrides; subsequent edits use settings/update.
+                reservations.set(key(connection, request), { ...accepted, root, resumeId: threadId });
+                return { ...request, params: root.config(params) };
+            }
             if (request.method !== 'thread/resume') {
                 runtime.pendingCreations = [...runtime.pendingCreations ?? [], root.session.sessionId]; await persist();
             }
@@ -375,11 +383,12 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             if (request.method === 'thread/resume' && threadId && (tier.downgraded || tier.params.serviceTier === 'ultrafast' || root.session.getMetadata()?.codexTierConfirmationPending === true)) pendingAdmission.add(threadId);
             return { ...request, params: root.config({ ...tier.params, ...(request.method === 'thread/fork' ? { deferGoalContinuation: true } : {}) }) };
         } catch (error) {
-            await root.close(request.method !== 'thread/resume');
+            const retained = threadId && retryableBindings.get(threadId)?.root === root;
+            if (!retained) await root.close(request.method !== 'thread/resume');
             const binding = runtime.sessions[root.session.sessionId];
             if (binding) binding.active = Boolean(threadId && retryableBindings.has(threadId));
             runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== root.session.sessionId);
-            await persist(); prepared.delete(root);
+            await persist(); if (!retained) prepared.delete(root);
             if (request.method === 'thread/resume' && threadId) resumingThreads.delete(threadId);
             throw error;
         }
@@ -394,27 +403,27 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         const reservation = reservations.get(key(connection, request)); reservations.delete(key(connection, request));
         if (reservation) {
             if (response.error) {
-                await reservation.root.close(!reservation.resumeId);
+                const retained = reservation.resumeId && retryableBindings.get(reservation.resumeId)?.root === reservation.root;
+                if (!retained) await reservation.root.close(!reservation.resumeId);
                 if (reservation.resumeId && !retryableBindings.has(reservation.resumeId)) pendingAdmission.delete(reservation.resumeId);
                 const binding = runtime.sessions[reservation.root.session.sessionId]; if (binding) binding.active = Boolean(reservation.resumeId && retryableBindings.has(reservation.resumeId));
                 runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== reservation.root.session.sessionId);
-                await persist(); prepared.delete(reservation.root);
+                await persist(); if (!retained) prepared.delete(reservation.root);
                 if (reservation.resumeId) resumingThreads.delete(reservation.resumeId);
                 return;
             }
             try {
                 await bind(reservation.root, record(response.result), true, undefined, request.method === 'thread/start', reservation.serviceTierExplicit, reservation.requestedUltrafast, reservation.downgraded);
             } catch (error) {
-                // Native already loaded the writer in this engine. Preserve
-                // its durable owner, but let this runtime retry the HAPI bind
-                // after the old session-end flush. Input stays gated.
-                if (!reservation.resumeId) throw error;
-                await reservation.root.close(false);
-                if (roots.get(reservation.resumeId) === reservation.root) roots.delete(reservation.resumeId);
-                nativeSettings.delete(reservation.resumeId);
-                retryableBindings.add(reservation.resumeId);
+                // Before root.bind, all resources can be retained unchanged for
+                // retry, including the MCP bridge the native thread accepted.
+                // Later partial/unknown outcomes keep their existing quarantine.
+                if (!reservation.resumeId || reservation.root.threadId) throw error;
+                retryableBindings.set(reservation.resumeId, { root: reservation.root,
+                    serviceTierExplicit: reservation.serviceTierExplicit,
+                    requestedUltrafast: reservation.requestedUltrafast, downgraded: reservation.downgraded });
                 pendingAdmission.add(reservation.resumeId);
-                await persist(); prepared.delete(reservation.root);
+                await persist();
                 resumingThreads.delete(reservation.resumeId);
                 throw error;
             }

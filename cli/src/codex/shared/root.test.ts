@@ -114,6 +114,24 @@ it('rejects an early native queue request when activation pauses for confirmatio
     expect(f.root.needsTierConfirmation).toBe(false);
 });
 
+it('allows cancellation while tier confirmation keeps queued input paused', async () => {
+    const f = await fixture();
+    await f.root.activate({}, false, true);
+    f.native.queue.push({ id: 'cancel-paused', clientUserMessageId: 'cancel-paused', input: [] });
+    const request = f.root.client.request.bind(f.root.client);
+    vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/queue/delete') {
+            f.native.queue = [];
+            return { deleted: true } as never;
+        }
+        return request(method, params);
+    });
+    await f.root.nativeQueueMutation('thread/queue/delete', { threadId: 'thread', queuedSubmissionId: 'cancel-paused' });
+    expect(f.native.queue).toHaveLength(0);
+    expect(f.root.needsTierConfirmation).toBe(true);
+    await expect(f.root.nativeQueueMutation('thread/queue/start', { threadId: 'thread' })).rejects.toThrow('tier confirmation');
+});
+
 it('does not publish cold-resume readiness before startup controls are registered', async () => {
     const f = await fixture({ initialTierPending: true, bindTier: 'ultrafast' });
     await f.root.confirmUltrafastLaunch();

@@ -144,15 +144,16 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                 }
                 return originalNativeRequest.call(this, method, params) as Promise<T>;
             }); extraSpies.push(metadataFailure);
-            state.sessions.get(original.sessionId)!.metadata.codexTierConfirmationPending = true;
-            await expect(second.client.request('thread/resume', { threadId, excludeTurns: true })).rejects.toThrow('fixture metadata update unavailable');
+            await expect(second.client.request('thread/resume', { threadId, excludeTurns: true, serviceTier: 'priority' })).rejects.toThrow('fixture metadata update unavailable');
+            const retainedSession = state.sessions.get(original.sessionId);
             metadataFailure.mockRestore();
             expect(second.runtime.sessions[original.sessionId].active).toBe(true);
             await expect(concurrent.request('thread/queue/start', { threadId })).rejects.toThrow('tier confirmation');
             const response = await second.client.request<{ serviceTier: string }>('thread/resume', { threadId, excludeTurns: true });
             const third = await start();
-            expect(response.serviceTier).toBe('default');
-            expect(state.sessions.get(original.sessionId)?.metadata.codexServiceTierExplicit).toBe(false);
+            expect(response.serviceTier).toBe('priority');
+            expect(state.sessions.get(original.sessionId)).toBe(retainedSession);
+            expect(state.sessions.get(original.sessionId)?.metadata.codexServiceTierExplicit).toBe(true);
             extraSpies.push(vi.spyOn(CodexAppServerClient.prototype, 'listModels').mockResolvedValue({ data: [
                 { id: 'gpt-6-astra', serviceTiers: [{ id: 'ultrafast' }] },
                 { id: 'gpt-6.1-sol', serviceTiers: [{ id: 'priority' }] },
@@ -238,6 +239,9 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             expect(state.sessions.get(pausedSid)?.metadata.codexTierConfirmationPending).toBe(false);
             await second.client.request('thread/settings/update', { threadId: unsupported.thread.id, serviceTier: 'priority' });
             second.abort.abort(); await second.done;
+            await configure('default');
+            expect((await third.client.request<{ serviceTier: string }>('thread/resume', { threadId, excludeTurns: true })).serviceTier).toBe('priority');
+            expect(state.sessions.get(original.sessionId)?.metadata.codexServiceTierExplicit).toBe(true);
             // Re-import selected Ultrafast in HAPI while the native snapshot still stores Fast.
             state.sessions.get(unsupportedSid)!.serviceTier = 'ultrafast';
             state.sessions.get(unsupportedSid)!.metadata.codexServiceTierExplicit = true;
