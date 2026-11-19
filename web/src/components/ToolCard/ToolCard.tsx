@@ -24,7 +24,8 @@ import type { TerminalToolDisplayMode } from '@/hooks/useToolCardDisplayMode'
 import { usePointerFocusRing } from '@/hooks/usePointerFocusRing'
 import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
 import { resolveToolNameAlias } from '@/components/ToolCard/toolNameAliases'
-import { parsePeerToolName } from '@/components/ToolCard/peerTools'
+import { parsePeerToolName, parseWrapperToolInvocation } from '@/components/ToolCard/peerTools'
+import { LinkedNativeSessionChip, useSessionByNativeAgentId } from '@/components/SessionLinkAnchor'
 import { cn } from '@/lib/utils'
 import { useTranslation } from '@/lib/use-translation'
 import { TraceSection } from '@/components/ToolCard/trace'
@@ -481,6 +482,10 @@ function ToolCardInner(props: ToolCardProps) {
     const CompactToolView = showInline ? getToolViewComponent(toolName, props.block.tool) : null
     const compactViewOwnsInteractions = toolName === 'CodexDiff' || parsePeerToolName(toolName) !== null
     const ResultToolView = getToolResultViewComponent(toolName, props.block)
+    const inlineWrapper = showInline && !CompactToolView
+        ? parseWrapperToolInvocation(toolName, props.block.tool.input, props.block.tool.result, props.block.tool.nativeKind)
+        : null
+    const matchedInlineWrapperSession = useSessionByNativeAgentId(inlineWrapper?.nativeSessionId)
     const permission = props.block.tool.permission
     const isAskUserQuestion = isAskUserQuestionToolName(toolName)
     const isRequestUserInput = isRequestUserInputToolName(toolName)
@@ -634,6 +639,14 @@ function ToolCardInner(props: ToolCardProps) {
                                     <div className="mb-1 text-xs font-medium text-[var(--app-hint)]">{t('tool.input')}</div>
                                     {renderToolInput(props.block, 'inline')}
                                 </div>
+                                {inlineWrapper?.nativeSessionId && matchedInlineWrapperSession ? (
+                                    <div className="flex items-center gap-2">
+                                        <LinkedNativeSessionChip
+                                            nativeSessionId={inlineWrapper.nativeSessionId}
+                                            fallbackLabel={inlineWrapper.label}
+                                        />
+                                    </div>
+                                ) : null}
                                 <div
                                     className="cursor-pointer rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
                                     role="button"

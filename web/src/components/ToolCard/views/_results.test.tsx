@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import type { ApiClient } from '@/api/client'
 import type { ToolCallBlock } from '@/chat/types'
 import { ToolCard } from '@/components/ToolCard/ToolCard'
@@ -929,7 +929,24 @@ describe('PeerToolResultView', () => {
         expect(unmatchedRender.container.querySelector('pre[data-language="text"]')?.textContent)
             .toContain('SESSION_ID: 019a0000-1111-7222-8333-444455556666')
         expect(screen.queryByRole('link')).toBeNull()
+        const unmatchedInlineBody = screen.getByText('Input').closest('[role="button"]')?.parentElement
+        expect(unmatchedInlineBody?.children).toHaveLength(2)
+        expect(Array.from(unmatchedRender.container.querySelectorAll('div')).filter((div) => div.childNodes.length === 0)).toHaveLength(0)
         unmatchedRender.unmount()
+
+        const WrapperResultView = getToolResultViewComponent(wrapperBlock.tool.name, wrapperBlock)
+        const unmatchedDialogRender = render(
+            <QueryClientProvider client={unmatchedQueryClient}>
+                <I18nProvider>
+                    <WrapperResultView block={wrapperBlock} metadata={null} surface="dialog" />
+                </I18nProvider>
+            </QueryClientProvider>
+        )
+        expect(screen.queryByRole('link')).toBeNull()
+        expect(Array.from(unmatchedDialogRender.container.querySelectorAll('div')).filter((div) => div.childNodes.length === 0)).toHaveLength(0)
+        expect(unmatchedDialogRender.container.querySelector('pre[data-language="text"]')?.textContent)
+            .toContain('Approved')
+        unmatchedDialogRender.unmount()
 
         const matchedQueryClient = new QueryClient()
         matchedQueryClient.setQueryData(['sessions'], {
@@ -984,11 +1001,19 @@ describe('PeerToolResultView', () => {
             .toContain('Approved')
         expect(matchedRender.container.querySelector('pre[data-language="text"]')?.textContent)
             .toContain('SESSION_ID: 019a0000-1111-7222-8333-444455556666')
+        const inlineLinks = screen.getAllByRole('link')
+        expect(inlineLinks).toHaveLength(1)
         const link = screen.getByRole('link', { name: /Codex Reviewer/ })
         expect(link.getAttribute('href')).toBe('/sessions/linked-wrapper-hapi-1')
+        expect(link.closest('[role="button"]')).toBeNull()
         link.addEventListener('click', (event) => event.preventDefault(), { once: true })
         fireEvent.click(link)
         expect(screen.queryByRole('dialog')).toBeNull()
+        fireEvent.click(screen.getByText('Result').closest('[role="button"]')!)
+        const dialog = screen.getByRole('dialog')
+        const dialogLinks = within(dialog).getAllByRole('link')
+        expect(dialogLinks).toHaveLength(1)
+        expect(dialogLinks[0].getAttribute('href')).toBe('/sessions/linked-wrapper-hapi-1')
         matchedRender.unmount()
 
         const compactRender = render(

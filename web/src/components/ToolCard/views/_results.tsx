@@ -12,7 +12,7 @@ import { isAskUserQuestionToolName } from '@/components/ToolCard/askUserQuestion
 import { isRequestUserInputToolName } from '@/components/ToolCard/requestUserInput'
 import { resolveToolNameAlias } from '@/components/ToolCard/toolNameAliases'
 import { extractPeerTargetSessionId, parsePeerToolName, parseWrapperToolInvocation } from '@/components/ToolCard/peerTools'
-import { LinkedNativeSessionChip, SessionLinkAnchor } from '@/components/SessionLinkAnchor'
+import { LinkedNativeSessionChip, SessionLinkAnchor, useSessionByNativeAgentId } from '@/components/SessionLinkAnchor'
 import { useTranslation } from '@/lib/use-translation'
 import { isTerminalToolBlock } from '@/chat/toolGroups'
 import { GoalView } from '@/components/ToolCard/views/GoalView'
@@ -1150,21 +1150,28 @@ const WrapperToolResultView: ToolViewComponent = (props) => {
         props.block.tool.result,
         props.block.tool.nativeKind
     )
+    // On the inline surface, ToolCard hoists the linked session chip outside
+    // its role="button" preview so interactive anchors never nest inside it.
+    const matchedSession = useSessionByNativeAgentId(
+        props.surface !== 'inline' ? wrapper?.nativeSessionId : null
+    )
     const BaseResultView = toolResultViewRegistry[props.block.tool.name]
         ?? toolResultViewRegistry[resolveToolNameAlias(props.block.tool.name)]
         ?? (isTerminalToolBlock(props.block) ? toolResultViewRegistry.Bash : undefined)
         ?? GenericResultView
 
+    if (!wrapper?.nativeSessionId || !matchedSession) {
+        return <BaseResultView {...props} />
+    }
+
     return (
         <div className="flex flex-col gap-2">
-            {wrapper?.nativeSessionId ? (
-                <div className="flex items-center gap-2">
-                    <LinkedNativeSessionChip
-                        nativeSessionId={wrapper.nativeSessionId}
-                        fallbackLabel={wrapper.label}
-                    />
-                </div>
-            ) : null}
+            <div className="flex items-center gap-2">
+                <LinkedNativeSessionChip
+                    nativeSessionId={wrapper.nativeSessionId}
+                    fallbackLabel={wrapper.label}
+                />
+            </div>
             <BaseResultView {...props} />
         </div>
     )
