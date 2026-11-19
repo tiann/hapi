@@ -1,4 +1,4 @@
-import { isUltrafastAvailable, ULTRAFAST_FALLBACK_NOTICE } from '../utils/serviceTier';
+import { isUltrafastAvailable, resumeTierContext, ULTRAFAST_FALLBACK_NOTICE } from '../utils/serviceTier';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdir, mkdtemp, chmod, rm, realpath } from 'node:fs/promises';
@@ -411,8 +411,9 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 const root = await prepare(launch.cwd, existing);
                 await reserveRecord(root, threadId); return root;
             });
+            const tierContext = resumeTierContext(launch.threadParams, thread);
             const downgraded = launch.threadParams.serviceTier === 'ultrafast'
-                && !await isUltrafastAvailable(control, launch.threadParams.model ?? thread.model, launch.cwd, Date.now() + 10_000, string(launch.threadParams.modelProvider ?? thread.modelProvider), catalogProvider);
+                && !await isUltrafastAvailable(control, tierContext.model, launch.cwd, Date.now() + 10_000, tierContext.modelProvider, catalogProvider);
             const params = root.config({ ...launch.threadParams, ...(downgraded ? { serviceTier: null } : {}), threadId, excludeTurns: true });
             let response: Record<string, unknown>;
             try {

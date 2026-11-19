@@ -403,3 +403,19 @@ describe('archived Codex fork coordination', () => {
         } finally { f.engine.stop() }
     })
 })
+
+it.each([false, true])('preserves explicit tier intent %s when launching an archived fork', async explicit => {
+    const f = fixture();
+    try {
+        const current = f.store.sessions.getSession(f.source.id)!;
+        f.store.sessions.updateSessionMetadata(f.source.id, { ...current.metadata!, codexServiceTierExplicit: explicit }, current.metadataVersion, 'ns');
+        ;(f.engine as any).sessionCache.refreshSession(f.source.id);
+        f.engine.handleSessionAlive({ sid: f.source.id, time: Date.now(), serviceTier: 'ultrafast' });
+        f.engine.handleSessionEnd({ sid: f.source.id, time: Date.now() });
+        let tier: string | undefined;
+        const spawn = f.rpc.spawnSession;
+        f.rpc.spawnSession = async (...args) => { tier = args[11]; return spawn.apply(f.rpc, args); };
+        expect((await f.engine.forkConversation(f.source.id, 'ns')).type).toBe('success');
+        expect(tier).toBe(explicit ? 'ultrafast' : undefined);
+    } finally { f.engine.stop(); }
+});

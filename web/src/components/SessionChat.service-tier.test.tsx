@@ -86,3 +86,15 @@ it.each(['empty', 'failure'])('allows Standard recovery when catalog is %s', asy
     fireEvent.click(button)
     await waitFor(() => expect(setServiceTier).toHaveBeenCalledWith('tier-session', 'standard'))
 })
+
+it('hides unverified attached Ultrafast while retaining Standard recovery', async () => {
+    const catalog = vi.fn(async () => ({ success: true, models: [{ id: 'gpt-6.2-sol', model: 'gpt-6.2-sol', supportsFastTier: false, serviceTiers: ['ultrafast'] }] }));
+    const setServiceTier = vi.fn(async () => ({}));
+    const session = { id: 'tier-session', active: true, serviceTier: 'ultrafast', model: 'gpt-6.2-sol', metadata: {
+        flavor: 'codex', machineId: 'machine', startingMode: 'remote', codexRuntime: { kind: 'attached', bindingId: 'attached' }, capabilities: { concurrentClients: true }
+    } } as unknown as Session;
+    render(shell(session, catalog, setServiceTier));
+    await waitFor(() => expect(catalog).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: 'Reset Standard / fast:false / ultra:false' }));
+    await waitFor(() => expect(setServiceTier).toHaveBeenCalledWith('tier-session', 'standard'));
+});

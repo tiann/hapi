@@ -599,6 +599,9 @@ export class SharedCodexRoot {
             for (;;) {
                 const model = config.model ?? this.settings.model;
                 const provider = this.modelProvider;
+                if (!this.host.catalogProvider && config.model && config.serviceTier === undefined) {
+                    throw new Error('Catalog provider could not be verified. Switch to Standard before changing models.');
+                }
                 const available = await isUltrafastAvailable(this.client, model, this.bootstrap.workingDirectory, discoveryDeadline, provider, this.host.catalogProvider);
                 if ((!config.model && model !== this.settings.model) || provider !== this.modelProvider) continue;
                 // Include the validated model in the write and its native confirmation.

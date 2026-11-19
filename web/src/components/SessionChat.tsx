@@ -2776,7 +2776,7 @@ function SessionChatInner(props: SessionChatProps) {
                         }
                         serviceTier={effectiveCodexServiceTier}
                         fastAvailable={!codexModelsState.error && codexModelAdvertisesFastTier(props.session.model, codexModelsState.models)}
-                        ultrafastAvailable={!codexModelsState.error && codexModelAdvertisesUltrafastTier(props.session.model, codexModelsState.models)}
+                        ultrafastAvailable={props.session.metadata?.codexRuntime?.kind !== 'attached' && !codexModelsState.error && codexModelAdvertisesUltrafastTier(props.session.model, codexModelsState.models)}
                         onServiceTierChange={
                             agentFlavor === 'codex'
                                 && props.session.active

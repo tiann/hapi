@@ -2545,7 +2545,7 @@ export class SyncEngine {
             this.setArchivedForkAttempt(source.id, namespace, attempt)
             const spawn = await this.rpcGateway.spawnSession(machineId, path, 'codex',
                 source.model ?? undefined, source.modelReasoningEffort ?? undefined, undefined, 'simple', undefined,
-                attempt.nativeSessionId, source.effort ?? undefined, source.permissionMode, source.serviceTier ?? undefined,
+                attempt.nativeSessionId, source.effort ?? undefined, source.permissionMode, source.metadata?.codexServiceTierExplicit === false ? undefined : source.serviceTier ?? undefined,
                 childId, source.collaborationMode)
             if (spawn.type === 'success' && spawn.sessionId !== childId) throw new Error('Fork launcher returned a different session')
             if (spawn.type === 'error' && spawn.childStarted === false) throw new Error(spawn.message)

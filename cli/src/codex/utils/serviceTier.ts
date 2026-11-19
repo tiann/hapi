@@ -3,6 +3,16 @@ import type { CodexAppServerClient } from '../codexAppServerClient';
 /** Validate against the same native account/provider that will execute the thread. */
 export const ULTRAFAST_FALLBACK_NOTICE = 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.';
 
+/** Match native has_model_resume_override before choosing a catalog context. */
+export function resumeTierContext(params: Record<string, unknown>, saved: Record<string, unknown>): { model: unknown; modelProvider?: string } {
+    const config = params.config && typeof params.config === 'object' ? params.config as Record<string, unknown> : {};
+    const overridden = params.model != null || params.modelProvider != null
+        || config.model !== undefined || config.model_reasoning_effort !== undefined;
+    const provider = overridden ? params.modelProvider ?? config.model_provider : saved.modelProvider;
+    return { model: overridden ? params.model ?? config.model : saved.model,
+        modelProvider: typeof provider === 'string' ? provider : undefined };
+}
+
 export async function isUltrafastAvailable(
     client: Pick<CodexAppServerClient, 'listModels' | 'readConfig'>,
     model: unknown,

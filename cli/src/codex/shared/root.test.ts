@@ -107,7 +107,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     } as unknown as ApiSessionClient;
     const end = opts?.end ?? (async () => { throw new Error('Unexpected root archive'); });
     const root = new SharedCodexRoot({ session, sessionInfo: { agentState: state }, workingDirectory: directory } as SessionBootstrapResult, {
-        directory, generation: 'test', endpoint: 'mock', catalogProvider: 'openai', settingsFor: () => undefined,
+        directory, generation: 'test', endpoint: 'mock', catalogProvider: opts?.attached ? undefined : 'openai', settingsFor: () => undefined,
         create: opts?.create ?? (async () => { throw new Error('Unexpected root creation'); }),
         attached: opts?.attached, beforeSubscribe: opts?.beforeSubscribe, validateHistory: opts?.validateHistory,
         end
@@ -1489,4 +1489,14 @@ it('preserves settings when an active thread provider differs from the startup c
     const request = vi.spyOn(f.root.client, 'request');
     await expect(f.root.applySettings({ serviceTier: 'ultrafast' })).rejects.toThrow('different Codex model provider');
     expect(request.mock.calls.some(([method]) => method === 'thread/settings/update')).toBe(false);
+});
+
+it('provides Standard recovery before an attached Ultrafast model change with unknown catalog identity', async () => {
+    const f = await fixture({ attached: true }); await f.root.activate();
+    f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' });
+    const request = vi.spyOn(f.root.client, 'request');
+    await expect(f.root.applySettings({ model: 'standard-only' })).rejects.toThrow('Switch to Standard before changing models');
+    expect(request.mock.calls.some(([method]) => method === 'thread/settings/update')).toBe(false);
+    await f.root.applySettings({ serviceTier: 'standard' });
+    expect((await f.root.applySettings({ model: 'standard-only' })).applied).toMatchObject({ model: 'standard-only', serviceTier: 'standard' });
 });

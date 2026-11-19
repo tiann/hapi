@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { isUltrafastAvailable } from './serviceTier';
+import { isUltrafastAvailable, resumeTierContext } from './serviceTier';
 
 describe('Ultrafast model/account availability', () => {
     const models = [
@@ -81,4 +81,15 @@ it('rejects a config provider edited after catalog startup', async () => {
 });
 it('preserves settings when the catalog provider was not captured', async () => {
     await expect(isUltrafastAvailable({ readConfig: vi.fn(), listModels: vi.fn() }, 'same-id')).rejects.toThrow('catalog provider');
+});
+
+it.each([
+    [{}, { model: 'saved', modelProvider: 'custom' }],
+    [{ model: 'selected' }, { model: 'selected', modelProvider: undefined }],
+    [{ modelProvider: 'openai' }, { model: undefined, modelProvider: 'openai' }],
+    [{ config: { model_reasoning_effort: 'high' } }, { model: undefined, modelProvider: undefined }],
+    [{ config: { model: 'configured', model_provider: 'openai' } }, { model: 'configured', modelProvider: 'openai' }],
+    [{ config: { model_reasoning_effort: undefined } }, { model: 'saved', modelProvider: 'custom' }],
+])('resolves native resume model/provider precedence for %j', (params, expected) => {
+    expect(resumeTierContext(params, { model: 'saved', modelProvider: 'custom' })).toEqual(expected);
 });
