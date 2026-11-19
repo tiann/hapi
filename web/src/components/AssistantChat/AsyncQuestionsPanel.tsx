@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { AgentState } from '@/types/api'
 import type { ChatToolCall } from '@/chat/types'
-import { applyCodexQuestionSubmission, getCodexQuestionSubmission, useCodexQuestionSubmission } from '@/components/ToolCard/CodexQuestionSubmission'
+import { applyCodexQuestionSubmission, getCodexQuestionSubmission, isHiddenCodexQuestionSubmission, useCodexQuestionSubmission } from '@/components/ToolCard/CodexQuestionSubmission'
 import { RequestUserInputView } from '@/components/ToolCard/views/RequestUserInputView'
 import { RequestUserInputFooter } from '@/components/ToolCard/RequestUserInputFooter'
 import { isAsyncRequestUserInput, parseRequestUserInputInput } from '@/components/ToolCard/requestUserInput'
@@ -29,7 +29,7 @@ export function AsyncQuestionsPanel(props: {
     const requests = Object.entries(props.requests ?? {})
         .filter(([, request]) => isAsyncRequestUserInput(request.tool, request.arguments))
         .map(([id, request]) => ({ id, request, submission: getCodexQuestionSubmission(submissions, id, request.instanceId) }))
-        .filter(({ submission }) => !submission || submission.status === 'answered')
+        .filter(({ submission }) => !isHiddenCodexQuestionSubmission(submission))
         .sort((a, b) => (a.request.createdAt ?? 0) - (b.request.createdAt ?? 0) || a.id.localeCompare(b.id))
     const pendingCount = requests.filter(({ submission }) => !submission).length
     const title = t(pendingCount ? 'chat.asyncQuestions.title' : 'tool.answerSentWaiting')

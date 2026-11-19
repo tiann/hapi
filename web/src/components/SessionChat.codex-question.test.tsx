@@ -55,9 +55,10 @@ function state(instance?: string): Session['agentState'] {
 function setup() {
     shell.api.approvePermission.mockReset().mockResolvedValue(undefined)
     const onRefresh = vi.fn()
+    const onInitialPendingRequestConsumed = vi.fn()
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const app = () => <QueryClientProvider client={queryClient}><I18nProvider><App /></I18nProvider></QueryClientProvider>
-    const setState = (agentState: Session['agentState'], mounted = true) => {
+    const setState = (agentState: Session['agentState'], mounted = true, pendingRequestId?: string) => {
         shell.outlet = mounted ? <SessionChat
             api={shell.api as unknown as ApiClient}
             session={{ id: 'session-1', active: true, agentState } as Session}
@@ -74,6 +75,8 @@ function setup() {
             tailRevision={0}
             onBack={() => {}}
             onRefresh={onRefresh}
+            initialPendingRequestId={pendingRequestId}
+            onInitialPendingRequestConsumed={onInitialPendingRequestConsumed}
             onLoadMore={async () => ({ kind: 'stopped', reason: 'unavailable' })}
             onCancelLoadMore={() => {}}
             onSend={async () => false}
@@ -83,8 +86,8 @@ function setup() {
     }
     setState(state('first'))
     const view = render(app())
-    const update = (agentState: Session['agentState'], mounted = true) => {
-        setState(agentState, mounted)
+    const update = (agentState: Session['agentState'], mounted = true, pendingRequestId?: string) => {
+        setState(agentState, mounted, pendingRequestId)
         view.rerender(app())
     }
     const transcript = () => within(view.container.querySelector(`[data-hapi-source-message-id="tool-call:${requestId}"]`)!)
@@ -93,7 +96,7 @@ function setup() {
         fireEvent.change(transcript().getByRole('textbox'), { target: { value: 'Web' } })
         fireEvent.click(transcript().getByRole('button', { name: 'Submit' }))
     }
-    return { update, transcript, submit, onRefresh }
+    return { update, transcript, submit, onRefresh, onInitialPendingRequestConsumed }
 }
 
 describe('Codex question receipts in the session chat', () => {
@@ -142,6 +145,23 @@ describe('Codex question receipts in the session chat', () => {
         await waitFor(() => expect(onRefresh).toHaveBeenCalledOnce())
         expect(transcript().queryByRole('textbox')).not.toBeInTheDocument()
         expect(transcript().queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument()
+    })
+
+    it('keeps the pending status but drops the shortcut and consumes a route target for a hidden issuance', async () => {
+        const { update, submit, onRefresh, onInitialPendingRequestConsumed } = setup()
+        expect(screen.getByRole('button', { name: 'Awaiting your answer' })).toBeVisible()
+        shell.api.approvePermission.mockRejectedValueOnce(new ApiError('Request not found', 404))
+        await submit()
+        await waitFor(() => expect(onRefresh).toHaveBeenCalledOnce())
+        expect(screen.getByText('Awaiting your answer', { exact: true })).toBeVisible()
+        expect(screen.queryByRole('button', { name: 'Awaiting your answer' })).not.toBeInTheDocument()
+
+        update(state('first'), true, requestId)
+        await waitFor(() => expect(onInitialPendingRequestConsumed).toHaveBeenCalledOnce())
+        expect(screen.queryByRole('region', { name: 'Awaiting your reply' })).not.toBeInTheDocument()
+
+        update(state('replacement'))
+        expect(screen.getByRole('button', { name: 'Awaiting your answer' })).toBeVisible()
     })
 
     it('keeps the panel answer on both surfaces when the transcript submission receives a late 404', async () => {

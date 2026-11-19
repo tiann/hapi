@@ -49,7 +49,7 @@ import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePic
 import { resolvePendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { QueuedMessagesBar } from '@/components/AssistantChat/QueuedMessagesBar'
-import { usePruneCodexQuestionSubmissions } from '@/components/ToolCard/CodexQuestionSubmission'
+import { getCodexQuestionSubmission, isHiddenCodexQuestionSubmission, useCodexQuestionSubmission, usePruneCodexQuestionSubmissions } from '@/components/ToolCard/CodexQuestionSubmission'
 import { AsyncQuestionsPanel } from '@/components/AssistantChat/AsyncQuestionsPanel'
 import { isAsyncRequestUserInput } from '@/components/ToolCard/requestUserInput'
 import { getPendingRequestNavigationTarget } from '@/lib/pendingRequests'
@@ -753,6 +753,15 @@ export function SessionChat(props: SessionChatProps) {
 
 function SessionChatInner(props: SessionChatProps) {
     usePruneCodexQuestionSubmissions(props.session.id, props.session.agentState)
+    const { submissions } = useCodexQuestionSubmission(props.session.id)
+    const hiddenPendingRequestIds = useMemo(() => {
+        const hidden = new Set<string>()
+        for (const [id, request] of Object.entries(props.session.agentState?.requests ?? {})) {
+            const submission = getCodexQuestionSubmission(submissions, id, request.instanceId)
+            if (isHiddenCodexQuestionSubmission(submission)) hidden.add(id)
+        }
+        return hidden
+    }, [props.session.agentState?.requests, submissions])
     const { haptic } = usePlatform()
     const { t } = useTranslation()
     const { codexExplorationCollapsed } = useCodexExplorationCollapse()
@@ -901,7 +910,7 @@ function SessionChatInner(props: SessionChatProps) {
     useEffect(() => {
         if (!pendingRequestNavigation) return
         const request = props.session.agentState?.requests?.[pendingRequestNavigation.requestId]
-        if (!request) {
+        if (!request || hiddenPendingRequestIds.has(pendingRequestNavigation.requestId)) {
             setLivePendingRequestId(null)
             consumePendingRequestNavigation(pendingRequestNavigation.fromRoute)
             return
@@ -922,12 +931,14 @@ function SessionChatInner(props: SessionChatProps) {
             version: pendingRequestNavigation.version,
             fromRoute: pendingRequestNavigation.fromRoute,
         })
-    }, [consumePendingRequestNavigation, pendingRequestNavigation, props.session.agentState?.requests])
+    }, [consumePendingRequestNavigation, hiddenPendingRequestIds, pendingRequestNavigation, props.session.agentState?.requests])
     useEffect(() => {
-        if (livePendingRequestId && !props.session.agentState?.requests?.[livePendingRequestId]) {
+        if (livePendingRequestId && (
+            !props.session.agentState?.requests?.[livePendingRequestId] || hiddenPendingRequestIds.has(livePendingRequestId)
+        )) {
             setLivePendingRequestId(null)
         }
-    }, [livePendingRequestId, props.session.agentState?.requests])
+    }, [hiddenPendingRequestIds, livePendingRequestId, props.session.agentState?.requests])
     const [cursorSelectedBase, setCursorSelectedBase] = useState('auto')
     // Serialize Cursor setModel RPCs so drill-down default apply cannot finish
     // after a later explicit variant click and overwrite it.
@@ -2666,6 +2677,7 @@ function SessionChatInner(props: SessionChatProps) {
                         onResumeStoredDraft={() => handleSend('', undefined, null)}
                         thinking={props.session.thinking}
                         agentState={props.session.agentState}
+                        hiddenPendingRequestIds={hiddenPendingRequestIds}
                         onPendingRequestClick={locatePendingRequest}
                         backgroundTaskCount={props.session.backgroundTaskCount}
                         contextSize={reduced.latestUsage?.contextSize}
