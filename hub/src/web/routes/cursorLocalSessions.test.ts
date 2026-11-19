@@ -89,6 +89,52 @@ describe('cursor local session routes', () => {
         expect(body.sessions.find((s) => s.id === 'cur-2')?.hapiSessionId).toBeUndefined()
     })
 
+    it('does not stamp already-imported from a different machine', async () => {
+        store.sessions.getOrCreateSession('tag', {
+            path: '/tmp/proj',
+            host: 'host',
+            flavor: 'cursor',
+            cursorSessionId: 'cur-1',
+            cursorSessionProtocol: 'acp',
+            machineId: 'other-machine',
+            lifecycleState: 'imported',
+            lifecycleStateSince: 1
+        }, null, 'default')
+
+        const engine = {
+            getOnlineMachinesByNamespace: () => [{
+                id: 'm1',
+                active: true,
+                metadata: {
+                    capabilities: [MACHINE_CAPABILITIES.LocalSessionImport],
+                    workspaceRoots: ['/tmp']
+                }
+            }],
+            getMachine: () => ({ id: 'm1', metadata: { homeDir: '/home/op' } }),
+            listLocalSessionsForMachine: async () => ({
+                success: true as const,
+                sessions: [{
+                    flavor: 'cursor' as const,
+                    id: 'cur-1',
+                    title: 'Same uuid other machine',
+                    cwd: '/tmp/proj',
+                    file: '/home/op/.cursor/acp-sessions/cur-1/store.db',
+                    modifiedAt: 10
+                }]
+            }),
+            prepareCursorImportForMachine: async () => {
+                throw new Error('list path must not prepare')
+            },
+            getOrCreateSession: () => {
+                throw new Error('list path must not create')
+            }
+        } as unknown as SyncEngine
+
+        const res = await authApp(store, engine).request('/api/cursor/sessions?machineId=m1')
+        const body = await res.json() as { sessions: Array<{ id: string; hapiSessionId?: string }> }
+        expect(body.sessions[0]?.hapiSessionId).toBeUndefined()
+    })
+
     it('imports by preparing then creating an attach-only session', async () => {
         const created: Array<{ metadata: Record<string, unknown> }> = []
         const engine = {

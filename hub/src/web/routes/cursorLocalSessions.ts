@@ -26,6 +26,8 @@ const NO_CURSOR_SESSION_SELECTED_ERROR = 'No Cursor sessions selected'
 const NO_ONLINE_MACHINE_ERROR = 'No online machine available for Cursor history import'
 const IMPORT_LIMIT = 200
 
+const importLocks = new Map<string, Promise<unknown>>()
+
 type CursorListItem = {
     id: string
     title: string
@@ -61,6 +63,21 @@ function resolveMachineHomeDir(engine: SyncEngine | null, machineId: string): st
 
 function machineSupportsCursorImport(machine: { metadata?: { capabilities?: readonly string[] | null } | null } | null | undefined): boolean {
     return machine?.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.LocalSessionImport) === true
+}
+
+async function withCursorImportLock<T>(lockKey: string, run: () => Promise<T>): Promise<T> {
+    const prior = importLocks.get(lockKey) ?? Promise.resolve()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const current = prior.catch(() => {}).then(() => gate)
+    importLocks.set(lockKey, current)
+    await prior.catch(() => {})
+    try {
+        return await run()
+    } finally {
+        release()
+        if (importLocks.get(lockKey) === current) importLocks.delete(lockKey)
+    }
 }
 
 export function createCursorLocalSessionRoutes(options: {
@@ -110,7 +127,7 @@ export function createCursorLocalSessionRoutes(options: {
                 machineId: machine.id
             }, 503)
         }
-        const already = buildAlreadyImportedCursorIndex(options.store, namespace)
+        const already = buildAlreadyImportedCursorIndex(options.store, namespace, machine.id)
         const sessions: CursorListItem[] = listed.sessions.map((summary) => {
             const extra = asRecord(summary.extra) ?? {}
             return {
@@ -185,68 +202,73 @@ export function createCursorLocalSessionRoutes(options: {
         const results: CursorImportResult[] = []
 
         for (const sessionId of sessionIds) {
-            const already = buildAlreadyImportedCursorIndex(options.store, namespace).get(sessionId)
-            if (already) {
-                results.push({
-                    cursorSessionId: sessionId,
-                    hapiSessionId: already,
-                    action: 'unchanged',
-                    appended: 0
-                })
-                continue
-            }
-            const summary = byId.get(sessionId)
-            if (!summary) {
-                results.push({
-                    cursorSessionId: sessionId,
-                    error: { code: 'missing_on_disk_store', message: `Cursor session ${sessionId} was not found on the runner` }
-                })
-                continue
-            }
-            const workspacePath = summary.cwd ?? cwd
-            const prepared = await engine.prepareCursorImportForMachine(machine.id, sessionId, workspacePath)
-            if (!prepared.success) {
-                results.push({
-                    cursorSessionId: sessionId,
-                    error: { code: prepared.reason, message: prepared.message }
-                })
-                continue
-            }
-            const alreadyAfter = buildAlreadyImportedCursorIndex(options.store, namespace).get(sessionId)
-            if (alreadyAfter) {
-                results.push({
-                    cursorSessionId: sessionId,
-                    hapiSessionId: alreadyAfter,
-                    action: 'unchanged',
-                    appended: 0
-                })
-                continue
-            }
-            try {
-                const metadata = buildImportedCursorSessionMetadata({
-                    uuid: prepared.uuid,
-                    workspacePath: prepared.workspacePath,
-                    title: prepared.title,
-                    hostName: prepared.hostName,
-                    homeDir: resolveMachineHomeDir(engine, machine.id),
-                    machineId: machine.id
-                })
-                const created = engine.getOrCreateSession(randomUUID(), metadata, {}, namespace)
-                results.push({
-                    cursorSessionId: sessionId,
-                    hapiSessionId: created.id,
-                    action: 'created',
-                    appended: 0
-                })
-            } catch (error) {
-                results.push({
-                    cursorSessionId: sessionId,
-                    error: {
-                        code: 'internal_error',
-                        message: error instanceof Error ? error.message : String(error)
+            const outcome = await withCursorImportLock(
+                `${namespace}:${machine.id}:cursor:${sessionId}`,
+                async (): Promise<CursorImportResult> => {
+                    const already = buildAlreadyImportedCursorIndex(options.store, namespace, machine.id).get(sessionId)
+                    if (already) {
+                        return {
+                            cursorSessionId: sessionId,
+                            hapiSessionId: already,
+                            action: 'unchanged',
+                            appended: 0
+                        }
                     }
-                })
-            }
+                    const summary = byId.get(sessionId)
+                    if (!summary) {
+                        return {
+                            cursorSessionId: sessionId,
+                            error: {
+                                code: 'missing_on_disk_store',
+                                message: `Cursor session ${sessionId} was not found on the runner`
+                            }
+                        }
+                    }
+                    const workspacePath = summary.cwd ?? cwd
+                    const prepared = await engine.prepareCursorImportForMachine(machine.id, sessionId, workspacePath)
+                    if (!prepared.success) {
+                        return {
+                            cursorSessionId: sessionId,
+                            error: { code: prepared.reason, message: prepared.message }
+                        }
+                    }
+                    const alreadyAfter = buildAlreadyImportedCursorIndex(options.store, namespace, machine.id).get(sessionId)
+                    if (alreadyAfter) {
+                        return {
+                            cursorSessionId: sessionId,
+                            hapiSessionId: alreadyAfter,
+                            action: 'unchanged',
+                            appended: 0
+                        }
+                    }
+                    try {
+                        const metadata = buildImportedCursorSessionMetadata({
+                            uuid: prepared.uuid,
+                            workspacePath: prepared.workspacePath,
+                            title: prepared.title,
+                            hostName: prepared.hostName,
+                            homeDir: resolveMachineHomeDir(engine, machine.id),
+                            machineId: machine.id
+                        })
+                        const created = engine.getOrCreateSession(randomUUID(), metadata, {}, namespace)
+                        return {
+                            cursorSessionId: sessionId,
+                            hapiSessionId: created.id,
+                            action: 'created',
+                            appended: 0
+                        }
+                    } catch (error) {
+                        return {
+                            cursorSessionId: sessionId,
+                            error: {
+                                code: 'internal_error',
+                                message: error instanceof Error ? error.message : String(error)
+                            }
+                        }
+                    }
+                }
+            )
+            results.push(outcome)
         }
 
         const success = results.every((row) => !row.error)

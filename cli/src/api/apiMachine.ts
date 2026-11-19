@@ -601,11 +601,26 @@ export class ApiMachineClient {
                 }
                 // Dynamic import: cursorImportSessions pulls bun:sqlite off the apiMachine hot path.
                 const { prepareCursorImportOnDisk } = await import('../modules/common/cursorImportSessions')
-                return await prepareCursorImportOnDisk({
+                const prepared = await prepareCursorImportOnDisk({
                     uuid: parsed.data.uuid.trim(),
                     workspacePath: parsed.data.workspacePath ?? null,
                     home: homedir()
                 })
+                // Prepare may resolve cwd from ACP meta when the request omitted
+                // workspacePath — re-gate the final path against spawn roots.
+                if (prepared.success === true) {
+                    const resolvedCwd = await this.pathPolicy.resolveForCheck(prepared.workspacePath)
+                    if (!this.pathPolicy.isWithinSpawnRoots(resolvedCwd)) {
+                        return {
+                            success: false,
+                            uuid: prepared.uuid,
+                            reason: 'internal_error',
+                            message: 'Path is outside workspace roots',
+                            durationMs: prepared.durationMs
+                        }
+                    }
+                }
+                return prepared
             }
         )
     }

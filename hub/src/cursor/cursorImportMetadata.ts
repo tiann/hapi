@@ -6,11 +6,16 @@ import type { Store } from '../store'
  * Discovery + verify/transplant live on the runner; the hub only stamps rows.
  */
 
-export function buildAlreadyImportedCursorIndex(store: Store, namespace: string): Map<string, string> {
+export function buildAlreadyImportedCursorIndex(
+    store: Store,
+    namespace: string,
+    machineId: string
+): Map<string, string> {
     const map = new Map<string, string>()
     for (const session of store.sessions.getSessionsByNamespace(namespace)) {
         const metadata = session.metadata as Record<string, unknown> | null
         if (!metadata || metadata.flavor !== 'cursor') continue
+        if (metadata.machineId !== machineId) continue
         const csid = metadata.cursorSessionId
         if (typeof csid === 'string' && csid.length > 0) {
             map.set(csid, session.id)

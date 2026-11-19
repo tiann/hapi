@@ -1,10 +1,7 @@
 import { homedir } from 'node:os'
 import type { LocalTranscript, LocalTranscriptSummary } from '@hapi/protocol/localTranscript'
 import type { CliLocalSessionSource, LocalSessionSourceListItem } from '../types'
-import {
-    listCursorImportableSessionsOnDisk,
-    type CursorImportableSessionSummary
-} from '../../cursorImportSessions'
+import type { CursorImportableSessionSummary } from '../../cursorImportSessions'
 
 function toSummary(session: CursorImportableSessionSummary): LocalTranscriptSummary {
     return {
@@ -33,7 +30,10 @@ function toTranscript(session: CursorImportableSessionSummary): LocalTranscript 
 
 export const cursorLocalSessionSource: CliLocalSessionSource = {
     flavor: 'cursor',
+    // Dynamic import: cursorImportSessions pulls bun:sqlite, which Vitest/Node
+    // cannot resolve at module-graph time (same pattern as PrepareCursorImport).
     list: async ({ cwd, sessionIds }) => {
+        const { listCursorImportableSessionsOnDisk } = await import('../../cursorImportSessions')
         const all = listCursorImportableSessionsOnDisk({
             home: homedir(),
             candidateWorkspacePaths: cwd ? [cwd] : [],
