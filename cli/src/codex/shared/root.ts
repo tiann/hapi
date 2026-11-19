@@ -76,6 +76,7 @@ export class SharedCodexRoot {
     private hubResync?: { signal: AbortSignal; promise: Promise<void> };
     private hubResyncRequired = false;
     private historyReplayAbort = new AbortController();
+    private readonly attachedHistoryReads = new Map<string, { signal: AbortSignal; promise: Promise<unknown> }>();
     private archiveAttempt?: Promise<void>;
     private archiveRecovery?: Promise<boolean>;
     private readonly projectingHistory = new Set<Promise<void>>();
@@ -191,24 +192,32 @@ export class SharedCodexRoot {
 
     private resyncHub(): void {
         const signal = this.historyReplayAbort.signal;
-        if (!this.threadId || this.closed || this.stopping || signal.aborted) return;
+        if (!this.projection || this.closed || this.stopping || signal.aborted) return;
         const wasActivated = Boolean(this.heartbeat);
-        // Replay final history with stable IDs to recover broadcasts lost with the Hub connection.
-        // The native turn continues running, so leave the active generation ledger intact.
-        this.projection?.resetAfterHubReconnect();
-        this.steeringActive = undefined;
-        this.publishedPlanId = undefined;
-        this.publishedCompactionIds = undefined;
-        const promise = this.refresh()
-            .then(() => signal.aborted ? undefined : this.refreshChildren(false))
-            .then(() => signal.aborted ? undefined : this.queue.replay())
-            .then(() => {
-                if (signal.aborted) return;
-                if (this.hubResync?.promise === promise) this.hubResyncRequired = false;
+        const previous = this.hubResync?.signal === signal ? this.hubResync.promise : undefined;
+        const isCurrent = () => !signal.aborted && !this.stopping && this.hubResync?.promise === promise;
+        const promise = Promise.resolve()
+            .then(async () => {
+                await previous;
+                // Finish the old replay before resetting deduplication for this
+                // connection. It may already have emitted a prefix to a dead socket.
+                while (isCurrent() && this.refreshing?.signal === signal) await this.refreshing.promise.catch(() => {});
+                if (!isCurrent()) return;
+                this.projection.resetAfterHubReconnect();
+                this.steeringActive = undefined;
+                this.publishedPlanId = undefined;
+                this.publishedCompactionIds = undefined;
+                await this.refresh();
+                if (!isCurrent()) return;
+                await this.refreshChildren(false, signal);
+                if (!isCurrent()) return;
+                await this.queue.replay();
+                if (!isCurrent()) return;
+                this.hubResyncRequired = false;
                 // Restore the Hub's readiness fence after native revalidation.
                 if (wasActivated && this.heartbeat && !this.closed && !this.stopping && this.client.isInitialized()) this.session.emitSessionReady();
             })
-            .catch(error => { if (!signal.aborted) { logger.debug('[Codex shared] hub resync', error); this.failAttached(); } })
+            .catch(error => { if (isCurrent()) { logger.debug('[Codex shared] hub resync', error); this.failAttached(); } })
             .finally(() => { if (this.hubResync?.promise === promise) this.hubResync = undefined; });
         this.hubResync = { signal, promise };
     }
@@ -242,11 +251,11 @@ export class SharedCodexRoot {
     private async submitQuestionAnswer(threadId: string, text: string, clientUserMessageId: string): Promise<void> {
         if (this.closed || this.stopping) throw new Error('Codex execution is stopping');
         const operation = (async () => {
-            const thread = threadId === this.threadId ? undefined : await this.readThread(threadId);
+            const signal = this.historyReplayAbort.signal;
+            const thread = threadId === this.threadId ? undefined : await this.readValidatedHistory(threadId, signal);
             if (this.host.attached) {
-                if (thread) await this.host.validateHistory?.(threadId, thread);
-                else await this.refreshValidatedHistory();
-                if (this.closed || this.stopping) throw new Error('Codex execution is stopping');
+                if (!thread) await this.refreshValidatedHistory();
+                if (signal.aborted || this.closed || this.stopping) throw new Error('Codex execution is stopping');
             }
             const turnId = threadId === this.threadId ? this.currentTurn
                 : string((Array.isArray(thread?.turns) ? thread.turns.map(record) : []).find(turn => turn.status === 'inProgress')?.id);
@@ -257,8 +266,6 @@ export class SharedCodexRoot {
         try { await operation; } finally { this.controls.delete(operation); }
     }
     private async projectHistory(projection: SharedCodexProjection, thread: unknown, signal = this.historyReplayAbort.signal): Promise<void> {
-        if (signal.aborted) return;
-        await this.host.validateHistory?.(projection.threadId, thread);
         if (signal.aborted) return;
         this.asyncQuestions.history(projection.threadId, thread);
         const pending = projection.history(thread, signal);
@@ -271,7 +278,7 @@ export class SharedCodexRoot {
         const backfill = { threadId, projection, signal };
         this.attachedChildBackfills.add(backfill);
         try {
-            await this.projectHistory(projection, await this.readThread(threadId, false, signal), signal);
+            await this.projectHistory(projection, await this.readValidatedHistory(threadId, signal), signal);
         } catch (error) {
             if (!signal.aborted) throw error;
         } finally {
@@ -524,6 +531,24 @@ export class SharedCodexRoot {
         } else thread = record(record(await this.client.request('thread/read', { threadId, includeTurns: true })).thread);
         return thread;
     }
+    private async readValidatedHistory(threadId: string, signal: AbortSignal): Promise<Record<string, unknown>> {
+        if (!this.host.validateHistory) return this.readThread(threadId, false, signal);
+        const previous = this.attachedHistoryReads.get(threadId);
+        // Validate the snapshot in the same order as its native read, so an
+        // older in-progress turn cannot be checked against a newer sealed one.
+        const promise = (previous?.signal === signal ? previous.promise.catch(() => {}) : Promise.resolve())
+            .then(async () => {
+                if (signal.aborted) return {};
+                const thread = await this.readThread(threadId, false, signal);
+                if (!signal.aborted) await this.host.validateHistory?.(threadId, thread);
+                return thread;
+            });
+        this.attachedHistoryReads.set(threadId, { signal, promise });
+        try { return await promise; }
+        finally {
+            if (this.attachedHistoryReads.get(threadId)?.promise === promise) this.attachedHistoryReads.delete(threadId);
+        }
+    }
     refresh(): Promise<void> {
         const signal = this.historyReplayAbort.signal;
         if (this.refreshing?.signal === signal) return this.refreshing.promise;
@@ -555,7 +580,7 @@ export class SharedCodexRoot {
     private async refreshNow(signal: AbortSignal): Promise<void> {
         if (!this.threadId || signal.aborted || !this.client.isInitialized()) return;
         const revision = this.turnRevision;
-        const thread = await this.readThread(this.threadId, false, signal);
+        const thread = await this.readValidatedHistory(this.threadId, signal);
         if (signal.aborted) return;
         const turns = Array.isArray(thread.turns) ? thread.turns.map(record) : [];
         if (revision === this.turnRevision) {
@@ -616,7 +641,7 @@ export class SharedCodexRoot {
                     await this.client.request('thread/resume', { threadId: id, excludeTurns: true });
                 }
                 if (replayHistory) {
-                    projection.reset(); await this.projectHistory(projection, await this.readThread(id, false, signal), signal);
+                    projection.reset(); await this.projectHistory(projection, await this.readValidatedHistory(id, signal), signal);
                 }
             } catch (error) {
                 if (this.host.attached) throw error;

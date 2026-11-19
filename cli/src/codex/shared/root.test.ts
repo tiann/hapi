@@ -13,6 +13,7 @@ import { CodexAppServerClient } from '../codexAppServerClient';
 import { buildHapiMcpBridge } from '../utils/buildHapiMcpBridge';
 import { SharedCodexProjection } from './projection';
 import { SharedCodexQueue } from './queue';
+import { validateAttachedHistory } from './attachedHistory';
 
 type NativeTurn = { id: string; status: string; items: unknown[] };
 type NativeRequest = { id: string | number; method: string; params: unknown };
@@ -444,7 +445,7 @@ it('restarts the complete Hub reconnect on the same connection after archive fai
     vi.spyOn(f.session, 'waitForMetadataConfirmation').mockResolvedValueOnce(false);
     try {
         f.reconnect();
-        expect(request).toHaveBeenCalledWith('thread/read', expect.anything());
+        await vi.waitFor(() => expect(request).toHaveBeenCalledWith('thread/read', expect.anything()));
         await expect(f.rpc.get(RPC_METHODS.KillSession)!({})).rejects.toThrow('Could not confirm Codex history metadata');
         expect(end).not.toHaveBeenCalled();
         await vi.waitFor(() => expect(f.sessionReady).toHaveBeenCalledTimes(2));
@@ -644,9 +645,74 @@ describe('externally attached root', () => {
         expect(request.mock.calls.some(([method]) => method === 'thread/settings/update')).toBe(false);
         expect(end).toHaveBeenCalledWith(f.root, false, 'unavailable');
     });
+
+    it('reads and seals attached child history in order across a notification and a Hub reconnect', async () => {
+        const end = vi.fn(async () => {});
+        let directory!: string;
+        const validateHistory = vi.fn((id: string, history: unknown) =>
+            validateAttachedHistory(join(directory, `${id}.checkpoint.json`), history));
+        const f = await fixture({ attached: true, end, bind: false, validateHistory });
+        directory = f.metadata().path;
+        await f.root.bind('thread', { thread: f.native.thread }, true);
+        await f.root.activate();
+
+        const child = { id: 'child', parentThreadId: 'thread' };
+        const initial = { id: 'turn', status: 'inProgress', items: [] };
+        const completed = { ...initial, status: 'completed' };
+        const entered = Promise.withResolvers<void>();
+        const first = Promise.withResolvers<{ thread: typeof child & { turns: NativeTurn[] } }>();
+        const original = f.root.client.request.bind(f.root.client);
+        let childReads = 0;
+        const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (method === 'thread/list') return { data: [child] };
+            if (method === 'thread/read' && (params as { threadId?: string })?.threadId === 'child') {
+                if (!(params as { includeTurns?: boolean }).includeTurns) return { thread: child };
+                if (++childReads === 1) { entered.resolve(); return first.promise; }
+                return { thread: { ...child, turns: [completed] } };
+            }
+            return original(method, params);
+        });
+        try {
+            f.native.notify('turn/started', { threadId: 'child', turn: initial });
+            await entered.promise;
+            f.reconnect();
+            await vi.waitFor(() => expect(request).toHaveBeenCalledWith('thread/list', expect.anything()));
+            expect(childReads).toBe(1);
+        } finally {
+            first.resolve({ thread: { ...child, turns: [initial] } });
+        }
+        await f.drain();
+        await vi.waitFor(() => expect(f.sessionReady).toHaveBeenCalledTimes(2));
+        expect(validateHistory.mock.calls.filter(([id]) => id === 'child').map(([, history]) => history)).toEqual([
+            { ...child, turns: [initial] }, { ...child, turns: [completed] }
+        ]);
+        expect(end).not.toHaveBeenCalled();
+    });
 });
 
 describe('native readiness after Hub reconnect', () => {
+    it('replays the transcript prefix on the newest connection when a previous replay was interrupted', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        const ids = Array.from({ length: 101 }, (_, index) => `message-${index}`);
+        f.native.thread.turns = [{ id: 'turn', status: 'completed', items: ids.map(id => ({
+            type: 'userMessage', id: `item-${id}`, clientId: id, content: [{ type: 'text', text: id }]
+        })) }];
+        const delivered = new Set<string>();
+        let newestSocket = false;
+        vi.spyOn(f.session, 'sendUserMessage').mockImplementation((_, __, id) => {
+            if (newestSocket && id) delivered.add(id);
+        }).mockImplementationOnce(() => {
+            // Drop the packets sent by the old replay before it yields.
+            setImmediate(() => { newestSocket = true; f.reconnect(); });
+        });
+        let readyMessages: string[] = [];
+        const ready = f.sessionReady.mockImplementation(() => { readyMessages = [...delivered]; });
+        f.reconnect();
+        await vi.waitFor(() => expect(ready).toHaveBeenCalledTimes(2));
+        expect(readyMessages.sort()).toEqual([...ids].sort());
+    });
+
     it('replays readiness only after an activated root revalidates native history', async () => {
         const f = await fixture()
         f.reconnect()
