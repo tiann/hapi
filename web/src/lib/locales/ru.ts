@@ -669,6 +669,7 @@ export default {
   'tool.waitingForReply': 'Ожидание вашего ответа',
   'tool.selectOption': 'Выберите хотя бы один вариант или введите ответ.',
   'tool.waitingForApproval': 'Ожидание одобрения…',
+  'tool.answerSentWaiting': 'Ответ отправлен. Ожидание агента.',
   'tool.resolved': 'Разрешено в Codex',
   'tool.canceled': 'Отменено',
   'tool.approvedForSession': 'Одобрено для сессии',

@@ -131,6 +131,25 @@ describe('Codex queued follow-up questions', () => {
         expect(restored.state().completedRequests?.[dismissed.id]?.status).toBe('resolved');
     });
 
+    it('publishes one instance per issuance, including replay of the same historical question', () => {
+        const historical = { ...item, completedAtMs: 1_000 };
+        const before = fixture();
+        const id = questions[0].id;
+        before.manager.observeItem('thread', historical);
+        const request = AgentStateSchema.parse(before.state()).requests![id];
+        before.manager.observeItem('thread', historical);
+        expect(before.state().requests![id]).toEqual(request);
+        before.manager.close();
+
+        const after = fixture(before.state());
+        after.manager.observeItem('thread', historical);
+        const restored = AgentStateSchema.parse(after.state()).requests![id];
+        expect(restored.createdAt).toBe(request.createdAt);
+        expect(request.instanceId).toEqual(expect.any(String));
+        expect(restored.instanceId).toEqual(expect.any(String));
+        expect(restored.instanceId).not.toBe(request.instanceId);
+    });
+
     it('parses literal reply tags inside an answer and ignores quoted or malformed replies', () => {
         const f = fixture(); f.manager.observeItem('thread', item); const q = questions[1];
         for (const text of ['<send_user_message_question_reply>bad json</send_user_message_question_reply>',

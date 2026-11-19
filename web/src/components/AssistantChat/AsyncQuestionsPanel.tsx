@@ -2,6 +2,8 @@ import { useEffect, useId, useRef, useState } from 'react'
 import type { ApiClient } from '@/api/client'
 import type { AgentState } from '@/types/api'
 import type { ChatToolCall } from '@/chat/types'
+import { applyCodexQuestionSubmission, getCodexQuestionSubmission, useCodexQuestionSubmission } from '@/components/ToolCard/CodexQuestionSubmission'
+import { RequestUserInputView } from '@/components/ToolCard/views/RequestUserInputView'
 import { RequestUserInputFooter } from '@/components/ToolCard/RequestUserInputFooter'
 import { isAsyncRequestUserInput, parseRequestUserInputInput } from '@/components/ToolCard/requestUserInput'
 import { useTranslation } from '@/lib/use-translation'
@@ -18,6 +20,7 @@ export function AsyncQuestionsPanel(props: {
     onTargetConsumed?: () => void
 }) {
     const { t } = useTranslation()
+    const { submissions } = useCodexQuestionSubmission(props.sessionId)
     const [expanded, setExpanded] = useState(false)
     const [highlightedRequestId, setHighlightedRequestId] = useState<string | null>(null)
     const contentId = useId()
@@ -25,8 +28,12 @@ export function AsyncQuestionsPanel(props: {
     const highlightTimerRef = useRef<number | null>(null)
     const requests = Object.entries(props.requests ?? {})
         .filter(([, request]) => isAsyncRequestUserInput(request.tool, request.arguments))
-        .sort(([aId, a], [bId, b]) => (a.createdAt ?? 0) - (b.createdAt ?? 0) || aId.localeCompare(bId))
-    const requestIds = requests.map(([id]) => id).join('\u0000')
+        .map(([id, request]) => ({ id, request, submission: getCodexQuestionSubmission(submissions, id, request.instanceId) }))
+        .filter(({ submission }) => !submission || submission.status === 'answered')
+        .sort((a, b) => (a.request.createdAt ?? 0) - (b.request.createdAt ?? 0) || a.id.localeCompare(b.id))
+    const pendingCount = requests.filter(({ submission }) => !submission).length
+    const title = t(pendingCount ? 'chat.asyncQuestions.title' : 'tool.answerSentWaiting')
+    const requestIds = requests.map(({ id }) => id).join('\u0000')
 
     useEffect(() => () => {
         if (highlightTimerRef.current !== null) {
@@ -36,7 +43,7 @@ export function AsyncQuestionsPanel(props: {
 
     useEffect(() => {
         const targetRequestId = props.targetRequestId
-        if (!targetRequestId || !requests.some(([id]) => id === targetRequestId)) return
+        if (!targetRequestId || !requests.some(({ id }) => id === targetRequestId)) return
         setExpanded(true)
         setHighlightedRequestId(targetRequestId)
         const openTimer = window.setTimeout(() => {
@@ -62,7 +69,7 @@ export function AsyncQuestionsPanel(props: {
     if (requests.length === 0) return null
 
     return (
-        <section className="mx-auto mb-2 w-full max-w-content rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)]" aria-label={t('chat.asyncQuestions.title')}>
+        <section className="mx-auto mb-2 w-full max-w-content rounded-xl border border-[var(--app-border)] bg-[var(--app-bg)]" aria-label={title}>
             <button
                 type="button"
                 className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm hover:bg-[var(--app-subtle-bg)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]"
@@ -71,13 +78,17 @@ export function AsyncQuestionsPanel(props: {
                 onClick={() => setExpanded((value) => !value)}
             >
                 <span aria-hidden="true">{expanded ? '▾' : '▸'}</span>
-                <span className="min-w-0 flex-1 font-medium">{t('chat.asyncQuestions.title')}</span>
-                <span className="rounded-full bg-[var(--app-subtle-bg)] px-2 text-xs tabular-nums">{requests.length}</span>
+                <span className="min-w-0 flex-1 font-medium">{title}</span>
+                {pendingCount > 0 ? (
+                    <span className="rounded-full bg-[var(--app-subtle-bg)] px-2 text-xs tabular-nums">{pendingCount}</span>
+                ) : null}
             </button>
             {/* Keep forms mounted so collapsing never discards a draft. */}
             <div id={contentId} hidden={!expanded} className="max-h-[35dvh] overflow-y-auto overscroll-contain px-3 pb-3">
-                <p className="text-xs text-[var(--app-hint)]">{t('chat.asyncQuestions.hint')}</p>
-                {requests.map(([id, request]) => {
+                {pendingCount > 0 ? (
+                    <p className="text-xs text-[var(--app-hint)]">{t('chat.asyncQuestions.hint')}</p>
+                ) : null}
+                {requests.map(({ id, request, submission }) => {
                     const tool: ChatToolCall = {
                         id,
                         name: request.tool,
@@ -90,7 +101,7 @@ export function AsyncQuestionsPanel(props: {
                         execCompletedAt: null,
                         description: null,
                         // Replies must use the request key, not the correlated toolCallId.
-                        permission: { id, status: 'pending' }
+                        permission: { id, status: 'pending', instanceId: request.instanceId }
                     }
                     return (
                         <details
@@ -108,13 +119,26 @@ export function AsyncQuestionsPanel(props: {
                             <summary className="cursor-pointer break-words text-sm font-medium">
                                 {parseRequestUserInputInput(request.arguments).questions.map((question) => question.question).filter(Boolean).join(' · ') || t('tool.question')}
                             </summary>
-                            <RequestUserInputFooter
-                                api={props.api}
-                                sessionId={props.sessionId}
-                                tool={tool}
-                                disabled={props.disabled}
-                                onDone={props.onRefresh}
-                            />
+                            {submission?.status === 'answered' ? (
+                                <div className="mt-2 space-y-2">
+                                    <p role="status" className="text-xs text-[var(--app-hint)]">{t('tool.answerSentWaiting')}</p>
+                                    <RequestUserInputView
+                                        block={{
+                                            kind: 'tool-call', id, localId: null, createdAt: tool.createdAt,
+                                            tool: applyCodexQuestionSubmission(tool, submission), children: []
+                                        }}
+                                        metadata={null}
+                                    />
+                                </div>
+                            ) : (
+                                <RequestUserInputFooter
+                                    api={props.api}
+                                    sessionId={props.sessionId}
+                                    tool={tool}
+                                    disabled={props.disabled}
+                                    onDone={props.onRefresh}
+                                />
+                            )}
                         </details>
                     )
                 })}

@@ -1,7 +1,8 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
-import type { ApiClient } from '@/api/client'
+import { ApiError, type ApiClient } from '@/api/client'
 import type { AgentState } from '@/types/api'
+import { CodexQuestionSubmissionProvider } from '@/components/ToolCard/CodexQuestionSubmission'
 import { AsyncQuestionsPanel } from './AsyncQuestionsPanel'
 
 vi.mock('@/hooks/usePlatform', () => ({
@@ -25,7 +26,7 @@ function setup(requests: AgentState['requests']) {
         api: { approvePermission, denyPermission } as unknown as ApiClient,
         sessionId: 'session-1', requests, disabled: false, onRefresh: vi.fn()
     }
-    return { ...render(<AsyncQuestionsPanel {...props} />), props, approvePermission, denyPermission }
+    return { ...render(<AsyncQuestionsPanel {...props} />, { wrapper: CodexQuestionSubmissionProvider }), props, approvePermission, denyPermission }
 }
 
 function expand() {
@@ -70,18 +71,57 @@ describe('AsyncQuestionsPanel', () => {
         expect(props.onRefresh).toHaveBeenCalledOnce()
     })
 
-    it('dismisses one request and follows authoritative updates, including replies elsewhere', async () => {
-        const { props, rerender, denyPermission } = setup({ first: question('First', 1), second: question('Second', 2) })
+    it('dismisses one issued request before hub removal and follows authoritative updates', async () => {
+        const { props, rerender, denyPermission } = setup({ first: { ...question('First', 1), instanceId: 'first-issuance' }, second: question('Second', 2) })
         expand()
         fireEvent.click(screen.getByText('First', { selector: 'summary' }))
         fireEvent.click(within(screen.getByText('First', { selector: 'summary' }).parentElement!).getByRole('button', { name: 'button.dismiss' }))
         await waitFor(() => expect(props.onRefresh).toHaveBeenCalledOnce())
         expect(denyPermission).toHaveBeenCalledExactlyOnceWith('session-1', 'first')
+        expect(screen.queryByText('First')).not.toBeInTheDocument()
         rerender(<AsyncQuestionsPanel {...props} requests={{ second: question('Second', 2) }} />)
         expect(screen.queryByText('First')).not.toBeInTheDocument()
         expect(screen.getByRole('button', { name: /chat.asyncQuestions.title/ })).toHaveTextContent('1')
         rerender(<AsyncQuestionsPanel {...props} requests={{}} />)
         expect(screen.queryByRole('region')).not.toBeInTheDocument()
+    })
+
+    it.each([200, 404])('withdraws the same Codex answer form after HTTP %s while session state is stale', async (status) => {
+        const approvePermission = status === 200 ? vi.fn().mockResolvedValue(undefined)
+            : vi.fn().mockRejectedValue(new ApiError('Request not found', 404))
+        const onRefresh = vi.fn()
+        const requestId = 'codex-async-question:one'
+        const other = question('Other', 2)
+        const requests = { [requestId]: { ...question('Question', 1), instanceId: 'first-issuance' }, other }
+        render(
+            <CodexQuestionSubmissionProvider>
+                <AsyncQuestionsPanel
+                    api={{ approvePermission } as unknown as ApiClient}
+                    sessionId="session-1"
+                    requests={requests}
+                    disabled={false}
+                    onRefresh={onRefresh}
+                />
+            </CodexQuestionSubmissionProvider>
+        )
+        expand()
+        const summary = screen.getByText('Question', { selector: 'summary' })
+        fireEvent.click(summary)
+        const form = within(summary.parentElement!)
+        fireEvent.change(form.getByRole('textbox'), { target: { value: 'My answer' } })
+        fireEvent.click(form.getByRole('button', { name: 'tool.submit' }))
+        await waitFor(() => {
+            expect(form.queryByRole('button', { name: 'tool.submit' })).not.toBeInTheDocument()
+            if (status === 200) {
+                expect(form.getByRole('status')).toHaveTextContent('tool.answerSentWaiting')
+                expect(form.getByText('My answer')).toBeInTheDocument()
+            } else {
+                expect(screen.queryByText('Question', { selector: 'summary' })).not.toBeInTheDocument()
+            }
+        })
+        expect(onRefresh).toHaveBeenCalledOnce()
+        expect(screen.getByText('Other', { selector: 'summary' })).toBeVisible()
+
     })
 
     it('opens, scrolls to, focuses, and highlights a targeted live question', async () => {

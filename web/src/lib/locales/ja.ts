@@ -760,6 +760,7 @@ export default {
   'tool.waitingForReply': '返信待ち',
   'tool.selectOption': '1 つ以上のオプションを選択するか、回答を入力してください。',
   'tool.waitingForApproval': '承認待ち…',
+  'tool.answerSentWaiting': '回答を送信しました。エージェントの処理を待っています。',
   'tool.resolved': 'Codex で解決済み',
   'tool.canceled': 'キャンセル済み',
   'tool.approvedForSession': 'セッション中は承認済み',

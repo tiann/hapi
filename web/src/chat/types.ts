@@ -187,11 +187,13 @@ export type NormalizedMessage = ({
 
 export type ToolPermission = {
     id: string
+    instanceId?: string
     status: 'pending' | 'approved' | 'denied' | 'canceled' | 'resolved'
     reason?: string
     mode?: string
     allowedTools?: string[]
     decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
+    answerSubmitted?: boolean
     answers?: Record<string, string[]> | Record<string, { answers: string[] }>
     date?: number
     createdAt?: number | null

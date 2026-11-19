@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentState } from '@/api/types';
 import { isIndeterminateError } from '../codexAppServerClient';
@@ -93,11 +94,12 @@ export class SharedCodexAsyncQuestions {
             // Shutdown also cancels controls. Only an explicit user decision survives replay.
             if (this.completedAtBootstrap?.[question.id]?.decision === 'denied') continue;
             this.pending.set(question.id, { question, submitted: false });
+            const instanceId = randomUUID();
             this.session.updateAgentState(state => {
                 const completedRequests = { ...state.completedRequests };
                 delete completedRequests[question.id];
                 return { ...state, completedRequests, requests: { ...state.requests, [question.id]: {
-                    tool: 'request_user_input', toolCallId: question.id, arguments: question.input,
+                    tool: 'request_user_input', toolCallId: question.id, instanceId, arguments: question.input,
                     createdAt: typeof item.completedAtMs === 'number' ? item.completedAtMs : Date.now()
                 } } };
             });

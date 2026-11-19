@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { ApiClient } from '@/api/client'
+import { ApiError, type ApiClient } from '@/api/client'
 import type { ChatToolCall } from '@/chat/types'
+import { useCodexQuestionSubmission, type CodexQuestionSubmission } from '@/components/ToolCard/CodexQuestionSubmission'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
@@ -32,16 +33,23 @@ type QuestionState = {
 // Same shape as Submit, quieter colors.
 const addNoteButtonClassName = 'h-8 rounded-full border border-[var(--app-border)] bg-[var(--app-subtle-bg)] px-3.5 text-[var(--app-hint)] hover:bg-[var(--app-secondary-bg)] hover:text-[var(--app-fg)]'
 
-export function RequestUserInputFooter(props: {
+type RequestUserInputFooterProps = {
     api: ApiClient
     sessionId: string
     tool: ChatToolCall
     disabled: boolean
     onDone: () => void
-}) {
+}
+
+export function RequestUserInputFooter(props: RequestUserInputFooterProps) {
+    return <RequestUserInputForm key={props.tool.permission?.instanceId} {...props} />
+}
+
+function RequestUserInputForm(props: RequestUserInputFooterProps) {
     const { t } = useTranslation()
     const { haptic } = usePlatform()
     const permission = props.tool.permission
+    const { record } = useCodexQuestionSubmission(props.sessionId)
     const parsed = useMemo(() => parseRequestUserInputInput(props.tool.input), [props.tool.input])
     const questions = parsed.questions
     const isAsync = isAsyncRequestUserInput(props.tool.name, props.tool.input)
@@ -80,14 +88,24 @@ export function RequestUserInputFooter(props: {
     if (!permission || permission.status !== 'pending') return null
     if (!isRequestUserInputToolName(props.tool.name)) return null
 
-    const run = async (action: () => Promise<void>, hapticType: 'success' | 'error') => {
+    const instanceId = isAsync ? permission.instanceId : undefined
+    const recordSubmission = instanceId && record
+        ? (submission: CodexQuestionSubmission) => record(props.sessionId, permission.id, instanceId, submission)
+        : undefined
+    const run = async (action: () => Promise<void>, onAccepted: () => void) => {
         if (props.disabled) return
         setError(null)
         try {
             await action()
-            haptic.notification(hapticType)
+            onAccepted()
+            haptic.notification('success')
             props.onDone()
         } catch (e) {
+            if (recordSubmission && e instanceof ApiError && e.status === 404) {
+                recordSubmission({ status: 'missing' })
+                props.onDone()
+                return
+            }
             haptic.notification('error')
             setError(e instanceof Error ? e.message : t('dialog.error.default'))
         }
@@ -130,7 +148,9 @@ export function RequestUserInputFooter(props: {
         }
 
         setLoading(true)
-        await run(() => props.api.approvePermission(props.sessionId, permission.id, formattedAnswers), 'success')
+        await run(() => props.api.approvePermission(props.sessionId, permission.id, formattedAnswers), () => {
+            recordSubmission?.({ status: 'answered', answers: formattedAnswers.answers })
+        })
         setLoading(false)
     }
 
@@ -148,7 +168,9 @@ export function RequestUserInputFooter(props: {
     const dismiss = async () => {
         if (!isAsync || loading) return
         setLoading(true)
-        await run(() => props.api.denyPermission(props.sessionId, permission.id), 'success')
+        await run(() => props.api.denyPermission(props.sessionId, permission.id), () => {
+            recordSubmission?.({ status: 'dismissed' })
+        })
         setLoading(false)
     }
 

@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { PermissionFooter, permissionFooterContent } from '@/components/ToolCard/PermissionFooter'
 import { CodexPlanFooter } from '@/components/ToolCard/CodexPlanFooter'
 import { AskUserQuestionFooter } from '@/components/ToolCard/AskUserQuestionFooter'
+import { applyCodexQuestionSubmission, getCodexQuestionSubmission, useCodexQuestionSubmission } from '@/components/ToolCard/CodexQuestionSubmission'
 import { RequestUserInputFooter } from '@/components/ToolCard/RequestUserInputFooter'
 import { isAskUserQuestionToolName } from '@/components/ToolCard/askUserQuestion'
 import { isRequestUserInputToolName } from '@/components/ToolCard/requestUserInput'
@@ -682,4 +683,11 @@ function ToolCardInner(props: ToolCardProps) {
     )
 }
 
-export const ToolCard = memo(ToolCardInner)
+export const ToolCard = memo(function ToolCard(props: ToolCardProps) {
+    const { submissions } = useCodexQuestionSubmission(props.sessionId)
+    const tool = props.block.tool
+    const submission = tool.permission && getCodexQuestionSubmission(submissions, tool.permission.id, tool.permission.instanceId)
+    const displayedTool = submission ? applyCodexQuestionSubmission(tool, submission) : tool
+    const block = displayedTool === tool ? props.block : { ...props.block, tool: displayedTool }
+    return <ToolCardInner {...props} block={block} />
+})

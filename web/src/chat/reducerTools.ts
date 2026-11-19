@@ -41,6 +41,7 @@ export function getPermissions(agentState: AgentState | null | undefined): Map<s
                 permission: {
                     id,
                     status: 'pending',
+                    ...(request.instanceId !== undefined ? { instanceId: request.instanceId } : {}),
                     createdAt: request.createdAt ?? null
                 }
             })

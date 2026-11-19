@@ -788,6 +788,7 @@ export default {
   'tool.waitingForReply': '等待你的回复',
   'tool.selectOption': '请至少选择一个选项或输入答案。',
   'tool.waitingForApproval': '等待审批…',
+  'tool.answerSentWaiting': '答案已发送，正在等待代理处理。',
   'tool.resolved': '已在 Codex 中处理',
   'tool.canceled': '已取消',
   'tool.approvedForSession': '本会话已批准',

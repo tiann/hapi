@@ -38,6 +38,7 @@ function isClaudeSession(metadata: SessionMetadataSummary | null): boolean {
 }
 
 function formatPermissionSummary(permission: ToolPermission, toolName: string, toolInput: unknown, codex: boolean, t: (key: string) => string): string {
+    if (permission.answerSubmitted) return t('tool.answerSentWaiting')
     if (permission.status === 'resolved') return t('tool.resolved')
     if (permission.status === 'pending') return t('tool.waitingForApproval')
     if (permission.status === 'canceled') return permission.reason ? `${t('tool.canceled')}: ${permission.reason}` : t('tool.canceled')

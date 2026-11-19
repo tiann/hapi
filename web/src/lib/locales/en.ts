@@ -790,6 +790,7 @@ export default {
   'tool.waitingForReply': 'Waiting for your reply',
   'tool.selectOption': 'Please select at least one option or type an answer.',
   'tool.waitingForApproval': 'Waiting for approval…',
+  'tool.answerSentWaiting': 'Answer sent. Waiting for the agent.',
   'tool.resolved': 'Resolved in Codex',
   'tool.canceled': 'Canceled',
   'tool.approvedForSession': 'Approved For Session',

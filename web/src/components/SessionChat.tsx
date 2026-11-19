@@ -49,6 +49,7 @@ import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePic
 import { resolvePendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { QueuedMessagesBar } from '@/components/AssistantChat/QueuedMessagesBar'
+import { usePruneCodexQuestionSubmissions } from '@/components/ToolCard/CodexQuestionSubmission'
 import { AsyncQuestionsPanel } from '@/components/AssistantChat/AsyncQuestionsPanel'
 import { isAsyncRequestUserInput } from '@/components/ToolCard/requestUserInput'
 import { getPendingRequestNavigationTarget } from '@/lib/pendingRequests'
@@ -751,6 +752,7 @@ export function SessionChat(props: SessionChatProps) {
 }
 
 function SessionChatInner(props: SessionChatProps) {
+    usePruneCodexQuestionSubmissions(props.session.id, props.session.agentState)
     const { haptic } = usePlatform()
     const { t } = useTranslation()
     const { codexExplorationCollapsed } = useCodexExplorationCollapse()
