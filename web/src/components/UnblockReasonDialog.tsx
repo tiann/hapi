@@ -26,19 +26,24 @@ export function UnblockReasonDialog(props: {
     isPending?: boolean
     onClose: () => void
     onConfirm: (reason: string) => Promise<unknown>
+    /** Where keyboard focus returns on Escape / Cancel / confirm. Passed in
+     *  because reading `document.activeElement` here races the action menu
+     *  closing and the textarea's own autoFocus — cleanup then tried to focus
+     *  the textarea as it unmounted, leaving the user with no focus at all. */
+    returnFocusTo?: () => HTMLElement | null
 }) {
     const { t } = useTranslation()
     const [reason, setReason] = useState('')
     const [error, setError] = useState<string | null>(null)
     const inputRef = useRef<HTMLTextAreaElement>(null)
     const dialogRef = useRef<HTMLDivElement>(null)
-    // Restore focus to whatever opened the dialog, so dismissing does not dump
-    // the keyboard user back at the top of the document.
+    // Restore focus to the caller-named target, so dismissing returns the
+    // keyboard user to the session row rather than the top of the document.
+    const returnFocusTo = props.returnFocusTo
     useEffect(() => {
         if (!props.isOpen) return
-        const opener = document.activeElement as HTMLElement | null
-        return () => opener?.focus?.()
-    }, [props.isOpen])
+        return () => returnFocusTo?.()?.focus?.()
+    }, [props.isOpen, returnFocusTo])
 
     useEffect(() => {
         if (props.isOpen) {

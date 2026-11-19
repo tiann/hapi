@@ -1,5 +1,7 @@
 import {
     BLOCKED_NOTIFY_STALE_MS,
+    notifyBlockerKey,
+    requestBlockerKey,
     getNotifyBlockReason
 } from '@hapi/protocol'
 import type { SessionSummary } from '@/types/api'
@@ -99,6 +101,8 @@ export type SessionBlockedReason =
     | 'question'
 
 export type SessionBlockedState = {
+    /** Identity of this blocker, for an acknowledgement that covers exactly it. */
+    key: string
     reason: SessionBlockedReason
     /** Epoch ms it became blocked — footer time, or the oldest pending request. */
     at: number
@@ -114,9 +118,28 @@ export type SessionBlockedState = {
  * Returns null when nothing is pending, or when every outstanding prompt
  * predates the operator's acknowledgement.
  */
+/**
+ * Is this specific blocker the one the operator dismissed?
+ *
+ * The acknowledgement used to be a bare timestamp, which suppressed every
+ * blocker older than itself — including ones belonging to the other session in
+ * a merge, and ones that arrived while the dialog was open. With an identity
+ * it covers exactly what was reviewed. Rows written before `key` existed fall
+ * back to the old watermark so an upgrade does not resurrect dismissed work.
+ */
+function isAcknowledgedBlocker(
+    ack: { at: number; key?: string | null } | null,
+    blockerKey: string,
+    blockerAt: number
+): boolean {
+    if (!ack) return false
+    if (ack.key) return ack.key === blockerKey
+    return blockerAt <= ack.at
+}
+
 function getPendingBlockedState(
     summary: SessionSummary,
-    ackAt: number | null,
+    ack: { at: number; key?: string | null } | null,
     now: number
 ): SessionBlockedState | null {
     // Requests left on an archived session can no longer be answered, and
@@ -141,7 +164,10 @@ function getPendingBlockedState(
     // kind first and filtering second discards a newly arrived permission
     // whenever an older, already-dismissed question still outranks it — the
     // session would vanish from the count with a live prompt unanswered.
-    const unacked = ackAt === null ? all : all.filter(request => request.since > ackAt)
+    const ackAt = ack?.at ?? null
+    const unacked = ack === null
+        ? all
+        : all.filter(request => !isAcknowledgedBlocker(ack, requestBlockerKey(request.id), request.since))
 
     // `pendingRequests` is capped and keeps the OLDEST entries, so a slice that
     // is entirely acknowledged says nothing about newer prompts the summary
@@ -150,7 +176,7 @@ function getPendingBlockedState(
     const newestAt = summary.pendingRequestsNewestAt
         ?? (all.length > 0 ? all[all.length - 1]!.since : 0)
     const newerBeyondCap = total > all.length && newestAt > (ackAt ?? 0)
-    if (ackAt !== null && unacked.length === 0 && !newerBeyondCap) {
+    if (ack !== null && unacked.length === 0 && !newerBeyondCap) {
         return null
     }
 
@@ -168,6 +194,7 @@ function getPendingBlockedState(
     const at = oldest?.since ?? (newestAt > 0 ? newestAt : summary.updatedAt)
 
     return {
+        key: oldest ? requestBlockerKey(oldest.id) : notifyBlockerKey(at),
         reason,
         at,
         note: oldest?.tool ?? null,
@@ -185,7 +212,7 @@ export function getSessionBlockedState(
     // Null rather than 0: a 0 sentinel would dismiss any blocker whose
     // timestamp is non-positive, which is only ever a test or clock artefact
     // but is exactly the kind of silent suppression this feature must not do.
-    const ackAt = summary.blockedAck?.at ?? null
+    const ack = summary.blockedAck ?? null
 
     // Live prompts are read BEFORE the `thinking` guard below, deliberately. A
     // remote Claude agent keeps `thinking` true while it waits on a permission
@@ -194,7 +221,7 @@ export function getSessionBlockedState(
     // single most common blocker this feature exists to surface, for the whole
     // duration of the wait. `classifySessionAttention` likewise reports a
     // pending request regardless of `thinking`.
-    const pending = getPendingBlockedState(summary, ackAt, options.now)
+    const pending = getPendingBlockedState(summary, ack, options.now)
     if (pending !== null) {
         return pending
     }
@@ -209,11 +236,13 @@ export function getSessionBlockedState(
 
     const notify = summary.lastNotify
     const notifyReason = notify ? getNotifyBlockReason(notify.status) : null
-    if (!notify || notifyReason === null || (ackAt !== null && notify.at <= ackAt)) {
+    if (!notify || notifyReason === null
+        || isAcknowledgedBlocker(ack, notifyBlockerKey(notify.at), notify.at)) {
         return null
     }
 
     return {
+        key: notifyBlockerKey(notify.at),
         reason: notifyReason,
         at: notify.at,
         note: notify.note ?? null,

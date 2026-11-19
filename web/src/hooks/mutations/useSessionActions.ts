@@ -38,7 +38,7 @@ export function useSessionActions(
     updateSessionSummary: (text: string, titleLocked?: boolean) => Promise<void>
     setPinMode: (mode: 'none' | 'project' | 'global') => Promise<void>
     /** #1717: dismiss blocked chrome with a required rationale. */
-    acknowledgeBlocked: (input: { reason: string; observedAt?: number }) => Promise<void>
+    acknowledgeBlocked: (input: { reason: string; observed?: { at: number; key: string } }) => Promise<void>
     deleteSession: () => Promise<void>
     isPending: boolean
 } {
@@ -316,9 +316,11 @@ export function useSessionActions(
     })
 
     const blockedAckMutation = useMutation({
-        mutationFn: async ({ reason, observedAt }: { reason: string; observedAt?: number }) => {
+        mutationFn: async ({ reason, observed }: {
+            reason: string; observed?: { at: number; key: string }
+        }) => {
             if (!api || !sessionId) throw new Error('Session unavailable')
-            await api.acknowledgeSessionBlocked(sessionId, reason, observedAt)
+            await api.acknowledgeSessionBlocked(sessionId, reason, observed)
         },
         onSuccess: () => void invalidateSession(),
     })

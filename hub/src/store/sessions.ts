@@ -288,6 +288,7 @@ type DbSessionRow = {
     last_notify_note: string | null
     blocked_ack_at: number | null
     blocked_ack_reason: string | null
+    blocked_ack_key: string | null
     last_notify_cleared_at: number | null
     last_notify_updated_at: number | null
     active: number
@@ -325,6 +326,7 @@ function toStoredSession(row: DbSessionRow): StoredSession {
         lastNotifyNote: row.last_notify_note,
         blockedAckAt: row.blocked_ack_at,
         blockedAckReason: row.blocked_ack_reason,
+        blockedAckKey: row.blocked_ack_key,
         lastNotifyClearedAt: row.last_notify_cleared_at,
         lastNotifyUpdatedAt: row.last_notify_updated_at,
         active: row.active === 1,
@@ -758,7 +760,7 @@ export function setSessionLastNotify(
 export function setSessionBlockedAck(
     db: Database,
     id: string,
-    ack: { at: number; reason: string },
+    ack: { at: number; reason: string; key?: string | null },
     namespace: string
 ): boolean {
     try {
@@ -766,12 +768,13 @@ export function setSessionBlockedAck(
             UPDATE sessions
             SET blocked_ack_at = @at,
                 blocked_ack_reason = @reason,
+                blocked_ack_key = @key,
                 last_notify_updated_at = MAX(COALESCE(last_notify_updated_at, 0) + 1, @at),
                 seq = seq + 1
             WHERE id = @id
               AND namespace = @namespace
               AND (blocked_ack_at IS NULL OR blocked_ack_at <= @at)
-        `).run({ id, at: ack.at, reason: ack.reason, namespace })
+        `).run({ id, at: ack.at, reason: ack.reason, key: ack.key ?? null, namespace })
         return result.changes === 1
     } catch {
         return false
@@ -1223,6 +1226,34 @@ export function replaceSessionNotifyAfterTruncate(
             clearedAt: signal ? Math.min(clearedAt, signal.at) : clearedAt,
             rev: Date.now()
         })
+        return result.changes === 1
+    } catch {
+        return false
+    }
+}
+
+/**
+ * Move the clear boundary forward WITHOUT dropping the current footer.
+ *
+ * Queueing a prompt is optimistic — the agent may never receive it — so it
+ * must not erase a live blocker. It must still advance the boundary, or a
+ * footer delayed past the reply slips in behind it later.
+ */
+export function advanceNotifyClearBoundary(
+    db: Database,
+    id: string,
+    namespace: string,
+    clearedAt: number
+): boolean {
+    try {
+        const result = db.prepare(`
+            UPDATE sessions
+            SET last_notify_cleared_at = @clearedAt,
+                seq = seq + 1
+            WHERE id = @id
+              AND namespace = @namespace
+              AND (last_notify_cleared_at IS NULL OR last_notify_cleared_at < @clearedAt)
+        `).run({ id, namespace, clearedAt })
         return result.changes === 1
     } catch {
         return false

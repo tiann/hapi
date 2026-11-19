@@ -431,10 +431,16 @@ export class SyncEngine {
      * silently would leave a state change with no "why", which is exactly the
      * gap the reason prompt exists to close.
      */
+    /** Confirmed prompt delivery cleared the agent's last self-report (#1717). */
+    clearSessionLastNotifyOnDelivery(sessionId: string): void {
+        this.sessionCache.clearSessionLastNotify(sessionId)
+    }
+
     acknowledgeSessionBlocked(
         sessionId: string,
         reason: string,
-        observedAt?: number
+        observedAt?: number,
+        observedKey?: string
     ): { at: number; reason: string } | null {
         const session = this.getSession(sessionId)
         if (!session) return null
@@ -448,7 +454,7 @@ export class SyncEngine {
         const ackAt = typeof observedAt === 'number'
             ? Math.min(observedAt, Date.now())
             : Date.now()
-        const ack = this.sessionCache.setSessionBlockedAck(sessionId, reason, ackAt)
+        const ack = this.sessionCache.setSessionBlockedAck(sessionId, reason, ackAt, observedKey)
         if (!ack) return null
 
         try {

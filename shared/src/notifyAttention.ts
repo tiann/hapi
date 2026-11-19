@@ -114,6 +114,27 @@ export const BLOCKED_ACK_REASON_MAX_CHARS = 500
 export type SessionBlockedAck = {
     at: number
     reason: string
+    /**
+     * Identity of the blocker the operator actually dismissed.
+     *
+     * A bare timestamp watermark cannot tell two blockers apart, so it
+     * suppressed everything older than itself — including a blocker belonging
+     * to the other session in a merge, or one that arrived while the dialog
+     * was open. `notify:<at>` for a self-reported footer, `request:<id>` for a
+     * prompt. Absent on rows written before this existed, which fall back to
+     * the old watermark behaviour.
+     */
+    key?: string | null
+}
+
+/** Stable identity for a self-reported footer. */
+export function notifyBlockerKey(at: number): string {
+    return `notify:${at}`
+}
+
+/** Stable identity for a prompt the agent is parked on. */
+export function requestBlockerKey(requestId: string): string {
+    return `request:${requestId}`
 }
 
 /** Last `AGENT_NOTIFY_SUMMARY` footer seen for a session. */

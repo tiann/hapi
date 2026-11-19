@@ -517,7 +517,10 @@ export const SetSessionBlockedAckRequestSchema = z.object({
      *  receive time, so a blocker that arrived while the dialog was open is
      *  not silently covered by a reason written for an earlier one.
      *  Optional: an older client omits it and keeps the previous behaviour. */
-    observedAt: z.number().int().nonnegative().safe().optional()
+    observedAt: z.number().int().nonnegative().safe().optional(),
+    /** Identity of that blocker, so the acknowledgement covers exactly it
+     *  rather than everything older than its timestamp. */
+    observedKey: z.string().max(256).optional()
 })
 export type SetSessionBlockedAckRequest = z.infer<typeof SetSessionBlockedAckRequestSchema>
 export type SessionPinMode = SetSessionPinnedRequest['mode']

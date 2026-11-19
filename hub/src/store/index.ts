@@ -515,6 +515,7 @@ export class Store {
                 last_notify_updated_at INTEGER,
                 blocked_ack_at INTEGER,
                 blocked_ack_reason TEXT,
+                blocked_ack_key TEXT,
                 active INTEGER DEFAULT 0,
                 active_at INTEGER,
                 seq INTEGER DEFAULT 0
@@ -1344,6 +1345,9 @@ export class Store {
         }
         if (!columns.has('last_notify_updated_at')) {
             this.db.exec('ALTER TABLE sessions ADD COLUMN last_notify_updated_at INTEGER')
+        }
+        if (!columns.has('blocked_ack_key')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN blocked_ack_key TEXT')
         }
     }
 

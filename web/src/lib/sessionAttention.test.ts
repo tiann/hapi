@@ -254,7 +254,9 @@ describe('getSessionBlockedState', () => {
             makeSummary({ id: 'a', lastNotify: { status: 'blocked', at: now, note: 'needs a token' } }),
             { now }
         )
-        expect(state).toEqual({ reason: 'blocked', at: now, note: 'needs a token', stale: false })
+        expect(state).toEqual({
+            key: `notify:${now}`, reason: 'blocked', at: now, note: 'needs a token', stale: false
+        })
     })
 
     it('treats a self-reported stall as blocked, matching the hub work_ad fold', () => {
@@ -278,7 +280,9 @@ describe('getSessionBlockedState', () => {
             }),
             { now }
         )
-        expect(state).toEqual({ reason: 'permission', at: now - 1000, note: 'Bash', stale: false })
+        expect(state).toEqual({
+            key: 'request:r1', reason: 'permission', at: now - 1000, note: 'Bash', stale: false
+        })
     })
 
     it('treats a Cursor plan approval as a question, not a bare permission', () => {

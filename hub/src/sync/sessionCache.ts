@@ -559,13 +559,19 @@ export class SessionCache {
      * Record the operator's manual unblock (#1717). Returns the stored ack so
      * the caller can put the same values in the ledger event.
      */
-    setSessionBlockedAck(sessionId: string, reason: string, at: number = Date.now()): {
+    setSessionBlockedAck(
+        sessionId: string,
+        reason: string,
+        at: number = Date.now(),
+        key?: string
+    ): {
         at: number
         reason: string
+        key?: string | null
     } | null {
         const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
         if (!session) return null
-        const ack = { at, reason }
+        const ack = { at, reason, key: key ?? null }
         if (!this.store.sessions.setSessionBlockedAck(sessionId, ack, session.namespace)) {
             return null
         }
@@ -980,11 +986,15 @@ export class SessionCache {
             })
         }
 
-        // #1717: this is the operator-answered-a-blocked-agent path, and it
-        // sets `thinking` before any CLI keep-alive lands — so the rising edge
-        // in `handleSessionAlive` would never see one.
+        // #1717: the clear lives on CONFIRMED delivery
+        // (`clearSessionLastNotifyOnDelivery`), not here. Queueing is
+        // optimistic: an idempotent retry of an already-consumed message
+        // reuses its row and starts no turn, and a prompt can be cancelled
+        // before the agent ever sees it — both erased a live blocker from
+        // here. The boundary still advances so a delayed footer cannot slip
+        // in behind the reply.
         if (!wasThinking) {
-            this.clearSessionLastNotify(session.id)
+            this.store.sessions.advanceNotifyClearBoundary(session.id, session.namespace)
         }
     }
 
@@ -2512,24 +2522,29 @@ export class SessionCache {
         // the operator already dismissed reads as newer-than-nothing and goes
         // straight back to blocking. Keep the later of the two acks, so a
         // genuinely newer request on either side still blocks.
+        // The acknowledgement now carries the identity of the blocker it
+        // covered, so a merge can transfer it without it swallowing anything
+        // else: a destination ack cannot hide an incoming source footer, and a
+        // source ack cannot hide an unanswered destination prompt. That is what
+        // the previous timestamp-only watermark could not express, and why a
+        // one-directional guard here was never going to be enough.
+        //
+        // Keyless acks (written before the identity existed) keep the old
+        // watermark semantics, so the later of the two still wins for them.
         const oldAckAt = oldStored.blockedAckAt
         if (oldAckAt !== null) {
             const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
             const targetAckAt = latest?.blockedAckAt ?? null
-            // The ack is a timestamp watermark, so carrying it across silences
-            // EVERY destination blocker older than it — including ones the
-            // operator never saw. Dismissing a 12:05 blocker on the source must
-            // not hide an unanswered 12:00 permission that belongs to the
-            // destination. Only transfer when the destination has nothing
-            // unacknowledged that the watermark would swallow; erring toward
-            // showing a blocker is the whole point of this feature.
-            const destinationWouldBeSilenced = latest !== null && latest !== undefined
-                && this.hasUnacknowledgedBlockerBefore(latest, oldAckAt, namespace)
-            if (latest && !destinationWouldBeSilenced
+            const targetHasKeyedAck = Boolean(latest?.blockedAckKey)
+            if (latest && !targetHasKeyedAck
                 && (targetAckAt === null || oldAckAt > targetAckAt)) {
                 this.store.sessions.setSessionBlockedAck(
                     newSessionId,
-                    { at: oldAckAt, reason: oldStored.blockedAckReason ?? '' },
+                    {
+                        at: oldAckAt,
+                        reason: oldStored.blockedAckReason ?? '',
+                        key: oldStored.blockedAckKey
+                    },
                     namespace
                 )
             }

@@ -24,16 +24,18 @@ function seedBlocked(cache: SessionCache, tag: string): string {
 }
 
 describe('lastNotify clearing on turn start (#1717)', () => {
-    it('clears when the operator sends a message', () => {
-        // markMessageQueued sets thinking=true itself, before any CLI
-        // keep-alive lands — so a rising-edge check in handleSessionAlive
-        // alone would never fire for the reply path and the stale "Blocked"
-        // chrome would survive the operator answering.
+    it('keeps the footer while the prompt is only QUEUED, clears on delivery', () => {
+        // Queueing is optimistic: an idempotent retry of an already-consumed
+        // message reuses its row and starts no turn, and a prompt can be
+        // cancelled before the agent ever sees it. Clearing here erased live
+        // blockers in both cases, so the clear lives on confirmed delivery.
         const { cache } = makeCache()
         const id = seedBlocked(cache, 'notify-clear-queued')
 
         cache.markMessageQueued(id)
+        expect(cache.getSession(id)?.lastNotify?.status).toBe('blocked')
 
+        cache.clearSessionLastNotify(id)
         expect(cache.getSession(id)?.lastNotify).toBeNull()
     })
 
@@ -81,6 +83,7 @@ describe('footer timestamp boundary on the live path (#1717)', () => {
         const beforeReply = Date.now() - 60_000
 
         cache.markMessageQueued(id)
+        cache.clearSessionLastNotify(id)
         expect(cache.getSession(id)?.lastNotify).toBeNull()
 
         cache.setSessionLastNotify(id, { status: 'blocked', at: beforeReply, note: 'stale replay' })
@@ -98,6 +101,7 @@ describe('footer timestamp boundary on the live path (#1717)', () => {
         const beforeReply = Date.now() - 60_000
 
         cache.markMessageQueued(id)
+        cache.clearSessionLastNotify(id)
         // Turn ends; agent goes idle without emitting another footer.
         cache.handleSessionEnd({ sid: id, time: Date.now() })
 
@@ -111,6 +115,7 @@ describe('footer timestamp boundary on the live path (#1717)', () => {
         const id = seedBlocked(cache, 'notify-boundary-live')
 
         cache.markMessageQueued(id)
+        cache.clearSessionLastNotify(id)
         cache.setSessionLastNotify(id, { status: 'blocked', at: Date.now() + 1_000, note: 'stuck again' })
 
         expect(cache.getSession(id)?.lastNotify?.note).toBe('stuck again')
@@ -239,9 +244,11 @@ describe('future-scheduled messages leave the blocker alone (#1717)', () => {
         await engine.sendMessage(session.id, { text: 'later', scheduledAt: Date.now() + 3_600_000 })
         expect(cache.getSession(session.id)?.lastNotify?.status).toBe('blocked')
 
-        // Control: an immediate send really does reach the agent, so it clears.
+        // Control: an immediate send reaches the agent, and the CLI's
+        // confirmed consumption is what clears the footer.
         seed()
         await engine.sendMessage(session.id, { text: 'now' })
+        engine.clearSessionLastNotifyOnDelivery(session.id)
         expect(cache.getSession(session.id)?.lastNotify).toBeNull()
     })
 })

@@ -1770,7 +1770,8 @@ export function createSessionsRoutes(
         const ack = engine.acknowledgeSessionBlocked(
             sessionResult.sessionId,
             parsed.data.reason,
-            parsed.data.observedAt
+            parsed.data.observedAt,
+            parsed.data.observedKey
         )
         if (!ack) {
             return c.json({ error: 'Failed to acknowledge' }, 500)

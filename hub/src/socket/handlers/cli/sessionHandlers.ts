@@ -130,10 +130,12 @@ export type SessionHandlersDeps = {
     /** Drops the queued-thinking grace so synchronous CLI handlers (e.g. slash
      *  commands) don't leave the spinner stuck for the full grace window. */
     onMessagesConsumed?: (sessionId: string) => void
+    /** Fired on CONFIRMED prompt consumption (#1717). */
+    onPromptDelivered?: (sessionId: string) => void
 }
 
 export function registerSessionHandlers(socket: CliSocketWithData, deps: SessionHandlersDeps): void {
-    const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionReady, onSessionEnd, onWebappEvent, onBackgroundTasks, onSessionActivity, onAgentProgress, onSweepImmediateQueued, onMessagesConsumed } = deps
+    const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionReady, onSessionEnd, onWebappEvent, onBackgroundTasks, onSessionActivity, onAgentProgress, onSweepImmediateQueued, onMessagesConsumed, onPromptDelivered } = deps
 
     socket.on('native-queue-message', data => {
         const parsed = z.object({ sid: z.string(), localId: z.string().min(1), text: z.string().nullable() }).safeParse(data)
@@ -508,6 +510,17 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             onSessionActivity?.(data.sid, sessionUpdatedAt)
         } catch (err) {
             console.error('onSessionActivity failed', err)
+        }
+
+        // #1717: the blocker clears when the agent actually RECEIVES the
+        // prompt, not when the hub optimistically queues it. Clearing at
+        // queue time erased a footer on an idempotent retry of an
+        // already-consumed message (no new turn started), and on a prompt
+        // cancelled before it was ever delivered.
+        try {
+            onPromptDelivered?.(data.sid)
+        } catch (err) {
+            console.error('onPromptDelivered failed', err)
         }
 
         // Only drop the queued-thinking grace when the CLI explicitly opts in

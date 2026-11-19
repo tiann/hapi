@@ -1538,11 +1538,13 @@ export class ApiClient {
     async acknowledgeSessionBlocked(
         sessionId: string,
         reason: string,
-        observedAt?: number
+        observed?: { at: number; key: string }
     ): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/blocked-ack`, {
             method: 'PUT',
-            body: JSON.stringify(observedAt === undefined ? { reason } : { reason, observedAt })
+            body: JSON.stringify(observed === undefined
+                ? { reason }
+                : { reason, observedAt: observed.at, observedKey: observed.key })
         })
     }
 

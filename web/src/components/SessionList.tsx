@@ -1648,7 +1648,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     // Pinned when the dialog opens so the watermark covers the blocker the
     // operator reviewed, not whatever arrived while they were typing.
     const [unblockObserved, setUnblockObserved] = useState<
-        { at: number; label: string | null; note: string | null } | null
+        { at: number; key: string; label: string | null; note: string | null } | null
     >(null)
     const {
         status: cursorChatStoreStatus,
@@ -2029,6 +2029,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                         // the operator read one blocker and dismissed another.
                         setUnblockObserved({
                             at: blocked.at,
+                            key: blocked.key,
                             label: t(getSessionBlockedLabelKey(blocked)),
                             note: blocked.note ?? null
                         })
@@ -2096,10 +2097,13 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                     blockedLabel={unblockObserved?.label ?? null}
                     blockedNote={unblockObserved?.note ?? null}
                     isPending={isPending}
+                    returnFocusTo={() => rowButtonRef.current}
                     onClose={() => { setUnblockOpen(false); setUnblockObserved(null) }}
                     onConfirm={(reason) => acknowledgeBlocked({
                         reason,
-                        ...(unblockObserved ? { observedAt: unblockObserved.at } : {})
+                        ...(unblockObserved
+                            ? { observed: { at: unblockObserved.at, key: unblockObserved.key } }
+                            : {})
                     })}
                 />
             ) : null}
@@ -2418,12 +2422,15 @@ export function SessionList(props: {
         () => new Set(allSessions.map(session => formatDateValue(new Date(session.updatedAt)))),
         [allSessions]
     )
+    // The jump target is exempted exactly where the selected session already
+    // is, so revealing one row needs no change to saved preferences.
+    const filterExemptId = revealBlockedSessionId ?? selectedSessionId
     const hasTextQuery = normalizedQuery.length > 0 && !contentSearchActive
     const timeScopedSessions = useMemo(
         () => timeRange === null
             ? allSessions
-            : allSessions.filter(session => sessionMatchesTimeRange(session, timeRange, selectedSessionId)),
-        [allSessions, selectedSessionId, timeRange?.start, timeRange?.end] // eslint-disable-line react-hooks/exhaustive-deps
+            : allSessions.filter(session => sessionMatchesTimeRange(session, timeRange, filterExemptId)),
+        [allSessions, filterExemptId, timeRange?.start, timeRange?.end] // eslint-disable-line react-hooks/exhaustive-deps
     )
     const searchScoreIndex = useMemo(
         () => searchMatchMode === 'default' && hasTextQuery
@@ -2435,12 +2442,12 @@ export function SessionList(props: {
         () => {
             if (contentSearchActive) {
                 const results = contentSearchResponse?.results.map((result) => result.session) ?? []
-                const prepared = prepareSidebarSessions(results, selectedSessionId)
-                const byStatus = filterSessionsForListStatus(prepared, listView.status, selectedSessionId)
+                const prepared = prepareSidebarSessions(results, filterExemptId)
+                const byStatus = filterSessionsForListStatus(prepared, listView.status, filterExemptId)
                 const unreadFiltered = listView.unreadOnly
-                    ? filterUnreadSessionsOnly(byStatus, isSessionUnread, selectedSessionId)
+                    ? filterUnreadSessionsOnly(byStatus, isSessionUnread, filterExemptId)
                     : byStatus
-                return unreadFiltered.filter(session => sessionMatchesTimeRange(session, timeRange, selectedSessionId))
+                return unreadFiltered.filter(session => sessionMatchesTimeRange(session, timeRange, filterExemptId))
             }
             if (!isFiltering) return allSessions
             const matched = searchMatchMode === 'exclude'
@@ -2462,7 +2469,7 @@ export function SessionList(props: {
             }
             return matched
         },
-        [allSessions, contentSearchActive, contentSearchResponse, hasTextQuery, isFiltering, normalizedQuery, searchMatchMode, searchScoreIndex, selectedSessionId, listView.status, listView.unreadOnly, isSessionUnread, machineLabelsById, timeScopedSessions, timeRange?.start, timeRange?.end] // eslint-disable-line react-hooks/exhaustive-deps
+        [allSessions, contentSearchActive, contentSearchResponse, hasTextQuery, isFiltering, normalizedQuery, searchMatchMode, searchScoreIndex, filterExemptId, listView.status, listView.unreadOnly, isSessionUnread, machineLabelsById, timeScopedSessions, timeRange?.start, timeRange?.end] // eslint-disable-line react-hooks/exhaustive-deps
     )
     const contentSnippetBySessionId = useMemo(() => {
         const snippets = new Map<string, string>()
@@ -2538,9 +2545,6 @@ export function SessionList(props: {
         ? machineFilter
         : null
 
-    // The jump target is exempted exactly where the selected session already
-    // is, so revealing one row needs no change to saved preferences.
-    const filterExemptId = revealBlockedSessionId ?? selectedSessionId
     const contentSearchCandidateSessions = useMemo(() => {
         let filtered = allSessions.filter(session => sessionMatchesTimeRange(session, timeRange, filterExemptId))
         if (listView.unreadOnly) {
@@ -3667,12 +3671,18 @@ export function SessionList(props: {
         row.scrollIntoView({ block: 'center', behavior: 'smooth' })
         setFlashBlockedSessionId(pendingBlockedScrollId)
         setPendingBlockedScrollId(null)
-        setRevealBlockedSessionId(null)
+        // The exemption is NOT dropped here. Releasing it the moment the
+        // smooth scroll starts unmounts the row mid-travel, so the operator
+        // arrives at nothing. It is released when the flash ends, which is
+        // long enough to see and act on the row.
     }, [pendingBlockedScrollId, blockedSessions, blockedSectionSessions, blockedSectionCollapsed, machineFilteredSessions])
 
     useEffect(() => {
         if (!flashBlockedSessionId) return
-        const timer = setTimeout(() => setFlashBlockedSessionId(null), 2000)
+        const timer = setTimeout(() => {
+            setFlashBlockedSessionId(null)
+            setRevealBlockedSessionId(null)
+        }, 2000)
         return () => clearTimeout(timer)
     }, [flashBlockedSessionId])
 

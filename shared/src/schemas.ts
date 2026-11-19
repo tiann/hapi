@@ -552,7 +552,8 @@ export const SessionNotifySignalSchema = z.object({
 /** Operator's manual unblock acknowledgement (#1717). */
 export const SessionBlockedAckSchema = z.object({
     at: z.number(),
-    reason: z.string()
+    reason: z.string(),
+    key: z.string().max(256).nullish()
 })
 
 export const ThreadGoalStatusSchema = z.enum([

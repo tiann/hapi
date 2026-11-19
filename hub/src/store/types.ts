@@ -29,6 +29,7 @@ export type StoredSession = {
     lastNotifyNote: string | null
     blockedAckAt: number | null
     blockedAckReason: string | null
+    blockedAckKey: string | null
     lastNotifyClearedAt: number | null
     lastNotifyUpdatedAt: number | null
     active: boolean
