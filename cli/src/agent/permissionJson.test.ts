@@ -19,11 +19,12 @@ vi.mock('socket.io-client', () => ({
             emit: () => socket,
             connect: () => socket,
             disconnect: () => socket,
-            timeout: () => ({ emitWithAck: async () => ({}) }),
+            timeout: () => socket,
             emitWithAck: async (event: string, payload: {
                 expectedVersion: number
                 agentState: unknown
             }) => {
+                if (event === 'ping') return {}
                 expect(event).toBe('update-state')
                 expect(payload.expectedVersion).toBe(transport.version)
                 // Model the JSON boundary and successful versioned storage ACK.

@@ -138,7 +138,7 @@ export { SESSION_KEEP_ALIVE_INTERVAL_MS }
 const MAX_PENDING_DROPPABLE_EVENTS = 256
 const MATERIALIZATION_RETRY_MIN_MS = 1_000
 const MATERIALIZATION_RETRY_MAX_MS = 30_000
-const UPDATE_METADATA_ACK_TIMEOUT_MS = 5_000
+const SESSION_UPDATE_ACK_TIMEOUT_MS = 5_000
 
 function isTransientMaterializationError(error: unknown): boolean {
     if (!axios.isAxiosError(error)) {
@@ -1483,7 +1483,7 @@ if (isReconnect) {
 
                 let answer: unknown
                 try {
-                    answer = await this.socket.timeout(UPDATE_METADATA_ACK_TIMEOUT_MS).emitWithAck('update-metadata', {
+                    answer = await this.socket.timeout(SESSION_UPDATE_ACK_TIMEOUT_MS).emitWithAck('update-metadata', {
                         sid: this.sessionId,
                         expectedVersion: this.metadataVersion,
                         metadata: updated
@@ -1561,14 +1561,17 @@ if (isReconnect) {
         }
         this.agentStateLock.inLock(async () => {
             await backoff(async () => {
+                if (this.isClosed()) return
+                if (!this.socket.connected) throw new Error('Socket not connected')
                 const current = this.agentState ?? ({} as AgentState)
                 const updated = handler(current)
 
-                const answer = await this.socket.emitWithAck('update-state', {
+                const answer = await this.socket.timeout(SESSION_UPDATE_ACK_TIMEOUT_MS).emitWithAck('update-state', {
                     sid: this.sessionId,
                     expectedVersion: this.agentStateVersion,
                     agentState: updated
                 }) as unknown
+                if (this.isClosed()) return
 
                 applyVersionedAck(answer, {
                     valueKey: 'agentState',

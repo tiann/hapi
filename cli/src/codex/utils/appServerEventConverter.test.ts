@@ -3,6 +3,22 @@ import { logger } from '@/ui/logger';
 import { AppServerEventConverter } from './appServerEventConverter';
 
 describe('AppServerEventConverter', () => {
+    it('bounds diagnostics for repeated unsupported history items', () => {
+        const debug = vi.spyOn(logger, 'debug').mockImplementation(() => {});
+        try {
+            const converter = new AppServerEventConverter();
+            for (let i = 0; i < 1000; i++) converter.handleNotification('item/completed', {
+                item: { id: `search-${i}`, type: 'webSearch', query: 'old query' }
+            });
+            expect(debug).toHaveBeenCalledTimes(1);
+            converter.reset();
+            converter.handleNotification('item/completed', { item: { id: 'again', type: 'webSearch' } });
+            expect(debug).toHaveBeenCalledTimes(1);
+            for (let i = 0; i < 100; i++) converter.handleNotification(`future/${i}`, {});
+            expect(debug).toHaveBeenCalledTimes(64);
+        } finally { debug.mockRestore(); }
+    });
+
     const footer = 'AGENT_NOTIFY_SUMMARY {"status":"done","summary":"Finished"}';
 
     it.each(['commentary', 'partial_answer'])('removes a summary footer from %s while preserving progress text', phase => {

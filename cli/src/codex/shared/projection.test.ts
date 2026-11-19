@@ -3,12 +3,48 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
 import type { ApiSessionClient } from '@/api/apiSession';
+import type { Metadata } from '@/api/types';
 import { SharedCodexProjection, inputText } from './projection';
 import { codexPlanProposalId } from './plan';
 import { extractNotifySummary } from '@hapi/protocol/messages';
 import { asyncQuestionsForItem } from './asyncQuestions';
 
 describe('shared history projection', () => {
+    it('batches large history metadata and skips unchanged replays across reconnects', async () => {
+        let metadata: Metadata = { path: '/tmp', host: 'localhost', conversationHistoryTurns: { 'user-0': 'turn-0' } };
+        const writes: Array<(current: Metadata) => Metadata> = [];
+        const sendUserMessage = vi.fn();
+        const session = {
+            getMetadata: () => metadata,
+            updateMetadata: (update: (current: Metadata) => Metadata) => writes.push(update),
+            sendUserMessage
+        } as unknown as ApiSessionClient;
+        const projection = new SharedCodexProjection(session, 'thread', async () => {});
+        const turns = Array.from({ length: 1_000 }, (_, i) => ({
+            id: `turn-${i}`, status: 'completed', items: [{
+                id: `item-${i}`, clientId: `user-${i}`, type: 'userMessage',
+                content: [{ type: 'text', text: `prompt ${i}` }]
+            }]
+        }));
+        let timerFired = false;
+        setImmediate(() => { timerFired = true; });
+        await projection.history({ id: 'thread', turns });
+        expect(timerFired).toBe(true);
+        expect(writes).toHaveLength(1);
+
+        projection.resetAfterHubReconnect();
+        await projection.history({ id: 'thread', turns });
+        expect(writes).toHaveLength(1);
+        metadata = writes[0]!(metadata);
+        expect(Object.keys(metadata.conversationHistoryTurns!)).toHaveLength(1_000);
+        expect(Object.keys(metadata.conversationHistoryPoints!)).toHaveLength(1_000);
+
+        projection.resetAfterHubReconnect();
+        await projection.history({ id: 'thread', turns });
+        expect(writes).toHaveLength(1);
+        expect(sendUserMessage.mock.calls.filter(([, , id]) => id === 'user-0')).toHaveLength(6);
+    });
+
     it('projects accepted batch members under their original IDs and one native turn', async () => {
         let metadata: Record<string, unknown> = {};
         const user = vi.fn();

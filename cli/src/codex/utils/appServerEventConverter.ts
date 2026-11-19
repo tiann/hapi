@@ -503,6 +503,7 @@ function buildCollabAgentOutput(item: Record<string, unknown>, toolName: string)
 }
 
 export class AppServerEventConverter {
+    private readonly unhandledNotifications = new Set<string>();
     private readonly agentMessageBuffers = new Map<string, string>();
     private readonly reasoningBuffers = new Map<string, string>();
     private readonly commandOutputBuffers = new Map<string, string>();
@@ -1259,7 +1260,14 @@ export class AppServerEventConverter {
             }
         }
 
-        logger.debug('[AppServerEventConverter] Unhandled notification', sanitizeUnhandledNotificationLogValue({ method, params }));
+        // Historical snapshots can replay thousands of unsupported items after
+        // every reconnect. Diagnose each kind once, with a bounded key set.
+        const itemType = normalizeItemType(extractItem(paramsRecord)?.type);
+        const unhandledKey = `${method}:${itemType ?? ''}`;
+        if (!this.unhandledNotifications.has(unhandledKey) && this.unhandledNotifications.size < 64) {
+            this.unhandledNotifications.add(unhandledKey);
+            logger.debug('[AppServerEventConverter] Unhandled notification', sanitizeUnhandledNotificationLogValue({ method, params }));
+        }
         return events;
     }
 

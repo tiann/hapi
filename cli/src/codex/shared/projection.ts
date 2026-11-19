@@ -51,6 +51,9 @@ export class SharedCodexProjection {
     private readonly generation = new CodexGenerationLedger();
     private readonly emitted = new Set<string>();
     private readonly turns = new Map<string, string>();
+    private readonly firstUserByTurn = new Map<string, string>();
+    private readonly historyPoints = new Set<string>();
+    private historyUpdateQueued = false;
     private readonly turnModels = new Map<string, string>();
     // Unlike transcript emission, title side effects survive reset/replay.
     private readonly pendingTitles = new Map<string, string>();
@@ -63,7 +66,16 @@ export class SharedCodexProjection {
         private readonly parentThreadId?: string, private readonly readSummaryThread?: () => Promise<unknown>,
         private readonly observeItem?: (threadId: string, item: unknown) => void) {
         this.compactionSummaries = new CodexCompactionSummaryLookup(threadId);
-        if (!parentThreadId) for (const [id, turn] of Object.entries(session.getMetadata()?.conversationHistoryTurns ?? {})) this.turns.set(id, turn);
+        if (!parentThreadId) {
+            const metadata = session.getMetadata();
+            for (const [id, turn] of Object.entries(metadata?.conversationHistoryTurns ?? {})) {
+                this.turns.set(id, turn);
+                if (!this.firstUserByTurn.has(turn)) this.firstUserByTurn.set(turn, id);
+            }
+            for (const [id, enabled] of Object.entries(metadata?.conversationHistoryPoints ?? {})) {
+                if (enabled) this.historyPoints.add(id);
+            }
+        }
     }
 
     turnFor(id: string): string | undefined { return this.turns.get(id); }
@@ -77,6 +89,42 @@ export class SharedCodexProjection {
      * resumed turn re-announces itself and re-measures from its own start.
      */
     resetAfterHubReconnect(): void { this.converter = new AppServerEventConverter(); this.emitted.clear(); }
+
+    private publishHistoryMetadata(): void {
+        if (this.historyUpdateQueued) return;
+        const metadata = this.session.getMetadata();
+        let changed = false;
+        for (const [id, turn] of this.turns) {
+            if (metadata?.conversationHistoryTurns?.[id] !== turn) { changed = true; break; }
+        }
+        if (!changed) for (const id of this.historyPoints) {
+            if (metadata?.conversationHistoryPoints?.[id] !== true) { changed = true; break; }
+        }
+        if (!changed) return;
+
+        // While the CAS waits for its lock, fold new mappings into the same write.
+        this.historyUpdateQueued = true;
+        let started = false;
+        this.session.updateMetadata(current => {
+            if (!started) {
+                started = true;
+                this.historyUpdateQueued = false;
+            }
+            return {
+                ...current,
+                conversationHistoryTurns: { ...current.conversationHistoryTurns, ...Object.fromEntries(this.turns) },
+                conversationHistoryPoints: {
+                    ...current.conversationHistoryPoints,
+                    ...Object.fromEntries([...this.historyPoints].map(id => [id, true as const]))
+                }
+            };
+        });
+    }
+
+    private setSummaryThread(thread: unknown): void {
+        const { id, path } = record(thread);
+        this.summaryThread = { id, path };
+    }
     private send(body: Record<string, unknown>, key: string): void {
         if (this.emitted.has(key)) return;
         this.emitted.add(key);
@@ -164,19 +212,27 @@ export class SharedCodexProjection {
             const id = string(item.clientId ?? item.clientUserMessageId) ?? (itemId ? `codex:${this.threadId}:user:${itemId}` : undefined);
             if (id) {
                 const aliases = await this.committed(id, item.content);
+                let historyChanged = false;
                 for (const member of aliases ?? [{ id, input: item.content }]) {
-                    const firstInTurn = turnId ? [...this.turns].find(([, value]) => value === turnId)?.[0] : undefined;
-                    if (turnId) this.turns.set(member.id, turnId);
+                    if (turnId) {
+                        if (!this.firstUserByTurn.has(turnId)) {
+                            this.firstUserByTurn.set(turnId, member.id);
+                        }
+                        if (this.firstUserByTurn.get(turnId) === member.id && !this.historyPoints.has(member.id)) {
+                            this.historyPoints.add(member.id);
+                            historyChanged = true;
+                        }
+                        if (this.turns.get(member.id) !== turnId) {
+                            this.turns.set(member.id, turnId);
+                            historyChanged = true;
+                        }
+                    }
                     const text = inputText(member.input);
                     const replies = asyncQuestionReplies(text);
                     const displayText = replies.length ? replies.map(reply => [reply.question, reply.answer].filter(Boolean).join('\n')).join('\n\n') : text;
                     if (displayText) this.session.sendUserMessage(displayText, undefined, member.id);
-                    this.session.updateMetadata(metadata => ({ ...metadata, conversationHistoryTurns: Object.fromEntries(this.turns),
-                        ...(turnId && (!firstInTurn || firstInTurn === member.id) ? {
-                            conversationHistoryPoints: { ...metadata.conversationHistoryPoints, [member.id]: true }
-                        } : {})
-                    }));
                 }
+                if (historyChanged && !fromHistory) this.publishHistoryMetadata();
             }
         }
         if (this.parentThreadId && (method === 'turn/started' || method === 'turn/completed')) {
@@ -231,7 +287,7 @@ export class SharedCodexProjection {
                 }
             } else if (event.type === 'context_compacted') {
                 if (!fromHistory && this.readSummaryThread) {
-                    try { this.summaryThread = await this.readSummaryThread(); } catch { this.summaryThread = undefined; }
+                    try { this.setSummaryThread(await this.readSummaryThread()); } catch { this.summaryThread = undefined; }
                 }
                 const compact = turnId && itemId ? await this.compactionSummaries.find(this.summaryThread, turnId, itemId, fromHistory ? { attempts: 1 } : undefined) : null;
                 if (compact) {
@@ -332,37 +388,44 @@ export class SharedCodexProjection {
     }
 
     async history(thread: unknown): Promise<void> {
-        if (record(thread).id === this.threadId) this.summaryThread = thread;
+        if (record(thread).id === this.threadId) this.setSummaryThread(thread);
         const turns = record(thread).turns;
         if (!Array.isArray(turns)) return;
         const titleRevision = this.titleRevision;
         let latestTitle: string | undefined;
-        for (const value of turns) {
-            const turn = record(value);
-            if (!Array.isArray(turn.items)) continue;
-            for (const item of turn.items) {
-                const params = { threadId: this.threadId, turnId: turn.id, item };
-                const titleKey = `${string(turn.id) ?? 'thread'}:${record(item).id}`;
-                const pendingTitle = requestedTitle(record(item));
-                if (!this.parentThreadId && string(record(item).id) && pendingTitle && !this.completedTitles.has(titleKey)) {
-                    this.pendingTitles.set(titleKey, pendingTitle);
-                }
-                await this.project('item/started', params, undefined, true);
-                // Active snapshots can contain partial assistant text. Do not
-                // settle it under the final stable id and suppress completion.
-                if (turn.status !== 'inProgress' || record(item).status === 'completed' || record(item).type === 'userMessage'
-                    || asyncQuestionsForItem(this.threadId, item).length > 0) {
-                    if (!this.parentThreadId) {
-                        const title = successfulTitle(record(item));
-                        if (title && string(record(item).id)) {
-                            latestTitle = title;
-                            this.completedTitles.add(titleKey);
-                        }
-                        this.pendingTitles.delete(titleKey);
+        let projectedItems = 0;
+        try {
+            for (const value of turns) {
+                const turn = record(value);
+                if (!Array.isArray(turn.items)) continue;
+                for (const item of turn.items) {
+                    const params = { threadId: this.threadId, turnId: turn.id, item };
+                    const titleKey = `${string(turn.id) ?? 'thread'}:${record(item).id}`;
+                    const pendingTitle = requestedTitle(record(item));
+                    if (!this.parentThreadId && string(record(item).id) && pendingTitle && !this.completedTitles.has(titleKey)) {
+                        this.pendingTitles.set(titleKey, pendingTitle);
                     }
-                    await this.project('item/completed', params, undefined, true);
+                    await this.project('item/started', params, undefined, true);
+                    // Active snapshots can contain partial assistant text. Do not
+                    // settle it under the final stable id and suppress completion.
+                    if (turn.status !== 'inProgress' || record(item).status === 'completed' || record(item).type === 'userMessage'
+                        || asyncQuestionsForItem(this.threadId, item).length > 0) {
+                        if (!this.parentThreadId) {
+                            const title = successfulTitle(record(item));
+                            if (title && string(record(item).id)) {
+                                latestTitle = title;
+                                this.completedTitles.add(titleKey);
+                            }
+                            this.pendingTitles.delete(titleKey);
+                        }
+                        await this.project('item/completed', params, undefined, true);
+                    }
+                    // Give timers and incoming socket events a turn during large replays.
+                    if (++projectedItems % 100 === 0) await new Promise<void>(resolve => setImmediate(resolve));
                 }
             }
+        } finally {
+            this.publishHistoryMetadata();
         }
         // Repair sessions created while remote title projection was missing.
         // Recheck inside the metadata lock: live updates may still be queued,
