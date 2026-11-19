@@ -2204,13 +2204,61 @@ export function SessionList(props: {
         () => buildSessionLookup(props.sessions),
         [props.sessions]
     )
+    const isRankedTextSearch = searchScoreIndex !== null
+    const buildGroupLineage = useCallback(
+        (sessions: SessionSummary[]): SessionLineageForest => isRankedTextSearch
+            ? {
+                roots: sessions,
+                childrenByParentId: new Map(),
+                descendantsByRootId: new Map(),
+                effectiveParentByChildId: new Map(),
+            }
+            : buildSessionLineage(sessions, sessionById),
+        [isRankedTextSearch, sessionById]
+    )
     const lineageByGroupKey = useMemo(() => {
         const map = new Map<string, SessionLineageForest>()
         for (const group of groups) {
-            map.set(group.key, buildSessionLineage(group.sessions, sessionById))
+            map.set(group.key, buildGroupLineage(group.sessions))
         }
         return map
-    }, [groups, sessionById])
+    }, [groups, buildGroupLineage])
+    const prevDescendantWorkingRef = useRef<Map<string, boolean> | null>(null)
+    // Reveal a collapsed lineage only when a previously-seen descendant transitions
+    // from not-working to working, so children leaving and re-entering groups
+    // (e.g. via machine/status/unread filters) do not reset explicit collapse.
+    useLayoutEffect(() => {
+        if (isRankedTextSearch) return
+        const currentDescendantWorking = new Map<string, boolean>()
+        const rootsToReveal: string[] = []
+        const prevDescendantWorking = prevDescendantWorkingRef.current
+
+        for (const lineage of lineageByGroupKey.values()) {
+            for (const [rootId, descendants] of lineage.descendantsByRootId) {
+                for (const { session: child } of descendants) {
+                    const working = childIsWorking(child)
+                    currentDescendantWorking.set(child.id, working)
+                    if (working && prevDescendantWorking?.get(child.id) === false) {
+                        rootsToReveal.push(rootId)
+                    }
+                }
+            }
+        }
+
+        prevDescendantWorkingRef.current = currentDescendantWorking
+        if (rootsToReveal.length === 0) return
+
+        setExpandedLineageParentIds((prev) => {
+            let next: Map<string, boolean> | null = null
+            for (const rootId of rootsToReveal) {
+                if (prev.get(rootId) === false) {
+                    next ??= new Map(prev)
+                    next.delete(rootId)
+                }
+            }
+            return next ?? prev
+        })
+    }, [lineageByGroupKey, isRankedTextSearch])
     const lineageAttentionCtx = useMemo(
         () => ({
             selectedSessionId,
@@ -2534,7 +2582,7 @@ export function SessionList(props: {
 
     const renderDirectoryGroup = (group: SessionGroup) => {
         const isCollapsed = isGroupCollapsed(group)
-        const lineage = lineageByGroupKey.get(group.key) ?? buildSessionLineage(group.sessions, sessionById)
+        const lineage = lineageByGroupKey.get(group.key) ?? buildGroupLineage(group.sessions)
         const rootIsVisibleRequired = (root: SessionSummary): boolean => isLineageRootVisibleRequired(lineage, root)
         const visibleRoots = getVisibleLineageRoots(group, lineage)
         // A collapsed group still shows its unread rows, so new output in a
@@ -2602,6 +2650,8 @@ export function SessionList(props: {
                         const parentExpanded = isLineageParentExpanded(s.id, descendants)
                         const runningChildCount = childSessions.filter(childIsWorking).length
                         const rootExternalParentLabel = resolveParentLabelById(s.metadata?.parentLink?.parentSessionId)
+                        const rootLinkKind = s.metadata?.parentLink?.kind
+                        const rootKindLabel = rootLinkKind && rootLinkKind !== 'peer' ? t(`sessions.lineage.kind.${rootLinkKind}`) : undefined
                         return (
                             <div key={s.id}>
                                 <CollapsiblePanel open={isRowOpen(s)}>
@@ -2615,7 +2665,12 @@ export function SessionList(props: {
                                         </CollapsiblePanel>
                                     ) : null}
                                     <div className="pb-0.5">
-                                        {renderGroupSessionItem(s, rootExternalParentLabel ? { parentLabel: rootExternalParentLabel } : undefined)}
+                                        {renderGroupSessionItem(
+                                            s,
+                                            rootExternalParentLabel || rootKindLabel
+                                                ? { lineageKindLabel: rootKindLabel, parentLabel: rootExternalParentLabel }
+                                                : undefined
+                                        )}
                                     </div>
                                 </CollapsiblePanel>
                                 {descendants.length > 0 ? (
@@ -2767,7 +2822,7 @@ export function SessionList(props: {
         if (targetGroup) {
             const targetSession = targetGroup.sessions.find((session) => session.id === target.sessionId)!
             const lineage = lineageByGroupKey.get(targetGroup.key)
-                ?? buildSessionLineage(targetGroup.sessions, sessionById)
+                ?? buildGroupLineage(targetGroup.sessions)
             const collapsed = isGroupCollapsed(targetGroup)
             const peekingUnread = collapsed
                 && keepUnreadSessionsVisible
@@ -2840,7 +2895,7 @@ export function SessionList(props: {
     }, [
         globalPinnedSessions, runningSessions, groups, runningSectionCollapsed,
         collapseOverrides, filterCollapseOverrides, sessionVisibleCounts,
-        expandedLineageParentIds, lineageByGroupKey, sessionById,
+        expandedLineageParentIds, lineageByGroupKey, buildGroupLineage,
         isFiltering, selectedSessionId, keepUnreadSessionsVisible,
         isSessionUnread, sessionPreviewLimit, isLineageRootVisibleRequired,
         lineageAttentionCtx,

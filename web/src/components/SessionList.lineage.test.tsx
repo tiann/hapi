@@ -41,7 +41,8 @@ function makeSession(overrides: Partial<SessionSummary> & { id: string }): Sessi
 function makeListNode(
     sessions: SessionSummary[],
     selectedSessionId: string | null = null,
-    api: ApiClient | null = null
+    api: ApiClient | null = null,
+    machineLabelsById?: Record<string, string>
 ) {
     return (
         <SessionList
@@ -53,6 +54,7 @@ function makeListNode(
             isLoading={false}
             renderHeader
             api={api}
+            machineLabelsById={machineLabelsById}
         />
     )
 }
@@ -60,7 +62,8 @@ function makeListNode(
 function renderList(
     sessions: SessionSummary[],
     selectedSessionId: string | null = null,
-    api: Partial<ApiClient> | null = null
+    api: Partial<ApiClient> | null = null,
+    machineLabelsById?: Record<string, string>
 ) {
     const resolvedApi = api as ApiClient | null
     const queryClient = new QueryClient({
@@ -77,11 +80,11 @@ function renderList(
         </QueryClientProvider>
     )
 
-    const view = render(makeListNode(sessions, selectedSessionId, resolvedApi), { wrapper })
+    const view = render(makeListNode(sessions, selectedSessionId, resolvedApi, machineLabelsById), { wrapper })
     return {
         ...view,
         rerenderList: (nextSessions: SessionSummary[], nextSelectedId: string | null = selectedSessionId) => {
-            view.rerender(makeListNode(nextSessions, nextSelectedId, resolvedApi))
+            view.rerender(makeListNode(nextSessions, nextSelectedId, resolvedApi, machineLabelsById))
         }
     }
 }
@@ -557,5 +560,202 @@ describe('SessionList lineage grouping and attention folding', () => {
         await waitFor(() => expect(screen.queryByRole('button', { name: 'Unpin' })).toBeNull())
         expect(screen.getByTestId('session-lineage-toggle')).toHaveAttribute('aria-expanded', 'false')
         expect(screen.queryByRole('button', { name: /Pinned Worker/ })).toBeNull()
+    })
+
+    it('keeps a top-ranked child match flat in the search preview with parent and kind labels, while exclude mode keeps lineage nesting', () => {
+        const searchButtonLabel = 'Search sessions (title, path, Agent, machine name, ID, and more)'
+        const searchPlaceholder = 'Search title/path/Agent/machine/ID…'
+        const otherMatches = Array.from({ length: DEFAULT_SESSION_PREVIEW_LIMIT + 1 }, (_, idx) => {
+            const id = `other-${idx}`
+            const ts = 2000 - idx * 10
+            markSessionSeen(id, ts)
+            return makeSession({
+                id,
+                active: idx === 0,
+                createdAt: ts,
+                lastUserMessageAt: ts,
+                updatedAt: ts,
+                metadata: { path: '/work/auth', name: `Auth Review ${idx}` }
+            })
+        })
+        markSessionSeen('weak-parent', 100)
+        markSessionSeen('strong-child', 50)
+
+        const weakParent = makeSession({
+            id: 'weak-parent',
+            active: false,
+            createdAt: 100,
+            lastUserMessageAt: 100,
+            updatedAt: 100,
+            metadata: { path: '/work/auth', name: 'Coordinator' }
+        })
+        const strongChild = makeSession({
+            id: 'strong-child',
+            active: false,
+            createdAt: 50,
+            lastUserMessageAt: 50,
+            updatedAt: 50,
+            metadata: {
+                path: '/work/auth',
+                name: 'Auth',
+                parentLink: { parentSessionId: 'weak-parent', kind: 'branch' }
+            }
+        })
+
+        renderList([...otherMatches, weakParent, strongChild])
+        expect(screen.queryByTitle('Auth')).toBeNull()
+
+        fireEvent.click(screen.getByRole('button', { name: searchButtonLabel }))
+        fireEvent.change(screen.getByPlaceholderText(searchPlaceholder), {
+            target: { value: 'auth' }
+        })
+
+        const childButton = screen.getByTitle('Auth').closest('button')
+        const firstOtherButton = screen.getByTitle('Auth Review 0').closest('button')
+        expect(childButton).not.toBeNull()
+        expect(firstOtherButton).not.toBeNull()
+        expect(Boolean(childButton!.compareDocumentPosition(firstOtherButton!) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true)
+        expect(screen.getByText('↳ Coordinator')).toBeInTheDocument()
+        expect(screen.getAllByTestId('session-lineage-kind').map((el) => el.textContent)).toEqual(['branch'])
+        expect(screen.queryByTitle('Coordinator')).toBeNull()
+        expect(screen.queryByTestId('session-lineage-toggle')).toBeNull()
+
+        // Exclude mode does not use relevance ranking and keeps normal lineage nesting.
+        fireEvent.click(screen.getByRole('button', { name: 'Search scope' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Exclude' }))
+        fireEvent.change(screen.getByPlaceholderText(searchPlaceholder), {
+            target: { value: 'review' }
+        })
+
+        expect(screen.getByTitle('Coordinator')).toBeInTheDocument()
+        expect(screen.getByTestId('session-lineage-toggle')).toHaveAttribute('aria-expanded', 'true')
+        expect(screen.getByTitle('Auth')).toBeInTheDocument()
+
+        fireEvent.change(screen.getByPlaceholderText(searchPlaceholder), {
+            target: { value: '' }
+        })
+        expect(screen.queryByTitle('Auth')).toBeNull()
+    })
+
+    it.each(['off', 'jobs'] as const)(
+        'reveals a read idle child when it starts a foreground turn after its lineage was collapsed (pinInProgress=%s)',
+        (pinInProgressMode) => {
+            localStorage.setItem('hapi-pin-in-progress-sessions', pinInProgressMode)
+            markSessionSeen('parent', 500)
+            markSessionSeen('idle-child', 450)
+
+            const parent = makeSession({
+                id: 'parent',
+                active: true,
+                updatedAt: 500,
+                metadata: { path: '/work/proj', name: 'Coordinator' }
+            })
+            const idleReadChild = makeSession({
+                id: 'idle-child',
+                active: false,
+                thinking: false,
+                updatedAt: 450,
+                metadata: {
+                    path: '/work/proj',
+                    name: 'Idle Worker',
+                    parentLink: { parentSessionId: 'parent', kind: 'peer' }
+                }
+            })
+
+            const { rerenderList } = renderList([parent, idleReadChild])
+            const toggle = screen.getByTestId('session-lineage-toggle')
+
+            // Explicitly expand then collapse to store a `false` collapse override.
+            fireEvent.click(toggle)
+            const panel = screen.getByTitle('Idle Worker').closest('.collapsible-panel')
+            expect(panel?.hasAttribute('data-open')).toBe(true)
+
+            fireEvent.click(toggle)
+            expect(toggle).toHaveAttribute('aria-expanded', 'false')
+            expect(panel?.hasAttribute('data-open')).toBe(false)
+
+            // Start a foreground turn while the child stays read.
+            markSessionSeen('idle-child', 600)
+            rerenderList([
+                parent,
+                makeSession({
+                    id: 'idle-child',
+                    active: true,
+                    thinking: true,
+                    updatedAt: 600,
+                    contentRevision: 600,
+                    metadata: {
+                        path: '/work/proj',
+                        name: 'Idle Worker',
+                        parentLink: { parentSessionId: 'parent', kind: 'peer' }
+                    }
+                })
+            ])
+
+            expect(toggle).toHaveTextContent('1 linked · 1 running')
+            expect(toggle).toHaveAttribute('aria-expanded', 'true')
+            expect(panel?.hasAttribute('data-open')).toBe(true)
+
+            // Explicit collapse still works once the worker is already running.
+            fireEvent.click(toggle)
+            expect(toggle).toHaveAttribute('aria-expanded', 'false')
+            expect(panel?.hasAttribute('data-open')).toBe(false)
+        }
+    )
+
+    it('preserves explicit lineage collapse of a working child when switching machine filter away and back', () => {
+        markSessionSeen('parent', 500)
+        markSessionSeen('working-child', 450)
+        markSessionSeen('other-machine-session', 400)
+
+        renderList(
+            [
+                makeSession({
+                    id: 'parent',
+                    active: true,
+                    updatedAt: 500,
+                    metadata: { path: '/work/proj', machineId: 'machine-1', name: 'Coordinator' }
+                }),
+                makeSession({
+                    id: 'working-child',
+                    active: true,
+                    thinking: true,
+                    updatedAt: 450,
+                    metadata: {
+                        path: '/work/proj',
+                        machineId: 'machine-1',
+                        name: 'Live Worker',
+                        parentLink: { parentSessionId: 'parent', kind: 'peer' }
+                    }
+                }),
+                makeSession({
+                    id: 'other-machine-session',
+                    active: true,
+                    updatedAt: 400,
+                    metadata: { path: '/work/other', machineId: 'machine-2', name: 'Other Host Task' }
+                })
+            ],
+            null,
+            null,
+            { 'machine-1': 'Mint', 'machine-2': 'Teemo' }
+        )
+
+        const toggle = screen.getByTestId('session-lineage-toggle')
+        expect(toggle).toHaveAttribute('aria-expanded', 'true')
+        expect(screen.getByTitle('Live Worker').closest('.collapsible-panel')?.hasAttribute('data-open')).toBe(true)
+
+        // Collapse the running child's lineage explicitly.
+        fireEvent.click(toggle)
+        expect(toggle).toHaveAttribute('aria-expanded', 'false')
+        expect(screen.getByTitle('Live Worker').closest('.collapsible-panel')?.hasAttribute('data-open')).toBe(false)
+
+        // Filter away to the other machine, then switch back to All.
+        fireEvent.click(screen.getByRole('button', { name: /^Teemo \(1\)/ }))
+        expect(screen.queryByTestId('session-lineage-toggle')).toBeNull()
+
+        fireEvent.click(screen.getByRole('button', { name: /^All \(3\)/ }))
+        const restoredToggle = screen.getByTestId('session-lineage-toggle')
+        expect(restoredToggle).toHaveAttribute('aria-expanded', 'false')
+        expect(screen.queryByRole('button', { name: /Live Worker/ })).toBeNull()
     })
 })
