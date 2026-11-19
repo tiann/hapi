@@ -294,6 +294,32 @@ describe('Codex question receipts in the session chat', () => {
         })
     })
 
+    it('keeps the draft when an equal-version update first supplies the issuance ID', async () => {
+        const { queryClient, transcript } = setup(true)
+        const version = 1
+        const legacy: SessionResponse = {
+            session: { id: 'session-1', active: true, agentStateVersion: version, agentState: state() } as Session
+        }
+        act(() => { queryClient.setQueryData(detailKey, legacy) })
+        const note = await waitFor(() => transcript().getByRole('textbox'))
+        fireEvent.change(note, { target: { value: 'Draft entered before upgrade' } })
+
+        const enriched = applySessionDetailPatch(legacy.session, { agentState: { version, value: state('learned') } })!
+        await act(async () => { queryClient.setQueryData(detailKey, { session: enriched }) })
+
+        const updated = await waitFor(() => {
+            const textbox = transcript().getByRole('textbox')
+            expect(textbox).toBe(note)
+            expect(textbox).toHaveValue('Draft entered before upgrade')
+            return textbox
+        })
+        expect(updated).toBeVisible()
+        fireEvent.click(transcript().getByRole('button', { name: 'Submit' }))
+        await waitFor(() => expect(shell.api.approvePermission).toHaveBeenCalledExactlyOnceWith('session-1', requestId, {
+            instanceId: 'learned', answers: { q: { answers: ['user_note: Draft entered before upgrade'] } }
+        }))
+    })
+
     it('waits for hub state when an older runner omits the issuance ID', async () => {
         const { update, transcript, submit, onRefresh } = setup()
         update(state())

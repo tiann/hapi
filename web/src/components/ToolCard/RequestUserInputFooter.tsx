@@ -45,7 +45,18 @@ type RequestUserInputFooterProps = {
 }
 
 export function RequestUserInputFooter(props: RequestUserInputFooterProps) {
-    return <RequestUserInputForm key={props.tool.permission?.instanceId} {...props} />
+    const requestId = props.tool.permission?.id
+    const instanceId = props.tool.permission?.instanceId
+    const [draft, setDraft] = useState(() => ({ requestId, instanceId, revision: 0 }))
+
+    if (requestId !== draft.requestId) {
+        setDraft({ requestId, instanceId, revision: draft.revision + 1 })
+    } else if (instanceId && instanceId !== draft.instanceId) {
+        // Learning the first issuance ID leaves the current draft mounted.
+        setDraft({ requestId, instanceId, revision: draft.revision + (draft.instanceId ? 1 : 0) })
+    }
+
+    return <RequestUserInputForm key={draft.revision} {...props} />
 }
 
 function RequestUserInputForm(props: RequestUserInputFooterProps) {
