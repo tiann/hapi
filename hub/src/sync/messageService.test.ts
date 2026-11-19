@@ -1682,6 +1682,52 @@ describe('MessageService.releaseMatureScheduledMessages', () => {
         expect(matured).toEqual([{ type: 'scheduled-matured', sessionId: session.id }])
     })
 
+    it('publishes maturity for different scheduled rows with the same local ID', () => {
+        const store = makeStore()
+        const first = makeSession(store, 'release-first')
+        const second = makeSession(store, 'release-second')
+        const publisher = makePublisher()
+        const { io } = makeTrackingIo()
+        const now = Date.now()
+        store.messages.addMessage(first.id, { text: 'first' }, 'shared-local-id', now - 1)
+        store.messages.addMessage(second.id, { text: 'second' }, 'shared-local-id', now + 1)
+        const service = new MessageService(store, io, publisher as unknown as EventPublisher)
+
+        service.releaseMatureScheduledMessages(now)
+        service.releaseMatureScheduledMessages(now + 5_000)
+
+        expect(publisher.events).toEqual([
+            { type: 'scheduled-matured', sessionId: first.id },
+            { type: 'scheduled-matured', sessionId: second.id }
+        ])
+    })
+
+    it.each(['clear delivery gate', 'history hold'] as const)(
+        'publishes a schedule-only update when a due prompt is under a %s',
+        (hold) => {
+            const store = makeStore()
+            const session = makeSession(store, 'release-held')
+            const publisher = makePublisher()
+            const { io, cliEmitted } = makeTrackingIo()
+            const now = Date.now()
+            store.messages.addMessage(session.id, { text: 'held' }, 'local-held', now - 1)
+            let gated = hold === 'clear delivery gate'
+            store.isOpenCodeClearDeliveryGated = () => gated
+            const skipIds = hold === 'history hold' ? new Set([session.id]) : undefined
+            const service = new MessageService(store, io, publisher as unknown as EventPublisher)
+
+            service.releaseMatureScheduledMessages(now, skipIds)
+            service.releaseMatureScheduledMessages(now + 5_000, skipIds)
+            expect(cliEmitted).toHaveLength(0)
+            expect(publisher.events).toEqual([{ type: 'session-schedule-updated', sessionId: session.id }])
+
+            gated = false
+            service.releaseMatureScheduledMessages(now + 10_000)
+            expect(cliEmitted).toHaveLength(1)
+            expect(publisher.events.at(-1)).toEqual({ type: 'scheduled-matured', sessionId: session.id })
+        }
+    )
+
     it('does NOT call markMessagesInvoked (pitfall #2 guard): message is re-emitted on next tick', async () => {
         const store = makeStore()
         const session = makeSession(store, 'release-no-mark')

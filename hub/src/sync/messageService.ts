@@ -214,8 +214,8 @@ function contentForDeferredDelivery(content: unknown): unknown {
 }
 
 export class MessageService {
-    /** One scheduled-matured SSE per localId per hub process (cleared on cancel/consume paths here). */
-    private readonly scheduledMatureNotifiedLocalIds = new Set<string>()
+    // Only due, still-queued rows from the last sweep. A different owner gets its own notification.
+    private dueMessageNotifications = new Map<string, { sessionId: string; released: boolean }>()
     private readonly activeIndeterminateRetries = new Set<string>()
 
     constructor(
@@ -224,12 +224,6 @@ export class MessageService {
         private readonly publisher: EventPublisher,
         private readonly onSessionActivity?: (sessionId: string, updatedAt: number) => void
     ) {
-    }
-
-    private forgetScheduledMatureNotified(localIds: Iterable<string>): void {
-        for (const localId of localIds) {
-            this.scheduledMatureNotifiedLocalIds.delete(localId)
-        }
     }
 
     private recordConsumedAcknowledgement(
@@ -698,7 +692,6 @@ export class MessageService {
         const now = Date.now()
         if (scheduledAt !== null && scheduledAt > now) {
             this.store.messages.deleteQueuedMessageById(sessionId, resolvedId)
-            this.forgetScheduledMatureNotified([localId])
             this.publisher.emit({
                 type: 'message-cancelled',
                 sessionId,
@@ -727,7 +720,6 @@ export class MessageService {
             const recheck = this.store.messages.lookupQueuedMessage(sessionId, resolvedId)
             if (recheck.status === 'invoked') {
                 // CLI beat us — treat identically to Race-B (ack returned not-found).
-                this.forgetScheduledMatureNotified([localId])
                 this.publisher.emit({
                     type: 'messages-consumed',
                     sessionId,
@@ -737,7 +729,6 @@ export class MessageService {
                 return recheck
             }
             // Row is gone (absent) — clean cancel.
-            this.forgetScheduledMatureNotified([localId])
             this.publisher.emit({
                 type: 'message-cancelled',
                 sessionId,
@@ -777,7 +768,6 @@ export class MessageService {
 
         // Phase 3: CLI confirmed removal.  Now DELETE the DB row and broadcast SSE.
         this.store.messages.deleteQueuedMessageById(sessionId, resolvedId)
-        this.forgetScheduledMatureNotified([localId])
         this.publisher.emit({
             type: 'message-cancelled',
             sessionId,
@@ -1102,7 +1092,6 @@ export class MessageService {
             )
         if (localIds.length === 0) return null
         this.store.messages.markMessagesInvoked(sessionId, localIds, invokedAt)
-        this.forgetScheduledMatureNotified(localIds)
         this.publisher.emit({ type: 'messages-consumed', sessionId, localIds, invokedAt })
         return { localIds, invokedAt }
     }
@@ -1177,20 +1166,26 @@ export class MessageService {
         const mature = this.store.messages.getMatureScheduledMessages(now)
         const maturedSessionIds = new Set<string>()
         const deliveryGateBySession = new Map<string, boolean>()
+        const dueMessageNotifications = new Map<string, { sessionId: string; released: boolean }>()
+        const heldScheduleChanges = new Set<string>()
         for (const msg of mature) {
             let deliveryGated = deliveryGateBySession.get(msg.sessionId)
             if (deliveryGated === undefined) {
                 deliveryGated = this.store.isOpenCodeClearDeliveryGated(msg.sessionId)
                 deliveryGateBySession.set(msg.sessionId, deliveryGated)
             }
-            if (skipSessionIds?.has(msg.sessionId) || deliveryGated) {
-                continue
+            const held = skipSessionIds?.has(msg.sessionId) || deliveryGated
+            if (typeof msg.localId === 'string') {
+                const last = this.dueMessageNotifications.get(msg.id)
+                const previous = last?.sessionId === msg.sessionId ? last : undefined
+                dueMessageNotifications.set(msg.id, {
+                    sessionId: msg.sessionId,
+                    released: !held || previous?.released === true
+                })
+                if (held && !previous) heldScheduleChanges.add(msg.sessionId)
+                if (!held && !previous?.released) maturedSessionIds.add(msg.sessionId)
             }
-            const localId = msg.localId
-            if (typeof localId === 'string' && !this.scheduledMatureNotifiedLocalIds.has(localId)) {
-                this.scheduledMatureNotifiedLocalIds.add(localId)
-                maturedSessionIds.add(msg.sessionId)
-            }
+            if (held) continue
             const update = {
                 id: msg.id,
                 seq: msg.seq,
@@ -1210,6 +1205,12 @@ export class MessageService {
             this.io.of('/cli').to(`session:${msg.sessionId}`).emit('update', update)
             // NOTE: do NOT call markMessagesInvoked here (pitfall #2).
             // CLI ack (messages-consumed) will handle invoked_at stamping.
+        }
+        this.dueMessageNotifications = dueMessageNotifications
+        for (const sessionId of heldScheduleChanges) {
+            if (!maturedSessionIds.has(sessionId)) {
+                this.publisher.emit({ type: 'session-schedule-updated', sessionId })
+            }
         }
         for (const sessionId of maturedSessionIds) {
             this.publisher.emit({ type: 'scheduled-matured', sessionId })

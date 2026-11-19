@@ -505,37 +505,52 @@ describe('SyncEngine.clearOpenCodeSession', () => {
         } finally { engine.stop() }
     })
 
-    it('treats a lost abort success response as an idempotent retry', async () => {
-        const { store, engine } = createEngine()
-        try {
-            const source = engine.getOrCreateSession('lost-abort-response', {
-                path: '/tmp/project', host: 'host', machineId: 'machine-1', flavor: 'opencode', startedBy: 'runner'
-            }, null, 'default')
-            engine.handleSessionAlive({ sid: source.id, time: Date.now() })
-            expect(engine.reserveOpenCodeClearSession(source.id, 'default')).toMatchObject({ type: 'success' })
-            await engine.sendMessage(source.id, { text: 'restore once', localId: 'restore-once' })
-            const original = store.abortOpenCodeClearOperation.bind(store)
-            let loseResponse = true
-            store.abortOpenCodeClearOperation = ((...args: Parameters<typeof original>) => {
-                const result = original(...args)
-                if (loseResponse && result.result === 'success') {
-                    loseResponse = false
-                    return { result: 'version-mismatch' as const }
+    it.each(['normal', 'lost result', 'cache refreshed before retry'] as const)(
+        'invalidates both owners after an abort returns queued prompts (%s)',
+        async (scenario) => {
+            const { store, engine } = createEngine()
+            const events: SyncEvent[] = []
+            engine.subscribe(event => events.push(event))
+            try {
+                const source = engine.getOrCreateSession('lost-abort-response', {
+                    path: '/tmp/project', host: 'host', machineId: 'machine-1', flavor: 'opencode', startedBy: 'runner'
+                }, null, 'default')
+                engine.handleSessionAlive({ sid: source.id, time: Date.now() })
+                expect(engine.reserveOpenCodeClearSession(source.id, 'default')).toMatchObject({ type: 'success' })
+                await engine.sendMessage(source.id, { text: 'restore once', localId: 'restore-once', scheduledAt: Date.now() + 60_000 })
+                const replacementId = currentReplacementId(engine, source.id)
+                expect(engine.getSessionByNamespace(replacementId, 'default')?.hasConversationContent).toBe(true)
+                const original = store.abortOpenCodeClearOperation.bind(store)
+                if (scenario === 'cache refreshed before retry') {
+                    const cached = engine.getSessionByNamespace(source.id, 'default')!
+                    const operation = cached.metadata!.opencodeClearOperation!
+                    // Commit the store write without publishing the engine's invalidation.
+                    expect(original(source.id, replacementId, {
+                        ...cached.metadata,
+                        opencodeClearOperation: { ...operation, state: 'aborted' }
+                    }, cached.metadataVersion, 'default')).toMatchObject({ result: 'success' })
+                    engine.handleRealtimeEvent({ type: 'session-updated', sessionId: source.id })
+                    expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation?.state)
+                        .toBe('aborted')
+                } else if (scenario === 'lost result') {
+                    store.abortOpenCodeClearOperation = (...args: Parameters<typeof original>) => {
+                        const result = original(...args)
+                        return result.result === 'success' ? { result: 'version-mismatch' as const } : result
+                    }
                 }
-                return result
-            }) as typeof store.abortOpenCodeClearOperation
-            const replacementId = currentReplacementId(engine, source.id)
-            expect(engine.getSessionByNamespace(replacementId, 'default')?.hasConversationContent).toBe(true)
-            expect(engine.abortOpenCodeClearSession(source.id, 'default', replacementId)).toEqual({ type: 'success', sessionId: source.id })
-            expect(engine.getSessionByNamespace(source.id, 'default')?.hasConversationContent).toBe(true)
-            expect(engine.getSessionByNamespace(replacementId, 'default')?.hasConversationContent).toBe(false)
-            expect(engine.abortOpenCodeClearSession(source.id, 'default', replacementId)).toEqual({ type: 'success', sessionId: source.id })
-            expect(engine.getSessionByNamespace(replacementId, 'default')?.hasConversationContent).toBe(false)
-            expect(store.messages.getAllMessages(source.id)).toEqual([
-                expect.objectContaining({ localId: 'restore-once', invokedAt: null })
-            ])
-        } finally { engine.stop() }
-    })
+                expect(engine.abortOpenCodeClearSession(source.id, 'default', replacementId)).toEqual({ type: 'success', sessionId: source.id })
+                expect(engine.getSessionByNamespace(source.id, 'default')?.hasConversationContent).toBe(true)
+                expect(engine.getSessionByNamespace(replacementId, 'default')?.hasConversationContent).toBe(false)
+                expect(events.filter(event => event.type === 'messages-invalidated').map(event => event.sessionId).sort())
+                    .toEqual([source.id, replacementId].sort())
+                expect(engine.abortOpenCodeClearSession(source.id, 'default', replacementId)).toEqual({ type: 'success', sessionId: source.id })
+                expect(engine.getSessionByNamespace(replacementId, 'default')?.hasConversationContent).toBe(false)
+                expect(store.messages.getAllMessages(source.id)).toEqual([
+                    expect.objectContaining({ localId: 'restore-once', invokedAt: null })
+                ])
+            } finally { engine.stop() }
+        }
+    )
 
     it.each(['confirm', 'abort'] as const)('does not let delayed reservation A %s mutate reservation B', (callback) => {
         const { engine } = createEngine()

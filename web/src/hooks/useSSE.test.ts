@@ -85,17 +85,22 @@ it('patches a newer schedule and refetches when the event cannot be applied', ()
     queryClient.setQueryData(queryKeys.sessions, { sessions: [row], sessionScheduleCursor: 'epoch:2:ns' })
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
     const cached = () => queryClient.getQueryData<SessionsResponse>(queryKeys.sessions)!.sessions[0]!
-    const emit = (id: string, sessionSchedule?: { futureScheduledMessageCount: number; nextScheduledAt: number | null }) => {
+    const emit = (
+        id: string,
+        sessionSchedule?: { futureScheduledMessageCount: number; nextScheduledAt: number | null },
+        scheduleOnly = false
+    ) => {
         act(() => {
-            FakeEventSource.instances[0]?.simulateMessage({
-                type: 'messages-consumed', sessionId: row.id, localIds: ['prompt'], invokedAt: 5, sessionSchedule
-            }, id)
+            const event = scheduleOnly
+                ? { type: 'session-schedule-updated', sessionId: row.id, sessionSchedule }
+                : { type: 'messages-consumed', sessionId: row.id, localIds: ['prompt'], invokedAt: 5, sessionSchedule }
+            FakeEventSource.instances[0]?.simulateMessage(event, id)
             vi.advanceTimersByTime(16)
         })
     }
     try {
         const schedule = { futureScheduledMessageCount: 2, nextScheduledAt: 200 }
-        emit('epoch:3:ns', schedule)
+        emit('epoch:3:ns', schedule, true)
         expect(cached()).toMatchObject(schedule)
         emit('epoch:2:ns', { futureScheduledMessageCount: 0, nextScheduledAt: null })
         expect(cached()).toMatchObject(schedule)

@@ -52,7 +52,8 @@ const MESSAGE_STREAM_EVENT_TYPES = new Set<SyncEvent['type']>([
     'messages-indeterminate',
     'messages-requeued',
     'message-cancelled',
-    'scheduled-matured'
+    'scheduled-matured',
+    'session-schedule-updated'
 ])
 
 export function isGlobalScopedMessageStreamEvent(scope: SSEScope, eventType: SyncEvent['type']): boolean {

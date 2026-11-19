@@ -124,6 +124,7 @@ Hub-side delivery (`SSEManager.shouldSend`):
 | `connection-changed` | the connection itself |
 | `heartbeat` | every connection |
 | `toast` | every **visible** connection in the namespace, regardless of filter (no `id`, never replayed) |
+| `session-schedule-updated` | `all=true` connections |
 | `message-received`, `scheduled-matured` | `all=true` connections + matching `sessionId` connections |
 | `session-added` / `session-updated` / `session-removed` / `session-ended` / `messages-invalidated` / `messages-consumed` / `messages-indeterminate` / `messages-requeued` / `message-cancelled` | `all=true` connections + matching `sessionId` connections |
 | `machine-updated`, `machine-agy-models-updated` | `all=true` connections + matching `machineId` connections |
@@ -145,6 +146,7 @@ Schema: `SyncEventSchema` in `shared/src/schemas.ts` (discriminated on `type`). 
 | `session-removed` | `sessionId` | Drop the session from the list, drop its detail cache, clear its message window. |
 | `message-received` | `sessionId`, `message: DecryptedMessage`, `sessionSchedule?` | Ingest into the message window; advance the tail cursor (see [pagination](./pagination.md)). Also fired for the caller's own send (the localId echo). |
 | `messages-invalidated` | `sessionId`; rewind may also include `reason: 'rewind'` and `truncateFromLocalId` | Message history changed **structurally** (rewind, fork, import, clear). For a rewind, retain only the known prefix through the client boundary before tail-syncing; for every other invalidation, discard the whole window and run a fresh tail sync. Global scope: refetch the session list. |
+| `session-schedule-updated` | `sessionId`, `sessionSchedule?` | Update the web list indicator independently of delivery, for example when a held prompt becomes due or a merge copies it into another session. |
 | `scheduled-matured` | `sessionId`, `sessionSchedule?` | A scheduled message became due and was handed to the agent. The web updates its list indicator from the optional schedule fields (see below). |
 | `session-ended` | `sessionId`, `reason?: 'completed'\|'terminated'\|'error'\|'handoff'\|'cleared'` | Session lifecycle signal (the `session-updated` flow still carries the state change). |
 | `machine-updated` | `machineId`, `data?: Machine \| MachinePatch \| null` | Full `Machine`: upsert (remove when `active:false`). `null`: machine removed. Patch `{active?, activeAt?, updatedAt?}`: `active:false` ⇒ remove, otherwise refetch machines. `data` absent ⇒ refetch. |

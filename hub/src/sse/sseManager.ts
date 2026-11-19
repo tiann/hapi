@@ -353,6 +353,10 @@ export class SSEManager {
             }
         }
 
+        if (event.type === 'session-schedule-updated') {
+            return connection.all
+        }
+
         if (event.type === 'message-received' || event.type === 'scheduled-matured') {
             return connection.all || connection.sessionId === event.sessionId
         }

@@ -309,8 +309,9 @@ export class Store {
                 return { result: 'version-mismatch' as const }
             }
             const result = this.sessions.updateSessionMetadata(sessionId, metadata, expectedVersion, namespace, { touchUpdatedAt: false })
-            if (result.result === 'success') this.messages.moveUninvokedMessages(replacementSessionId, sessionId)
-            return result
+            if (result.result !== 'success') return result
+            const movedMessages = this.messages.moveUninvokedMessages(replacementSessionId, sessionId)
+            return { ...result, movedMessages }
         })()
     }
 

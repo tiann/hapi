@@ -4544,7 +4544,8 @@ export class SyncEngine {
             if (replacementSessionId !== operation.replacementSessionId) {
                 return { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
             }
-            this.sessionCache.refreshConversationContent(operation.replacementSessionId)
+            // A cache refresh may have observed the committed abort before its invalidations were published.
+            this.invalidateOpenCodeClearMessages(sessionId, operation.replacementSessionId)
             return { type: 'success', sessionId }
         }
         const required = { replacementSessionId, state: expectedState, requireInactive }
@@ -4554,7 +4555,8 @@ export class SyncEngine {
             const current = latest.metadata.opencodeClearOperation
             if (!current) break
             if (current.replacementSessionId === required.replacementSessionId && current.state === 'aborted') {
-                this.sessionCache.refreshConversationContent(current.replacementSessionId)
+                // The previous write may have committed before its result was lost.
+                this.invalidateOpenCodeClearMessages(sessionId, current.replacementSessionId)
                 return { type: 'success', sessionId }
             }
             if ((required.requireInactive && latest.active)
@@ -4566,7 +4568,11 @@ export class SyncEngine {
             }, latest.metadataVersion, namespace, required)
             if (result.result === 'success') {
                 this.sessionCache.refreshSession(sessionId)
-                this.sessionCache.refreshConversationContent(current.replacementSessionId)
+                if (result.movedMessages > 0) {
+                    this.invalidateOpenCodeClearMessages(sessionId, current.replacementSessionId)
+                } else {
+                    this.sessionCache.refreshConversationContent(current.replacementSessionId)
+                }
                 return { type: 'success', sessionId }
             }
             if (result.result !== 'version-mismatch') break
@@ -4738,6 +4744,11 @@ export class SyncEngine {
         return this.finishOpenCodeClear(sessionId, namespace, operation.replacementSessionId, operation)
     }
 
+    private invalidateOpenCodeClearMessages(sourceId: string, replacementId: string): void {
+        this.eventPublisher.emit({ type: 'messages-invalidated', sessionId: sourceId })
+        this.eventPublisher.emit({ type: 'messages-invalidated', sessionId: replacementId })
+    }
+
     private finishOpenCodeClear(
         sessionId: string,
         namespace: string,
@@ -4754,8 +4765,7 @@ export class SyncEngine {
         try {
             const moved = this.store.messages.moveUninvokedMessages(sessionId, replacementSessionId)
             if (moved > 0) {
-                this.eventPublisher.emit({ type: 'messages-invalidated', sessionId })
-                this.eventPublisher.emit({ type: 'messages-invalidated', sessionId: replacementSessionId })
+                this.invalidateOpenCodeClearMessages(sessionId, replacementSessionId)
             }
         } catch (error) {
             const message = error instanceof Error ? error.message : 'Could not move scheduled prompts to the fresh OpenCode session'

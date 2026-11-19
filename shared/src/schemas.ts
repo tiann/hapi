@@ -970,6 +970,9 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
     SessionScheduleChangedSchema.extend({
         type: z.literal('scheduled-matured')
     }),
+    SessionScheduleChangedSchema.extend({
+        type: z.literal('session-schedule-updated')
+    }),
     SessionChangedSchema.extend({
         type: z.literal('session-ended'),
         reason: SessionEndReasonSchema.optional()
@@ -1057,6 +1060,7 @@ export function affectsSessionSchedule(
         case 'messages-requeued':
         case 'message-cancelled':
         case 'scheduled-matured':
+        case 'session-schedule-updated':
             return true
         default:
             return false
