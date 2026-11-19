@@ -61,6 +61,39 @@ export type CollectedQueueBatch<T> = {
 export class MessageQueue2<T> {
     public queue: QueueItem<T>[] = []; // Made public for testing
     private waiter: ((hasMessages: boolean) => void) | null = null;
+    private preparingInputs = 0;
+    private preparingInputWake: AbortController | null = null;
+
+    /** Observe pending user input while its handler waits for admission to enqueue it. */
+    beginPreparingInput(): () => void {
+        this.preparingInputs++;
+        this.preparingInputWake?.abort();
+        let active = true;
+        return () => {
+            if (active) this.preparingInputs--;
+            active = false;
+        };
+    }
+
+    hasInputDemand(): boolean {
+        return this.preparingInputs > 0 || this.queue.length > 0;
+    }
+
+    /** Used by the parked recovery owner, before any replacement can dequeue. */
+    async waitForInputDemand(signal: AbortSignal): Promise<boolean> {
+        while (!signal.aborted && !this.isClosed()) {
+            if (this.hasInputDemand()) return true;
+            const preparing = new AbortController();
+            this.preparingInputWake = preparing;
+            try {
+                await this.waitForMessages(AbortSignal.any([signal, preparing.signal]));
+            } finally {
+                this.preparingInputWake = null;
+            }
+        }
+        return false;
+    }
+
     private closeController = new AbortController();
     get closeSignal(): AbortSignal {
         return this.closeController.signal;

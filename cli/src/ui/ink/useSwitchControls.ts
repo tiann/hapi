@@ -14,6 +14,9 @@ export function useSwitchControls(opts: {
     onExit?: () => void;
     onSwitch?: () => void;
     confirmationTimeoutMs?: number;
+    canSwitch?: () => boolean;
+    canExit?: () => boolean;
+    immediateExit?: () => boolean;
 }): {
     confirmationMode: ConfirmationMode;
     actionInProgress: ActionInProgress;
@@ -21,7 +24,8 @@ export function useSwitchControls(opts: {
     const [confirmationMode, setConfirmationMode] = useState<ConfirmationMode>(null);
     const [actionInProgress, setActionInProgress] = useState<ActionInProgress>(null);
     const confirmationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-    const { onExit, onSwitch } = opts;
+    const mounted = useRef(true);
+    const { onExit, onSwitch, canSwitch, canExit, immediateExit } = opts;
     const confirmationTimeoutMs = opts.confirmationTimeoutMs ?? 15000;
 
     const resetConfirmation = useCallback(() => {
@@ -50,7 +54,9 @@ export function useSwitchControls(opts: {
     }, []);
 
     useEffect(() => {
+        mounted.current = true;
         return () => {
+            mounted.current = false;
             if (confirmationTimeoutRef.current) {
                 clearTimeout(confirmationTimeoutRef.current);
             }
@@ -76,8 +82,15 @@ export function useSwitchControls(opts: {
             }
             if (confirmationMode === 'exit') {
                 resetConfirmation();
+                if (canExit && !canExit()) return;
                 setActionInProgress('exiting');
-                await new Promise(resolve => setTimeout(resolve, 100));
+                if (!immediateExit?.()) {
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                    if (canExit && !canExit()) {
+                        if (mounted.current) setActionInProgress(null);
+                        return;
+                    }
+                }
                 onExit();
             } else {
                 setConfirmationWithTimeout('exit');
@@ -102,8 +115,13 @@ export function useSwitchControls(opts: {
         if (isSpace) {
             if (confirmationMode === 'switch') {
                 resetConfirmation();
+                if (canSwitch && !canSwitch()) return;
                 setActionInProgress('switching');
                 await new Promise(resolve => setTimeout(resolve, 100));
+                if (canSwitch && (!mounted.current || !canSwitch())) {
+                    if (mounted.current) setActionInProgress(null);
+                    return;
+                }
                 onSwitch?.();
             } else {
                 setConfirmationWithTimeout('switch');
@@ -117,6 +135,9 @@ export function useSwitchControls(opts: {
     }, [
         actionInProgress,
         confirmationMode,
+        canSwitch,
+        canExit,
+        immediateExit,
         onExit,
         onSwitch,
         resetConfirmation,

@@ -309,7 +309,7 @@ app.post('/sessions/:id/prepare-local-resume', async (c) => {
         if (result.type === 'error') {
             const status = result.code === 'access_denied' ? 403
                 : result.code === 'session_not_found' ? 404
-                    : result.code === 'already_local' || result.code === 'control_mode_not_applicable' ? 409
+                    : result.code === 'already_local' || result.code === 'control_mode_not_applicable' || result.code === 'opencode_handoff_refused' ? 409
                         : 500
             return c.json({ error: result.message, code: result.code }, status)
         }

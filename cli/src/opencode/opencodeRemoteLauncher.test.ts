@@ -3,7 +3,7 @@ import { runWithAcpChildRecovery } from '@/modules/common/remote/acpChildRecover
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
 import type { OpencodeMode, PermissionMode } from './types';
-import { OpenCodeRewind, OpenCodeRuntimeGate } from './rewind';
+import { OpenCodeHandoffRefusedError, OpenCodeRewind, OpenCodeRuntimeGate } from './rewind';
 import { configuration } from '@/configuration';
 import { getProcessStartMarker } from '@/utils/process';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -20,6 +20,8 @@ import { getOpencodeNativeToolInstruction } from './utils/systemPrompt';
 import type { PromptContent } from '@/agent/types';
 import { ACP_INDETERMINATE_SYMBOL } from '@/agent/backends/acp/AcpStdioTransport';
 import { hashObject } from '@/utils/deterministicJson';
+import { PassThrough } from 'node:stream';
+import type { ReactElement } from 'react';
 
 
 const harness = vi.hoisted(() => ({
@@ -71,6 +73,7 @@ const harness = vi.hoisted(() => ({
     clientMetadata: undefined as undefined | Record<string, unknown>,
     metadataUpdates: [] as Array<Record<string, unknown>>,
     treeGone: true,
+    completeCapture: true,
     disconnectImpl: null as null | (() => Promise<void>),
     permissionCancelError: null as Error | null,
     permissionCancelReasons: [] as string[],
@@ -125,7 +128,8 @@ const inkHarness = vi.hoisted(() => ({
     lastRenderProps: null as null | { onExit?: () => void | Promise<void>; onSwitchToLocal?: () => void | Promise<void> }
 }));
 
-vi.mock('ink', () => ({
+vi.mock('ink', async importOriginal => ({
+    ...await importOriginal<typeof import('ink')>(),
     render: vi.fn((element: { props?: { onExit?: () => void | Promise<void>; onSwitchToLocal?: () => void | Promise<void> } }) => {
         inkHarness.lastRenderProps = element.props ?? null;
         return { unmount: () => {} };
@@ -245,6 +249,8 @@ vi.mock('./utils/opencodeBackend', () => ({
             harness.refreshSessionInfoCalls.push({ sessionId, cwd });
         }),
         onPermissionRequest: vi.fn(),
+        get canRecheckTermination() { return harness.completeCapture; },
+        recheckTermination: vi.fn(async () => harness.treeGone),
         disconnect: vi.fn(async () => {
             harness.cleanupEvents.push('cleanup:disconnect');
             if (harness.disconnectImpl) {
@@ -297,9 +303,6 @@ vi.mock('./utils/permissionHandler', () => ({
     }
 }));
 
-vi.mock('@/ui/ink/OpencodeDisplay', () => ({
-    OpencodeDisplay: () => null
-}));
 
 const compactHarness = vi.hoisted(() => ({
     calls: [] as Array<{ baseUrl: string; sessionId: string; providerId: string; modelId: string; signal?: AbortSignal }>,
@@ -791,6 +794,7 @@ afterEach(async () => {
     harness.clientMetadata = undefined;
     harness.metadataUpdates.length = 0;
     harness.treeGone = true;
+    harness.completeCapture = true;
     harness.disconnectImpl = null;
     harness.permissionCancelError = null;
     harness.permissionCancelReasons = [];
@@ -961,6 +965,263 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         }
     );
 
+    linuxRecoveryTest('fences a replacement stopped while it is reopening the native session', async () => {
+        harness.detectedVersion = 'v2';
+        const loading = Promise.withResolvers<string>();
+        const { session, rpcHandlers, sessionEvents } = createSessionStub([], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        const launcher = opencodeRemoteLauncher(session as never, { recoveryBackoffsMs: [0, 0] });
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.has(RPC_METHODS.Switch)).toBe(true));
+            const load = vi.fn(() => loading.promise);
+            harness.loadSessionImpl = load;
+            harness.unexpectedExitHandler!(new Error('child exit'), { childProcessExited: true });
+            await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
+            harness.treeGone = false;
+            session.queue.push('queued', createMode(), 'queued');
+            await rpcHandlers.get(RPC_METHODS.Abort)!({});
+            await vi.waitFor(() => expect(sessionEvents.some(e => String(e.message).includes('still be writing'))).toBe(true));
+            expect(harness.createBackendArgs).toHaveLength(2);
+            harness.loadSessionImpl = null;
+            harness.treeGone = true;
+            session.queue.push('next', createMode(), 'next');
+            await vi.waitFor(() => expect(harness.promptCount).toBeGreaterThan(0), { timeout: 4000 });
+        } finally {
+            loading.resolve('acp-session-1');
+            session.queue.close();
+            await launcher.catch(() => {});
+        }
+    });
+
+    linuxRecoveryTest.each(['child exit', 'load rejection'] as const)(
+        'counts replacement %s even when Stop arrives before cleanup completes', async failure => {
+            harness.detectedVersion = 'v2';
+            const { session, rpcHandlers } = createSessionStub([], { keepOpen: true });
+            session.sessionId = 'acp-session-1';
+            const loading = Promise.withResolvers<string>();
+            const cleaning = Promise.withResolvers<void>();
+            const stopBackend = vi.fn(() => cleaning.promise);
+            const launcher = opencodeRemoteLauncher(session as never, { recoveryBackoffsMs: [0] });
+            let error: Error | undefined;
+            void launcher.catch(reason => { error = reason; });
+            try {
+                await vi.waitFor(() => expect(rpcHandlers.has(RPC_METHODS.Switch)).toBe(true));
+                const load = vi.fn(() => loading.promise);
+                harness.loadSessionImpl = load;
+                harness.unexpectedExitHandler!(new Error('initial exit'), { childProcessExited: true });
+                await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
+                harness.disconnectImpl = stopBackend;
+                if (failure === 'child exit') {
+                    harness.unexpectedExitHandler!(new Error('replacement failed'), { childProcessExited: true });
+                } else {
+                    loading.reject(new Error('replacement failed'));
+                    await vi.waitFor(() => expect(stopBackend).toHaveBeenCalled());
+                }
+                await rpcHandlers.get(RPC_METHODS.Abort)!({});
+                session.queue.push('pending', createMode(), 'pending');
+                harness.loadSessionImpl = null;
+                cleaning.resolve();
+                await vi.waitFor(() => expect(error || harness.createBackendArgs.length > 2).toBeTruthy());
+                expect(error?.message).toContain('replacement failed');
+                expect(harness.createBackendArgs).toHaveLength(2);
+            } finally {
+                session.queue.close();
+                loading.resolve('acp-session-1');
+                cleaning.resolve();
+                await launcher.catch(() => {});
+            }
+        }
+    );
+
+    linuxRecoveryTest.each([true, false])('hands an admitted Clear to the fresh session after generation loss (confirmation succeeds: %s)', async succeeds => {
+        harness.detectedVersion = 'v2';
+        harness.treeGone = false;
+        const reservation = Promise.withResolvers<void>();
+        const reserve = vi.fn(() => reservation.promise);
+        const confirmed = vi.fn(async () => {
+            if (!succeeds) throw new Error('Clear confirmation rejected');
+        });
+        const { session } = createSessionStub([], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        const launcher = opencodeRemoteLauncher(session as never, {
+            recoveryBackoffsMs: [0], onClearRequested: reserve, onClearCleanupComplete: confirmed
+        });
+        try {
+            const completed = succeeds ? expect(launcher).resolves.toBe('exit')
+                : expect(launcher).rejects.toThrow('Clear confirmation rejected');
+            void completed.catch(() => {});
+            session.queue.push('', createClearMode(), 'clear');
+            await vi.waitFor(() => expect(reserve).toHaveBeenCalledOnce());
+            harness.unexpectedExitHandler!(new Error('child exit'), { childProcessExited: true });
+            reservation.resolve();
+            await vi.waitFor(() => expect(confirmed).toHaveBeenCalledOnce());
+            await completed;
+            expect(harness.createBackendArgs).toHaveLength(1);
+        } finally {
+            reservation.resolve();
+            session.queue.close();
+        }
+    });
+
+    linuxRecoveryTest('fails input, refuses same-ID Switch and accepts Clear after a permanently incomplete capture', async () => {
+        harness.detectedVersion = 'v2';
+        harness.treeGone = false;
+        harness.completeCapture = false;
+        const { session, rpcHandlers, sessionEvents } = createSessionStub([], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        const reserve = vi.fn(async () => {});
+        const confirm = vi.fn(async () => {});
+        const launcher = opencodeRemoteLauncher({ ...session, startedBy: 'runner' } as never, { onClearRequested: reserve, onClearCleanupComplete: confirm });
+        void launcher.catch(() => {});
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.has(RPC_METHODS.Switch)).toBe(true));
+            harness.unexpectedExitHandler!(new Error('child exit'), { childProcessExited: true });
+            await vi.waitFor(() => expect(sessionEvents.some(e => String(e.message).includes('/clear'))).toBe(true));
+            const before = sessionEvents.length;
+            await expect(rpcHandlers.get(RPC_METHODS.Switch)!({})).rejects.toBeInstanceOf(OpenCodeHandoffRefusedError);
+            expect(sessionEvents.slice(before).some(e => String(e.message).includes('/clear'))).toBe(true);
+            session.queue.push('next question', createMode(), 'next');
+            await vi.waitFor(() => expect(sessionEvents.some(e => String(e.message).includes('OpenCode prompt failed'))).toBe(true));
+            session.queue.push('', createClearMode(), 'clear');
+            await expect(launcher).resolves.toBe('exit');
+            expect(reserve).toHaveBeenCalledOnce();
+            expect(confirm).toHaveBeenCalledOnce();
+            expect(harness.promptCount).toBe(0);
+            expect(harness.createBackendArgs).toHaveLength(1);
+            const { createOpencodeBackend } = await import('./utils/opencodeBackend');
+            expect(vi.mocked(createOpencodeBackend).mock.results[0]?.value.recheckTermination).not.toHaveBeenCalled();
+        } finally {
+            session.queue.close();
+            await launcher.catch(() => {});
+        }
+    });
+
+    linuxRecoveryTest.each(['backoff', 'startup', 'verification', 'switch verification', 'parked'] as const)(
+        'keeps terminal Exit and RPC Stop available while refusing Switch during %s', async phase => {
+            const { RemoteLauncherBase } = await import('@/modules/common/remote/RemoteLauncherBase');
+            type Controls = import('@/modules/common/remote/RemoteLauncherBase').RemoteLauncherTerminalHandlers;
+            const verification = Promise.withResolvers<void>();
+            const { render } = await vi.importActual<typeof import('ink')>('ink');
+            const stdin = Object.assign(new PassThrough(), { isTTY: true, setRawMode: () => {}, ref: () => {}, unref: () => {} });
+            stdin.setEncoding('utf8');
+            const stdout = Object.assign(new PassThrough(), { isTTY: true, columns: 100, rows: 30 });
+            let output = '';
+            stdout.on('data', chunk => { output += chunk.toString(); });
+            type Mounted = {
+                setupTerminal(controls: Controls): void;
+                createDisplay(context: Controls & { messageBuffer: MessageBuffer }): ReactElement;
+                messageBuffer: MessageBuffer;
+                inkInstance: ReturnType<typeof render>;
+            };
+            const terminal = vi.spyOn(RemoteLauncherBase.prototype as unknown as Mounted, 'setupTerminal')
+                .mockImplementation(function (this: Mounted, controls) {
+                    this.inkInstance = render(this.createDisplay({ ...controls, messageBuffer: this.messageBuffer }), {
+                        stdin: stdin as unknown as NodeJS.ReadStream, stdout: stdout as unknown as NodeJS.WriteStream,
+                        debug: true, exitOnCtrlC: false, patchConsole: false
+                    });
+                });
+            harness.detectedVersion = 'v2';
+            const loading = Promise.withResolvers<string>();
+            const gate = new OpenCodeRuntimeGate();
+            const { session, rpcHandlers, sessionEvents } = createSessionStub([], { keepOpen: true });
+            session.sessionId = 'acp-session-1';
+            const confirmedExit = vi.spyOn(gate, 'requestSessionExit');
+            const launcher = opencodeRemoteLauncher({ ...session, runtimeGate: gate } as never, {
+                recoveryBackoffsMs: [phase === 'backoff' ? 60_000 : 0]
+            });
+            try {
+                await vi.waitFor(() => expect(rpcHandlers.has(RPC_METHODS.Switch)).toBe(true));
+                const load = vi.fn(() => loading.promise);
+                harness.loadSessionImpl = load;
+                if (phase === 'parked' || phase === 'switch verification') {
+                    harness.treeGone = false;
+                    if (phase === 'switch verification') harness.disconnectImpl = vi.fn(() => verification.promise);
+                    const switching = terminal.mock.calls[0]![0].onSwitchToLocal!();
+                    harness.unexpectedExitHandler!(new Error('child exit'), { childProcessExited: true });
+                    await switching;
+                    if (phase === 'switch verification') await vi.waitFor(() => expect(harness.disconnectImpl).toHaveBeenCalledOnce());
+                    else await vi.waitFor(() => expect(sessionEvents.some(e => String(e.message).includes('still be writing'))).toBe(true));
+                } else {
+                    if (phase === 'verification') {
+                        harness.treeGone = false;
+                        harness.disconnectImpl = vi.fn(() => verification.promise);
+                    }
+                    harness.unexpectedExitHandler!(new Error('child exit'), { childProcessExited: true });
+                    if (phase === 'verification') await vi.waitFor(() => expect(harness.disconnectImpl).toHaveBeenCalledOnce());
+                    if (phase === 'startup') await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
+                }
+                await expect(rpcHandlers.get(RPC_METHODS.Switch)!({})).rejects.toThrow('OpenCode is recovering');
+                output = '';
+                stdin.write(' ');
+                await vi.waitFor(() => expect(output).toContain('Press space again'));
+                await new Promise(resolve => setTimeout(resolve, 25));
+                stdin.write(' ');
+                await vi.waitFor(() => expect(output).toContain('OpenCode is recovering'));
+                expect(output).not.toContain('Switching to local mode...');
+                if (phase !== 'verification' && phase !== 'startup') {
+                    await rpcHandlers.get(RPC_METHODS.Abort)!({});
+                    expect(sessionEvents.some(event => String(event.message).includes('Send a message'))).toBe(true);
+                }
+                const exitCleanup = vi.spyOn(RemoteLauncherBase.prototype as unknown as {
+                    requestExit(reason: string, handler: () => Promise<void>): Promise<void>;
+                }, 'requestExit');
+                stdin.write('\x03');
+                await vi.waitFor(() => expect(output).toContain('Press Ctrl-C again'));
+                await new Promise(resolve => setTimeout(resolve, 25));
+                stdin.write('\x03');
+                await new Promise(resolve => setTimeout(resolve, 25));
+                expect(confirmedExit).toHaveBeenCalledOnce();
+                if (phase === 'startup') expect(exitCleanup.mock.calls.map(([reason]) => reason)).toEqual(['exit']);
+                exitCleanup.mockRestore();
+                verification.resolve();
+                await expect(launcher).resolves.toBe('exit');
+                expect(harness.createBackendArgs).toHaveLength(phase === 'startup' ? 2 : 1);
+            } finally {
+                loading.resolve('acp-session-1');
+                gate.requestSessionExit();
+                verification.resolve();
+                session.queue.close();
+                await launcher.catch(() => {});
+                terminal.mockRestore();
+                stdin.destroy();
+                stdout.destroy();
+            }
+        }
+    );
+
+    it('a confirmed Exit supersedes an in-flight Switch outside recovery', async () => {
+        harness.detectedVersion = 'v1';
+        const { RemoteLauncherBase } = await import('@/modules/common/remote/RemoteLauncherBase');
+        type Controls = import('@/modules/common/remote/RemoteLauncherBase').RemoteLauncherTerminalHandlers;
+        const terminal = vi.spyOn(RemoteLauncherBase.prototype as unknown as {
+            setupTerminal(controls: Controls): void;
+        }, 'setupTerminal');
+        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true });
+        const gate = new OpenCodeRuntimeGate();
+        const cleaning = Promise.withResolvers<void>();
+        const disconnect = vi.fn(() => cleaning.promise);
+        harness.disconnectImpl = disconnect;
+        const launcher = opencodeRemoteLauncher({ ...session, runtimeGate: gate } as never);
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.has(RPC_METHODS.Switch)).toBe(true));
+            gate.reserve();
+            await expect(terminal.mock.calls[0]![0].onExit()).rejects.toThrow('rewind');
+            expect(gate.sessionExit.aborted).toBe(false);
+            gate.release();
+            await rpcHandlers.get(RPC_METHODS.Switch)!({});
+            await vi.waitFor(() => expect(disconnect).toHaveBeenCalledOnce());
+            gate.requestSessionExit();
+            cleaning.resolve();
+            await expect(launcher).resolves.toBe('exit');
+        } finally {
+            gate.release();
+            cleaning.resolve();
+            session.queue.close();
+            await launcher.catch(() => {});
+            terminal.mockRestore();
+        }
+    });
+
     it.each(['switch', 'clear'] as const)('uses ordinary v2 teardown for %s without transport loss', async action => {
         harness.detectedVersion = 'v2';
         harness.treeGone = false;
@@ -979,7 +1240,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         }
     });
 
-    linuxRecoveryTest('resumes the same v2 native conversation only after the old serve tree is verified', async () => {
+    linuxRecoveryTest('resumes the same v2 native conversation after writer verification', async () => {
         harness.detectedVersion = 'v2';
         const stopped = Promise.withResolvers<void>();
         const stop = vi.fn(async () => stopped.promise);
@@ -988,7 +1249,8 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         session.sessionId = 'acp-session-1';
         const load = vi.fn(async () => 'acp-session-1');
         harness.loadSessionImpl = load;
-        const launcher = opencodeRemoteLauncher(session as never, { recoveryBackoffsMs: [0] });
+        const gate = new OpenCodeRuntimeGate();
+        const launcher = opencodeRemoteLauncher({ ...session, runtimeGate: gate } as never, { recoveryBackoffsMs: [0] });
         try {
             await vi.waitFor(() => expect(rpcHandlers.has(RPC_METHODS.Switch)).toBe(true));
             harness.unexpectedExitHandler!(new Error('child exit'), { childProcessExited: true });
@@ -999,6 +1261,8 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             await vi.waitFor(() => expect(harness.promptCount).toBe(1));
             expect(load).toHaveBeenCalledTimes(2);
             expect(session.sessionId).toBe('acp-session-1');
+            await rpcHandlers.get(RPC_METHODS.Switch)!({});
+            await expect(launcher).resolves.toBe('switch');
         } finally {
             stopped.resolve();
             session.queue.close();
@@ -1173,6 +1437,12 @@ describe('opencodeRemoteLauncher inline model switch', () => {
             reconnected = true; connected!();
             await vi.waitFor(() => expect(rpcHandlers.get('rewind-conversation')).toBeTypeOf('function'));
             expect(gate.isBlocked()).toBe(false);
+            gate.setRecoveryPending(true);
+            expect(await rpcHandlers.get(RPC_METHODS.RewindConversation)!({})).toMatchObject({
+                success: false, outcome: 'rejected', error: expect.stringContaining('OpenCode is recovering')
+            });
+            await expect(rpcHandlers.get(RPC_METHODS.ForkConversation)!({})).rejects.toThrow('OpenCode is recovering');
+            gate.setRecoveryPending(false);
         } finally { gate.release(); session.queue.close(); await launcher; fetchSpy.mockRestore(); }
     });
 

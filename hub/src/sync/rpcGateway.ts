@@ -77,6 +77,10 @@ const MODEL_LIST_RPC_TIMEOUT_MS = 120_000
 const CODEX_SPAWN_RPC_TIMEOUT_MS = 60_000
 const UPLOAD_CHUNK_RPC_TIMEOUT_MS = 60_000
 
+export class OpenCodeHandoffRefusal extends Error {
+    readonly code = 'opencode_handoff_refused'
+}
+
 export class RunnerStopRpcError extends Error {
     constructor(readonly timedOut: boolean, cause: unknown) {
         super('Runner stop acknowledgement was not received', { cause })
@@ -212,7 +216,7 @@ export class RpcGateway {
     }
 
     async switchSession(sessionId: string, to: 'remote' | 'local'): Promise<void> {
-        await this.sessionRpc(sessionId, RPC_METHODS.Switch, { to })
+        await this.requestHandoff(sessionId, RPC_METHODS.Switch, { to })
     }
 
     async requestSessionConfig(
@@ -283,7 +287,12 @@ export class RpcGateway {
     }
 
     async handoffSessionToLocal(sessionId: string): Promise<void> {
-        await this.sessionRpc(sessionId, RPC_METHODS.HandoffLocal, {})
+        await this.requestHandoff(sessionId, RPC_METHODS.HandoffLocal, {})
+    }
+
+    private async requestHandoff(sessionId: string, method: typeof RPC_METHODS.Switch | typeof RPC_METHODS.HandoffLocal, params: { to?: 'remote' | 'local' }): Promise<void> {
+        const reply = await this.sessionRpc(sessionId, method, params) as { error?: unknown; code?: unknown } | null
+        if (reply?.code === 'opencode_handoff_refused' && typeof reply.error === 'string') throw new OpenCodeHandoffRefusal(reply.error)
     }
 
     async bridgeModelError(

@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { hashObject } from '@/utils/deterministicJson';
 import { getProcessStartMarker } from '@/utils/process';
 import type { OpenCodeRewindOperation } from '@hapi/protocol/schemas';
+import { OpenCodeHandoffRefusedError } from '@/api/rpc/types';
+export { OpenCodeHandoffRefusedError };
 import type { OpenCodeRewindReport } from '@hapi/protocol/apiTypes';
 
 type Checkpoint = NonNullable<OpenCodeRewindReport['checkpoint']>;
@@ -44,10 +46,32 @@ export class OpenCodeRuntimeBlockedError extends Error {
     constructor() { super('OpenCode rewind is pending reconciliation'); }
 }
 
+export const OPENCODE_RECOVERY_HANDOFF_REFUSAL = 'OpenCode is recovering. If you pressed Stop, send a message to resume, then try again.';
+
 /** Shared by OpenCode input/config preparation, dequeue, handoff and history RPCs. */
 export class OpenCodeRuntimeGate {
     /** One session/wrapper owner, shared by sequential local/remote launchers. */
     readonly workerId = randomUUID();
+    private recovering = false;
+    private readonly exitRequest = new AbortController();
+
+    get recoveryPending(): boolean { return this.recovering; }
+    setRecoveryPending(pending: boolean): void {
+        this.recovering = pending;
+    }
+    get sessionExit(): AbortSignal { return this.exitRequest.signal; }
+    requestSessionExit(): void { this.exitRequest.abort(); }
+
+    assertHandoffAllowed(): void {
+        if (this.sessionExit.aborted) throw new OpenCodeHandoffRefusedError('The OpenCode session is ending.');
+        if (this.recovering) throw new OpenCodeHandoffRefusedError(OPENCODE_RECOVERY_HANDOFF_REFUSAL);
+    }
+
+    private readonly unavailable = new AbortController();
+    get nativeSessionUnavailable(): AbortSignal { return this.unavailable.signal; }
+    disableNativeSession(): void {
+        this.unavailable.abort();
+    }
     private active = 0;
     private cancellations = 0;
     private blocked = false;
@@ -87,6 +111,7 @@ export class OpenCodeRuntimeGate {
         };
     }
     enterLocalRuntime(operation: OpenCodeRewindOperation | undefined): () => void {
+        this.assertHandoffAllowed();
         if (operation && (!['committed', 'rejected'].includes(operation.phase)
             || this.reconciledOperationId !== operation.operationId)) {
             this.block();
@@ -117,7 +142,7 @@ export class OpenCodeRuntimeGate {
             signal?.addEventListener('abort', done, { once: true });
         });
     }
-    isBlocked(): boolean { return this.blocked || this.entryFences.size > 0; }
+    isBlocked(): boolean { return this.unavailable.signal.aborted || this.blocked || this.entryFences.size > 0; }
     isRewindBlocked(): boolean { return this.blocked; }
     isRuntimeActive(): boolean { return this.active > 0; }
     hasOrdinaryRuntimeActivity(): boolean { return this.active > this.cancellations; }

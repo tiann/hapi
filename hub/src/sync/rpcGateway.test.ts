@@ -215,6 +215,18 @@ describe('RpcGateway no-target diagnostics (tiann/hapi#916)', () => {
             expectedPid: 42, expectedProcessStartMarker: 'old-generation' })).rejects.toBeInstanceOf(RpcTargetMissingError)
     })
 
+    it('propagates a tagged OpenCode refusal and preserves generic handoff responses', async () => {
+        let response: { error: string; code?: string } = { error: 'upstream handler error' }
+        const io = { of: () => ({ sockets: { get: () => ({ timeout: () => ({
+            emitWithAck: async () => JSON.stringify(response)
+        }) }) } }) } as unknown as Server
+        const registry = { getSocketIdForMethod: () => 'socket-1' } as unknown as RpcRegistry
+        const gateway = new RpcGateway(io, registry)
+        await expect(gateway.switchSession('claude', 'local')).resolves.toBeUndefined()
+        response = { error: 'OpenCode is recovering', code: 'opencode_handoff_refused' }
+        await expect(gateway.handoffSessionToLocal('opencode')).rejects.toThrow('OpenCode is recovering')
+    })
+
     it('rejects a KillSession error envelope instead of allowing runner force termination', async () => {
         const io = { of: () => ({ sockets: { get: () => ({ timeout: () => ({
             emitWithAck: async () => JSON.stringify({ error: 'publication drain failed' })

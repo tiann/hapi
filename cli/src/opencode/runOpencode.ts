@@ -21,7 +21,7 @@ import { isRetryableConnectionError } from '@/utils/errorUtils';
 import { withRetry } from '@/utils/time';
 import { configuration } from '@/configuration';
 import { join } from 'node:path';
-import { OpenCodeRuntimeGate, readOpenCodeRewindIntent, sameOperation } from './rewind';
+import { OPENCODE_RECOVERY_HANDOFF_REFUSAL, OpenCodeRuntimeGate, readOpenCodeRewindIntent, sameOperation } from './rewind';
 
 export async function runOpencode(opts: {
     startedBy?: 'runner' | 'terminal';
@@ -184,17 +184,28 @@ export async function runOpencode(opts: {
         }
     });
 
+    let exitCleanup: Promise<void> | undefined;
+    const cleanupAndExit = (code?: number) => exitCleanup ??= lifecycle.cleanupAndExit(code);
     lifecycle.registerProcessHandlers();
     registerKillSessionHandler(session.rpcHandlerManager, { ...lifecycle, machineId: bootstrap.machineId,
+        cleanupAndExit: () => {
+            runtimeGate.requestSessionExit();
+            return cleanupAndExit();
+        },
         beforeKill: async (lease) => await sessionWrapperRef.current?.localHistoryPublisher?.prepare(lease) ?? true
     }, session);
     registerLocalHandoffHandler({ registerHandler: (method, handler) => {
         session.rpcHandlerManager.registerHandler(method, (payload) => {
+            runtimeGate.assertHandoffAllowed();
             const release = runtimeGate.enterRuntime();
             // An accepted handoff owns admission until this process exits.
-            try { return handler(payload); } catch (error) { release(); throw error; }
+            try {
+                const accepted = handler(payload);
+                runtimeGate.requestSessionExit();
+                return accepted;
+            } catch (error) { release(); throw error; }
         });
-    } }, lifecycle);
+    } }, { ...lifecycle, cleanupAndExit });
 
     const syncSessionMode = () => {
         const sessionInstance = sessionWrapperRef.current;
@@ -218,7 +229,7 @@ export async function runOpencode(opts: {
     // `cancelByLocalId` would find nothing. Track in-flight localIds so the
     // cancel RPC can ack the cancel during that window and the chain can
     // short-circuit when it resumes.
-    const preparingLocalIds = new Set<string>();
+    const preparingLocalIds = new Map<string, () => void>();
     const cancelledBeforeEnqueue = new Set<string>();
     // Mirrors `cancelledBeforeEnqueue` above, but for the other side of the
     // queued-compact ack: `onCancelQueuedMessage` below can still fire for a
@@ -269,9 +280,21 @@ export async function runOpencode(opts: {
 
     let userMessageChain: Promise<void> = Promise.resolve();
     session.onUserMessage((message, localId) => {
+        const refuseClearDuringRecovery = (): boolean => {
+            if (!runtimeGate.recoveryPending) return false;
+            if (localId) session.emitMessagesConsumed([localId], { clearQueuedThinkingGrace: true });
+            session.sendAgentMessage({ type: 'message', message: OPENCODE_RECOVERY_HANDOFF_REFUSAL, id: randomUUID() });
+            return true;
+        };
+        // Resolve the built-in spelling before registering input demand: a refused
+        // Clear must not wake a parked replacement or wait behind its entry fence.
+        if (runtimeGate.recoveryPending && resolveOpencodeSlashCommand(message.content.text, {
+            permissionMode: currentPermissionMode
+        }).kind === 'clear' && refuseClearDuringRecovery()) return;
         // Admission is synchronous, including async slash/config preparation.
         let release = runtimeGate.isBlocked() ? undefined : runtimeGate.enterRuntime();
-        if (localId) preparingLocalIds.add(localId);
+        const finishPreparing = messageQueue.beginPreparingInput();
+        if (localId) preparingLocalIds.set(localId, finishPreparing);
         userMessageChain = userMessageChain.then(async () => {
             const wasCancelled = (): boolean => {
                 if (!localId) return false;
@@ -295,9 +318,9 @@ export async function runOpencode(opts: {
                 // retry, and that race must fall into the handler's catch/
                 // finally instead of dropping the prompt and leaking its
                 // preparing window.
-                while (!release) {
+                while (!release && !runtimeGate.nativeSessionUnavailable.aborted) {
                     if (wasCancelled()) return;
-                    await runtimeGate.waitUntilOpen();
+                    await runtimeGate.waitUntilOpen(runtimeGate.nativeSessionUnavailable);
                     if (!runtimeGate.isBlocked()) release = runtimeGate.enterRuntime();
                 }
                 if (wasCancelled()) return;
@@ -317,6 +340,7 @@ export async function runOpencode(opts: {
                 });
 
                 if (slash.kind === 'clear') {
+                    if (refuseClearDuringRecovery()) return;
                     if (startedBy !== 'runner') {
                         if (localId) {
                             session.emitMessagesConsumed([localId], { clearQueuedThinkingGrace: true });
@@ -337,6 +361,12 @@ export async function runOpencode(opts: {
                     // A clear is isolated but retains its FIFO position:
                     // older prompts and native /compact work finish first.
                     messageQueue.pushIsolated('', { ...buildMode(), operation: 'clear' }, localId);
+                    return;
+                }
+
+                if (runtimeGate.nativeSessionUnavailable.aborted) {
+                    // The failed-session consumer reports this input in FIFO order.
+                    pushPlain();
                     return;
                 }
 
@@ -454,6 +484,7 @@ export async function runOpencode(opts: {
                     pushPlain();
                 }
             } finally {
+                finishPreparing();
                 release?.();
                 if (localId) {
                     preparingLocalIds.delete(localId);
@@ -488,7 +519,9 @@ export async function runOpencode(opts: {
             return true;
         }
         if (removedFromQueue !== false) return removedFromQueue;
-        if (preparingLocalIds.has(localId)) {
+        const finishPreparing = preparingLocalIds.get(localId);
+        if (finishPreparing) {
+            finishPreparing();
             cancelledBeforeEnqueue.add(localId);
             logger.debug(`[opencode] cancelByLocalId(${localId}): marked for cancellation before enqueue`);
             return true;
@@ -625,11 +658,11 @@ export async function runOpencode(opts: {
             lifecycle.setExitCode(1);
             lifecycle.setArchiveReason(`Local launch failed: ${localFailure.message.slice(0, 200)}`);
             lifecycle.setSessionEndReason('error');
-        } else if (!crashed) {
+        } else if (!crashed && !lifecycle.hasExplicitSessionEndReason()) {
             lifecycle.setSessionEndReason('completed');
         }
         if (!clearRequested) {
-            await lifecycle.cleanupAndExit();
+            await cleanupAndExit();
             return;
         }
 

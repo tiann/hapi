@@ -57,6 +57,19 @@ describe('API extra headers integration', () => {
         ioMock.mockReset()
     })
 
+    it('surfaces the session owner’s reason for refusing local resume', async () => {
+        const reason = 'OpenCode is recovering. Try again after recovery finishes.'
+        const generic = Object.assign(new Error('Request failed with status code 500'), {
+            isAxiosError: true, response: { data: { error: reason, code: 'handoff_failed' } }
+        })
+        axiosPostMock.mockRejectedValueOnce(generic).mockRejectedValueOnce(Object.assign(new Error('Request failed'), {
+            isAxiosError: true, response: { data: { error: reason, code: 'opencode_handoff_refused' } }
+        }))
+        const client = await ApiClient.create()
+        await expect(client.handoffSessionToLocal('session')).rejects.toBe(generic)
+        await expect(client.handoffSessionToLocal('session')).rejects.toThrow(reason)
+    })
+
     it('waits for confirmed shutdown preparation using CLI authentication and extra headers', async () => {
         configuration._setExtraHeaders({ Cookie: 'fixture' })
         let release!: () => void

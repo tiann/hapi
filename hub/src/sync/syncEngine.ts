@@ -54,6 +54,7 @@ import { resolveForkBoundary, resolveRewindBoundary, invokedTailSeq, type Resolv
 import { buildForkSessionSummary } from './forkSessionSummary'
 import { isMachineSpawnPreallocatedStub } from '../store/sessions'
 import {
+    OpenCodeHandoffRefusal,
     RpcGateway,
     RpcTargetMissingError,
     RunnerStopRpcError,
@@ -160,7 +161,7 @@ export type LocalResumePrepareResult =
 
 export type LocalHandoffResult =
     | { type: 'success' }
-    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'already_local' | 'handoff_failed' | 'control_mode_not_applicable' }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'already_local' | 'handoff_failed' | 'control_mode_not_applicable' | 'opencode_handoff_refused' }
 
 export type ClearOpencodeSessionResult =
     | { type: 'success'; sessionId: string }
@@ -6078,7 +6079,7 @@ export class SyncEngine {
             return {
                 type: 'error',
                 message: error instanceof Error ? error.message : String(error),
-                code: 'handoff_failed'
+                code: error instanceof OpenCodeHandoffRefusal ? error.code : 'handoff_failed'
             }
         }
 

@@ -500,6 +500,86 @@ describe('runOpencode set-session-config handler', () => {
         expect(harness.session.sendAgentMessage).toHaveBeenCalled();
     });
 
+    it('latches an accepted local handoff before a later ACP loss', async () => {
+        await runOpencode({ startingMode: 'remote' });
+        const gate = harness.opencodeLoopArgs[0]!.runtimeGate as import('./rewind').OpenCodeRuntimeGate;
+        const handler = harness.session.rpcHandlerManager.registerHandler.mock.calls.find(([name]) => name === RPC_METHODS.HandoffLocal)![1];
+        gate.setRecoveryPending(true);
+        expect(() => handler({})).toThrow('OpenCode is recovering');
+        gate.setRecoveryPending(false);
+        expect(handler({})).toEqual({ ok: true });
+        expect(() => gate.assertHandoffAllowed()).toThrow('session is ending');
+    });
+
+    it('refuses Clear before input demand can wake a parked session', async () => {
+        await runOpencode({ startingMode: 'remote', startedBy: 'runner' });
+        const { runtimeGate, messageQueue } = harness.opencodeLoopArgs[0]!;
+        const gate = runtimeGate as import('./rewind').OpenCodeRuntimeGate;
+        const queue = messageQueue as MessageQueue2<OpencodeMode>;
+        gate.setRecoveryPending(true);
+        gate.acquireEntryFence();
+        harness.session.onUserMessage.mock.calls[0]![0]({ content: { text: '/clear' } }, 'clear');
+        expect(queue.hasInputDemand()).toBe(false);
+        expect(harness.session.emitMessagesConsumed).toHaveBeenCalledWith(['clear'], { clearQueuedThinkingGrace: true });
+        expect(harness.session.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('OpenCode is recovering') }));
+    });
+
+    it('invokes lifecycle cleanup once when two KillSession requests race the loop exit', async () => {
+        const { opencodeLoop } = await import('./loop');
+        let ready!: () => void;
+        const started = new Promise<void>(resolve => { ready = resolve; });
+        vi.mocked(opencodeLoop).mockImplementationOnce(async options => {
+            ready();
+            await new Promise<void>(resolve => options.runtimeGate!.sessionExit.addEventListener('abort', () => resolve(), { once: true }));
+        });
+        const running = runOpencode({ startingMode: 'remote' });
+        await started;
+        const { registerKillSessionHandler } = await vi.importActual<typeof import('@/claude/registerKillSessionHandler')>('@/claude/registerKillSessionHandler');
+        let kill!: () => Promise<unknown>;
+        registerKillSessionHandler({ registerHandler: (method: string, handler: typeof kill) => {
+            if (method === RPC_METHODS.KillSession) kill = handler;
+        } } as never, harness.killLifecycle as never);
+        await Promise.all([kill(), kill(), running]);
+        expect(lifecycleMock.cleanupAndExit).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['before', 'after'] as const)('wakes a stopped replacement on input arriving %s it parks', async order => {
+        await runOpencode({ startingMode: 'remote' });
+        const { runtimeGate, messageQueue } = harness.opencodeLoopArgs[0]!;
+        const gate = runtimeGate as import('./rewind').OpenCodeRuntimeGate;
+        const queue = messageQueue as MessageQueue2<OpencodeMode>;
+        const userMessage = harness.session.onUserMessage.mock.calls[0]![0];
+        const ack = vi.fn();
+        queue.onBatchConsumed = ack;
+
+        // Stop during session/load hands the unfinished startup fence to its successor.
+        gate.handoffEntryFence(gate.acquireEntryFence());
+        const send = () => userMessage({ content: { text: 'next turn' } }, 'next');
+        if (order === 'before') send();
+        const parked = new AbortController();
+        const demand = queue.waitForInputDemand(parked.signal);
+        if (order === 'after') send();
+        await Promise.resolve();
+        expect(gate.isBlocked()).toBe(true);
+        expect(queue.size()).toBe(0);
+        const wake = vi.fn();
+        void demand.then(wake);
+        try {
+            await vi.waitFor(() => expect(wake).toHaveBeenCalledExactlyOnceWith(true));
+            expect(ack).not.toHaveBeenCalled();
+            const inherited = gate.takeInitialEntryFence();
+            expect(inherited).toBeDefined();
+            gate.releaseEntryFence(inherited!);
+            const batch = await queue.waitForMessagesAndGetAsString();
+            expect(batch?.items.map(item => item.localId)).toEqual(['next']);
+            expect(ack).toHaveBeenCalledExactlyOnceWith(['next']);
+            expect(queue.size()).toBe(0);
+        } finally {
+            parked.abort();
+            queue.close();
+        }
+    });
+
     it('delivers a prompt whose chain admission races a re-block and closes its preparing window', async () => {
         await runOpencode({});
 
