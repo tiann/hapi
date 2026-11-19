@@ -36,7 +36,7 @@ describe('useIssueTemplates', () => {
     it('fetches when enabled with both boardId and repo, and surfaces the response', async () => {
         const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
         const response: GetIssueTemplatesResponse = {
-            templates: [{ id: 'bug_report.yml', name: 'Bug report', kind: 'form', fields: [], labels: [], assignees: [] }],
+            templates: [{ id: 'bug_report.yml', name: 'Bug report', kind: 'form', fields: [], labels: [], assignees: [], revision: 'rev-1' }],
             blankAllowed: true,
             githubNewIssueUrl: 'https://github.com/heavygee/hapi/issues/new/choose'
         }

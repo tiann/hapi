@@ -1,5 +1,11 @@
+import { createHash } from 'node:crypto'
 import { parse as parseYaml } from 'yaml'
 import type { IssueFormCheckboxOption, IssueFormField, IssueTemplate } from '@hapi/protocol'
+
+/** Hash of a template's raw file content — see IssueTemplateBase.revision. */
+function hashTemplateRevision(raw: string): string {
+    return createHash('sha256').update(raw).digest('hex')
+}
 
 const SUPPORTED_FIELD_TYPES = new Set(['markdown', 'input', 'textarea', 'dropdown', 'checkboxes'])
 
@@ -198,7 +204,8 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
         labels: asStringListField(obj.labels),
         assignees: asStringListField(obj.assignees),
         kind: 'form',
-        fields
+        fields,
+        revision: hashTemplateRevision(raw)
     }
 }
 
@@ -275,7 +282,8 @@ export function parseLegacyIssueTemplate(id: string, raw: string): IssueTemplate
         labels: asStringListField(frontmatter.labels),
         assignees: asStringListField(frontmatter.assignees),
         kind: 'legacy',
-        body
+        body,
+        revision: hashTemplateRevision(raw)
     }
 }
 

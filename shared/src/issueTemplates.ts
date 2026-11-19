@@ -100,6 +100,14 @@ export type IssueTemplateBase = {
     titlePrefix?: string
     labels: string[]
     assignees: string[]
+    /**
+     * Hash of the template's raw file content (review finding, hapi#238) —
+     * echoed back on submit so the hub can reject a stale submission built
+     * against an since-edited template (a maintainer adding a required
+     * field, or changing labels, between the picker fetching templates and
+     * the user submitting) instead of silently filing the old shape.
+     */
+    revision: string
 }
 
 /** A `.yml`/`.yaml` issue form — structured fields, rendered as a dynamic form. */

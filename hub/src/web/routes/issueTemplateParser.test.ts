@@ -318,3 +318,29 @@ describe('parseIssueTemplateConfig', () => {
         expect(parseIssueTemplateConfig(': : not yaml {{{').blankIssuesEnabled).toBe(true)
     })
 })
+
+// Regression (bot review, hapi#238, follow-up): templateId alone only
+// proves a template still exists, not that its content hasn't changed.
+describe('template revision', () => {
+    it('stays stable for identical content and changes when the form content changes', () => {
+        const yaml = 'name: Bug\nbody:\n  - type: markdown\n    attributes:\n      value: Hi\n'
+        const editedYaml = 'name: Bug\nbody:\n  - type: markdown\n    attributes:\n      value: Hi (edited)\n'
+        const first = parseIssueFormYaml('bug.yml', yaml)
+        const same = parseIssueFormYaml('bug.yml', yaml)
+        const edited = parseIssueFormYaml('bug.yml', editedYaml)
+        if (first.kind !== 'form' || same.kind !== 'form' || edited.kind !== 'form') throw new Error('expected form')
+        expect(same.revision).toBe(first.revision)
+        expect(edited.revision).not.toBe(first.revision)
+    })
+
+    it('stays stable for identical content and changes when the legacy template content changes', () => {
+        const markdown = '---\nname: Bug\n---\nOriginal body.\n'
+        const edited = '---\nname: Bug\n---\nEdited body.\n'
+        const first = parseLegacyIssueTemplate('bug.md', markdown)
+        const same = parseLegacyIssueTemplate('bug.md', markdown)
+        const changed = parseLegacyIssueTemplate('bug.md', edited)
+        if (first.kind !== 'legacy' || same.kind !== 'legacy' || changed.kind !== 'legacy') throw new Error('expected legacy')
+        expect(same.revision).toBe(first.revision)
+        expect(changed.revision).not.toBe(first.revision)
+    })
+})

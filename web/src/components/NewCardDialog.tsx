@@ -46,7 +46,7 @@ export type NewCardDialogProps = {
     isLoadingTemplates: boolean
     templatesError: string | null
     onRepoChange: (repo: string | null) => void
-    onSubmit: (payload: { repo: string; title: string; body: string; templateId: string | null; existingIssueUrl?: string; labels: string[]; assignees: string[] }) => Promise<string>
+    onSubmit: (payload: { repo: string; title: string; body: string; templateId: string | null; templateRevision: string | null; existingIssueUrl?: string; labels: string[]; assignees: string[] }) => Promise<string>
 }
 
 /**
@@ -174,6 +174,7 @@ export function NewCardDialog(props: NewCardDialogProps) {
                 title: finalTitle,
                 body: formattedBody,
                 templateId: selectedTemplate?.id ?? null,
+                templateRevision: selectedTemplate?.revision ?? null,
                 // Retrying after a partial failure attaches the issue that
                 // already exists rather than creating a second one (review
                 // finding, hapi#238) — only present once a prior attempt's

@@ -35,7 +35,8 @@ const FORM_TEMPLATE: IssueTemplate = {
     fields: [
         { kind: 'markdown', value: 'Thanks for filing!' },
         { kind: 'input', id: 'contact', label: 'Contact', required: false }
-    ]
+    ],
+    revision: 'rev-bug-report-1'
 }
 
 const TEMPLATE_WITH_DEFAULTS: IssueTemplate = {
@@ -47,7 +48,8 @@ const TEMPLATE_WITH_DEFAULTS: IssueTemplate = {
     fields: [
         { kind: 'input', id: 'env', label: 'Environment', value: 'production', required: true },
         { kind: 'dropdown', id: 'severity', label: 'Severity', options: ['Low', 'High'], multiple: false, defaultIndex: 1, required: true }
-    ]
+    ],
+    revision: 'rev-defaults-1'
 }
 
 const UNSUPPORTED_TEMPLATE: IssueTemplate = {
@@ -93,6 +95,7 @@ describe('NewCardDialog', () => {
                 title: '[Bug]: Everything is broken',
                 body: '### Contact\n\nme@example.com',
                 templateId: 'bug_report.yml',
+                templateRevision: 'rev-bug-report-1',
                 labels: ['bug'],
                 assignees: ['octocat']
             })
@@ -167,7 +170,8 @@ describe('NewCardDialog', () => {
             kind: 'form',
             fields: [
                 { kind: 'textarea', id: 'repro', label: 'Reproduction steps', required: true, minLength: 10 }
-            ]
+            ],
+            revision: 'rev-repro-1'
         }
         renderDialog({ templates: [template] })
 
@@ -207,6 +211,7 @@ describe('NewCardDialog', () => {
                 title: 'A plain title',
                 body: 'Plain body text',
                 templateId: null,
+                templateRevision: null,
                 labels: [],
                 assignees: []
             })
@@ -245,6 +250,7 @@ describe('NewCardDialog', () => {
                 title: 'A plain title',
                 body: 'Plain body text',
                 templateId: null,
+                templateRevision: null,
                 existingIssueUrl: 'https://github.com/heavygee/hapi/issues/42',
                 labels: [],
                 assignees: []

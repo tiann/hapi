@@ -1906,6 +1906,12 @@ export function createBoardRoutes(
                     if (!current || !isUsableIssueTemplate(current)) {
                         return c.json({ error: 'This template is no longer available — pick another and try again' }, 409)
                     }
+                    // templateId existing isn't enough — a maintainer can
+                    // edit a template's fields/labels in place, same id,
+                    // different content (review finding, hapi#238, follow-up).
+                    if (current.revision !== parsed.data.templateRevision) {
+                        return c.json({ error: 'This template has changed since you opened it — review it again and try again' }, 409)
+                    }
                 }
             } catch (error) {
                 return c.json({ error: error instanceof Error ? error.message : 'Failed to verify the current issue template policy' }, 502)

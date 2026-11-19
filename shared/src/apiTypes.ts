@@ -1706,6 +1706,15 @@ export const CreateBoardItemRequestSchema = z.object({
     // left a window where this route filed an issue the repo's current
     // policy no longer allows).
     templateId: z.string().nullable(),
+    // Echoes the template's content-hash revision from the picker fetch
+    // (review finding, hapi#238, follow-up) — templateId alone only proves
+    // the template still *exists*, not that its shape hasn't changed: a
+    // maintainer adding a required field or changing labels between
+    // picker-open and submit produces the same id with different content,
+    // which the hub must reject rather than silently file against the old
+    // shape. `null` when templateId is null (blank issue, no revision to
+    // check).
+    templateRevision: z.string().nullable(),
     // Set on a retry after a prior submission's issue was created but
     // project-attachment failed (review finding, hapi#238) — resubmitting
     // without this re-ran the whole create+attach flow and filed a second,
