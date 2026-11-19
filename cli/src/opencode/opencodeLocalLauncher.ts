@@ -607,10 +607,10 @@ async function launchLocal(
 
             session.client.updateAgentState((currentState) => {
                 const prior = currentState.completedRequests?.[id];
-                const request = currentState.requests?.[id] ?? {
+                const request = currentState.requests?.[id] ?? prior ?? {
                     tool: toolName,
                     arguments: toolInput,
-                    createdAt: prior?.createdAt ?? completedAt
+                    createdAt: completedAt
                 };
                 const nextRequests = { ...(currentState.requests || {}) };
                 delete nextRequests[id];

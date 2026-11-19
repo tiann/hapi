@@ -172,12 +172,14 @@ export class SharedCodexAsyncQuestions {
             scope: { role: 'child', threadId: question.threadId, parentThreadId: rootThreadId }, scope_role: 'child'
         } : message, id);
         this.session.updateAgentState(state => {
+            const completed = state.completedRequests?.[question.id];
+            if (!emitResult && (completed?.status === 'resolved' || completed?.decision === 'denied')) return state;
             const requests = { ...state.requests };
-            const prior = requests[question.id] ?? state.completedRequests?.[question.id];
+            const prior = requests[question.id] ?? completed;
             delete requests[question.id];
             return { ...state, requests, completedRequests: { ...state.completedRequests, [question.id]: {
                 tool: 'request_user_input', toolCallId: question.id, arguments: question.input,
-                createdAt: prior?.createdAt, completedAt: state.completedRequests?.[question.id]?.completedAt ?? Date.now(),
+                createdAt: prior?.createdAt, completedAt: completed?.completedAt ?? Date.now(),
                 status: resolution.status, ...(answers ? { answers } : {}), decision: resolution.status === 'canceled' ? resolution.decision : undefined
             } } };
         });

@@ -24,6 +24,21 @@ function fixture(initialState: AgentState = {}) {
 }
 
 describe('Codex queued follow-up questions', () => {
+    it.each(['denied', 'resolved'] as const)('keeps a %s question if shutdown queued a cancellation before retry', result => {
+        const f = fixture();
+        f.manager.observeItem('thread', item);
+        f.manager.close();
+        const id = questions[0].id;
+        const latest: AgentState = { completedRequests: { [id]: {
+            tool: 'request_user_input', arguments: {},
+            ...(result === 'denied' ? { status: 'canceled', decision: 'denied' } : {
+                status: 'resolved', answers: { [questions[0].questionItemId]: { answers: ['Web'] } }
+            })
+        } } };
+        expect(f.updates[0]!(latest)).toBe(latest);
+        expect(f.updates[questions.length]!(latest)).toBe(latest);
+    });
+
     it.each(['denied', 'resolved'] as const)('does not reopen a %s question from the newer Hub state', async result => {
         const f = fixture();
         f.manager.observeItem('thread', item);

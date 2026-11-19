@@ -249,6 +249,7 @@ describe('local tool call ids reused by the model (shell:0 every step)', () => {
             sessionId: 'native', messageIds: [], userMessageIds: [], localMessageIds: []
         } };
         let agentState: Record<string, any> = {};
+        let updateAgentState: ((current: Record<string, any>) => Record<string, any>) | undefined;
         const messages: Array<Record<string, unknown>> = [];
         const session = {
             path: '/tmp/project', sessionId: 'native', startedBy: 'terminal', startingMode: 'local',
@@ -258,7 +259,10 @@ describe('local tool call ids reused by the model (shell:0 every step)', () => {
                 getMetadata: () => metadata,
                 rpcHandlerManager: { registerHandler: vi.fn() },
                 updateMetadata(update: (current: Metadata) => Metadata) { metadata = update(metadata); },
-                updateAgentState(update: (current: Record<string, any>) => Record<string, any>) { agentState = update(agentState); },
+                updateAgentState(update: (current: Record<string, any>) => Record<string, any>) {
+                    updateAgentState = update;
+                    agentState = update(agentState);
+                },
                 materialize: async () => true, flushMetadata: async () => true, flush: async () => true
             },
             queue: { size: () => 0, reset: vi.fn(), setOnMessage: vi.fn() },
@@ -284,6 +288,14 @@ describe('local tool call ids reused by the model (shell:0 every step)', () => {
             handler!({ event: 'permission.updated', sessionId: 'native', payload: {
                 id: 'per_1', type: 'bash', sessionID: 'native', messageID: 'msg-2', callID: 'shell:0', title: 'pwd', metadata: {}
             } } as OpencodeHookEvent);
+            expect(agentState.requests?.per_1).toMatchObject({ toolCallId: 'shell:0#msg-2' });
+            handler!({ event: 'permission.replied', sessionId: 'native', payload: {
+                id: 'per_1', type: 'bash', response: 'once'
+            } } as OpencodeHookEvent);
+            const newer = { ...agentState, steeringActive: true };
+            expect(updateAgentState!(newer).completedRequests?.per_1).toMatchObject({
+                toolCallId: 'shell:0#msg-2', status: 'approved'
+            });
             shell('msg-2', 'pwd', 'completed');
             releaseNative();
             expect(await result).toBe('exit');
@@ -291,7 +303,6 @@ describe('local tool call ids reused by the model (shell:0 every step)', () => {
             const ids = (type: string) => messages.filter((message) => message.type === type).map((message) => message.callId);
             expect(ids('tool-call')).toEqual(['shell:0#msg-1', 'shell:0#msg-2']);
             expect(ids('tool-call-result')).toEqual(['shell:0#msg-1', 'shell:0#msg-2']);
-            expect(agentState.requests?.per_1).toMatchObject({ toolCallId: 'shell:0#msg-2' });
         } finally {
             releaseNative();
             await result;
