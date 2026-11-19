@@ -228,6 +228,35 @@ function rebaseMaterializingAgentState(initial: AgentState | null, local: AgentS
     return { ...rebased, requests: nextRequests, completedRequests: nextCompleted }
 }
 
+function changedAgentStateRequestIds(before: AgentState, after: AgentState): Set<string> {
+    const ids = new Set<string>()
+    for (const field of ['requests', 'completedRequests'] as const) {
+        const previous = before[field] ?? {}
+        const updated = after[field] ?? {}
+        for (const id of new Set([...Object.keys(previous), ...Object.keys(updated)])) {
+            if (!hasSameJsonValue(previous[id], updated[id])) ids.add(id)
+        }
+    }
+    return ids
+}
+
+function retainAgentStateRequests<T>(
+    current: Record<string, T> | null | undefined,
+    updated: Record<string, T> | null | undefined,
+    targeted: ReadonlySet<string>
+): Record<string, T> | null | undefined {
+    if (current === updated || !targeted.size) return current
+    const rebased = { ...current }
+    for (const id of targeted) {
+        if (updated && Object.hasOwn(updated, id)) {
+            Object.defineProperty(rebased, id, { value: updated[id], writable: true, enumerable: true, configurable: true })
+        } else {
+            delete rebased[id]
+        }
+    }
+    return Object.keys(rebased).length ? rebased : current && {}
+}
+
 export class ApiSessionClient extends EventEmitter {
     private reconnectHandler: ((metadataRefreshed?: boolean) => void) | null = null
     onReconnect(handler: ((metadataRefreshed?: boolean) => void) | null): void { this.reconnectHandler = handler }
@@ -616,7 +645,10 @@ if (isReconnect) {
             this.metadataChangedDuringAttempt = false
             const snapshot: PendingSessionSnapshot = {
                 metadata: this.metadata,
-                agentState: this.agentState
+                // An earlier create may have committed before its response was
+                // lost. Give all attempts the same state baseline and reconcile
+                // any subsequent local changes after creation is confirmed.
+                agentState: initialAgentState
             }
 
             try {
@@ -1602,6 +1634,7 @@ if (isReconnect) {
         }
         this.agentStateLock.inLock(async () => {
             let unconfirmed: { expectedVersion: number; agentState: AgentState } | undefined
+            let targetedRequests: ReadonlySet<string> | undefined
             const alreadyCommitted = () => unconfirmed !== undefined
                 && this.agentStateVersion === unconfirmed.expectedVersion + 1
                 && isDeepStrictEqual(this.agentState, unconfirmed.agentState)
@@ -1609,7 +1642,17 @@ if (isReconnect) {
                 if (this.isClosed() || alreadyCommitted()) return
                 const expectedVersion = this.agentStateVersion
                 const current = this.agentState ?? ({} as AgentState)
-                const updated = unconfirmed?.expectedVersion === expectedVersion ? unconfirmed.agentState : handler(current)
+                let updated = unconfirmed?.expectedVersion === expectedVersion ? unconfirmed.agentState : handler(current)
+                if (targetedRequests && unconfirmed?.expectedVersion !== expectedVersion) {
+                    // Re-evaluate the original targets against the latest Hub
+                    // snapshot without including permissions added after the
+                    // first attempt (for example by a session merge).
+                    updated = {
+                        ...updated,
+                        requests: retainAgentStateRequests(current.requests, updated.requests, targetedRequests),
+                        completedRequests: retainAgentStateRequests(current.completedRequests, updated.completedRequests, targetedRequests)
+                    }
+                }
                 let answer: unknown
                 try {
                     // Keep Socket.IO buffering during reconnect, with a bounded ACK wait.
@@ -1622,6 +1665,7 @@ if (isReconnect) {
                     // Retain the value as encoded on the wire, without re-running a
                     // time-sensitive updater when the Hub may have committed it.
                     unconfirmed = { expectedVersion, agentState: JSON.parse(JSON.stringify(updated)) as AgentState }
+                    targetedRequests ??= changedAgentStateRequestIds(current, updated)
                     throw error
                 }
                 if (this.isClosed()) return

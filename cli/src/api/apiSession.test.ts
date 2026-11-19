@@ -263,6 +263,37 @@ describe('ApiSessionClient input buffered during initialization', () => {
 })
 
 describe('ApiSessionClient lazy materialization', () => {
+    it('uses one state baseline across creation attempts even when steering starts and stops during retries', async () => {
+        vi.useFakeTimers()
+        socketHarness.sockets.length = 0
+        let created: Session | undefined
+        const materialize = vi.fn(async (snapshot: { agentState: AgentState | null }) => {
+            if (materialize.mock.calls.length === 1) {
+                throw Object.assign(new Error('Create never reached Hub'), { isAxiosError: true })
+            }
+            if (!created) {
+                created = createSession({ namespace: 'default', agentState: snapshot.agentState })
+                throw Object.assign(new Error('Create response lost'), { isAxiosError: true })
+            }
+            return created
+        })
+        const client = new ApiSessionClient('token', createSession({ agentState: { steeringActive: false } }), { materialize })
+        try {
+            const task = client.materialize()
+            client.updateAgentState(state => ({ ...state, steeringActive: true }))
+            await vi.advanceTimersByTimeAsync(1_100)
+            expect(materialize).toHaveBeenCalledTimes(2)
+            client.updateAgentState(state => ({ ...state, steeringActive: false }))
+            await vi.advanceTimersByTimeAsync(2_100)
+            expect(await task).toBe(true)
+            expect(materialize.mock.calls.map(([snapshot]) => snapshot.agentState?.steeringActive)).toEqual([false, false, false])
+            expect(created?.agentState?.steeringActive).toBe(false)
+        } finally {
+            client.close()
+            vi.useRealTimers()
+        }
+    })
+
     it('rebases state changed during materialization without dropping a permission merged after a lost ACK', async () => {
         vi.useFakeTimers()
         socketHarness.sockets.length = 0
@@ -2505,6 +2536,46 @@ describe('ApiSessionClient metadata cancellation and reconnect ordering', () => 
             expect(seen).toEqual([true, true, false])
             expect(socket.timeoutEmits.filter(({ event }) => event === 'update-state').map(({ ms }) => ms))
                 .toEqual([5_000, 5_000, 5_000])
+        } finally {
+            client.close()
+            vi.useRealTimers()
+        }
+    })
+
+    it('does not extend a cancellation after lost ACK to requests merged on the Hub', async () => {
+        vi.useFakeTimers()
+        socketHarness.sockets.length = 0
+        const pendingRequest = { tool: 'Read', arguments: {}, createdAt: 10 }
+        const mergedRequest = { tool: 'Read', arguments: {}, createdAt: 20 }
+        const client = new ApiSessionClient('token', createSession({
+            namespace: 'default', agentState: { requests: { initial: pendingRequest } }
+        }))
+        const socket = socketHarness.sockets[0]!
+        const writes: Array<{ expectedVersion: number; agentState: AgentState }> = []
+        socket.emitWithAckImpl = async (event, payload) => {
+            if (event !== 'update-state') return {}
+            const request = payload as (typeof writes)[number]
+            writes.push(request)
+            if (writes.length === 1) return await new Promise<never>(() => {})
+            if (request.expectedVersion === 0) return { result: 'version-mismatch', version: 2, agentState: {
+                ...writes[0]!.agentState, requests: { merged: mergedRequest }
+            } }
+            return { result: 'success', version: request.expectedVersion + 1, agentState: request.agentState }
+        }
+        try {
+            client.updateAgentState(state => ({
+                ...state,
+                requests: {},
+                completedRequests: {
+                    ...state.completedRequests,
+                    ...Object.fromEntries(Object.entries(state.requests ?? {}).map(([id, request]) =>
+                        [id, { ...request, status: 'canceled' as const, completedAt: Date.now() }]))
+                }
+            }))
+            await vi.advanceTimersByTimeAsync(6_100)
+            expect(writes.map(write => write.expectedVersion)).toEqual([0, 0, 2])
+            expect(writes[2]!.agentState.requests).toEqual({ merged: mergedRequest })
+            expect(writes[2]!.agentState.completedRequests).toEqual(writes[0]!.agentState.completedRequests)
         } finally {
             client.close()
             vi.useRealTimers()
