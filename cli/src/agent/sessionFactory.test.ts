@@ -122,6 +122,20 @@ describe('bootstrapExistingSession', () => {
         expect(sessionSyncClientMock).not.toHaveBeenCalled();
     });
 
+    it.each([false, true])('preserves Codex tier intent %s across the existing-session metadata rebuild', async explicit => {
+        const session = createSession();
+        session.metadata = { ...session.metadata!, codexServiceTierExplicit: explicit };
+        const sessionClient = { updateMetadata: vi.fn() };
+        getSessionMock.mockResolvedValue(session);
+        getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' });
+        sessionSyncClientMock.mockReturnValue(sessionClient);
+        readSettingsMock.mockResolvedValue({ machineId: 'machine-1' });
+        const result = await bootstrapExistingSession({ sessionId: session.id, flavor: 'codex', workingDirectory: '/tmp/project' });
+        expect(result.metadata.codexServiceTierExplicit).toBe(explicit);
+        const rebuild = sessionClient.updateMetadata.mock.calls[0][0];
+        expect(rebuild(session.metadata).codexServiceTierExplicit).toBe(explicit);
+        expect(rebuild({ ...session.metadata, codexServiceTierExplicit: !explicit }).codexServiceTierExplicit).toBe(!explicit);
+    });
     it('refuses local Codex resume of a CLI-archived source with a pending fork before creating a socket or changing metadata', async () => {
         const session = createSession()
         session.metadata = { ...session.metadata!, lifecycleState: 'archived', archivedBy: 'cli',
