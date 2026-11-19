@@ -260,6 +260,7 @@ export default {
   'boards.newCard.bodyPreview': 'Issue 正文预览',
   'boards.newCard.emptyBody': '(空)',
   'boards.newCard.create': '创建 issue',
+  'boards.newCard.retryAttach': '重试添加到看板',
   'boards.newCard.creating': '创建中…',
   'boards.newCard.error': '无法创建该 issue。',
   'boards.newCard.minLength': '最少 {count} 个字符',

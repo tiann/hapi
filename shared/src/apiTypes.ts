@@ -1705,7 +1705,13 @@ export const CreateBoardItemRequestSchema = z.object({
     // blank issues, or removing a template, between picker-open and submit
     // left a window where this route filed an issue the repo's current
     // policy no longer allows).
-    templateId: z.string().nullable()
+    templateId: z.string().nullable(),
+    // Set on a retry after a prior submission's issue was created but
+    // project-attachment failed (review finding, hapi#238) — resubmitting
+    // without this re-ran the whole create+attach flow and filed a second,
+    // duplicate issue instead of retrying just the attach step for the one
+    // that already exists.
+    existingIssueUrl: z.string().url().optional()
 })
 export type CreateBoardItemRequest = z.infer<typeof CreateBoardItemRequestSchema>
 

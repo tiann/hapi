@@ -46,7 +46,7 @@ export type NewCardDialogProps = {
     isLoadingTemplates: boolean
     templatesError: string | null
     onRepoChange: (repo: string | null) => void
-    onSubmit: (payload: { repo: string; title: string; body: string; templateId: string | null; labels: string[]; assignees: string[] }) => Promise<string>
+    onSubmit: (payload: { repo: string; title: string; body: string; templateId: string | null; existingIssueUrl?: string; labels: string[]; assignees: string[] }) => Promise<string>
 }
 
 /**
@@ -167,7 +167,6 @@ export function NewCardDialog(props: NewCardDialogProps) {
 
     const handleSubmit = async () => {
         setError(null)
-        setOrphanedIssueUrl(null)
         setIsSubmitting(true)
         try {
             await onSubmit({
@@ -175,13 +174,24 @@ export function NewCardDialog(props: NewCardDialogProps) {
                 title: finalTitle,
                 body: formattedBody,
                 templateId: selectedTemplate?.id ?? null,
+                // Retrying after a partial failure attaches the issue that
+                // already exists rather than creating a second one (review
+                // finding, hapi#238) — only present once a prior attempt's
+                // create succeeded but its project-attach step didn't.
+                existingIssueUrl: orphanedIssueUrl ?? undefined,
                 labels: selectedTemplate?.labels ?? [],
                 assignees: selectedTemplate?.assignees ?? []
             })
+            setOrphanedIssueUrl(null)
             onClose()
         } catch (err) {
             setError(getApiErrorMessage(err, t('boards.newCard.error')))
-            setOrphanedIssueUrl(getApiErrorUrl(err))
+            // Keep showing the previously-known orphaned issue (if any) when
+            // this retry's own failure carries no URL of its own — a
+            // transient network error on the attach retry must not make the
+            // already-created issue's link disappear from view.
+            const url = getApiErrorUrl(err)
+            if (url) setOrphanedIssueUrl(url)
         } finally {
             setIsSubmitting(false)
         }
@@ -418,7 +428,7 @@ export function NewCardDialog(props: NewCardDialogProps) {
                                             <Spinner size="sm" label={null} className="text-[var(--app-button-text)]" />
                                             {t('boards.newCard.creating')}
                                         </>
-                                    ) : t('boards.newCard.create')}
+                                    ) : orphanedIssueUrl ? t('boards.newCard.retryAttach') : t('boards.newCard.create')}
                                 </Button>
                             </div>
                         </div>

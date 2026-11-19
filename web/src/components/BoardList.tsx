@@ -364,7 +364,7 @@ export function BoardList(props: {
     isLoadingIssueTemplates: boolean
     issueTemplatesError: string | null
     onNewCardRepoChange: (repo: string | null) => void
-    onCreateCard: (payload: { repo: string; title: string; body: string; templateId: string | null; labels: string[]; assignees: string[] }) => Promise<string>
+    onCreateCard: (payload: { repo: string; title: string; body: string; templateId: string | null; existingIssueUrl?: string; labels: string[]; assignees: string[] }) => Promise<string>
 }) {
     const { t } = useTranslation()
     // In-memory cache of explicit user toggles this session, keyed by

@@ -218,6 +218,7 @@ export default {
   'boards.newCard.bodyPreview': 'Предпросмотр текста issue',
   'boards.newCard.emptyBody': '(пусто)',
   'boards.newCard.create': 'Создать issue',
+  'boards.newCard.retryAttach': 'Повторить добавление на доску',
   'boards.newCard.creating': 'Создание…',
   'boards.newCard.error': 'Не удалось создать issue.',
   'boards.newCard.minLength': 'Минимум {count} символов',

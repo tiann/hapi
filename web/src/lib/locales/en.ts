@@ -260,6 +260,7 @@ export default {
   'boards.newCard.bodyPreview': 'Issue body preview',
   'boards.newCard.emptyBody': '(empty)',
   'boards.newCard.create': 'Create issue',
+  'boards.newCard.retryAttach': 'Retry adding to board',
   'boards.newCard.creating': 'Creating…',
   'boards.newCard.error': 'Could not create the issue.',
   'boards.newCard.minLength': 'Minimum {count} characters',

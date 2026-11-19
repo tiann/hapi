@@ -213,6 +213,45 @@ describe('NewCardDialog', () => {
         })
     })
 
+    // Regression (bot review, hapi#238): a retry after "issue created, but
+    // not added to the board" used to resubmit the exact same payload,
+    // filing a second, duplicate issue instead of retrying only the attach.
+    it('retries only the attach step (existingIssueUrl) after a partial create-but-not-attached failure', async () => {
+        const onSubmit = vi.fn()
+            .mockRejectedValueOnce(new ApiError(
+                'Issue created at https://github.com/heavygee/hapi/issues/42 but could not be added to the board: boom',
+                502, undefined, JSON.stringify({ url: 'https://github.com/heavygee/hapi/issues/42' })
+            ))
+            .mockResolvedValueOnce('https://github.com/heavygee/hapi/issues/42')
+        renderDialog({ templates: [], blankAllowed: true, onSubmit })
+
+        fireEvent.change(screen.getByPlaceholderText('owner/repo'), { target: { value: 'heavygee/hapi' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+        fireEvent.click(await screen.findByText('Open a blank issue'))
+        fireEvent.change(screen.getAllByRole('textbox')[0]!, { target: { value: 'A plain title' } })
+        fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Plain body text' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Create issue' }))
+
+        const orphanedLink = await screen.findByRole('link', { name: 'https://github.com/heavygee/hapi/issues/42' })
+        expect(orphanedLink).toHaveAttribute('href', 'https://github.com/heavygee/hapi/issues/42')
+
+        const retryButton = await screen.findByRole('button', { name: 'Retry adding to board' })
+        fireEvent.click(retryButton)
+
+        await waitFor(() => {
+            expect(onSubmit).toHaveBeenLastCalledWith({
+                repo: 'heavygee/hapi',
+                title: 'A plain title',
+                body: 'Plain body text',
+                templateId: null,
+                existingIssueUrl: 'https://github.com/heavygee/hapi/issues/42',
+                labels: [],
+                assignees: []
+            })
+        })
+    })
+
     it('does not offer "Open a blank issue" when blankAllowed is false but a usable template exists', async () => {
         renderDialog({ templates: [FORM_TEMPLATE], blankAllowed: false })
 

@@ -2234,4 +2234,62 @@ describe('POST /api/todo-boards/:id/items (create a card)', () => {
         expect(body.error).toContain('https://github.com/heavygee/hapi/issues/42')
         expect(body.url).toBe('https://github.com/heavygee/hapi/issues/42')
     })
+
+    // Regression (bot review, hapi#238): a retry after "created but not
+    // added to board" used to re-run createIssue too, filing a second,
+    // duplicate issue. existingIssueUrl makes the retry attach-only.
+    it('retries only the project-attach step for an existingIssueUrl, without creating a second issue', async () => {
+        const calls: string[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            createIssue: async () => { calls.push('createIssue'); return 'https://github.com/heavygee/hapi/issues/99' },
+            addItemToProject: async (target) => { calls.push(`addItemToProject:${target.issueUrl}`) }
+        })
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({
+                repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null,
+                existingIssueUrl: 'https://github.com/heavygee/hapi/issues/42'
+            })
+        })
+        expect(response.status).toBe(200)
+        const body = await response.json() as { ok: true; url: string }
+        expect(body.url).toBe('https://github.com/heavygee/hapi/issues/42')
+        expect(calls).toEqual(['addItemToProject:https://github.com/heavygee/hapi/issues/42'])
+    })
+
+    // A retry-attach creates nothing, so there is nothing for a changed
+    // template policy to invalidate — the policy re-check must not 409 it.
+    it('skips the template-policy re-check for a retry-attach', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined,
+            {
+                ...UNUSED_ACTIONS,
+                createIssue: async () => { calls.push('should-not-be-called'); return 'https://github.com/heavygee/hapi/issues/99' },
+                addItemToProject: async (target) => { calls.push(`addItemToProject:${target.issueUrl}`) }
+            },
+            ALWAYS_MEMBER, undefined,
+            () => ({
+                data: {
+                    repository: {
+                        issueTemplateDir: {
+                            entries: [
+                                { name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }
+                            ]
+                        }
+                    }
+                }
+            })
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({
+                repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null,
+                existingIssueUrl: 'https://github.com/heavygee/hapi/issues/42'
+            })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual(['addItemToProject:https://github.com/heavygee/hapi/issues/42'])
+    })
 })

@@ -1889,36 +1889,49 @@ export function createBoardRoutes(
         // template, in the window between the picker fetching templates and
         // this submit. A 409 here preserves the client's draft (it never
         // clears on a failed submit) rather than filing something the repo's
-        // current policy no longer allows.
-        const [repoOwner, repoName] = parsed.data.repo.split('/') as [string, string]
-        try {
-            const { templates, blankIssuesEnabled } = await resolveIssueTemplatesForRepo(board.host, repoOwner, repoName)
-            if (parsed.data.templateId === null) {
-                if (!blankIssuesEnabled) {
-                    return c.json({ error: 'This repository no longer allows blank issues — pick a template and try again' }, 409)
+        // current policy no longer allows. Skipped on a retry-attach
+        // (existingIssueUrl set): that issue was already created under the
+        // policy that applied at the time, and this request creates nothing
+        // new — only (re)attaching it to the project.
+        if (!parsed.data.existingIssueUrl) {
+            const [repoOwner, repoName] = parsed.data.repo.split('/') as [string, string]
+            try {
+                const { templates, blankIssuesEnabled } = await resolveIssueTemplatesForRepo(board.host, repoOwner, repoName)
+                if (parsed.data.templateId === null) {
+                    if (!blankIssuesEnabled) {
+                        return c.json({ error: 'This repository no longer allows blank issues — pick a template and try again' }, 409)
+                    }
+                } else {
+                    const current = templates.find(t => t.id === parsed.data.templateId)
+                    if (!current || !isUsableIssueTemplate(current)) {
+                        return c.json({ error: 'This template is no longer available — pick another and try again' }, 409)
+                    }
                 }
-            } else {
-                const current = templates.find(t => t.id === parsed.data.templateId)
-                if (!current || !isUsableIssueTemplate(current)) {
-                    return c.json({ error: 'This template is no longer available — pick another and try again' }, 409)
-                }
+            } catch (error) {
+                return c.json({ error: error instanceof Error ? error.message : 'Failed to verify the current issue template policy' }, 502)
             }
-        } catch (error) {
-            return c.json({ error: error instanceof Error ? error.message : 'Failed to verify the current issue template policy' }, 502)
         }
 
         let issueUrl: string
-        try {
-            issueUrl = await actions.createIssue({
-                host: board.host,
-                repo: parsed.data.repo,
-                title: parsed.data.title,
-                body: parsed.data.body,
-                labels: parsed.data.labels,
-                assignees: parsed.data.assignees
-            })
-        } catch (error) {
-            return c.json({ error: error instanceof Error ? error.message : 'Failed to create issue' }, 502)
+        if (parsed.data.existingIssueUrl) {
+            // Retry-attach: the issue already exists from a prior submission
+            // whose project-attach step failed — do not call createIssue
+            // again, or this exact retry would be the duplicate it exists to
+            // prevent (review finding, hapi#238).
+            issueUrl = parsed.data.existingIssueUrl
+        } else {
+            try {
+                issueUrl = await actions.createIssue({
+                    host: board.host,
+                    repo: parsed.data.repo,
+                    title: parsed.data.title,
+                    body: parsed.data.body,
+                    labels: parsed.data.labels,
+                    assignees: parsed.data.assignees
+                })
+            } catch (error) {
+                return c.json({ error: error instanceof Error ? error.message : 'Failed to create issue' }, 502)
+            }
         }
 
         try {
