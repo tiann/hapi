@@ -497,9 +497,6 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (queue.size() > 0 || queue.isClosed() || outerSignal.aborted) {
             return { kind: 'batch', batch: await queue.waitForMessagesAndGetAsString(outerSignal) };
         }
-        if (this.hasPendingReactiveWakeup()) {
-            return { kind: 'wakeup' };
-        }
 
         const waitController = new AbortController();
         let wakeupTriggered = false;
@@ -508,12 +505,41 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const onOuterAbort = () => waitController.abort();
         outerSignal.addEventListener('abort', onOuterAbort, { once: true });
 
+        let timer: ReturnType<typeof setInterval> | undefined;
+        let pollMs: number | undefined;
+        const stopPoll = () => {
+            clearInterval(timer);
+            timer = undefined;
+        };
+        const armPoll = (intervalMs: number) => {
+            if ((timer && pollMs === intervalMs) || waitController.signal.aborted) return;
+            stopPoll();
+            pollMs = intervalMs;
+            timer = setInterval(checkWakeup, intervalMs);
+            timer.unref?.();
+        };
+
         const tryAttachWatcher = () => {
             if (watchRef.current || !this.acpSessionId) return;
             const paths = agyTranscriptPaths(this.brainDir, this.acpSessionId);
             if (!paths) return;
             try {
-                const fsWatcher = watch(paths.logsDir, () => checkWakeup());
+                const fsWatcher = watch(paths.logsDir, (event) => {
+                    if (watchRef.current !== fsWatcher) return;
+                    if (event === 'rename') {
+                        watchRef.current = null;
+                        fsWatcher.close();
+                    }
+                    checkWakeup();
+                });
+                const lost = () => {
+                    if (watchRef.current !== fsWatcher) return;
+                    watchRef.current = null;
+                    fsWatcher.close();
+                    armPoll(this.reactivePollMs);
+                };
+                fsWatcher.once('error', lost);
+                fsWatcher.once('close', lost);
                 fsWatcher.unref?.();
                 watchRef.current = fsWatcher;
             } catch {
@@ -524,17 +550,15 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const checkWakeup = () => {
             if (wakeupTriggered || waitController.signal.aborted || this.shouldExit || queue.size() > 0) return;
             tryAttachWatcher();
+            armPoll(watchRef.current ? 30_000 : this.reactivePollMs);
             if (this.hasPendingReactiveWakeup()) {
                 wakeupTriggered = true;
                 waitController.abort();
             }
         };
 
-        tryAttachWatcher();
-        const timer = setInterval(checkWakeup, this.reactivePollMs);
-        timer.unref?.();
-
         try {
+            checkWakeup();
             const batch = await queue.waitForMessagesAndGetAsString(waitController.signal);
             if (batch) return { kind: 'batch', batch };
             if (wakeupTriggered && !outerSignal.aborted && !this.shouldExit) {
@@ -542,8 +566,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             }
             return { kind: 'batch', batch: null };
         } finally {
-            clearInterval(timer);
-            watchRef.current?.close();
+            stopPoll();
+            const watcher = watchRef.current;
+            watchRef.current = null;
+            watcher?.close();
             outerSignal.removeEventListener('abort', onOuterAbort);
         }
     }

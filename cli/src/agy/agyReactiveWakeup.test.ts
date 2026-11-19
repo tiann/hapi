@@ -1,4 +1,5 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
+import { EventEmitter } from 'node:events';
+import { watch, type FSWatcher, mkdtempSync, mkdirSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -25,6 +26,10 @@ import {
     type AgyTranscriptStep
 } from './agyReactiveWakeup';
 
+vi.mock('node:fs', async (load) => {
+    const fs = await load<typeof import('node:fs')>();
+    return { ...fs, watch: vi.fn(fs.watch) };
+});
 vi.mock('@/ui/ink/RemoteModeDisplay', () => ({ RemoteModeDisplay: () => null }));
 vi.mock('@/ui/logger', () => ({ logger: { debug: vi.fn(), warn: vi.fn(), info: vi.fn() } }));
 
@@ -738,6 +743,63 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
 
     afterEach(() => {
         rmSync(tempBrainDir, { recursive: true, force: true });
+    });
+
+    it.each(['silent', 'rename', 'late directory'])('recovers a transcript wakeup with a %s watcher', async (mode) => {
+        vi.useFakeTimers();
+        const { session } = makeHarness();
+        const launcher = new AgyAcpRemoteLauncher(session, { brainDir: tempBrainDir, reactivePollMs: 350 });
+        const id = 'agy-watcher';
+        launcher['acpSessionId'] = id;
+        launcher['backend'] = new WakeupTestBackend() as unknown as AcpSdkBackend;
+        const controller = new AbortController();
+        const existingTimers = vi.getTimerCount();
+        const watchers: Array<ReturnType<typeof makeWatcher>> = [];
+        function makeWatcher() {
+            return Object.assign(new EventEmitter(), { close: vi.fn(), unref: vi.fn() });
+        }
+        const mocked = vi.mocked(watch);
+        const original = mocked.getMockImplementation()!;
+        let available = mode !== 'late directory';
+        mocked.mockImplementation(() => {
+            if (!available) throw Error('ENOENT');
+            const watcher = makeWatcher();
+            watchers.push(watcher);
+            return watcher as unknown as FSWatcher;
+        });
+        mocked.mockClear();
+        try {
+            writeTranscript(tempBrainDir, id, []);
+            const waiting = launcher['waitForNextBatchOrWakeup'](controller.signal);
+            let settled = false;
+            void waiting.then(() => { settled = true; });
+            if (!available) {
+                available = true;
+                await vi.advanceTimersByTimeAsync(350);
+            }
+            expect(watchers).toHaveLength(1);
+            if (mode === 'rename') {
+                const listener = mocked.mock.calls.at(-1)![1] as (event: string) => void;
+                listener('rename');
+                expect(watchers[0].close).toHaveBeenCalledOnce();
+                expect(watchers).toHaveLength(2);
+            }
+            writeTranscript(tempBrainDir, id, [{ step_index: 1, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE' }]);
+            if (mode === 'rename') {
+                const listener = mocked.mock.calls.at(-1)![1] as (event: string) => void;
+                listener('change');
+            } else {
+                await vi.advanceTimersByTimeAsync(29_999);
+                expect(settled).toBe(false);
+                await vi.advanceTimersByTimeAsync(1);
+            }
+            await expect(waiting).resolves.toEqual({ kind: 'wakeup' });
+            expect(vi.getTimerCount()).toBe(existingTimers);
+        } finally {
+            controller.abort();
+            mocked.mockImplementation(original);
+            vi.useRealTimers();
+        }
     });
 
     it('wakes up on completed background turn, emits background Bash result + text + summary, and advances cursor via resumeSession', async () => {
