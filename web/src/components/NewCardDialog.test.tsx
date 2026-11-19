@@ -258,6 +258,54 @@ describe('NewCardDialog', () => {
         })
     })
 
+    // Regression (bot review, hapi#238, follow-up): after a partial
+    // failure, Back still let the user edit the title/body and resubmit —
+    // but the hub's retry-attach path ignores title/body entirely and only
+    // attaches the already-created issue, so the edit was silently
+    // discarded while the dialog still reported success.
+    it('abandons the retry-attach association on Back, so an edit after that point creates a fresh issue', async () => {
+        const onSubmit = vi.fn()
+            .mockRejectedValueOnce(new ApiError(
+                'Issue created at https://github.com/heavygee/hapi/issues/42 but could not be added to the board: boom',
+                502, undefined, JSON.stringify({ url: 'https://github.com/heavygee/hapi/issues/42' })
+            ))
+            .mockResolvedValueOnce('https://github.com/heavygee/hapi/issues/99')
+        renderDialog({ templates: [], blankAllowed: true, onSubmit })
+
+        fireEvent.change(screen.getByPlaceholderText('owner/repo'), { target: { value: 'heavygee/hapi' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+        fireEvent.click(await screen.findByText('Open a blank issue'))
+        fireEvent.change(screen.getAllByRole('textbox')[0]!, { target: { value: 'Original title' } })
+        fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Original body' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Create issue' }))
+
+        await screen.findByRole('button', { name: 'Retry adding to board' })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+        fireEvent.change(screen.getAllByRole('textbox')[0]!, { target: { value: 'Edited title' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+
+        // Not "Retry adding to board" — the association was abandoned, and
+        // the stale error/link from before must not still be showing.
+        expect(screen.queryByRole('button', { name: 'Retry adding to board' })).toBeNull()
+        expect(screen.queryByText(/could not be added to the board/)).toBeNull()
+        fireEvent.click(screen.getByRole('button', { name: 'Create issue' }))
+
+        await waitFor(() => {
+            expect(onSubmit).toHaveBeenLastCalledWith({
+                repo: 'heavygee/hapi',
+                title: 'Edited title',
+                body: 'Original body',
+                templateId: null,
+                templateRevision: null,
+                existingIssueUrl: undefined,
+                labels: [],
+                assignees: []
+            })
+        })
+    })
+
     it('does not offer "Open a blank issue" when blankAllowed is false but a usable template exists', async () => {
         renderDialog({ templates: [FORM_TEMPLATE], blankAllowed: false })
 

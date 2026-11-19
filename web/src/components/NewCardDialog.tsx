@@ -420,7 +420,24 @@ export function NewCardDialog(props: NewCardDialogProps) {
                             ) : null}
 
                             <div className="flex items-center justify-between gap-2">
-                                <Button type="button" variant="secondary" onClick={() => setStep('form')} disabled={isSubmitting}>
+                                <Button
+                                    type="button"
+                                    variant="secondary"
+                                    onClick={() => {
+                                        // Abandon the pending retry-attach association on Back
+                                        // (review finding, hapi#238): the hub's retry-attach
+                                        // path only ever attaches the already-created issue —
+                                        // it ignores title/body entirely — so an edit made
+                                        // after this point can never reach that issue. Clearing
+                                        // orphanedIssueUrl here makes the next submit create a
+                                        // fresh issue reflecting the edit, instead of silently
+                                        // discarding it while still reporting success.
+                                        setError(null)
+                                        setOrphanedIssueUrl(null)
+                                        setStep('form')
+                                    }}
+                                    disabled={isSubmitting}
+                                >
                                     {t('button.back')}
                                 </Button>
                                 <Button type="button" className="gap-2" aria-busy={isSubmitting} onClick={handleSubmit} disabled={isSubmitting}>
