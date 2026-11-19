@@ -933,6 +933,87 @@ describe('AcpSdkBackend', () => {
         expect(events).toEqual(['wait', 'request', 'sent', 'answered', 'wait', 'resolved']);
     });
 
+    it('waits for transport dispatch before firing timing.onSent', async () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const events: string[] = [];
+        let resolveDispatched!: () => void;
+        let resolveCompleted!: (value: unknown) => void;
+        const dispatched = new Promise<void>((resolve) => { resolveDispatched = resolve; });
+        const completed = new Promise<unknown>((resolve) => { resolveCompleted = resolve; });
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequestWithDispatch: (
+                    method: string,
+                    params: unknown,
+                    options?: { timeoutMs?: number; dispatchTimeoutMs?: number }
+                ) => { dispatched: Promise<void>; completed: Promise<unknown> };
+                close: () => Promise<void>;
+            } | null;
+            waitForSessionUpdateQuiet: (quietMs: number, timeoutMs: number) => Promise<void>;
+        };
+        backendInternal.waitForSessionUpdateQuiet = async () => {};
+        const sendRequestWithDispatch = vi.fn(() => {
+            events.push('request');
+            return { dispatched, completed };
+        });
+        backendInternal.transport = {
+            sendRequestWithDispatch,
+            close: async () => {}
+        };
+
+        const promptPromise = backend.prompt('session-1', [{ type: 'text', text: 'hello' }], () => {}, {
+            timing: {
+                onSent: () => events.push('sent'),
+                onAnswered: () => events.push('answered')
+            }
+        });
+
+        await vi.waitFor(() => expect(sendRequestWithDispatch).toHaveBeenCalledTimes(1));
+        expect(sendRequestWithDispatch).toHaveBeenCalledWith(
+            'session/prompt',
+            { sessionId: 'session-1', prompt: [{ type: 'text', text: 'hello' }] },
+            { timeoutMs: Infinity, dispatchTimeoutMs: 20_000 }
+        );
+        expect(events).toEqual(['request']);
+
+        resolveDispatched();
+        await vi.waitFor(() => expect(events).toEqual(['request', 'sent']));
+
+        resolveCompleted({ stopReason: 'end_turn' });
+        await promptPromise;
+        expect(events).toEqual(['request', 'sent', 'answered']);
+    });
+
+    it('does not fire timing.onSent when transport dispatch rejects', async () => {
+        const backend = new AcpSdkBackend({ command: 'agent' });
+        const onSent = vi.fn();
+        const onAnswered = vi.fn();
+        const dispatchError = new Error('stdin write failed');
+        const backendInternal = backend as unknown as {
+            transport: {
+                sendRequestWithDispatch: () => { dispatched: Promise<void>; completed: Promise<unknown> };
+                close: () => Promise<void>;
+            } | null;
+            waitForSessionUpdateQuiet: (quietMs: number, timeoutMs: number) => Promise<void>;
+        };
+        backendInternal.waitForSessionUpdateQuiet = async () => {};
+        backendInternal.transport = {
+            sendRequestWithDispatch: () => ({
+                dispatched: Promise.reject(dispatchError),
+                completed: Promise.reject(dispatchError)
+            }),
+            close: async () => {}
+        };
+
+        await expect(
+            backend.prompt('session-1', [{ type: 'text', text: 'hello' }], () => {}, {
+                timing: { onSent, onAnswered }
+            })
+        ).rejects.toThrow('stdin write failed');
+        expect(onSent).not.toHaveBeenCalled();
+        expect(onAnswered).toHaveBeenCalledTimes(1);
+    });
+
     it('seals a Cursor done footer before quiet drain so harness text stays separate (#2268)', async () => {
         backendStatics.UPDATE_QUIET_PERIOD_MS = 40;
         backendStatics.UPDATE_DRAIN_TIMEOUT_MS = 200;
