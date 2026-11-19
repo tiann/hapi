@@ -765,7 +765,13 @@ export class SessionCache {
         let newest: StoredMessage | null = null
         for (const message of this.store.messages.getInvokedMessages(sessionId)) {
             if (!isDeliveredOperatorReply(message)) continue
-            if (newest === null || deliveredOperatorReplyAt(message) > deliveredOperatorReplyAt(newest)) {
+            // Selected by the same key `replyAnswersFooter` then compares.
+            // Picking the latest by timestamp and testing by position let the
+            // two disagree after a merge, where the destination's positions
+            // were renumbered and its replies' timestamps were not — so the
+            // reply chosen as "latest" could be the one that answers least.
+            if (newest === null
+                || deliveredOperatorReplySeq(message) > deliveredOperatorReplySeq(newest)) {
                 newest = message
             }
         }

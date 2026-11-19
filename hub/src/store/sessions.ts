@@ -1305,34 +1305,6 @@ export function shiftNotifySeqWatermarks(
     }
 }
 
-/**
- * Move the clear boundary forward WITHOUT dropping the current footer.
- *
- * Queueing a prompt is optimistic — the agent may never receive it — so it
- * must not erase a live blocker. It must still advance the boundary, or a
- * footer delayed past the reply slips in behind it later.
- */
-export function advanceNotifyClearBoundary(
-    db: Database,
-    id: string,
-    namespace: string,
-    clearedAt: number
-): boolean {
-    try {
-        const result = db.prepare(`
-            UPDATE sessions
-            SET last_notify_cleared_at = @clearedAt,
-                seq = seq + 1
-            WHERE id = @id
-              AND namespace = @namespace
-              AND (last_notify_cleared_at IS NULL OR last_notify_cleared_at < @clearedAt)
-        `).run({ id, namespace, clearedAt })
-        return result.changes === 1
-    } catch {
-        return false
-    }
-}
-
 /** Dismissed-blocker identities are stored as a JSON array in one column. */
 export function parseAckKeys(raw: string | null | undefined): string[] | null {
     // `undefined` reaches here when the column is absent on a database that

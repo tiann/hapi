@@ -29,8 +29,7 @@ import {
     updateSessionAgentState,
     updateSessionMetadata,
     replaceSessionNotifyAfterTruncate,
-    shiftNotifySeqWatermarks,
-    advanceNotifyClearBoundary
+    shiftNotifySeqWatermarks
 } from './sessions'
 
 export class SessionStore {
@@ -124,10 +123,6 @@ export class SessionStore {
         namespace: string
     ): boolean {
         return setSessionBlockedAck(this.db, id, ack, namespace)
-    }
-
-    advanceNotifyClearBoundary(id: string, namespace: string, clearedAt: number = Date.now()): boolean {
-        return advanceNotifyClearBoundary(this.db, id, namespace, clearedAt)
     }
 
     clearSessionLastNotify(
