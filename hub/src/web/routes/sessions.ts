@@ -274,6 +274,17 @@ export function createSessionsRoutes(
         return c.json({ sessions })
     })
 
+    app.get('/sessions/scratchlist-status', (c) => {
+        const engine = requireSyncEngine(c, getSyncEngine)
+        if (engine instanceof Response) {
+            return engine
+        }
+
+        return c.json({
+            sessionIds: engine.getScratchlistSessionIdsByNamespace(c.get('namespace'))
+        })
+    })
+
     const respondToSessionContentSearch = (
         c: Context<WebAppEnv>,
         engine: SyncEngine,

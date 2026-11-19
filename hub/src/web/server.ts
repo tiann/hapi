@@ -241,12 +241,26 @@ function withVaryAcceptEncoding(response: Response): Response {
     }
 }
 
-function getStaticCacheHeaders(requestPath: string, options?: { spaFallback?: boolean }): Record<string, string> {
+export function getStaticCacheHeaders(requestPath: string, options?: { spaFallback?: boolean }): Record<string, string> {
     if (!options?.spaFallback && requestPath === '/sw.js') {
         return {
             'Cache-Control': 'no-store, no-cache, must-revalidate',
             'CDN-Cache-Control': 'no-store',
             'Cloudflare-CDN-Cache-Control': 'no-store'
+        }
+    }
+    if (!options?.spaFallback && requestPath.startsWith('/assets/fonts/')) {
+        // copyKaTeXFonts (web/vite.config.ts) copies the katex fonts into
+        // assets/fonts/ under their original, non-content-hashed names — the
+        // only non-hashed family under /assets/ — so they must not get the
+        // blanket immutable rule: a katex upgrade can revise a same-named
+        // font, and immutable would pin stale bytes for up to a year in the
+        // browser HTTP cache, the SW precache (vite-plugin-pwa's default
+        // dontCacheBustURLsMatching ^assets/ leaves these entries without a
+        // revision, so workbox installs fetch them through the HTTP cache)
+        // and any CDN edge that respects origin max-age.
+        return {
+            'Cache-Control': 'public, max-age=86400'
         }
     }
     if (!options?.spaFallback && requestPath.startsWith('/assets/')) {
