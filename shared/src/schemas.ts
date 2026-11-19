@@ -47,7 +47,8 @@ export const OpencodeClearOperationSchema = z.object({
     replacementSessionId: z.string(),
     state: z.enum(['reserved', 'abort-needed', 'cleanup-confirmed', 'finalizing', 'pending', 'failed', 'completed', 'aborted']),
     updatedAt: z.number(),
-    error: z.string().optional()
+    error: z.string().optional(),
+    abortInvalidationPending: z.literal(true).optional()
 })
 export type OpencodeClearOperation = z.infer<typeof OpencodeClearOperationSchema>
 

@@ -505,7 +505,7 @@ describe('SyncEngine.clearOpenCodeSession', () => {
         } finally { engine.stop() }
     })
 
-    it.each(['normal', 'lost result', 'cache refreshed before retry'] as const)(
+    it.each(['normal', 'lost result', 'cache refreshed before retry', 'zero moves'] as const)(
         'invalidates both owners after an abort returns queued prompts (%s)',
         async (scenario) => {
             const { store, engine } = createEngine()
@@ -517,16 +517,20 @@ describe('SyncEngine.clearOpenCodeSession', () => {
                 }, null, 'default')
                 engine.handleSessionAlive({ sid: source.id, time: Date.now() })
                 expect(engine.reserveOpenCodeClearSession(source.id, 'default')).toMatchObject({ type: 'success' })
-                await engine.sendMessage(source.id, { text: 'restore once', localId: 'restore-once', scheduledAt: Date.now() + 60_000 })
+                const moved = scenario !== 'zero moves'
+                if (moved) {
+                    await engine.sendMessage(source.id, { text: 'restore once', localId: 'restore-once', scheduledAt: Date.now() + 60_000 })
+                }
                 const replacementId = currentReplacementId(engine, source.id)
-                expect(engine.getSessionByNamespace(replacementId, 'default')?.hasConversationContent).toBe(true)
+                expect(engine.getSessionByNamespace(replacementId, 'default')?.hasConversationContent).toBe(moved)
                 const original = store.abortOpenCodeClearOperation.bind(store)
                 if (scenario === 'cache refreshed before retry') {
                     const cached = engine.getSessionByNamespace(source.id, 'default')!
-                    const operation = cached.metadata!.opencodeClearOperation!
+                    const metadata = cached.metadata!
+                    const operation = metadata.opencodeClearOperation!
                     // Commit the store write without publishing the engine's invalidation.
                     expect(original(source.id, replacementId, {
-                        ...cached.metadata,
+                        ...metadata,
                         opencodeClearOperation: { ...operation, state: 'aborted' }
                     }, cached.metadataVersion, 'default')).toMatchObject({ result: 'success' })
                     engine.handleRealtimeEvent({ type: 'session-updated', sessionId: source.id })
@@ -539,15 +543,17 @@ describe('SyncEngine.clearOpenCodeSession', () => {
                     }
                 }
                 expect(engine.abortOpenCodeClearSession(source.id, 'default', replacementId)).toEqual({ type: 'success', sessionId: source.id })
-                expect(engine.getSessionByNamespace(source.id, 'default')?.hasConversationContent).toBe(true)
+                const invalidatedIds = () => events.filter(event => event.type === 'messages-invalidated')
+                    .map(event => event.sessionId).sort()
+                const expected = moved ? [source.id, replacementId].sort() : []
+                expect(engine.getSessionByNamespace(source.id, 'default')?.hasConversationContent).toBe(moved)
                 expect(engine.getSessionByNamespace(replacementId, 'default')?.hasConversationContent).toBe(false)
-                expect(events.filter(event => event.type === 'messages-invalidated').map(event => event.sessionId).sort())
-                    .toEqual([source.id, replacementId].sort())
+                expect(invalidatedIds()).toEqual(expected)
                 expect(engine.abortOpenCodeClearSession(source.id, 'default', replacementId)).toEqual({ type: 'success', sessionId: source.id })
-                expect(engine.getSessionByNamespace(replacementId, 'default')?.hasConversationContent).toBe(false)
-                expect(store.messages.getAllMessages(source.id)).toEqual([
-                    expect.objectContaining({ localId: 'restore-once', invokedAt: null })
-                ])
+                expect(invalidatedIds()).toEqual(expected)
+                expect(store.messages.getAllMessages(source.id)).toEqual(moved
+                    ? [expect.objectContaining({ localId: 'restore-once', invokedAt: null })]
+                    : [])
             } finally { engine.stop() }
         }
     )

@@ -4544,8 +4544,7 @@ export class SyncEngine {
             if (replacementSessionId !== operation.replacementSessionId) {
                 return { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
             }
-            // A cache refresh may have observed the committed abort before its invalidations were published.
-            this.invalidateOpenCodeClearMessages(sessionId, operation.replacementSessionId)
+            this.finishAbortedOpenCodeClear(sessionId, operation.replacementSessionId, namespace)
             return { type: 'success', sessionId }
         }
         const required = { replacementSessionId, state: expectedState, requireInactive }
@@ -4555,8 +4554,7 @@ export class SyncEngine {
             const current = latest.metadata.opencodeClearOperation
             if (!current) break
             if (current.replacementSessionId === required.replacementSessionId && current.state === 'aborted') {
-                // The previous write may have committed before its result was lost.
-                this.invalidateOpenCodeClearMessages(sessionId, current.replacementSessionId)
+                this.finishAbortedOpenCodeClear(sessionId, current.replacementSessionId, namespace)
                 return { type: 'success', sessionId }
             }
             if ((required.requireInactive && latest.active)
@@ -4567,18 +4565,25 @@ export class SyncEngine {
                 opencodeClearOperation: { ...current, state: 'aborted', updatedAt: Date.now(), error: undefined }
             }, latest.metadataVersion, namespace, required)
             if (result.result === 'success') {
-                this.sessionCache.refreshSession(sessionId)
-                if (result.movedMessages > 0) {
-                    this.invalidateOpenCodeClearMessages(sessionId, current.replacementSessionId)
-                } else {
-                    this.sessionCache.refreshConversationContent(current.replacementSessionId)
-                }
+                this.finishAbortedOpenCodeClear(sessionId, current.replacementSessionId, namespace, true)
                 return { type: 'success', sessionId }
             }
             if (result.result !== 'version-mismatch') break
             this.sessionCache.refreshSession(sessionId)
         }
         return { type: 'error', message: 'Could not abort clear reservation', code: 'replacement_link_failed' }
+    }
+
+    private finishAbortedOpenCodeClear(sessionId: string, replacementId: string, namespace: string, refreshSource = false): void {
+        const pending = this.store.takeOpenCodeClearAbortInvalidation(sessionId, replacementId, namespace)
+        if (pending || refreshSource) this.sessionCache.refreshSession(sessionId)
+        if (pending) {
+            // Claim before broadcasting so retries cannot clear an open chat twice.
+            // A hub restart between the claim and the emit already forces an SSE snapshot resync.
+            this.invalidateOpenCodeClearMessages(sessionId, replacementId)
+        } else {
+            this.sessionCache.refreshConversationContent(replacementId)
+        }
     }
 
     confirmOpenCodeClearCleanup(sessionId: string, namespace: string, replacementSessionId: string): ClearOpencodeSessionResult {
