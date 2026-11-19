@@ -390,6 +390,7 @@ async fn serve(
     shared: &Arc<Shared>,
     events: &mpsc::UnboundedSender<Event>,
 ) -> io::Result<()> {
+    let mut received = Vec::new();
     let buffered = shared.lock().queue.len();
     for _ in 0..buffered {
         let next = {
@@ -397,10 +398,30 @@ async fn serve(
             if state.stopped {
                 return Ok(());
             }
+            transport.check_heartbeat()?;
             state.queue.pop_front()
         };
         if let Some(item) = next {
-            transport.write_packet(&cli(item.payload)).await?;
+            let keep_replaying = transport
+                .replay_packet(cli(item.payload), |packet| {
+                    if packet.namespace == "/cli" {
+                        match packet.payload {
+                            Payload::Ack { id, args } => {
+                                if let Some(reply) = shared.lock().pending.remove(&id) {
+                                    let _ = reply.send(args);
+                                }
+                            }
+                            Payload::Disconnect => return Ok(false),
+                            payload @ Payload::Event { .. } => received.push(payload),
+                            _ => return Err(invalid("unexpected namespace packet")),
+                        }
+                    }
+                    Ok(true)
+                })
+                .await?;
+            if !keep_replaying {
+                return Ok(());
+            }
         }
     }
     let generation = {
@@ -412,6 +433,9 @@ async fn serve(
         state.connected = true;
         state.writable = state.queue.is_empty();
         let _ = events.send(Event::Connected);
+        for payload in received {
+            dispatch_message(payload, shared, events, state.generation);
+        }
         state.generation
     };
     tokio::select! {
@@ -446,6 +470,7 @@ async fn exchange(
         };
         let frame = tokio::select! {
             _ = async { if queue_empty { shared.ready.notified().await; } } => {
+                transport.check_heartbeat()?;
                 let next = shared.lock().queue.pop_front();
                 if let Some(item) = next {
                     transport.write_packet(&cli(item.payload)).await?;
@@ -468,17 +493,8 @@ async fn exchange(
             return Ok(());
         }
         match packet.payload {
-            Payload::Event { id, name, args } => {
-                let ack = id.map(|id| ServerAck {
-                    shared: shared.clone(),
-                    generation,
-                    id,
-                });
-                let name = name
-                    .as_str()
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| crate::jsjson::stringify(&name));
-                let _ = events.send(Event::Message { name, args, ack });
+            payload @ Payload::Event { .. } => {
+                dispatch_message(payload, shared, events, generation)
             }
             Payload::Ack { id, args } => {
                 if let Some(reply) = state.pending.remove(&id) {
@@ -491,6 +507,26 @@ async fn exchange(
     }
 }
 
+fn dispatch_message(
+    payload: Payload,
+    shared: &Arc<Shared>,
+    events: &mpsc::UnboundedSender<Event>,
+    generation: u64,
+) {
+    if let Payload::Event { id, name, args } = payload {
+        let ack = id.map(|id| ServerAck {
+            shared: shared.clone(),
+            generation,
+            id,
+        });
+        let name = name
+            .as_str()
+            .map(str::to_owned)
+            .unwrap_or_else(|| crate::jsjson::stringify(&name));
+        let _ = events.send(Event::Message { name, args, ack });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,7 +535,7 @@ mod tests {
     use tokio::net::{TcpListener, TcpStream};
     use tokio_tungstenite::{accept_async, tungstenite::Message, WebSocketStream};
 
-    async fn open(listener: TcpListener) -> WebSocketStream<TcpStream> {
+    async fn open(listener: &TcpListener) -> WebSocketStream<TcpStream> {
         let mut ws = accept_async(listener.accept().await.unwrap().0)
             .await
             .unwrap();
@@ -524,7 +560,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let (client, mut events) = Client::start(url, vec![], "token".into(), "s".into());
-        let _socket = open(listener).await;
+        let _socket = open(&listener).await;
         tokio::time::advance(Duration::from_secs(19)).await;
         tokio::task::yield_now().await;
         assert!(matches!(
@@ -551,7 +587,7 @@ mod tests {
             backoff.next();
         }
         let reject = async {
-            let mut ws = open(listener).await;
+            let mut ws = open(&listener).await;
             ws.send(Message::text(r#"44/cli,{"message":"denied"}"#))
                 .await
                 .unwrap();
@@ -567,7 +603,7 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let (client, mut events) = Client::start(url, vec![], "token".into(), "s".into());
-        let mut ws = open(listener).await;
+        let mut ws = open(&listener).await;
         ws.send(Message::text(r#"40/cli,{"sid":"session"}"#))
             .await
             .unwrap();
@@ -588,7 +624,7 @@ mod tests {
         let listener = socket.listen(1).unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let (client, events) = Client::start(url, vec![], "token".into(), "s".into());
-        (client, events, open(listener).await)
+        (client, events, open(&listener).await)
     }
 
     fn queue_backlog(client: &Client) {
@@ -610,6 +646,81 @@ mod tests {
             ws.next().await.unwrap().unwrap(),
             Message::text(r#"42/cli,["first"]"#)
         );
+    }
+
+    #[tokio::test]
+    async fn replay_services_acks_and_pings_before_the_backlog_finishes() {
+        let (client, mut events, mut ws) = slow_peer().await;
+        let ack = client.emit_with_ack("probe", vec![], None);
+        tokio::pin!(ack);
+        assert!(futures_util::FutureExt::now_or_never(ack.as_mut()).is_none());
+        queue_backlog(&client);
+        accept_namespace(&mut ws).await;
+        assert_eq!(
+            ws.next().await.unwrap().unwrap(),
+            Message::text(r#"42/cli,0["probe"]"#)
+        );
+        read_first(&mut ws).await;
+
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(50)).await;
+        tokio::time::resume();
+        ws.send(Message::text("2replay")).await.unwrap();
+        ws.send(Message::text("43/cli,0[1]")).await.unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), ack)
+                .await
+                .unwrap()
+                .unwrap(),
+            vec![json!(1)]
+        );
+        assert!(!client.is_connected());
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(50)).await;
+        tokio::time::resume();
+        let mut blocks = 0;
+        let mut pong = false;
+        while blocks < 128 {
+            let frame = ws.next().await.unwrap().unwrap().into_text().unwrap();
+            if frame == "3replay" {
+                pong = true;
+            } else {
+                assert!(frame.starts_with(r#"42/cli,["block","#));
+                blocks += 1;
+            }
+        }
+        assert!(pong);
+        assert!(matches!(events.recv().await, Some(Event::Connected)));
+        client.stop(Duration::ZERO);
+    }
+
+    #[tokio::test]
+    async fn reliable_emit_at_expiry_reaches_the_next_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (client, mut events) = Client::start(url, vec![], "token".into(), "s".into());
+        let mut ws = open(&listener).await;
+        accept_namespace(&mut ws).await;
+        assert!(matches!(events.recv().await, Some(Event::Connected)));
+        tokio::time::pause();
+        assert!(client.emit("retained", vec![]));
+        tokio::time::advance(Duration::from_secs(91)).await;
+        assert!(matches!(events.recv().await, Some(Event::Disconnected(_))));
+        tokio::time::resume();
+        let mut next = tokio::time::timeout(Duration::from_secs(4), open(&listener))
+            .await
+            .unwrap();
+        accept_namespace(&mut next).await;
+        assert!(matches!(events.recv().await, Some(Event::Connected)));
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), next.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            Message::text(r#"42/cli,["retained"]"#)
+        );
+        client.stop(Duration::ZERO);
     }
 
     #[tokio::test]

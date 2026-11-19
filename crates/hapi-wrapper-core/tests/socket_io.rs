@@ -45,8 +45,8 @@ async fn connected(rx: &mut mpsc::UnboundedReceiver<Event>, ordinal: u32) {
         panic!("expected server ack request")
     };
     assert_eq!(name, "request");
-    assert_eq!(args, vec![json!(ordinal)]);
-    assert!(ack.send(vec![json!("reply"), json!(ordinal)]));
+    assert_eq!(args, vec![json!(ordinal), json!(51.248178375505404)]);
+    assert!(ack.send(vec![json!("reply"), args[0].clone(), args[1].clone()]));
     let Some(Event::Message {
         name,
         args,

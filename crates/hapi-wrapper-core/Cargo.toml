@@ -10,7 +10,7 @@ rustls = { version = "0.23", features = ["ring", "std", "tls12"], default-featur
 rustls-native-certs = "0.8"
 hyper = "1.12"
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 futures-util = { version = "0.3", features = ["sink", "std"], default-features = false }
 uuid = { version = "1", features = ["v4"] }
 

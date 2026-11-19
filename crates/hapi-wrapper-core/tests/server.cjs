@@ -39,7 +39,11 @@ if (process.argv[2] === 'parser') {
         socket.on('drop', () => socket.conn.close())
         socket.on('end', () => socket.disconnect())
         socket.on('disconnect', reason => console.log(JSON.stringify({reason, received, connections})))
-        socket.emit('request', connections, (a, b) => socket.emit('answered', a, b))
+        const decimal = 51.248178375505404
+        socket.emit('request', connections, decimal, (a, b, echoed) => {
+            assert.equal(echoed, decimal)
+            socket.emit('answered', a, b)
+        })
     })
     http.listen(0, '127.0.0.1', () => console.log(http.address().port))
 }

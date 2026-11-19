@@ -77,14 +77,18 @@ fn endpoint(url: &str) -> io::Result<(String, String, u16, bool)> {
         .ok_or_else(|| invalid("missing hub authority"))?;
     let scheme = if secure { "wss" } else { "ws" };
     let url = format!("{scheme}://{authority}/socket.io/?EIO=4&transport=websocket");
-    Ok((
-        url,
-        authority.host().trim_matches(['[', ']']).into(),
-        authority
-            .port_u16()
-            .unwrap_or(if secure { 443 } else { 80 }),
-        secure,
-    ))
+    let host = authority.host();
+    let host_port = authority.as_str().rsplit('@').next().unwrap();
+    let port = match &host_port[host.len()..] {
+        "" if secure => 443,
+        "" => 80,
+        suffix => suffix
+            .strip_prefix(':')
+            .filter(|s| !s.is_empty() && s.bytes().all(|c| c.is_ascii_digit()))
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(|| invalid("invalid hub port"))?,
+    };
+    Ok((url, host.trim_matches(['[', ']']).into(), port, secure))
 }
 
 async fn read(socket: &mut Socket) -> io::Result<EnginePacket> {
@@ -169,6 +173,57 @@ impl Transport {
             watchdog,
             expires: deadline(watchdog)?,
         })
+    }
+
+    pub(super) fn check_heartbeat(&self) -> io::Result<()> {
+        if Instant::now() >= self.expires {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "ping timeout"));
+        }
+        Ok(())
+    }
+
+    pub(super) async fn replay_packet(
+        &mut self,
+        packet: Packet,
+        mut receive: impl FnMut(Packet) -> io::Result<bool>,
+    ) -> io::Result<bool> {
+        let (mut sink, mut stream) = (&mut self.socket).split();
+        let mut frames = std::collections::VecDeque::from([Message::text(
+            EnginePacket::Message(packet.encode()?).encode(),
+        )]);
+        while let Some(frame) = frames.pop_front() {
+            let write = sink.send(frame);
+            tokio::pin!(write);
+            loop {
+                tokio::select! {
+                    incoming = stream.next() => {
+                        match incoming.transpose().map_err(io::Error::other)? {
+                            Some(Message::Text(s)) => match EnginePacket::decode(&s)? {
+                                EnginePacket::Ping(data) => {
+                                    self.expires = deadline(self.watchdog)?;
+                                    frames.push_back(Message::text(EnginePacket::Pong(data).encode()));
+                                }
+                                EnginePacket::Message(data) => {
+                                    if !receive(Packet::decode(&data)?)? { return Ok(false); }
+                                }
+                                EnginePacket::Noop | EnginePacket::Pong(_) => {}
+                                EnginePacket::Close => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "transport closed")),
+                                _ => return Err(invalid("unexpected Engine.IO packet")),
+                            },
+                            None | Some(Message::Close(_)) => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "transport closed")),
+                            Some(Message::Ping(_) | Message::Pong(_)) => {}
+                            _ => return Err(invalid("expected Engine.IO text frame")),
+                        }
+                    }
+                    result = &mut write => {
+                        result.map_err(io::Error::other)?;
+                        break;
+                    }
+                    _ = tokio::time::sleep_until(self.expires) => return Err(io::Error::new(io::ErrorKind::TimedOut, "ping timeout")),
+                }
+            }
+        }
+        Ok(true)
     }
 
     pub(super) async fn drain(&mut self, packets: impl Iterator<Item = Packet>) -> io::Result<()> {
@@ -351,6 +406,15 @@ mod tests {
             }
         }
         server.await.unwrap();
+    }
+
+    #[test]
+    fn explicit_ports_are_validated() {
+        for authority in ["hub:70000", "hub:abc", "[::1]:65536", "hub:"] {
+            assert!(endpoint(&format!("https://{authority}")).is_err());
+        }
+        assert_eq!(endpoint("https://[::1]").unwrap().2, 443);
+        assert_eq!(endpoint("http://[::1]:3006").unwrap().2, 3006);
     }
 
     #[test]
