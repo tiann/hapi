@@ -258,6 +258,13 @@ export class RpcGateway {
         }
     }
 
+    hasConnectedStopTarget(machineId: string, namespace: string): boolean {
+        const id = this.rpcRegistry.getSocketIdForMethod(`${machineId}:${RPC_METHODS.StopSession}`)
+        if (!id) return false
+        const socket = this.io.of('/cli').sockets.get(id)
+        return socket?.connected === true && socket.data.namespace === namespace && socket.rooms.has(`machine:${machineId}`)
+    }
+
     async stopRunnerSession(
         machineId: string,
         sessionId: string,

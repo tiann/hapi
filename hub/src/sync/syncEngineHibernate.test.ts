@@ -6,7 +6,7 @@ import type { Session } from '@hapi/protocol/types'
 import { Store } from '../store'
 import { RpcRegistry } from '../socket/rpcRegistry'
 import { SyncEngine } from './syncEngine'
-import { RpcTargetMissingError, RunnerStopRpcError } from './rpcGateway'
+import { RpcGateway, RpcTargetMissingError, RunnerStopRpcError } from './rpcGateway'
 import type { SessionCache } from './sessionCache'
 
 const HOUR = 60 * 60 * 1000
@@ -66,6 +66,7 @@ describe('SyncEngine hibernation', () => {
         engine.getOrCreateMachine(machineId, { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
             { status: 'running', capabilities }, NAMESPACE)
         engine.handleMachineAlive({ machineId, time: Date.now() })
+        gateway().hasConnectedStopTarget = () => true
     }
 
     function insertIdleSession(tag: string, metadata: Record<string, unknown> = {}): string {
@@ -134,6 +135,28 @@ describe('SyncEngine hibernation', () => {
         expect(session.updatedAt).toBe(updatedAtBefore)
         expect(stopCalls).toEqual([{ machineId: MACHINE, sessionId: id }])
         expect(killCalls).toEqual([id])
+    })
+
+    it('skips a heartbeating worker until the runner has a connected StopSession handler', async () => {
+        const id = insertIdleSession('detached')
+        const registry = new RpcRegistry()
+        const sockets = new Map()
+        const rpc = new RpcGateway({ of: () => ({ sockets }) } as never, registry)
+        gateway().hasConnectedStopTarget = rpc.hasConnectedStopTarget.bind(rpc)
+        const socket = { id: 'runner', connected: true, rooms: new Set([`machine:${MACHINE}`]), data: { namespace: NAMESPACE } }
+        for (const state of ['unregistered', 'stale-registration', 'connected']) {
+            if (state === 'stale-registration') registry.register(socket as never, `${MACHINE}:stop-session`)
+            if (state === 'connected') sockets.set(socket.id, socket)
+            engine.handleSessionAlive({ sid: id, time: Date.now() })
+            const connected = state === 'connected'
+            expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual(connected ? [id] : [])
+            expect(killCalls).toEqual(connected ? [id] : [])
+            expect(stopCalls).toHaveLength(connected ? 1 : 0)
+            if (!connected) {
+                expect(cache().getSession(id)?.active).toBe(true)
+                expect(cache().getSession(id)?.metadata?.hibernation).toBeUndefined()
+            }
+        }
     })
 
     it('uses the archive stop sequence and accepts its PID fallback confirmation', async () => {

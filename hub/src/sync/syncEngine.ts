@@ -906,6 +906,9 @@ export class SyncEngine {
             void this.automaticTitleSuggestionService.onTurnCompleted(payload.sid)
         }
         if (!current?.metadata?.hibernation) this.messageService.replayImmediateQueuedMessages(payload.sid)
+        else if (current.active && this.sessionReadyIds.has(payload.sid) && this.matchesCodexResumeAttempt(current)) {
+            this.finishReadyCodexResume(current)
+        }
         this.triggerDedupIfNeeded(payload.sid)
         // First inactive → active: catch toggles while inactive (fanout is
         // active-only). Also retry sessions whose prior fanout/rollback RPC failed.
@@ -927,11 +930,10 @@ export class SyncEngine {
                 return
             }
         }
+        const codexAttempt = session?.metadata?.codexResumePending
+        if (codexAttempt && !this.matchesCodexResumeAttempt(session)) return
         this.sessionReadyIds.add(payload.sid)
-        if (session?.active && session.metadata?.codexResumePending
-            && session.metadata.codexResumePending.nativeSessionId === session.metadata.codexSessionId) {
-            this.writeCodexResumePending(session.id, session.namespace, undefined)
-        }
+        if (session?.active && codexAttempt) this.finishReadyCodexResume(session)
         if (session?.metadata?.piResumeAttempt) {
             void this.writePiResumeAttempt(payload.sid, session.namespace, null)
                 .then(() => {
@@ -1284,7 +1286,7 @@ export class SyncEngine {
         if (now - this.hubStartedAt < SyncEngine.HIBERNATE_STARTUP_GRACE_MS || !(hibernateMs > 0)) return false
         if (!this.aliveSinceHubStartIds.has(session.id) || now < (this.hibernateBackoffUntil.get(session.id) ?? 0)) return false
         const machine = this.machineCache.getMachine(session.metadata?.machineId ?? '')
-        if (machine?.namespace !== session.namespace) return false
+        if (!machine?.active || machine.namespace !== session.namespace) return false
         // Cheap prefilter before the store-backed signals.
         if (!session.active || !isLiveLifecycleState(session.metadata?.lifecycleState)) return false
         const progressAt = this.getHibernationProgressAt(session)
@@ -1371,6 +1373,7 @@ export class SyncEngine {
         const session = this.sessionCache.getSession(sessionId)
         if (!session?.metadata?.machineId) return 'skipped'
         if (!this.evaluateHibernation(session, now, hibernateMs, true)) return 'skipped'
+        if (!this.rpcGateway.hasConnectedStopTarget(session.metadata.machineId, session.namespace)) return 'skipped'
         const reason = opts.reason ?? 'idle'
         if (!this.sessionCache.markSessionHibernationStopping(sessionId, session.metadataVersion, reason, now)) return 'skipped'
         const original = session.metadata
@@ -2353,7 +2356,7 @@ export class SyncEngine {
         let valid: boolean
         try {
             const files = attachments.map(({ path, size }) => ({ path, size }))
-            valid = await this.rpcGateway.validateSessionUploads(sessionId, files, required || this.hibernationRunnerCapabilities(session)?.sessionHibernation === true)
+            valid = await this.rpcGateway.validateSessionUploads(sessionId, files, required)
         } catch {
             throw new AttachmentCheckError(true)
         }
@@ -2799,12 +2802,29 @@ export class SyncEngine {
         throw new Error('Failed to persist Codex resume state')
     }
 
+    private matchesCodexResumeAttempt(session: Session): boolean {
+        const metadata = session.metadata
+        const pending = metadata?.codexResumePending
+        return !!pending && metadata.machineId === pending.machineId && metadata.codexSessionId === pending.nativeSessionId
+    }
+
+    private finishReadyCodexResume(session: Session): void {
+        const waking = session.metadata?.hibernation?.state === 'hibernated'
+        if (waking && !this.sessionCache.clearSessionHibernation(session.id, 'hibernated')) return
+        this.writeCodexResumePending(session.id, session.namespace, undefined)
+        if (waking) {
+            this.hibernateWakeBackoffUntil.delete(session.id)
+            this.sessionCache.recordAgentProgress(session.id, Date.now())
+            this.messageService.replayImmediateQueuedMessages(session.id)
+        }
+    }
+
     private async reconcileCodexResume(session: Session): Promise<boolean> {
         const pending = session.metadata?.codexResumePending
         if (!pending) return true
-        if (session.active && this.sessionReadyIds.has(session.id) && session.metadata?.codexSessionId === pending.nativeSessionId) {
-            this.writeCodexResumePending(session.id, session.namespace, undefined)
-            return true
+        if (session.active && this.sessionReadyIds.has(session.id) && this.matchesCodexResumeAttempt(session)) {
+            this.finishReadyCodexResume(session)
+            return !this.sessionCache.getSession(session.id)?.metadata?.codexResumePending
         }
         const stopped = await this.rpcGateway.stopRunnerSession(pending.machineId, session.id)
         if (stopped !== 'stopped' && stopped !== 'already_gone') return false

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test'
 import { Hono } from 'hono'
 import type { Session } from '@hapi/protocol/types'
 import { Store } from '../store'
@@ -76,6 +76,7 @@ describe('SyncEngine resume of hibernated sessions', () => {
             if (cache().getSession(sessionId)?.active) engine.handleSessionEnd({ sid: sessionId, time: Date.now() })
             return 'stopped'
         }
+        gateway().hasConnectedStopTarget = () => true
         gateway().killSession = async () => { throw new RpcTargetMissingError('KillSession', 'handler-not-registered') }
         spawnImpl = async (sessionId) => {
             bootCli(sessionId)
@@ -214,6 +215,40 @@ describe('SyncEngine resume of hibernated sessions', () => {
         expect(backoff.has(id)).toBe(false)
     })
 
+    it.each(['alive-first', 'ready-first'])('finalizes a timed-out Codex wake on matching readiness and transport (%s)', async order => {
+        const id = await hibernatedSession('late-codex', 'codex')
+        spawnImpl = async () => ({ type: 'error', message: 'startup timed out' })
+        expect(await engine.resumeSession(id, NAMESPACE)).toMatchObject({ type: 'error' })
+        const backoff = (engine as unknown as { hibernateWakeBackoffUntil: Map<string, number> }).hibernateWakeBackoffUntil
+        backoff.set(id, Date.now() + WINDOW)
+        const publish = (machineId: string, codexSessionId: string) => {
+            const stored = store.sessions.getSession(id)!
+            store.sessions.updateSessionMetadata(id, { ...(stored.metadata as object), machineId, codexSessionId,
+                lifecycleState: 'running' }, stored.metadataVersion, NAMESPACE)
+            cache().refreshSession(id)
+            if (order === 'ready-first') engine.handleSessionReady({ sid: id, time: Date.now() })
+            engine.handleSessionAlive({ sid: id, time: Date.now() })
+            if (order === 'alive-first') engine.handleSessionReady({ sid: id, time: Date.now() })
+        }
+        const replay = spyOn((engine as unknown as { messageService: { replayImmediateQueuedMessages(sid: string): number } }).messageService,
+            'replayImmediateQueuedMessages')
+        for (const [machine, thread] of [['wrong-machine', 'native-late-codex'], [MACHINE, 'wrong-thread']]) {
+            publish(machine, thread)
+            expect(cache().getSession(id)?.metadata?.hibernation?.state).toBe('hibernated')
+            expect(cache().getSession(id)?.metadata?.codexResumePending).toBeDefined()
+            expect(backoff.has(id)).toBe(true)
+        }
+        expect(replay).not.toHaveBeenCalled()
+        engine.handleSessionEnd({ sid: id, time: Date.now() })
+        publish(MACHINE, 'native-late-codex')
+        expect(replay).toHaveBeenCalledWith(id)
+        expect(cache().getSession(id)?.metadata?.hibernation).toBeUndefined()
+        expect(cache().getSession(id)?.metadata?.codexResumePending).toBeUndefined()
+        expect(backoff.has(id)).toBe(false)
+        engine.handleSessionEnd({ sid: id, time: Date.now() })
+        expect(cache().getSession(id)?.metadata?.lifecycleState).toBe('running')
+    })
+
     it('preserves a local Claude resume and its subsequent normal CLI archive', async () => {
         const id = await hibernatedSession('local-resume')
         const publish = (patch: object) => {
@@ -344,13 +379,23 @@ describe('SyncEngine resume of hibernated sessions', () => {
         expect(engine.pendingSessionWake(id, NAMESPACE)).toBeUndefined()
     })
 
+    it('lets a connected older worker accept its upload when only its runner was upgraded', async () => {
+        const session = cache().getOrCreateSession('old-worker', { path: '/tmp', host: 'localhost', machineId: MACHINE }, null, NAMESPACE)
+        engine.handleSessionAlive({ sid: session.id, time: Date.now() })
+        await engine.sendMessage(session.id, {
+            text: 'read this', localId: 'existing-worker-upload',
+            attachments: [{ id: 'a', path: '/staged', filename: 'a', size: 4, mimeType: 'text/plain' }]
+        })
+        expect(store.messages.getFirstMessages(session.id, 1)[0]?.localId).toBe('existing-worker-upload')
+    })
+
     it('asks the resumed worker about staged attachments before accepting a REST message', async () => {
         const id = await hibernatedSession('stale-attachment')
         const checked: string[] = []
         gateway().validateSessionUploads = async (sid: string, files: { path: string }[], required: boolean) => {
             expect(sid).toBe(id)
             expect(cache().getSession(id)?.active).toBe(true)
-            expect(required).toBe(true)
+            expect(required).toBe(files[0]!.path === '/old-upload')
             checked.push(files[0]!.path)
             return files[0]!.path === '/fresh-upload'
         }

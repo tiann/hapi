@@ -300,6 +300,8 @@ Keep-alives prove a socket, not an agent. A session can therefore heartbeat for 
 - Progress means a message in either direction, a queued prompt, or a background task - never a keep-alive. Sessions that are thinking, running background tasks or holding a pending permission request are never marked.
 - `idle` reverts to `running` on the next progress, within one tick.
 - After `HAPI_SESSION_HIBERNATE_MS` without progress or live work, the hub stops eligible runner sessions. A confirmed stop marks the session `hibernated` and inactive. Hibernation uses the same stop path as archive. Children that detach from the wrapper’s process tree, such as an MCP server that daemonises, may keep running. The next send resumes the same ID.
+- The hub skips hibernation unless the runner has a connected stop handler. If the runner disconnects after worker shutdown begins, the hub clears the attempt and backs off. A worker that exited in that interval can be reopened explicitly.
+- A wake must return the original session ID. A different ID cannot prove ownership of the spawned process. The hub leaves that row untouched and pauses scheduled wakes for the original session until an explicit resume succeeds or the hub restarts. An unexpected child may remain running.
 - `metadata.idleReconcileExempt: true` opts a session out entirely.
 
 ## Storage
