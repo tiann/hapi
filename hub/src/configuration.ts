@@ -64,7 +64,7 @@ export interface ConfigSources {
     cliApiToken: 'env' | 'file' | 'generated'
 }
 
-export class Configuration {
+class Configuration {
     /** Telegram Bot API token */
     public readonly telegramBotToken: string | null
 
@@ -134,7 +134,7 @@ export class Configuration {
     /** Sources of each configuration value */
     public readonly sources: ConfigSources
 
-    /** Private constructor - use create() instead */
+    /** Private constructor - use createConfiguration() instead */
     private constructor(
         dataDir: string,
         dbPath: string,

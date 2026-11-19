@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { AgentState, Session } from './types'
+import type { Session } from './types'
 import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,6 +9,7 @@ import type { OpenCodeRewindReport } from '@hapi/protocol/apiTypes'
 import { OpenCodeRewind, OpenCodeRuntimeGate } from '../opencode/rewind'
 import { MessageQueue2 } from '../utils/MessageQueue2'
 import { getProcessStartMarker } from '../utils/process'
+import type { AgentState } from './types'
 
 const socketHarness = vi.hoisted(() => ({
     sockets: [] as Array<{
@@ -2513,6 +2514,68 @@ describe('ApiSessionClient metadata cancellation and reconnect ordering', () => 
         }
     })
 
+    it('stops retrying an aborted updateMetadata write after ack timeout and releases metadataLock', async () => {
+        vi.useFakeTimers()
+        try {
+            socketHarness.sockets.length = 0
+            axiosHarness.get.mockResolvedValue({ data: { messages: [] } })
+            const client = new ApiSessionClient('token', createSession({
+                namespace: 'default',
+                metadata: { path: '/tmp', host: 'h', flavor: 'claude' },
+                metadataVersion: 1
+            }))
+            const socket = socketHarness.sockets[0]!
+            const firstEmitStarted = deferred<void>()
+            let subsequentAcked = false
+            const emittedNames: Array<unknown> = []
+
+            let emitCalls = 0
+            socket.emitWithAckImpl = async (event, payload) => {
+                if (event !== 'update-metadata') return {}
+                emitCalls += 1
+                const req = payload as { expectedVersion: number; metadata: Record<string, unknown> }
+                emittedNames.push(req.metadata.name)
+                if (emitCalls === 1) {
+                    firstEmitStarted.resolve()
+                    return await new Promise<never>(() => {})
+                }
+                subsequentAcked = true
+                return {
+                    result: 'success',
+                    version: req.expectedVersion + 1,
+                    metadata: req.metadata
+                }
+            }
+
+            const abortController = new AbortController()
+            client.updateMetadata(
+                (meta) => ({ ...meta, name: 'aborted-intent' }),
+                { signal: abortController.signal }
+            )
+
+            await firstEmitStarted.promise
+            abortController.abort()
+            client.updateMetadata((meta) => ({ ...meta, name: 'after-abort' }))
+
+            await vi.advanceTimersByTimeAsync(5_000)
+            await vi.advanceTimersByTimeAsync(1_100)
+            await vi.advanceTimersByTimeAsync(10)
+
+            expect(subsequentAcked).toBe(true)
+            expect(socket.timeoutEmits.filter((entry) => entry.event === 'update-metadata')).toEqual([
+                { event: 'update-metadata', ms: 5_000 },
+                { event: 'update-metadata', ms: 5_000 }
+            ])
+            expect(emittedNames).toEqual(['aborted-intent', 'after-abort'])
+            expect(client.getMetadata()?.name).toBe('after-abort')
+            client.close()
+        } finally {
+            vi.useRealTimers()
+        }
+    })
+})
+
+describe('ApiSessionClient agent state acknowledgement retries', () => {
     it('retries a timed-out agent state acknowledgement and sends subsequent updates', async () => {
         vi.useFakeTimers()
         socketHarness.sockets.length = 0
@@ -2652,66 +2715,6 @@ describe('ApiSessionClient metadata cancellation and reconnect ordering', () => 
             connected.resolve()
             client.close()
             jitter.mockRestore()
-            vi.useRealTimers()
-        }
-    })
-
-    it('stops retrying an aborted updateMetadata write after ack timeout and releases metadataLock', async () => {
-        vi.useFakeTimers()
-        try {
-            socketHarness.sockets.length = 0
-            axiosHarness.get.mockResolvedValue({ data: { messages: [] } })
-            const client = new ApiSessionClient('token', createSession({
-                namespace: 'default',
-                metadata: { path: '/tmp', host: 'h', flavor: 'claude' },
-                metadataVersion: 1
-            }))
-            const socket = socketHarness.sockets[0]!
-            const firstEmitStarted = deferred<void>()
-            let subsequentAcked = false
-            const emittedNames: Array<unknown> = []
-
-            let emitCalls = 0
-            socket.emitWithAckImpl = async (event, payload) => {
-                if (event !== 'update-metadata') return {}
-                emitCalls += 1
-                const req = payload as { expectedVersion: number; metadata: Record<string, unknown> }
-                emittedNames.push(req.metadata.name)
-                if (emitCalls === 1) {
-                    firstEmitStarted.resolve()
-                    return await new Promise<never>(() => {})
-                }
-                subsequentAcked = true
-                return {
-                    result: 'success',
-                    version: req.expectedVersion + 1,
-                    metadata: req.metadata
-                }
-            }
-
-            const abortController = new AbortController()
-            client.updateMetadata(
-                (meta) => ({ ...meta, name: 'aborted-intent' }),
-                { signal: abortController.signal }
-            )
-
-            await firstEmitStarted.promise
-            abortController.abort()
-            client.updateMetadata((meta) => ({ ...meta, name: 'after-abort' }))
-
-            await vi.advanceTimersByTimeAsync(5_000)
-            await vi.advanceTimersByTimeAsync(1_100)
-            await vi.advanceTimersByTimeAsync(10)
-
-            expect(subsequentAcked).toBe(true)
-            expect(socket.timeoutEmits.filter((entry) => entry.event === 'update-metadata')).toEqual([
-                { event: 'update-metadata', ms: 5_000 },
-                { event: 'update-metadata', ms: 5_000 }
-            ])
-            expect(emittedNames).toEqual(['aborted-intent', 'after-abort'])
-            expect(client.getMetadata()?.name).toBe('after-abort')
-            client.close()
-        } finally {
             vi.useRealTimers()
         }
     })

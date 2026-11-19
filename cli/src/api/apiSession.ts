@@ -377,11 +377,11 @@ export class ApiSessionClient extends EventEmitter {
         })
 
         this.socket.on('connect', () => {
-            this.wakeAgentStateRetry?.()
             logger.debug('Socket connected successfully')
             this.emit('connection-start')
             this.awaitingMaterializedConnection = false
             this.rpcHandlerManager.onSocketConnect(this.socket)
+            this.wakeAgentStateRetry?.()
             const isReconnect = this.hasConnectedOnce
             if (isReconnect) {
                 this.needsBackfill = true
@@ -1865,11 +1865,11 @@ if (isReconnect) {
             return
         }
         this.state = 'closed'
-        this.wakeAgentStateRetry?.()
         this.materializationAbortController?.abort()
         this.materializationAbortController = null
         this.materializationRetryAbortController?.abort()
         this.materializationRetryAbortController = null
+        this.wakeAgentStateRetry?.()
         this.awaitingMaterializedConnection = false
         this.pendingOutboundEvents.length = 0
         this.pendingMessages.length = 0
