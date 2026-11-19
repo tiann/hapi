@@ -726,16 +726,22 @@ describe('SessionRowSummary time label', () => {
         vi.useRealTimers()
     })
 
-    it('shows a stopped session the stop time it is ordered by when that is later than its last update', () => {
+    it('shows a stopped session the stop time it is ordered by only where the list orders by it', () => {
         vi.useFakeTimers()
         const now = 1_800_000_000_000
         vi.setSystemTime(now)
-        const quiet = { updatedAt: now - 12 * 60 * 60_000, activeAt: now - 5 * 60_000, backgroundTaskCount: 0 }
-        const view = render(<I18nProvider><SessionRowSummary session={makeSummary({ ...quiet, active: false })} /></I18nProvider>)
         // Expired after a quiet spell: updatedAt is old, the stop time is recent.
+        const quiet = { updatedAt: now - 12 * 60 * 60_000, activeAt: now - 5 * 60_000, backgroundTaskCount: 0 }
+        const row = (active: boolean, showStoppedTime?: boolean) => (
+            <I18nProvider><SessionRowSummary session={makeSummary({ ...quiet, active })} showStoppedTime={showStoppedTime} /></I18nProvider>
+        )
+        const view = render(row(false, true))
         expect(screen.getByText('5m ago')).toBeInTheDocument()
 
-        view.rerender(<I18nProvider><SessionRowSummary session={makeSummary({ ...quiet, active: true })} /></I18nProvider>)
+        // Other callers (Active first off, mention tooltips) keep the activity time.
+        view.rerender(row(false))
+        expect(screen.getByText('12h ago')).toBeInTheDocument()
+        view.rerender(row(true, true))
         expect(screen.getByText('12h ago')).toBeInTheDocument()
     })
 

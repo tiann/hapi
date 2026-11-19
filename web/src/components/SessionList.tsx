@@ -1410,6 +1410,8 @@ type SessionItemProps = {
     targetMessageId?: string
     targetMessageQuery?: string
     lastSeenVersion: number
+    /** Stopped rows show the stop time they are ordered by (Active first). */
+    showStoppedTime?: boolean
 }
 
 function shallowEqualExcept<T extends object>(previous: T, next: T, ignored: keyof T): boolean {
@@ -1440,7 +1442,8 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
         contentSearchTruncated,
         targetMessageId,
         targetMessageQuery,
-        lastSeenVersion
+        lastSeenVersion,
+        showStoppedTime = false
     } = props
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
@@ -1742,6 +1745,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                         contentSnippet={contentSnippet}
                         contentSearchTruncated={contentSearchTruncated}
                         trailingClassName={hasQuickAction ? 'session-row-trailing' : undefined}
+                        showStoppedTime={showStoppedTime}
                     />
                 </button>
                 {githubPrAwarenessEnabled && primaryPrRef ? (
@@ -2683,6 +2687,7 @@ export function SessionList(props: {
                                             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
                                             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
                                             lastSeenVersion={lastSeenVersion}
+                                            showStoppedTime={listView.activeFirst}
                                         />
                                     ))}
                                 </div>
@@ -2760,6 +2765,7 @@ export function SessionList(props: {
             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
             lastSeenVersion={lastSeenVersion}
+            showStoppedTime={listView.activeFirst}
         />
     )
 
@@ -3633,6 +3639,7 @@ export function SessionList(props: {
                                             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
                                             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
                                             lastSeenVersion={lastSeenVersion}
+                                            showStoppedTime={listView.activeFirst}
                                         />
                                     ))}
                                 </div>
