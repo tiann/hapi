@@ -30,6 +30,13 @@ it('backs off to 30 s, recovers on attach, and cancels a queued retry on stop', 
     expect(vi.getTimerCount()).toBe(0);
     fsWatcher.emit('error', Error('lost watcher'));
     expect(health).toHaveBeenLastCalledWith(false);
+    const calls = open.mock.calls.length;
+    vi.advanceTimersByTime(999);
+    expect(open).toHaveBeenCalledTimes(calls);
+    vi.advanceTimersByTime(1);
+    expect(open).toHaveBeenCalledTimes(calls + 1);
+    expect(health).toHaveBeenLastCalledWith(true);
+    fsWatcher.emit('error', Error('lost watcher again'));
     expect(vi.getTimerCount()).toBe(1);
     stop();
     expect(vi.getTimerCount()).toBe(0);
@@ -57,7 +64,7 @@ it.each(['rename', 'inode', 'stable', 'change'])('restarts on %s and ignores cal
     } else if (mode === 'rename') callback('rename');
     else first.emit('error', Error('watch lost'));
     expect(health).toHaveBeenLastCalledWith(false);
-    vi.advanceTimersByTime(mode === 'inode' ? 2000 : 1000);
+    vi.advanceTimersByTime(1000);
     expect(health.mock.calls.map(([value]) => value)).toEqual([false, true, false, true]);
     changed.mockClear();
     callback('rename');

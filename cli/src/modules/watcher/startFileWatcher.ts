@@ -6,7 +6,6 @@ export function startFileWatcher(file: string, onFileChange: (file: string) => v
     let retry: ReturnType<typeof setTimeout> | undefined;
     let backoffMs = 1_000;
     let identity: { dev: bigint; ino: bigint } | undefined;
-    let attachedAt = 0;
     let stopped = false;
 
     const restart = () => {
@@ -14,7 +13,6 @@ export function startFileWatcher(file: string, onFileChange: (file: string) => v
         watcher = null;
         previous?.close();
         if (stopped || retry) return;
-        if (previous && performance.now() - attachedAt >= 30_000) backoffMs = 1_000;
         onHealth?.(false);
         retry = setTimeout(() => {
             retry = undefined;
@@ -38,13 +36,12 @@ export function startFileWatcher(file: string, onFileChange: (file: string) => v
             identity = statSync(file, { bigint: true });
             const current = watch(file, (event) => {
                 if (watcher !== current) return;
-                backoffMs = 1_000;
                 if (event === 'rename') restart();
                 else verifyIdentity();
                 onFileChange(file);
             });
             watcher = current;
-            attachedAt = performance.now();
+            backoffMs = 1_000;
             current.once('error', () => { if (watcher === current) restart(); });
             current.once('close', () => { if (watcher === current) restart(); });
             onHealth?.(true);

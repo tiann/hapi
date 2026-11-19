@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { watch, type FSWatcher, mkdtempSync, mkdirSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
+import { watch, type FSWatcher, mkdtempSync, mkdirSync, renameSync, rmSync, writeFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -745,7 +745,7 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         rmSync(tempBrainDir, { recursive: true, force: true });
     });
 
-    it.each(['silent', 'rename', 'late directory'])('recovers a transcript wakeup with a %s watcher', async (mode) => {
+    it.each(['silent', 'rename', 'late directory', 'silent replacement'])('recovers a transcript wakeup with a %s watcher', async (mode) => {
         vi.useFakeTimers();
         const { session } = makeHarness();
         const launcher = new AgyAcpRemoteLauncher(session, { brainDir: tempBrainDir, reactivePollMs: 350 });
@@ -781,11 +781,18 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
             if (mode === 'rename') {
                 const listener = mocked.mock.calls.at(-1)![1] as (event: string) => void;
                 listener('rename');
+            } else if (mode === 'silent replacement') {
+                renameSync(join(tempBrainDir, id), join(tempBrainDir, id + '-old'));
+                writeTranscript(tempBrainDir, id, []);
+                await vi.advanceTimersByTimeAsync(30_000);
+                expect(settled).toBe(false);
+            }
+            if (mode === 'rename' || mode === 'silent replacement') {
                 expect(watchers[0].close).toHaveBeenCalledOnce();
                 expect(watchers).toHaveLength(2);
             }
             writeTranscript(tempBrainDir, id, [{ step_index: 1, source: 'SYSTEM', type: 'SYSTEM_MESSAGE', status: 'DONE' }]);
-            if (mode === 'rename') {
+            if (mode === 'rename' || mode === 'silent replacement') {
                 const listener = mocked.mock.calls.at(-1)![1] as (event: string) => void;
                 listener('change');
             } else {
