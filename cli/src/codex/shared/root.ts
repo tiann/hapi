@@ -1152,7 +1152,7 @@ export class SharedCodexRoot {
         return slash.kind === 'replace' ? slash.text : null;
     }
     stopAccepting(): void {
-        this.stopping = true; this.ready();
+        this.stopping = true; this.ready(); this.inputReady();
         this.publishSteering();
         this.publishPlan();
         this.session.onReconnect(null); this.client.setTransportAbandonedHandler(null);

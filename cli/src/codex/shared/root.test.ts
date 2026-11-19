@@ -1899,3 +1899,12 @@ it('does not introduce a tier-recovery fence for an unrelated model-write timeou
         expect(f.metadata().codexTierConfirmationPending).not.toBe(true);
     } finally { vi.useRealTimers(); }
 });
+
+it.each(['suspend', 'close'])('releases held input without submitting it when a paused root must %s', async action => {
+    const f = await fixture({ attached: action === 'close' });
+    await f.root.activate({}, true, true);
+    f.submit('must not be submitted', 'paused-stop-input');
+    await new Promise(resolve => setTimeout(resolve, 10));
+    await (action === 'suspend' ? f.root.suspend() : f.root.close(false));
+    expect(f.native.queue).toHaveLength(0);
+});
