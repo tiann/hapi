@@ -197,7 +197,13 @@ test('a confirmed 401 still requires authentication', async ({ page }) => {
 
 test('preserves the actionable Telegram-disabled diagnostic', async ({ page }) => {
     mode = 'telegram-disabled'
+    const authOrigins: string[] = []
+    page.on('request', request => { if (new URL(request.url()).pathname === '/api/auth') authOrigins.push(new URL(request.url()).origin) })
     await page.goto('/sessions?initData=fixture-telegram')
     await expect(page.getByRole('status')).toHaveText('Telegram authentication is disabled. Configure TELEGRAM_BOT_TOKEN.')
     await expect(page.getByText(/temporarily unavailable/)).toHaveCount(0)
+    await expect(page.getByRole('button', { name: /^Hub / })).toHaveCount(0)
+    await page.getByRole('button', { name: 'Retry now' }).click()
+    await expect.poll(() => authAttempts).toBeGreaterThan(1)
+    expect(authOrigins.every(value => value === origin)).toBe(true)
 })
