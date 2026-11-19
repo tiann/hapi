@@ -144,6 +144,24 @@ describe('Codex question receipts in the session chat', () => {
         expect(transcript().queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument()
     })
 
+    it('submits the displayed issuance and refreshes after the runner reports a replacement', async () => {
+        const { update, transcript, submit, onRefresh } = setup()
+        shell.api.approvePermission.mockRejectedValueOnce(new ApiError('Question was reissued', 409, 'codex_question_reissued'))
+        await submit()
+        await waitFor(() => expect(onRefresh).toHaveBeenCalledOnce())
+        expect(shell.api.approvePermission).toHaveBeenCalledWith('session-1', requestId, {
+            instanceId: 'first', answers: { q: { answers: ['user_note: Web'] } }
+        })
+        expect(transcript().queryByText('Answer sent. Waiting for the agent.')).not.toBeInTheDocument()
+        update(state('replacement'))
+        await waitFor(() => expect(transcript().getByRole('textbox')).toHaveValue(''))
+        await submit()
+        await waitFor(() => expect(transcript().getByText('Answer sent. Waiting for the agent.')).toBeVisible())
+        expect(shell.api.approvePermission).toHaveBeenLastCalledWith('session-1', requestId, {
+            instanceId: 'replacement', answers: { q: { answers: ['user_note: Web'] } }
+        })
+    })
+
     it('waits for hub state when an older runner omits the issuance ID', async () => {
         const { update, transcript, submit, onRefresh } = setup()
         update(state())

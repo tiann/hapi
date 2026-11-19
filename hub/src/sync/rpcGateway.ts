@@ -1,6 +1,6 @@
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, PermissionMode } from '@hapi/protocol/types'
 import { isObject } from '@hapi/protocol'
-import { CODEX_ASYNC_QUESTION_REQUEST_PREFIX, DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
+import { CODEX_ASYNC_QUESTION_REQUEST_PREFIX, CODEX_QUESTION_REISSUED, DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
 import {
     UsageQueryResultSchema,
     UsageQuerySettingsResponseSchema,
@@ -125,6 +125,13 @@ export class PermissionDecisionRejectedError extends Error {
     }
 }
 
+export class PermissionQuestionReissuedError extends Error {
+    constructor() {
+        super('Question was reissued')
+        this.name = 'PermissionQuestionReissuedError'
+    }
+}
+
 function assertPermissionDecisionAccepted(requestId: string, response: unknown, action: 'answer' | 'dismissal'): void {
     if (!isObject(response) || typeof response.error !== 'string') return
     if (response.error === PERMISSION_REQUEST_NOT_FOUND_MESSAGE) {
@@ -132,6 +139,9 @@ function assertPermissionDecisionAccepted(requestId: string, response: unknown, 
     }
     // HTTP success closes Codex async forms before the agent publishes completion.
     if (requestId.startsWith(CODEX_ASYNC_QUESTION_REQUEST_PREFIX)) {
+        if (response.error === CODEX_QUESTION_REISSUED) {
+            throw new PermissionQuestionReissuedError()
+        }
         throw new PermissionDecisionRejectedError(action)
     }
 }
@@ -186,7 +196,8 @@ export class RpcGateway {
         mode?: PermissionMode,
         allowTools?: string[],
         decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort',
-        answers?: Record<string, string[]> | Record<string, { answers: string[] }>
+        answers?: Record<string, string[]> | Record<string, { answers: string[] }>,
+        instanceId?: string
     ): Promise<void> {
         const response = await this.sessionRpc(sessionId, RPC_METHODS.Permission, {
             id: requestId,
@@ -194,7 +205,8 @@ export class RpcGateway {
             mode,
             allowTools,
             decision,
-            answers
+            answers,
+            instanceId
         })
         assertPermissionDecisionAccepted(requestId, response, 'answer')
     }
@@ -202,12 +214,14 @@ export class RpcGateway {
     async denyPermission(
         sessionId: string,
         requestId: string,
-        decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
+        decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort',
+        instanceId?: string
     ): Promise<void> {
         const response = await this.sessionRpc(sessionId, RPC_METHODS.Permission, {
             id: requestId,
             approved: false,
-            decision
+            decision,
+            instanceId
         })
         assertPermissionDecisionAccepted(requestId, response, 'dismissal')
     }

@@ -1143,6 +1143,7 @@ export class ApiClient {
             allowTools?: string[]
             decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
             answers?: Record<string, string[]> | Record<string, { answers: string[] }>
+            instanceId?: string
         }
     ): Promise<void> {
         const body = typeof modeOrOptions === 'string' || modeOrOptions === undefined
@@ -1159,6 +1160,7 @@ export class ApiClient {
         requestId: string,
         options?: {
             decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
+            instanceId?: string
         }
     ): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(requestId)}/deny`, {

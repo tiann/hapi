@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { CODEX_QUESTION_REISSUED } from '@hapi/protocol/rpcMethods';
 import type { ApiSessionClient } from '@/api/apiSession';
 import { AgentStateSchema, type AgentState } from '@/api/types';
 import { INDETERMINATE_SYMBOL } from '../codexAppServerClient';
@@ -148,6 +149,23 @@ describe('Codex queued follow-up questions', () => {
         expect(request.instanceId).toEqual(expect.any(String));
         expect(restored.instanceId).toEqual(expect.any(String));
         expect(restored.instanceId).not.toBe(request.instanceId);
+    });
+
+    it.each([true, false])('rejects a decision for a previous issuance (approved: %s)', async approved => {
+        const q = questions[0];
+        const first = fixture();
+        first.manager.observeItem('thread', item);
+        const previous = first.state().requests![q.id].instanceId;
+        first.manager.close();
+
+        const replacement = fixture(first.state());
+        replacement.manager.observeItem('thread', item);
+        const reply = { id: q.id, instanceId: previous, approved, answers: { [q.questionItemId]: ['Web'] } };
+        await expect(replacement.manager.answer(reply)).rejects.toThrow(CODEX_QUESTION_REISSUED);
+        expect(replacement.submit).not.toHaveBeenCalled();
+        const current = replacement.state().requests![q.id].instanceId;
+        expect(current).not.toBe(previous);
+        await expect(replacement.manager.answer({ ...reply, instanceId: current })).resolves.toBe(true);
     });
 
     it('parses literal reply tags inside an answer and ignores quoted or malformed replies', () => {

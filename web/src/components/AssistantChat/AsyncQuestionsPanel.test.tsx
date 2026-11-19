@@ -77,7 +77,7 @@ describe('AsyncQuestionsPanel', () => {
         fireEvent.click(screen.getByText('First', { selector: 'summary' }))
         fireEvent.click(within(screen.getByText('First', { selector: 'summary' }).parentElement!).getByRole('button', { name: 'button.dismiss' }))
         await waitFor(() => expect(props.onRefresh).toHaveBeenCalledOnce())
-        expect(denyPermission).toHaveBeenCalledExactlyOnceWith('session-1', 'first')
+        expect(denyPermission).toHaveBeenCalledExactlyOnceWith('session-1', 'first', { instanceId: 'first-issuance' })
         expect(screen.queryByText('First')).not.toBeInTheDocument()
         rerender(<AsyncQuestionsPanel {...props} requests={{ second: question('Second', 2) }} />)
         expect(screen.queryByText('First')).not.toBeInTheDocument()

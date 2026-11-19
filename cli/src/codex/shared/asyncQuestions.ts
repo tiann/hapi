@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { CODEX_ASYNC_QUESTION_REQUEST_PREFIX } from '@hapi/protocol/rpcMethods';
+import { CODEX_ASYNC_QUESTION_REQUEST_PREFIX, CODEX_QUESTION_REISSUED } from '@hapi/protocol/rpcMethods';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentState } from '@/api/types';
 import { isIndeterminateError } from '../codexAppServerClient';
@@ -57,7 +57,7 @@ export function asyncQuestionsForItem(threadId: string, value: unknown): AsyncQu
     });
 }
 
-type Pending = { question: AsyncQuestion; submitted: boolean };
+type Pending = { question: AsyncQuestion; instanceId: string; submitted: boolean };
 type Resolution = { status: 'resolved'; answer: string } | { status: 'canceled'; decision?: 'denied' };
 
 /** Reuses the existing question UI; replies are native user input, never RPC responses. */
@@ -94,8 +94,8 @@ export class SharedCodexAsyncQuestions {
             if (this.pending.has(question.id)) continue;
             // Shutdown also cancels controls. Only an explicit user decision survives replay.
             if (this.completedAtBootstrap?.[question.id]?.decision === 'denied') continue;
-            this.pending.set(question.id, { question, submitted: false });
             const instanceId = randomUUID();
+            this.pending.set(question.id, { question, instanceId, submitted: false });
             this.session.updateAgentState(state => {
                 const completedRequests = { ...state.completedRequests };
                 delete completedRequests[question.id];
@@ -121,6 +121,9 @@ export class SharedCodexAsyncQuestions {
     async answer(reply: PermissionReply): Promise<boolean> {
         const pending = this.pending.get(reply.id);
         if (!pending) return false;
+        if (reply.instanceId !== undefined && reply.instanceId !== pending.instanceId) {
+            throw new Error(CODEX_QUESTION_REISSUED);
+        }
         if (this.closed || pending.submitted) throw new Error('Question already submitted or unavailable');
         const question = pending.question;
         if (!reply.approved) {

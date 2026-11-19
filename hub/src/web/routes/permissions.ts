@@ -1,8 +1,9 @@
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol'
+import { CODEX_QUESTION_REISSUED } from '@hapi/protocol/rpcMethods'
 import { PermissionModeSchema } from '@hapi/protocol/schemas'
 import { Hono, type Context } from 'hono'
 import { z } from 'zod'
-import { PermissionDecisionRejectedError, PermissionRequestNotFoundError } from '../../sync/rpcGateway'
+import { PermissionDecisionRejectedError, PermissionQuestionReissuedError, PermissionRequestNotFoundError } from '../../sync/rpcGateway'
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
@@ -20,16 +21,21 @@ const approveBodySchema = z.object({
     mode: PermissionModeSchema.optional(),
     allowTools: z.array(z.string()).optional(),
     decision: decisionSchema.optional(),
-    answers: answersSchema.optional()
+    answers: answersSchema.optional(),
+    instanceId: z.string().min(1).optional()
 })
 
 const denyBodySchema = z.object({
-    decision: decisionSchema.optional()
+    decision: decisionSchema.optional(),
+    instanceId: z.string().min(1).optional()
 })
 
 function permissionFailure(c: Context<WebAppEnv>, error: unknown): Response {
     if (error instanceof PermissionRequestNotFoundError) {
         return c.json({ error: error.message }, 409)
+    }
+    if (error instanceof PermissionQuestionReissuedError) {
+        return c.json({ error: error.message, code: CODEX_QUESTION_REISSUED }, 409)
     }
     if (error instanceof PermissionDecisionRejectedError) {
         return c.json({ error: error.message }, 422)
@@ -76,7 +82,7 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
         const decision = parsed.data.decision
         const answers = parsed.data.answers
         try {
-            await engine.approvePermission(sessionId, requestId, mode, allowTools, decision, answers)
+            await engine.approvePermission(sessionId, requestId, mode, allowTools, decision, answers, parsed.data.instanceId)
         } catch (error) {
             return permissionFailure(c, error)
         }
@@ -109,7 +115,7 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
         }
 
         try {
-            await engine.denyPermission(sessionId, requestId, parsed.data.decision)
+            await engine.denyPermission(sessionId, requestId, parsed.data.decision, parsed.data.instanceId)
         } catch (error) {
             return permissionFailure(c, error)
         }

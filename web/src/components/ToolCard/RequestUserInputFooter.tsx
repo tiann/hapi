@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { CODEX_ASYNC_QUESTION_REQUEST_PREFIX } from '@hapi/protocol/rpcMethods'
+import { CODEX_ASYNC_QUESTION_REQUEST_PREFIX, CODEX_QUESTION_REISSUED } from '@hapi/protocol/rpcMethods'
 import { ApiError, type ApiClient } from '@/api/client'
 import type { ChatToolCall } from '@/chat/types'
 import { useCodexQuestionSubmission, type CodexQuestionSubmission } from '@/components/ToolCard/CodexQuestionSubmission'
@@ -109,6 +109,9 @@ function RequestUserInputForm(props: RequestUserInputFooterProps) {
                 props.onDone()
                 return
             }
+            if (instanceId && e instanceof ApiError && e.status === 409 && e.code === CODEX_QUESTION_REISSUED) {
+                props.onDone()
+            }
             haptic.notification('error')
             setError(e instanceof Error ? e.message : t('dialog.error.default'))
         }
@@ -162,7 +165,8 @@ function RequestUserInputForm(props: RequestUserInputFooterProps) {
         }
 
         setLoading(true)
-        await run(() => props.api.approvePermission(props.sessionId, permission.id, formattedAnswers), () => {
+        const options = instanceId ? { ...formattedAnswers, instanceId } : formattedAnswers
+        await run(() => props.api.approvePermission(props.sessionId, permission.id, options), () => {
             recordSubmission?.({ status: 'answered', answers: formattedAnswers.answers })
         })
         setLoading(false)
@@ -183,7 +187,10 @@ function RequestUserInputForm(props: RequestUserInputFooterProps) {
     const dismiss = async () => {
         if (!isAsync || loading) return
         setLoading(true)
-        await run(() => props.api.denyPermission(props.sessionId, permission.id), () => {
+        const deny = () => instanceId
+            ? props.api.denyPermission(props.sessionId, permission.id, { instanceId })
+            : props.api.denyPermission(props.sessionId, permission.id)
+        await run(deny, () => {
             recordSubmission?.({ status: 'dismissed' })
         })
         setLoading(false)

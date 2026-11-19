@@ -7,6 +7,7 @@ import { record, string } from './gateway';
 
 const ReplySchema = z.object({
     id: z.string(), approved: z.boolean(),
+    instanceId: z.string().min(1).optional(),
     decision: z.enum(['approved', 'approved_for_session', 'denied', 'abort']).optional(),
     reason: z.string().optional(),
     answers: z.union([z.record(z.string(), z.array(z.string())), z.record(z.string(), z.object({ answers: z.array(z.string()) }))]).optional()
