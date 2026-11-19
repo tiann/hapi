@@ -672,17 +672,18 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             expect(store.messages.getAllMessages(source.id).map(message => message.localId)).toEqual(['claim-failure'])
             expect(store.messages.getAllMessages(replacementId)).toEqual([])
 
-            engine.handleRealtimeEvent({ type: 'session-updated', sessionId: source.id })
-            engine.handleSessionEnd({ sid: source.id, time: Date.now(), reason: 'error' })
-            const sync = engine as unknown as { reconcileOpenCodeClears(): Promise<void> }
-            await expect(sync.reconcileOpenCodeClears()).resolves.toBeUndefined()
+            const cached = engine.getSessionByNamespace(source.id, 'default')!
+            cached.activeAt = Date.now() - 360_000
+            const sync = engine as unknown as { expireInactive(): void; reconcileOpenCodeClears(): Promise<void> }
+            sync.expireInactive()
+            expect(engine.getSessionByNamespace(source.id, 'default')?.active).toBe(false)
             expect(events.filter(event => event.type === 'messages-invalidated')).toEqual([])
 
             fail = false
-            await sync.reconcileOpenCodeClears()
+            sync.expireInactive()
             expect(events.filter(event => event.type === 'messages-invalidated').map(event => event.sessionId))
                 .toEqual([source.id, replacementId])
-            expect(engine.abortOpenCodeClearSession(source.id, 'default', replacementId)).toEqual({ type: 'success', sessionId: source.id })
+            await sync.reconcileOpenCodeClears()
             expect(events.filter(event => event.type === 'messages-invalidated')).toHaveLength(2)
         } finally { engine.stop() }
     })

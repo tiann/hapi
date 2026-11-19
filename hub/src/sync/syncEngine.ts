@@ -4581,9 +4581,11 @@ export class SyncEngine {
     }
 
     private finishAbortedOpenCodeClear(sessionId: string, replacementId: string, namespace: string, refreshSource = false): void {
+        // Make the committed abort visible to the inactivity sweep even if claiming it fails.
+        if (refreshSource) this.sessionCache.refreshSession(sessionId)
         const pending = this.store.takeOpenCodeClearAbortInvalidation(sessionId, replacementId, namespace)
-        if (pending || refreshSource) this.sessionCache.refreshSession(sessionId)
         if (pending) {
+            this.sessionCache.refreshSession(sessionId)
             // Claim before broadcasting so retries cannot clear an open chat twice.
             // A hub restart between the claim and the emit already forces an SSE snapshot resync.
             this.invalidateOpenCodeClearMessages(sessionId, replacementId)
