@@ -31,7 +31,7 @@ function flattenResultText(result: unknown, depth: number = 0): string {
     }
     if (isObject(result)) {
         if (typeof result.sessionId === 'string') return result.sessionId
-        for (const key of ['text', 'content', 'result', 'output', 'message', 'error'] as const) {
+        for (const key of ['text', 'content', 'result', 'output', 'stdout', 'message', 'error'] as const) {
             const nested = flattenResultText(result[key], depth + 1)
             if (nested) return nested
         }

@@ -1736,7 +1736,7 @@ export class SessionCache {
                 nextMetadata,
                 session.metadataVersion,
                 session.namespace,
-                { touchUpdatedAt: false }
+                { touchUpdatedAt: false, preservePreallocation: true }
             )
 
             if (result.result === 'error') return false

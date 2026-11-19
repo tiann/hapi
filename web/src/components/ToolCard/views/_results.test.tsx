@@ -781,7 +781,11 @@ describe('PeerToolResultView', () => {
         expect(screen.getByRole('link', { name: /Open session/ }).getAttribute('href')).toBe('/sessions/33333333-3333-4333-8333-333333333333')
     })
 
-    it('links codeagent-wrapper Bash results when a HAPI session owns the returned SESSION_ID', () => {
+    const wrapperOutput = 'Approved\n---\nSESSION_ID: 019a0000-1111-7222-8333-444455556666'
+    it.each([
+        ['text', wrapperOutput],
+        ['terminal stdout', { stdout: wrapperOutput, exit_code: 0 }],
+    ])('links codeagent-wrapper Bash results when a HAPI session owns the SESSION_ID in %s', (_source, result) => {
         const queryClient = new QueryClient()
         queryClient.setQueryData(['sessions'], {
             sessions: [{
@@ -819,11 +823,7 @@ describe('PeerToolResultView', () => {
                 command: 'codeagent-wrapper --backend codex - "/work/repo"',
                 description: 'Run Codex review',
             },
-            result: [
-                'Approved',
-                '---',
-                'SESSION_ID: 019a0000-1111-7222-8333-444455556666',
-            ].join('\n'),
+            result,
         })
         const WrapperResultView = getToolResultViewComponent(wrapperBlock.tool.name, wrapperBlock)
         render(

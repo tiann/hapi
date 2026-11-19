@@ -87,6 +87,28 @@ describe('session parent link recording and persistence', () => {
         }
     })
 
+    it('adopts a preallocated peer with its updated parent after a parent merge', async () => {
+        const { store, engine } = setup()
+        try {
+            const metadata = { path: '/tmp/repo', host: 'mac' }
+            const parent = engine.getOrCreateSession('parent', metadata, null, 'default')
+            const replacement = engine.getOrCreateSession('replacement', metadata, null, 'default')
+            const peerId = crypto.randomUUID()
+            engine.getOrCreateSession(
+                `machine-spawn:${peerId}`, { ...metadata, parentSessionId: parent.id },
+                null, 'default', undefined, undefined, undefined, peerId
+            )
+
+            await engine['sessionCache'].mergeSessions(parent.id, replacement.id, 'default')
+            const adopted = engine.adoptPreallocatedSession(peerId, 'runner-peer', metadata, null, 'default')
+            expect(adopted.id).toBe(peerId)
+            expect(adopted.metadata?.parentSessionId).toBe(replacement.id)
+        } finally {
+            engine.stop()
+            store.close()
+        }
+    })
+
     it('preserves hub-owned parentSessionId across sparse CLI metadata rewrites', () => {
         const { store, engine } = setup()
         try {
