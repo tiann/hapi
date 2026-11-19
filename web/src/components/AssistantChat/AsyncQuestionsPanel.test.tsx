@@ -1,3 +1,7 @@
+import { QueryClientProvider } from '@tanstack/react-query'
+import type { ReactNode } from 'react'
+import { createQueryClient } from '@/lib/query-client'
+import { queryKeys } from '@/lib/query-keys'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { ApiError, type ApiClient } from '@/api/client'
@@ -19,14 +23,24 @@ function question(text: string, createdAt: number, isBlocking: unknown = false) 
     }
 }
 
+function receiptWrapper(requests: AgentState['requests']) {
+    const client = createQueryClient()
+    client.setQueryData(queryKeys.session('session-1'), { session: { id: 'session-1', agentState: { requests } } })
+    return ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={client}><CodexQuestionSubmissionProvider>{children}</CodexQuestionSubmissionProvider></QueryClientProvider>
+    )
+}
+
 function setup(requests: AgentState['requests']) {
     const approvePermission = vi.fn().mockResolvedValue(undefined)
-    const denyPermission = vi.fn().mockResolvedValue(undefined)
+    const denyPermission = vi.fn(async (_sessionId, requestId, options) => ({
+        ok: true, acknowledgement: options?.instanceId ? { requestId, instanceId: options.instanceId } : undefined
+    }))
     const props = {
         api: { approvePermission, denyPermission } as unknown as ApiClient,
         sessionId: 'session-1', requests, disabled: false, onRefresh: vi.fn()
     }
-    return { ...render(<AsyncQuestionsPanel {...props} />, { wrapper: CodexQuestionSubmissionProvider }), props, approvePermission, denyPermission }
+    return { ...render(<AsyncQuestionsPanel {...props} />, { wrapper: receiptWrapper(requests) }), props, approvePermission, denyPermission }
 }
 
 function expand() {
@@ -87,22 +101,22 @@ describe('AsyncQuestionsPanel', () => {
     })
 
     it.each([200, 404])('withdraws the same Codex answer form after HTTP %s while session state is stale', async (status) => {
-        const approvePermission = status === 200 ? vi.fn().mockResolvedValue(undefined)
+        const requestId = 'codex-async-question:one'
+        const approvePermission = status === 200
+            ? vi.fn().mockResolvedValue({ ok: true, acknowledgement: { requestId, instanceId: 'first-issuance' } })
             : vi.fn().mockRejectedValue(new ApiError('Request not found', 404))
         const onRefresh = vi.fn()
-        const requestId = 'codex-async-question:one'
         const other = question('Other', 2)
         const requests = { [requestId]: { ...question('Question', 1), instanceId: 'first-issuance' }, other }
         render(
-            <CodexQuestionSubmissionProvider>
-                <AsyncQuestionsPanel
-                    api={{ approvePermission } as unknown as ApiClient}
-                    sessionId="session-1"
-                    requests={requests}
-                    disabled={false}
-                    onRefresh={onRefresh}
-                />
-            </CodexQuestionSubmissionProvider>
+            <AsyncQuestionsPanel
+                api={{ approvePermission } as unknown as ApiClient}
+                sessionId="session-1"
+                requests={requests}
+                disabled={false}
+                onRefresh={onRefresh}
+            />,
+            { wrapper: receiptWrapper(requests) }
         )
         expand()
         const summary = screen.getByText('Question', { selector: 'summary' })

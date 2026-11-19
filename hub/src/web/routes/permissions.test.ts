@@ -127,6 +127,32 @@ describe('permissions routes (tiann/hapi#1735)', () => {
         expect(session.agentState.requests?.[id]).toBeDefined()
     })
 
+    it('returns only a matching runner acknowledgement for a Codex decision', async () => {
+        const requestId = `${CODEX_ASYNC_QUESTION_REQUEST_PREFIX}test`
+        const instanceId = 'issuance'
+        const session = createSession('codex')
+        session.agentState = { requests: { [requestId]: { tool: 'request_user_input', arguments: {}, instanceId } } }
+        const acknowledgement = { requestId, instanceId }
+        const socket = { timeout: () => ({ emitWithAck: async () => JSON.stringify(rpcResponse) }) }
+        const io = { of: () => ({ sockets: new Map([['socket-1', socket]]) }) } as unknown as Server
+        const registry = { getSocketIdForMethod: () => 'socket-1' } as unknown as RpcRegistry
+        const gateway = new RpcGateway(io, registry)
+        const app = createApp({
+            session, approvePermission: gateway.approvePermission.bind(gateway), denyPermission: gateway.denyPermission.bind(gateway)
+        })
+        let rpcResponse: unknown
+        for (const action of ['approve', 'deny']) {
+            for (const ack of [acknowledgement, undefined, { ...acknowledgement, instanceId: 'different' }]) {
+                rpcResponse = { ok: true, acknowledgement: ack }
+                const response = await app.request(`/api/sessions/session-1/permissions/${encodeURIComponent(requestId)}/${action}`, {
+                    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ instanceId })
+                })
+                expect(response.status).toBe(200)
+                expect(await response.json()).toEqual(ack === acknowledgement ? { ok: true, acknowledgement } : { ok: true })
+            }
+        }
+    })
+
     it('forwards the expected issuance and returns a distinguishable conflict for a replacement', async () => {
         const id = `${CODEX_ASYNC_QUESTION_REQUEST_PREFIX}test`
         const session = createSession('codex')
@@ -200,7 +226,7 @@ describe('permissions routes (tiann/hapi#1735)', () => {
 
     it('404s for a request id the session has never heard of, without calling the engine', async () => {
         let called = false
-        const app = createApp({ approvePermission: async () => { called = true } })
+        const app = createApp({ approvePermission: async () => { called = true; return undefined } })
         const res = await app.request('/api/sessions/session-1/permissions/unknown-request/approve', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },

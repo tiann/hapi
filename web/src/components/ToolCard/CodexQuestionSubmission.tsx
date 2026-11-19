@@ -1,5 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from 'react'
-import type { AgentState } from '@/types/api'
+import { useQueryClient } from '@tanstack/react-query'
+import { queryKeys } from '@/lib/query-keys'
+import type { SessionResponse } from '@/types/api'
 import type { ChatToolCall } from '@/chat/types'
 import type { RequestUserInputAnswers } from './requestUserInput'
 
@@ -19,12 +21,15 @@ function receiptKey(requestId: string, instanceId: string): string {
 const SubmissionContext = createContext<{
     sessions: ReadonlyMap<string, SessionSubmissions>
     record: (sessionId: string, id: string, instanceId: string, submission: CodexQuestionSubmission) => void
-    prune: (sessionId: string, requests: AgentState['requests']) => void
 } | null>(null)
 
 export function CodexQuestionSubmissionProvider({ children }: { children: ReactNode }) {
+    const queryClient = useQueryClient()
     const [sessions, setSessions] = useState<ReadonlyMap<string, SessionSubmissions>>(() => new Map())
     const record = useCallback((sessionId: string, id: string, instanceId: string, submission: CodexQuestionSubmission) => {
+        const detail = queryClient.getQueryData<SessionResponse>(queryKeys.session(sessionId))
+        if (detail?.session.agentState?.requests?.[id]?.instanceId !== instanceId) return
+
         const key = receiptKey(id, instanceId)
         setSessions(current => {
             const receipts = current.get(sessionId)
@@ -34,20 +39,32 @@ export function CodexQuestionSubmissionProvider({ children }: { children: ReactN
             const next = new Map(receipts).set(key, { requestId: id, instanceId, submission })
             return new Map(current).set(sessionId, next)
         })
-    }, [])
-    const prune = useCallback((sessionId: string, requests: AgentState['requests']) => {
+    }, [queryClient])
+
+    useEffect(() => queryClient.getQueryCache().subscribe(event => {
+        const [scope, sessionId, ...rest] = event.query.queryKey
+        if (scope !== queryKeys.sessionDetails[0] || typeof sessionId !== 'string' || rest.length) return
+        const removed = event.type === 'removed'
+        if (!removed && (event.type !== 'updated' || event.action.type !== 'success')) return
+        const detail = event.query.state.data as SessionResponse | undefined
+        const agentState = detail?.session.agentState
+        if (!removed && !agentState) return
+
         setSessions(current => {
-            const submissions = current.get(sessionId)
-            if (!submissions) return current
-            const remaining = new Map([...submissions].filter(([, receipt]) => requests?.[receipt.requestId]?.instanceId === receipt.instanceId))
-            if (remaining.size === submissions.size) return current
+            const receipts = current.get(sessionId)
+            if (!receipts) return current
+            const remaining = removed ? [] : [...receipts].filter(([, receipt]) =>
+                agentState?.requests?.[receipt.requestId]?.instanceId === receipt.instanceId
+            )
+            if (remaining.length === receipts.size) return current
             const next = new Map(current)
-            if (remaining.size) next.set(sessionId, remaining)
+            if (remaining.length) next.set(sessionId, new Map(remaining))
             else next.delete(sessionId)
             return next
         })
-    }, [])
-    return <SubmissionContext.Provider value={{ sessions, record, prune }}>{children}</SubmissionContext.Provider>
+    }), [queryClient])
+
+    return <SubmissionContext.Provider value={{ sessions, record }}>{children}</SubmissionContext.Provider>
 }
 
 export function useCodexQuestionSubmission(sessionId: string) {
@@ -61,15 +78,6 @@ export function getCodexQuestionSubmission(submissions: SessionSubmissions | und
 
 export function isHiddenCodexQuestionSubmission(status: CodexQuestionSubmission['status'] | undefined): boolean {
     return status === 'dismissed' || status === 'missing'
-}
-
-export function usePruneCodexQuestionSubmissions(sessionId: string, agentState: AgentState | null | undefined) {
-    const context = useContext(SubmissionContext)
-    const submissions = context?.sessions.get(sessionId)
-    const prune = context?.prune
-    useEffect(() => {
-        if (submissions && agentState) prune?.(sessionId, agentState.requests)
-    }, [agentState, prune, sessionId, submissions])
 }
 
 /** Keep the local receipt until agentState stops advertising the request. */

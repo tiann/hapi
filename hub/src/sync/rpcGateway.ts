@@ -1,3 +1,4 @@
+import { getPermissionDecisionAcknowledgement, type PermissionDecisionResponse } from '@hapi/protocol/apiTypes'
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, PermissionMode } from '@hapi/protocol/types'
 import { isObject } from '@hapi/protocol'
 import { CODEX_ASYNC_QUESTION_REQUEST_PREFIX, CODEX_QUESTION_REISSUED, DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
@@ -198,7 +199,7 @@ export class RpcGateway {
         decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort',
         answers?: Record<string, string[]> | Record<string, { answers: string[] }>,
         instanceId?: string
-    ): Promise<void> {
+    ): Promise<PermissionDecisionResponse['acknowledgement']> {
         const response = await this.sessionRpc(sessionId, RPC_METHODS.Permission, {
             id: requestId,
             approved: true,
@@ -209,6 +210,9 @@ export class RpcGateway {
             instanceId
         })
         assertPermissionDecisionAccepted(requestId, response, 'answer')
+        return requestId.startsWith(CODEX_ASYNC_QUESTION_REQUEST_PREFIX)
+            ? getPermissionDecisionAcknowledgement(response, requestId, instanceId)
+            : undefined
     }
 
     async denyPermission(
@@ -216,7 +220,7 @@ export class RpcGateway {
         requestId: string,
         decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort',
         instanceId?: string
-    ): Promise<void> {
+    ): Promise<PermissionDecisionResponse['acknowledgement']> {
         const response = await this.sessionRpc(sessionId, RPC_METHODS.Permission, {
             id: requestId,
             approved: false,
@@ -224,6 +228,9 @@ export class RpcGateway {
             instanceId
         })
         assertPermissionDecisionAccepted(requestId, response, 'dismissal')
+        return requestId.startsWith(CODEX_ASYNC_QUESTION_REQUEST_PREFIX)
+            ? getPermissionDecisionAcknowledgement(response, requestId, instanceId)
+            : undefined
     }
 
     async abortSession(sessionId: string): Promise<void> {

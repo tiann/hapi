@@ -1,3 +1,4 @@
+import type { PermissionDecisionResponse } from '@hapi/protocol/apiTypes'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClientProvider, skipToken, useQuery } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
@@ -64,7 +65,11 @@ function CachedChat({ renderChat }: { renderChat: (agentState: Session['agentSta
 }
 
 function setup(fromCache = false) {
-    shell.api.approvePermission.mockReset().mockResolvedValue(undefined)
+    shell.api.approvePermission.mockReset().mockImplementation(
+        async (_sessionId, requestId: string, options: { instanceId?: string }) => ({
+            ok: true, acknowledgement: options.instanceId ? { requestId, instanceId: options.instanceId } : undefined
+        })
+    )
     const onRefresh = vi.fn()
     const onInitialPendingRequestConsumed = vi.fn()
     const queryClient = createQueryClient()
@@ -95,7 +100,11 @@ function setup(fromCache = false) {
             onJumpToTail={() => {}}
         />
     )
+    let agentStateVersion = 0
     const setState = (agentState: Session['agentState'], mounted = true, pendingRequestId?: string) => {
+        queryClient.setQueryData(detailKey, {
+            session: { id: 'session-1', active: true, agentStateVersion: ++agentStateVersion, agentState }
+        })
         shell.outlet = mounted ? renderChat(agentState, pendingRequestId) : null
     }
     if (fromCache) shell.outlet = <CachedChat renderChat={renderChat} />
@@ -177,6 +186,19 @@ describe('Codex question receipts in the session chat', () => {
         expect(transcript().queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument()
     })
 
+    it.each([
+        { ok: true },
+        { ok: true, acknowledgement: { requestId: 'different', instanceId: 'first' } },
+        { ok: true, acknowledgement: { requestId, instanceId: 'different' } },
+    ])('refreshes without recording an unconfirmed answer for %o', async response => {
+        const { transcript, submit, onRefresh } = setup()
+        shell.api.approvePermission.mockResolvedValueOnce(response)
+        await submit()
+        await waitFor(() => expect(onRefresh).toHaveBeenCalledOnce())
+        expect(transcript().getByRole('button', { name: 'Submit' })).toBeEnabled()
+        expect(transcript().queryByText('Answer sent. Waiting for the agent.')).not.toBeInTheDocument()
+    })
+
     it('closes the transcript form on 404 and refreshes the session', async () => {
         const { transcript, submit, onRefresh } = setup()
         shell.api.approvePermission.mockRejectedValueOnce(new ApiError('Request not found', 404))
@@ -226,8 +248,8 @@ describe('Codex question receipts in the session chat', () => {
 
     it('keeps the panel answer on both surfaces when the transcript submission receives a late 404', async () => {
         const { transcript, submit, onRefresh } = setup()
-        const panelResponse = Promise.withResolvers<void>()
-        const transcriptResponse = Promise.withResolvers<void>()
+        const panelResponse = Promise.withResolvers<PermissionDecisionResponse>()
+        const transcriptResponse = Promise.withResolvers<PermissionDecisionResponse>()
         shell.api.approvePermission
             .mockReturnValueOnce(panelResponse.promise)
             .mockReturnValueOnce(transcriptResponse.promise)
@@ -241,7 +263,7 @@ describe('Codex question receipts in the session chat', () => {
         await submit()
         expect(shell.api.approvePermission).toHaveBeenCalledTimes(2)
 
-        await act(async () => { panelResponse.resolve() })
+        await act(async () => { panelResponse.resolve({ ok: true, acknowledgement: { requestId, instanceId: 'first' } }) })
         expect(transcript().getByText('Panel answer')).toBeVisible()
         expect(panelRow.getByText('Panel answer')).toBeVisible()
 

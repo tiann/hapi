@@ -1,3 +1,4 @@
+import { getPermissionDecisionAcknowledgement, type PermissionDecisionResponse } from '@hapi/protocol/apiTypes'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { CODEX_ASYNC_QUESTION_REQUEST_PREFIX, CODEX_QUESTION_REISSUED } from '@hapi/protocol/rpcMethods'
 import { ApiError, type ApiClient } from '@/api/client'
@@ -95,13 +96,17 @@ function RequestUserInputForm(props: RequestUserInputFooterProps) {
     const recordSubmission = instanceId && record
         ? (submission: CodexQuestionSubmission) => record(props.sessionId, permission.id, instanceId, submission)
         : undefined
-    const run = async (action: () => Promise<void>, onAccepted: () => void) => {
+    const run = async (action: () => Promise<PermissionDecisionResponse>, submission: CodexQuestionSubmission) => {
         if (props.disabled) return
         setError(null)
         try {
-            await action()
-            onAccepted()
-            haptic.notification('success')
+            const response = await action()
+            if (getPermissionDecisionAcknowledgement(response, permission.id, instanceId)) {
+                recordSubmission?.(submission)
+                haptic.notification('success')
+            } else if (!isCodexAsync) {
+                haptic.notification('success')
+            }
             props.onDone()
         } catch (e) {
             const reissued = e instanceof ApiError && e.status === 409 && e.code === CODEX_QUESTION_REISSUED
@@ -167,8 +172,8 @@ function RequestUserInputForm(props: RequestUserInputFooterProps) {
 
         setLoading(true)
         const options = instanceId ? { ...formattedAnswers, instanceId } : formattedAnswers
-        await run(() => props.api.approvePermission(props.sessionId, permission.id, options), () => {
-            recordSubmission?.({ status: 'answered', answers: formattedAnswers.answers })
+        await run(() => props.api.approvePermission(props.sessionId, permission.id, options), {
+            status: 'answered', answers: formattedAnswers.answers
         })
         setLoading(false)
     }
@@ -191,9 +196,7 @@ function RequestUserInputForm(props: RequestUserInputFooterProps) {
         const deny = () => instanceId
             ? props.api.denyPermission(props.sessionId, permission.id, { instanceId })
             : props.api.denyPermission(props.sessionId, permission.id)
-        await run(deny, () => {
-            recordSubmission?.({ status: 'dismissed' })
-        })
+        await run(deny, { status: 'dismissed' })
         setLoading(false)
     }
 

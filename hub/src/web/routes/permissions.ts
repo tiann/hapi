@@ -83,11 +83,11 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
         const decision = parsed.data.decision
         const answers = parsed.data.answers
         try {
-            await engine.approvePermission(sessionId, requestId, mode, allowTools, decision, answers, parsed.data.instanceId)
+            const acknowledgement = await engine.approvePermission(sessionId, requestId, mode, allowTools, decision, answers, parsed.data.instanceId)
+            return c.json({ ok: true, acknowledgement })
         } catch (error) {
             return permissionFailure(c, error)
         }
-        return c.json({ ok: true })
     })
 
     app.post('/sessions/:id/permissions/:requestId/deny', async (c) => {
@@ -116,11 +116,11 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
         }
 
         try {
-            await engine.denyPermission(sessionId, requestId, parsed.data.decision, parsed.data.instanceId)
+            const acknowledgement = await engine.denyPermission(sessionId, requestId, parsed.data.decision, parsed.data.instanceId)
+            return c.json({ ok: true, acknowledgement })
         } catch (error) {
             return permissionFailure(c, error)
         }
-        return c.json({ ok: true })
     })
 
     return app

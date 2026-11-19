@@ -1,4 +1,4 @@
-import type { BranchConversationRequest, BranchConversationResponse } from '@hapi/protocol/apiTypes'
+import type { BranchConversationRequest, BranchConversationResponse, PermissionDecisionResponse } from '@hapi/protocol/apiTypes'
 import type {
     AttachmentMetadata,
     AbortChunkedUploadResponse,
@@ -1145,11 +1145,11 @@ export class ApiClient {
             answers?: Record<string, string[]> | Record<string, { answers: string[] }>
             instanceId?: string
         }
-    ): Promise<void> {
+    ): Promise<PermissionDecisionResponse> {
         const body = typeof modeOrOptions === 'string' || modeOrOptions === undefined
             ? { mode: modeOrOptions }
             : modeOrOptions
-        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(requestId)}/approve`, {
+        return this.request(`/api/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(requestId)}/approve`, {
             method: 'POST',
             body: JSON.stringify(body)
         })
@@ -1162,8 +1162,8 @@ export class ApiClient {
             decision?: 'approved' | 'approved_for_session' | 'denied' | 'abort'
             instanceId?: string
         }
-    ): Promise<void> {
-        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(requestId)}/deny`, {
+    ): Promise<PermissionDecisionResponse> {
+        return this.request(`/api/sessions/${encodeURIComponent(sessionId)}/permissions/${encodeURIComponent(requestId)}/deny`, {
             method: 'POST',
             body: JSON.stringify(options ?? {})
         })

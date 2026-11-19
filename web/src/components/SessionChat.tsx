@@ -49,7 +49,7 @@ import type { PendingSchedule } from '@/components/AssistantChat/ScheduleTimePic
 import { resolvePendingSchedule } from '@/components/AssistantChat/ScheduleTimePicker'
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
 import { QueuedMessagesBar } from '@/components/AssistantChat/QueuedMessagesBar'
-import { getCodexQuestionSubmission, isHiddenCodexQuestionSubmission, useCodexQuestionSubmission, usePruneCodexQuestionSubmissions, type CodexQuestionSubmission } from '@/components/ToolCard/CodexQuestionSubmission'
+import { getCodexQuestionSubmission, isHiddenCodexQuestionSubmission, useCodexQuestionSubmission, type CodexQuestionSubmission } from '@/components/ToolCard/CodexQuestionSubmission'
 import { AsyncQuestionsPanel } from '@/components/AssistantChat/AsyncQuestionsPanel'
 import { isAsyncRequestUserInput } from '@/components/ToolCard/requestUserInput'
 import { getPendingRequestNavigationTarget } from '@/lib/pendingRequests'
@@ -752,7 +752,6 @@ export function SessionChat(props: SessionChatProps) {
 }
 
 function SessionChatInner(props: SessionChatProps) {
-    usePruneCodexQuestionSubmissions(props.session.id, props.session.agentState)
     const { submissions } = useCodexQuestionSubmission(props.session.id)
     const pendingRequestReceipts = useMemo(() => {
         const receipts = new Map<string, CodexQuestionSubmission['status']>()

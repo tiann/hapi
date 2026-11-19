@@ -139,7 +139,7 @@ export function PermissionFooter(props: {
     const summary = formatPermissionSummary(permission, props.tool.name, props.tool.input, codex, t)
     const isPending = permission.status === 'pending'
 
-    const run = async (action: () => Promise<void>, hapticType: 'success' | 'error') => {
+    const run = async (action: () => Promise<unknown>, hapticType: 'success' | 'error') => {
         if (props.disabled) return
         setError(null)
         try {
