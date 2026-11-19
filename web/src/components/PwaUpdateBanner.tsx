@@ -4,7 +4,7 @@ import { usePwaUpdateContext } from '@/lib/pwa-update-context'
 import { useTranslation } from '@/lib/use-translation'
 import { useVoiceOptional } from '@/lib/voice-context'
 
-export function PwaUpdateBanner({ topClassName }: { topClassName?: string } = {}) {
+export function PwaUpdateBanner({ topClassName, statusHeight }: { topClassName?: string; statusHeight?: number } = {}) {
     const { t } = useTranslation()
     const { needRefresh, reload } = usePwaUpdateContext()
     const isOnline = useOnlineStatus()
@@ -21,6 +21,7 @@ export function PwaUpdateBanner({ topClassName }: { topClassName?: string } = {}
     return (
         <div
             data-testid="pwa-update-banner"
+            style={statusHeight ? { top: `calc(${statusHeight}px + 0.5rem)` } : undefined}
             className={`fixed left-4 right-4 bg-[var(--app-secondary-bg)] border border-[var(--app-border)] rounded-lg p-4 shadow-lg z-50 ${topClass}`}
         >
             <div className="flex items-center justify-between gap-3">
@@ -59,9 +60,11 @@ export function PwaUpdateBanner({ topClassName }: { topClassName?: string } = {}
 export function PwaUpdateBannerWithStatusOffset({
     isSyncing,
     isReconnecting,
+    statusHeight,
 }: {
     isSyncing: boolean
     isReconnecting: boolean
+    statusHeight?: number
 }) {
     const voice = useVoiceOptional()
     const hasTopStatusBanner =
@@ -71,6 +74,7 @@ export function PwaUpdateBannerWithStatusOffset({
 
     return (
         <PwaUpdateBanner
+            statusHeight={statusHeight}
             topClassName={hasTopStatusBanner
                 ? 'top-[calc(env(safe-area-inset-top)+3rem)]'
                 : undefined}

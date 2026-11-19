@@ -1,5 +1,6 @@
 import { Spinner } from '@/components/Spinner'
 import { useTranslation } from '@/lib/use-translation'
+import { useLayoutEffect, useRef } from 'react'
 
 function getReasonLabel(reason: string, t: (key: string) => string): string {
     if (reason === 'heartbeat-timeout') {
@@ -26,13 +27,25 @@ function getReasonLabel(reason: string, t: (key: string) => string): string {
 export function ReconnectingBanner({
     isReconnecting,
     reason,
-    message
+    message,
+    onHeightChange
 }: {
     isReconnecting: boolean
     reason?: string | null
     message?: string
+    onHeightChange?: (height: number) => void
 }) {
     const { t } = useTranslation()
+    const ref = useRef<HTMLDivElement>(null)
+    useLayoutEffect(() => {
+        if (!isReconnecting || !ref.current || !onHeightChange) return
+        const element = ref.current
+        const measure = () => onHeightChange(element.getBoundingClientRect().height)
+        measure()
+        const observer = new ResizeObserver(measure)
+        observer.observe(element)
+        return () => { observer.disconnect(); onHeightChange(0) }
+    }, [isReconnecting, onHeightChange])
     const reasonLabel = reason ? getReasonLabel(reason, t) : null
 
     if (!isReconnecting) {
@@ -42,7 +55,7 @@ export function ReconnectingBanner({
     // Neutral like SyncingBanner: reconnecting is routine. Amber is reserved
     // for being offline (OfflineBanner). App delays this by 2s.
     return (
-        <div className="fixed top-0 left-0 right-0 bg-[var(--app-banner-bg)] text-[var(--app-banner-text)] text-center pb-2 pt-[calc(env(safe-area-inset-top)+0.5rem)] text-sm font-medium z-50 flex items-center justify-center gap-2 border-b border-[var(--app-divider)]">
+        <div ref={ref} className="fixed top-0 left-0 right-0 bg-[var(--app-banner-bg)] text-[var(--app-banner-text)] text-center pb-2 pt-[calc(env(safe-area-inset-top)+0.5rem)] text-sm font-medium z-50 flex items-center justify-center gap-2 border-b border-[var(--app-divider)]">
             <Spinner size="sm" label={null} className="text-[var(--app-banner-text)]" />
             {message ?? t('reconnecting.message')}
             {reasonLabel ? <span className="text-[var(--app-hint)]">({reasonLabel})</span> : null}

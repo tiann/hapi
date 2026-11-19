@@ -455,6 +455,7 @@ function AppInner() {
     // Transient states wait before showing; quick reconnects never flash.
     const revealReconnecting = useDelayedFlag(showReconnectingBanner, CONNECTION_STATUS_DELAY_MS)
     const revealAuthRefresh = useDelayedFlag(showAuthRefreshBanner, CONNECTION_STATUS_DELAY_MS)
+    const [authRefreshHeight, setAuthRefreshHeight] = useState(0)
     const revealSyncing = useDelayedFlag(isSyncing, CONNECTION_STATUS_DELAY_MS)
 
     useVisibilityReporter({
@@ -569,7 +570,8 @@ function AppInner() {
             <VoiceProvider>
                 <PwaUpdateBannerWithStatusOffset
                     isSyncing={revealSyncing}
-                    isReconnecting={revealReconnecting}
+                    isReconnecting={revealReconnecting || revealAuthRefresh}
+                    statusHeight={revealAuthRefresh && streamConnected ? authRefreshHeight : undefined}
                 />
                 <SyncingBanner isSyncing={revealSyncing} />
                 <ReconnectingBanner
@@ -579,6 +581,7 @@ function AppInner() {
                 <ReconnectingBanner
                     isReconnecting={revealAuthRefresh && streamConnected}
                     message="Sign-in refresh failed. Live updates are connected; retrying automatically."
+                    onHeightChange={setAuthRefreshHeight}
                     reason={connectionError?.diagnostic ?? (connectionError?.status ? `HTTP ${connectionError.status}` : null)}
                 />
                 <VoiceErrorBanner />
