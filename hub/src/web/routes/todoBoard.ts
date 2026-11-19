@@ -920,6 +920,46 @@ async function execGh(args: string[], host: string): Promise<string> {
     }
 }
 
+// `gh project item-edit`'s name-based flags (`--owner`/`--url`/`--field`/
+// `--value`) were only added in cli/cli#13807, first released in gh 2.97.0 —
+// every earlier version rejects them as unrecognized flags, so every status
+// change on an older `gh` fails outright with a confusing CLI error (review
+// finding, tiann/hapi#2147). Probed fresh per call rather than cached: status
+// changes aren't a hot path, and a cache would need its own invalidation path
+// for an operator upgrading `gh` mid-session.
+const MIN_GH_VERSION_FOR_STATUS_EDIT = [2, 97, 0] as const
+
+export function parseGhVersion(stdout: string): [number, number, number] | null {
+    const match = stdout.match(/gh version (\d+)\.(\d+)\.(\d+)/)
+    if (!match) return null
+    return [Number(match[1]), Number(match[2]), Number(match[3])]
+}
+
+export function isGhVersionBelow(version: readonly number[], minimum: readonly number[]): boolean {
+    for (let i = 0; i < minimum.length; i += 1) {
+        const diff = (version[i] ?? 0) - (minimum[i] ?? 0)
+        if (diff !== 0) return diff < 0
+    }
+    return false
+}
+
+// Fails open on any probe trouble (missing binary, unexpected output, timeout)
+// rather than blocking status changes a working `gh` could actually perform —
+// this is a clearer error for the common old-CLI case, not a hard gate.
+async function checkGhVersionForStatusEdit(host: string): Promise<string | null> {
+    let stdout: string
+    try {
+        stdout = await execGh(['--version'], host)
+    } catch {
+        return null
+    }
+    const version = parseGhVersion(stdout)
+    if (!version || !isGhVersionBelow(version, MIN_GH_VERSION_FOR_STATUS_EDIT)) {
+        return null
+    }
+    return `Changing status requires gh CLI ${MIN_GH_VERSION_FOR_STATUS_EDIT.join('.')} or newer (detected ${version.join('.')}) — upgrade gh on the hub machine and try again.`
+}
+
 export type BoardItemActionTarget = { host: string; url: string; isPullRequest: boolean }
 export type BoardItemStatusTarget = { host: string; ownerLogin: string; projectNumber: number; url: string; fieldName: string; status: string | null }
 export type CreateIssueTarget = { host: string; repo: string; title: string; body: string; labels: string[]; assignees: string[] }
@@ -969,6 +1009,10 @@ export const defaultBoardItemActions: BoardItemActions = {
     // could never be moved back to the unassigned/no-status bucket from
     // HAPI before this).
     setStatus: async (target) => {
+        const versionError = await checkGhVersionForStatusEdit(target.host)
+        if (versionError) {
+            throw new Error(versionError)
+        }
         const args = [
             'project', 'item-edit', String(target.projectNumber),
             '--owner', target.ownerLogin,

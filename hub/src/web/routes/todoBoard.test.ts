@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { Hono } from 'hono'
 import type { BoardItemsResponse, BoardsResponse } from '@hapi/protocol'
 import type { WebAppEnv } from '../middleware/auth'
-import { createBoardRoutes, fetchAllItemComments, fetchAllProjectItems, GhGraphqlNotFoundError, makeBoardId, parseProjectUrl, parseValidatedItemUrl, PROJECT_QUERY, PROJECT_QUERY_FILTERED, resolveProjectView } from './todoBoard'
+import { createBoardRoutes, fetchAllItemComments, fetchAllProjectItems, GhGraphqlNotFoundError, isGhVersionBelow, makeBoardId, parseGhVersion, parseProjectUrl, parseValidatedItemUrl, PROJECT_QUERY, PROJECT_QUERY_FILTERED, resolveProjectView } from './todoBoard'
 
 const ENV_KEYS = [
     'HAPI_BOARD_HOST',
@@ -2374,5 +2374,36 @@ describe('POST /api/todo-boards/:id/items (create a card)', () => {
         })
         expect(response.status).toBe(200)
         expect(calls).toEqual(['addItemToProject:https://github.com/heavygee/hapi/issues/42'])
+    })
+})
+
+// Review finding (tiann/hapi#2147): `gh project item-edit`'s name-based
+// flags (--owner/--url/--field/--value) were only added in cli/cli#13807,
+// first released in gh 2.97.0 (confirmed against the actual gh CLI source:
+// v2.95.0's item-edit only has --id/--field-id/--project-id/--text/--number/
+// --date/--single-select-option-id/--iteration-id/--clear). An older gh
+// rejects those flags outright, so every status change failed with a
+// confusing CLI error rather than an actionable one.
+describe('gh version gate for project item-edit name-based flags', () => {
+    it('parses a standard gh --version line', () => {
+        expect(parseGhVersion('gh version 2.97.0 (2026-08-01)\nhttps://github.com/cli/cli/releases/tag/v2.97.0'))
+            .toEqual([2, 97, 0])
+    })
+
+    it('returns null for output that does not look like gh --version', () => {
+        expect(parseGhVersion('command not found: gh')).toBeNull()
+    })
+
+    it('treats a version below the minimum as below', () => {
+        expect(isGhVersionBelow([2, 95, 0], [2, 97, 0])).toBe(true)
+        expect(isGhVersionBelow([2, 96, 9], [2, 97, 0])).toBe(true)
+        expect(isGhVersionBelow([1, 99, 0], [2, 97, 0])).toBe(true)
+    })
+
+    it('treats the minimum version itself, and anything newer, as not below', () => {
+        expect(isGhVersionBelow([2, 97, 0], [2, 97, 0])).toBe(false)
+        expect(isGhVersionBelow([2, 97, 1], [2, 97, 0])).toBe(false)
+        expect(isGhVersionBelow([2, 98, 0], [2, 97, 0])).toBe(false)
+        expect(isGhVersionBelow([3, 0, 0], [2, 97, 0])).toBe(false)
     })
 })
