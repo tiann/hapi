@@ -972,7 +972,7 @@ describe('AcpSdkBackend', () => {
         expect(sendRequestWithDispatch).toHaveBeenCalledWith(
             'session/prompt',
             { sessionId: 'session-1', prompt: [{ type: 'text', text: 'hello' }] },
-            { timeoutMs: Infinity, dispatchTimeoutMs: 20_000 }
+            { timeoutMs: Infinity }
         );
         expect(events).toEqual(['request']);
 

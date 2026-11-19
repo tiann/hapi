@@ -874,7 +874,7 @@ export class AcpSdkBackend implements AgentBackend {
                     const request = this.transport.sendRequestWithDispatch('session/prompt', {
                         sessionId,
                         prompt: content
-                    }, { timeoutMs: Infinity, dispatchTimeoutMs: 20_000 });
+                    }, { timeoutMs: Infinity });
                     // Avoid an unhandled rejection if `completed` settles while awaiting `dispatched`.
                     void request.completed.catch(() => {});
                     await request.dispatched;
