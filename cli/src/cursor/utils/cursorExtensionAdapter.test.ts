@@ -110,6 +110,19 @@ describe('CursorExtensionAdapter', () => {
         });
     });
 
+    it('keeps a completed question’s recorded wait on ACK retry', async () => {
+        const f = createHarness();
+        const pending = f.handlers.get('cursor/ask_question')!({ toolCallId: 'q-1', questions: [] }, null);
+        vi.mocked(Date.now).mockReturnValue(1_700_000_001_000);
+        await f.adapter.handlePermissionResponse({ id: 'q-1', approved: true, answers: {} });
+        await pending;
+        vi.mocked(Date.now).mockReturnValue(1_700_000_009_000);
+        const newer = { ...f.getAgentState(), steeringActive: true };
+        expect(f.reapply(newer).completedRequests?.['q-1']).toMatchObject({
+            createdAt: 1_700_000_000_000, completedAt: 1_700_000_001_000
+        });
+    });
+
     it('resolves ask_question denial as cancelled', async () => {
         const { handlers, adapter } = createHarness();
         const pending = handlers.get('cursor/ask_question')!({ toolCallId: 'q-2' }, null);

@@ -24,14 +24,19 @@ function fixture(initialState: AgentState = {}) {
 }
 
 describe('Codex queued follow-up questions', () => {
-    it('does not reopen a question dismissed in the newer Hub state', async () => {
+    it.each(['denied', 'resolved'] as const)('does not reopen a %s question from the newer Hub state', async result => {
         const f = fixture();
         f.manager.observeItem('thread', item);
         const id = questions[0].id;
-        const denied: AgentState = { completedRequests: { [id]: {
-            tool: 'request_user_input', arguments: {}, status: 'canceled', decision: 'denied'
+        const settled: AgentState = { completedRequests: { [id]: {
+            tool: 'request_user_input', arguments: {},
+            ...(result === 'denied' ? { status: 'canceled', decision: 'denied' } : {
+                status: 'resolved', answers: { [questions[0].questionItemId]: { answers: ['Web'] } }
+            })
         } } };
-        expect(f.updates[0]!(denied)).toBe(denied);
+        expect(f.updates[0]!(settled)).toBe(settled);
+        f.manager.observeItem('thread', item);
+        expect(f.updates).toHaveLength(2);
         await expect(f.manager.answer({ id, approved: true })).resolves.toBe(false);
         expect(f.submit).not.toHaveBeenCalled();
     });

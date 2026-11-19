@@ -212,6 +212,21 @@ function buildRequest(overrides?: Partial<PermissionRequest>): PermissionRequest
 }
 
 describe('PermissionAdapter', () => {
+    it('keeps the recorded approval wait when completion is retried on newer Hub state', async () => {
+        const now = vi.spyOn(Date, 'now').mockReturnValue(100);
+        try {
+            const f = createHarness();
+            f.emitPermissionRequest(buildRequest());
+            now.mockReturnValue(300);
+            await f.rpcHandlers.get('permission')!({ id: 'perm-1', approved: true });
+            now.mockReturnValue(500);
+            const newer = { ...f.getAgentState(), steeringActive: true };
+            expect(f.reapply(newer).completedRequests['perm-1']).toMatchObject({ createdAt: 100, completedAt: 300 });
+        } finally {
+            now.mockRestore();
+        }
+    });
+
     it('preserves an ACP request timestamp across a state retry', () => {
         const now = vi.spyOn(Date, 'now').mockReturnValue(100);
         try {

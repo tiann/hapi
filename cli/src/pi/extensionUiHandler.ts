@@ -281,8 +281,12 @@ export class PiExtensionUiHandler {
         // this handler itself marked the completion as an abort/cancellation.
         const denied = !approved && permission.decision !== 'abort';
         const answers = normalizeAnswers(permission.answers);
+        const status = approved ? 'approved' : denied ? 'denied' : 'canceled';
+        const decision = permission.decision ?? (approved ? 'approved' : 'denied');
+        const completedAt = Date.now();
         this.options.session.updateAgentState((currentState) => {
             const request = currentState.requests?.[id];
+            const prior = currentState.completedRequests?.[id];
             const { [id]: _removed, ...remaining } = currentState.requests ?? {};
             return {
                 ...currentState,
@@ -292,11 +296,11 @@ export class PiExtensionUiHandler {
                     [id]: {
                         tool,
                         arguments: request?.arguments ?? requestArguments(entry.request),
-                        createdAt: request?.createdAt ?? Date.now(),
-                        completedAt: Date.now(),
-                        status: approved ? 'approved' : denied ? 'denied' : 'canceled',
+                        createdAt: request?.createdAt ?? prior?.createdAt ?? completedAt,
+                        completedAt: prior?.status === status && prior.decision === decision ? prior.completedAt ?? completedAt : completedAt,
+                        status,
                         reason: permission.reason,
-                        decision: permission.decision ?? (approved ? 'approved' : 'denied'),
+                        decision,
                         ...(answers ? { answers } : {}),
                     },
                 },

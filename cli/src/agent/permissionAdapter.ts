@@ -165,8 +165,10 @@ export class PermissionAdapter {
             await this.backend.respondToPermission(pending.sessionId, pending, outcome);
         }
 
+        const completedAt = Date.now();
         this.session.updateAgentState((currentState) => {
             const requestEntry = currentState.requests?.[response.id];
+            const prior = currentState.completedRequests?.[response.id];
             const { [response.id]: _, ...remaining } = currentState.requests ?? {};
 
             const status = response.approved ? 'approved' : 'denied';
@@ -180,8 +182,8 @@ export class PermissionAdapter {
                         tool: toolName,
                         toolCallId: pending.toolCallId,
                         arguments: toolInput,
-                        createdAt: requestEntry?.createdAt ?? Date.now(),
-                        completedAt: Date.now(),
+                        createdAt: requestEntry?.createdAt ?? prior?.createdAt ?? completedAt,
+                        completedAt: prior?.status === status && prior.decision === decision ? prior.completedAt ?? completedAt : completedAt,
                         status,
                         decision
                     }

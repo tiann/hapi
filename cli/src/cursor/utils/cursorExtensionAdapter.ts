@@ -155,8 +155,10 @@ export class CursorExtensionAdapter {
         }
 
         const status = response.approved ? 'approved' : 'denied';
+        const completedAt = Date.now();
         this.session.updateAgentState((currentState) => {
             const requestEntry = currentState.requests?.[response.id];
+            const prior = currentState.completedRequests?.[response.id];
             const { [response.id]: _, ...remaining } = currentState.requests ?? {};
             return {
                 ...currentState,
@@ -167,8 +169,8 @@ export class CursorExtensionAdapter {
                         tool: pending.tool,
                         toolCallId: pending.toolCallId,
                         arguments: pending.arguments,
-                        createdAt: requestEntry?.createdAt ?? Date.now(),
-                        completedAt: Date.now(),
+                        createdAt: requestEntry?.createdAt ?? prior?.createdAt ?? completedAt,
+                        completedAt: prior?.status === status && prior.decision === decision ? prior.completedAt ?? completedAt : completedAt,
                         status,
                         decision
                     }
@@ -272,8 +274,10 @@ export class CursorExtensionAdapter {
         for (const [id, pending] of entries) {
             pending.respond(wrapOutcome({ outcome: 'cancelled' }));
 
+            const completedAt = Date.now();
             this.session.updateAgentState((currentState) => {
                 const requestEntry = currentState.requests?.[id];
+                const prior = currentState.completedRequests?.[id];
                 const { [id]: _, ...remaining } = currentState.requests ?? {};
                 return {
                     ...currentState,
@@ -284,8 +288,8 @@ export class CursorExtensionAdapter {
                             tool: pending.tool,
                             toolCallId: pending.toolCallId,
                             arguments: pending.arguments,
-                            createdAt: requestEntry?.createdAt ?? Date.now(),
-                            completedAt: Date.now(),
+                            createdAt: requestEntry?.createdAt ?? prior?.createdAt ?? completedAt,
+                            completedAt: prior?.status === 'canceled' && prior.decision === 'abort' ? prior.completedAt ?? completedAt : completedAt,
                             status: 'canceled',
                             reason,
                             decision: 'abort'

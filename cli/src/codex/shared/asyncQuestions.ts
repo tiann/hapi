@@ -63,6 +63,7 @@ export class SharedCodexAsyncQuestions {
     private readonly pending = new Map<string, Pending>();
     private readonly questions = new Map<string, AsyncQuestion>();
     private readonly completed = new Map<string, Resolution>();
+    private readonly settledByHub = new Set<string>();
     private closed = false;
 
     constructor(private readonly session: ApiSessionClient,
@@ -89,15 +90,17 @@ export class SharedCodexAsyncQuestions {
             this.questions.set(question.id, question);
             const resolution = this.completed.get(question.id);
             if (resolution) { this.resolve(question, resolution); continue; }
-            if (this.pending.has(question.id)) continue;
+            if (this.pending.has(question.id) || this.settledByHub.has(question.id)) continue;
             // Shutdown also cancels controls. Only an explicit user decision survives replay.
-            if (this.completedAtBootstrap?.[question.id]?.decision === 'denied') continue;
+            const bootstrap = this.completedAtBootstrap?.[question.id];
+            if (bootstrap?.decision === 'denied' || bootstrap?.status === 'resolved') continue;
             this.pending.set(question.id, { question, submitted: false });
             const createdAt = typeof item.completedAtMs === 'number' ? item.completedAtMs : Date.now();
             this.session.updateAgentState(state => {
-                if (state.completedRequests?.[question.id]?.decision === 'denied') {
+                const settled = state.completedRequests?.[question.id];
+                if (settled?.decision === 'denied' || settled?.status === 'resolved') {
                     this.pending.delete(question.id);
-                    this.completed.set(question.id, { status: 'canceled', decision: 'denied' });
+                    this.settledByHub.add(question.id);
                     return state;
                 }
                 const completedRequests = { ...state.completedRequests };

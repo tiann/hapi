@@ -603,12 +603,14 @@ async function launchLocal(
                     : 'denied';
             const reason = getString(record.reason) ?? undefined;
             const allowTools = Array.isArray(record.allowTools) ? record.allowTools : undefined;
+            const completedAt = Date.now();
 
             session.client.updateAgentState((currentState) => {
+                const prior = currentState.completedRequests?.[id];
                 const request = currentState.requests?.[id] ?? {
                     tool: toolName,
                     arguments: toolInput,
-                    createdAt: Date.now()
+                    createdAt: prior?.createdAt ?? completedAt
                 };
                 const nextRequests = { ...(currentState.requests || {}) };
                 delete nextRequests[id];
@@ -619,7 +621,7 @@ async function launchLocal(
                         ...currentState.completedRequests,
                         [id]: {
                             ...request,
-                            completedAt: Date.now(),
+                            completedAt: prior?.status === status && prior.decision === decision ? prior.completedAt ?? completedAt : completedAt,
                             status,
                             decision,
                             reason,
