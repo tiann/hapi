@@ -18,12 +18,25 @@ interface ProcessFacts {
 
 function channel(event: string) {
     if (event.startsWith('GET ') || event.startsWith('POST ')) return 'http'
-    if (event === 'message' || event === 'messages-consumed') return 'chat'
+    if (event === 'message' || event === 'messages-consumed' || event === 'messages-steer-state') return 'chat'
     if (event.startsWith('messages-')) return 'messages-*'
     if (event === 'session-ready' || event === 'session-end') return 'lifecycle'
     if (['update-metadata', 'update-state', 'auth', 'rpc-register', 'session-alive', 'step'].includes(event)) return event
     return 'others'
 }
+
+const clockPaths = new Set([
+    'session-alive/args/time',
+    'session-end/args/time',
+    'message/args/createdAt',
+    'message/args/message/content/data/timestamp',
+    'message/args/message/content/data/message/content/permissions/date',
+    'decoded/createdAt',
+    'decoded/agentTimestamp',
+    'decoded/content/permissions/date'
+])
+const metadataClock = /^(?:POST \/cli\/sessions\/args\/body|POST \/session-started\/args|update-metadata\/(?:args|ack))\/metadata\/(?:lifecycleStateSince|summary\/updatedAt)$/
+const requestClock = /^update-state\/(?:args|ack)\/agentState\/(?:requests\/[^/]+\/createdAt|completedRequests\/[^/]+\/(?:createdAt|completedAt))$/
 
 export function normalize(rows: Row[], facts: ProcessFacts, launches: unknown[], decoded: unknown[]) {
     const runtimeDir = facts.runtimeDir ?? facts.cli
@@ -44,8 +57,7 @@ export function normalize(rows: Row[], facts: ProcessFacts, launches: unknown[],
         if (Array.isArray(value)) return value.map(v => clean(v, '', path))
         if (value && typeof value === 'object') return Object.fromEntries(Object.keys(value).sort()
             .map(k => [k, clean(value[k], k, path + '/' + k)]))
-        if (!path.startsWith('step/') && (['time', 'createdAt', 'lifecycleStateSince', 'completedAt', 'updatedAt', 'timestamp', 'agentTimestamp'].includes(key)
-            || path.endsWith('/permissions/date'))) {
+        if (clockPaths.has(path) || metadataClock.test(path) || requestClock.test(path)) {
             if (key === 'timestamp') {
                 assert.equal(typeof value, 'string', path)
                 assert.match(value, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/, path)

@@ -31,17 +31,42 @@ describe('transcript normalization', () => {
         expect(clean([message, metadata, pickup])).not.toEqual(clean([pickup, metadata, message]))
     })
 
+    it('retains dispatch before consumption for the same steered message', () => {
+        const dispatch = row('messages-steer-state', { state: 'dispatching', localIds: ['local-2'] })
+        const consumed = row('messages-consumed', { steered: true, localIds: ['local-2'] })
+        expect(clean([dispatch, consumed])).not.toEqual(clean([consumed, dispatch]))
+    })
+
+    it('keeps tool input clocks literal in the wire and decoded content', () => {
+        const input = { time: 30, timestamp: 'tomorrow' }
+        const tool = { type: 'tool_use', input }
+        const data = { message: { content: [tool] } }
+        const message = { content: { type: 'output', data } }
+        const result = normalize([row('message', { message })], facts, [], [{ content: [tool] }])
+        expect(result.channels['1/chat'][0]).toMatchObject({ args: [{ message }] })
+        expect(result.decoded).toEqual([{ content: [tool] }])
+    })
+
     it('rejects an RPC registration that requests an acknowledgement', () => {
         expect(() => clean([{ ...row('rpc-register', { method: 's:abort' }), ackRequested: true }])).toThrow('fire-and-forget')
     })
 
     it.each([
-        { time: 0 }, { createdAt: Math.floor(now / 1000) }, { completedAt: now + 1 },
-        { timestamp: now }, { timestamp: '11/19/2026' }, { timestamp: new Date(now + 60000).toISOString() },
-        { permissions: { date: 0 } }, { path: 'session-hook-43.json' },
+        row('session-alive', { time: 0 }),
+        row('message', { createdAt: Math.floor(now / 1000) }),
+        row('update-state', { agentState: { completedRequests: { tool: { completedAt: now + 1 } } } }),
+        ...[now, '11/19/2026', new Date(now + 60000).toISOString()].map(timestamp =>
+            row('message', { message: { content: { data: { timestamp } } } })),
+        row('message', { message: { content: { data: { message: { content: [{ permissions: { date: 0 } }] } } } } }),
+    ])('rejects invalid protocol clocks %j', entry => {
+        expect(() => clean([entry])).toThrow()
+    })
+
+    it.each([
+        { path: 'session-hook-43.json' },
         { method: 'sid:killSession/process/machine/43' }, { hapiMcpUrl: 'http://127.0.0.1:18122/' },
         { url: 'http://127.0.0.1:99999/' }
-    ])('rejects invalid process or clock data %j', arg => {
+    ])('rejects invalid process data %j', arg => {
         expect(() => clean([row('message', arg)])).toThrow()
     })
 
