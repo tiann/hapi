@@ -263,6 +263,7 @@ export default {
   'boards.newCard.retryAttach': 'Retry adding to board',
   'boards.newCard.creating': 'Creating…',
   'boards.newCard.error': 'Could not create the issue.',
+  'boards.newCard.boardRemoved': 'This board is no longer available. Close this dialog and choose a destination again.',
   'boards.newCard.minLength': 'Minimum {count} characters',
   'codexSync.tooltip': 'Import sessions from Codex into Hapi',
   'codexSync.newSessionAction': 'Import Codex history',

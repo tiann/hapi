@@ -263,6 +263,7 @@ export default {
   'boards.newCard.retryAttach': '重试添加到看板',
   'boards.newCard.creating': '创建中…',
   'boards.newCard.error': '无法创建该 issue。',
+  'boards.newCard.boardRemoved': '该看板已不可用。请关闭此对话框并重新选择目标。',
   'boards.newCard.minLength': '最少 {count} 个字符',
   'codexSync.tooltip': '从 Codex 导入会话到 Hapi',
   'codexSync.newSessionAction': '导入 Codex 历史',

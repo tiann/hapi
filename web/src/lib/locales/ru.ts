@@ -221,6 +221,7 @@ export default {
   'boards.newCard.retryAttach': 'Повторить добавление на доску',
   'boards.newCard.creating': 'Создание…',
   'boards.newCard.error': 'Не удалось создать issue.',
+  'boards.newCard.boardRemoved': 'Эта доска больше недоступна. Закройте диалог и выберите место назначения заново.',
   'boards.newCard.minLength': 'Минимум {count} символов',
   'codexSync.tooltip': 'Импортировать сессии из Codex в Hapi',
   'codexSync.newSessionAction': 'Импорт истории Codex',

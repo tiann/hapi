@@ -390,16 +390,39 @@ function SessionsPage() {
     // tracks itself (hapi#238).
     const [newCardDialogOpen, setNewCardDialogOpen] = useState(false)
     const [newCardRepo, setNewCardRepo] = useState<string | null>(null)
+    // Captured once when the dialog opens, not read live off `effectiveBoardId`
+    // for the rest of the dialog's lifetime (review finding, hapi#238):
+    // `effectiveBoardId` tracks cross-tab board-selection sync
+    // (useBoardSelection's storage listener), so without this capture,
+    // switching boards in another tab while this dialog is open silently
+    // retargets template lookup and, worse, submission — filing the card
+    // against whatever board happened to be selected by the time the user
+    // clicked Create, not the board the dialog was opened on.
+    const [newCardBoardId, setNewCardBoardId] = useState<string | null>(null)
+    const openNewCardDialog = useCallback(() => {
+        setNewCardBoardId(effectiveBoardId)
+        setNewCardDialogOpen(true)
+    }, [effectiveBoardId])
     useEffect(() => {
-        if (!newCardDialogOpen) setNewCardRepo(null)
+        if (!newCardDialogOpen) {
+            setNewCardRepo(null)
+            setNewCardBoardId(null)
+        }
     }, [newCardDialogOpen])
+    // True once the captured board disappears from the live list (removed,
+    // or — in the brief window before the first boards fetch resolves —
+    // simply not loaded yet) while the dialog is still open. Submission is
+    // refused rather than silently falling back to `effectiveBoardId`, which
+    // would resurrect exactly the misfile-to-the-wrong-board bug this
+    // capture exists to prevent.
+    const newCardBoardMissing = newCardDialogOpen && newCardBoardId !== null && !boards.some(b => b.id === newCardBoardId)
     const {
         templates: newCardTemplates,
         blankAllowed: newCardBlankAllowed,
         githubNewIssueUrl: newCardGithubNewIssueUrl,
         isLoading: newCardTemplatesLoading,
         error: newCardTemplatesError,
-    } = useIssueTemplates(api, effectiveBoardId, newCardRepo, newCardDialogOpen)
+    } = useIssueTemplates(api, newCardBoardId, newCardRepo, newCardDialogOpen)
     // Seen-tracking used to live here, gated on sessionsMode/selection
     // (hapi#238 Codex review, two rounds) — upstream reworked
     // useSelectedSessionSeen to be driven by the rendered transcript's own
@@ -683,7 +706,7 @@ function SessionsPage() {
                             sessions={sessions}
                             onOpenSession={handleOpenLinkedBoardSession}
                             newCardDialogOpen={newCardDialogOpen}
-                            onOpenNewCard={() => setNewCardDialogOpen(true)}
+                            onOpenNewCard={openNewCardDialog}
                             onCloseNewCard={() => setNewCardDialogOpen(false)}
                             issueTemplates={newCardTemplates}
                             issueTemplatesBlankAllowed={newCardBlankAllowed}
@@ -691,7 +714,12 @@ function SessionsPage() {
                             isLoadingIssueTemplates={newCardTemplatesLoading}
                             issueTemplatesError={newCardTemplatesError}
                             onNewCardRepoChange={setNewCardRepo}
-                            onCreateCard={(payload) => createBoardItem(effectiveBoardId ?? '', payload)}
+                            onCreateCard={(payload) => {
+                                if (newCardBoardMissing || !newCardBoardId) {
+                                    return Promise.reject(new Error(t('boards.newCard.boardRemoved')))
+                                }
+                                return createBoardItem(newCardBoardId, payload)
+                            }}
                         />
                     ) : (
                     <SessionList
