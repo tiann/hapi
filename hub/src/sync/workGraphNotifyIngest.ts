@@ -627,11 +627,37 @@ export function isOperatorReplyMessage(content: unknown): boolean {
  * tooltip something actionable, and storing it for every `done` footer would
  * grow the /sessions payload for nothing.
  */
+/**
+ * True for Claude subagent (sidechain) output.
+ *
+ * Checked on the raw record and one envelope level down, because the local
+ * transcript scanner and the remote SDK converter wrap the flags differently.
+ */
+function isSidechainOutput(content: unknown, depth: number = 0): boolean {
+    const record = asRecord(content)
+    if (!record || depth > 4) return false
+    if (record.isSidechain === true) return true
+    if (typeof record.parentToolUseId === 'string' && record.parentToolUseId.length > 0) return true
+    for (const key of ['content', 'data', 'message'] as const) {
+        if (isSidechainOutput(record[key], depth + 1)) return true
+    }
+    return false
+}
+
 export function extractSessionNotifySignal(
     content: unknown,
     ts: number
 ): SessionNotifySignal | null {
     if (!isAgentMessageContent(content)) {
+        return null
+    }
+
+    // A subagent's footer describes the subagent, not the session. Both the
+    // local transcript scanner and the remote SDK converter forward sidechain
+    // assistant output, so without this a background subagent's `done` erases
+    // the main agent's unanswered blocker — or its `blocked` flags a parent
+    // that actually finished.
+    if (isSidechainOutput(content)) {
         return null
     }
 

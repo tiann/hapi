@@ -1208,6 +1208,49 @@ describe('notify cause consumption watermark', () => {
 })
 
 describe('extractSessionNotifySignal (#1717 blocked session-list chrome)', () => {
+    it('ignores a subagent (sidechain) footer', () => {
+        // A subagent's footer describes the subagent, not the session. Without
+        // this a background subagent's `done` erases the main agent's
+        // unanswered blocker, and its `blocked` flags a finished parent.
+        const text = 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'done', summary: 'subtask finished' })
+        const sidechain = {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'assistant',
+                    isSidechain: true,
+                    message: { content: [{ type: 'text', text }] }
+                }
+            }
+        }
+        expect(extractSessionNotifySignal(sidechain, 1_000)).toBeNull()
+    })
+
+    it('ignores a subagent footer carrying parentToolUseId instead', () => {
+        const text = 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'subtask stuck' })
+        const sidechain = {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: {
+                    type: 'assistant',
+                    parentToolUseId: 'toolu_abc123',
+                    message: { content: [{ type: 'text', text }] }
+                }
+            }
+        }
+        expect(extractSessionNotifySignal(sidechain, 1_000)).toBeNull()
+    })
+
+    it('still reads a main-agent footer', () => {
+        const text = 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs a key' })
+        expect(extractSessionNotifySignal(assistantOutput(text), 1_000)?.status).toBe('blocked')
+    })
+
     const ts = 1_700_000_000_000
 
     it('lowercases the status and carries the action as the operator note', () => {

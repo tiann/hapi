@@ -523,6 +523,18 @@ export class SessionCache {
     ): void {
         const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
         if (!session) return
+        // `clearSessionLastNotify` nulls `last_notify_at`, so the store's
+        // timestamp-monotonic check has nothing left to compare against — and
+        // Claude replays keep their original transcript timestamps. Without a
+        // boundary, a delayed footer from before the operator's reply walks
+        // straight back in and the row reappears as blocked when thinking ends.
+        // The turn that did the clearing is that boundary: anything stamped
+        // earlier was answered by the prompt which started it. Startup
+        // restoration and the merge apply the same rule via the transcript.
+        const turnBoundary = session.activeTurnStartedAt ?? null
+        if (turnBoundary !== null && signal.at < turnBoundary) {
+            return
+        }
         // Unchanged status for the same turn: skip the write + SSE fan-out.
         // The list only renders status/note, so a repeated footer is a no-op.
         if (session.lastNotify

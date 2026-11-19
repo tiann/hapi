@@ -70,6 +70,35 @@ describe('lastNotify clearing on turn start (#1717)', () => {
     })
 })
 
+describe('footer timestamp boundary on the live path (#1717)', () => {
+    it('rejects a delayed footer stamped before the operator reply', () => {
+        // `clearSessionLastNotify` nulls `last_notify_at`, so the store's
+        // monotonic check has nothing to compare against, and Claude replays
+        // keep their original timestamps. The turn that cleared it is the
+        // boundary — anything older was answered by the prompt that started it.
+        const { cache } = makeCache()
+        const id = seedBlocked(cache, 'notify-boundary')
+        const beforeReply = Date.now() - 60_000
+
+        cache.markMessageQueued(id)
+        expect(cache.getSession(id)?.lastNotify).toBeNull()
+
+        cache.setSessionLastNotify(id, { status: 'blocked', at: beforeReply, note: 'stale replay' })
+
+        expect(cache.getSession(id)?.lastNotify ?? null).toBeNull()
+    })
+
+    it('still accepts a footer from the current turn', () => {
+        const { cache } = makeCache()
+        const id = seedBlocked(cache, 'notify-boundary-live')
+
+        cache.markMessageQueued(id)
+        cache.setSessionLastNotify(id, { status: 'blocked', at: Date.now() + 1_000, note: 'stuck again' })
+
+        expect(cache.getSession(id)?.lastNotify?.note).toBe('stuck again')
+    })
+})
+
 describe('blocked acknowledgement across a session merge (#1717)', () => {
     function makeSession(cache: SessionCache, tag: string): string {
         return cache.getOrCreateSession(
