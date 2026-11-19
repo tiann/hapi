@@ -2502,6 +2502,40 @@ describe('ApiSessionClient metadata cancellation and reconnect ordering', () => 
         }
     })
 
+    it('flushes a buffered agent-state write when the socket reconnects before the drain deadline', async () => {
+        vi.useFakeTimers()
+        const jitter = vi.spyOn(Math, 'random').mockReturnValue(0.8)
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]!
+        const connected = deferred<void>()
+        const stateWrites = vi.fn()
+        socket.emitWithAckImpl = async (event, payload) => {
+            if (event !== 'update-state') return {}
+            stateWrites()
+            if (!socket.connected) await connected.promise
+            const req = payload as { expectedVersion: number; agentState: AgentState }
+            return { result: 'success', version: req.expectedVersion + 1, agentState: req.agentState }
+        }
+        try {
+            socket.connected = false
+            socket.trigger('disconnect', 'transport close')
+            client.updateAgentState(state => ({ ...state, steeringActive: false }))
+            const flushed = client.flush({ timeoutMs: 100 })
+            await vi.advanceTimersByTimeAsync(20)
+            socket.triggerConnect()
+            connected.resolve()
+            await vi.advanceTimersByTimeAsync(100)
+            expect(await flushed).toBe(true)
+            expect(stateWrites).toHaveBeenCalledOnce()
+        } finally {
+            connected.resolve()
+            client.close()
+            jitter.mockRestore()
+            vi.useRealTimers()
+        }
+    })
+
     it('stops retrying an aborted updateMetadata write after ack timeout and releases metadataLock', async () => {
         vi.useFakeTimers()
         try {

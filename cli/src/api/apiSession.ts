@@ -1567,12 +1567,12 @@ if (isReconnect) {
                 && isDeepStrictEqual(this.agentState, unconfirmed.agentState)
             await backoff(async () => {
                 if (this.isClosed() || alreadyCommitted()) return
-                if (!this.socket.connected) throw new Error('Socket not connected')
                 const expectedVersion = this.agentStateVersion
                 const current = this.agentState ?? ({} as AgentState)
                 const updated = unconfirmed?.expectedVersion === expectedVersion ? unconfirmed.agentState : handler(current)
                 let answer: unknown
                 try {
+                    // Keep Socket.IO buffering during reconnect, with a bounded ACK wait.
                     answer = await this.socket.timeout(SESSION_UPDATE_ACK_TIMEOUT_MS).emitWithAck('update-state', {
                         sid: this.sessionId,
                         expectedVersion,

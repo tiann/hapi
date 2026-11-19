@@ -13,16 +13,34 @@ function nativeReply(questionItemId: string, answer: string) {
 }
 function fixture(initialState: AgentState = {}) {
     let state = initialState;
+    const updates: Array<(state: AgentState) => AgentState> = [];
     const send = vi.fn();
     const session = { getMetadata: () => ({ codexSessionId: 'thread' }), sendAgentMessage: send,
-        updateAgentState: (fn: (state: AgentState) => AgentState) => { state = fn(state); }
+        updateAgentState: (fn: (state: AgentState) => AgentState) => { updates.push(fn); state = fn(state); }
     } as unknown as ApiSessionClient;
     const submit = vi.fn(async (_threadId: string, _text: string, _id: string) => {});
     const manager = new SharedCodexAsyncQuestions(session, submit, initialState.completedRequests);
-    return { manager, send, submit, state: () => state };
+    return { manager, send, submit, updates, state: () => state };
 }
 
 describe('Codex queued follow-up questions', () => {
+    it('preserves a pending async question and its wait time when an ACK retry rebases', () => {
+        const now = vi.spyOn(Date, 'now').mockReturnValue(100);
+        try {
+            const f = fixture();
+            f.manager.observeItem('thread', item);
+            const id = questions[0].id;
+            const pending = f.state().requests?.[id];
+            expect(pending?.createdAt).toBe(100);
+            now.mockReturnValue(5_000);
+            const newer = { ...f.state(), steeringActive: true };
+            expect(f.updates[0]!(newer).requests?.[id]).toBe(pending);
+            expect(f.updates[0]!({}).requests?.[id]?.createdAt).toBe(100);
+        } finally {
+            now.mockRestore();
+        }
+    });
+
     it('preserves per-question native IDs and options in the existing question contract', () => {
         const f = fixture(); f.manager.observeItem('thread', item); f.manager.observeItem('thread', item);
         expect(Object.values(f.state().requests!)).toHaveLength(2);
