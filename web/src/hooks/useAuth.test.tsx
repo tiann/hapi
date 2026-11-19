@@ -530,3 +530,31 @@ describe('useAuth — weak-network and JWT expiry resilience', () => {
         expect(result.current.error).toBeNull()
     })
 })
+
+describe('useAuth connection failure classification', () => {
+    it.each(['network', 'server', 'rejected'])('separates %s failures from invalid saved credentials', async kind => {
+        const failure = kind === 'network' ? new TypeError('Failed to fetch') : new h.MockApiError('Unavailable', kind === 'server' ? 503 : 401)
+        h.setAuthenticateImpl(async () => { throw failure })
+        const source = { type: 'accessToken' as const, token: 'saved-fixture-credential' }
+        const { result } = renderHook(() => useAuth(source, 'https://hub.test'))
+        await waitFor(() => expect(result.current.isLoading).toBe(false))
+        expect(result.current.token).toBeNull()
+        expect(result.current.connectionError).toEqual(kind === 'rejected' ? null : kind === 'server' ? { status: 503 } : {})
+        if (kind === 'rejected') return
+        h.setAuthenticateImpl(async () => ({ token: 'recovered-token', user: { id: 'u1' } }))
+        act(() => result.current.retryConnection())
+        await waitFor(() => expect(result.current.token).toBe('recovered-token'))
+        expect(result.current.connectionError).toBeNull()
+        expect(result.current.error).toBeNull()
+    })
+    it('does not carry a connection failure to another hub or auth source', async () => {
+        h.setAuthenticateImpl(async () => { throw new TypeError('Failed to fetch') })
+        const oldSource = { type: 'accessToken' as const, token: 'old-fixture-credential' }
+        const { result, rerender } = renderHook(({ source, base }) => useAuth(source, base), { initialProps: { source: oldSource, base: 'https://old.test' } })
+        await waitFor(() => expect(result.current.connectionError).toEqual({}))
+        h.setAuthenticateImpl(() => new Promise(() => {}))
+        rerender({ source: { type: 'accessToken', token: 'new-fixture-credential' }, base: 'https://new.test' })
+        expect(result.current.connectionError).toBeNull()
+        expect(result.current.api).toBeNull()
+    })
+})

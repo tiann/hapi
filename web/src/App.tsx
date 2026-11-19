@@ -6,6 +6,8 @@ import { initializeChatSurfaceColors } from '@/hooks/useChatSurfaceColors'
 import { initializeTheme } from '@/hooks/useTheme'
 import { initializeThemeColors } from '@/hooks/useThemeColors'
 import { useAuth } from '@/hooks/useAuth'
+import { useOnlineStatus } from '@/hooks/useOnlineStatus'
+import { authConnectionMessage } from '@/lib/authConnection'
 import { useAuthSource } from '@/hooks/useAuthSource'
 import { useServerUrl } from '@/hooks/useServerUrl'
 import { useSSE } from '@/hooks/useSSE'
@@ -73,7 +75,9 @@ function AppInner() {
     const { t } = useTranslation()
     const { serverUrl, baseUrl, setServerUrl, clearServerUrl } = useServerUrl()
     const { authSource, isLoading: isAuthSourceLoading, setAccessToken, setPasskeySession } = useAuthSource(baseUrl)
-    const { token, api, isLoading: isAuthLoading, error: authError, needsBinding, bind, handleSseClosed } = useAuth(authSource, baseUrl)
+    const { token, api, isLoading: isAuthLoading, error: authError, needsBinding, connectionError, retryConnection, bind, handleSseClosed } = useAuth(authSource, baseUrl)
+    const isOnline = useOnlineStatus()
+    const connectionMessage = connectionError ? authConnectionMessage(connectionError, isOnline) : null
     const [titleSuggestionAvailable, setTitleSuggestionAvailable] = useState(false)
     const goBack = useAppGoBack()
     const pathname = useLocation({ select: (location) => location.pathname })
@@ -422,10 +426,10 @@ function AppInner() {
         [selectedSessionId]
     )
     const sseEnabled = Boolean(api && token)
-    const showReconnectingBanner = sseDisconnected && !isSyncing
+    const showReconnectingBanner = Boolean(connectionError) || sseDisconnected && !isSyncing
     // Transient states wait before showing; quick reconnects never flash.
     const revealReconnecting = useDelayedFlag(showReconnectingBanner, CONNECTION_STATUS_DELAY_MS)
-    const revealSyncing = useDelayedFlag(isSyncing, CONNECTION_STATUS_DELAY_MS)
+    const revealSyncing = useDelayedFlag(isSyncing && !connectionError, CONNECTION_STATUS_DELAY_MS)
 
     const { subscriptionId: globalSubscriptionId } = useSSE({
         enabled: sseEnabled,
@@ -500,6 +504,21 @@ function AppInner() {
         )
     }
 
+    if (connectionError && !token) {
+        return withPwaBanner(
+            <LoginPrompt
+                mode="reconnect"
+                onReconnect={retryConnection}
+                error={connectionMessage}
+                baseUrl={baseUrl}
+                serverUrl={serverUrl}
+                setServerUrl={setServerUrl}
+                clearServerUrl={clearServerUrl}
+                requireServerUrl={REQUIRE_SERVER_URL}
+            />,
+        )
+    }
+
     // Authenticating (also covers the gap before useAuth effect starts)
     if (isAuthLoading || (authSource && !token && !authError)) {
         return withPwaBanner(
@@ -551,7 +570,7 @@ function AppInner() {
                 <SyncingBanner isSyncing={revealSyncing} />
                 <ReconnectingBanner
                     isReconnecting={revealReconnecting}
-                    reason={sseDisconnectReason}
+                    reason={!isOnline ? authConnectionMessage({}, false) : connectionMessage ?? sseDisconnectReason}
                 />
                 <VoiceErrorBanner />
                 <OfflineBanner

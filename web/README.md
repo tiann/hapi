@@ -23,6 +23,9 @@ React Mini App / PWA for monitoring and controlling hapi sessions.
 - When opened in a normal browser, you can log in with `CLI_API_TOKEN:<namespace>` (or `CLI_API_TOKEN` for the default namespace).
 - The login screen includes a top-right hub picker; if unset, the app uses the same origin it was loaded from.
 - Live updates come from the hub via SSE.
+- Temporary sign-in connection failures show a reconnecting screen with automatic retry.
+  Browser offline status and HTTP server failures have separate diagnostics. An already
+  authenticated tab keeps its cached chats browsable while reconnecting.
 - Session `@` suggestions require conversation content, including untitled conversations. Names and directory labels affect display/search, not eligibility; empty stubs stay excluded. See the [session list behavior guide](../docs/guide/session-list.md) for search and picker rules.
 
 ## Routes
