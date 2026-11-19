@@ -629,3 +629,12 @@ describe('ApiClient auth proxy redirect', () => {
             .resolves.toEqual({ ok: true, reason: undefined })
     })
 })
+
+it('passes an authentication cancellation signal through the auth proxy transport', async () => {
+    const controller = new AbortController()
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({ token: 'fixture', user: { id: 'u1' } })))
+    try {
+        await new ApiClient('', { baseUrl: 'https://hub.test' }).authenticate({ accessToken: 'fixture' }, { signal: controller.signal })
+        expect(fetch.mock.calls[0]?.[1]?.signal).toBe(controller.signal)
+    } finally { fetch.mockRestore() }
+})

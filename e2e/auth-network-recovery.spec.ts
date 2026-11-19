@@ -4,7 +4,7 @@ import { createServer, type Server, type ServerResponse } from 'node:http'
 // Exercise the real App, auth hook, router, SSE and message cache. No agent or model calls.
 let hub: Server
 let origin: string
-let mode: 'ok' | 'unavailable' | 'rejected' = 'ok'
+let mode: 'ok' | 'unavailable' | 'rejected' | 'telegram-disabled' = 'ok'
 const streams = new Set<ServerResponse>()
 const now = Date.now()
 const sessions = ['A', 'B'].map(letter => ({
@@ -26,7 +26,7 @@ test.beforeAll(async () => {
         if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return }
         const path = new URL(req.url ?? '/', 'http://fixture').pathname
         const json = (body: unknown, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(body)) }
-        if (mode !== 'ok') { json({ error: mode }, mode === 'rejected' ? 401 : 503); return }
+        if (mode !== 'ok') { json({ error: mode === 'telegram-disabled' ? 'Telegram authentication is disabled. Configure TELEGRAM_BOT_TOKEN.' : mode }, mode === 'rejected' ? 401 : 503); return }
         if (path === '/api/auth') {
             const payload = Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 })).toString('base64url')
             json({ token: 'fixture.' + payload + '.signature', user: { id: 'fixture' } }); return
@@ -59,11 +59,17 @@ test.beforeAll(async () => {
     origin = 'http://127.0.0.1:' + (hub.address() as { port: number }).port
 })
 test.afterAll(async () => { disconnect(); hub.closeAllConnections(); await new Promise<void>(resolve => hub.close(() => resolve())) })
-test.beforeEach(() => { mode = 'ok'; disconnect() })
+test.beforeEach(async ({ page }) => {
+    mode = 'ok'; disconnect()
+    await page.addInitScript(server => {
+        localStorage.setItem('hapi_hub_url', server)
+        localStorage.setItem('hapi_access_token::' + server, 'fixture-credential')
+    }, origin)
+})
 
 test('restored sign-in shows connection recovery, identifies offline, and reconnects without a token prompt', async ({ page, context }) => {
     mode = 'unavailable'
-    await page.goto('/sessions?hub=' + encodeURIComponent(origin) + '&token=fixture-credential')
+    await page.goto('/sessions')
     await expect(page.getByText('Reconnecting to hub', { exact: true })).toBeVisible()
     await expect(page.getByRole('status')).toContainText('HTTP 503')
     await expect(page.locator('input[type=password]')).toHaveCount(0)
@@ -79,7 +85,7 @@ test('cached chats remain navigable during a server outage and recover without r
     test.setTimeout(60_000)
     await page.clock.install()
     await page.setViewportSize({ width: 1200, height: 850 })
-    await page.goto('/sessions/network-chat-A?hub=' + encodeURIComponent(origin) + '&token=fixture-credential')
+    await page.goto('/sessions/network-chat-A')
     await expect(page.getByText('Cached message A', { exact: true })).toBeVisible()
     await page.getByText('Offline fixture B', { exact: true }).first().click()
     await expect(page.getByText('Cached message B', { exact: true })).toBeVisible()
@@ -87,6 +93,10 @@ test('cached chats remain navigable during a server outage and recover without r
     await expect(page.getByText('Cached message A', { exact: true })).toBeVisible()
     await context.setOffline(true); disconnect()
     await expect(page.getByText(/Your device is offline/)).toBeVisible({ timeout: 10000 })
+    await expect(page.getByText('Cached message A', { exact: true })).toBeVisible()
+    await page.getByText('Offline fixture B', { exact: true }).first().click()
+    await expect(page.getByText('Cached message B', { exact: true })).toBeVisible()
+    await page.getByText('Offline fixture A', { exact: true }).first().click()
     await expect(page.getByText('Cached message A', { exact: true })).toBeVisible()
     await context.setOffline(false)
     await page.clock.fastForward(16_000)
@@ -104,7 +114,14 @@ test('cached chats remain navigable during a server outage and recover without r
 
 test('a confirmed 401 still requires authentication', async ({ page }) => {
     mode = 'rejected'
-    await page.goto('/sessions?hub=' + encodeURIComponent(origin) + '&token=fixture-credential')
+    await page.goto('/sessions')
     await expect(page.locator('input[type=password]')).toBeVisible()
     await expect(page.getByText('Reconnecting to hub', { exact: true })).toHaveCount(0)
+})
+
+test('preserves the actionable Telegram-disabled diagnostic', async ({ page }) => {
+    mode = 'telegram-disabled'
+    await page.goto('/sessions?initData=fixture-telegram')
+    await expect(page.getByRole('status')).toHaveText('Telegram authentication is disabled. Configure TELEGRAM_BOT_TOKEN.')
+    await expect(page.getByText(/temporarily unavailable/)).toHaveCount(0)
 })

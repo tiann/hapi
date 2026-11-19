@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AuthProxyRedirectError } from '@/api/authProxy'
 import { ApiClient, ApiError } from '@/api/client'
 import type { AuthResponse } from '@/types/api'
-import type { AuthConnectionFailure } from '@/lib/authConnection'
+import { TELEGRAM_AUTH_DISABLED_MESSAGE, type AuthConnectionFailure } from '@/lib/authConnection'
+
+const AUTH_REQUEST_TIMEOUT_MS = 15_000
 
 export type AuthSource =
     | { type: 'telegram'; initData: string }
@@ -101,6 +103,7 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
     const [needsBinding, setNeedsBinding] = useState<boolean>(false)
     const [transientRetryTick, setTransientRetryTick] = useState<number>(0)
     const refreshPromiseRef = useRef<Promise<string | null> | null>(null)
+    const authAbortRef = useRef<AbortController | null>(null)
     const tokenRef = useRef<string | null>(null)
     const lastRefreshAttemptRef = useRef<number>(0)
     const authEpochRef = useRef<number>(0)
@@ -154,10 +157,12 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
 
         const run = async () => {
             lastRefreshAttemptRef.current = now
-
+            const controller = new AbortController()
+            authAbortRef.current = controller
+            const timeout = setTimeout(() => controller.abort(), AUTH_REQUEST_TIMEOUT_MS)
             try {
                 const client = new ApiClient('', { baseUrl })
-                const auth = await client.authenticate(getAuthPayload(currentSource))
+                const auth = await client.authenticate(getAuthPayload(currentSource), { signal: controller.signal })
                 if (authEpochRef.current !== epoch) {
                     return null
                 }
@@ -224,7 +229,8 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
                 // Transient network / gateway failure: schedule bounded retries.
                 // Preserve an active session even past JWT expMs so flaky networks
                 // do not dump authenticated users onto the login prompt.
-                setConnectionFailure({ source: currentSource, baseUrl, failure: error instanceof ApiError ? { status: error.status } : {} })
+                setConnectionFailure({ source: currentSource, baseUrl, failure: error instanceof ApiError ? { status: error.status,
+                    ...(error.status === 503 && error.code === TELEGRAM_AUTH_DISABLED_MESSAGE ? { diagnostic: TELEGRAM_AUTH_DISABLED_MESSAGE } : {}) } : {} })
                 const attempt = transientFailureCountRef.current + 1
                 transientFailureCountRef.current = attempt
                 nextTransientRetryAtRef.current = Date.now() + getTransientRetryDelayMs(attempt, hadToken)
@@ -234,6 +240,9 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
                     setError(error instanceof Error ? error.message : 'Auth failed')
                 }
                 return null
+            } finally {
+                clearTimeout(timeout)
+                if (authAbortRef.current === controller) authAbortRef.current = null
             }
         }
 
@@ -310,6 +319,8 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
 
     useEffect(() => {
         authEpochRef.current += 1
+        authAbortRef.current?.abort()
+        authAbortRef.current = null
         const epoch = authEpochRef.current
         authSourceRef.current = authSource
         tokenRef.current = null
@@ -328,6 +339,8 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
             setIsLoading(false)
             return () => {
                 authEpochRef.current += 1
+                authAbortRef.current?.abort()
+                authAbortRef.current = null
                 refreshPromiseRef.current = null
             }
         }
@@ -341,6 +354,8 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
 
         return () => {
             authEpochRef.current += 1
+            authAbortRef.current?.abort()
+            authAbortRef.current = null
             refreshPromiseRef.current = null
         }
     }, [authSource, baseUrl, refreshAuth])
@@ -450,6 +465,14 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
         }
     }, [refreshAuth])
 
-    const retryConnection = useCallback(() => { void refreshAuth({ force: true }) }, [refreshAuth])
+    const retryConnection = useCallback(() => {
+        const epoch = authEpochRef.current
+        const retry = () => { void refreshAuth({ force: true, expectedEpoch: epoch }) }
+        const pending = refreshPromiseRef.current
+        if (pending) {
+            authAbortRef.current?.abort()
+            void pending.then(retry, retry)
+        } else retry()
+    }, [refreshAuth])
     return { token, user, api, isLoading, error, needsBinding, connectionError, retryConnection, bind, handleSseClosed }
 }

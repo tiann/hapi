@@ -330,12 +330,14 @@ export class ApiClient {
     }
 
     async authenticate(
-        auth: { initData: string } | { accessToken: string } | { passkeySession: string }
+        auth: { initData: string } | { accessToken: string } | { passkeySession: string },
+        options?: { signal?: AbortSignal }
     ): Promise<AuthResponse> {
         const res = await fetchThroughAuthProxy(this.buildUrl('/api/auth'), {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify(auth)
+            body: JSON.stringify(auth),
+            ...(options?.signal ? { signal: options.signal } : {})
         })
 
         if (!res.ok) {

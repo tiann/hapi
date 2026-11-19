@@ -15,3 +15,7 @@ describe('authentication connection diagnostics', () => {
         expect(authConnectionMessage({ status: 404 }, true)).toContain('HTTP 404. Check the hub URL')
     })
 })
+
+it('preserves the explicit Telegram configuration diagnostic', () => {
+    expect(authConnectionMessage({ status: 503, diagnostic: 'Telegram authentication is disabled. Configure TELEGRAM_BOT_TOKEN.' }, true)).toBe('Telegram authentication is disabled. Configure TELEGRAM_BOT_TOKEN.')
+})
