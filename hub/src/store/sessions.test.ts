@@ -1814,6 +1814,57 @@ describe('setSessionLastNotify / clearSessionLastNotify (#1717)', () => {
         expect(row?.lastNotifySeq).toBe(12)
     })
 
+    it('a rewind drops seq watermarks that point into deleted history', () => {
+        const store = makeStore()
+        const session = seed(store)
+
+        // The operator replied at seq 100 and the boundary recorded it.
+        store.sessions.clearSessionLastNotify(session.id, 'default', 5000, 100)
+        expect(store.sessions.getSession(session.id)?.lastNotifyClearedSeq).toBe(100)
+
+        // A rewind then deletes everything past seq 20. The retained history
+        // holds no reply at all, so the boundary must come back with it.
+        expect(store.sessions.replaceNotifyAfterTruncate(
+            session.id,
+            'default',
+            null,
+            null,
+            6000
+        )).toBe(true)
+        expect(store.sessions.getSession(session.id)?.lastNotifyClearedSeq).toBeNull()
+
+        // New rows are numbered from the retained maximum, so the next genuine
+        // footer lands at a LOW seq. The stale watermark of 100 rejected every
+        // footer up to seq 100 — and the clear's MAX meant nothing could ever
+        // lower it again, so the session could not report blocked at all.
+        expect(store.sessions.setSessionLastNotify(
+            session.id,
+            { status: 'blocked', at: 7000, note: 'stuck again', seq: 21 },
+            'default'
+        )).toBe(true)
+        expect(store.sessions.getSession(session.id)?.lastNotifyStatus).toBe('blocked')
+    })
+
+    it('shifts seq watermarks by a merge renumbering offset', () => {
+        const store = makeStore()
+        const session = seed(store)
+        store.sessions.setSessionLastNotify(
+            session.id,
+            { status: 'blocked', at: 2000, note: null, seq: 4 },
+            'default'
+        )
+        store.sessions.clearSessionLastNotify(session.id, 'default', 3000, 6)
+
+        // A merge added the source's 50 messages beneath this row's history.
+        expect(store.sessions.shiftNotifySeqWatermarks(session.id, 'default', 50)).toBe(true)
+
+        const row = store.sessions.getSession(session.id)
+        expect(row?.lastNotifyClearedSeq).toBe(56)
+        // A no-op offset must not touch anything.
+        expect(store.sessions.shiftNotifySeqWatermarks(session.id, 'default', 0)).toBe(false)
+        expect(store.sessions.getSession(session.id)?.lastNotifyClearedSeq).toBe(56)
+    })
+
     it('is namespace scoped', () => {
         const store = makeStore()
         const session = seed(store)

@@ -138,7 +138,7 @@ export type SessionSummary = {
      *  oldest few, so an overflow prompt had no identity and fell back to a
      *  synthetic one — a dismissal then stopped matching the moment the real
      *  request entered the capped slice. Ids are small; the bodies are not. */
-    pendingRequestIds?: string[]
+    pendingRequestRefs?: Array<{ id: string; kind: PendingRequestKind; since: number }>
     backgroundTaskCount: number
     /**
      * Hub-derived "open tool work exists in the transcript tail" (work-scoped
@@ -242,13 +242,24 @@ export function computePendingRequestsCount(agentState: AgentState | null | unde
  * is simply absent. Computed from `agentState` like `pendingRequestsCount`,
  * so it costs no storage and needs no migration.
  */
-/** Every pending request id, uncapped and bounded only by a sane ceiling. */
-export function computePendingRequestIds(
-    agentState: AgentState | null | undefined
-): string[] {
-    const requests = agentState?.requests
-    if (!requests) return []
-    return Object.keys(requests).slice(0, 200)
+/**
+ * A light descriptor for EVERY pending request, uncapped (#1717).
+ *
+ * `pendingRequests` keeps only the oldest few, so a session whose previewed
+ * prompts have all been dismissed says nothing about the ones behind them.
+ * The id alone was not enough either: the chip read its label and age off
+ * aggregate fields that describe all prompts at once, so an overflow question
+ * could be drawn as a Permission with another prompt's timestamp. Carrying the
+ * kind and `since` with the id keeps the chip, the dismissal target and the
+ * age all describing the same request. Same order as `pendingRequests`, so the
+ * capped list is always this list's prefix.
+ */
+export function computePendingRequestRefs(
+    agentState: AgentState | null | undefined,
+    fallbackSince: number
+): Array<{ id: string; kind: PendingRequestKind; since: number }> {
+    return computePendingRequests(agentState, fallbackSince, 200)
+        .map(({ id, kind, since }) => ({ id, kind, since }))
 }
 
 export function computePendingRequestsNewestAt(
@@ -381,7 +392,7 @@ export function toSessionSummary(
         pendingRequestKinds: computePendingRequestKinds(session.agentState),
         pendingRequests: computePendingRequests(session.agentState, session.updatedAt),
         pendingRequestsNewestAt: computePendingRequestsNewestAt(session.agentState, session.updatedAt),
-        pendingRequestIds: computePendingRequestIds(session.agentState),
+        pendingRequestRefs: computePendingRequestRefs(session.agentState, session.updatedAt),
         backgroundTaskCount: session.backgroundTaskCount ?? 0,
         derivedToolWork: session.derivedToolWork === true,
         lastNotify: session.lastNotify ?? null,

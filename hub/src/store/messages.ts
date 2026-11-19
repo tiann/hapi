@@ -28,6 +28,8 @@ type DbMessageRow = {
     local_id: string | null
     invoked_at: number | null
     swept_at?: number | null
+    invoked_seq?: number | null
+    agent_delivered?: number | null
     scheduled_at: number | null
     delivery_state: string | null
 }
@@ -121,6 +123,8 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
         localId: row.local_id,
         invokedAt: row.invoked_at ?? null,
         sweptAt: row.swept_at ?? null,
+        invokedSeq: row.invoked_seq ?? null,
+        agentDelivered: row.agent_delivered ?? null,
         scheduledAt: row.scheduled_at ?? null,
         ...(row.delivery_state && row.delivery_state !== 'queued' ? { deliveryState: 'indeterminate' as const } : {}),
         ...(row.delivery_state === 'dispatching' ? { deliveryPending: true as const } : {})
@@ -1637,18 +1641,32 @@ export function markMessagesInvoked(
     db: Database,
     sessionId: string,
     localIds: string[],
-    invokedAt: number
+    invokedAt: number,
+    options?: { agentDelivered?: boolean }
 ): number {
     if (localIds.length === 0) return 0
     return runInTransaction(db, () => {
         const placeholders = localIds.map(() => '?').join(', ')
+        // `invoked_seq` puts the delivery in the same hub insertion domain as
+        // the footers it has to be ordered against (#1717). The row's own
+        // `seq` cannot: it was allocated when the prompt was queued, possibly
+        // long before the agent was handed it.
         const changes = prepareCached(db,
             `UPDATE messages
-             SET invoked_at = ?, delivery_state = 'queued'
+             SET invoked_at = ?,
+                 invoked_seq = (SELECT COALESCE(MAX(seq), 0) FROM messages WHERE session_id = ?),
+                 agent_delivered = ?,
+                 delivery_state = 'queued'
              WHERE session_id = ?
                AND local_id IN (${placeholders})
                AND invoked_at IS NULL`
-        ).run(invokedAt, sessionId, ...localIds).changes
+        ).run(
+            invokedAt,
+            sessionId,
+            options?.agentDelivered === false ? 0 : 1,
+            sessionId,
+            ...localIds
+        ).changes
         if (changes > 0) {
             const rows = prepareCached(db, `
                 SELECT id, session_id, content, created_at, seq, invoked_at
@@ -1863,9 +1881,16 @@ export function mergeSessionMessages(
         db.exec('BEGIN')
 
         if (newMaxSeq > 0 && oldMaxSeq > 0) {
+            // `invoked_seq` is a position in this same insertion domain, so it
+            // has to move with it (#1717). Left behind, a destination reply's
+            // recorded delivery position would suddenly sit below the source's
+            // footers and stop answering the footer it actually answered.
             prepareCached(db,
-                'UPDATE messages SET seq = seq + ? WHERE session_id = ?'
-            ).run(oldMaxSeq, toSessionId)
+                `UPDATE messages
+                 SET seq = seq + ?,
+                     invoked_seq = CASE WHEN invoked_seq IS NULL THEN NULL ELSE invoked_seq + ? END
+                 WHERE session_id = ?`
+            ).run(oldMaxSeq, oldMaxSeq, toSessionId)
         }
 
         const collisions = prepareCached(db, `

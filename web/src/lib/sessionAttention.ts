@@ -167,41 +167,55 @@ function getPendingBlockedState(
     // whenever an older, already-dismissed question still outranks it — the
     // session would vanish from the count with a live prompt unanswered.
     const ackAt = ack?.at ?? null
+
+    // `pendingRequestRefs` describes EVERY pending prompt — id, kind and age
+    // together — so one contest covers previewed and overflow prompts alike
+    // and whichever wins describes itself. The capped `pendingRequests` slice
+    // keeps only the oldest few, and the aggregate `pendingRequestKinds` /
+    // `pendingRequestsNewestAt` fields describe all prompts at once: deciding
+    // an overflow prompt's label or age from those gave it another, already
+    // dismissed prompt's kind and another prompt's timestamp.
+    const refs = summary.pendingRequestRefs ?? []
+    if (refs.length > 0) {
+        const unackedRefs = ack === null
+            ? refs
+            : refs.filter(ref => !isAcknowledgedBlocker(ack, requestBlockerKey(ref.id), ref.since))
+        if (unackedRefs.length === 0) {
+            return null
+        }
+        // A question outranks a permission: "answer me" is a heavier ask than
+        // "approve this tool", and it is the one the operator asked to be loud.
+        // Contest only what still needs answering.
+        const reason: SessionBlockedReason = unackedRefs.some(ref => ref.kind === 'input')
+            ? 'question'
+            : 'permission'
+        const wantedKind = reason === 'question' ? 'input' : 'permission'
+        // Oldest-first, so the first match is the oldest of its kind.
+        const chosen = unackedRefs.find(ref => ref.kind === wantedKind) ?? unackedRefs[0]!
+        // `tool` only rides on the capped slice; absent for an overflow prompt.
+        const note = all.find(request => request.id === chosen.id)?.tool ?? null
+        return {
+            key: requestBlockerKey(chosen.id),
+            reason,
+            at: chosen.since,
+            note,
+            stale: now - chosen.since > BLOCKED_NOTIFY_STALE_MS
+        }
+    }
+
+    // Older hub: no uncapped descriptors, so fall back to the capped slice and
+    // the aggregate fields. Nothing here can distinguish an overflow prompt
+    // from a previewed one, which is exactly why the descriptors exist.
     const unacked = ack === null
         ? all
         : all.filter(request => !isAcknowledgedBlocker(ack, requestBlockerKey(request.id), request.since))
-
-    // `pendingRequests` is capped and keeps the OLDEST entries, so a slice that
-    // is entirely acknowledged says nothing about newer prompts the summary
-    // never carried. `pendingRequestsNewestAt` is computed uncapped for exactly
-    // this question; without it (older hub) fall back to what we can see.
     const newestAt = summary.pendingRequestsNewestAt
         ?? (all.length > 0 ? all[all.length - 1]!.since : 0)
-    // Prefer identity over the timestamp heuristic when ids are available.
-    const uncappedIds = summary.pendingRequestIds ?? []
-    const unackedBeyondCap = uncappedIds.length > 0
-        ? uncappedIds.some((id) => !all.some((request) => request.id === id)
-            && !isAcknowledgedBlocker(ack, requestBlockerKey(id), newestAt))
-        : total > all.length && newestAt > (ackAt ?? 0)
-    const newerBeyondCap = unackedBeyondCap
+    const newerBeyondCap = total > all.length && newestAt > (ackAt ?? 0)
     if (ack !== null && unacked.length === 0 && !newerBeyondCap) {
         return null
     }
 
-    // A question outranks a permission: "answer me" is a heavier ask than
-    // "approve this tool", and it is the one the operator asked to be loud.
-    // Contest only what still needs answering.
-    //
-    // The uncapped `kinds` list is a legitimate fallback for ONE case: an
-    // older hub that sends a count and kinds but no `pendingRequests` array,
-    // where nothing visible could have been dismissed. It is NOT a fallback
-    // when the slice is present and every entry in it was acknowledged — the
-    // live blocker is then an overflow prompt, and `kinds` is a deduped set
-    // over all prompts including the dismissed ones, so consulting it labelled
-    // the overflow prompt with a dismissed question's kind. `pendingRequestIds`
-    // carries ids only, so the real kind is genuinely unknown here; take the
-    // neutral label rather than escalating on evidence that belongs to a
-    // prompt the operator already dealt with.
     const unackedKinds = unacked.map(request => request.kind)
     const contest = unackedKinds.length > 0
         ? unackedKinds
@@ -209,27 +223,10 @@ function getPendingBlockedState(
     const reason: SessionBlockedReason = contest.includes('input') ? 'question' : 'permission'
 
     const wantedKind = reason === 'question' ? 'input' : 'permission'
-    // `unacked` is oldest-first, so the first match is the oldest of its kind.
     const oldest = unacked.find(request => request.kind === wantedKind) ?? unacked[0] ?? null
     const at = oldest?.since ?? (newestAt > 0 ? newestAt : summary.updatedAt)
-
-    // Overflow prompts are not in the capped slice, but their ids are carried
-    // uncapped for exactly this. A synthetic notify key stopped matching the
-    // moment the real request entered the slice, so the dismissal was lost.
-    // Must match the existence check above: pick the first overflow id that is
-    // still UNACKNOWLEDGED. Selecting merely the first id outside the preview
-    // returned an already-dismissed prompt, so the next one could not be
-    // dismissed at all.
-    const overflowId = !oldest
-        ? (summary.pendingRequestIds ?? []).find(
-            (id) => !all.some((request) => request.id === id)
-                && !isAcknowledgedBlocker(ack, requestBlockerKey(id), newestAt)
-        ) ?? null
-        : null
     return {
-        key: oldest
-            ? requestBlockerKey(oldest.id)
-            : (overflowId ? requestBlockerKey(overflowId) : notifyBlockerKey(at)),
+        key: oldest ? requestBlockerKey(oldest.id) : notifyBlockerKey(at),
         reason,
         at,
         note: oldest?.tool ?? null,

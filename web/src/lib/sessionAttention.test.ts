@@ -619,7 +619,10 @@ describe('getSessionBlockedState', () => {
             pendingRequestsCount: 2,
             pendingRequestKinds: ['permission', 'input'],
             pendingRequests: [{ id: 'r1', kind: 'input', tool: 'AskUser', since: now - 2000 }],
-            pendingRequestIds: ['r1', 'r2'],
+            pendingRequestRefs: [
+                { id: 'r1', kind: 'input', since: now - 2000 },
+                { id: 'r2', kind: 'permission', since: now - 1000 }
+            ],
             pendingRequestsNewestAt: now - 1000,
             blockedAck: { at: now, reason: 'answered that one', keys: ['request:r1'] }
         }), { now })
@@ -629,6 +632,69 @@ describe('getSessionBlockedState', () => {
         // dismissed one.
         expect(state?.key).toBe('request:r2')
         expect(state?.reason).toBe('permission')
+        // The age must be the chosen prompt's own, not the newest across all.
+        expect(state?.at).toBe(now - 1000)
+    })
+
+    it('labels an overflow question as a question, with its own age', () => {
+        // The reviewer's case, and the one a neutral default still got wrong:
+        // five dismissed previews and a sixth, unanswered QUESTION. The chip,
+        // the dismissal target and the age must all describe that question —
+        // previously the id came from the overflow list while the label came
+        // from aggregate kinds and the age from the newest timestamp across
+        // every prompt, so all three could describe different requests.
+        const previews = [1, 2, 3, 4, 5].map((n) => ({
+            id: `p${n}`,
+            kind: 'permission' as const,
+            tool: 'Bash',
+            since: now - 10_000 + n
+        }))
+        const state = getSessionBlockedState(makeSummary({
+            id: 'a',
+            pendingRequestsCount: 6,
+            pendingRequestKinds: ['permission', 'input'],
+            pendingRequests: previews,
+            pendingRequestRefs: [
+                ...previews.map(({ id, kind, since }) => ({ id, kind, since })),
+                { id: 'q6', kind: 'input', since: now - 3000 },
+                // A NEWER prompt that was also dismissed. It owns the
+                // aggregate `pendingRequestsNewestAt`, so any age taken from
+                // that field describes this prompt rather than the live one.
+                { id: 'p7', kind: 'permission', since: now - 500 }
+            ],
+            pendingRequestsNewestAt: now - 500,
+            blockedAck: {
+                at: now,
+                reason: 'approved those',
+                keys: [...previews.map((request) => `request:${request.id}`), 'request:p7']
+            }
+        }), { now })
+
+        expect(state?.key).toBe('request:q6')
+        expect(state?.reason).toBe('question')
+        expect(state?.at).toBe(now - 3000)
+    })
+
+    it('prefers a question over a permission among several live prompts', () => {
+        // Positive control that the contest still runs over the descriptors:
+        // a question outranks a permission even when the permission is older.
+        const state = getSessionBlockedState(makeSummary({
+            id: 'a',
+            pendingRequestsCount: 2,
+            pendingRequestKinds: ['permission', 'input'],
+            pendingRequests: [
+                { id: 'perm', kind: 'permission', tool: 'Bash', since: now - 9000 },
+                { id: 'ask', kind: 'input', tool: 'AskUser', since: now - 4000 }
+            ],
+            pendingRequestRefs: [
+                { id: 'perm', kind: 'permission', since: now - 9000 },
+                { id: 'ask', kind: 'input', since: now - 4000 }
+            ]
+        }), { now })
+
+        expect(state?.reason).toBe('question')
+        expect(state?.key).toBe('request:ask')
+        expect(state?.at).toBe(now - 4000)
     })
 
     it('still reads the kind list when the hub sent no prompt array at all', () => {

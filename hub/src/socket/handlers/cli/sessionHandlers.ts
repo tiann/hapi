@@ -505,7 +505,13 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                 data.sid,
                 localIds,
                 invokedAt,
-                sessionAccess.value.namespace
+                sessionAccess.value.namespace,
+                // Persist the disposition, not just the live decision below:
+                // the backfill, rewind and merge paths re-derive "was this
+                // answered?" from the transcript long afterwards, and
+                // `invoked_at` alone reads a locally handled command as an
+                // answer the agent never received (#1717).
+                { agentDelivered: data.clearQueuedThinkingGrace !== true }
             )
             sessionUpdatedAt = consumedResult.updatedAt
             newlyDelivered = consumedResult.consumed > 0

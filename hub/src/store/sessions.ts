@@ -741,12 +741,20 @@ export function setSessionLastNotify(
                 seq = seq + 1
             WHERE id = @id
               AND namespace = @namespace
-              -- Ordered by seq, not by clock, when the caller supplies one.
-              AND (@seq IS NULL OR last_notify_seq IS NULL OR last_notify_seq <= @seq)
+              -- Footer vs footer: both were stamped by the same agent runner
+              -- inside one transcript, so authorship time IS the authoritative
+              -- order and applies unconditionally. Insertion seq is NOT: it
+              -- is allocated as MAX(seq)+1 at write time, so a replayed older
+              -- footer arriving after a newer one carries a HIGHER seq and
+              -- would win on seq while being older in fact — putting an
+              -- answered session back into Blocked.
+              AND (last_notify_at IS NULL OR last_notify_at <= @at)
+              -- Footer vs the operator's reply: the footer carries the runner's
+              -- clock and the reply is stamped by the hub, so no comparison
+              -- between those two is sound. Order them by seq instead, the
+              -- hub insertion domain both sides genuinely share. Clock
+              -- comparison survives only for seq-less callers.
               AND (@seq IS NULL OR last_notify_cleared_seq IS NULL OR last_notify_cleared_seq < @seq)
-              -- Clock comparison retained only for callers without a seq
-              -- (older paths); it is never used to compare the two domains.
-              AND (@seq IS NOT NULL OR last_notify_at IS NULL OR last_notify_at <= @at)
               AND (@seq IS NOT NULL OR last_notify_cleared_at IS NULL OR last_notify_cleared_at <= @at)
         `).run({
             id,
@@ -1226,16 +1234,23 @@ export function replaceSessionNotifyAfterTruncate(
     db: Database,
     id: string,
     namespace: string,
-    signal: { status: string; at: number; note: string | null } | null,
-    clearedAt: number
+    signal: { status: string; at: number; note: string | null; seq?: number | null } | null,
+    clearedAt: number,
+    clearedSeq: number | null = null
 ): boolean {
     try {
+        // Every watermark is assigned ABSOLUTELY here, never via MAX. The
+        // rewind deleted the history these pointed into, so carrying the old
+        // values forward rejected genuine new footers numbered below them —
+        // and MAX meant no later delivery could lower them again (#1717).
         const result = db.prepare(`
             UPDATE sessions
             SET last_notify_status = @status,
                 last_notify_at = @at,
                 last_notify_note = @note,
+                last_notify_seq = @seq,
                 last_notify_cleared_at = @clearedAt,
+                last_notify_cleared_seq = @clearedSeq,
                 last_notify_updated_at = MAX(COALESCE(last_notify_updated_at, 0) + 1, @rev),
                 seq = seq + 1
             WHERE id = @id AND namespace = @namespace
@@ -1245,11 +1260,45 @@ export function replaceSessionNotifyAfterTruncate(
             status: signal?.status ?? null,
             at: signal?.at ?? null,
             note: signal?.note ?? null,
+            seq: signal?.seq ?? null,
+            clearedSeq,
             // A retained footer must survive its own boundary check, so the
             // boundary sits just below it rather than at `now`.
             clearedAt: signal ? Math.min(clearedAt, signal.at) : clearedAt,
             rev: Date.now()
         })
+        return result.changes === 1
+    } catch {
+        return false
+    }
+}
+
+/**
+ * Shift the notify seq watermarks by a merge's renumbering offset (#1717).
+ *
+ * `mergeSessionMessages` adds the source's max seq to every destination
+ * message, so any position recorded in the old numbering is stale by exactly
+ * that offset. Without this the destination's clear boundary sinks below the
+ * incoming source footers and stops answering the one it did answer.
+ */
+export function shiftNotifySeqWatermarks(
+    db: Database,
+    id: string,
+    namespace: string,
+    offset: number
+): boolean {
+    if (offset <= 0) return false
+    try {
+        const result = db.prepare(`
+            UPDATE sessions
+            SET last_notify_seq = CASE
+                    WHEN last_notify_seq IS NULL THEN NULL ELSE last_notify_seq + @offset END,
+                last_notify_cleared_seq = CASE
+                    WHEN last_notify_cleared_seq IS NULL THEN NULL ELSE last_notify_cleared_seq + @offset END
+            WHERE id = @id
+              AND namespace = @namespace
+              AND (last_notify_seq IS NOT NULL OR last_notify_cleared_seq IS NOT NULL)
+        `).run({ id, namespace, offset })
         return result.changes === 1
     } catch {
         return false

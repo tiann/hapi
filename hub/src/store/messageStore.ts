@@ -301,8 +301,13 @@ export class MessageStore {
         return markMessagesSwept(this.db, sessionId, localIds, sweptAt)
     }
 
-    markMessagesInvoked(sessionId: string, localIds: string[], invokedAt: number): number {
-        return markMessagesInvoked(this.db, sessionId, localIds, invokedAt)
+    markMessagesInvoked(
+        sessionId: string,
+        localIds: string[],
+        invokedAt: number,
+        options?: { agentDelivered?: boolean }
+    ): number {
+        return markMessagesInvoked(this.db, sessionId, localIds, invokedAt, options)
     }
 
     markDispatchingMessagesIndeterminate(sessionId: string): string[] {

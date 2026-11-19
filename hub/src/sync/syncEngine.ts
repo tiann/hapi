@@ -92,7 +92,7 @@ import { ArchiveCleanupError } from './archiveCleanupError'
 import { AutomaticTitleSuggestionService } from './automaticTitleSuggestion'
 import { extractMessageEventType } from '../notifications/eventParsing'
 import { SessionEnumerationCache } from './sessionEnumerationCache'
-import { buildOperatorUnblockEvent, deliveredOperatorReplyAt, extractSessionNotifySignal, ingestNotifySummaryFromMessage, isDeliveredOperatorReply, isOperatorReplyMessage } from './workGraphNotifyIngest'
+import { buildOperatorUnblockEvent, deliveredOperatorReplyAt, deliveredOperatorReplySeq, extractSessionNotifySignal, ingestNotifySummaryFromMessage, isDeliveredOperatorReply, isOperatorReplyMessage } from './workGraphNotifyIngest'
 import { MetadataSchema, type OpenCodeRewindOperation } from '@hapi/protocol/schemas'
 import type { OpenCodeRewindReport } from '@hapi/protocol/apiTypes'
 import { extractTodoWriteTodosFromMessageContent } from './todos'
@@ -546,44 +546,66 @@ export class SyncEngine {
         sessionId: string,
         scanDepth: number | null = NOTIFY_BACKFILL_MESSAGE_SCAN
     ): { status: string; at: number; note: string | null; seq?: number | null } | null {
-        const now = Date.now()
+        return this.deriveNotifyStateFromTranscript(sessionId, scanDepth).signal
+    }
+
+    /**
+     * Derive both the surviving footer and its clear boundary from the
+     * transcript, each in the only domain that can order it (#1717).
+     *
+     * Two separate comparisons, deliberately not one sort:
+     *
+     *  - footer vs footer: both were stamped by the same agent runner inside
+     *    one transcript, so authorship time is authoritative. Insertion `seq`
+     *    is not — Claude replays an older footer after a newer one and it
+     *    lands at a HIGHER seq while being older in fact.
+     *  - footer vs reply: the footer carries the runner's clock and the reply
+     *    is stamped by the hub, so no timestamp comparison between them is
+     *    sound in either direction. They are ordered by the hub's insertion
+     *    domain instead: the footer's own `seq` against the reply's
+     *    `invoked_seq` (the high-water mark when the agent was handed it).
+     *
+     * A single ordering key cannot satisfy both, which is why mixing hub
+     * invocation times with runner footer times could drop a blocker still
+     * visible in the transcript whenever the two clocks disagreed.
+     */
+    private deriveNotifyStateFromTranscript(
+        sessionId: string,
+        scanDepth: number | null = NOTIFY_BACKFILL_MESSAGE_SCAN
+    ): {
+        signal: { status: string; at: number; note: string | null; seq?: number | null } | null
+        boundarySeq: number | null
+    } {
         const scanned = scanDepth === null
             ? this.store.messages.getAllMessages(sessionId)
             : this.store.messages.getMessages(sessionId, scanDepth)
-        // Re-order by message time before scanning. `getMessages` sorts by
-        // insertion `seq`, but replayed transcripts keep their original
-        // timestamps, so an older footer can be stored after a newer one.
-        // Live notify writes are timestamp-monotonic; a restart must agree with
-        // them rather than resurrect a superseded blocker. The operator-reply
-        // boundary moves with it, or the stop point would be chosen in a
-        // different order than the footer it guards.
-        // Order by when the agent actually SAW each message, not when it was
-        // written. A reply composed before a footer can be invoked after it;
-        // sorting on `createdAt` would place that reply earlier in the walk and
-        // let the already-answered footer be restored.
-        const effectiveAt = (message: StoredMessage): number =>
-            isOperatorReplyMessage(message.content)
-                ? deliveredOperatorReplyAt(message)
-                : message.createdAt
-        const messages = [...scanned].sort((a, b) => {
-            const ea = effectiveAt(a)
-            const eb = effectiveAt(b)
-            return ea !== eb ? ea - eb : a.seq - b.seq
-        })
-        // Newest first: the most recent footer is the session's current
-        // self-report, and older ones have already been superseded.
-        for (let index = messages.length - 1; index >= 0; index -= 1) {
-            const message = messages[index]!
-            // Stop at the newest operator prompt. Anything older was already
-            // answered, and clear-on-new-turn deliberately erased it — a
-            // restart must not resurrect a blocker the operator dealt with.
-            // Only a reply the agent was actually given ends the scan.
-            if (isDeliveredOperatorReply(message)) break
+
+        // Where the operator's most recent genuine reply sits. Only a reply the
+        // agent was actually given counts: a locally handled slash command has
+        // `invoked_at` stamped but answered nothing.
+        let boundarySeq: number | null = null
+        for (const message of scanned) {
+            if (!isDeliveredOperatorReply(message)) continue
+            const seq = deliveredOperatorReplySeq(message)
+            if (boundarySeq === null || seq > boundarySeq) boundarySeq = seq
+        }
+
+        // The newest footer that the boundary does not already answer.
+        let best: { signal: { status: string; at: number; note: string | null }; seq: number } | null = null
+        for (const message of scanned) {
+            if (boundarySeq !== null && message.seq <= boundarySeq) continue
             const signal = extractSessionNotifySignal(message.content, message.createdAt)
             if (!signal) continue
-            return { ...signal, seq: message.seq }
+            if (best === null
+                || signal.at > best.signal.at
+                || (signal.at === best.signal.at && message.seq > best.seq)) {
+                best = { signal, seq: message.seq }
+            }
         }
-        return null
+        return {
+            signal: best === null ? null : { ...best.signal, seq: best.seq },
+            boundarySeq
+        }
     }
 
     /**
@@ -608,8 +630,18 @@ export class SyncEngine {
         // does not delay the signal, it writes null and drops the session out
         // of Blocked while its transcript still ends unanswered. Rewind is
         // rare, so the full read is affordable.
-        const retained = this.findNotifySignalInTranscript(sessionId, null)
-        this.sessionCache.replaceNotifyAfterTruncate(sessionId, retained)
+        // Scope the seq watermarks to the surviving transcript too. They were
+        // left pointing at deleted history: after a rewind that drops the
+        // reply at seq 100 and keeps history through 20, new rows are numbered
+        // from 21, so a stale clear watermark of 100 silently rejected every
+        // genuine footer up to seq 100 — and the clear uses MAX, so no later
+        // delivery could ever lower it again.
+        const retained = this.deriveNotifyStateFromTranscript(sessionId, null)
+        this.sessionCache.replaceNotifyAfterTruncate(
+            sessionId,
+            retained.signal,
+            retained.boundarySeq
+        )
     }
 
     private resolveOnlineMachineForSession(

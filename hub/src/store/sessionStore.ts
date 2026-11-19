@@ -29,6 +29,7 @@ import {
     updateSessionAgentState,
     updateSessionMetadata,
     replaceSessionNotifyAfterTruncate,
+    shiftNotifySeqWatermarks,
     advanceNotifyClearBoundary
 } from './sessions'
 
@@ -141,10 +142,15 @@ export class SessionStore {
     replaceNotifyAfterTruncate(
         id: string,
         namespace: string,
-        signal: { status: string; at: number; note: string | null } | null,
+        signal: { status: string; at: number; note: string | null; seq?: number | null } | null,
+        clearedSeq: number | null = null,
         clearedAt: number = Date.now()
     ): boolean {
-        return replaceSessionNotifyAfterTruncate(this.db, id, namespace, signal, clearedAt)
+        return replaceSessionNotifyAfterTruncate(this.db, id, namespace, signal, clearedAt, clearedSeq)
+    }
+
+    shiftNotifySeqWatermarks(id: string, namespace: string, offset: number): boolean {
+        return shiftNotifySeqWatermarks(this.db, id, namespace, offset)
     }
 
     setSessionTeamState(id: string, teamState: unknown, updatedAt: number, namespace: string): boolean {

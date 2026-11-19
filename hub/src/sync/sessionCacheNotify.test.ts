@@ -367,6 +367,128 @@ describe('startup notify backfill (#1717)', () => {
         expect(engine.getSession(session.id)?.lastNotify?.status).toBe('blocked')
     })
 
+    it('keeps a blocker whose runner clock predates the prompt that started the turn', async () => {
+        // The reviewer's scenario: the runner is 30 seconds behind the hub, and
+        // the turn the operator's prompt started ends blocked 10 seconds in.
+        // The footer's runner timestamp is therefore 20 seconds BEFORE the
+        // hub's invocation stamp for the prompt that caused it, so comparing
+        // the two clocks concludes the prompt answered a footer it actually
+        // provoked — and the blocker vanishes while sitting in the transcript.
+        //
+        // Ordered by position instead: the prompt was delivered at a seq below
+        // the footer that followed it, so it cannot be its answer.
+        const { SyncEngine } = await import('./syncEngine')
+        const { RpcRegistry } = await import('../socket/rpcRegistry')
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const session = engine.getOrCreateSession(
+            'backfill-skew',
+            { path: '/tmp/project', host: 'localhost' },
+            null,
+            'default'
+        )
+        const now = Date.now()
+        const RUNNER_BEHIND = 30_000
+
+        // The operator's prompt, delivered now by the hub's clock.
+        store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'go on then' },
+            meta: { sentFrom: 'webapp' }
+        }, 'prompt-1', null, now - 1_000)
+        store.messages.markMessagesInvoked(session.id, ['prompt-1'], now)
+
+        // The turn it started ends blocked 10s later — but stamped by a runner
+        // running 30s slow, so it reads as 20s BEFORE the prompt's delivery.
+        const footer = 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs a key' })
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'assistant', message: { content: [{ type: 'text', text: footer }] } }
+            }
+        }, undefined, null, now + 10_000 - RUNNER_BEHIND)
+
+        expect(engine.backfillRecentNotifySignals({ now })).toBe(1)
+        expect(engine.getSession(session.id)?.lastNotify?.status).toBe('blocked')
+    })
+
+    it('does not let a locally handled command answer a footer during reconciliation', async () => {
+        // The live path already skips the clear for a command the CLI handled
+        // itself, but the store still stamps the row's `invoked_at`, so every
+        // path that re-derives "was this answered?" from the transcript later
+        // — backfill, rewind, merge — read it as a delivered reply. The
+        // disposition is persisted now, so they agree with the live decision.
+        const { SyncEngine } = await import('./syncEngine')
+        const { RpcRegistry } = await import('../socket/rpcRegistry')
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const session = engine.getOrCreateSession(
+            'backfill-local-command',
+            { path: '/tmp/project', host: 'localhost' },
+            null,
+            'default'
+        )
+        const now = Date.now()
+        const footer = 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs a key' })
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'assistant', message: { content: [{ type: 'text', text: footer }] } }
+            }
+        }, undefined, null, now - 10_000)
+        // `/model` — consumed and stamped, but handled inside the CLI.
+        store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: '/model' },
+            meta: { sentFrom: 'webapp' }
+        }, 'slash-1', null, now - 5_000)
+        store.messages.markMessagesInvoked(session.id, ['slash-1'], now - 5_000, { agentDelivered: false })
+
+        expect(engine.backfillRecentNotifySignals({ now })).toBe(1)
+        expect(engine.getSession(session.id)?.lastNotify?.status).toBe('blocked')
+    })
+
+    it('still lets a genuinely delivered reply answer a footer', async () => {
+        // Positive control for both tests above: the scan must still stop at a
+        // real reply, or they would pass on a predicate that never matches.
+        const { SyncEngine } = await import('./syncEngine')
+        const { RpcRegistry } = await import('../socket/rpcRegistry')
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const session = engine.getOrCreateSession(
+            'backfill-answered',
+            { path: '/tmp/project', host: 'localhost' },
+            null,
+            'default'
+        )
+        const now = Date.now()
+        const footer = 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs a key' })
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'assistant', message: { content: [{ type: 'text', text: footer }] } }
+            }
+        }, undefined, null, now - 10_000)
+        store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'here is the key' },
+            meta: { sentFrom: 'webapp' }
+        }, 'reply-1', null, now - 5_000)
+        store.messages.markMessagesInvoked(session.id, ['reply-1'], now - 5_000)
+
+        expect(engine.backfillRecentNotifySignals({ now })).toBe(0)
+        expect(engine.getSession(session.id)?.lastNotify ?? null).toBeNull()
+    })
+
     it('does not treat an overdue but never-invoked reply as an answer', async () => {
         // Due time is not delivery. A scheduled reply can pass its due time
         // while the agent is offline and still have a null invokedAt — the

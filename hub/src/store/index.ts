@@ -173,7 +173,8 @@ export class Store {
         sessionId: string,
         localIds: string[],
         invokedAt: number,
-        namespace: string
+        namespace: string,
+        options?: { agentDelivered?: boolean }
     ): { updatedAt: number; consumed: number; deliveredSeq: number | null } {
         return this.db.transaction(() => {
             // Which of these rows are actually the operator's prompts? Agent
@@ -191,7 +192,7 @@ export class Store {
             const operatorPrompts = pending.filter(
                 (row) => isUserInputMessage(decodeMessageContent(row.content))
             ).length
-            const changes = this.messages.markMessagesInvoked(sessionId, localIds, invokedAt)
+            const changes = this.messages.markMessagesInvoked(sessionId, localIds, invokedAt, options)
             if (changes > 0) {
                 this.sessions.touchSessionUpdatedAt(sessionId, invokedAt, namespace)
             }
@@ -209,11 +210,14 @@ export class Store {
             // a delivery (#1717).
             // `consumed` counts only operator prompts: a replayed ack, unknown
             // local ids, and agent output all deliver nothing (#1717).
-            // Max seq among the rows just invoked: the clock-free boundary for
-            // "this reply came after that footer".
+            // The clock-free boundary for "this reply came after that footer".
+            // `invoked_seq`, not the row's own `seq`: the row was numbered when
+            // the prompt was QUEUED, which can precede the footer it answers.
+            // Only rows that actually reached the agent can move the boundary.
             const seqRow = localIds.length === 0 ? null : this.db.prepare(
-                `SELECT MAX(seq) AS maxSeq FROM messages
-                 WHERE session_id = ? AND local_id IN (${placeholders})`
+                `SELECT MAX(invoked_seq) AS maxSeq FROM messages
+                 WHERE session_id = ? AND local_id IN (${placeholders})
+                   AND agent_delivered IS NOT 0`
             ).get(sessionId, ...localIds) as { maxSeq: number | null } | null
             return {
                 updatedAt: session.updatedAt,
@@ -587,6 +591,8 @@ export class Store {
                 seq INTEGER NOT NULL,
                 local_id TEXT,
                 invoked_at INTEGER,
+                invoked_seq INTEGER,
+                agent_delivered INTEGER,
                 swept_at INTEGER,
                 scheduled_at INTEGER,
                 delivery_state TEXT NOT NULL DEFAULT 'queued',
@@ -1408,6 +1414,26 @@ export class Store {
         const messageColumns = this.getMessageColumnNames()
         if (messageColumns.size > 0 && !messageColumns.has('swept_at')) {
             this.db.exec('ALTER TABLE messages ADD COLUMN swept_at INTEGER')
+        }
+        // `invoked_at` is a hub wall-clock stamp, so it cannot be ordered
+        // against a footer's runner-clock timestamp. `invoked_seq` records the
+        // session's message high-water mark at the moment of delivery, putting
+        // the delivery event in the SAME hub insertion domain as the footer's
+        // own `seq` — the only way to ask "did this reply reach the agent after
+        // that footer arrived?" without comparing two unrelated clocks. A
+        // reply's own `seq` cannot answer it either: that is allocated when the
+        // prompt is QUEUED, which can be long before it is delivered.
+        if (messageColumns.size > 0 && !messageColumns.has('invoked_seq')) {
+            this.db.exec('ALTER TABLE messages ADD COLUMN invoked_seq INTEGER')
+        }
+        // Whether the delivery actually reached the agent. A locally handled
+        // slash command, a rejected or aborted prompt and a failed steer all
+        // get `invoked_at` stamped while the agent never saw them, so
+        // `invoked_at` alone wrongly reads as "the operator answered this".
+        // NULL means "written before this column existed" and keeps the old
+        // permissive reading, so an upgrade does not un-answer historical work.
+        if (messageColumns.size > 0 && !messageColumns.has('agent_delivered')) {
+            this.db.exec('ALTER TABLE messages ADD COLUMN agent_delivered INTEGER')
         }
     }
 

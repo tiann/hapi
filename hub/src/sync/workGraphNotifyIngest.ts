@@ -619,9 +619,16 @@ export function isDeliveredOperatorReply(
         scheduledAt: number | null
         invokedAt: number | null
         sweptAt?: number | null
+        agentDelivered?: number | null
     }
 ): boolean {
     if (!isOperatorReplyMessage(message.content)) return false
+    // The CLI consumed the row synchronously without prompting the agent: a
+    // slash command it handled itself, a rejected or aborted message, a failed
+    // steer. `invoked_at` is stamped regardless, so without the persisted
+    // disposition the transcript paths read it as an answer the agent never
+    // got. NULL is "written before this was recorded" and stays permissive.
+    if (message.agentDelivered === 0) return false
     // The session-end sweep stamps `invokedAt` to unpin the floating bar, on
     // rows the runtime never received. Its own documentation calls that
     // synthetic. Treating it as a delivered reply let a session end answer a
@@ -632,6 +639,25 @@ export function isDeliveredOperatorReply(
     // reached the agent either, and treating it as an answer buries a footer
     // the agent never saw.
     return message.invokedAt !== null
+}
+
+/**
+ * Where a delivered reply sits in the hub's insertion order (#1717).
+ *
+ * This is the only sound key for "did this reply reach the agent after that
+ * footer arrived?". The footer's position is its own `seq`; the reply's is
+ * `invoked_seq`, the session high-water mark at delivery. Its own `seq` is not
+ * usable — that was allocated when the prompt was queued, which can be well
+ * before the footer it answers. Timestamps are not usable either: the footer
+ * carries the runner's clock and `invokedAt` is the hub's.
+ *
+ * Falls back to the row's `seq` for rows written before `invoked_seq` existed,
+ * which is the best available ordering for history already on disk.
+ */
+export function deliveredOperatorReplySeq(
+    message: { seq: number; invokedSeq?: number | null }
+): number {
+    return message.invokedSeq ?? message.seq
 }
 
 /** When the agent actually saw a delivered reply. */
