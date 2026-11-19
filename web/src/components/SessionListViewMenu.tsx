@@ -98,6 +98,8 @@ export function SessionListViewMenu(props: {
     onReset: () => void
     scratchlistOnly?: boolean
     onScratchlistChange?: (value: boolean) => void
+    activeOnly?: boolean
+    onActiveChange?: (value: boolean) => void
     workingOnly?: boolean
     onWorkingChange?: (value: boolean) => void
     customStart?: string
@@ -120,7 +122,7 @@ export function SessionListViewMenu(props: {
     const [anchor, setAnchor] = useState<MachineFilterMenuAnchor | null>(null)
     const [menuLeft, setMenuLeft] = useState<number | null>(null)
     const customized = !isDefaultSessionListView(props.view)
-        || Boolean(props.scratchlistOnly || props.workingOnly || props.customStart || props.customEnd || props.machineFilter)
+        || Boolean(props.scratchlistOnly || props.activeOnly || props.workingOnly || props.customStart || props.customEnd || props.machineFilter)
     const closeDatePicker = useCallback(() => {
         setDatePickerOpen(false)
         dateFilterButtonRef.current?.focus()
@@ -301,6 +303,14 @@ export function SessionListViewMenu(props: {
                                     expanded={datePickerOpen}
                                     buttonRef={dateFilterButtonRef}
                                     onSelect={() => setDatePickerOpen(value => !value)}
+                                />
+                            ) : null}
+                            {props.onActiveChange ? (
+                                <MenuRow
+                                    role="menuitemcheckbox"
+                                    label={t('sessions.view.activeOnly')}
+                                    checked={props.activeOnly}
+                                    onSelect={() => props.onActiveChange?.(!props.activeOnly)}
                                 />
                             ) : null}
                             {props.onWorkingChange ? (

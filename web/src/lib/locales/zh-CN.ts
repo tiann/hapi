@@ -143,6 +143,7 @@ export default {
   'sessions.view.status.active': '活跃',
   'sessions.view.status.archived': '归档',
   'sessions.view.unreadOnly': '未读',
+  'sessions.view.activeOnly': '当前活跃',
   'sessions.view.working': '工作中',
   'sessions.view.reset': '恢复默认',
   'sessions.view.fueTitle': '新功能：排序与筛选',

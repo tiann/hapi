@@ -2018,9 +2018,13 @@ export function SessionList(props: {
     const listComparator = useMemo(() => createSessionComparator(listView), [listView])
     const lastSeenVersion = useSessionLastSeenVersion()
 
-    // Date, scratchlist, and working are transient; unread uses the upstream
-    // view store.
+    // Date, scratchlist, active, and working are transient; unread uses the
+    // upstream view store. showActiveOnly is deliberately independent of
+    // listView.status (persisted, backs the Settings "Active sessions only"
+    // toggle) — #2002 wants a temporary scan, not another write path onto
+    // that saved preference.
     const [showScratchlistOnly, setShowScratchlistOnly] = useState(false)
+    const [showActiveOnly, setShowActiveOnly] = useState(false)
     const [showWorkingOnly, setShowWorkingOnly] = useState(false)
     const {
         sessionIds: scratchlistSessionIds,
@@ -2113,7 +2117,7 @@ export function SessionList(props: {
     const normalizedQuery = normalizeSearch(searchQuery)
     const timeRange = getSessionTimeRange(customStart, customEnd)
     const isSearchFiltering = normalizedQuery.length > 0 || timeRange !== null
-    const isFiltering = isSearchFiltering || listView.unreadOnly || showScratchlistOnly || showWorkingOnly
+    const isFiltering = isSearchFiltering || listView.unreadOnly || showScratchlistOnly || showActiveOnly || showWorkingOnly
 
     const contentSearchActive = searchMode === 'content' && normalizedQuery.length > 0
     const contentSearchReady = contentSearchActive
@@ -2286,6 +2290,9 @@ export function SessionList(props: {
                 selectedSessionId
             )
         }
+        if (showActiveOnly) {
+            filtered = filterActiveSessionsOnly(filtered, selectedSessionId)
+        }
         if (showWorkingOnly) {
             filtered = filterWorkingSessionsOnly(filtered, selectedSessionId)
         }
@@ -2307,6 +2314,7 @@ export function SessionList(props: {
         scratchlistStatusError,
         selectedSessionId,
         showScratchlistOnly,
+        showActiveOnly,
         showWorkingOnly,
         listView.unreadOnly,
         timeRange?.start,
@@ -2375,8 +2383,13 @@ export function SessionList(props: {
         let filtered = listView.unreadOnly
             ? filterUnreadSessionsOnly(visibleSessions, isSessionUnread, selectedSessionId)
             : visibleSessions
-        // Working is AND-composed with the other lenses (#2002); Active is
-        // handled upstream via listView.status (allSessions), not here.
+        // Active and Working are AND-composed with the other lenses (#2002).
+        // Both are ephemeral, independent of the persisted listView.status
+        // ("Active sessions only" in Settings) — a temporary scan should not
+        // read or write that saved preference.
+        if (showActiveOnly) {
+            filtered = filterActiveSessionsOnly(filtered, selectedSessionId)
+        }
         if (showWorkingOnly) {
             filtered = filterWorkingSessionsOnly(filtered, selectedSessionId)
         }
@@ -2398,6 +2411,7 @@ export function SessionList(props: {
         scratchlistStatusError,
         selectedSessionId,
         showScratchlistOnly,
+        showActiveOnly,
         showWorkingOnly,
         listView.unreadOnly,
         visibleSessions
@@ -3341,6 +3355,7 @@ export function SessionList(props: {
                                             onReset={() => {
                                                 setListView(DEFAULT_SESSION_LIST_VIEW)
                                                 setShowScratchlistOnly(false)
+                                                setShowActiveOnly(false)
                                                 setShowWorkingOnly(false)
                                                 setCustomStart('')
                                                 setCustomEnd('')
@@ -3348,6 +3363,8 @@ export function SessionList(props: {
                                             }}
                                             scratchlistOnly={showScratchlistOnly}
                                             onScratchlistChange={setShowScratchlistOnly}
+                                            activeOnly={showActiveOnly}
+                                            onActiveChange={setShowActiveOnly}
                                             workingOnly={showWorkingOnly}
                                             onWorkingChange={setShowWorkingOnly}
                                             customStart={customStart}

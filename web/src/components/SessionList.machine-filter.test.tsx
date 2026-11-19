@@ -342,6 +342,7 @@ describe('SessionList machine filter', () => {
             'Archivedonly',
             'Unreadonly',
             'Updateddate',
+            'Activenow',
             'Workingonly',
             'Withdraftsonly',
             'All(2)',
@@ -355,7 +356,7 @@ describe('SessionList machine filter', () => {
 })
 
 describe('SessionList session filter menu', () => {
-    it('lists unread, date, working, and scratchlist and closes when clicking outside', () => {
+    it('lists unread, date, active, working, and scratchlist and closes when clicking outside', () => {
         renderSessionList([
             makeSession({ id: 'session-1', metadata: { path: '/work/hapi', name: 'Session one' } })
         ])
@@ -372,6 +373,7 @@ describe('SessionList session filter menu', () => {
             'Archived only',
             'Unread only',
             'Updated date',
+            'Active now',
             'Working only',
             'With drafts only'
         ])
@@ -495,6 +497,23 @@ describe('SessionList session filter menu', () => {
             expect(screen.queryByTitle('/work/draft-seen')).toBeNull()
             expect(screen.queryByTitle('/work/plain-unread')).toBeNull()
         })
+    })
+
+    it('filters to connected sessions with Active now, independent of the persisted Active status radio (#2002)', () => {
+        renderSessionList([
+            makeSession({ id: 'connected', active: true, metadata: { path: '/work/connected', name: 'Connected session' } }),
+            makeSession({ id: 'disconnected', active: false, metadata: { path: '/work/disconnected', name: 'Disconnected session' } })
+        ])
+
+        fireEvent.click(screen.getByRole('button', { name: 'Sort and filter' }))
+        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Active now' }))
+
+        expect(screen.getByTitle('/work/connected')).toBeTruthy()
+        expect(screen.queryByTitle('/work/disconnected')).toBeNull()
+
+        // Ephemeral: toggling it does not flip the persisted status radio.
+        expect(screen.getByRole('menuitemradio', { name: 'All sessions' })).toHaveAttribute('aria-checked', 'true')
+        expect(screen.getByRole('menuitemradio', { name: 'Active only' })).toHaveAttribute('aria-checked', 'false')
     })
 
     it('filters to connected thinking or background-task sessions with Working only (#2002)', () => {
