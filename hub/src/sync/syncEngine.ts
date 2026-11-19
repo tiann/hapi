@@ -1880,7 +1880,9 @@ export class SyncEngine {
         const held = new Set(this.historyActionsInFlight)
         for (const session of this.sessionCache.getSessions()) if (this.openCodeRewindPending(session.id)) held.add(session.id)
         this.messageService.releaseMatureScheduledMessages(Date.now(), held)
-        void this.reconcileOpenCodeClears()
+        void this.reconcileOpenCodeClears().catch(error => {
+            console.error('[SyncEngine] OpenCode clear reconciliation failed:', error)
+        })
         this.reconcileDerivedToolWork()
     }
 
@@ -1931,7 +1933,7 @@ export class SyncEngine {
             const operation = session.metadata?.opencodeClearOperation
             if (session.active || !operation) continue
             if (operation.state === 'reserved') continue
-            if (operation.state === 'abort-needed') {
+            if (operation.state === 'abort-needed' || (operation.state === 'aborted' && operation.abortInvalidationPending)) {
                 this.abortOpenCodeClearSession(session.id, session.namespace, operation.replacementSessionId, 'abort-needed')
                 continue
             }
@@ -4536,40 +4538,44 @@ export class SyncEngine {
         expectedState: 'reserved' | 'abort-needed' = 'reserved',
         requireInactive: boolean = false
     ): ClearOpencodeSessionResult {
-        const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
-        if (!access.ok) return { type: 'error', message: 'Session not found', code: access.reason === 'access-denied' ? 'access_denied' : 'session_not_found' }
-        const operation = access.session.metadata?.opencodeClearOperation
-        if (!operation) return { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
-        if (operation.state === 'aborted') {
-            if (replacementSessionId !== operation.replacementSessionId) {
-                return { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
-            }
-            this.finishAbortedOpenCodeClear(sessionId, operation.replacementSessionId, namespace)
-            return { type: 'success', sessionId }
-        }
-        const required = { replacementSessionId, state: expectedState, requireInactive }
-        for (let attempt = 0; attempt < 3; attempt += 1) {
-            const latest = this.sessionCache.getSessionByNamespace(sessionId, namespace) ?? this.sessionCache.refreshSession(sessionId)
-            if (!latest?.metadata) break
-            const current = latest.metadata.opencodeClearOperation
-            if (!current) break
-            if (current.replacementSessionId === required.replacementSessionId && current.state === 'aborted') {
-                this.finishAbortedOpenCodeClear(sessionId, current.replacementSessionId, namespace)
+        try {
+            const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
+            if (!access.ok) return { type: 'error', message: 'Session not found', code: access.reason === 'access-denied' ? 'access_denied' : 'session_not_found' }
+            const operation = access.session.metadata?.opencodeClearOperation
+            if (!operation) return { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
+            if (operation.state === 'aborted') {
+                if (replacementSessionId !== operation.replacementSessionId) {
+                    return { type: 'error', message: 'Clear reservation not found', code: 'clear_unavailable' }
+                }
+                this.finishAbortedOpenCodeClear(sessionId, operation.replacementSessionId, namespace)
                 return { type: 'success', sessionId }
             }
-            if ((required.requireInactive && latest.active)
-                || current.replacementSessionId !== required.replacementSessionId
-                || current.state !== required.state) break
-            const result = this.store.abortOpenCodeClearOperation(sessionId, current.replacementSessionId, {
-                ...latest.metadata,
-                opencodeClearOperation: { ...current, state: 'aborted', updatedAt: Date.now(), error: undefined }
-            }, latest.metadataVersion, namespace, required)
-            if (result.result === 'success') {
-                this.finishAbortedOpenCodeClear(sessionId, current.replacementSessionId, namespace, true)
-                return { type: 'success', sessionId }
+            const required = { replacementSessionId, state: expectedState, requireInactive }
+            for (let attempt = 0; attempt < 3; attempt += 1) {
+                const latest = this.sessionCache.getSessionByNamespace(sessionId, namespace) ?? this.sessionCache.refreshSession(sessionId)
+                if (!latest?.metadata) break
+                const current = latest.metadata.opencodeClearOperation
+                if (!current) break
+                if (current.replacementSessionId === required.replacementSessionId && current.state === 'aborted') {
+                    this.finishAbortedOpenCodeClear(sessionId, current.replacementSessionId, namespace)
+                    return { type: 'success', sessionId }
+                }
+                if ((required.requireInactive && latest.active)
+                    || current.replacementSessionId !== required.replacementSessionId
+                    || current.state !== required.state) break
+                const result = this.store.abortOpenCodeClearOperation(sessionId, current.replacementSessionId, {
+                    ...latest.metadata,
+                    opencodeClearOperation: { ...current, state: 'aborted', updatedAt: Date.now(), error: undefined }
+                }, latest.metadataVersion, namespace, required)
+                if (result.result === 'success') {
+                    this.finishAbortedOpenCodeClear(sessionId, current.replacementSessionId, namespace, true)
+                    return { type: 'success', sessionId }
+                }
+                if (result.result !== 'version-mismatch') break
+                this.sessionCache.refreshSession(sessionId)
             }
-            if (result.result !== 'version-mismatch') break
-            this.sessionCache.refreshSession(sessionId)
+        } catch (error) {
+            console.error('[SyncEngine] OpenCode clear abort failed:', error)
         }
         return { type: 'error', message: 'Could not abort clear reservation', code: 'replacement_link_failed' }
     }

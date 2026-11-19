@@ -1,4 +1,4 @@
-import { describe, expect, it, mock } from 'bun:test'
+import { describe, expect, it, mock, spyOn } from 'bun:test'
 import { RpcRegistry } from '../socket/rpcRegistry'
 import { Store } from '../store'
 import { SyncEngine, type SyncEvent } from './syncEngine'
@@ -618,13 +618,22 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             engine.handleSessionAlive({ sid: source.id, time: Date.now() })
             expect(engine.reserveOpenCodeClearSession(source.id, 'default')).toMatchObject({ type: 'success' })
             await engine.sendMessage(source.id, { text: 'restore atomically', localId: 'atomic-held' })
-            const original = store.abortOpenCodeClearOperation.bind(store)
+            const replacementId = currentReplacementId(engine, source.id)
+            const original = store.sessions.updateSessionMetadata.bind(store.sessions)
             let fail = true
-            store.abortOpenCodeClearOperation = ((...args: Parameters<typeof original>) => {
-                if (fail) return { result: 'not-found' as const }
-                return original(...args)
-            }) as typeof store.abortOpenCodeClearOperation
+            store.sessions.updateSessionMetadata = (id, metadata, ...args) => {
+                if (fail && (metadata as { opencodeClearOperation?: { state: string } }).opencodeClearOperation?.state === 'aborted') {
+                    expect(store.messages.getAllMessages(source.id)).toHaveLength(1)
+                    return { result: 'error' }
+                }
+                return original(id, metadata, ...args)
+            }
+            expect(engine.abortOpenCodeClearSession(source.id, 'default', replacementId))
+                .toMatchObject({ type: 'error', code: 'replacement_link_failed' })
+            expect(store.messages.getAllMessages(source.id)).toEqual([])
+            expect(store.messages.getAllMessages(replacementId).map(message => message.localId)).toEqual(['atomic-held'])
             engine.handleSessionEnd({ sid: source.id, time: Date.now(), reason: 'error' })
+            await expect((engine as unknown as { reconcileOpenCodeClears(): Promise<void> }).reconcileOpenCodeClears()).resolves.toBeUndefined()
             expect(store.messages.getAllMessages(source.id)).toEqual([])
             expect(engine.getSessionByNamespace(source.id, 'default')?.metadata?.opencodeClearOperation?.state).toBe('abort-needed')
             fail = false
@@ -634,6 +643,67 @@ describe('SyncEngine.clearOpenCodeSession', () => {
                 expect.objectContaining({ localId: 'atomic-held', invokedAt: null })
             ])
         } finally { engine.stop() }
+    })
+
+    it('returns a structured failure without emitting when the abort invalidation claim write fails', async () => {
+        const { store, engine } = createEngine()
+        const events: SyncEvent[] = []
+        engine.subscribe(event => events.push(event))
+        try {
+            const source = engine.getOrCreateSession('abort-claim-failure', {
+                path: '/tmp/project', host: 'host', machineId: 'machine-1', flavor: 'opencode', startedBy: 'runner'
+            }, null, 'default')
+            engine.handleSessionAlive({ sid: source.id, time: Date.now() })
+            expect(engine.reserveOpenCodeClearSession(source.id, 'default')).toMatchObject({ type: 'success' })
+            const replacementId = currentReplacementId(engine, source.id)
+            await engine.sendMessage(source.id, { text: 'retry publication', localId: 'claim-failure' })
+            const original = store.sessions.updateSessionMetadata.bind(store.sessions)
+            let fail = true
+            store.sessions.updateSessionMetadata = (id, metadata, ...args) => {
+                const operation = (metadata as { opencodeClearOperation?: { state: string; abortInvalidationPending?: true } }).opencodeClearOperation
+                if (fail && operation?.state === 'aborted' && !operation.abortInvalidationPending) {
+                    return { result: 'error' }
+                }
+                return original(id, metadata, ...args)
+            }
+            expect(engine.abortOpenCodeClearSession(source.id, 'default', replacementId))
+                .toMatchObject({ type: 'error', code: 'replacement_link_failed' })
+            expect(events.filter(event => event.type === 'messages-invalidated')).toEqual([])
+            expect(store.messages.getAllMessages(source.id).map(message => message.localId)).toEqual(['claim-failure'])
+            expect(store.messages.getAllMessages(replacementId)).toEqual([])
+
+            engine.handleRealtimeEvent({ type: 'session-updated', sessionId: source.id })
+            engine.handleSessionEnd({ sid: source.id, time: Date.now(), reason: 'error' })
+            const sync = engine as unknown as { reconcileOpenCodeClears(): Promise<void> }
+            await expect(sync.reconcileOpenCodeClears()).resolves.toBeUndefined()
+            expect(events.filter(event => event.type === 'messages-invalidated')).toEqual([])
+
+            fail = false
+            await sync.reconcileOpenCodeClears()
+            expect(events.filter(event => event.type === 'messages-invalidated').map(event => event.sessionId))
+                .toEqual([source.id, replacementId])
+            expect(engine.abortOpenCodeClearSession(source.id, 'default', replacementId)).toEqual({ type: 'success', sessionId: source.id })
+            expect(events.filter(event => event.type === 'messages-invalidated')).toHaveLength(2)
+        } finally { engine.stop() }
+    })
+
+    it('handles a rejected clear reconciliation from the inactivity tick', async () => {
+        const { engine } = createEngine()
+        const error = new Error('reconciliation fault')
+        const failure = Promise.reject(error)
+        // Suppress the test promise itself so the assertion catches a missing timer handler.
+        void failure.catch(() => {})
+        const sync = engine as unknown as { expireInactive(): void; reconcileOpenCodeClears(): Promise<void> }
+        sync.reconcileOpenCodeClears = () => failure
+        const log = spyOn(console, 'error').mockImplementation(() => {})
+        try {
+            sync.expireInactive()
+            await Promise.resolve()
+            expect(log.mock.calls.some(args => args.includes(error))).toBe(true)
+        } finally {
+            log.mockRestore()
+            engine.stop()
+        }
     })
 
     it('re-reserves an aborted operation with a fresh durable identity', () => {
