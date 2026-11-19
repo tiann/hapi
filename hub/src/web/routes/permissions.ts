@@ -1,5 +1,5 @@
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol'
-import { CODEX_QUESTION_REISSUED } from '@hapi/protocol/rpcMethods'
+import { CODEX_ASYNC_QUESTION_REQUEST_PREFIX, CODEX_QUESTION_REISSUED } from '@hapi/protocol/rpcMethods'
 import { PermissionModeSchema } from '@hapi/protocol/schemas'
 import { Hono, type Context } from 'hono'
 import { z } from 'zod'
@@ -32,7 +32,8 @@ const denyBodySchema = z.object({
 
 function permissionFailure(c: Context<WebAppEnv>, error: unknown): Response {
     if (error instanceof PermissionRequestNotFoundError) {
-        return c.json({ error: error.message }, 409)
+        const status = error.requestId.startsWith(CODEX_ASYNC_QUESTION_REQUEST_PREFIX) ? 404 : 409
+        return c.json({ error: error.message }, status)
     }
     if (error instanceof PermissionQuestionReissuedError) {
         return c.json({ error: error.message, code: CODEX_QUESTION_REISSUED }, 409)

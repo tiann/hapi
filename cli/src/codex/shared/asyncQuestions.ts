@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { CODEX_ASYNC_QUESTION_REQUEST_PREFIX, CODEX_QUESTION_REISSUED } from '@hapi/protocol/rpcMethods';
+import { CODEX_ASYNC_QUESTION_REQUEST_PREFIX, CODEX_QUESTION_REISSUED, PERMISSION_REQUEST_NOT_FOUND_MESSAGE } from '@hapi/protocol/rpcMethods';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentState } from '@/api/types';
 import { isIndeterminateError } from '../codexAppServerClient';
@@ -120,7 +120,12 @@ export class SharedCodexAsyncQuestions {
 
     async answer(reply: PermissionReply): Promise<boolean> {
         const pending = this.pending.get(reply.id);
-        if (!pending) return false;
+        if (!pending) {
+            if (reply.id.startsWith(CODEX_ASYNC_QUESTION_REQUEST_PREFIX)) {
+                throw new Error(PERMISSION_REQUEST_NOT_FOUND_MESSAGE);
+            }
+            return false;
+        }
         if (reply.instanceId !== undefined && reply.instanceId !== pending.instanceId) {
             throw new Error(CODEX_QUESTION_REISSUED);
         }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import { Hono } from 'hono'
-import { CODEX_ASYNC_QUESTION_REQUEST_PREFIX, CODEX_QUESTION_REISSUED } from '@hapi/protocol/rpcMethods'
+import { CODEX_ASYNC_QUESTION_REQUEST_PREFIX, CODEX_QUESTION_REISSUED, PERMISSION_REQUEST_NOT_FOUND_MESSAGE } from '@hapi/protocol/rpcMethods'
 import type { Server } from 'socket.io'
 import type { RpcRegistry } from '../../socket/rpcRegistry'
 import type { Session, SyncEngine } from '../../sync/syncEngine'
@@ -148,6 +148,27 @@ describe('permissions routes (tiann/hapi#1735)', () => {
             })
             expect(response.status).toBe(409)
             expect(await response.json()).toEqual({ error: 'Question was reissued', code: CODEX_QUESTION_REISSUED })
+        }
+    })
+
+    it('returns 404 if the Codex runner already consumed an async question the hub still lists', async () => {
+        const id = `${CODEX_ASYNC_QUESTION_REQUEST_PREFIX}test`
+        const session = createSession('codex')
+        session.agentState = { requests: { [id]: { tool: 'request_user_input', arguments: { isBlocking: false } } } }
+        const socket = { timeout: () => ({
+            emitWithAck: async () => JSON.stringify({ error: PERMISSION_REQUEST_NOT_FOUND_MESSAGE })
+        }) }
+        const io = { of: () => ({ sockets: new Map([['socket-1', socket]]) }) } as unknown as Server
+        const registry = { getSocketIdForMethod: () => 'socket-1' } as unknown as RpcRegistry
+        const gateway = new RpcGateway(io, registry)
+        const app = createApp({
+            session, approvePermission: gateway.approvePermission.bind(gateway), denyPermission: gateway.denyPermission.bind(gateway)
+        })
+        for (const action of ['approve', 'deny']) {
+            const response = await app.request(`/api/sessions/session-1/permissions/${encodeURIComponent(id)}/${action}`, {
+                method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}'
+            })
+            expect(response.status).toBe(404)
         }
     })
 

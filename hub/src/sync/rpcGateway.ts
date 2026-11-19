@@ -112,7 +112,7 @@ export class RpcTargetMissingError extends Error {
  * sent a control_cancel_request for it) before this answer arrived.
  */
 export class PermissionRequestNotFoundError extends Error {
-    constructor(requestId: string) {
+    constructor(readonly requestId: string) {
         super(`Permission request is no longer active: ${requestId}`)
         this.name = 'PermissionRequestNotFoundError'
     }
