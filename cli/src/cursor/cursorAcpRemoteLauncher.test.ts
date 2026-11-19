@@ -2062,6 +2062,79 @@ describe('cursorAcpRemoteLauncher', () => {
         setAutoBridgeTransientModelErrors(false);
     });
 
+    it('does not auto-bridge a non-retryable failure on the Continue attempt after tool side effects', async () => {
+        // Cold-review Major 2026-11-19: the retryable give-up branch forces
+        // bridgeable:false, but the non-retryable catch branch recorded the
+        // model error without checking postToolAutoContinueUsed — a rate-limit
+        // rejection (non-retryable, but transient/bridgeable by default) on the
+        // Continue attempt could still auto-Bridge and resend the *original*
+        // prompt into tools that already ran on the first attempt.
+        setAutoBridgeTransientModelErrors(true);
+        harness.promptMessageBatches = [[{
+            type: 'tool_call',
+            id: 'tool-1',
+            name: 'shell',
+            input: { command: 'touch output.txt' },
+            status: 'completed'
+        }], []];
+        harness.promptErrors = [
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL'),
+            new Error('Rate limit exceeded')
+        ];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+            sendSessionEvent: ReturnType<typeof vi.fn>;
+            updateMetadata: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.promptCalls).toBe(2);
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
+        // Non-retryable catch surfaces the raw error message, not the give-up copy.
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: 'Rate limit exceeded'
+        }));
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
+        expect(queue.queue.some(
+            (item) => item.internal?.kind === 'model-error-bridge'
+        )).toBe(false);
+        expect(client.sendSessionEvent.mock.calls.some(
+            (call) => call[0]?.type === 'modelErrorBridged'
+        )).toBe(false);
+
+        const wroteBridgeableFalse = client.updateMetadata.mock.calls.some((call) => {
+            const updater = call[0] as (m: Record<string, unknown>) => Record<string, unknown>;
+            if (typeof updater !== 'function') return false;
+            const err = updater({}).lastModelError as { bridgeable?: boolean } | undefined;
+            return err?.bridgeable === false;
+        });
+        expect(wroteBridgeableFalse).toBe(true);
+
+        setAutoBridgeTransientModelErrors(false);
+    });
+
     it('gives up after one Continue instead of retrying it when the continuation itself fails without tool activity', async () => {
         harness.promptMessageBatches = [[{
             type: 'tool_call',

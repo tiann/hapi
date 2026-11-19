@@ -1192,7 +1192,13 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             if (!this.pendingRetryableError) {
                                 const settled = this.pendingStderrFailure ?? this.pendingTextFailure;
                                 if (settled && !this.turnHasModelError) {
-                                    this.recordModelError(settled);
+                                    // Earlier attempt's tools (if any) already ran —
+                                    // attemptProducedToolActivity only covers *this*
+                                    // attempt, so force non-bridgeable explicitly too.
+                                    this.recordModelError(
+                                        settled,
+                                        postToolAutoContinueUsed ? { bridgeable: false } : undefined
+                                    );
                                 }
                                 this.pendingStderrFailure = null;
                                 this.pendingTextFailure = null;
@@ -1204,11 +1210,21 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             logger.warn('[cursor-acp] prompt failed', error);
                             if (this.userAbortRequested) break;
                             if (!isRetryableCursorError(error)) {
-                                this.surfacePromptFailure(error instanceof Error ? error.message : String(error));
+                                const message = error instanceof Error ? error.message : String(error);
+                                this.surfacePromptFailure(message, { deferFooter: true });
                                 const failure = settleFailure(error);
                                 this.pendingStderrFailure = null;
                                 this.pendingTextFailure = null;
-                                if (failure) this.recordModelError(failure);
+                                // Same earlier-attempt-tools gap as the settled branch
+                                // above: this RPC rejection can land on the Continue
+                                // attempt, where attemptProducedToolActivity is false.
+                                const { bridgeQueued } = failure
+                                    ? this.recordModelError(
+                                        failure,
+                                        postToolAutoContinueUsed ? { bridgeable: false } : undefined
+                                    )
+                                    : { bridgeQueued: false };
+                                if (!bridgeQueued) this.stampBlockedFooter(message);
                                 break;
                             }
                             this.pendingRetryableError = error instanceof Error ? error.message : String(error);
@@ -1230,20 +1246,26 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                                 retryAttempt = -1;
                                 continue;
                             }
-                            this.surfacePromptFailure(CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE);
+                            this.surfacePromptFailure(CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE, { deferFooter: true });
                             const failure = settleFailure(
                                 this.pendingRetryableError ?? 'Cursor connection interrupted after tool activity'
                             );
                             this.pendingStderrFailure = null;
                             this.pendingTextFailure = null;
-                            if (failure) this.recordModelError(failure);
+                            // attemptProducedToolActivity is true this attempt, so
+                            // recordModelError already forces bridgeable:false —
+                            // bridgeQueued is always false here, footer always stamps.
+                            const { bridgeQueued } = failure
+                                ? this.recordModelError(failure)
+                                : { bridgeQueued: false };
+                            if (!bridgeQueued) this.stampBlockedFooter(CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE);
                             break;
                         }
                         if (postToolAutoContinueUsed) {
                             // One-shot contract (#1724): a retryable failure on the
                             // Continue attempt itself does not get the normal retry
                             // budget — give up rather than resending Continue N times.
-                            this.surfacePromptFailure(CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE);
+                            this.surfacePromptFailure(CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE, { deferFooter: true });
                             const continueFailure = settleFailure(
                                 this.pendingRetryableError ?? 'Cursor connection interrupted after tool activity'
                             );
@@ -1252,21 +1274,31 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             // attemptProducedToolActivity is per-attempt and this
                             // (Continue) attempt made none, but the turn's earlier
                             // attempt already ran tools — Bridge must not resend
-                            // lastUserMessage into them regardless.
-                            if (continueFailure) this.recordModelError(continueFailure, { bridgeable: false });
+                            // lastUserMessage into them regardless, so bridgeQueued
+                            // is always false here too; footer always stamps.
+                            const { bridgeQueued } = continueFailure
+                                ? this.recordModelError(continueFailure, { bridgeable: false })
+                                : { bridgeQueued: false };
+                            if (!bridgeQueued) this.stampBlockedFooter(CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE);
                             break;
                         }
                         if (retryAttempt < CURSOR_AUTO_RETRY_LIMIT) {
                             this.surfaceRetry(retryAttempt + 1);
                             continue;
                         }
-                        this.surfacePromptFailure(`Cursor Agent failed after ${CURSOR_AUTO_RETRY_LIMIT} retries.`);
-                        const exhaustedFailure = settleFailure(
-                            this.pendingRetryableError ?? 'Cursor Agent failed after retries'
-                        );
-                        this.pendingStderrFailure = null;
-                        this.pendingTextFailure = null;
-                        if (exhaustedFailure) this.recordModelError(exhaustedFailure);
+                        {
+                            const message = `Cursor Agent failed after ${CURSOR_AUTO_RETRY_LIMIT} retries.`;
+                            this.surfacePromptFailure(message, { deferFooter: true });
+                            const exhaustedFailure = settleFailure(
+                                this.pendingRetryableError ?? 'Cursor Agent failed after retries'
+                            );
+                            this.pendingStderrFailure = null;
+                            this.pendingTextFailure = null;
+                            const { bridgeQueued } = exhaustedFailure
+                                ? this.recordModelError(exhaustedFailure)
+                                : { bridgeQueued: false };
+                            if (!bridgeQueued) this.stampBlockedFooter(message);
+                        }
                     }
                 }
             } finally {
@@ -1715,10 +1747,22 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
         });
     }
 
-    private surfacePromptFailure(message: string): void {
+    /**
+     * `deferFooter` holds the blocked stamp back for a caller that still has
+     * to call recordModelError and may find Auto Bridge can still recover —
+     * stamping the footer first would mislabel a turn Bridge goes on to fix
+     * (#1724 bot Minor). Callers with no model-error decision to make
+     * (e.g. backend-unavailable infra failures) use the default immediate path.
+     */
+    private surfacePromptFailure(message: string, opts?: { deferFooter?: boolean }): void {
         const converted = convertAgentMessage({ type: 'error', message });
         if (converted) this.session.sendAgentMessage(converted);
         this.messageBuffer.addMessage(message, 'status');
+        if (opts?.deferFooter) return;
+        this.stampBlockedFooter(message);
+    }
+
+    private stampBlockedFooter(message: string): void {
         // Estate Blocked chrome (#1717) keys off lastNotify from AGENT_NOTIFY_SUMMARY
         // on assistant text — not error rows (#1724).
         const footer = convertAgentMessage({
@@ -1750,15 +1794,20 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
      * via pendingTextFailure until prompt settles, then flushed here.
      * First recorded signal wins for the turn.
      */
+    /**
+     * `bridgeQueued` reflects only whether *this* call just enqueued an
+     * auto-Bridge retry — callers use it to hold a blocked footer when
+     * Bridge may still recover, not as a snapshot of ambient bridge state.
+     */
     private recordModelError(
         failure: CursorAgentStreamFailure,
         opts?: { bridgeable?: boolean }
-    ): void {
+    ): { bridgeQueued: boolean } {
         if (this.turnHasModelError) {
             logger.debug(
                 `[cursor-acp] modelError already recorded for this turn, dropping ${failure.source}/${failure.kind}`
             );
-            return;
+            return { bridgeQueued: false };
         }
         // Abort/Exit/Switch can settle as canceled *or* transport/process-close
         // shapes (ACP process exited, WritableIterable closed, …). Never promote
@@ -1769,7 +1818,7 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             );
             this.pendingTextFailure = null;
             this.pendingStderrFailure = null;
-            return;
+            return { bridgeQueued: false };
         }
         this.turnHasModelError = true;
         this.pendingTextFailure = null;
@@ -1835,14 +1884,12 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
             priorAssistantClaimsDone
         });
 
-        if (
-            !bridgedFailure
+        const shouldAutoBridge = !bridgedFailure
             && bridgeable
             && failure.transient
-            && getAutoBridgeTransientModelErrors()
-        ) {
-            this.tryEnqueueModelErrorBridge('auto');
-        }
+            && getAutoBridgeTransientModelErrors();
+        const bridgeQueued = shouldAutoBridge && this.tryEnqueueModelErrorBridge('auto').ok;
+        return { bridgeQueued };
     }
 
     private async handleBridgeModelErrorRpc(payload: unknown): Promise<{ ok: boolean; reason?: string }> {
