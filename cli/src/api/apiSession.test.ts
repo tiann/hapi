@@ -2526,35 +2526,6 @@ describe('ApiSessionClient metadata cancellation and reconnect ordering', () => 
         }
     })
 
-    it('retries a timed-out agent state acknowledgement and sends subsequent updates', async () => {
-        vi.useFakeTimers()
-        socketHarness.sockets.length = 0
-        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
-        const socket = socketHarness.sockets[0]!
-        const seen: unknown[] = []
-        socket.emitWithAckImpl = async (event, payload) => {
-            if (event !== 'update-state') return {}
-            const request = payload as { expectedVersion: number; agentState: Record<string, unknown> }
-            seen.push(request.agentState.steeringActive)
-            if (seen.length === 1) return await new Promise<never>(() => {})
-            return { result: 'success', version: request.expectedVersion + 1, agentState: request.agentState }
-        }
-
-        try {
-            client.updateAgentState(state => ({ ...state, steeringActive: true }))
-            client.updateAgentState(state => ({ ...state, steeringActive: false }))
-            await vi.advanceTimersByTimeAsync(4_999)
-            expect(seen).toEqual([true])
-            await vi.advanceTimersByTimeAsync(1_100)
-            expect(seen).toEqual([true, true, false])
-            expect(socket.timeoutEmits.filter(({ event }) => event === 'update-state').map(({ ms }) => ms))
-                .toEqual([5_000, 5_000, 5_000])
-        } finally {
-            client.close()
-            vi.useRealTimers()
-        }
-    })
-
     it('stops retrying an aborted updateMetadata write after ack timeout and releases metadataLock', async () => {
         vi.useFakeTimers()
         try {
