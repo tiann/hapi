@@ -1399,11 +1399,10 @@ export class SessionCache {
     ): boolean {
         const session = this.sessions.get(sessionId)
         const current = session?.metadata
-        if (!session || !current?.machineId || !current.hostPid || !current.hostStartMarker || session.metadataVersion !== expectedVersion) return false
-        const generation = { machineId: current.machineId, pid: current.hostPid, startMarker: current.hostStartMarker }
+        if (!session || !current?.machineId || session.metadataVersion !== expectedVersion) return false
         const result = this.store.sessions.updateSessionMetadata(
             sessionId,
-            { ...current, hibernation: { state: 'stopping', since, reason, generation } },
+            { ...current, hibernation: { state: 'stopping', since, reason } },
             expectedVersion,
             session.namespace,
             { touchUpdatedAt: false }
@@ -1428,46 +1427,13 @@ export class SessionCache {
             if (onlyState && marker?.state !== onlyState) return false
             const next: Record<string, unknown> = { ...current }
             delete next.hibernation
-            if (hibernatedLifecycle && onlyState !== 'stopping') {
-                next.lifecycleState = SESSION_LIFECYCLE_RUNNING
-                next.lifecycleStateSince = Date.now()
-            }
-            const result = this.store.sessions.updateSessionMetadata(
-                sessionId,
-                next,
-                session.metadataVersion,
-                session.namespace,
-                { touchUpdatedAt: false }
-            )
-            if (result.result === 'error') return false
-            this.refreshSession(sessionId)
-            if (result.result === 'success') return true
-        }
-        return false
-    }
-
-    /**
-     * Undo a CLI self-archive after an unconfirmed stop. Keep the stopping
-     * marker only while an inactive wrapper is awaiting its cleanup retry.
-     */
-    recoverUnconfirmedHibernationStop(sessionId: string, retryInactive = false): boolean {
-        for (let attempt = 0; attempt < METADATA_RETRY_ATTEMPTS; attempt += 1) {
-            const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
-            const current = session?.metadata
-            if (!session || !current) return false
-            const cliArchived = !session.active
-                && current.lifecycleState === 'archived'
-                && !current.supersededBySessionId
-                && (current.archivedBy === 'cli' || (current.hibernation?.state === 'stopping' && current.archivedBy !== 'hub'))
-            if (current.hibernation?.state !== 'stopping' && !cliArchived) return false
-            const next: Record<string, unknown> = { ...current }
-            const keepMarker = retryInactive && !session.active && current.hibernation?.state === 'stopping'
-                && current.archivedBy !== 'hub' && !current.supersededBySessionId
-            if (keepMarker && !cliArchived) return true
-            if (!keepMarker) delete next.hibernation
-            if (cliArchived) {
+            if (onlyState === 'stopping' && current.lifecycleState === 'archived'
+                && current.archivedBy !== 'hub' && !current.supersededBySessionId) {
                 delete next.archivedBy
                 delete next.archiveReason
+                next.lifecycleState = SESSION_LIFECYCLE_RUNNING
+                next.lifecycleStateSince = Date.now()
+            } else if (hibernatedLifecycle && onlyState !== 'stopping') {
                 next.lifecycleState = SESSION_LIFECYCLE_RUNNING
                 next.lifecycleStateSince = Date.now()
             }

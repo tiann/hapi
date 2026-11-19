@@ -33,7 +33,6 @@ When no `code` is present, branch on status alone and treat the failure generica
 | 403 | `access_denied` | RPC-flow results mapped in `sessions.ts` (resume/reopen/cursor-chat-store) | Same as above |
 | 404 | — | `guards.ts` (`Session not found`, `Machine not found`); `permissions.ts` (`Request not found`); scratchlist entry/attachment; `events.ts` visibility (`Subscription not found`) | Stale reference — refresh the parent list |
 | 404 | `session_not_found`, `machine_not_found` | Coded variants from resume/reopen/restart-runner result mapping | Same |
-| 409 | `cleanup_pending` | Session wake, reopen, or local resume preparation | The runner has yet to confirm cleanup of the previous wrapper generation. Retry before starting a replacement. |
 | 409 | `attachment_reupload_required` | Message send or delivery retry | The worker cannot use a staged attachment. Upload it again and send the new attachment metadata. |
 | 503 | `attachment_check_unavailable` | Message send or delivery retry | The worker could not verify its uploads. Retry when the session is connected. |
 | 409 | `session_inactive` | `guards.ts` `requireSession(requireActive)` — send/steer/abort/approve/deny/config on an inactive session | Offer **Reopen** (the web router does exactly this on this code) |

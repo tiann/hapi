@@ -299,7 +299,7 @@ Keep-alives prove a socket, not an agent. A session can therefore heartbeat for 
 - `active` is left alone on purpose. The CLI really is reachable, and flipping it would let `resumeSession` spawn a second agent against a live process, and unlock dedup-merge / delete on it.
 - Progress means a message in either direction, a queued prompt, or a background task - never a keep-alive. Sessions that are thinking, running background tasks or holding a pending permission request are never marked.
 - `idle` reverts to `running` on the next progress, within one tick.
-- After `HAPI_SESSION_HIBERNATE_MS` without progress or live work, the hub stops eligible runner sessions. A confirmed stop marks the session `hibernated` and inactive. The next send resumes the same ID.
+- After `HAPI_SESSION_HIBERNATE_MS` without progress or live work, the hub stops eligible runner sessions. A confirmed stop marks the session `hibernated` and inactive. Hibernation uses the same stop path as archive. Children that detach from the wrapper’s process tree, such as an MCP server that daemonises, may keep running. The next send resumes the same ID.
 - `metadata.idleReconcileExempt: true` opts a session out entirely.
 
 ## Storage

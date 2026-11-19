@@ -101,7 +101,7 @@ type MachineRpcHandlers = {
     spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>
     stopSession: (
         sessionId: string,
-        opts?: { expectedPid?: number; processStartMarker?: string; requireProcessGroupCleanup?: boolean }
+        opts?: { processStartMarker?: string }
     ) => Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'>
     requestShutdown: () => void
 }
@@ -576,7 +576,7 @@ export class ApiMachineClient {
             const { forkArchivedCodex } = await import('@/codex/shared/archivedFork')
             return forkArchivedCodex(request, () => this.pathPolicy.allowsSpawn(request.directory))
         })
-        const spawnInDirectory = async (params: any) => {
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.SpawnHappySession, async (params: any) => {
             const { directory, sessionId, existingSessionId, reservedSessionId, resumeSessionId, machineId, approvedNewDirectoryCreation, agent, model, effort, modelReasoningEffort, yolo, permissionMode, serviceTier, collaborationMode, copilotAgentMode, token, sessionType, worktreeName, startingMode, forkSession, resumeSessionAt } = params || {}
 
             if (!directory) {
@@ -598,7 +598,6 @@ export class ApiMachineClient {
                 directory,
                 sessionId,
                 existingSessionId,
-                ...(params.requireSameSessionId === true ? { requireSameSessionId: true } : {}),
                 reservedSessionId,
                 resumeSessionId,
                 machineId,
@@ -634,39 +633,19 @@ export class ApiMachineClient {
                         agent: result.agent,
                     }
             }
-        }
-        this.rpcHandlerManager.registerHandler(RPC_METHODS.SpawnHappySession, spawnInDirectory)
-        this.rpcHandlerManager.registerHandler(RPC_METHODS.ResumeHibernatedSession, async (params: any) => {
-            if (typeof params?.existingSessionId !== 'string' || !params.existingSessionId.trim()) {
-                return { type: 'error', errorMessage: 'Hibernation wake requires an existing session ID', childStarted: false }
-            }
-            return spawnInDirectory({ ...params, requireSameSessionId: true })
         })
 
-        const handleStopSession = async (params: any) => {
-            const { sessionId, expectedPid, processStartMarker, requireProcessGroupCleanup } = params || {}
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.StopSession, async (params: any) => {
+            const { sessionId, processStartMarker } = params || {}
             if (!sessionId) {
                 throw new Error('Session ID is required')
             }
 
-            if (expectedPid !== undefined && (!Number.isSafeInteger(expectedPid) || expectedPid <= 1 || !processStartMarker)) {
-                throw new Error('Invalid stop generation')
-            }
-            const stopOpts = {
-                ...(expectedPid !== undefined ? { expectedPid } : {}),
-                ...(typeof processStartMarker === 'string' ? { processStartMarker } : {}),
-                ...(requireProcessGroupCleanup === true ? { requireProcessGroupCleanup: true } : {}),
-            }
             const status = await stopSession(
                 sessionId,
-                Object.keys(stopOpts).length > 0 ? stopOpts : undefined
+                typeof processStartMarker === 'string' ? { processStartMarker } : undefined
             )
             return { status }
-        }
-        this.rpcHandlerManager.registerHandler(RPC_METHODS.StopSession, handleStopSession)
-        this.rpcHandlerManager.registerHandler(RPC_METHODS.StopHibernatingSession, async (params: any) => {
-            if (params?.expectedPid === undefined || typeof params?.processStartMarker !== 'string') return { status: 'unknown' }
-            return handleStopSession({ ...params, requireProcessGroupCleanup: true })
         })
 
         this.rpcHandlerManager.registerHandler(RPC_METHODS.StopRunner, () => {

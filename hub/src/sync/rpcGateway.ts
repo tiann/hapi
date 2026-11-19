@@ -1,5 +1,5 @@
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, PermissionMode } from '@hapi/protocol/types'
-import { DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease, type StopSessionRpcRequest } from '@hapi/protocol/rpcMethods'
+import { DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
 import {
     UsageQueryResultSchema,
     UsageQuerySettingsResponseSchema,
@@ -261,21 +261,16 @@ export class RpcGateway {
     async stopRunnerSession(
         machineId: string,
         sessionId: string,
-        opts?: { expectedPid?: number; processStartMarker?: string; timeoutMs?: number; requireProcessGroupCleanup?: boolean }
+        opts?: { processStartMarker?: string; timeoutMs?: number }
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> {
         const timeoutMs = opts?.timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS
         const started = performance.now()
         let result: unknown
-        const request: StopSessionRpcRequest = {
-            sessionId,
-            ...(opts?.expectedPid !== undefined ? { expectedPid: opts.expectedPid } : {}),
-            ...(opts?.processStartMarker ? { processStartMarker: opts.processStartMarker } : {}),
-            ...(opts?.requireProcessGroupCleanup ? { requireProcessGroupCleanup: true } : {}),
-        }
         try {
-            const method = request.requireProcessGroupCleanup && request.expectedPid !== undefined
-                ? RPC_METHODS.StopHibernatingSession : RPC_METHODS.StopSession
-            result = await this.machineRpc(machineId, method, request, timeoutMs)
+            result = await this.machineRpc(machineId, RPC_METHODS.StopSession, {
+                sessionId,
+                ...(opts?.processStartMarker ? { processStartMarker: opts.processStartMarker } : {}),
+            }, timeoutMs)
         } catch (error) {
             if (error instanceof RpcTargetMissingError) throw error
             // Ack timeout does not cancel the remote stop. Preserve uncertainty
@@ -337,8 +332,7 @@ export class RpcGateway {
         /** Fresh machine-spawn stub — distinct from reopen existingSessionId. */
         reservedSessionId?: string,
         /** Claude: resume the spawned child truncated to this entry uuid. */
-        resumeSessionAt?: string,
-        requireSameSessionId?: boolean
+        resumeSessionAt?: string
     ): Promise<
         | { type: 'success'; sessionId: string }
         | {
@@ -353,7 +347,7 @@ export class RpcGateway {
         try {
             const result = await this.machineRpc(
                 machineId,
-                requireSameSessionId ? RPC_METHODS.ResumeHibernatedSession : RPC_METHODS.SpawnHappySession,
+                RPC_METHODS.SpawnHappySession,
                 {
                     type: 'spawn-in-directory',
                     directory,
@@ -368,7 +362,6 @@ export class RpcGateway {
                     permissionMode,
                     serviceTier,
                     existingSessionId,
-                    ...(requireSameSessionId ? { requireSameSessionId: true } : {}),
                     reservedSessionId,
                     // Local HTTP / tracking may still read sessionId; prefer
                     // reserved stub id, then reopen id.
@@ -425,9 +418,6 @@ export class RpcGateway {
                 })()
             return { type: 'error', message: `Unexpected spawn result: ${details}` }
         } catch (error) {
-            if (requireSameSessionId && error instanceof RpcTargetMissingError) {
-                return { type: 'error', message: 'Hibernation wake requires a connected, upgraded runner with same-ID resume support', childStarted: false }
-            }
             // Ambiguous: the machine RPC may have started a child before failing.
             // Do not claim childStarted: false — hub keeps the stub.
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }

@@ -146,7 +146,7 @@ export type {
 
 export type ResumeSessionResult =
     | { type: 'success'; sessionId: string }
-    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'cleanup_pending' | 'resume_failed'; rollbackSafe?: boolean }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'resume_failed'; rollbackSafe?: boolean }
 
 export type HibernateSessionResult = 'hibernated' | 'skipped' | 'failed'
 
@@ -161,7 +161,7 @@ export const HISTORY_ACTION_IN_PROGRESS_MESSAGE = 'Conversation history action a
 
 export type ReopenSessionResult =
     | { type: 'success'; sessionId: string; resumed: boolean; cursorSessionProtocol?: 'acp' | 'stream-json' }
-    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'cleanup_pending' | 'resume_failed' | 'metadata_conflict' }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'no_machine_online' | 'resume_unavailable' | 'resume_failed' | 'metadata_conflict' }
     | { type: 'incomplete'; message: string; missing: [string, ...string[]] }
 
 export type LocalResumeTargetResult =
@@ -172,15 +172,13 @@ export type LocalResumeTargetByAgentResult =
     | { type: 'success'; target: LocalResumeTarget | null; historical: boolean }
     | { type: 'error'; message: string; code: 'resume_unavailable' }
 
-const CLEANUP_PENDING_MESSAGE = 'Previous wrapper cleanup is unconfirmed. Retry when the runner has finished cleanup.'
-
 export type LocalResumePrepareResult =
     | { type: 'success'; revived: boolean }
-    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'session_active' | 'cleanup_pending' }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'session_active' }
 
 export type LocalHandoffResult =
     | { type: 'success' }
-    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'already_local' | 'handoff_failed' | 'control_mode_not_applicable' | 'cleanup_pending' }
+    | { type: 'error'; message: string; code: 'session_not_found' | 'access_denied' | 'already_local' | 'handoff_failed' | 'control_mode_not_applicable' }
 
 export type ClearOpencodeSessionResult =
     | { type: 'success'; sessionId: string }
@@ -253,18 +251,15 @@ export class SyncEngine {
     private readonly hibernateBackoffUntil = new Map<string, number>()
     /** Failed automatic wakes (scheduled-message maturity) back off per session. */
     private readonly hibernateWakeBackoffUntil = new Map<string, number>()
-    /** Session-end of a hibernation stop must not trigger dedup merges. */
-    private readonly hibernationSkipDedupIds = new Set<string>()
     private terminalSessionCounter: ((sessionId: string) => number) | null = null
     private static readonly HIBERNATE_BACKOFF_MS = 600_000
     private static readonly HIBERNATE_WAKE_BACKOFF_MS = 600_000
     /** Cold cache: no hibernation until the hub has been up this long. */
     static readonly HIBERNATE_STARTUP_GRACE_MS = 600_000
-    private hubStartedAt: number = Date.now()
-    /** Sessions that sent at least one session-alive since this hub started. */
+    private readonly hubStartedAt = Date.now()
     private readonly peerReplyWatchSessions = new Set<string>()
+    /** Sessions that sent at least one session-alive since this hub started. */
     private readonly aliveSinceHubStartIds = new Set<string>()
-    private static readonly HIBERNATE_STOP_TIMEOUT_MS = 90_000
     // KillSession's beforeKill drain completes before the CLI's async cleanup
     // closes the session socket, so a runner prepare-stop that loses that race
     // can still be honored for the exact killed generation while its archive
@@ -893,9 +888,6 @@ export class SyncEngine {
         if (!wasThinking && payload.thinking === true) {
             this.automaticTitleSuggestionService.onTurnStarted(payload.sid)
         }
-        if (!wasActive && before?.metadata?.hibernation?.state === 'stopping' && before.metadata.startedBy === 'terminal') {
-            this.sessionCache.recoverUnconfirmedHibernationStop(payload.sid)
-        }
         this.sessionCache.handleSessionAlive(payload)
         const current = this.sessionCache.getSession(payload.sid)
         if (current) this.aliveSinceHubStartIds.add(payload.sid)
@@ -1288,26 +1280,17 @@ export class SyncEngine {
         }
     }
 
-    private evaluateHibernation(session: Session, now: number, hibernateMs: number, holdsHistoryLock = false, cleanupOnly = false): boolean {
-        // Cold cache: progress clocks and signals are only trustworthy once
-        // the hub has been up a while and has heard from this session itself.
-        if (!cleanupOnly && (now - this.hubStartedAt < SyncEngine.HIBERNATE_STARTUP_GRACE_MS
-            || !(hibernateMs > 0) || now < (this.hibernateBackoffUntil.get(session.id) ?? 0))) return false
+    private evaluateHibernation(session: Session, now: number, hibernateMs: number, holdsHistoryLock = false): boolean {
+        if (now - this.hubStartedAt < SyncEngine.HIBERNATE_STARTUP_GRACE_MS || !(hibernateMs > 0)) return false
+        if (!this.aliveSinceHubStartIds.has(session.id) || now < (this.hibernateBackoffUntil.get(session.id) ?? 0)) return false
         const machine = this.machineCache.getMachine(session.metadata?.machineId ?? '')
         if (machine?.namespace !== session.namespace) return false
-        if (!session.active && session.metadata?.hibernation?.state === 'stopping') {
-            return !!session.metadata.hibernation.generation
-                && machine.active && machine.runnerState?.capabilities?.sessionHibernation === true
-                && !this.hibernationOperationInFlight(session.id, holdsHistoryLock)
-        }
-        if (cleanupOnly) return false
-        if (!this.aliveSinceHubStartIds.has(session.id) || !session.metadata?.hostPid || !session.metadata.hostStartMarker) return false
         // Cheap prefilter before the store-backed signals.
         if (!session.active || !isLiveLifecycleState(session.metadata?.lifecycleState)) return false
         const progressAt = this.getHibernationProgressAt(session)
         if (now - progressAt <= hibernateMs) return false
         const capabilities = this.hibernationRunnerCapabilities(session)
-        if (capabilities?.sessionHibernation !== true || !machine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.ResumeHibernatedSession)) return false
+        if (capabilities?.sessionHibernation !== true) return false
         return shouldHibernate(session, () => this.collectHibernationSignals(session, holdsHistoryLock),
             progressAt, now, hibernateMs, capabilities)
     }
@@ -1330,7 +1313,7 @@ export class SyncEngine {
                 const backoffUntil = this.hibernateBackoffUntil.get(session.id)
                 if (backoffUntil !== undefined) {
                     if (now < backoffUntil) continue
-                    if (session.metadata?.hibernation?.state !== 'stopping') this.hibernateBackoffUntil.delete(session.id)
+                    this.hibernateBackoffUntil.delete(session.id)
                 }
                 let eligible = false
                 try {
@@ -1354,11 +1337,11 @@ export class SyncEngine {
     /**
      * Stop an idle session's wrapper + agent and mark it `hibernated`. Only a
      * runner-confirmed `stopped` / `already_gone` settles the mark; anything
-     * else backs off 10 minutes. A disconnected wrapper keeps its cleanup reservation.
+     * else backs off 10 minutes.
      */
     async hibernateSession(
         sessionId: string,
-        opts: { now?: number; hibernateMs?: number; reason?: 'idle' | 'binary-drift'; cleanupOnly?: boolean } = {}
+        opts: { now?: number; hibernateMs?: number; reason?: 'idle' | 'binary-drift' } = {}
     ): Promise<HibernateSessionResult> {
         const existing = this.hibernateTails.get(sessionId)
         if (existing) return await existing
@@ -1369,7 +1352,6 @@ export class SyncEngine {
                 return await this.hibernateSessionUnlocked(sessionId, opts)
             } finally {
                 this.historyActionsInFlight.delete(sessionId)
-                this.hibernationSkipDedupIds.delete(sessionId)
             }
         })()
         this.hibernateTails.set(sessionId, operation)
@@ -1380,87 +1362,55 @@ export class SyncEngine {
         }
     }
 
-    private pendingCleanupForResume(sessionId: string, namespace: string): Promise<HibernateSessionResult> | undefined {
-        const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
-        if (access.ok && access.session.metadata?.hibernation?.state === 'stopping') {
-            return this.hibernateSession(access.sessionId, { cleanupOnly: true })
-        }
-        return undefined
-    }
-
     private async hibernateSessionUnlocked(
         sessionId: string,
-        opts: { now?: number; hibernateMs?: number; reason?: 'idle' | 'binary-drift'; cleanupOnly?: boolean }
+        opts: { now?: number; hibernateMs?: number; reason?: 'idle' | 'binary-drift' }
     ): Promise<HibernateSessionResult> {
         const now = opts.now ?? Date.now()
         const hibernateMs = opts.hibernateMs ?? this.sessionHibernateMs
         const session = this.sessionCache.getSession(sessionId)
         if (!session?.metadata?.machineId) return 'skipped'
-        // Re-validate with fresh signals: state may have moved since the sweep.
-        if (!this.evaluateHibernation(session, now, hibernateMs, true, opts.cleanupOnly)) return 'skipped'
-        const retry = !session.active && session.metadata.hibernation?.state === 'stopping'
-        const reason = session.metadata.hibernation?.reason ?? opts.reason ?? 'idle'
-        if (retry && (this.hibernationRunnerCapabilities(session)?.sessionHibernation !== true
-            || session.metadata.archivedBy === 'hub' || session.metadata.supersededBySessionId)) {
-            this.sessionCache.recoverUnconfirmedHibernationStop(sessionId)
-            return 'failed'
-        }
-        if (!retry && !this.sessionCache.markSessionHibernationStopping(sessionId, session.metadataVersion, reason, now)) {
-            return 'skipped'
-        }
-        this.hibernationSkipDedupIds.add(sessionId)
-
-        const marker = this.sessionCache.getSession(sessionId)?.metadata?.hibernation
-        const generation = marker?.generation
-        const sameGeneration = () => {
+        if (!this.evaluateHibernation(session, now, hibernateMs, true)) return 'skipped'
+        const reason = opts.reason ?? 'idle'
+        if (!this.sessionCache.markSessionHibernationStopping(sessionId, session.metadataVersion, reason, now)) return 'skipped'
+        const original = session.metadata
+        const stillOwnsSession = () => {
             const current = this.sessionCache.getSession(sessionId)?.metadata
-            return generation && current?.hibernation?.state === 'stopping'
-                && current.hibernation.since === marker.since
-                && current.machineId === generation.machineId && current.hostPid === generation.pid
-                && current.hostStartMarker === generation.startMarker && current.startedBy !== 'terminal'
+            return current?.hibernation?.state === 'stopping' && current.machineId === original.machineId
+                && current.hostPid === original.hostPid && current.hostStartMarker === original.hostStartMarker
+                && current.startedBy !== 'terminal'
         }
-        const cancelReplacedStop = () => {
-            this.sessionCache.clearSessionHibernation(sessionId, 'stopping')
-            return 'skipped' as const
-        }
-        if (!generation || !sameGeneration()) return cancelReplacedStop()
         try {
-            const status = await this.rpcGateway.stopRunnerSession(generation.machineId, sessionId, {
-                expectedPid: generation.pid,
-                timeoutMs: SyncEngine.HIBERNATE_STOP_TIMEOUT_MS,
-                requireProcessGroupCleanup: true, processStartMarker: generation.startMarker
-            })
-            if (!sameGeneration()) return cancelReplacedStop()
-            if (status === 'stopped' || status === 'already_gone') {
-                const inactive = retry || await this.waitForSessionInactive(sessionId)
-                if (!sameGeneration()) return cancelReplacedStop()
-                if (!inactive) this.handleSessionEnd({ sid: sessionId, time: Date.now() })
-                if (this.sessionCache.markSessionHibernatedFromHub(sessionId, reason, Date.now())) {
+            await this.stopSessionProcess(sessionId, stillOwnsSession)
+            if (stillOwnsSession()) {
+                if (this.sessionCache.getSession(sessionId)?.active) this.handleSessionEnd({ sid: sessionId, time: Date.now() })
+                if (this.sessionCache.markSessionHibernatedFromHub(sessionId, reason)) {
                     this.hibernateBackoffUntil.delete(sessionId)
                     return 'hibernated'
                 }
             }
         } catch (error) {
-            console.warn('[hibernate] could not confirm or settle stop', { sessionId, error })
+            console.warn('[hibernate] stop was not confirmed', { sessionId, error })
+        } finally {
+            this.archiveDrainedGenerations.delete(sessionId)
         }
-        const retryInactive = retry || await this.waitForSessionInactive(sessionId).catch(() => false)
-        if (!sameGeneration()) return cancelReplacedStop()
         this.hibernateBackoffUntil.set(sessionId, now + SyncEngine.HIBERNATE_BACKOFF_MS)
-        this.sessionCache.recoverUnconfirmedHibernationStop(sessionId, retryInactive)
+        this.sessionCache.clearSessionHibernation(sessionId, 'stopping')
         return 'failed'
     }
 
     private convergeHibernationMarkers(): void {
         for (const session of this.sessionCache.getSessions()) {
             const state = session.metadata?.hibernation?.state
-            if (state === 'stopping' && session.metadata?.hibernation?.generation
-                && session.metadata.archivedBy !== 'hub' && !session.metadata.supersededBySessionId) continue
+            if (state === 'stopping') {
+                this.sessionCache.clearSessionHibernation(session.id, 'stopping')
+                continue
+            }
             const interruptedWake = state === 'hibernated' && session.metadata?.archivedBy === 'cli'
                 && !session.metadata.supersededBySessionId
             if (state && session.metadata?.lifecycleState === 'archived' && !interruptedWake) {
                 this.sessionCache.clearSessionHibernation(session.id)
-            } else if (state === 'stopping') this.sessionCache.recoverUnconfirmedHibernationStop(session.id)
-            else if (state === 'hibernated') this.restoreUnconfirmedWake(session.id)
+            } else if (state === 'hibernated') this.restoreUnconfirmedWake(session.id)
         }
     }
 
@@ -2397,13 +2347,13 @@ export class SyncEngine {
     }
 
     private async checkMessageUploads(sessionId: string, attachments: { path: string; size: number }[], required = false): Promise<void> {
-        const metadata = this.getSession(sessionId)?.metadata
-        const needsCheck = required || this.machineCache.getMachine(metadata?.machineId ?? '')?.metadata
-            ?.capabilities?.includes(MACHINE_CAPABILITIES.ResumeHibernatedSession) === true
+        const session = this.getSession(sessionId)
+        if (!session?.active) throw new AttachmentCheckError(false)
+        const metadata = session.metadata
         let valid: boolean
         try {
             const files = attachments.map(({ path, size }) => ({ path, size }))
-            valid = await this.rpcGateway.validateSessionUploads(sessionId, files, needsCheck)
+            valid = await this.rpcGateway.validateSessionUploads(sessionId, files, required || this.hibernationRunnerCapabilities(session)?.sessionHibernation === true)
         } catch {
             throw new AttachmentCheckError(true)
         }
@@ -4186,11 +4136,6 @@ export class SyncEngine {
 
     async archiveSession(sessionId: string): Promise<void> {
         if (this.hibernationInFlight(sessionId)) await this.awaitHibernation(sessionId)
-        const row = this.sessionCache.getSession(sessionId)
-        if (row?.metadata?.hibernation?.state === 'stopping') {
-            const cleanup = this.pendingCleanupForResume(sessionId, row.namespace)
-            if (cleanup && await cleanup !== 'hibernated') throw new ArchiveCleanupError('unconfirmed')
-        }
         if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         const existing = this.archiveRequests.get(sessionId)
         if (existing) return existing
@@ -4212,67 +4157,6 @@ export class SyncEngine {
         } finally { this.historyActionsInFlight.delete(sessionId) }
     }
 
-    /**
-     * Resolve a runner StopSession into a confirmed outcome, shared by archive
-     * and hibernation. Escalates `unknown` through the KillSession-reported
-     * pid + start marker, then the `metadata.hostPid` tombstone, then the
-     * machine-spawn keep-stub escape hatch. Callers decide what to do with
-     * `still_alive` / `unknown`.
-     */
-    private async confirmRunnerStop(
-        machineId: string,
-        sessionId: string,
-        sessionMeta: Session['metadata'] | undefined,
-        stopRunner: (machineId: string, id: string, processStartMarker?: string) => Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'>,
-        archiveKill?: { killPid?: number; killProcessStartMarker?: string }
-    ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> {
-        const { killPid, killProcessStartMarker } = archiveKill ?? {}
-        // Missing Runner acknowledgement leaves cleanup unconfirmed.
-        let status = await stopRunner(machineId, sessionId)
-        // KillSession acknowledges before cleanupAndExit finishes, and socket
-        // loss is not exit proof. When the runner cannot find the HAPI id,
-        // confirm the KillSession-reported OS pid + start marker.
-        const killPidConfirmable = (
-            typeof killPid === 'number'
-            && killPid > 0
-            && typeof killProcessStartMarker === 'string'
-            && killProcessStartMarker.length > 0
-        )
-        if (status === 'unknown' && killPidConfirmable) {
-            status = await stopRunner(machineId, `PID-${killPid}`, killProcessStartMarker)
-        }
-        // Estate dogfood (#1911 / Peer #1820): KillSession often supplies no
-        // pid+marker when the CLI socket is already gone. If session-id stop
-        // is unknown, ask the runner about metadata.hostPid as a tombstone —
-        // without a start marker the runner returns already_gone only when
-        // the OS pid is dead (alive → unknown; never tree-kills). Refuse
-        // still_alive / unknown on that confirm.
-        if (status === 'unknown' && !killPidConfirmable) {
-            const hostPid = sessionMeta?.hostPid
-            if (typeof hostPid === 'number' && hostPid > 0) {
-                status = await stopRunner(machineId, `PID-${hostPid}`)
-            }
-        }
-        // Ambiguous machine-spawn keep-stub: startedBy=runner, no hostPid, still
-        // tagged machine-spawn:<id>. StopSession returns unknown forever (nothing
-        // tracked). There is no OS child to confirm — allow hub archive so the
-        // ghost is not permanent while the runner is online (#1911 Opus Major).
-        // A late-booting child that later hits reopen must not resurrect: CLI
-        // bootstrapExistingSession refuses archived rows (#1911 cold-read M1).
-        if (status === 'unknown' && archiveKill) {
-            const stored = this.store.sessions.getSession(sessionId)
-            if (
-                stored
-                && isMachineSpawnPreallocatedStub(stored)
-                && !sessionMeta?.codexResumePending
-                && !(typeof sessionMeta?.hostPid === 'number' && sessionMeta.hostPid > 0)
-            ) {
-                status = 'already_gone'
-            }
-        }
-        return status
-    }
-
     private async archiveSessionUnlocked(sessionId: string): Promise<void> {
         const hasConfirmedStop = (session: Session | undefined) => session?.active === false
             && isHibernatedLifecycleState(session.metadata?.lifecycleState)
@@ -4289,11 +4173,17 @@ export class SyncEngine {
                 return
             }
         }
+        const reason = await this.stopSessionProcess(sessionId)
+        this.finishSessionArchive(sessionId, reason)
+    }
+
+    private async stopSessionProcess(sessionId: string, stillOwnsSession?: () => boolean): Promise<string> {
         // Windows may need longer than the ordinary 30s RPC timeout to prove a
         // complete tree exited. All PID fallbacks share this bounded operation
         // budget; an acknowledgement timeout must never become archive success.
         const deadline = performance.now() + 90_000
         const stopRunner = async (machineId: string, id: string, processStartMarker?: string) => {
+            if (stillOwnsSession && !stillOwnsSession()) throw new ArchiveCleanupError('unconfirmed')
             const timeoutMs = Math.ceil(deadline - performance.now())
             if (timeoutMs <= 0) throw new ArchiveCleanupError('timeout')
             try {
@@ -4334,11 +4224,51 @@ export class SyncEngine {
         }
         const runnerSpawned = Boolean(sessionMeta?.codexResumePending) || sessionMeta?.startedBy === 'runner'
             || sessionMeta?.startedFromRunner === true
+        if (stillOwnsSession && (!stillOwnsSession() || !machineId || !runnerSpawned)) throw new ArchiveCleanupError('unconfirmed')
         if (machineId && runnerSpawned) {
-            const status = await this.confirmRunnerStop(machineId, sessionId, sessionMeta, stopRunner, {
-                killPid,
-                killProcessStartMarker,
-            })
+            // Missing Runner acknowledgement leaves cleanup unconfirmed.
+            let status = await stopRunner(machineId, sessionId)
+            // KillSession acknowledges before cleanupAndExit finishes, and socket
+            // loss is not exit proof. When the runner cannot find the HAPI id,
+            // confirm the KillSession-reported OS pid + start marker.
+            const killPidConfirmable = (
+                typeof killPid === 'number'
+                && killPid > 0
+                && typeof killProcessStartMarker === 'string'
+                && killProcessStartMarker.length > 0
+            )
+            if (status === 'unknown' && killPidConfirmable) {
+                status = await stopRunner(machineId, `PID-${killPid}`, killProcessStartMarker)
+            }
+            // Estate dogfood (#1911 / Peer #1820): KillSession often supplies no
+            // pid+marker when the CLI socket is already gone. If session-id stop
+            // is unknown, ask the runner about metadata.hostPid as a tombstone —
+            // without a start marker the runner returns already_gone only when
+            // the OS pid is dead (alive → unknown; never tree-kills). Refuse
+            // still_alive / unknown on that confirm.
+            if (status === 'unknown' && !killPidConfirmable) {
+                const hostPid = sessionMeta?.hostPid
+                if (typeof hostPid === 'number' && hostPid > 0) {
+                    status = await stopRunner(machineId, `PID-${hostPid}`)
+                }
+            }
+            // Ambiguous machine-spawn keep-stub: startedBy=runner, no hostPid, still
+            // tagged machine-spawn:<id>. StopSession returns unknown forever (nothing
+            // tracked). There is no OS child to confirm — allow hub archive so the
+            // ghost is not permanent while the runner is online (#1911 Opus Major).
+            // A late-booting child that later hits reopen must not resurrect: CLI
+            // bootstrapExistingSession refuses archived rows (#1911 cold-read M1).
+            if (status === 'unknown' && !stillOwnsSession) {
+                const stored = this.store.sessions.getSession(sessionId)
+                if (
+                    stored
+                    && isMachineSpawnPreallocatedStub(stored)
+                    && !sessionMeta?.codexResumePending
+                    && !(typeof sessionMeta?.hostPid === 'number' && sessionMeta.hostPid > 0)
+                ) {
+                    status = 'already_gone'
+                }
+            }
             if (status === 'still_alive' || status === 'unknown') {
                 throw new ArchiveCleanupError('unconfirmed')
             }
@@ -4353,9 +4283,7 @@ export class SyncEngine {
             }
         }
 
-        this.finishSessionArchive(sessionId, cliUnreachable
-            ? 'Archived from hub (CLI unreachable)'
-            : 'Archived from hub (CLI stopped before archive metadata)')
+        return cliUnreachable ? 'Archived from hub (CLI unreachable)' : 'Archived from hub (CLI stopped before archive metadata)'
     }
 
     private finishSessionArchive(sessionId: string, reason: string): void {
@@ -5459,8 +5387,6 @@ export class SyncEngine {
      */
     async prepareLocalResume(sessionId: string, namespace: string): Promise<LocalResumePrepareResult> {
         if (this.hibernationInFlight(sessionId)) await this.awaitHibernation(sessionId)
-        const cleanup = this.pendingCleanupForResume(sessionId, namespace)
-        if (cleanup && await cleanup !== 'hibernated') return { type: 'error', message: CLEANUP_PENDING_MESSAGE, code: 'cleanup_pending' }
         const access = this.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
             return access.reason === 'access-denied'
@@ -5470,7 +5396,7 @@ export class SyncEngine {
         if (access.session.active) {
             return { type: 'error', message: 'Session is active; hand it off before reopening locally', code: 'session_active' }
         }
-        const metadata = this.sessionCache.getSession(access.sessionId)?.metadata
+        const metadata = access.session.metadata
         if (metadata?.lifecycleState !== 'archived' || metadata.archivedBy !== 'hub') {
             return { type: 'success', revived: false }
         }
@@ -5817,8 +5743,6 @@ export class SyncEngine {
 
     async resumeSession(sessionId: string, namespace: string, opts?: { permissionMode?: PermissionMode }): Promise<ResumeSessionResult> {
         if (this.hibernationInFlight(sessionId)) await this.awaitHibernation(sessionId)
-        const cleanup = this.pendingCleanupForResume(sessionId, namespace)
-        if (cleanup && await cleanup !== 'hibernated') return { type: 'error', message: CLEANUP_PENDING_MESSAGE, code: 'cleanup_pending' }
         if (this.archivedForkPending(sessionId, namespace)) {
             return { type: 'error', message: 'Archived fork is in progress; retry the fork before reopening', code: 'resume_failed' }
         }
@@ -5858,7 +5782,7 @@ export class SyncEngine {
 
         let initialSession = access.session
         const fromHibernation = isHibernatedLifecycleState(initialSession.metadata?.lifecycleState)
-            || initialSession.metadata?.hibernation !== undefined
+            || initialSession.metadata?.hibernation?.state === 'hibernated'
         if (initialSession.metadata?.codexResumePending) {
             if (!await this.reconcileCodexResume(initialSession)) return { type: 'error', message: 'Codex resume startup is still unconfirmed', code: 'resume_failed', rollbackSafe: false }
             initialSession = this.sessionCache.getSessionByNamespace(sessionId, namespace) ?? initialSession
@@ -5948,8 +5872,7 @@ export class SyncEngine {
             return { type: 'error', message: 'No machine online', code: 'no_machine_online' }
         }
 
-        if (fromHibernation && (targetMachine.runnerState?.capabilities?.sessionHibernation !== true
-            || !targetMachine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.ResumeHibernatedSession))) {
+        if (fromHibernation && targetMachine.runnerState?.capabilities?.sessionHibernation !== true) {
             return { type: 'error', message: 'Upgrade the runner to wake this session under its existing ID', code: 'resume_unavailable' }
         }
 
@@ -5957,7 +5880,6 @@ export class SyncEngine {
             return { type: 'error', message: 'Pi resume requires an upgraded runner', code: 'resume_failed' }
         }
 
-        if (session.metadata?.hibernation?.state === 'stopping') return { type: 'error', message: CLEANUP_PENDING_MESSAGE, code: 'cleanup_pending' }
         const metadata = this.sessionCache.getSessionByNamespace(access.sessionId, namespace)?.metadata ?? session.metadata!
 
         const requiresPiNativeReady = flavor === 'pi' && resumeToken !== undefined
@@ -6093,8 +6015,7 @@ export class SyncEngine {
                 access.sessionId,
                 session.collaborationMode ?? undefined,
                 session.copilotAgentMode ?? undefined,
-                resumedStartingMode,
-                ...(fromHibernation ? [undefined, undefined, undefined, true] as const : [] as const)
+                resumedStartingMode
             )
 
             if (spawnResult.type !== 'success') {
@@ -6360,8 +6281,6 @@ export class SyncEngine {
      */
     async reopenSession(sessionId: string, namespace: string): Promise<ReopenSessionResult> {
         if (this.hibernationInFlight(sessionId)) await this.awaitHibernation(sessionId)
-        const cleanup = this.pendingCleanupForResume(sessionId, namespace)
-        if (cleanup && await cleanup !== 'hibernated') return { type: 'error', message: CLEANUP_PENDING_MESSAGE, code: 'cleanup_pending' }
         if (this.archivedForkPending(sessionId, namespace)) {
             return { type: 'error', message: 'Archived fork is in progress; retry the fork before reopening', code: 'resume_failed' }
         }
@@ -6542,8 +6461,6 @@ export class SyncEngine {
 
     async handoffSessionToLocal(sessionId: string, namespace: string): Promise<LocalHandoffResult> {
         if (this.hibernationInFlight(sessionId)) await this.awaitHibernation(sessionId)
-        const cleanup = this.pendingCleanupForResume(sessionId, namespace)
-        if (cleanup && await cleanup !== 'hibernated') return { type: 'error', message: CLEANUP_PENDING_MESSAGE, code: 'cleanup_pending' }
         if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
         const access = this.sessionCache.resolveSessionAccess(sessionId, namespace)
         if (!access.ok) {
@@ -7022,9 +6939,8 @@ export class SyncEngine {
     }
 
     private triggerDedupIfNeeded(sessionId: string): void {
-        if (this.hibernationSkipDedupIds.has(sessionId)) return
         const session = this.sessionCache.getSession(sessionId)
-        if (isHibernatedLifecycleState(session?.metadata?.lifecycleState)) return
+        if (session?.metadata?.hibernation || isHibernatedLifecycleState(session?.metadata?.lifecycleState)) return
         if (session?.metadata) {
             if (!this.canRunCursorDedup(session)) {
                 return

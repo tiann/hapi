@@ -1,6 +1,4 @@
-import { once } from 'node:events'
-import { spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -12,9 +10,7 @@ const mocks = vi.hoisted(() => ({
     findRuntime: vi.fn(),
     reapOrphans: vi.fn<typeof import('./orphanReap')['reapRunnerSpawnedOrphans']>(),
     kill: vi.fn(),
-    sweep: vi.fn<typeof import('@/utils/process')['sweepProcessGroup']>(async () => true),
     prepare: vi.fn(),
-    windows: vi.fn(() => false),
     alive: vi.fn(() => true),
     marker: vi.fn(() => 'generation'),
 }))
@@ -46,14 +42,12 @@ vi.mock('@/runner/orphanReap', () => ({
 }))
 vi.mock('@/utils/process', async importOriginal => ({
     ...await importOriginal<typeof import('@/utils/process')>(),
-    isWindows: mocks.windows,
+    isWindows: () => false,
     isProcessAlive: () => mocks.alive(),
     getProcessStartMarker: () => mocks.marker(),
     killProcess: mocks.kill,
     killProcessTreeByPid: mocks.kill,
     killProcessByChildProcess: mocks.kill,
-    sweepProcessGroup: mocks.sweep,
-    processGroupGone: () => false,
 }))
 
 import { configuration } from '@/configuration'
@@ -63,8 +57,8 @@ describe('runner stop of recovered persisted sessions while the Hub is unavailab
     let stopSession: Parameters<typeof startRunnerControlServer>[0]['stopSession']
     let home: string
 
-    const startWith = async (records: unknown[], previousHome?: string) => {
-        home = previousHome ?? mkdtempSync(join(tmpdir(), 'hapi-stop-recovered-'))
+    const startWith = async (records: unknown[]) => {
+        home = mkdtempSync(join(tmpdir(), 'hapi-stop-recovered-'))
         const originalStateFile = configuration.runnerStateFile
         const captured = new Error('control handlers captured before runner networking')
         mocks.controlServer.mockImplementation(async handlers => {
@@ -88,7 +82,6 @@ describe('runner stop of recovered persisted sessions while the Hub is unavailab
 
     beforeEach(() => {
         vi.clearAllMocks()
-        mocks.windows.mockReturnValue(false)
         mocks.alive.mockReturnValue(true)
         mocks.marker.mockReturnValue('generation')
         mocks.readRuntimes.mockResolvedValue([])
@@ -96,93 +89,9 @@ describe('runner stop of recovered persisted sessions while the Hub is unavailab
         mocks.reapOrphans.mockResolvedValue(null)
         mocks.prepare.mockRejectedValue(new Error('hub unavailable'))
         mocks.kill.mockResolvedValue(true)
-        mocks.sweep.mockResolvedValue(true)
     })
 
     afterEach(() => rmSync(home, { recursive: true, force: true }))
-
-    it.skipIf(process.platform !== 'linux' && process.platform !== 'darwin')(
-        'reloads pending member identities and reaps an orphan after interruption before sweep confirmation', async () => {
-            const real = await vi.importActual<typeof import('@/utils/process')>('@/utils/process')
-            const wrapper = spawn('sh', ['-c', 'sh -c "sleep 60 >/dev/null 2>&1 &"; echo ready; exec sleep 60'],
-                { detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
-            const pid = wrapper.pid!
-            try {
-                await once(wrapper.stdout, 'data')
-                const marker = real.getProcessStartMarker(pid)!
-                const opts = { requireProcessGroupCleanup: true, expectedPid: pid, processStartMarker: marker }
-                mocks.marker.mockReturnValue(marker)
-                await startWith([{ requestedSessionId: 'interrupted', pid, processStartMarker: marker, flavor: 'claude' }])
-                mocks.kill.mockImplementation(async (...args: Parameters<typeof real.killProcessTreeByPid>) => {
-                    const ledger = JSON.parse(readFileSync(join(home, 'runner.json.cleanup-receipts.json'), 'utf8'))
-                    expect(ledger.pending).toContainEqual(['interrupted', pid, marker, expect.arrayContaining([
-                        { pid: expect.any(Number), identity: expect.any(String) }
-                    ])])
-                    return real.killProcessTreeByPid(...args)
-                })
-                mocks.sweep.mockResolvedValueOnce(false)
-                expect(await stopSession('interrupted', opts)).toBe('still_alive')
-                expect(real.isProcessAlive(pid)).toBe(false)
-                expect(real.processGroupGone(pid)).toBe(false)
-                const file = join(home, 'runner.json.cleanup-receipts.json')
-                const checkpoint = readFileSync(file, 'utf8')
-                const stale = JSON.parse(checkpoint)
-                for (const [, , , members] of stale.pending) {
-                    for (const member of members) member.identity = 'replaced-generation'
-                }
-                writeFileSync(file, JSON.stringify(stale))
-                await startWith([], home)
-                mocks.kill.mockClear()
-                mocks.sweep.mockImplementation(real.sweepProcessGroup)
-                expect(await stopSession('interrupted', opts)).toBe('still_alive')
-                expect(real.processGroupGone(pid)).toBe(false)
-                writeFileSync(file, checkpoint)
-                await startWith([], home)
-                expect(await stopSession('interrupted', opts)).toBe('already_gone')
-                expect(real.processGroupGone(pid)).toBe(true)
-                expect(mocks.kill).not.toHaveBeenCalled()
-            } finally {
-                if (!real.processGroupGone(pid)) process.kill(-pid, 'SIGKILL')
-            }
-        }
-    )
-
-    it('does not kill the wrapper if the pending generation cannot be saved', async () => {
-        await startWith([{ requestedSessionId: 'write-failed', pid: 4242, processStartMarker: 'generation', flavor: 'claude' }])
-        mkdirSync(join(home, 'runner.json.cleanup-receipts.json'))
-        const opts = { requireProcessGroupCleanup: true, expectedPid: 4242, processStartMarker: 'generation' }
-        expect(await stopSession('write-failed', opts)).toBe('unknown')
-        expect(mocks.kill).not.toHaveBeenCalled()
-    })
-
-    it('recovers a confirmed generation after runner restart and a lost stop acknowledgement', async () => {
-        await startWith([{ requestedSessionId: 'lost-ack', pid: 4242, processStartMarker: 'generation', flavor: 'claude' }])
-        const opts = { requireProcessGroupCleanup: true, expectedPid: 4242, processStartMarker: 'generation' }
-        expect(await stopSession('lost-ack', opts)).toBe('stopped')
-        await startWith([], home)
-        mocks.alive.mockReturnValue(false)
-        mocks.kill.mockClear()
-        expect(await stopSession('lost-ack', opts)).toBe('already_gone')
-        expect(await stopSession('lost-ack', { ...opts, processStartMarker: 'other' })).toBe('unknown')
-        expect(await stopSession('other-session', opts)).toBe('unknown')
-        expect(mocks.kill).not.toHaveBeenCalled()
-    })
-
-    it.each([false, true])('requires a verified Windows tree stop for retries (tree confirmed: %s)', async confirmed => {
-        await startWith([{ requestedSessionId: 'win', pid: 4242, processStartMarker: 'generation', flavor: 'claude' }])
-        mocks.windows.mockReturnValue(true)
-        mocks.kill.mockImplementationOnce(async () => {
-            mocks.alive.mockReturnValue(false)
-            return confirmed
-        })
-        const opts = { requireProcessGroupCleanup: true, expectedPid: 4242, processStartMarker: 'generation' }
-        expect(await stopSession('unrelated', opts)).toBe('unknown')
-        expect(mocks.kill).not.toHaveBeenCalled()
-        expect(await stopSession('win', opts)).toBe(confirmed ? 'stopped' : 'still_alive')
-        expect(await stopSession('win', opts)).toBe(confirmed ? 'already_gone' : 'unknown')
-        expect(await stopSession('PID-4242', { requireProcessGroupCleanup: true, processStartMarker: 'generation' }))
-            .toBe(confirmed ? 'already_gone' : 'unknown')
-    })
 
     it('still kills a recovered non-OpenCode process tree without Hub preparation', async () => {
         await startWith([{
@@ -192,83 +101,6 @@ describe('runner stop of recovered persisted sessions while the Hub is unavailab
         await expect(stopSession('claude-session')).resolves.toBe('stopped')
         expect(mocks.prepare).not.toHaveBeenCalled()
         expect(mocks.kill).toHaveBeenCalled()
-    })
-
-    it('sweeps the process group after the tree kill succeeds', async () => {
-        await startWith([{
-            requestedSessionId: 'claude-session', confirmedSessionId: 'claude-session',
-            pid: 4242, processStartMarker: 'generation', flavor: 'claude',
-        }])
-        await expect(stopSession('claude-session', { requireProcessGroupCleanup: true })).resolves.toBe('stopped')
-        expect(mocks.sweep).toHaveBeenCalledWith(4242, expect.any(Object))
-        expect(mocks.sweep.mock.invocationCallOrder[0]).toBeGreaterThan(mocks.kill.mock.invocationCallOrder[0]!)
-    })
-
-    it('reports still_alive when a required process-group cleanup fails after the tree kill', async () => {
-        await startWith([{
-            requestedSessionId: 'claude-session', confirmedSessionId: 'claude-session',
-            pid: 4242, processStartMarker: 'generation', flavor: 'claude',
-        }])
-        mocks.sweep.mockResolvedValue(false)
-        await expect(stopSession('claude-session', { requireProcessGroupCleanup: true })).resolves.toBe('still_alive')
-    })
-
-    it('retries the verified group via the confirmed ID after a recovered root dies', async () => {
-        await startWith([{
-            requestedSessionId: 'requested', confirmedSessionId: 'confirmed',
-            pid: 4242, processStartMarker: 'generation', flavor: 'claude',
-        }])
-        mocks.kill.mockImplementationOnce(async () => {
-            mocks.alive.mockReturnValue(false)
-            return true
-        })
-        mocks.sweep.mockResolvedValueOnce(false)
-        await expect(stopSession('requested', { requireProcessGroupCleanup: true })).resolves.toBe('still_alive')
-        await expect(stopSession('confirmed', { requireProcessGroupCleanup: true })).resolves.toBe('already_gone')
-        expect(mocks.kill).toHaveBeenCalledTimes(1)
-        expect(mocks.sweep).toHaveBeenCalledTimes(2)
-        expect(mocks.sweep).toHaveBeenLastCalledWith(4242, expect.objectContaining({ expectedStartMarker: 'generation', leaderExited: true }))
-    })
-
-    it('does not sweep when the tree kill fails', async () => {
-        await startWith([{
-            requestedSessionId: 'claude-session', confirmedSessionId: 'claude-session',
-            pid: 4242, processStartMarker: 'generation', flavor: 'claude',
-        }])
-        mocks.kill.mockResolvedValue(false)
-        await expect(stopSession('claude-session')).resolves.toBe('still_alive')
-        expect(mocks.sweep).not.toHaveBeenCalled()
-    })
-
-    it('never sweeps a fallback PID whose generation this stop did not verify (archive unchanged)', async () => {
-        await startWith([{
-            requestedSessionId: 'claude-session', confirmedSessionId: 'claude-session',
-            pid: 4242, processStartMarker: 'generation', flavor: 'claude',
-        }])
-        mocks.alive.mockReturnValue(false)
-        await expect(stopSession('claude-session')).resolves.toBe('already_gone')
-        expect(mocks.kill).not.toHaveBeenCalled()
-        expect(mocks.sweep).not.toHaveBeenCalled()
-    })
-
-    it('reports unknown for an unverified dead root when process-group cleanup is required', async () => {
-        await startWith([{
-            requestedSessionId: 'claude-session', confirmedSessionId: 'claude-session',
-            pid: 4242, processStartMarker: 'generation', flavor: 'claude',
-        }])
-        mocks.alive.mockReturnValue(false)
-        await expect(stopSession('claude-session', { requireProcessGroupCleanup: true })).resolves.toBe('unknown')
-        expect(mocks.sweep).not.toHaveBeenCalled()
-    })
-
-    it('blocks a required cleanup when a verified group outlives the tree kill, but not archive', async () => {
-        await startWith([{
-            requestedSessionId: 'claude-session', confirmedSessionId: 'claude-session',
-            pid: 4242, processStartMarker: 'generation', flavor: 'claude',
-        }])
-        mocks.sweep.mockResolvedValue(false)
-        await expect(stopSession('claude-session', { requireProcessGroupCleanup: true })).resolves.toBe('still_alive')
-        await expect(stopSession('claude-session')).resolves.toBe('stopped')
     })
 
     it('keeps the mandatory Hub preparation for a recovered OpenCode process', async () => {
@@ -302,7 +134,6 @@ describe('runner stop of recovered persisted sessions while the Hub is unavailab
         })
         await expect(stopSession('opencode-session')).resolves.toBe('already_gone')
         expect(mocks.kill).not.toHaveBeenCalled()
-        expect(mocks.sweep).not.toHaveBeenCalled()
     })
 
     it('refuses to signal a recycled PID after Hub preparation', async () => {

@@ -15,36 +15,6 @@ const WINDOW = 2 * HOUR
 const NAMESPACE = 'default'
 const MACHINE = 'machine-1'
 
-function mulberry32(seed: number): () => number {
-    let a = seed >>> 0
-    return () => {
-        a = (a + 0x6D2B79F5) >>> 0
-        let t = a
-        t = Math.imul(t ^ (t >>> 15), t | 1)
-        t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
-        return ((t ^ (t >>> 14)) >>> 0) / 4294967296
-    }
-}
-
-const PBT_ITERATIONS = 500
-const PBT_BASE_SEED = Number.parseInt(process.env.HAPI_PBT_SEED ?? '', 10) || (Date.now() >>> 0)
-
-async function forAll(name: string, property: (rand: () => number, iteration: number) => Promise<void>): Promise<void> {
-    for (let i = 0; i < PBT_ITERATIONS; i += 1) {
-        const seed = (PBT_BASE_SEED + i) >>> 0
-        try {
-            await property(mulberry32(seed), i)
-        } catch (error) {
-            const message = error instanceof Error ? error.message : String(error)
-            throw new Error(`[pbt] ${name} failed with seed=${seed} (HAPI_PBT_SEED=${seed} to replay): ${message}`)
-        }
-    }
-}
-
-function pick<T>(rand: () => number, items: readonly T[]): T {
-    return items[Math.floor(rand() * items.length)]!
-}
-
 const ioStub = { of: () => ({ to: () => ({ emit() {} }) }) }
 
 describe('SyncEngine resume of hibernated sessions', () => {
@@ -98,7 +68,7 @@ describe('SyncEngine resume of hibernated sessions', () => {
         engine = new SyncEngine(store, ioStub as never, new RpcRegistry(), { broadcast() {} } as never)
         stopCalls = []
         mergeCalls = 0
-        engine.getOrCreateMachine(MACHINE, { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0', capabilities: ['resume-hibernated-session'] },
+        engine.getOrCreateMachine(MACHINE, { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
             { status: 'running', capabilities: { sessionHibernation: true, piExistingSessionResume: true } }, NAMESPACE)
         engine.handleMachineAlive({ machineId: MACHINE, time: Date.now() })
         gateway().stopRunnerSession = async (_machineId: string, sessionId: string) => {
@@ -136,18 +106,18 @@ describe('SyncEngine resume of hibernated sessions', () => {
         expect(cache().getSession(id)!.active).toBe(true)
     })
 
-    it('keeps the session asleep when a rolled-back runner lacks strict wake support', async () => {
+    it('keeps the session asleep when a selected runner lacks hibernation support', async () => {
         const id = await hibernatedSession('rollback')
         let spawns = 0
         const spawn = spawnImpl
         spawnImpl = async sid => { spawns++; return spawn(sid) }
-        engine.getOrCreateMachine(MACHINE, { host: 'localhost', platform: 'linux', happyCliVersion: 'old' },
-            { status: 'running', capabilities: { sessionHibernation: true } }, NAMESPACE)
+        const runner = engine.getMachine(MACHINE)!.runnerState!
+        const capabilities = runner.capabilities
+        runner.capabilities = {}
         expect(await engine.resumeSession(id, NAMESPACE)).toMatchObject({ type: 'error', code: 'resume_unavailable', message: expect.stringContaining('Upgrade') })
         expect(spawns).toBe(0)
         expect(cache().getSession(id)?.metadata?.hibernation?.state).toBe('hibernated')
-        engine.getOrCreateMachine(MACHINE, { host: 'localhost', platform: 'linux', happyCliVersion: 'new', capabilities: ['resume-hibernated-session'] },
-            { status: 'running', capabilities: { sessionHibernation: true } }, NAMESPACE)
+        runner.capabilities = capabilities
         expect(await engine.resumeSession(id, NAMESPACE)).toEqual({ type: 'success', sessionId: id })
         expect(spawns).toBe(1)
     })
@@ -318,28 +288,6 @@ describe('SyncEngine resume of hibernated sessions', () => {
         expect(after.metadata?.hibernation?.state).toBe('hibernated')
     })
 
-    it('fails closed when the stray child cannot be confirmed stopped', async () => {
-        const id = await hibernatedSession('stray-alive')
-        spawnImpl = async () => ({ type: 'success', sessionId: 'stray-live' })
-        gateway().stopRunnerSession = async (_machineId: string, sessionId: string) => {
-            stopCalls.push(sessionId)
-            return 'still_alive'
-        }
-        const result = await engine.resumeSession(id, NAMESPACE)
-        expect(result).toMatchObject({ type: 'error', code: 'resume_failed', rollbackSafe: false })
-        expect(stopCalls).toEqual([])
-        expect(mergeCalls).toBe(0)
-
-        store.messages.addMessage(id, { role: 'user', content: { type: 'text', text: 'due' } }, 'local-due', Date.now() + 1_000)
-        let spawns = 0
-        spawnImpl = async (sessionId) => { spawns += 1; bootCli(sessionId); return { type: 'success', sessionId } }
-        const wake = (engine as unknown as { wakeHibernatedForMatureScheduled: (now: number) => void })
-            .wakeHibernatedForMatureScheduled.bind(engine)
-        wake(Date.now() + 5_000)
-        await new Promise((resolve) => setTimeout(resolve, 10))
-        expect(spawns).toBe(0)
-    })
-
     it('backs off automatic wakes after a failed resume', async () => {
         const id = await hibernatedSession('wake-backoff')
         store.messages.addMessage(id, { role: 'user', content: { type: 'text', text: 'due' } }, 'local-due', Date.now() + 1_000)
@@ -363,28 +311,12 @@ describe('SyncEngine resume of hibernated sessions', () => {
         expect(spawns).toBe(2)
     })
 
-    it('INVARIANT resume of a hibernated session returns the same id or an error and never merges', async () => {
-        const outcomes = ['same', 'different', 'error', 'never-active'] as const
-        await forAll('resume-keeps-id', async (rand, i) => {
-            const id = await hibernatedSession(`pbt-${i}`)
-            const outcome = pick(rand, outcomes)
-            spawnImpl = async (sessionId) => {
-                if (outcome === 'error') return { type: 'error', message: 'spawn failed' }
-                if (outcome === 'never-active') return { type: 'success', sessionId }
-                if (outcome === 'different') return { type: 'success', sessionId: `stray-${i}` }
-                bootCli(sessionId)
-                return { type: 'success', sessionId }
-            }
-            const result = await engine.resumeSession(id, NAMESPACE)
-            if (result.type === 'success') {
-                expect(result.sessionId).toBe(id)
-            } else {
-                expect(result.type).toBe('error')
-            }
-            expect(outcome === 'same' ? result.type === 'success' : result.type === 'error').toBe(true)
-            expect(mergeCalls).toBe(0)
-            expect(cache().getSession(id)).toBeDefined()
-        })
+    it('refuses a same-ID spawn that never becomes active', async () => {
+        const id = await hibernatedSession('never-active')
+        spawnImpl = async sessionId => ({ type: 'success', sessionId })
+        expect(await engine.resumeSession(id, NAMESPACE)).toMatchObject({ type: 'error', code: 'resume_failed' })
+        expect(cache().getSession(id)?.metadata?.lifecycleState).toBe('hibernated')
+        expect(mergeCalls).toBe(0)
     })
 
     it('keeps the authorized wake joinable after the marker clears and before Pi finalization', async () => {

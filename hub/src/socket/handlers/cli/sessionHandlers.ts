@@ -112,9 +112,11 @@ function preserveHubOwnedMetadata(incoming: unknown, current: unknown): { metada
     if (rewind && ['reserved', 'prepared', 'unknown'].includes(rewind.phase ?? '')) {
         for (const key of ['opencodeHistoryCheckpoint', 'conversationHistoryIndexes', 'conversationHistoryPoints']) next[key] = existing[key]
     }
-    const preserveHibernation = existing.lifecycleState === 'hibernated'
-        && (existing.hibernation as { state?: string } | undefined)?.state === 'hibernated'
-        && next.lifecycleState === 'archived'
+    const state = (existing.hibernation as { state?: string } | undefined)?.state
+    const preserveHibernation = next.lifecycleState === 'archived' && (
+        (state === 'hibernated' && existing.lifecycleState === 'hibernated')
+        || (state === 'stopping' && (existing.lifecycleState === 'running' || existing.lifecycleState === 'idle'))
+    )
     if (preserveHibernation) {
         next.lifecycleState = existing.lifecycleState
         next.lifecycleStateSince = existing.lifecycleStateSince

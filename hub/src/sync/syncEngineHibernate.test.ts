@@ -63,7 +63,7 @@ describe('SyncEngine hibernation', () => {
     }
 
     function registerMachine(capabilities: Record<string, unknown> = { sessionHibernation: true }, machineId = MACHINE): void {
-        engine.getOrCreateMachine(machineId, { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0', capabilities: ['resume-hibernated-session'] },
+        engine.getOrCreateMachine(machineId, { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
             { status: 'running', capabilities }, NAMESPACE)
         engine.handleMachineAlive({ machineId, time: Date.now() })
     }
@@ -105,7 +105,6 @@ describe('SyncEngine hibernation', () => {
         stopCalls = []
         killCalls = []
         stopImpl = endingStop('stopped')
-        engine.waitForSessionInactive = async id => cache().getSession(id)?.active === false
         gateway().stopRunnerSession = async (machineId: string, sessionId: string) => {
             stopCalls.push({ machineId, sessionId })
             return await stopImpl(machineId, sessionId)
@@ -134,9 +133,24 @@ describe('SyncEngine hibernation', () => {
         expect(session.metadata?.hibernation?.reason).toBe('idle')
         expect(session.updatedAt).toBe(updatedAtBefore)
         expect(stopCalls).toEqual([{ machineId: MACHINE, sessionId: id }])
-        // Direct StopSession: KillSession would let the wrapper exit first and
-        // orphan its children.
-        expect(killCalls).toEqual([])
+        expect(killCalls).toEqual([id])
+    })
+
+    it('uses the archive stop sequence and accepts its PID fallback confirmation', async () => {
+        const id = insertIdleSession('archive-fallback')
+        const calls: string[] = []
+        gateway().killSession = async () => {
+            calls.push('kill')
+            return { pid: 4242, processStartMarker: 'wrapper-start' }
+        }
+        gateway().stopRunnerSession = async (_machine: string, target: string, opts: { processStartMarker?: string }) => {
+            calls.push(target)
+            if (target === id) return 'unknown'
+            expect(opts.processStartMarker).toBe('wrapper-start')
+            return 'already_gone'
+        }
+        expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([id])
+        expect(calls).toEqual(['kill', id, 'PID-4242'])
     })
 
     it('hibernates only the single-session Codex root on a shared-runtime-capable runner', async () => {
@@ -148,7 +162,7 @@ describe('SyncEngine hibernation', () => {
         expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([single])
         expect(cache().getSession(shared)?.active).toBe(true)
         expect(stopCalls).toEqual([{ machineId, sessionId: single }])
-        expect(killCalls).toEqual([])
+        expect(killCalls).toEqual([single])
     })
 
     it('keeps an idle caller alive until peer reply forwarding ends', async () => {
@@ -293,11 +307,13 @@ describe('SyncEngine hibernation', () => {
         expect(session.metadata?.lifecycleState).toBe('running')
         expect(session.metadata?.archivedBy).toBeUndefined()
         expect(session.metadata?.archiveReason).toBeUndefined()
-        expect(session.metadata?.hibernation?.state).toBe('stopping')
-        stopImpl = async () => 'unknown'
-        expect(await engine.hibernateIdleSessions(later() + 600_000, WINDOW)).toEqual([])
-        expect(cache().getSession(id)?.metadata?.hibernation?.state).toBe('stopping')
-        expect(cache().getSession(id)?.metadata?.lifecycleState).toBe('running')
+        expect(session.metadata?.hibernation).toBeUndefined()
+        gateway().spawnSession = async () => {
+            engine.handleSessionAlive({ sid: id, time: Date.now() })
+            return { type: 'success', sessionId: id }
+        }
+        expect(await engine.resumeSession(id, NAMESPACE)).toEqual({ type: 'success', sessionId: id })
+        expect(stopCalls).toHaveLength(1)
     })
 
     it('ignores the idle reconciler stamp so the window is not stretched', async () => {
@@ -346,70 +362,6 @@ describe('SyncEngine hibernation', () => {
         const second = await engine.hibernateIdleSessions(later(), WINDOW)
         expect(second).toHaveLength(1)
         expect(new Set([...first, ...second])).toEqual(new Set([a, b]))
-    })
-
-    it.each(['already_gone', 'stopped', 'still_alive', 'unknown'] as const)(
-        'rechecks cleanup after a delayed session-end and settles only with evidence (%s)', async outcome => {
-            const id = insertIdleSession('cleanup-retry')
-            const now = later()
-            engine.waitForSessionInactive = SyncEngine.prototype.waitForSessionInactive
-            stopImpl = async () => {
-                setTimeout(() => engine.handleSessionEnd({ sid: id, time: Date.now() }), 0)
-                return 'still_alive'
-            }
-            expect(await engine.hibernateIdleSessions(now, WINDOW)).toEqual([])
-            expect(cache().getSession(id)?.active).toBe(false)
-            expect(cache().getSession(id)?.metadata?.hibernation?.state).toBe('stopping')
-            expect(await engine.hibernateIdleSessions(now + 599_999, WINDOW)).toEqual([])
-            expect(stopCalls).toHaveLength(1)
-            stopImpl = async () => outcome
-            const confirmed = outcome === 'already_gone' || outcome === 'stopped'
-            expect(await engine.hibernateIdleSessions(now + 600_000, WINDOW)).toEqual(confirmed ? [id] : [])
-            expect(stopCalls).toHaveLength(2)
-            expect(cache().getSession(id)?.metadata?.hibernation?.state).toBe(confirmed ? 'hibernated' : 'stopping')
-            expect(cache().getSession(id)?.metadata?.lifecycleState).toBe(confirmed ? 'hibernated' : 'running')
-            expect(await engine.hibernateIdleSessions(now + 1_200_000, WINDOW)).toEqual([])
-            expect(stopCalls).toHaveLength(confirmed ? 2 : 3)
-        }
-    )
-
-    it.each(['resumeSession', 'reopenSession', 'prepareLocalResume', 'handoffSessionToLocal'] as const)(
-        '%s requires old-group cleanup before authorizing a replacement', async method => {
-            const id = insertIdleSession('resume-before-cleanup')
-            stopImpl = async () => {
-                engine.handleSessionEnd({ sid: id, time: Date.now() })
-                return 'still_alive'
-            }
-            expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([])
-            let spawns = 0
-            gateway().spawnSession = async () => {
-                spawns++
-                engine.handleSessionAlive({ sid: id, time: Date.now() })
-                return { type: 'success', sessionId: id }
-            }
-            for (const status of ['still_alive', 'unknown'] as const) {
-                stopImpl = async () => status
-                expect(await engine[method](id, NAMESPACE)).toMatchObject({ type: 'error', code: 'cleanup_pending', message: expect.stringContaining('Retry') })
-                expect(cache().getSession(id)?.metadata?.hibernation?.state).toBe('stopping')
-                expect(spawns).toBe(0)
-            }
-            stopImpl = async () => 'already_gone'
-            expect(await engine[method](id, NAMESPACE)).toMatchObject({ type: 'success' })
-            expect(spawns).toBe(method === 'resumeSession' || method === 'reopenSession' ? 1 : 0)
-            expect(stopCalls).toHaveLength(4)
-        }
-    )
-
-    it('preserves outstanding group cleanup across an unsuccessful archive', async () => {
-        const id = insertIdleSession('archive-during-cleanup')
-        stopImpl = async () => {
-            engine.handleSessionEnd({ sid: id, time: Date.now() })
-            return 'still_alive'
-        }
-        expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([])
-        await expect(engine.archiveSession(id)).rejects.toThrow()
-        expect(cache().getSession(id)?.metadata?.hibernation?.state).toBe('stopping')
-        expect(killCalls).toHaveLength(0)
     })
 
     it('excludes hibernation through the CLI retry acknowledgement and refuses a retry once the stop starts', async () => {
@@ -500,42 +452,27 @@ describe('SyncEngine hibernation', () => {
         expect(await engine.hibernateIdleSessions(Date.now() + 4 * HOUR + 1_000, WINDOW)).toEqual([id])
     })
 
-    it('INVARIANT disabled switch issues zero stop RPCs', async () => {
-        insertIdleSession('idle-disabled')
-        await forAll('disabled-zero-rpc', async (rand) => {
-            const hibernateMs = rand() < 0.5 ? 0 : -Math.floor(rand() * 1e9)
-            const now = Date.now() + Math.floor(rand() * 1000 * HOUR)
-            expect(await engine.hibernateIdleSessions(now, hibernateMs)).toEqual([])
-        })
-        expect(stopCalls).toEqual([])
+    it.each([0, -1])('issues no RPCs when the hibernation window is %i', async hibernateMs => {
+        insertIdleSession('disabled')
+        expect(await engine.hibernateIdleSessions(later(), hibernateMs)).toEqual([])
         expect(killCalls).toEqual([])
+        expect(stopCalls).toEqual([])
     })
 
-    it('INVARIANT hibernated iff the stop result is stopped or already_gone', async () => {
-        const outcomes = ['stopped', 'already_gone', 'still_alive', 'unknown', 'throw', 'timeout'] as const
-        await forAll('stop-confirmation', async (rand, i) => {
-            const outcome = pick(rand, outcomes)
-            const id = insertIdleSession(`confirm-${i}`)
-            stopImpl = async (_machineId, sessionId) => {
+    it.each(['stopped', 'already_gone', 'still_alive', 'unknown', 'throw', 'timeout'] as const)(
+        'only records hibernation on a confirmed runner stop (%s)', async outcome => {
+            const id = insertIdleSession('confirm')
+            stopImpl = async () => {
                 if (outcome === 'throw') throw new RpcTargetMissingError('StopSession', 'socket-disconnected')
                 if (outcome === 'timeout') throw new RunnerStopRpcError(true, new Error('ack timeout'))
-                return await endingStop(outcome)(_machineId, sessionId)
+                return outcome
             }
-            const result = await engine.hibernateSession(id, { now: later(), hibernateMs: WINDOW })
-            const session = cache().getSession(id)!
             const confirmed = outcome === 'stopped' || outcome === 'already_gone'
-            expect(result).toBe(confirmed ? 'hibernated' : 'failed')
-            expect(session.metadata?.lifecycleState === 'hibernated').toBe(confirmed)
-            if (confirmed) {
-                expect(session.active).toBe(false)
-                expect(session.metadata?.hibernation?.state).toBe('hibernated')
-            } else {
-                expect(session.active).toBe(true)
-                expect(session.metadata?.lifecycleState).toBe('running')
-                expect(session.metadata?.hibernation).toBeUndefined()
-            }
-        })
-    })
+            expect(await engine.hibernateSession(id, { now: later(), hibernateMs: WINDOW })).toBe(confirmed ? 'hibernated' : 'failed')
+            expect(cache().getSession(id)?.metadata?.hibernation?.state).toBe(confirmed ? 'hibernated' : undefined)
+            expect(cache().getSession(id)?.active).toBe(!confirmed)
+        }
+    )
 
     it('INVARIANT hibernate / resume / archive are mutually exclusive per session', async () => {
         let pending = 0
@@ -623,33 +560,13 @@ describe('SyncEngine hibernation', () => {
         cache().refreshSession(id)
         engine.handleSessionAlive({ sid: id, time: Date.now() })
         acknowledge('stopped')
-        expect(await stop).toBe('skipped')
+        expect(await stop).toBe('failed')
         expect(await local).toMatchObject({ type: 'error', code: 'session_active' })
         expect(cache().getSession(id)?.active).toBe(true)
         expect(cache().getSession(id)?.metadata?.hibernation).toBeUndefined()
     })
 
-    it.each(['already_gone', 'unknown'] as const)('reconciles an interrupted stop by its persisted generation on restart (%s)', async result => {
-        const id = insertIdleSession('restart-generation')
-        const row = cache().getSession(id)!
-        expect(cache().markSessionHibernationStopping(id, row.metadataVersion, 'idle')).toBe(true)
-        const { hostPid, hostStartMarker } = row.metadata!
-        store.sessions.setSessionActive(id, false, Date.now(), NAMESPACE)
-        engine.stop()
-        engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
-        expect(cache().getSession(id)?.metadata?.hibernation?.state).toBe('stopping')
-        registerMachine()
-        gateway().stopRunnerSession = async (machine: string, target: string, opts: unknown) => {
-            expect(machine).toBe(MACHINE)
-            expect(target).toBe(id)
-            expect(opts).toMatchObject({ expectedPid: hostPid, processStartMarker: hostStartMarker, requireProcessGroupCleanup: true })
-            return result
-        }
-        expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual(result === 'already_gone' ? [id] : [])
-        expect(cache().getSession(id)?.metadata?.lifecycleState).toBe(result === 'already_gone' ? 'hibernated' : 'running')
-    })
-
-    it('drops a legacy stopping marker without a generation on hub start', () => {
+    it('clears an interrupted stop on hub start and leaves CLI-archived rows resumable', () => {
         const plainId = insertIdleSession('restart-plain')
         const cliArchivedId = insertIdleSession('restart-cli-archived')
         const activeId = insertIdleSession('restart-active')
@@ -666,9 +583,7 @@ describe('SyncEngine hibernation', () => {
         engine.stop()
 
         engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
-        expect(cache().getSession(cliArchivedId)?.metadata?.lifecycleState).toBe('archived')
-        expect(cache().getSession(cliArchivedId)?.metadata?.hibernation).toBeUndefined()
-        for (const sid of [plainId, activeId]) {
+        for (const sid of [plainId, cliArchivedId, activeId]) {
             const metadata = cache().getSession(sid)!.metadata!
             expect(metadata.hibernation).toBeUndefined()
             expect(metadata.lifecycleState).toBe('running')
@@ -704,6 +619,7 @@ describe('SyncEngine hibernation', () => {
         const id = insertIdleSession('archive-offline')
         expect(await engine.hibernateSession(id, { now: later(), hibernateMs: WINDOW })).toBe('hibernated')
         stopCalls.length = 0
+        killCalls.length = 0
         stopImpl = async () => {
             if (outcome === 'unknown') return 'unknown'
             throw new Error(outcome)
@@ -733,18 +649,6 @@ describe('SyncEngine hibernation', () => {
         await engine.archiveSession(id)
         expect(cache().getSession(id)?.metadata?.lifecycleState).toBe('archived')
         expect(cache().getSession(id)?.metadata?.hibernation).toBeUndefined()
-    })
-
-    it('abandons the stop and backs off when post-RPC confirmation throws', async () => {
-        const id = insertIdleSession('failed-confirmation')
-        const now = later()
-        stopImpl = async () => 'stopped'
-        const internal = engine as unknown as { waitForSessionInactive(id: string): Promise<boolean> }
-        internal.waitForSessionInactive = async () => { throw new Error('confirmation unavailable') }
-        expect(await engine.hibernateSession(id, { now, hibernateMs: WINDOW })).toBe('failed')
-        expect(cache().getSession(id)?.metadata?.hibernation).toBeUndefined()
-        expect(await engine.hibernateIdleSessions(now + 599_999, WINDOW)).toEqual([])
-        expect(stopCalls).toHaveLength(1)
     })
 
     it.each(['archiveSession', 'resumeSession', 'reopenSession'] as const)('%s proceeds after a rejected stop', async method => {
@@ -781,27 +685,6 @@ describe('SyncEngine hibernation', () => {
         await new Promise((resolve) => setTimeout(resolve, 0))
         engine.setTerminalSessionCounter(null)
         expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([id])
-    })
-
-    it('passes requireProcessGroupCleanup on the hibernation stop only', async () => {
-        const id = insertIdleSession('pgroup-cleanup')
-        const options: unknown[] = []
-        gateway().stopRunnerSession = async (_machineId: string, sessionId: string, opts?: unknown) => {
-            options.push(opts)
-            engine.handleSessionEnd({ sid: sessionId, time: Date.now() })
-            return 'stopped'
-        }
-        expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([id])
-        expect(options).toHaveLength(1)
-        expect((options[0] as { requireProcessGroupCleanup?: boolean }).requireProcessGroupCleanup).toBe(true)
-
-        options.length = 0
-        const archiveId = insertIdleSession('pgroup-archive')
-        await engine.archiveSession(archiveId)
-        expect(options.length).toBeGreaterThan(0)
-        for (const opts of options) {
-            expect((opts as { requireProcessGroupCleanup?: boolean } | undefined)?.requireProcessGroupCleanup).toBeUndefined()
-        }
     })
 
     describe('cold-cache startup grace', () => {

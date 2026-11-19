@@ -19,10 +19,7 @@ export function startRunnerControlServer({
   onHappySessionWebhook
 }: {
   getChildren: () => TrackedSession[];
-  stopSession: (
-    sessionId: string,
-    opts?: { expectedPid?: number; processStartMarker?: string; requireProcessGroupCleanup?: boolean }
-  ) => Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'>;
+  stopSession: (sessionId: string) => Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'>;
   spawnSession: (options: SpawnSessionOptions) => Promise<SpawnSessionResult>;
   requestShutdown: () => void;
   onHappySessionWebhook: (sessionId: string, metadata: Metadata) => void;

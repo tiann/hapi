@@ -11,7 +11,6 @@ const mocks = vi.hoisted(() => ({
     findRuntime: vi.fn(),
     reapOrphans: vi.fn<typeof import('./orphanReap')['reapRunnerSpawnedOrphans']>(),
     kill: vi.fn(),
-    sweep: vi.fn(async () => true),
 }))
 
 vi.mock('./controlServer', () => ({ startRunnerControlServer: mocks.controlServer }))
@@ -44,7 +43,6 @@ vi.mock('@/utils/process', async importOriginal => ({
     killProcess: mocks.kill,
     killProcessTreeByPid: mocks.kill,
     killProcessByChildProcess: mocks.kill,
-    sweepProcessGroup: mocks.sweep,
 }))
 
 import { configuration } from '@/configuration'
@@ -107,7 +105,6 @@ describe('runner stop confirmation after shared Codex tracking loss', () => {
         record.sessions.sibling = { threadId: 'other', namespace: 'test', active: true }
         await expect(stopSession('target')).resolves.toBe('stopped')
         expect(mocks.kill).not.toHaveBeenCalled()
-        expect(mocks.sweep).not.toHaveBeenCalled()
     })
 
     it('does not treat an active root as stopped when runtime control is unavailable', async () => {

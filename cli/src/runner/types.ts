@@ -15,7 +15,6 @@ export interface TrackedSession {
   happySessionId?: string;
   /** HAPI row requested for this process generation before its webhook arrives. */
   requestedHappySessionId?: string;
-  rejectMismatchedSpawn?: () => void;
   happySessionMetadataFromLocalWebhook?: Metadata;
   pid: number;
   childProcess?: ChildProcess;

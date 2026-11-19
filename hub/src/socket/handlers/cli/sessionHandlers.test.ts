@@ -659,14 +659,14 @@ it.each([
         }
     })
 
-    it('preserves settled shared Codex hibernation across a late CLI archive retry', async () => {
+    it.each([['stopping', 'idle'], ['hibernated', 'hibernated']])('preserves %s state and ordering across CLI archive retries', async (state, lifecycleState) => {
         const store = new Store(':memory:')
         try {
-            const metadata = { flavor: 'codex', capabilities: { concurrentClients: true }, lifecycleState: 'running' }
-            const row = store.sessions.getOrCreateSession('shared-codex-root', metadata, null, 'default')
-            const settled = { ...metadata, lifecycleState: 'hibernated', lifecycleStateSince: 42,
-                hibernation: { state: 'hibernated', reason: 'idle', since: 42 } }
-            store.sessions.updateSessionMetadata(row.id, settled, row.metadataVersion, 'default', { touchUpdatedAt: false })
+            const metadata = { flavor: 'claude', lifecycleState: 'running' }
+            const row = store.sessions.getOrCreateSession('idle-wrapper', metadata, null, 'default')
+            const marked = { ...metadata, lifecycleState, lifecycleStateSince: 42,
+                hibernation: { state, reason: 'idle', since: 42 } }
+            store.sessions.updateSessionMetadata(row.id, marked, row.metadataVersion, 'default', { touchUpdatedAt: false })
             const socket = new FakeSocket()
             registerSessionHandlers(socket as unknown as CliSocketWithData, {
                 store, resolveSessionAccess: () => ({ ok: true, value: store.sessions.getSession(row.id)! }), emitAccessError() {}
@@ -679,7 +679,7 @@ it.each([
             retry(row.metadataVersion, ack => expect(ack).toMatchObject({ result: 'version-mismatch' }))
             retry(row.metadataVersion + 1, ack => expect(ack).toMatchObject({ result: 'success' }))
             const stored = store.sessions.getSession(row.id)!
-            expect(stored.metadata).toEqual(settled)
+            expect(stored.metadata).toEqual(marked)
             expect(stored.updatedAt).toBe(row.updatedAt)
         } finally {
             store.close()

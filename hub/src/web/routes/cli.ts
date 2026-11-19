@@ -256,7 +256,6 @@ app.post('/sessions/:id/prepare-local-resume', async (c) => {
             return c.json({ error: error instanceof Error ? error.message : 'Failed to prepare session', code: 'prepare_failed' }, 409)
         }
         if (result.type === 'error') {
-            if (result.code === 'cleanup_pending') return c.json({ error: result.message, code: result.code, retryable: true }, 409)
             const status = result.code === 'access_denied' ? 403
                 : result.code === 'session_not_found' ? 404
                     : 409
@@ -308,7 +307,6 @@ app.post('/sessions/:id/prepare-local-resume', async (c) => {
         const namespace = c.get('namespace')
         const result = await engine.handoffSessionToLocal(c.req.param('id'), namespace)
         if (result.type === 'error') {
-            if (result.code === 'cleanup_pending') return c.json({ error: result.message, code: result.code, retryable: true }, 409)
             const status = result.code === 'access_denied' ? 403
                 : result.code === 'session_not_found' ? 404
                     : result.code === 'already_local' || result.code === 'control_mode_not_applicable' ? 409

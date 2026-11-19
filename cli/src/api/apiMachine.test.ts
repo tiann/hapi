@@ -791,36 +791,17 @@ describe('ApiMachineClient SpawnHappySession handler', () => {
     async function callSpawnHappySession(
         client: ApiMachineClient,
         machineId: string,
-        params: Record<string, unknown>,
-        method = 'spawn-happy-session'
+        params: Record<string, unknown>
     ): Promise<unknown> {
         const manager = (client as unknown as {
             rpcHandlerManager: { handleRequest: (req: { method: string; params: string }) => Promise<string> }
         }).rpcHandlerManager
         const raw = await manager.handleRequest({
-            method: `${machineId}:${method}`,
+            method: `${machineId}:spawn-happy-session`,
             params: JSON.stringify(params)
         })
         return JSON.parse(raw) as unknown
     }
-
-    it('forces same-ID validation on the hibernation wake RPC', async () => {
-        const machine = makeMachine('machine-wake')
-        const client = new ApiMachineClient('cli-token', machine, [workspaceRoot])
-        const spawnSession = vi.fn(async () => ({ type: 'success' as const, sessionId: 'original' }))
-        client.setRPCHandlers({ spawnSession, stopSession: vi.fn(), requestShutdown: vi.fn() })
-        try {
-            expect(await callSpawnHappySession(client, machine.id, { directory: workspaceRoot }, 'resume-hibernated-session'))
-                .toMatchObject({ type: 'error', childStarted: false })
-            expect(spawnSession).not.toHaveBeenCalled()
-            await callSpawnHappySession(client, machine.id, {
-                directory: workspaceRoot, existingSessionId: 'original', requireSameSessionId: false
-            }, 'resume-hibernated-session')
-            expect(spawnSession).toHaveBeenCalledWith(expect.objectContaining({ existingSessionId: 'original', requireSameSessionId: true }))
-        } finally {
-            client.shutdown()
-        }
-    })
 
     it('forwards collaborationMode and serviceTier to spawnSession', async () => {
         const machine = makeMachine('machine-spawn-1')

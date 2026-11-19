@@ -78,7 +78,7 @@ export function windowsGenerationMayBeAlive(table: WindowsProcessTable | null, p
 
 export type WindowsStopReport = { confirmed: boolean; phase: string; elapsedMs: number; snapshots: number }
 export async function stopWindowsProcessTree(rootPid: number, force: boolean, report?: (result: WindowsStopReport) => void,
-    callerDeadlineMs?: number, requiredRootMarker?: string): Promise<boolean> {
+    callerDeadlineMs?: number): Promise<boolean> {
     // Includes command startup, queries, signalling and verification, independent
     // of tree size. Each async child is killed when its remaining budget expires.
     const started = performance.now()
@@ -100,7 +100,6 @@ export async function stopWindowsProcessTree(rootPid: number, force: boolean, re
     }
     if (!remaining()) return finish(false)
     const initial = await readWindowsProcessTable(Math.min(15_000, remaining()))
-    if (requiredRootMarker && initial?.get(rootPid)?.marker !== requiredRootMarker) return finish(false)
     if (!initial) {
         // A transient CIM failure must not leave the cancellation path with no
         // termination attempt. A direct process probe still supplies a

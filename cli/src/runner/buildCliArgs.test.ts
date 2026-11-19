@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -507,15 +507,6 @@ describe('buildCliArgs', () => {
 
 
 describe('createSpawnDeduplicator', () => {
-    it('rejects a recovered mismatched spawn result for a strict wake', async () => {
-        const spawn = vi.fn()
-        const dedupe = createSpawnDeduplicator(spawn)
-        dedupe.recoverChild('requested', { type: 'success', sessionId: 'different' })
-        const result = await dedupe({ directory: '/tmp', existingSessionId: 'requested', requireSameSessionId: true })
-        expect(result.type).toBe('error')
-        expect(spawn).not.toHaveBeenCalled()
-    })
-
     it('rehydrates a live child after runner restart without spawning again', async () => {
         let calls = 0
         const dedupe = createSpawnDeduplicator(async () => {

@@ -164,7 +164,6 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const namespace = c.get('namespace')
 
         const wakeError = (result: Extract<ResumeSessionResult | ReopenSessionResult, { type: 'error' }>) => {
-            if (result.code === 'cleanup_pending') return c.json({ error: result.message, code: result.code, retryable: true }, 409)
             const status = result.code === 'no_machine_online' ? 503
                 : result.code === 'access_denied' ? 403
                     : result.code === 'session_not_found' ? 404
@@ -197,8 +196,7 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 current = requireSessionFromParam(c, engine)
                 if (current instanceof Response) return current
             }
-            const hibernated = (!current.session.active && isHibernatedLifecycleState(current.session.metadata?.lifecycleState))
-                || current.session.metadata?.hibernation?.state === 'stopping'
+            const hibernated = !current.session.active && isHibernatedLifecycleState(current.session.metadata?.lifecycleState)
             if (!current.session.active && !hibernated) {
                 return c.json({ error: 'Session is inactive', code: 'session_inactive' }, 409)
             }
@@ -242,8 +240,7 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             if (!engine.hibernationInFlight?.(target) && !engine.pendingSessionWake?.(target, namespace)) {
                 const current = requireSessionFromParam(c, engine)
                 if (current instanceof Response) return current
-                if (current.session.active || (!isHibernatedLifecycleState(current.session.metadata?.lifecycleState)
-                    && current.session.metadata?.hibernation?.state !== 'stopping')) {
+                if (current.session.active || !isHibernatedLifecycleState(current.session.metadata?.lifecycleState)) {
                     throw error
                 }
             }

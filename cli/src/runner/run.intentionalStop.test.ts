@@ -1,8 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { EventEmitter, once } from 'node:events'
-import { spawn } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { CodexRuntimeRecord } from '@/codex/shared/registry'
 import type { startRunnerControlServer } from './controlServer'
@@ -16,9 +15,6 @@ const mocks = vi.hoisted(() => ({
     findRuntime: vi.fn(),
     reapOrphans: vi.fn<typeof import('./orphanReap')['reapRunnerSpawnedOrphans']>(),
     kill: vi.fn(),
-    sweep: vi.fn<typeof import('@/utils/process')['sweepProcessGroup']>(async () => true),
-    marker: vi.fn<(pid: number) => string | null>(() => 'generation'),
-    groupGone: vi.fn((_pid: number) => false),
     isProcessAlive: vi.fn<(pid: number) => boolean>(() => true),
     spawnHappyCLI: vi.fn(),
     reportChildExit: vi.fn(),
@@ -63,7 +59,7 @@ vi.mock('@/utils/process', async importOriginal => ({
     ...await importOriginal<typeof import('@/utils/process')>(),
     isWindows: () => false,
     isProcessAlive: mocks.isProcessAlive,
-    getProcessStartMarker: mocks.marker,
+    getProcessStartMarker: () => 'generation',
     // The probe reads /proc/<pid>/status on Linux: a busy shared host can have
     // an unrelated non-leader task owning PID_GONE's TID, which would classify
     // the durable record as exited (dropping it without a tombstone) before
@@ -72,8 +68,6 @@ vi.mock('@/utils/process', async importOriginal => ({
     killProcess: mocks.kill,
     killProcessTreeByPid: mocks.kill,
     killProcessByChildProcess: mocks.kill,
-    sweepProcessGroup: mocks.sweep,
-    processGroupGone: mocks.groupGone,
 }))
 vi.mock('@/utils/spawnHappyCLI', () => ({ spawnHappyCLI: mocks.spawnHappyCLI }))
 vi.mock('@/api/api', () => ({
@@ -93,7 +87,6 @@ vi.mock('@/api/api', () => ({
 
 import { configuration } from '@/configuration'
 import { startRunner } from './run'
-import { ExitedProcessGroups } from './exitedProcessGroups'
 
 type RunnerHandlers = Parameters<typeof startRunnerControlServer>[0]
 
@@ -104,20 +97,6 @@ function makeFakeChild(pid: number): EventEmitter & { pid: number } {
     child.pid = pid
     return child
 }
-
-it('evicts the oldest exited group aliases and preserves a rebound ID when cleanup finishes', () => {
-    const groups = new ExitedProcessGroups(3)
-    const old = { pgid: 10, startMarker: 'old' }
-    const newer = { pgid: 10, startMarker: 'new' }
-    groups.remember(old, ['first', 'second', 'rebound'])
-    groups.remember(newer, ['rebound', 'last'])
-    expect(groups.get('first')).toBeUndefined()
-    expect(groups.get('second')).toBe(old)
-    groups.confirm(old)
-    expect(groups.get('second')).toEqual({ ...old, confirmed: true })
-    expect(groups.get('rebound')).toBe(newer)
-    expect(groups.get('last')).toBe(newer)
-})
 
 describe('runner intentional-stop marker cleanup', () => {
     let handlers: RunnerHandlers
@@ -143,7 +122,6 @@ describe('runner intentional-stop marker cleanup', () => {
         // 'sess-gone' and the generation probe verifies it as alive.
         writeFileSync(`${configuration.runnerStateFile}.resume-processes.json`, JSON.stringify([
             { requestedSessionId: 'sess-gone', pid: PID_GONE, processStartMarker: 'generation' },
-            { requestedSessionId: 'recovered-wake', confirmedSessionId: 'recovered-wake', pid: 5010, processStartMarker: 'generation', flavor: 'claude' },
         ]))
         runnerPromise = startRunner()
         await vi.waitFor(() => expect(handlers.stopSession).toBeTypeOf('function'))
@@ -162,10 +140,7 @@ describe('runner intentional-stop marker cleanup', () => {
         mocks.readRuntimes.mockResolvedValue([])
         mocks.findRuntime.mockResolvedValue(undefined)
         mocks.reapOrphans.mockResolvedValue(null)
-        mocks.marker.mockReturnValue('generation')
         mocks.kill.mockResolvedValue(true)
-        mocks.sweep.mockResolvedValue(true)
-        mocks.groupGone.mockReturnValue(false)
         mocks.isProcessAlive.mockImplementation(() => true)
         mocks.spawnHappyCLI.mockImplementation(() => { throw new Error('no child queued for spawn') })
     })
@@ -191,30 +166,6 @@ describe('runner intentional-stop marker cleanup', () => {
         if (!settled) throw new Error(`Spawn ${sessionId} was not confirmed by webhook`)
     }
 
-    it('refuses a mismatched wake webhook and cleans up only its own spawned child', async () => {
-        const child = makeFakeChild(8990)
-        mocks.spawnHappyCLI.mockReturnValue(child)
-        const spawn = handlers.spawnSession({ directory: home, agent: 'claude', existingSessionId: 'original',
-            requireSameSessionId: true })
-        await confirmSpawn(spawn, 'unrelated-row', child.pid)
-        expect(await spawn).toMatchObject({ type: 'error', errorMessage: expect.stringContaining('unexpected session ID') })
-        expect(mocks.kill).toHaveBeenCalledTimes(1)
-        expect(mocks.kill.mock.calls[0][0]).toBe(child)
-        expect(mocks.kill.mock.calls[0].at(-1)).toBe('generation')
-    })
-
-    it('spawns a new same-ID wrapper immediately after a generation-checked recovered stop', async () => {
-        const id = 'recovered-wake'
-        const opts = { requireProcessGroupCleanup: true, expectedPid: 5010, processStartMarker: 'generation' }
-        await expect(handlers.stopSession(id, opts)).resolves.toBe('stopped')
-        const child = makeFakeChild(5011)
-        mocks.spawnHappyCLI.mockReturnValue(child)
-        const spawn = handlers.spawnSession({ directory: home, agent: 'claude', existingSessionId: id, requireSameSessionId: true })
-        await confirmSpawn(spawn, id, child.pid)
-        expect(await spawn).toEqual({ type: 'success', sessionId: id })
-        expect(mocks.spawnHappyCLI).toHaveBeenCalledTimes(1)
-    })
-
     it('reports a reused pid unexpected exit after a stop that returned already_gone', async () => {
         // The process is already dead when the stop runs: the runner reports
         // already_gone without any exit event for it.
@@ -233,189 +184,6 @@ describe('runner intentional-stop marker cleanup', () => {
         expect(mocks.reportChildExit).toHaveBeenCalledWith(
             expect.objectContaining({ sid: 'sess-new', pid: PID_GONE })
         )
-    })
-
-    it.skipIf(process.platform === 'win32')('hibernates a real detached wrapper and its reparented group member', async () => {
-        const real = await vi.importActual<typeof import('@/utils/process')>('@/utils/process')
-        const child = spawn('sh', ['-c', 'sh -c "sleep 60 >/dev/null 2>&1 &"; echo ready; exec sleep 60'],
-            { detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
-        const pid = child.pid!
-        try {
-            await once(child.stdout, 'data')
-            const marker = real.getProcessStartMarker(pid)!
-            expect(real.captureGroupMembers(pid, marker).length).toBeGreaterThan(0)
-            mocks.marker.mockImplementation(real.getProcessStartMarker)
-            mocks.isProcessAlive.mockImplementation(real.isProcessAlive)
-            mocks.kill.mockImplementation(real.killProcessTreeByPid)
-            mocks.sweep.mockImplementation(real.sweepProcessGroup)
-            mocks.groupGone.mockImplementation(real.processGroupGone)
-            mocks.spawnHappyCLI.mockReturnValue(child)
-            const id = 'real-reparented'
-            const started = handlers.spawnSession({ directory: home, agent: 'claude', existingSessionId: id })
-            await confirmSpawn(started, id, pid)
-            await expect(started).resolves.toEqual({ type: 'success', sessionId: id })
-            await expect(handlers.stopSession(id, { requireProcessGroupCleanup: true, expectedPid: pid, processStartMarker: marker })).resolves.toBe('stopped')
-            expect(real.processGroupGone(pid)).toBe(true)
-        } finally {
-            if (!real.processGroupGone(pid)) process.kill(-pid, 'SIGKILL')
-        }
-    })
-
-    it('sweeps the recorded process group of a wrapper that exited on its own', async () => {
-        const child = makeFakeChild(6300)
-        mocks.spawnHappyCLI.mockImplementation(() => child)
-        const spawnPromise = handlers.spawnSession({ directory: home, agent: 'claude', existingSessionId: 'sess-exited' })
-        await confirmSpawn(spawnPromise, 'sess-exited', 6300)
-        await expect(spawnPromise).resolves.toEqual({ type: 'success', sessionId: 'sess-exited' })
-
-        mocks.isProcessAlive.mockImplementation((pid: number) => pid !== 6300)
-        child.emit('exit', 1, null)
-        await vi.waitFor(() => expect(mocks.reportChildExit).toHaveBeenCalled())
-
-        mocks.sweep.mockResolvedValueOnce(false)
-        await expect(handlers.stopSession('sess-exited', { requireProcessGroupCleanup: true })).resolves.toBe('still_alive')
-        expect(mocks.sweep).toHaveBeenCalledWith(6300, expect.objectContaining({ expectedStartMarker: 'generation' }))
-
-        await expect(handlers.stopSession('sess-exited', { requireProcessGroupCleanup: true })).resolves.toBe('already_gone')
-        expect(mocks.sweep).toHaveBeenCalledTimes(2)
-
-        await expect(handlers.stopSession('sess-exited', { requireProcessGroupCleanup: true })).resolves.toBe('already_gone')
-        expect(mocks.sweep).toHaveBeenCalledTimes(2)
-        expect(mocks.kill).not.toHaveBeenCalled()
-    })
-
-    it.each([true, false])('never sweeps a reused group observed empty (empty at exit: %s)', async emptyAtExit => {
-        const pid = emptyAtExit ? 6450 : 6451
-        const id = `reused-group-${pid}`
-        const child = makeFakeChild(pid)
-        mocks.spawnHappyCLI.mockImplementation(() => child)
-        const spawn = handlers.spawnSession({ directory: home, agent: 'claude', existingSessionId: id })
-        await confirmSpawn(spawn, id, pid)
-        await expect(spawn).resolves.toEqual({ type: 'success', sessionId: id })
-        mocks.groupGone.mockImplementation(candidate => candidate === pid && emptyAtExit)
-        mocks.isProcessAlive.mockImplementation(candidate => candidate !== pid)
-        child.emit('exit', 0, null)
-        await vi.waitFor(() => expect(mocks.reportChildExit).toHaveBeenCalled())
-        if (!emptyAtExit) {
-            mocks.sweep.mockResolvedValueOnce(false)
-            await expect(handlers.stopSession(id, { requireProcessGroupCleanup: true })).resolves.toBe('still_alive')
-            expect(mocks.sweep).toHaveBeenCalledTimes(1)
-            mocks.sweep.mockClear()
-            mocks.groupGone.mockImplementation(candidate => candidate === pid)
-            await handlers.stopSession('unrelated-session')
-        }
-        mocks.groupGone.mockReturnValue(false)
-        await expect(handlers.stopSession(id, { requireProcessGroupCleanup: true })).resolves.toBe('already_gone')
-        expect(mocks.sweep).not.toHaveBeenCalled()
-    })
-
-    it('acknowledges a repeated stop after the first successful sweep reply is lost', async () => {
-        const id = 'lost-stop-ack'
-        const child = makeFakeChild(6499)
-        mocks.spawnHappyCLI.mockImplementation(() => child)
-        const spawned = handlers.spawnSession({ directory: home, agent: 'claude', existingSessionId: id })
-        await confirmSpawn(spawned, id, 6499)
-        const opts = { requireProcessGroupCleanup: true }
-        await expect(handlers.stopSession(id, opts)).resolves.toBe('stopped')
-        mocks.isProcessAlive.mockImplementation(pid => pid !== 6499)
-        child.emit('exit', 0, null)
-        await expect(handlers.stopSession(id, opts)).resolves.toBe('already_gone')
-        expect(mocks.sweep).toHaveBeenCalledTimes(1)
-    })
-
-    it('archive of an exited wrapper leaves its recorded process group alone', async () => {
-        const child = makeFakeChild(6400)
-        mocks.spawnHappyCLI.mockImplementation(() => child)
-        const spawnPromise = handlers.spawnSession({ directory: home, agent: 'claude', existingSessionId: 'sess-archive' })
-        await confirmSpawn(spawnPromise, 'sess-archive', 6400)
-        await expect(spawnPromise).resolves.toEqual({ type: 'success', sessionId: 'sess-archive' })
-
-        mocks.isProcessAlive.mockImplementation((pid: number) => pid !== 6400)
-        child.emit('exit', 1, null)
-        await vi.waitFor(() => expect(mocks.reportChildExit).toHaveBeenCalled())
-
-        await expect(handlers.stopSession('sess-archive')).resolves.toBe('already_gone')
-        expect(mocks.sweep).not.toHaveBeenCalled()
-    })
-
-    it('sweeps only the current group after a respawn under the same session ID', async () => {
-        const id = 'same-id-respawn'
-        for (const pid of [6600, 6601]) {
-            const child = makeFakeChild(pid)
-            mocks.spawnHappyCLI.mockImplementation(() => child)
-            const spawn = handlers.spawnSession({ directory: home, agent: 'claude', existingSessionId: id })
-            await confirmSpawn(spawn, id, pid)
-            await expect(spawn).resolves.toEqual({ type: 'success', sessionId: id })
-            if (pid === 6600) {
-                mocks.isProcessAlive.mockImplementation(candidate => candidate !== pid)
-                child.emit('exit', 1, null)
-                await vi.waitFor(() => expect(mocks.reportChildExit).toHaveBeenCalled())
-            }
-        }
-        await expect(handlers.stopSession(id, { requireProcessGroupCleanup: true })).resolves.toBe('stopped')
-        expect(mocks.sweep).toHaveBeenCalledTimes(1)
-        expect(mocks.sweep).toHaveBeenCalledWith(6601, expect.any(Object))
-    })
-
-    it('retains a tracked group when its child exits during tree termination and the sweep fails', async () => {
-        const id = 'retry-tracked'
-        const child = makeFakeChild(6700)
-        mocks.spawnHappyCLI.mockImplementation(() => child)
-        const spawn = handlers.spawnSession({ directory: home, agent: 'claude', existingSessionId: id })
-        await confirmSpawn(spawn, id, 6700)
-        await expect(spawn).resolves.toEqual({ type: 'success', sessionId: id })
-        mocks.kill.mockImplementationOnce(async () => {
-            mocks.isProcessAlive.mockImplementation(pid => pid !== 6700)
-            child.emit('exit', 0, null)
-            return true
-        })
-        mocks.sweep.mockResolvedValueOnce(false)
-        await expect(handlers.stopSession(id, { requireProcessGroupCleanup: true })).resolves.toBe('still_alive')
-        await expect(handlers.stopSession(id, { requireProcessGroupCleanup: true })).resolves.toBe('already_gone')
-        expect(mocks.sweep).toHaveBeenCalledTimes(2)
-        expect(mocks.sweep).toHaveBeenLastCalledWith(6700, expect.objectContaining({ expectedStartMarker: 'generation', leaderExited: true }))
-    })
-
-    it('archive kills the tracked tree without signalling the whole process group', async () => {
-        const child = makeFakeChild(6500)
-        mocks.spawnHappyCLI.mockImplementation(() => child)
-        const spawnPromise = handlers.spawnSession({ directory: home, agent: 'claude', existingSessionId: 'sess-killed' })
-        await confirmSpawn(spawnPromise, 'sess-killed', 6500)
-        await expect(spawnPromise).resolves.toEqual({ type: 'success', sessionId: 'sess-killed' })
-
-        await expect(handlers.stopSession('sess-killed')).resolves.toBe('stopped')
-        expect(mocks.sweep).not.toHaveBeenCalled()
-        expect(mocks.kill).toHaveBeenCalled()
-        mocks.isProcessAlive.mockImplementation((pid: number) => pid !== 6500)
-        child.emit('exit', 0, null)
-        await Promise.resolve()
-
-        await expect(handlers.stopSession('sess-killed')).resolves.toBe('already_gone')
-        expect(mocks.sweep).not.toHaveBeenCalled()
-    })
-
-    it('retries an adopted wrapper group after its verified leader dies during stop', async () => {
-        const id = 'adopted-retry'
-        const pid = 6800
-        handlers.onHappySessionWebhook(id, {
-            hostPid: pid, hostStartMarker: 'generation', startedBy: 'runner', flavor: 'claude',
-            lifecycleState: 'running', path: home, host: 'localhost'
-        } as never)
-        mocks.kill.mockImplementationOnce(async () => {
-            mocks.isProcessAlive.mockImplementation(candidate => candidate !== pid)
-            return true
-        })
-        mocks.sweep.mockResolvedValueOnce(false)
-        await expect(handlers.stopSession(id, { requireProcessGroupCleanup: true })).resolves.toBe('still_alive')
-        await expect(handlers.stopSession(id, { requireProcessGroupCleanup: true })).resolves.toBe('already_gone')
-        expect(mocks.sweep).toHaveBeenCalledTimes(2)
-        await expect(handlers.stopSession(id)).resolves.toBe('already_gone')
-    })
-
-    it('requires group evidence after an argv-only orphan reap', async () => {
-        mocks.reapOrphans.mockResolvedValue('stopped')
-        await expect(handlers.stopSession('orphan-only', { requireProcessGroupCleanup: true })).resolves.toBe('unknown')
-        await expect(handlers.stopSession('orphan-only')).resolves.toBe('stopped')
     })
 
     it('still suppresses the exit of a child the stop killed intentionally', async () => {
@@ -463,7 +231,7 @@ describe('runner intentional-stop marker cleanup', () => {
                 'sibling-b': { threadId: 'b', namespace: 'test', active: true },
             },
         }])
-        await expect(handlers.stopSession('root-a', { requireProcessGroupCleanup: true })).resolves.toBe('stopped')
+        await expect(handlers.stopSession('root-a')).resolves.toBe('stopped')
         expect(mocks.kill).not.toHaveBeenCalled()
 
         // The surviving wrapper later crashes on its own: the sibling's death
