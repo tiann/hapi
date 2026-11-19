@@ -21,6 +21,7 @@ import {
     useRef,
     useState
 } from 'react'
+import type { CodexQuestionSubmission } from '@/components/ToolCard/CodexQuestionSubmission'
 import { useNarrowViewport } from '@/hooks/useNarrowViewport'
 import { shouldInvokeComposerDictateShortcut } from '@/lib/composerDictateShortcut'
 import { isRichComposerMentionsEnabled, resolveComposerPlaceholderKey } from '@/lib/composerSegments'
@@ -309,7 +310,7 @@ export function HappyComposer(props: {
     allowSendWhenInactive?: boolean
     thinking?: boolean
     agentState?: AgentState | null
-    hiddenPendingRequestIds?: ReadonlySet<string>
+    pendingRequestReceipts?: ReadonlyMap<string, CodexQuestionSubmission['status']>
     onPendingRequestClick?: (requestId: string) => void
     backgroundTaskCount?: number
     contextSize?: number
@@ -435,7 +436,7 @@ export function HappyComposer(props: {
         allowSendWhenInactive = false,
         thinking = false,
         agentState,
-        hiddenPendingRequestIds,
+        pendingRequestReceipts,
         onPendingRequestClick,
         backgroundTaskCount,
         contextSize,
@@ -2358,7 +2359,7 @@ export function HappyComposer(props: {
                         machineId={machineId}
                         thinking={thinking}
                         agentState={agentState}
-                        hiddenPendingRequestIds={hiddenPendingRequestIds}
+                        pendingRequestReceipts={pendingRequestReceipts}
                         onPendingRequestClick={onPendingRequestClick}
                         backgroundTaskCount={backgroundTaskCount}
                         contextSize={contextSize}

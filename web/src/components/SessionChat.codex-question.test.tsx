@@ -131,6 +131,8 @@ describe('Codex question receipts in the session chat', () => {
         await waitFor(() => expect(transcript().getByText('Answer sent. Waiting for the agent.')).toBeVisible())
         expect(transcript().queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument()
         expect(transcript().getByText('Web')).toBeVisible()
+        expect(screen.getByText('Answer sent. Waiting for the agent.', { selector: 'span.whitespace-nowrap' })).toBeVisible()
+        expect(screen.queryByRole('button', { name: 'Awaiting your answer' })).not.toBeInTheDocument()
         update(null)
         await waitFor(() => expect(transcript().queryByText('Answer sent. Waiting for the agent.')).not.toBeInTheDocument())
         update(state('first'))
@@ -184,13 +186,34 @@ describe('Codex question receipts in the session chat', () => {
         expect(transcript().queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument()
     })
 
-    it('keeps the pending status but drops the shortcut and consumes a route target for a hidden issuance', async () => {
+    it('opens and focuses an answered panel card from a pending-request deep link', async () => {
+        const { update, submit, transcript, onInitialPendingRequestConsumed } = setup()
+        await submit()
+        const waiting = 'Answer sent. Waiting for the agent.'
+        await waitFor(() => expect(transcript().getByText(waiting)).toBeVisible())
+        const panel = within(screen.getByRole('region', { name: waiting }))
+        expect(panel.getByRole('button', { name: waiting })).toHaveAttribute('aria-expanded', 'false')
+
+        update(state('first'), true, requestId)
+
+        await waitFor(() => {
+            expect(panel.getByRole('button', { name: waiting })).toHaveAttribute('aria-expanded', 'true')
+            const row = panel.getByText('Which client?', { selector: 'summary' }).closest('details')
+            expect(row).toHaveAttribute('open')
+            expect(row).toHaveFocus()
+            expect(within(row!).getByText('Web')).toBeVisible()
+            expect(onInitialPendingRequestConsumed).toHaveBeenCalledOnce()
+        })
+        expect(screen.queryByRole('button', { name: 'Awaiting your answer' })).not.toBeInTheDocument()
+    })
+
+    it('shows the normal status and consumes a route target for a hidden issuance', async () => {
         const { update, submit, onRefresh, onInitialPendingRequestConsumed } = setup()
         expect(screen.getByRole('button', { name: 'Awaiting your answer' })).toBeVisible()
         shell.api.approvePermission.mockRejectedValueOnce(new ApiError('Request not found', 404))
         await submit()
         await waitFor(() => expect(onRefresh).toHaveBeenCalledOnce())
-        expect(screen.getByText('Awaiting your answer', { exact: true })).toBeVisible()
+        expect(screen.getByText('online', { exact: true })).toBeVisible()
         expect(screen.queryByRole('button', { name: 'Awaiting your answer' })).not.toBeInTheDocument()
 
         update(state('first'), true, requestId)

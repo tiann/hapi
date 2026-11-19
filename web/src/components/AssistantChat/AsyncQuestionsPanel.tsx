@@ -29,7 +29,7 @@ export function AsyncQuestionsPanel(props: {
     const requests = Object.entries(props.requests ?? {})
         .filter(([, request]) => isAsyncRequestUserInput(request.tool, request.arguments))
         .map(([id, request]) => ({ id, request, submission: getCodexQuestionSubmission(submissions, id, request.instanceId) }))
-        .filter(({ submission }) => !isHiddenCodexQuestionSubmission(submission))
+        .filter(({ submission }) => !isHiddenCodexQuestionSubmission(submission?.status))
         .sort((a, b) => (a.request.createdAt ?? 0) - (b.request.createdAt ?? 0) || a.id.localeCompare(b.id))
     const pendingCount = requests.filter(({ submission }) => !submission).length
     const title = t(pendingCount ? 'chat.asyncQuestions.title' : 'tool.answerSentWaiting')

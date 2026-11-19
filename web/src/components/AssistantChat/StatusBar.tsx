@@ -8,6 +8,7 @@ import {
 import type { PermissionModeTone } from '@hapi/protocol'
 import * as Popover from '@radix-ui/react-popover'
 import { useMemo, useState } from 'react'
+import type { CodexQuestionSubmission } from '@/components/ToolCard/CodexQuestionSubmission'
 import type { AgentState, CodexCollaborationMode, PermissionMode } from '@/types/api'
 import type { ConversationStatus } from '@/realtime/types'
 import { getContextBudgetTokens } from '@/chat/modelConfig'
@@ -61,6 +62,7 @@ function getConnectionStatus(
     active: boolean,
     thinking: boolean,
     pendingRequests: readonly PendingRequestEntry[],
+    waitingForAgent: boolean,
     voiceStatus: ConversationStatus | undefined,
     backgroundTaskCount: number,
     t: (key: string) => string
@@ -82,6 +84,16 @@ function getConnectionStatus(
             color: 'text-[#999]',
             dotColor: 'bg-[#999]',
             isPulsing: false,
+            hasPendingRequests: false
+        }
+    }
+
+    if (waitingForAgent) {
+        return {
+            text: t('tool.answerSentWaiting'),
+            color: 'text-[#007AFF]',
+            dotColor: 'bg-[#007AFF]',
+            isPulsing: true,
             hasPendingRequests: false
         }
     }
@@ -229,7 +241,7 @@ export function StatusBar(props: {
     copilotAgentMode?: import('@hapi/protocol').CopilotAgentMode
     agentFlavor?: string | null
     voiceStatus?: ConversationStatus
-    hiddenPendingRequestIds?: ReadonlySet<string>
+    pendingRequestReceipts?: ReadonlyMap<string, CodexQuestionSubmission['status']>
     onPendingRequestClick?: (requestId: string) => void
 }) {
     const { t } = useTranslation()
@@ -240,16 +252,17 @@ export function StatusBar(props: {
         [props.agentState?.requests]
     )
     const actionableRequests = useMemo(
-        () => props.hiddenPendingRequestIds?.size
-            ? pendingRequests.filter(request => !props.hiddenPendingRequestIds?.has(request.id))
+        () => props.pendingRequestReceipts?.size
+            ? pendingRequests.filter(request => !props.pendingRequestReceipts?.has(request.id))
             : pendingRequests,
-        [pendingRequests, props.hiddenPendingRequestIds]
+        [pendingRequests, props.pendingRequestReceipts]
     )
     const hasActionableShortcut = Boolean(props.onPendingRequestClick && actionableRequests.length > 0)
-    const statusRequests = hasActionableShortcut ? actionableRequests : pendingRequests
+    const waitingForAgent = actionableRequests.length === 0
+        && pendingRequests.some(request => props.pendingRequestReceipts?.get(request.id) === 'answered')
     const connectionStatus = useMemo(
-        () => getConnectionStatus(props.active, props.thinking, statusRequests, props.voiceStatus, props.backgroundTaskCount ?? 0, t),
-        [props.active, props.thinking, statusRequests, props.voiceStatus, props.backgroundTaskCount, t]
+        () => getConnectionStatus(props.active, props.thinking, actionableRequests, waitingForAgent, props.voiceStatus, props.backgroundTaskCount ?? 0, t),
+        [props.active, props.thinking, actionableRequests, waitingForAgent, props.voiceStatus, props.backgroundTaskCount, t]
     )
 
     const contextHeuristicModel = props.contextModel ?? props.model

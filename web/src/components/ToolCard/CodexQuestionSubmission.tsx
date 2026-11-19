@@ -59,8 +59,8 @@ export function getCodexQuestionSubmission(submissions: SessionSubmissions | und
     return instanceId ? submissions?.get(receiptKey(id, instanceId))?.submission : undefined
 }
 
-export function isHiddenCodexQuestionSubmission(submission: CodexQuestionSubmission | undefined): boolean {
-    return submission?.status === 'dismissed' || submission?.status === 'missing'
+export function isHiddenCodexQuestionSubmission(status: CodexQuestionSubmission['status'] | undefined): boolean {
+    return status === 'dismissed' || status === 'missing'
 }
 
 export function usePruneCodexQuestionSubmissions(sessionId: string, agentState: AgentState | null | undefined) {
