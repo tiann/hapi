@@ -609,11 +609,11 @@ it('keeps the explicit Telegram-disabled diagnostic actionable', async () => {
     await waitFor(() => expect(result.current.connectionError?.diagnostic).toBe(diagnostic))
 })
 
-it('preserves the active session when a deadline abort is reported as an incomplete 401', async () => {
+it.each([401, 408, 429, 503])('preserves the active session when a deadline abort interrupts HTTP %s', async status => {
     vi.useFakeTimers()
     const token = makeJwtWithExp(Math.floor(Date.now() / 1000) + 3600)
     h.setAuthenticateImpl((count, signal) => count === 1 ? Promise.resolve({ token, user: { id: 'u1' } }) : new Promise((_resolve, reject) => {
-        signal?.addEventListener('abort', () => reject(new h.MockApiError('body aborted', 401)), { once: true })
+        signal?.addEventListener('abort', () => reject(new h.MockApiError('body aborted', status)), { once: true })
     }))
     const source = { type: 'accessToken' as const, token: 'fixture' }
     const { result, unmount } = renderHook(() => useAuth(source, 'https://hub.test'))
@@ -624,7 +624,7 @@ it('preserves the active session when a deadline abort is reported as an incompl
     await flushMicrotasks()
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000); await refresh })
     expect(result.current.token).toBe(token)
-    expect(result.current.connectionError).toEqual({})
+    expect(result.current.connectionError).toEqual(status === 401 ? {} : { status })
     expect(result.current.error).toBeNull()
     unmount()
 })

@@ -23,6 +23,12 @@ describe('ApiClient error mapping', () => {
         await expect(pending).rejects.toHaveProperty('name', 'AbortError')
     })
 
+    it.each([408, 429, 503])('retains HTTP %s when a transient auth response body is interrupted', async status => {
+        const body = new ReadableStream({ start(stream) { stream.error(new TypeError('connection lost')) } })
+        fetchMock.mockResolvedValueOnce(new Response(body, { status }))
+        await expect(new ApiClient('').authenticate({ accessToken: 'fixture' })).rejects.toMatchObject({ status })
+    })
+
     it('apiErrorMessage unwraps the hub error string and falls back cleanly', () => {
         const body = '{"success":false,"error":"No online machine available for Pi history import"}'
         const error = new ApiError(`HTTP 503 Service Unavailable: ${body}`, 503, 'No online machine available for Pi history import', body)

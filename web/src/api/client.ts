@@ -341,7 +341,16 @@ export class ApiClient {
         })
 
         if (!res.ok) {
-            const body = await res.text()
+            let body: string
+            try { body = await res.text() }
+            catch (error) {
+                // Headers already establish a transient server failure. A partial
+                // credential rejection must still remain retryable.
+                if (res.status >= 500 || res.status === 408 || res.status === 429) {
+                    throw new ApiError(`Auth failed: HTTP ${res.status} ${res.statusText}`, res.status)
+                }
+                throw error
+            }
             const code = parseErrorCode(body)
             const detail = body ? `: ${body}` : ''
             throw new ApiError(`Auth failed: HTTP ${res.status} ${res.statusText}${detail}`, res.status, code, body || undefined)
