@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { Session } from './types'
+import type { Metadata, Session } from './types'
 import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -130,6 +130,7 @@ vi.mock('axios', () => ({
 }))
 
 import { ApiSessionClient, isExternalUserMessage, IncomingMessageFilter } from './apiSession'
+import { SharedCodexProjection } from '@/codex/shared/projection'
 
 function createSession(overrides: Partial<Session> = {}): Session {
     return {
@@ -2431,6 +2432,97 @@ describe('ApiSessionClient metadata cancellation and reconnect ordering', () => 
             client.close()
         } finally {
             vi.useRealTimers()
+        }
+    })
+
+    it('skips an unchanged Codex history write queued while the first ACK is pending', async () => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({
+            namespace: 'default',
+            metadata: { path: '/tmp', host: 'h', flavor: 'codex' },
+            metadataVersion: 1
+        }))
+        const socket = socketHarness.sockets[0]!
+        const firstWrite = deferred<void>()
+        const releaseAck = deferred<void>()
+        let historyWrites = 0
+        socket.emitWithAckImpl = async (event, payload) => {
+            if (event !== 'update-metadata') return {}
+            const update = payload as { expectedVersion: number; metadata: unknown }
+            if (++historyWrites === 1) {
+                firstWrite.resolve()
+                await releaseAck.promise
+            }
+            return { result: 'success', version: update.expectedVersion + 1, metadata: update.metadata }
+        }
+        const snapshot = { id: 'thread', turns: [{ id: 'turn', status: 'completed', items: [{
+            type: 'userMessage', id: 'item', clientId: 'message', content: [{ type: 'text', text: 'prompt' }]
+        }] }] }
+        const projection = new SharedCodexProjection(client, 'thread', async () => {})
+        try {
+            await projection.history(snapshot)
+            await firstWrite.promise
+            projection.resetAfterHubReconnect()
+            await projection.history(snapshot)
+            releaseAck.resolve()
+            expect(await client.flush({ timeoutMs: 1_000 })).toBe(true)
+            expect(historyWrites).toBe(1)
+            expect(client.getMetadata()?.conversationHistoryPoints).toEqual({ message: true })
+        } finally {
+            releaseAck.resolve()
+            client.close()
+        }
+    })
+
+    it.each(['reconnect update', 'version mismatch'])('saves emitted Codex fork points after a Hub fallback archive via %s', async learnedFrom => {
+        socketHarness.sockets.length = 0
+        axiosHarness.get.mockResolvedValue({ data: { messages: [] } })
+        const running = { path: '/tmp', host: 'h', flavor: 'codex', lifecycleState: 'running' } as const
+        const archived = { ...running, lifecycleState: 'archived', archivedBy: 'hub',
+            lifecycleStateSince: 42, archiveReason: 'Archived from hub (CLI unreachable)' } as const
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default', metadata: running, metadataVersion: 1 }))
+        const socket = socketHarness.sockets[0]!
+        const firstMessage = deferred<void>()
+        const releaseReplay = deferred<void>()
+        const send = client.sendUserMessage.bind(client)
+        vi.spyOn(client, 'sendUserMessage').mockImplementationOnce((...args) => { send(...args); firstMessage.resolve() })
+        let committed = 0
+        const projection = new SharedCodexProjection(client, 'thread', async () => {
+            if (++committed === 2) await releaseReplay.promise
+        })
+        const snapshot = { id: 'thread', turns: [{ id: 'turn', status: 'completed', items: [{
+            type: 'userMessage', id: 'item', clientId: 'message', content: [{ type: 'text', text: 'prompt' }]
+        }] }] }
+        const writes: Array<{ expectedVersion: number; metadata: Metadata }> = []
+        socket.emitWithAckImpl = async (event, payload) => {
+            if (event !== 'update-metadata') return {}
+            const update = payload as (typeof writes)[number]
+            writes.push(update)
+            if (update.expectedVersion === 1) return { result: 'version-mismatch', version: 2, metadata: archived }
+            return { result: 'success', version: 3, metadata: update.metadata }
+        }
+        const replay = projection.history(snapshot)
+        try {
+            await firstMessage.promise
+            expect(writes).toHaveLength(0)
+            socket.connected = false
+            socket.trigger('disconnect', 'transport close')
+            socket.triggerConnect()
+            if (learnedFrom === 'reconnect update') {
+                socket.trigger('update', { body: { t: 'update-session', sid: client.sessionId,
+                    metadata: { version: 2, value: archived }, agentState: null } })
+                expect(client.hubArchived).toBe(true)
+            }
+            releaseReplay.resolve()
+            await replay
+            expect(await client.flush({ timeoutMs: 1_000 })).toBe(true)
+            expect(writes.map(write => write.expectedVersion)).toEqual(learnedFrom === 'reconnect update' ? [2] : [1, 2])
+            expect(client.getMetadata()).toMatchObject({
+                ...archived, conversationHistoryTurns: { message: 'turn' }, conversationHistoryPoints: { message: true }
+            })
+        } finally {
+            releaseReplay.resolve()
+            client.close()
         }
     })
 

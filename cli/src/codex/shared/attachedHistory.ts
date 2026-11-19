@@ -5,12 +5,22 @@ import { z } from 'zod';
 import { record, string } from './gateway';
 
 const SnapshotSchema = z.array(z.object({ id: z.string(), hash: z.string().nullable() }));
+const checkpointWrites = new Map<string, Promise<void>>();
 export class AttachedHistoryChangedError extends Error {
     constructor() { super('Native history changed outside HAPI; use hapi attach --new-view for a fresh projection'); }
 }
 
 /** Durable observed-prefix guard, including rewrites missed while detached. */
 export async function validateAttachedHistory(file: string, thread: unknown): Promise<void> {
+    // A cancelled replay may still be writing while its replacement validates.
+    const write = (checkpointWrites.get(file) ?? Promise.resolve()).catch(() => {})
+        .then(() => validateAndWriteCheckpoint(file, thread));
+    checkpointWrites.set(file, write);
+    try { await write; }
+    finally { if (checkpointWrites.get(file) === write) checkpointWrites.delete(file); }
+}
+
+async function validateAndWriteCheckpoint(file: string, thread: unknown): Promise<void> {
     const turns = record(thread).turns;
     if (!Array.isArray(turns)) throw new Error('Cannot verify attached native history');
     const current = turns.map(record).map(turn => {

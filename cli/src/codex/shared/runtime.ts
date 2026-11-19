@@ -371,7 +371,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             }, control: (method, params) => operation(async () => {
                 const sid = string(record(params).sessionId); const root = [...roots.values()].find(root => root.session.sessionId === sid);
                 if (!root) throw new Error('Shared session not found');
-                if (method === 'hapi/stopSession') { await end(root); return { stopped: true }; }
+                if (method === 'hapi/stopSession') { await root.archiveFromRunner(); return { stopped: true }; }
                 if (method === 'hapi/attach') return { threadId: root.threadId };
                 throw new Error('Unknown runtime control');
             }) } });

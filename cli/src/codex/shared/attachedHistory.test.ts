@@ -1,8 +1,13 @@
-import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { AttachedHistoryChangedError, validateAttachedHistory } from './attachedHistory';
+
+vi.mock('node:fs/promises', async importOriginal => {
+    const fs = await importOriginal<typeof import('node:fs/promises')>();
+    return { ...fs, readFile: vi.fn(fs.readFile), rename: vi.fn(fs.rename) };
+});
 
 const homes: string[] = [];
 afterEach(async () => { await Promise.all(homes.splice(0).map(home => rm(home, { recursive: true, force: true }))); });
@@ -13,6 +18,32 @@ async function checkpoint() {
 const turn = (id: string, text = id, status = 'completed') => ({ id, status, items: [{ id, type: 'agentMessage', text }] });
 
 describe('attached completed-history checkpoint', () => {
+    it('serializes an older replay write and its replacement for the same checkpoint', async () => {
+        const file = await checkpoint();
+        const entered = Promise.withResolvers<void>();
+        const release = Promise.withResolvers<void>();
+        const fs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+        vi.mocked(rename).mockImplementationOnce(async (from, to) => {
+            entered.resolve();
+            await release.promise;
+            await fs.rename(from, to);
+        });
+        const older = validateAttachedHistory(file, { turns: [turn('a')] });
+        await entered.promise;
+        vi.mocked(readFile).mockClear();
+        const newer = validateAttachedHistory(file, { turns: [turn('a'), turn('b')] });
+        try {
+            expect(readFile).not.toHaveBeenCalled();
+        } finally {
+            release.resolve();
+            await Promise.all([older, newer]);
+        }
+        const stored = JSON.parse(await readFile(file, 'utf8')) as Array<{ id: string }>;
+        expect(stored.map(entry => entry.id)).toEqual(['a', 'b']);
+        await expect(validateAttachedHistory(file, { turns: [turn('a'), turn('b', 'rewritten')] }))
+            .rejects.toBeInstanceOf(AttachedHistoryChangedError);
+    });
+
     it('accepts appends and changing in-progress items, sealing terminal content privately', async () => {
         const file = await checkpoint();
         await validateAttachedHistory(file, { turns: [turn('a'), turn('b', 'partial', 'inProgress')] });

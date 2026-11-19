@@ -2,6 +2,7 @@ import { CodexRoundDuration } from '../utils/roundDuration';
 import { CodexGenerationLedger } from '../utils/codexGenerationLedger';
 import { createHash } from 'node:crypto';
 import type { ApiSessionClient } from '@/api/apiSession';
+import type { Metadata } from '@/api/types';
 import { normalizeSessionDisplayTitle } from '@/agent/sessionDisplayRename';
 import { registerGeneratedImageFromPath } from '@/modules/common/generatedImages';
 import { AppServerEventConverter } from '../utils/appServerEventConverter';
@@ -90,17 +91,18 @@ export class SharedCodexProjection {
      */
     resetAfterHubReconnect(): void { this.converter = new AppServerEventConverter(); this.emitted.clear(); }
 
-    private publishHistoryMetadata(): void {
-        if (this.historyUpdateQueued) return;
-        const metadata = this.session.getMetadata();
-        let changed = false;
+    hasUnpublishedHistory(metadata: Metadata | null | undefined = this.session.getMetadata()): boolean {
         for (const [id, turn] of this.turns) {
-            if (metadata?.conversationHistoryTurns?.[id] !== turn) { changed = true; break; }
+            if (metadata?.conversationHistoryTurns?.[id] !== turn) return true;
         }
-        if (!changed) for (const id of this.historyPoints) {
-            if (metadata?.conversationHistoryPoints?.[id] !== true) { changed = true; break; }
+        for (const id of this.historyPoints) {
+            if (metadata?.conversationHistoryPoints?.[id] !== true) return true;
         }
-        if (!changed) return;
+        return false;
+    }
+
+    private publishHistoryMetadata(): void {
+        if (this.historyUpdateQueued || !this.hasUnpublishedHistory(this.session.getMetadata())) return;
 
         // While the CAS waits for its lock, fold new mappings into the same write.
         this.historyUpdateQueued = true;
@@ -110,6 +112,8 @@ export class SharedCodexProjection {
                 started = true;
                 this.historyUpdateQueued = false;
             }
+            // A write ahead of us may have acknowledged these mappings while we waited.
+            if (!this.hasUnpublishedHistory(current)) return current;
             return {
                 ...current,
                 conversationHistoryTurns: { ...current.conversationHistoryTurns, ...Object.fromEntries(this.turns) },
@@ -118,7 +122,7 @@ export class SharedCodexProjection {
                     ...Object.fromEntries([...this.historyPoints].map(id => [id, true as const]))
                 }
             };
-        });
+        }, { skipUnchanged: true, codexHistoryOnly: true });
     }
 
     private setSummaryThread(thread: unknown): void {
@@ -387,7 +391,8 @@ export class SharedCodexProjection {
         this.generation.noteTokenUsage(0);
     }
 
-    async history(thread: unknown): Promise<void> {
+    async history(thread: unknown, signal?: AbortSignal): Promise<void> {
+        if (signal?.aborted) return;
         if (record(thread).id === this.threadId) this.setSummaryThread(thread);
         const turns = record(thread).turns;
         if (!Array.isArray(turns)) return;
@@ -399,6 +404,7 @@ export class SharedCodexProjection {
                 const turn = record(value);
                 if (!Array.isArray(turn.items)) continue;
                 for (const item of turn.items) {
+                    if (signal?.aborted) return;
                     const params = { threadId: this.threadId, turnId: turn.id, item };
                     const titleKey = `${string(turn.id) ?? 'thread'}:${record(item).id}`;
                     const pendingTitle = requestedTitle(record(item));
@@ -406,6 +412,7 @@ export class SharedCodexProjection {
                         this.pendingTitles.set(titleKey, pendingTitle);
                     }
                     await this.project('item/started', params, undefined, true);
+                    if (signal?.aborted) return;
                     // Active snapshots can contain partial assistant text. Do not
                     // settle it under the final stable id and suppress completion.
                     if (turn.status !== 'inProgress' || record(item).status === 'completed' || record(item).type === 'userMessage'

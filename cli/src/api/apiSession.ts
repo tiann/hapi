@@ -1453,13 +1453,29 @@ if (isReconnect) {
         })
     }
 
-    updateMetadata(handler: (metadata: Metadata) => Metadata, options?: { signal?: AbortSignal }): void {
+    updateMetadata(handler: (metadata: Metadata) => Metadata, options?: {
+        signal?: AbortSignal; skipUnchanged?: boolean; codexHistoryOnly?: boolean
+    }): void {
         const signal = options?.signal
+        const codexHistoryOnly = options?.codexHistoryOnly === true
+        const apply = codexHistoryOnly ? (current: Metadata): Metadata => {
+            const updated = handler(current)
+            if (updated === current) return updated
+            // A fallback archive can race history replay. Allow its fork mappings
+            // to catch up without touching the Hub's lifecycle or other metadata.
+            return {
+                ...current,
+                conversationHistoryTurns: updated.conversationHistoryTurns,
+                conversationHistoryPoints: updated.conversationHistoryPoints
+            }
+        } : handler
         if (signal?.aborted) return
         if (this.state !== 'active') {
             if (this.state === 'closed') return
             const current = this.metadata ?? ({} as Metadata)
-            this.metadata = handler(current)
+            const updated = apply(current)
+            if (options?.skipUnchanged && updated === current) return
+            this.metadata = updated
             if (this.state === 'materializing') {
                 this.metadataChangedDuringAttempt = true
             }
@@ -1469,14 +1485,15 @@ if (isReconnect) {
             await backoff(async () => {
                 if (signal?.aborted || this.isClosed()) return
                 // #1911 M1 criterion 6: hub-archived → EXIT (same as applyRemoteMetadata).
-                if (this.metadata?.lifecycleState === 'archived' && this.metadata.archivedBy === 'hub') {
+                if (!codexHistoryOnly && this.metadata?.lifecycleState === 'archived' && this.metadata.archivedBy === 'hub') {
                     this.noteHubArchived()
                     logger.debug('[API] Skipping metadata update; session hub-archived')
                     return
                 }
 
                 const current = this.metadata ?? ({} as Metadata)
-                const updated = handler(current)
+                const updated = apply(current)
+                if (options?.skipUnchanged && updated === current) return
                 if (!this.socket.connected) {
                     throw new Error('Socket not connected')
                 }
@@ -1531,7 +1548,7 @@ if (isReconnect) {
                 } catch (error) {
                     // True version races still throw; if hub archived mid-flight,
                     // applied metadata is archived — exit, do not spin.
-                    if (this.metadata?.lifecycleState === 'archived' && this.metadata.archivedBy === 'hub') {
+                    if (!codexHistoryOnly && this.metadata?.lifecycleState === 'archived' && this.metadata.archivedBy === 'hub') {
                         this.noteHubArchived()
                         return
                     }
@@ -1541,7 +1558,7 @@ if (isReconnect) {
                 // Success+preserve terminates backoff without throw; ensure EXIT
                 // if ack applied hub-archived (detector above already fired).
                 if (this.metadata?.lifecycleState === 'archived' && this.metadata.archivedBy === 'hub') {
-                    this.noteHubArchived()
+                    if (!codexHistoryOnly) this.noteHubArchived()
                     return
                 }
                 this.metadataAppliedHandler?.()

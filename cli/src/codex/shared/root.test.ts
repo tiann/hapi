@@ -11,6 +11,8 @@ import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { asyncQuestionsForItem } from './asyncQuestions';
 import { CodexAppServerClient } from '../codexAppServerClient';
 import { buildHapiMcpBridge } from '../utils/buildHapiMcpBridge';
+import { SharedCodexProjection } from './projection';
+import { SharedCodexQueue } from './queue';
 
 type NativeTurn = { id: string; status: string; items: unknown[] };
 type NativeRequest = { id: string | number; method: string; params: unknown };
@@ -69,7 +71,8 @@ afterEach(async () => {
 });
 
 async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; create?: RootHost['create'];
-    attached?: boolean; beforeSubscribe?: RootHost['beforeSubscribe']; validateHistory?: RootHost['validateHistory']; initialState?: AgentState }) {
+    attached?: boolean; beforeSubscribe?: RootHost['beforeSubscribe']; validateHistory?: RootHost['validateHistory']; initialState?: AgentState;
+    bind?: boolean }) {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-shared-root-'));
     let state: AgentState = opts?.initialState ?? { steeringActive: true };
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex' };
@@ -100,7 +103,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         rpcHandlerManager: { registerHandler: (name: string, handler: (raw: unknown) => Promise<unknown>) => rpc.set(name, handler) },
         sendSessionEvent: events, sendAgentMessage: send, emitSessionReady: sessionReady,
         sendUserMessage() {}, emitMessagesConsumed: consumed, emitSteerIndeterminate: uncertain, syncNativeQueuedMessage() {},
-        sendSessionDeath() {}, async flush() {}, close() {}
+        sendSessionDeath() {}, async flush() {}, async flushMetadata() { return true; }, close() {}
     } as unknown as ApiSessionClient;
     const end = opts?.end ?? (async () => { throw new Error('Unexpected root archive'); });
     const root = new SharedCodexRoot({ session, sessionInfo: { agentState: state }, workingDirectory: directory } as SessionBootstrapResult, {
@@ -111,7 +114,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     } satisfies RootHost);
     cleanups.push(async () => { await root.close(false); await rm(directory, { recursive: true, force: true }); });
     await root.prepare();
-    await root.bind('thread', { model: 'mock', thread: { turns: [] } }, opts?.attached ?? false);
+    if (opts?.bind !== false) await root.bind('thread', { model: 'mock', thread: { turns: [] } }, opts?.attached ?? false);
     const native = root.client as unknown as {
         initialized: boolean;
         thread: { id: string; turns: NativeTurn[] };
@@ -127,6 +130,7 @@ session, root, native, rpc, send, events, consumed, uncertain, sessionReady,
         retry: (id: string) => retryMessage?.(id),
         submit: (text: string, id: string) => userMessage?.({ role: 'user', content: { type: 'text', text } }, id), metadata: () => metadata, state: () => state, updateState,
         drain: () => (root as unknown as { notifications: Promise<void> }).notifications,
+        drainWork: () => (root as unknown as { work: Promise<unknown> }).work,
         reconnect: () => reconnect?.(),
         emitHubArchived: () => { for (const listener of hubArchivedListeners) listener(); },
         hubArchivedListenerCount: () => hubArchivedListeners.length,
@@ -134,7 +138,337 @@ session, root, native, rpc, send, events, consumed, uncertain, sessionReady,
     };
 }
 
+it('flushes fork points for replayed messages when archive interrupts history replay', async () => {
+    const f = await fixture();
+    f.native.thread.turns = ['first', 'second'].map(id => ({
+        id: `turn-${id}`, status: 'completed', items: [{
+            type: 'userMessage', id: `item-${id}`, clientId: id, content: [{ type: 'text', text: id }]
+        }]
+    }));
+    let closing: Promise<void> | undefined;
+    const send = vi.spyOn(f.session, 'sendUserMessage').mockImplementationOnce(() => {
+        closing = f.root.close(true);
+    });
+    let flushed: Metadata | undefined;
+    vi.spyOn(f.session, 'flush').mockImplementation(async () => {
+        flushed = f.metadata();
+        return true;
+    });
+
+    await f.root.refresh();
+    await closing;
+
+    expect(flushed?.conversationHistoryTurns).toEqual({ first: 'turn-first' });
+    expect(flushed?.conversationHistoryPoints).toEqual({ first: true });
+    expect(send.mock.calls.map(([, , id]) => id)).toEqual(['first']);
+    expect(flushed?.lifecycleState).toBe('archived');
+});
+
+it('persists replayed fork points before acknowledging Web archive without a Runner', async () => {
+    const end = vi.fn(async () => {});
+    const f = await fixture({ end });
+    await f.root.activate();
+    f.native.thread.turns = ['first', 'second'].map(id => ({
+        id: `turn-${id}`, status: 'completed', items: [{
+            type: 'userMessage', id: `item-${id}`, clientId: id, content: [{ type: 'text', text: id }]
+        }]
+    }));
+    const ack = Promise.withResolvers<boolean>();
+    const flush = vi.spyOn(f.session, 'flushMetadata').mockReturnValueOnce(ack.promise);
+    let archive: Promise<unknown> | undefined;
+    const send = vi.spyOn(f.session, 'sendUserMessage').mockImplementationOnce(() => {
+        archive = f.rpc.get(RPC_METHODS.KillSession)!({});
+    });
+
+    await f.root.refresh();
+    await vi.waitFor(() => expect(flush).toHaveBeenCalledOnce());
+    expect(f.metadata().conversationHistoryPoints).toEqual({ first: true });
+    expect(end).not.toHaveBeenCalled();
+    ack.resolve(true);
+    expect(await archive).toEqual({ success: true });
+    expect(send.mock.calls.map(([, , id]) => id)).toEqual(['first']);
+    expect(end).toHaveBeenCalledOnce();
+});
+
+it('keeps Web archive retryable if the history metadata is not confirmed', async () => {
+    const end = vi.fn(async () => {});
+    const f = await fixture({ end });
+    await f.root.activate();
+    const flush = vi.spyOn(f.session, 'flushMetadata').mockResolvedValueOnce(false);
+    const archive = f.rpc.get(RPC_METHODS.KillSession)!;
+
+    await expect(archive({})).rejects.toThrow('Could not confirm Codex history metadata');
+    expect(end).not.toHaveBeenCalled();
+    await expect(archive({})).resolves.toEqual({ success: true });
+    expect(flush).toHaveBeenCalledTimes(2);
+    expect(end).toHaveBeenCalledOnce();
+});
+
+it('acknowledges Web archive while a native history page is still pending', async () => {
+    const end = vi.fn(async () => {});
+    const f = await fixture({ end });
+    await f.root.activate();
+    const page = Promise.withResolvers<{ data: NativeTurn[]; nextCursor: string }>();
+    const pageRequested = Promise.withResolvers<void>();
+    const original = f.root.client.request.bind(f.root.client);
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation((method, params) => {
+        if (method === 'thread/read') return Promise.resolve({ thread: { id: 'thread', historyMode: 'paginated' } });
+        if (method === 'thread/turns/list') {
+            pageRequested.resolve();
+            return page.promise;
+        }
+        return original(method, params);
+    });
+    const send = vi.spyOn(f.session, 'sendUserMessage');
+    const refreshing = f.root.refresh();
+    await pageRequested.promise;
+    const archive = f.rpc.get(RPC_METHODS.KillSession)!({});
+    try {
+        await vi.waitFor(() => expect(end).toHaveBeenCalledOnce());
+        await expect(archive).resolves.toEqual({ success: true });
+    } finally {
+        page.resolve({ nextCursor: 'next', data: [{
+            id: 'late', status: 'completed',
+            items: [{ id: 'late-message', type: 'userMessage', content: [{ type: 'text', text: 'late' }] }]
+        }] });
+        await refreshing;
+    }
+    expect(request.mock.calls.filter(([method]) => method === 'thread/turns/list')).toHaveLength(1);
+    expect(send).not.toHaveBeenCalled();
+});
+
+it('does not archive after waiting too long for active history projection', async () => {
+    const end = vi.fn(async () => {});
+    const f = await fixture({ end });
+    await f.root.activate();
+    vi.useFakeTimers();
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const project = vi.spyOn(SharedCodexProjection.prototype, 'history').mockImplementationOnce(() => {
+        entered.resolve();
+        return release.promise;
+    });
+    const refreshing = f.root.refresh();
+    await entered.promise;
+    try {
+        const archive = expect(f.rpc.get(RPC_METHODS.KillSession)!({})).rejects.toThrow('Could not confirm Codex history metadata');
+        await vi.advanceTimersByTimeAsync(5_000);
+        await archive;
+    } finally {
+        project.mockRestore();
+        release.resolve();
+        await refreshing;
+    }
+    expect(end).not.toHaveBeenCalled();
+});
+
+it('rejects attached controls and drops a deferred send when archive succeeds', async () => {
+    const end = vi.fn(async () => {});
+    const validateHistory = vi.fn(async () => {});
+    const f = await fixture({ attached: true, end, validateHistory });
+    await f.root.activate();
+    validateHistory.mockClear();
+    const read = Promise.withResolvers<{ thread: typeof f.native.thread }>();
+    const ack = Promise.withResolvers<boolean>();
+    const flush = vi.spyOn(f.session, 'flushMetadata').mockReturnValueOnce(ack.promise);
+    const request = vi.spyOn(f.root.client, 'request').mockReturnValueOnce(read.promise);
+    const refresh = vi.spyOn(f.root, 'refresh');
+    const settings = f.rpc.get(RPC_METHODS.SetSessionConfig)!({ model: 'must-not-apply' });
+    const cancelled = expect(settings).rejects.toThrow('Codex history validation was cancelled');
+    f.submit('must not submit', 'blocked');
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
+    const archive = f.rpc.get(RPC_METHODS.KillSession)!({});
+    try {
+        await vi.waitFor(() => expect(flush).toHaveBeenCalledOnce());
+        read.resolve({ thread: f.native.thread });
+        await cancelled;
+        expect(validateHistory).not.toHaveBeenCalled();
+        expect(request.mock.calls.some(([method]) => ['thread/settings/update', 'thread/queue/add', 'turn/start'].includes(method))).toBe(false);
+        expect(end).not.toHaveBeenCalled();
+    } finally {
+        read.resolve({ thread: f.native.thread });
+        ack.resolve(true);
+        await archive;
+        await f.drainWork();
+    }
+    expect(request.mock.calls.some(([method]) => ['thread/queue/add', 'turn/start'].includes(method))).toBe(false);
+});
+
+it('delivers an attached Web prompt once under its original ID after archive fails', async () => {
+    const f = await fixture({ attached: true });
+    await f.root.activate();
+    const read = Promise.withResolvers<{ thread: typeof f.native.thread }>();
+    const ack = Promise.withResolvers<boolean>();
+    const request = vi.spyOn(f.root.client, 'request').mockReturnValueOnce(read.promise);
+    const flush = vi.spyOn(f.session, 'flushMetadata').mockReturnValueOnce(ack.promise);
+    f.submit('keep this prompt', 'web-message-id');
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith('thread/read', expect.anything()));
+    const archive = expect(f.rpc.get(RPC_METHODS.KillSession)!({})).rejects.toThrow('Could not confirm Codex history metadata');
+    try {
+        await vi.waitFor(() => expect(flush).toHaveBeenCalledOnce());
+        read.resolve({ thread: f.native.thread });
+        expect(f.native.queue).toHaveLength(0);
+    } finally {
+        read.resolve({ thread: f.native.thread });
+        ack.resolve(false);
+        await archive;
+    }
+    await f.drainWork();
+    expect(f.native.queue).toHaveLength(1);
+    expect(f.native.queue[0]?.input).toEqual([{ type: 'text', text: 'keep this prompt' }]);
+    const ledger = await f.ledger();
+    expect(Object.keys(ledger.entries)).toEqual(['web-message-id']);
+    expect(ledger.batches[f.native.queue[0]!.clientUserMessageId].versions[0].members)
+        .toEqual([expect.objectContaining({ id: 'web-message-id' })]);
+});
+
+it('keeps an offline Runner archive unconfirmed while fork metadata is pending', async () => {
+    const end = vi.fn(async () => {});
+    const f = await fixture({ end });
+    await f.root.activate();
+    const persist = f.session.updateMetadata.bind(f.session);
+    const pending: Array<(metadata: Metadata) => Metadata> = [];
+    vi.spyOn(f.session, 'updateMetadata').mockImplementation((update, options) => {
+        if (options?.codexHistoryOnly) pending.push(update);
+        else persist(update, options);
+    });
+    f.native.thread.turns = [{ id: 'turn', status: 'completed', items: [{
+        type: 'userMessage', id: 'item', clientId: 'message', content: [{ type: 'text', text: 'prompt' }]
+    }] }];
+    const send = vi.spyOn(f.session, 'sendUserMessage');
+    await f.root.refresh();
+    expect(send).toHaveBeenCalledWith('prompt', undefined, 'message');
+    const flush = vi.spyOn(f.session, 'flushMetadata').mockResolvedValue(false);
+    await expect(f.root.archiveFromRunner()).rejects.toThrow('Could not confirm Codex history metadata');
+    expect(flush).toHaveBeenCalledOnce();
+    expect(end).not.toHaveBeenCalled();
+    expect(pending).toHaveLength(1);
+
+    // The connection catches up and applies the queued write before the next stop.
+    persist(pending[0]!);
+    expect(f.metadata().conversationHistoryPoints).toEqual({ message: true });
+    await expect(f.root.archiveFromRunner()).resolves.toBeUndefined();
+    expect(flush).toHaveBeenCalledOnce();
+    expect(end).toHaveBeenCalledOnce();
+});
+
+it('stops through the Runner before queue loading completes and never activates the root', async () => {
+    const end = vi.fn(async () => {});
+    const f = await fixture({ end, bind: false });
+    const loading = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const load = vi.spyOn(SharedCodexQueue.prototype, 'load').mockImplementationOnce(() => {
+        loading.resolve();
+        return release.promise;
+    });
+    const binding = expect(f.root.bind('thread', { thread: { turns: [] } }, false))
+        .rejects.toThrow('Codex execution is stopping');
+    try {
+        await loading.promise;
+        await expect(f.root.archiveFromRunner()).resolves.toBeUndefined();
+        expect(end).toHaveBeenCalledOnce();
+    } finally {
+        release.resolve();
+        load.mockRestore();
+        await binding;
+    }
+    await expect(f.root.activate()).rejects.toThrow('Codex execution is stopping');
+    expect(f.sessionReady).not.toHaveBeenCalled();
+});
+
+it('restarts the complete Hub reconnect on the same connection after archive fails', async () => {
+    const end = vi.fn(async () => {});
+    const f = await fixture({ end });
+    await f.root.activate();
+    const replay = vi.spyOn(SharedCodexQueue.prototype, 'replay');
+    const olderRead = Promise.withResolvers<{ thread: typeof f.native.thread }>();
+    const request = vi.spyOn(f.root.client, 'request').mockReturnValueOnce(olderRead.promise);
+    vi.spyOn(f.session, 'flushMetadata').mockResolvedValueOnce(false);
+    try {
+        f.reconnect();
+        expect(request).toHaveBeenCalledWith('thread/read', expect.anything());
+        await expect(f.rpc.get(RPC_METHODS.KillSession)!({})).rejects.toThrow('Could not confirm Codex history metadata');
+        expect(end).not.toHaveBeenCalled();
+        await vi.waitFor(() => expect(f.sessionReady).toHaveBeenCalledTimes(2));
+        expect(request).toHaveBeenCalledWith('thread/list', expect.objectContaining({ ancestorThreadId: 'thread' }));
+        expect(replay).toHaveBeenCalledOnce();
+        olderRead.resolve({ thread: f.native.thread });
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect(f.sessionReady).toHaveBeenCalledTimes(2);
+    } finally {
+        olderRead.resolve({ thread: f.native.thread });
+        replay.mockRestore();
+    }
+});
+
+it('resumes native child subscriptions when archive interrupts child discovery and fails', async () => {
+    const end = vi.fn(async () => {});
+    const f = await fixture({ end });
+    await f.root.activate();
+    const requested = Promise.withResolvers<void>();
+    const oldPage = Promise.withResolvers<{ data: Array<{ id: string; parentThreadId: string }> }>();
+    const child = { id: 'child', parentThreadId: 'thread' };
+    const original = f.root.client.request.bind(f.root.client);
+    let discoveryCalls = 0;
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/list') {
+            if (++discoveryCalls === 1) { requested.resolve(); return oldPage.promise; }
+            return { data: [child] };
+        }
+        if (method === 'thread/loaded/list') return { data: ['child'] };
+        return original(method, params);
+    });
+    const initialize = vi.spyOn(f.root.client, 'initialize');
+    vi.spyOn(f.session, 'flushMetadata').mockResolvedValueOnce(false);
+    try {
+        f.native.initialized = false;
+        f.native.abandoned();
+        await requested.promise;
+        await expect(f.rpc.get(RPC_METHODS.KillSession)!({})).rejects.toThrow('Could not confirm Codex history metadata');
+        oldPage.resolve({ data: [child] });
+        await vi.waitFor(() => expect(request).toHaveBeenCalledWith('thread/resume', { threadId: 'child', excludeTurns: true }));
+        expect(initialize).toHaveBeenCalledOnce();
+        expect(end).not.toHaveBeenCalled();
+    } finally {
+        oldPage.resolve({ data: [child] });
+    }
+});
+
 describe('externally attached root', () => {
+    it.each(['pending', 'resolved', 'archived'] as const)('handles a %s native question during a Web archive', async state => {
+        const end = vi.fn(async () => {});
+        const f = await fixture({ attached: true, end });
+        await f.root.activate();
+        const ack = Promise.withResolvers<boolean>();
+        const flush = vi.spyOn(f.session, 'flushMetadata').mockReturnValueOnce(ack.promise);
+        const archive = f.rpc.get(RPC_METHODS.KillSession)!({});
+        const settled = state === 'archived'
+            ? expect(archive).resolves.toEqual({ success: true })
+            : expect(archive).rejects.toThrow('Could not confirm Codex history metadata');
+        try {
+            await vi.waitFor(() => expect(flush).toHaveBeenCalledOnce());
+            f.native.serverRequest({ id: 'archive-question', method: 'item/tool/requestUserInput', params: {
+                threadId: 'thread', turnId: 'turn', itemId: 'question',
+                questions: [{ id: 'choice', header: 'Choose', question: 'Which?', options: [{ label: 'A', description: 'A' }] }]
+            } });
+            if (state === 'resolved') f.native.notify('serverRequest/resolved', { threadId: 'thread', requestId: 'archive-question' });
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(f.state().requests ?? {}).toEqual({});
+        } finally {
+            ack.resolve(state === 'archived');
+            await settled;
+        }
+        if (state === 'pending') {
+            await vi.waitFor(() => expect(Object.values(f.state().requests ?? {}))
+                .toEqual([expect.objectContaining({ toolCallId: 'question' })]));
+            expect(end).not.toHaveBeenCalled();
+        } else {
+            await f.root.refresh();
+            expect(f.state().requests ?? {}).toEqual({});
+            expect(f.send.mock.calls.some(([message]) => message.callId === 'question')).toBe(false);
+        }
+    });
+
     it('skips MCP, instructions and initial settings injection, and disables lifecycle actions', async () => {
         const builds = vi.mocked(buildHapiMcpBridge).mock.calls.length;
         const calls = vi.spyOn(CodexAppServerClient.prototype, 'request');
