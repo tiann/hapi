@@ -111,9 +111,15 @@ async fn plain_rest_and_webhook_work_without_tls_roots() {
     let mut hub = Hub::new().await;
     let rest = Rest::new(&hub.config).await.unwrap();
     assert_eq!(rest.session("s").await.unwrap().session["id"], "s");
-    rest.report_started(&hub.config.home, "s", &json!({}))
-        .await
-        .unwrap();
+    let started = rest.report_started(&hub.config.home, "s", &json!({})).await;
+    if cfg!(unix) {
+        started.unwrap();
+    } else {
+        assert_eq!(
+            started.unwrap_err().to_string(),
+            "Runner is not running, file is stale"
+        );
+    }
     hub.config.api_url = "https://localhost".into();
     assert!(Rest::new(&hub.config).await.is_err());
 }
@@ -141,13 +147,22 @@ async fn https_hub_and_plain_runner_webhook_share_rest_client() {
     let rest = Rest::new(&hub.config).await.unwrap();
     let session = rest.session("s").await.unwrap().session;
     assert_eq!(session["id"], "s");
-    rest.report_started(&hub.config.home, "s", &session["metadata"])
-        .await
-        .unwrap();
+    let started = rest
+        .report_started(&hub.config.home, "s", &session["metadata"])
+        .await;
     let snapshot = hub.command("snapshot", Value::Null).await;
     let requests = snapshot["requests"].as_array().unwrap();
-    assert_eq!(requests.len(), 2);
     assert_eq!(requests[0]["path"], "/cli/sessions/s");
+    if !cfg!(unix) {
+        assert_eq!(
+            started.unwrap_err().to_string(),
+            "Runner is not running, file is stale"
+        );
+        assert_eq!(requests.len(), 1);
+        return;
+    }
+    started.unwrap();
+    assert_eq!(requests.len(), 2);
     assert_eq!(requests[1]["path"], "/session-started");
     assert_eq!(
         requests[1]["body"],

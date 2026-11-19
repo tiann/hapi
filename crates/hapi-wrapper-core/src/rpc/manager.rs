@@ -84,7 +84,7 @@ impl RpcHandlerManager {
         };
         let params = request["params"]
             .as_str()
-            .and_then(|s| serde_json::from_str(s).ok())
+            .and_then(|s| crate::sio::packet::decode_json(s).ok())
             .unwrap_or_default();
         match handler(params).await {
             Ok(v) => v.as_ref().map(stringify),
@@ -139,5 +139,17 @@ mod tests {
                 .as_deref(),
             Some(r#"{"error":"failed"}"#)
         );
+    }
+    #[tokio::test]
+    async fn params_with_lone_surrogate_keep_sibling_fields() {
+        let m = RpcHandlerManager::new("s");
+        m.register("echo", |v| async move { Ok(Some(v)) });
+        let params = r#"{"text":"a\ud83d b","keep":1}"#;
+        let reply = m
+            .handle_request(&json!({"method":"s:echo","params":params}))
+            .await
+            .unwrap();
+        let reply: Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(reply, json!({"text":"a\u{fffd} b","keep":1}));
     }
 }

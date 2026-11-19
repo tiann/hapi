@@ -48,6 +48,10 @@ pub fn metadata(v: &Value) -> bool {
         && v["host"].is_string()
         && v["path"].is_string()
         && v.get("opencodeRewind").is_none_or(opencode_rewind)
+        && ["lifecycleState", "archivedBy", "archiveReason"]
+            .iter()
+            .all(|key| v.get(*key).is_none_or(Value::is_string))
+        && v.get("lifecycleStateSince").is_none_or(Value::is_number)
 }
 
 #[cfg(test)]
@@ -124,6 +128,36 @@ mod tests {
             .map(|c| metadata(&json!({"host":"h","path":"/","opencodeRewind":c})))
             .collect();
         assert_eq!(actual, expected);
+        let lifecycle = vec![
+            json!({"lifecycleState":"archived","lifecycleStateSince":1,"archivedBy":"u","archiveReason":"r"}),
+            json!({"lifecycleState":1}),
+            json!({"lifecycleState":null}),
+            json!({"lifecycleStateSince":"1"}),
+            json!({"archivedBy":false}),
+            json!({"archiveReason":[]}),
+        ];
+        let script = format!(
+            "import {{ MetadataSchema }} from '@hapi/protocol/schemas'; console.log(JSON.stringify({}.map(c => MetadataSchema.safeParse({{host:'h',path:'/',...c}}).success)))",
+            serde_json::to_string(&lifecycle).unwrap()
+        );
+        let output = std::process::Command::new("bun")
+            .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../../cli"))
+            .args(["-e", &script])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        let expected: Vec<bool> = serde_json::from_slice(&output.stdout).unwrap();
+        let actual: Vec<_> = lifecycle
+            .iter()
+            .map(|c| {
+                let mut m = c.clone();
+                m["host"] = "h".into();
+                m["path"] = "/".into();
+                metadata(&m)
+            })
+            .collect();
+        assert_eq!(actual, expected);
+        assert_eq!(expected, [true, false, false, false, false, false]);
         assert!(metadata(&json!({"host":"h","path":"/"})));
         assert!(!metadata(&json!({"path":"/"})));
     }

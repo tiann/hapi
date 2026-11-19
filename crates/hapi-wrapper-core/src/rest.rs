@@ -17,11 +17,13 @@ use std::{io, time::Duration};
 pub struct SessionResponse {
     pub session: Value,
     pub session_summary_contract: Option<bool>,
+    pub auto_bridge_transient_model_errors: Option<bool>,
 }
 impl SessionResponse {
     fn parse(body: Value) -> io::Result<Self> {
         Ok(Self {
             session_summary_contract: body["sessionSummaryContract"].as_bool(),
+            auto_bridge_transient_model_errors: body["autoBridgeTransientModelErrors"].as_bool(),
             session: resource(body, "session")?,
         })
     }
@@ -232,7 +234,11 @@ fn resource(mut v: Value, key: &str) -> io::Result<Value> {
     if !common || !valid {
         return Err(io::Error::other(format!("Invalid {key} response")));
     }
-    Ok(v[key].take())
+    let mut row = v[key].take();
+    if key == "session" && row["activeAt"].is_null() {
+        row["activeAt"] = 0.into();
+    }
+    Ok(row)
 }
 fn encode_component(value: &str) -> String {
     const COMPONENT: &percent_encoding::AsciiSet = &NON_ALPHANUMERIC
@@ -305,6 +311,26 @@ mod tests {
         io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
         net::TcpListener,
     };
+
+    #[test]
+    fn session_response_parity() {
+        let row = json!({"id":"s","namespace":"default","seq":0,"createdAt":1,"updatedAt":1,"active":false,"metadataVersion":1,"agentStateVersion":1,"agentState":null,"thinking":false,"thinkingAt":0,"metadata":null});
+        for (active_at, expected) in [(None, 0), (Some(Value::Null), 0), (Some(json!(7)), 7)] {
+            for bridge in [Some(true), Some(false), None] {
+                let mut session = row.clone();
+                if let Some(v) = &active_at {
+                    session["activeAt"] = v.clone();
+                }
+                let mut body = json!({"session":session});
+                if let Some(b) = bridge {
+                    body["autoBridgeTransientModelErrors"] = b.into();
+                }
+                let parsed = SessionResponse::parse(body).unwrap();
+                assert_eq!(parsed.session["activeAt"], expected);
+                assert_eq!(parsed.auto_bridge_transient_model_errors, bridge);
+            }
+        }
+    }
 
     #[tokio::test]
     async fn session_title_truncated_through_a_surrogate_pair_decodes() {
