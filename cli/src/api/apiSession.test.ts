@@ -2463,8 +2463,9 @@ describe('ApiSessionClient metadata cancellation and reconnect ordering', () => 
         }
     })
 
-    it('preserves the permission timestamp when the Hub committed a write before its ACK was lost', async () => {
+    it.each([false, true])('preserves a committed permission timestamp after ACK loss (concurrent update: %s)', async (concurrent) => {
         vi.useFakeTimers()
+        const jitter = vi.spyOn(Math, 'random').mockReturnValue(0.5)
         socketHarness.sockets.length = 0
         const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
         const socket = socketHarness.sockets[0]!
@@ -2475,6 +2476,10 @@ describe('ApiSessionClient metadata cancellation and reconnect ordering', () => 
             writes.push(request)
             if (writes.length === 1) return await new Promise<never>(() => {})
             if (request.expectedVersion === 0) {
+                if (concurrent) setTimeout(() => socket.trigger('update', { body: {
+                    t: 'update-session', sid: client.sessionId, metadata: null,
+                    agentState: { version: 2, value: { ...writes[0]!.agentState, steeringActive: true } }
+                } }), 1)
                 return { result: 'version-mismatch', version: 1, agentState: writes[0]!.agentState }
             }
             return { result: 'success', version: request.expectedVersion + 1, agentState: request.agentState }
@@ -2484,14 +2489,15 @@ describe('ApiSessionClient metadata cancellation and reconnect ordering', () => 
         }))
         try {
             client.updateAgentState(addRequest)
-            client.updateAgentState(state => ({ ...state, steeringActive: true }))
+            if (!concurrent) client.updateAgentState(state => ({ ...state, steeringActive: true }))
             await vi.advanceTimersByTimeAsync(6_100)
             expect(addRequest).toHaveBeenCalledOnce()
-            expect(writes.map(write => write.expectedVersion)).toEqual([0, 0, 1])
+            expect(writes.map(write => write.expectedVersion)).toEqual(concurrent ? [0, 0] : [0, 0, 1])
             expect(writes[1]!.agentState.requests).toEqual(writes[0]!.agentState.requests)
-            expect(writes[2]!.agentState).toEqual({ ...writes[0]!.agentState, steeringActive: true })
+            if (!concurrent) expect(writes[2]!.agentState).toEqual({ ...writes[0]!.agentState, steeringActive: true })
         } finally {
             client.close()
+            jitter.mockRestore()
             vi.useRealTimers()
         }
     })

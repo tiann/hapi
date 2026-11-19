@@ -1586,26 +1586,32 @@ if (isReconnect) {
                 }
                 if (this.isClosed()) return
 
-                applyVersionedAck(answer, {
-                    valueKey: 'agentState',
-                    parseValue: (value) => {
-                        const parsed = AgentStateSchema.safeParse(value)
-                        return parsed.success ? parsed.data : null
-                    },
-                    applyValue: (value) => {
-                        this.agentState = value
-                    },
-                    applyVersion: (version) => {
-                        this.agentStateVersion = version
-                    },
-                    logInvalidValue: (context, version) => {
-                        const suffix = context === 'success' ? 'ack' : 'version-mismatch ack'
-                        logger.debug(`[API] Ignoring invalid agentState value from ${suffix}`, { version })
-                    },
-                    invalidResponseMessage: 'Invalid update-state response',
-                    errorMessage: 'Agent state update failed',
-                    versionMismatchMessage: 'Agent state version mismatch'
-                })
+                try {
+                    applyVersionedAck(answer, {
+                        valueKey: 'agentState',
+                        parseValue: (value) => {
+                            const parsed = AgentStateSchema.safeParse(value)
+                            return parsed.success ? parsed.data : null
+                        },
+                        applyValue: (value) => {
+                            this.agentState = value
+                        },
+                        applyVersion: (version) => {
+                            this.agentStateVersion = version
+                        },
+                        logInvalidValue: (context, version) => {
+                            const suffix = context === 'success' ? 'ack' : 'version-mismatch ack'
+                            logger.debug(`[API] Ignoring invalid agentState value from ${suffix}`, { version })
+                        },
+                        invalidResponseMessage: 'Invalid update-state response',
+                        errorMessage: 'Agent state update failed',
+                        versionMismatchMessage: 'Agent state version mismatch'
+                    })
+                } catch (error) {
+                    // The mismatch supplies the committed state synchronously.
+                    // Confirm it before a newer socket update can supersede it.
+                    if (!alreadyCommitted()) throw error
+                }
             })
         })
     }
