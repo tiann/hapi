@@ -63,6 +63,7 @@ export function useSessions(api: ApiClient | null, options: UseSessionsOptions =
                                 pendingRequestKinds: prior.pendingRequestKinds,
                                 pendingRequests: prior.pendingRequests,
                                 pendingRequestsNewestAt: prior.pendingRequestsNewestAt,
+                                pendingRequestIds: prior.pendingRequestIds,
                                 agentStateVersion: prior.agentStateVersion
                             }
                             : {}),

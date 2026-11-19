@@ -517,6 +517,7 @@ export function useSSE(options: {
                             pendingRequestKinds: existing.pendingRequestKinds,
                             pendingRequests: existing.pendingRequests,
                             pendingRequestsNewestAt: existing.pendingRequestsNewestAt,
+                            pendingRequestIds: existing.pendingRequestIds,
                             agentStateVersion: existing.agentStateVersion
                         }
                         : {}),
