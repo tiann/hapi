@@ -1130,6 +1130,9 @@ export class SessionCache {
         const wasThinking = session.thinking
         session.active = false
         this.store.sessions.setSessionActive(session.id, false, t, session.namespace)
+        // Mirror the stored active_at (which keeps the later time) so cached
+        // summaries and the patch carry when the session stopped.
+        session.activeAt = Math.max(session.activeAt, t)
         session.thinking = false
         session.thinkingAt = t
         session.activeTurnStartedAt = null
@@ -1144,6 +1147,7 @@ export class SessionCache {
             sessionId: session.id,
             data: {
                 active: false,
+                activeAt: session.activeAt,
                 thinking: false,
                 activeTurnStartedAt: null,
                 backgroundTaskCount: 0,
@@ -1188,6 +1192,9 @@ export class SessionCache {
                 sessionId: session.id,
                 data: {
                     active: false,
+                    // The last keepalive: when the session stopped, for clients
+                    // that only saw an older activeAt.
+                    activeAt: session.activeAt,
                     backgroundTaskCount: 0,
                     backgroundTasks: [],
                     derivedToolWork: false

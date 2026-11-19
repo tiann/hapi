@@ -14,8 +14,8 @@ describe('getSessionSortKey', () => {
 
 describe('createSessionComparator', () => {
     const minute = 60_000
-    const row = (id: string, active: boolean, lastUserMessageAt: number, updatedAt: number) =>
-        ({ id, active, createdAt: 0, lastUserMessageAt, updatedAt, activeAt: lastUserMessageAt }) as SessionSummary
+    const row = (id: string, active: boolean, lastUserMessageAt: number, stoppedAt: number) =>
+        ({ id, active, createdAt: 0, lastUserMessageAt, activeAt: stoppedAt, updatedAt: stoppedAt }) as SessionSummary
     const order = (sessions: SessionSummary[], activeFirst: boolean) =>
         [...sessions].sort(createSessionComparator({ sort: 'last-message', activeFirst })).map((s) => s.id)
 
@@ -36,12 +36,12 @@ describe('createSessionComparator', () => {
         ])
     })
 
-    it('follows the time a stopped row shows, not a stale activeAt', () => {
-        // The hub may not refresh activeAt in the live list when a session stops;
-        // archiving updates updatedAt, which is the time the row renders.
-        const archived = { ...row('archived-just-now', false, 100 * minute, 720 * minute), activeAt: 1 }
-        const older = { ...row('stopped-earlier', false, 200 * minute, 600 * minute), activeAt: 700 * minute }
-        expect(order([older, archived], true)).toEqual(['archived-just-now', 'stopped-earlier'])
+    it('orders by when sessions stopped, whichever way they stopped', () => {
+        // A keepalive expiry or a hub fallback archive does not touch updatedAt;
+        // the stop time (activeAt) still puts the latest stop first.
+        const expiredJustNow = { ...row('expired-just-now', false, 100 * minute, 720 * minute), updatedAt: 100 * minute }
+        const stoppedEarlier = { ...row('stopped-earlier', false, 200 * minute, 600 * minute), updatedAt: 650 * minute }
+        expect(order([stoppedEarlier, expiredJustNow], true)).toEqual(['expired-just-now', 'stopped-earlier'])
     })
 
     it('keeps the chosen sort for sessions that stopped within the same minute', () => {
