@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import type { ToolCallBlock } from '@/chat/types'
 import { extractCodexBashDisplay, extractTextFromResult, getMutationResultRenderMode, getToolResultViewComponent, parseNumberedFileLines } from '@/components/ToolCard/views/_results'
+import { extractPeerTargetSessionId, extractSpawnedSessionId } from '@/components/ToolCard/peerTools'
 import { getToolViewComponent } from '@/components/ToolCard/views/_all'
 import { I18nProvider } from '@/lib/i18n-context'
 
@@ -776,5 +777,81 @@ describe('PeerToolResultView', () => {
             </I18nProvider>
         )
         expect(screen.getByRole('link', { name: /Open session/ }).getAttribute('href')).toBe('/sessions/33333333-3333-4333-8333-333333333333')
+    })
+
+    it('prefers anchored CLI headers, then structured UUID sessionId, over title citations and ignores non-UUID structured ids', () => {
+        const targetId = '11111111-1111-4111-8111-111111111111'
+        const citedId = '22222222-2222-4222-8222-222222222222'
+        const envelopeId = '99999999-9999-4999-8999-999999999999'
+        const citedTitle = `Review [Other](/sessions/${citedId})`
+
+        const acceptedBlock = makeResultBlock({
+            name: 'mcp__hapi__ping_peer',
+            input: { sessionIdPrefix: '11111111', message: 'Check status' },
+            result: [{
+                type: 'text',
+                text: `Accepted for ${targetId} (${citedTitle}) localId=ping-peer-1 — delivery shows in the recipient chat when its runtime consumes it`,
+            }],
+        })
+        const PingResultView = getToolResultViewComponent(acceptedBlock.tool.name, acceptedBlock)
+        render(
+            <I18nProvider>
+                <PingResultView block={acceptedBlock} metadata={null} surface="dialog" />
+            </I18nProvider>
+        )
+        expect(screen.getByRole('link', { name: /Open session/ }).getAttribute('href')).toBe(`/sessions/${targetId}`)
+
+        expect(extractPeerTargetSessionId(
+            'mcp__hapi__ping_peer',
+            { sessionIdPrefix: '11111111', message: 'Check status' },
+            {
+                sessionId: envelopeId,
+                content: [{ type: 'text', text: `steered to ${targetId} (${citedTitle}) localId=ping-peer-2` }],
+            }
+        )).toBe(targetId)
+
+        expect(extractPeerTargetSessionId(
+            'mcp__hapi__ping_peer',
+            { sessionIdPrefix: '11111111', message: 'Check status' },
+            [{ type: 'text', text: `invoked to ${targetId} (resumed) (${citedTitle}) localId=ping-peer-3` }]
+        )).toBe(targetId)
+
+        expect(extractPeerTargetSessionId(
+            'mcp__hapi__ping_peer',
+            { sessionIdPrefix: '11111111', message: 'Check status' },
+            {
+                structuredContent: { sessionId: targetId },
+                content: [{ type: 'text', text: `Delivered to [Other](/sessions/${citedId})` }],
+            }
+        )).toBe(targetId)
+
+        expect(extractPeerTargetSessionId(
+            'mcp__hapi__ping_peer',
+            { sessionIdPrefix: '11111111', message: 'Check status' },
+            { sessionId: 'ses_abc12345' }
+        )).toBeNull()
+
+        expect(extractPeerTargetSessionId(
+            'mcp__hapi__inspect_peer',
+            { sessionIdPrefix: '11111111' },
+            {
+                sessionId: envelopeId,
+                content: [{ type: 'text', text: `sessionId: ${targetId}\nname: ${citedTitle}\n[user] See [Other](/sessions/${citedId})` }],
+            }
+        )).toBe(targetId)
+
+        expect(extractSpawnedSessionId({
+            sessionId: envelopeId,
+            content: [{ type: 'text', text: `Spawned ${targetId} (${citedTitle})` }],
+        })).toBe(targetId)
+
+        expect(extractSpawnedSessionId({
+            structuredContent: { sessionId: targetId },
+            content: [{ type: 'text', text: `Created peer referencing [Other](/sessions/${citedId})` }],
+        })).toBe(targetId)
+
+        expect(extractSpawnedSessionId({
+            structuredContent: { sessionId: 'ses_abc12345' },
+        })).toBeNull()
     })
 })
