@@ -569,6 +569,22 @@ describe('NewSession launch preferences', () => {
         expect(loadPreferredLaunchSettings('machine-1', 'codex')?.serviceTier).toBe('ultrafast')
     })
 
+    it('preserves Ultrafast preference but blocks launch while Default makes it unavailable', async () => {
+        savePreferredAgent('codex')
+        savePreferredLaunchSettings('machine-1', 'codex', { model: 'gpt-6.2-sol', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'high', serviceTier: 'ultrafast' })
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        const tier = await screen.findByRole('combobox', { name: 'newSession.fastMode' })
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        mocks.nextModelValue = 'auto'
+        fireEvent.click(screen.getByTestId('model'))
+        expect(tier).toHaveValue('ultrafast')
+        await waitFor(() => expect(screen.getByTestId('create')).toBeDisabled())
+        mocks.nextModelValue = 'gpt-6.2-sol'
+        fireEvent.click(screen.getByTestId('model'))
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        expect(tier).toHaveValue('ultrafast')
+    })
+
     it('preserves saved Ultrafast on catalog errors and permits recovery or explicit Standard', async () => {
         savePreferredAgent('codex')
         savePreferredLaunchSettings('machine-1', 'codex', { model: 'gpt-6.2-sol', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'high', serviceTier: 'ultrafast' })

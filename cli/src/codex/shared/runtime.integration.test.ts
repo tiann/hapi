@@ -136,8 +136,21 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             failConfig.mockRestore(); failConfig = undefined;
             expect(second.runtime.sessions[original.sessionId].active).toBe(false);
             expect(state.sessions.get(original.sessionId)?.metadata.lifecycleState).not.toBe('archived');
+            const originalNativeRequest = CodexAppServerClient.prototype.request;
+            let rejectMetadata = true;
+            const metadataFailure = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
+                if (rejectMetadata && method === 'thread/metadata/update' && !clients.includes(this) && record(params).threadId === threadId) {
+                    rejectMetadata = false; return Promise.reject(new Error('fixture metadata update unavailable'));
+                }
+                return originalNativeRequest.call(this, method, params) as Promise<T>;
+            }); extraSpies.push(metadataFailure);
+            state.sessions.get(original.sessionId)!.metadata.codexTierConfirmationPending = true;
+            await expect(second.client.request('thread/resume', { threadId, excludeTurns: true })).rejects.toThrow('fixture metadata update unavailable');
+            metadataFailure.mockRestore();
+            expect(second.runtime.sessions[original.sessionId].active).toBe(true);
+            await expect(concurrent.request('thread/queue/start', { threadId })).rejects.toThrow('tier confirmation');
+            const response = await second.client.request<{ serviceTier: string }>('thread/resume', { threadId, excludeTurns: true });
             const third = await start();
-            const response = await third.client.request<{ serviceTier: string }>('thread/resume', { threadId, excludeTurns: true });
             expect(response.serviceTier).toBe('default');
             expect(state.sessions.get(original.sessionId)?.metadata.codexServiceTierExplicit).toBe(false);
             extraSpies.push(vi.spyOn(CodexAppServerClient.prototype, 'listModels').mockResolvedValue({ data: [

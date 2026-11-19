@@ -1984,6 +1984,7 @@ export function NewSession(props: {
 
     async function handleCreate() {
         if (!machineId || !trimmedDirectory || createInFlightRef.current) return
+        if (fastModeSelectionPending) return
         if (hubDefaultsPending) return
 
         createInFlightRef.current = true
@@ -2279,7 +2280,7 @@ export function NewSession(props: {
             && piModelsState.isLoading)
     const fastModeSelectionPending = agent === 'codex'
         && serviceTier !== 'standard'
-        && (codexModelsState.isLoading || (serviceTier === 'ultrafast' && (Boolean(codexModelsState.error) || Boolean(selectedCodexImportSessionId))))
+        && (codexModelsState.isLoading || (serviceTier === 'ultrafast' && (Boolean(codexModelsState.error) || Boolean(selectedCodexImportSessionId) || (serviceTierExplicit && !showCodexUltrafastMode))))
     const canCreate = Boolean(
         machineId
         && trimmedDirectory

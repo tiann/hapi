@@ -620,8 +620,9 @@ export class SharedCodexRoot {
     nativeQueueDeleted(nativeId: string): Promise<void> { return this.queue.deleted(nativeId); }
     async nativeQueueMutation(method: string, params: unknown): Promise<unknown> {
         await this.bound;
+        if (this.needsTierConfirmation) throw new Error('Service tier confirmation is pending. Select a service tier in settings before sending input.');
         await this.inputGate;
-        if (this.needsTierConfirmation) await this.inputGate;
+        if (this.needsTierConfirmation) throw new Error('Service tier confirmation is pending. Select a service tier in settings before sending input.');
         if (this.closed || this.stopping) throw new Error('Codex execution is stopping');
         return this.queue.nativeMutation(method, record(params));
     }

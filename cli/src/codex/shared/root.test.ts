@@ -104,6 +104,16 @@ it.each([false, true])('observes effective attached desktop Ultrafast without ov
     expect(keepAlive.mock.lastCall?.[2]?.serviceTier).toBe(superseded ? 'fast' : 'ultrafast');
 });
 
+it('rejects an early native queue request when activation pauses for confirmation', async () => {
+    const f = await fixture();
+    const queued = f.root.nativeQueueMutation('thread/queue/start', { threadId: 'thread' });
+    const rejected = expect(queued).rejects.toThrow('tier confirmation');
+    await f.root.activate({}, false, true);
+    await rejected;
+    await f.rpc.get(RPC_METHODS.SetSessionConfig)!({ serviceTier: 'standard' });
+    expect(f.root.needsTierConfirmation).toBe(false);
+});
+
 it('does not publish cold-resume readiness before startup controls are registered', async () => {
     const f = await fixture({ initialTierPending: true, bindTier: 'ultrafast' });
     await f.root.confirmUltrafastLaunch();

@@ -57,6 +57,12 @@ describe('isFastServiceTier', () => {
 })
 
 describe('getEffectiveCodexServiceTier', () => {
+    it('does not promote a null effective tier from an Ultrafast catalog default', () => {
+        const catalog = [{ id: 'gpt-6-astra', isDefault: true, defaultServiceTier: 'ultrafast' }]
+        expect(getEffectiveCodexServiceTier(null, 'gpt-6-astra', catalog)).toBeNull()
+        expect(getDisplayedCodexServiceTier(getEffectiveCodexServiceTier(null, 'gpt-6-astra', catalog))).toBe('standard')
+        expect(getEffectiveCodexServiceTier('ultrafast', 'gpt-6-astra', catalog)).toBe('ultrafast')
+    })
     it('uses the active model default only when the session has no override', () => {
         const modelsWithDefault = models.map((model) => (
             model.id === 'gpt-5.5' ? { ...model, defaultServiceTier: 'priority' } : model

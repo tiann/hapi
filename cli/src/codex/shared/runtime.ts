@@ -78,6 +78,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     const reservations = new Map<string, Reservation>();
     const pendingAdmission = new Set<string>();
     const resumingThreads = new Set<string>();
+    const retryableBindings = new Set<string>();
     const nativeTurns = new Map<string, { root: SharedCodexRoot; params: Record<string, unknown>; explicitTier: boolean; fallbackNotice?: string }>();
     const runtime: CodexRuntimeRecord = { id, pid: process.pid, marker: getProcessStartMarker(process.pid) ?? '',
         endpoint: '', command: command.command, args: command.args, codexHome: home, hub: configuration.apiUrl, authHash: runtimeAuthHash(), sessions: {} };
@@ -376,7 +377,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         } catch (error) {
             await root.close(request.method !== 'thread/resume');
             const binding = runtime.sessions[root.session.sessionId];
-            if (binding) binding.active = false;
+            if (binding) binding.active = Boolean(threadId && retryableBindings.has(threadId));
             runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== root.session.sessionId);
             await persist(); prepared.delete(root);
             if (request.method === 'thread/resume' && threadId) resumingThreads.delete(threadId);
@@ -394,15 +395,31 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         if (reservation) {
             if (response.error) {
                 await reservation.root.close(!reservation.resumeId);
-                if (reservation.resumeId) pendingAdmission.delete(reservation.resumeId);
-                const binding = runtime.sessions[reservation.root.session.sessionId]; if (binding) binding.active = false;
+                if (reservation.resumeId && !retryableBindings.has(reservation.resumeId)) pendingAdmission.delete(reservation.resumeId);
+                const binding = runtime.sessions[reservation.root.session.sessionId]; if (binding) binding.active = Boolean(reservation.resumeId && retryableBindings.has(reservation.resumeId));
                 runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== reservation.root.session.sessionId);
                 await persist(); prepared.delete(reservation.root);
                 if (reservation.resumeId) resumingThreads.delete(reservation.resumeId);
                 return;
             }
-            await bind(reservation.root, record(response.result), true, undefined, request.method === 'thread/start', reservation.serviceTierExplicit, reservation.requestedUltrafast, reservation.downgraded);
+            try {
+                await bind(reservation.root, record(response.result), true, undefined, request.method === 'thread/start', reservation.serviceTierExplicit, reservation.requestedUltrafast, reservation.downgraded);
+            } catch (error) {
+                // Native already loaded the writer in this engine. Preserve
+                // its durable owner, but let this runtime retry the HAPI bind
+                // after the old session-end flush. Input stays gated.
+                if (!reservation.resumeId) throw error;
+                await reservation.root.close(false);
+                if (roots.get(reservation.resumeId) === reservation.root) roots.delete(reservation.resumeId);
+                nativeSettings.delete(reservation.resumeId);
+                retryableBindings.add(reservation.resumeId);
+                pendingAdmission.add(reservation.resumeId);
+                await persist(); prepared.delete(reservation.root);
+                resumingThreads.delete(reservation.resumeId);
+                throw error;
+            }
             if (reservation.resumeId) resumingThreads.delete(reservation.resumeId);
+            if (reservation.resumeId) retryableBindings.delete(reservation.resumeId);
         } else if (request.method === 'thread/archive' && !response.error) {
             const root = roots.get(string(record(request.params).threadId) ?? ''); if (root) await end(root, false);
         } else if (request.method === 'thread/queue/delete' && !response.error && record(response.result).deleted === true) {
@@ -463,6 +480,8 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 }
             }, control: (method, params) => operation(async () => {
                 const sid = string(record(params).sessionId); const root = [...roots.values()].find(root => root.session.sessionId === sid);
+                const retryThread = sid && runtime.sessions[sid]?.threadId;
+                if (!root && method === 'hapi/attach' && retryThread && retryableBindings.has(retryThread)) return { threadId: retryThread };
                 if (!root) throw new Error('Shared session not found');
                 if (method === 'hapi/stopSession') { await end(root); return { stopped: true }; }
                 if (method === 'hapi/attach') return { threadId: root.threadId };
