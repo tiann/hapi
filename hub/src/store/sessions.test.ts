@@ -1819,14 +1819,39 @@ describe('setSessionBlockedAck (#1717 manual unblock)', () => {
     it('does not let a replayed older ack un-dismiss a newer one', () => {
         const store = makeStore()
         const session = seed(store)
-        store.sessions.setSessionBlockedAck(session.id, { at: 9000, reason: 'newer' }, 'default')
+        store.sessions.setSessionBlockedAck(
+            session.id, { at: 9000, reason: 'newer', keys: ['notify:9000'] }, 'default'
+        )
 
-        expect(store.sessions.setSessionBlockedAck(
+        // The write is now accepted — with identities, an older acknowledgement
+        // is legitimate (dismissing an older prompt after a newer one), and
+        // rejecting it turned that into a 500. What must NOT move backwards is
+        // the watermark and the reason that describes the newest dismissal.
+        store.sessions.setSessionBlockedAck(
+            session.id, { at: 1000, reason: 'older replay', keys: ['notify:9000'] }, 'default'
+        )
+        const row = store.sessions.getSession(session.id)
+        expect(row?.blockedAckAt).toBe(9000)
+        expect(row?.blockedAckReason).toBe('newer')
+    })
+
+    it('retains dismissals for several prompts, in any order', () => {
+        const store = makeStore()
+        const session = seed(store)
+
+        store.sessions.setSessionBlockedAck(
+            session.id, { at: 9000, reason: 'newer question', keys: ['request:q1'] }, 'default'
+        )
+        // Dismissing the OLDER permission afterwards used to be rejected by the
+        // monotonic guard, which the route surfaced as a 500.
+        store.sessions.setSessionBlockedAck(
             session.id,
-            { at: 1000, reason: 'older replay' },
+            { at: 5000, reason: 'older permission', keys: ['request:q1', 'request:p1'] },
             'default'
-        )).toBe(false)
-        expect(store.sessions.getSession(session.id)?.blockedAckReason).toBe('newer')
+        )
+
+        expect(store.sessions.getSession(session.id)?.blockedAckKeys)
+            .toEqual(['request:q1', 'request:p1'])
     })
 
     it('leaves updated_at alone — dismissing chrome is not conversation', () => {

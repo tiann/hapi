@@ -105,6 +105,10 @@ import { getConfiguration } from '../configuration'
 /** Startup notify backfill bounds (#1717) — see `backfillRecentNotifySignals`. */
 const NOTIFY_BACKFILL_MAX_SESSIONS = 200
 const NOTIFY_BACKFILL_MESSAGE_SCAN = 6
+/** Rewind reconciliation scans deeper than the startup backfill: the retained
+ *  footer can sit behind a run of sidechain or tool rows, and missing it there
+ *  does not merely delay the signal — the replacement write clears it. */
+const NOTIFY_REWIND_MESSAGE_SCAN = 60
 
 type PiResumeAttempt = NonNullable<NonNullable<Session['metadata']>['piResumeAttempt']>
 type PtyResumeAttempt = NonNullable<NonNullable<Session['metadata']>['ptyResumeAttempt']>
@@ -445,7 +449,15 @@ export class SyncEngine {
         const session = this.getSession(sessionId)
         if (!session) return null
 
-        const priorNotify = session.lastNotify ?? null
+        // The ledger has to describe the blocker the operator READ, not
+        // whatever the session reports at confirmation time. If a newer footer
+        // landed while they were typing, recording that one attaches their
+        // reason to something they never saw.
+        const observedNotify = session.lastNotify
+            && (!observedKey || observedKey === `notify:${session.lastNotify.at}`)
+            ? session.lastNotify
+            : null
+        const priorNotify = observedNotify
         // Watermark the blocker the operator actually reviewed, not the hub's
         // receive time. A permission request or footer that landed between the
         // dialog opening and this call is a blocker they never saw, and
@@ -518,10 +530,11 @@ export class SyncEngine {
 
     /** Newest eligible footer in the retained transcript, or null. */
     private findNotifySignalInTranscript(
-        sessionId: string
+        sessionId: string,
+        scanDepth: number = NOTIFY_BACKFILL_MESSAGE_SCAN
     ): { status: string; at: number; note: string | null } | null {
         const now = Date.now()
-        const scanned = this.store.messages.getMessages(sessionId, NOTIFY_BACKFILL_MESSAGE_SCAN)
+        const scanned = this.store.messages.getMessages(sessionId, scanDepth)
         // Re-order by message time before scanning. `getMessages` sorts by
         // insertion `seq`, but replayed transcripts keep their original
         // timestamps, so an older footer can be stored after a newer one.
@@ -576,7 +589,7 @@ export class SyncEngine {
         // truncation the transcript is the truth, not arrival order.
         const session = this.sessionCache.getSession(sessionId)
         if (!session) return
-        const retained = this.findNotifySignalInTranscript(sessionId)
+        const retained = this.findNotifySignalInTranscript(sessionId, NOTIFY_REWIND_MESSAGE_SCAN)
         this.sessionCache.replaceNotifyAfterTruncate(sessionId, retained)
     }
 

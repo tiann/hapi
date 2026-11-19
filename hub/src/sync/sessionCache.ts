@@ -463,7 +463,14 @@ export class SessionCache {
             todosUpdatedAt: stored.todosUpdatedAt ?? 0,
             teamStateUpdatedAt: stored.teamStateUpdatedAt ?? 0,
             blockedAck: stored.blockedAckAt !== null
-                ? { at: stored.blockedAckAt, reason: stored.blockedAckReason ?? '' }
+                ? {
+                    at: stored.blockedAckAt,
+                    reason: stored.blockedAckReason ?? '',
+                    // Dropping this made a restart or merge fall back to
+                    // timestamp-cutoff semantics, which is exactly what the
+                    // identity exists to replace.
+                    keys: stored.blockedAckKeys
+                }
                 : null,
             notifyUpdatedAt: stored.lastNotifyUpdatedAt ?? 0,
             lastNotify: stored.lastNotifyStatus !== null && stored.lastNotifyAt !== null
@@ -567,11 +574,18 @@ export class SessionCache {
     ): {
         at: number
         reason: string
-        key?: string | null
+        keys?: string[] | null
     } | null {
         const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
         if (!session) return null
-        const ack = { at, reason, key: key ?? null }
+        // Merge, never replace: dismissing a second prompt must not un-dismiss
+        // the first. Deduped and bounded by the store.
+        const existingKeys = this.store.sessions.getSessionByNamespace(sessionId, session.namespace)
+            ?.blockedAckKeys ?? []
+        const keys = key
+            ? Array.from(new Set([...existingKeys, key]))
+            : (existingKeys.length > 0 ? existingKeys : null)
+        const ack = { at, reason, keys }
         if (!this.store.sessions.setSessionBlockedAck(sessionId, ack, session.namespace)) {
             return null
         }
@@ -2535,7 +2549,7 @@ export class SessionCache {
         if (oldAckAt !== null) {
             const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
             const targetAckAt = latest?.blockedAckAt ?? null
-            const targetHasKeyedAck = Boolean(latest?.blockedAckKey)
+            const targetHasKeyedAck = Boolean(latest?.blockedAckKeys?.length)
             if (latest && !targetHasKeyedAck
                 && (targetAckAt === null || oldAckAt > targetAckAt)) {
                 this.store.sessions.setSessionBlockedAck(
@@ -2543,7 +2557,7 @@ export class SessionCache {
                     {
                         at: oldAckAt,
                         reason: oldStored.blockedAckReason ?? '',
-                        key: oldStored.blockedAckKey
+                        keys: oldStored.blockedAckKeys
                     },
                     namespace
                 )

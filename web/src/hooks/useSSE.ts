@@ -500,11 +500,17 @@ export function useSSE(options: {
                     && existingNotifyAt > incomingNotifyAt
                 const summary = {
                     ...toSessionSummary(session),
-                    ...(keepExistingNotify
+                    ...(keepExistingNotify && existing !== undefined
                         ? {
-                            lastNotify: existing?.lastNotify ?? null,
-                            blockedAck: existing?.blockedAck ?? null,
-                            notifyUpdatedAt: existingNotifyAt
+                            lastNotify: existing.lastNotify ?? null,
+                            blockedAck: existing.blockedAck ?? null,
+                            notifyUpdatedAt: existingNotifyAt,
+                            // Same picture, same decision — see useSessions.
+                            pendingRequestsCount: existing.pendingRequestsCount,
+                            pendingRequestKinds: existing.pendingRequestKinds,
+                            pendingRequests: existing.pendingRequests,
+                            pendingRequestsNewestAt: existing.pendingRequestsNewestAt,
+                            agentStateVersion: existing.agentStateVersion
                         }
                         : {}),
                     attachedJob: existing?.attachedJob ?? null,

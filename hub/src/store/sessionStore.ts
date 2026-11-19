@@ -119,7 +119,7 @@ export class SessionStore {
 
     setSessionBlockedAck(
         id: string,
-        ack: { at: number; reason: string; key?: string | null },
+        ack: { at: number; reason: string; keys?: string[] | null },
         namespace: string
     ): boolean {
         return setSessionBlockedAck(this.db, id, ack, namespace)

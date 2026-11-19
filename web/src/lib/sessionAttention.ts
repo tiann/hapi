@@ -128,18 +128,20 @@ export type SessionBlockedState = {
  * back to the old watermark so an upgrade does not resurrect dismissed work.
  */
 function isAcknowledgedBlocker(
-    ack: { at: number; key?: string | null } | null,
+    ack: { at: number; keys?: string[] | null } | null,
     blockerKey: string,
     blockerAt: number
 ): boolean {
     if (!ack) return false
-    if (ack.key) return ack.key === blockerKey
+    // A set, so several prompts can be dismissed independently and in any
+    // order. Only rows predating identities fall back to the watermark.
+    if (ack.keys && ack.keys.length > 0) return ack.keys.includes(blockerKey)
     return blockerAt <= ack.at
 }
 
 function getPendingBlockedState(
     summary: SessionSummary,
-    ack: { at: number; key?: string | null } | null,
+    ack: { at: number; keys?: string[] | null } | null,
     now: number
 ): SessionBlockedState | null {
     // Requests left on an archived session can no longer be answered, and

@@ -39,11 +39,16 @@ export function UnblockReasonDialog(props: {
     const dialogRef = useRef<HTMLDivElement>(null)
     // Restore focus to the caller-named target, so dismissing returns the
     // keyboard user to the session row rather than the top of the document.
-    const returnFocusTo = props.returnFocusTo
+    // Deliberately NOT keyed on the callback identity. SessionItem passes a
+    // fresh closure every render, so including it re-ran cleanup whenever the
+    // mutation went pending — focusing the row while the dialog was still
+    // open, which put keyboard input behind the focus trap.
+    const returnFocusRef = useRef(props.returnFocusTo)
+    returnFocusRef.current = props.returnFocusTo
     useEffect(() => {
         if (!props.isOpen) return
-        return () => returnFocusTo?.()?.focus?.()
-    }, [props.isOpen, returnFocusTo])
+        return () => returnFocusRef.current?.()?.focus?.()
+    }, [props.isOpen])
 
     useEffect(() => {
         if (props.isOpen) {

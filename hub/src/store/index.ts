@@ -172,7 +172,7 @@ export class Store {
         localIds: string[],
         invokedAt: number,
         namespace: string
-    ): number {
+    ): { updatedAt: number; consumed: number } {
         return this.db.transaction(() => {
             const changes = this.messages.markMessagesInvoked(sessionId, localIds, invokedAt)
             if (changes > 0) {
@@ -187,7 +187,10 @@ export class Store {
                 throw new Error('session activity was not persisted after messages-consumed transition')
             }
 
-            return session.updatedAt
+            // `consumed` is 0 for a replayed acknowledgement or unknown local
+            // ids: nothing reached the agent, so callers must not treat it as
+            // a delivery (#1717).
+            return { updatedAt: session.updatedAt, consumed: changes }
         })()
     }
 

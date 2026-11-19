@@ -40,11 +40,20 @@ export function useSessions(api: ApiClient | null, options: UseSessionsOptions =
                     const keepPriorNotify = prior !== undefined
                         && priorNotifyAt > (session.notifyUpdatedAt ?? 0)
                     return { ...session,
-                        ...(keepPriorNotify
+                        // The pending-request fields are part of the same
+                        // blocker picture: keeping the newer footer while
+                        // taking older pending data brought an answered prompt
+                        // back into Blocked and re-fired the arrival alert.
+                        ...(keepPriorNotify && prior !== undefined
                             ? {
-                                lastNotify: prior?.lastNotify ?? null,
-                                blockedAck: prior?.blockedAck ?? null,
-                                notifyUpdatedAt: priorNotifyAt
+                                lastNotify: prior.lastNotify ?? null,
+                                blockedAck: prior.blockedAck ?? null,
+                                notifyUpdatedAt: priorNotifyAt,
+                                pendingRequestsCount: prior.pendingRequestsCount,
+                                pendingRequestKinds: prior.pendingRequestKinds,
+                                pendingRequests: prior.pendingRequests,
+                                pendingRequestsNewestAt: prior.pendingRequestsNewestAt,
+                                agentStateVersion: prior.agentStateVersion
                             }
                             : {}),
                         lastUserMessageAt: Math.max(prior?.lastUserMessageAt ?? 0, session.lastUserMessageAt ?? 0) || undefined,

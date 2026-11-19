@@ -553,7 +553,7 @@ export const SessionNotifySignalSchema = z.object({
 export const SessionBlockedAckSchema = z.object({
     at: z.number(),
     reason: z.string(),
-    key: z.string().max(256).nullish()
+    keys: z.array(z.string().max(256)).max(64).nullish()
 })
 
 export const ThreadGoalStatusSchema = z.enum([

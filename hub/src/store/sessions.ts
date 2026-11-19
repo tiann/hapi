@@ -326,7 +326,7 @@ function toStoredSession(row: DbSessionRow): StoredSession {
         lastNotifyNote: row.last_notify_note,
         blockedAckAt: row.blocked_ack_at,
         blockedAckReason: row.blocked_ack_reason,
-        blockedAckKey: row.blocked_ack_key,
+        blockedAckKeys: parseAckKeys(row.blocked_ack_key),
         lastNotifyClearedAt: row.last_notify_cleared_at,
         lastNotifyUpdatedAt: row.last_notify_updated_at,
         active: row.active === 1,
@@ -760,21 +760,30 @@ export function setSessionLastNotify(
 export function setSessionBlockedAck(
     db: Database,
     id: string,
-    ack: { at: number; reason: string; key?: string | null },
+    ack: { at: number; reason: string; keys?: string[] | null },
     namespace: string
 ): boolean {
     try {
         const result = db.prepare(`
             UPDATE sessions
-            SET blocked_ack_at = @at,
-                blocked_ack_reason = @reason,
-                blocked_ack_key = @key,
+            SET blocked_ack_at = MAX(COALESCE(blocked_ack_at, 0), @at),
+                -- Reason follows the newest acknowledgement; a replayed older
+                -- one must not overwrite it. The KEYS still merge below, so
+                -- dismissing an older prompt is accepted on its own terms.
+                blocked_ack_reason = CASE
+                    WHEN blocked_ack_at IS NULL OR @at >= blocked_ack_at THEN @reason
+                    ELSE blocked_ack_reason
+                END,
+                blocked_ack_key = @keys,
                 last_notify_updated_at = MAX(COALESCE(last_notify_updated_at, 0) + 1, @at),
                 seq = seq + 1
             WHERE id = @id
               AND namespace = @namespace
-              AND (blocked_ack_at IS NULL OR blocked_ack_at <= @at)
-        `).run({ id, at: ack.at, reason: ack.reason, key: ack.key ?? null, namespace })
+              -- No monotonic guard on @at. With identities the acknowledgement
+              -- is a SET, so dismissing an OLDER prompt after a newer one is
+              -- legitimate — the guard rejected it and the route turned that
+              -- into a 500. Ordering is carried by the keys, not the clock.
+        `).run({ id, at: ack.at, reason: ack.reason, keys: serialiseAckKeys(ack.keys), namespace })
         return result.changes === 1
     } catch {
         return false
@@ -1258,4 +1267,24 @@ export function advanceNotifyClearBoundary(
     } catch {
         return false
     }
+}
+
+/** Dismissed-blocker identities are stored as a JSON array in one column. */
+export function parseAckKeys(raw: string | null): string[] | null {
+    if (raw === null) return null
+    try {
+        const parsed: unknown = JSON.parse(raw)
+        if (!Array.isArray(parsed)) return null
+        return parsed.filter((item): item is string => typeof item === 'string')
+    } catch {
+        // Pre-set rows stored a single bare key; keep honouring them.
+        return raw.length > 0 ? [raw] : null
+    }
+}
+
+function serialiseAckKeys(keys: string[] | null | undefined): string | null {
+    if (!keys || keys.length === 0) return null
+    // Bounded so a long-lived session cannot grow this without limit; the
+    // newest dismissals are the ones still capable of hiding a live blocker.
+    return JSON.stringify(keys.slice(-64))
 }

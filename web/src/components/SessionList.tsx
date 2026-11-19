@@ -2410,9 +2410,12 @@ export function SessionList(props: {
     // Keep status filtering separate from the unread lens. Machine choices are
     // derived from this set, so selecting a machine with no unread matches must
     // stay an empty intersection instead of falling back to another machine.
+    // The jump target is exempted exactly where the selected session already
+    // is, so revealing one row needs no change to saved preferences.
+    const filterExemptId = revealBlockedSessionId ?? selectedSessionId
     const allSessions = useMemo(
-        () => filterSessionsForListStatus(sidebarSessions, listView.status, selectedSessionId),
-        [sidebarSessions, selectedSessionId, listView.status]
+        () => filterSessionsForListStatus(sidebarSessions, listView.status, filterExemptId),
+        [sidebarSessions, filterExemptId, listView.status]
     )
     const unreadSessionCount = useMemo(
         () => getUnreadSessionCount(readableSessions),
@@ -2422,9 +2425,6 @@ export function SessionList(props: {
         () => new Set(allSessions.map(session => formatDateValue(new Date(session.updatedAt)))),
         [allSessions]
     )
-    // The jump target is exempted exactly where the selected session already
-    // is, so revealing one row needs no change to saved preferences.
-    const filterExemptId = revealBlockedSessionId ?? selectedSessionId
     const hasTextQuery = normalizedQuery.length > 0 && !contentSearchActive
     const timeScopedSessions = useMemo(
         () => timeRange === null

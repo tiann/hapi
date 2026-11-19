@@ -494,13 +494,20 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         }
         const invokedAt = Date.now()
         let sessionUpdatedAt: number
+        // Only rows that were still uninvoked count as newly delivered. A
+        // replayed acknowledgement after the turn already finished blocked,
+        // and one naming unknown local ids, consume nothing — clearing on
+        // those erased a blocker the agent genuinely reported (#1717).
+        let newlyDelivered = false
         try {
-            sessionUpdatedAt = store.recordMessagesConsumed(
+            const consumedResult = store.recordMessagesConsumed(
                 data.sid,
                 localIds,
                 invokedAt,
                 sessionAccess.value.namespace
             )
+            sessionUpdatedAt = consumedResult.updatedAt
+            newlyDelivered = consumedResult.consumed > 0
         } catch (err) {
             console.error('recordMessagesConsumed failed', err)
             return
@@ -517,10 +524,12 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         // queue time erased a footer on an idempotent retry of an
         // already-consumed message (no new turn started), and on a prompt
         // cancelled before it was ever delivered.
-        try {
-            onPromptDelivered?.(data.sid)
-        } catch (err) {
-            console.error('onPromptDelivered failed', err)
+        if (newlyDelivered) {
+            try {
+                onPromptDelivered?.(data.sid)
+            } catch (err) {
+                console.error('onPromptDelivered failed', err)
+            }
         }
 
         // Only drop the queued-thinking grace when the CLI explicitly opts in

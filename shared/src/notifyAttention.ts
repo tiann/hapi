@@ -123,8 +123,14 @@ export type SessionBlockedAck = {
      * was open. `notify:<at>` for a self-reported footer, `request:<id>` for a
      * prompt. Absent on rows written before this existed, which fall back to
      * the old watermark behaviour.
+     *
+     * A SET, not one value: a session can hold several prompts at once, and
+     * dismissing the newer one then the older one must leave both dismissed.
+     * With a single slot the second dismissal overwrote the first — and,
+     * because the write was timestamp-monotonic, dismissing the older prompt
+     * failed outright.
      */
-    key?: string | null
+    keys?: string[] | null
 }
 
 /** Stable identity for a self-reported footer. */
