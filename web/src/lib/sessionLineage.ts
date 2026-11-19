@@ -45,16 +45,44 @@ export function isChildLineageExpandedByDefault(
     return children.some((child) => childIsWorking(child) || childDemandsAttention(child, ctx))
 }
 
+export type SessionLookupSource = readonly SessionSummary[] | ReadonlyMap<string, SessionSummary>
+
+export function buildSessionLookup(
+    sessions: readonly SessionSummary[]
+): ReadonlyMap<string, SessionSummary> {
+    const byId = new Map<string, SessionSummary>()
+    for (const s of sessions) {
+        if (!byId.has(s.id)) byId.set(s.id, s)
+    }
+    return byId
+}
+
+function isReadonlySessionMap(
+    source: SessionLookupSource | undefined
+): source is ReadonlyMap<string, SessionSummary> {
+    return source instanceof Map
+        || (typeof source === 'object' && source !== null && 'get' in source && typeof source.get === 'function')
+}
+
 function findNearestVisibleAncestorId(
     session: SessionSummary,
     visibleIndexById: ReadonlyMap<string, number>,
-    lookupById: ReadonlyMap<string, SessionSummary>
+    getLookup: () => ReadonlyMap<string, SessionSummary> | undefined
 ): string | null {
     if (session.pinned) return null
-    const visited = new Set<string>([session.id])
-    let cursor: SessionSummary | undefined = session
-    for (let hop = 0; hop < MAX_ANCESTOR_HOPS; hop += 1) {
-        const parentId = cursor?.metadata?.parentLink?.parentSessionId
+    const firstParentId = session.metadata?.parentLink?.parentSessionId
+    if (!firstParentId || firstParentId === session.id) return null
+    if (visibleIndexById.has(firstParentId)) return firstParentId
+
+    const lookupById = getLookup()
+    if (!lookupById) return null
+
+    let cursor = lookupById.get(firstParentId)
+    if (!cursor) return null
+
+    const visited = new Set<string>([session.id, firstParentId])
+    for (let hop = 1; hop < MAX_ANCESTOR_HOPS; hop += 1) {
+        const parentId = cursor.metadata?.parentLink?.parentSessionId
         if (!parentId || visited.has(parentId)) return null
         if (visibleIndexById.has(parentId)) return parentId
         visited.add(parentId)
@@ -70,30 +98,39 @@ function findNearestVisibleAncestorId(
  */
 export function buildSessionLineage(
     sessions: readonly SessionSummary[],
-    allSessions?: readonly SessionSummary[]
+    allSessions?: SessionLookupSource
 ): SessionLineageForest {
     const visibleIndexById = new Map<string, number>()
-    const visibleById = new Map<string, SessionSummary>()
     for (let i = 0; i < sessions.length; i += 1) {
-        const s = sessions[i]!
-        visibleIndexById.set(s.id, i)
-        visibleById.set(s.id, s)
+        visibleIndexById.set(sessions[i]!.id, i)
     }
 
-    let lookupById: ReadonlyMap<string, SessionSummary> = visibleById
-    if (allSessions && allSessions.length > 0) {
-        const combined = new Map<string, SessionSummary>(visibleById)
-        for (const s of allSessions) {
-            if (!combined.has(s.id)) combined.set(s.id, s)
+    let lookupById: ReadonlyMap<string, SessionSummary> | undefined = isReadonlySessionMap(allSessions)
+        ? allSessions
+        : undefined
+    const getLookup = (): ReadonlyMap<string, SessionSummary> | undefined => {
+        if (lookupById !== undefined) return lookupById
+        if (Array.isArray(allSessions) && allSessions.length > 0) {
+            lookupById = buildSessionLookup(allSessions)
+            return lookupById
         }
-        lookupById = combined
+        return undefined
     }
 
     const effectiveParentByChildId = new Map<string, string>()
     for (const s of sessions) {
-        const parentId = findNearestVisibleAncestorId(s, visibleIndexById, lookupById)
+        const parentId = findNearestVisibleAncestorId(s, visibleIndexById, getLookup)
         if (parentId !== null) {
             effectiveParentByChildId.set(s.id, parentId)
+        }
+    }
+
+    if (effectiveParentByChildId.size === 0) {
+        return {
+            roots: [...sessions],
+            childrenByParentId: new Map(),
+            descendantsByRootId: new Map(),
+            effectiveParentByChildId
         }
     }
 

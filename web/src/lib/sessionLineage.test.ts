@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { SessionSummary } from '@/types/api'
 import {
     buildSessionLineage,
+    buildSessionLookup,
     childDemandsAttention,
     childIsWorking,
     isChildLineageExpandedByDefault
@@ -67,6 +68,31 @@ describe('buildSessionLineage', () => {
         expect(forest.roots.map((s) => s.id)).toEqual(['root'])
         expect(forest.effectiveParentByChildId.get('leaf')).toBe('root')
         expect(forest.descendantsByRootId.get('root')?.map((d) => d.session.id)).toEqual(['leaf'])
+    })
+
+    it('reuses a shared session lookup map across groups without iterating it', () => {
+        const root = makeSession({ id: 'root' })
+        const archivedMiddle = makeSession({ id: 'mid', metadata: link('root', 'peer') })
+        const activeLeaf = makeSession({ id: 'leaf', metadata: link('mid', 'peer') })
+        const standaloneA = makeSession({ id: 'standalone-a' })
+        const standaloneB = makeSession({ id: 'standalone-b' })
+
+        const lookup = buildSessionLookup([root, archivedMiddle, activeLeaf, standaloneA, standaloneB])
+        const getSpy = vi.spyOn(lookup, 'get')
+        const iterSpy = vi.spyOn(lookup as Map<string, SessionSummary>, Symbol.iterator)
+
+        const unlinkedForest = buildSessionLineage([standaloneA, standaloneB], lookup)
+        expect(unlinkedForest.roots.map((s) => s.id)).toEqual(['standalone-a', 'standalone-b'])
+        expect(getSpy).not.toHaveBeenCalled()
+        expect(iterSpy).not.toHaveBeenCalled()
+
+        const linkedForest = buildSessionLineage([root, activeLeaf], lookup)
+        expect(linkedForest.roots.map((s) => s.id)).toEqual(['root'])
+        expect(linkedForest.effectiveParentByChildId.get('leaf')).toBe('root')
+        expect(linkedForest.descendantsByRootId.get('root')?.map((d) => d.session.id)).toEqual(['leaf'])
+        expect(iterSpy).not.toHaveBeenCalled()
+        expect(getSpy).toHaveBeenCalledTimes(1)
+        expect(getSpy).toHaveBeenCalledWith('mid')
     })
 
     it('breaks cycles deterministically without losing any session', () => {
@@ -176,5 +202,86 @@ describe('buildSessionLineage performance benchmark', () => {
         expect(r5000.lastRoots).toBe(1000)
         expect(r500.medianMs).toBeLessThan(5)
         expect(r5000.medianMs).toBeLessThan(25)
+    })
+
+    it('processes multi-group sidebars in linear O(N) time with a shared lookup', () => {
+        const groupCount = 100
+        const sessionsPerGroup = 50
+        const allSessions: SessionSummary[] = []
+        const groups: SessionSummary[][] = []
+        let expectedTotalRoots = 0
+
+        for (let g = 0; g < groupCount; g += 1) {
+            const group: SessionSummary[] = []
+            const linkedGroup = g % 2 === 0
+            for (let i = 0; i < sessionsPerGroup; i += 1) {
+                const id = `g${g}-s${i}`
+                if (!linkedGroup) {
+                    const session = makeSession({ id, updatedAt: sessionsPerGroup - i, metadata: { path: `/work/proj-${g}` } })
+                    allSessions.push(session)
+                    group.push(session)
+                    expectedTotalRoots += 1
+                    continue
+                }
+                const slot = i % 5
+                if (slot === 0) {
+                    const root = makeSession({ id, updatedAt: sessionsPerGroup - i, metadata: { path: `/work/proj-${g}` } })
+                    allSessions.push(root)
+                    group.push(root)
+                    expectedTotalRoots += 1
+                } else if (slot === 1) {
+                    // Filtered-out intermediate present only in allSessions.
+                    const hidden = makeSession({
+                        id,
+                        updatedAt: sessionsPerGroup - i,
+                        metadata: { path: `/work/proj-${g}`, parentLink: { parentSessionId: `g${g}-s${i - 1}`, kind: 'peer' } }
+                    })
+                    allSessions.push(hidden)
+                } else {
+                    const child = makeSession({
+                        id,
+                        updatedAt: sessionsPerGroup - i,
+                        metadata: { path: `/work/proj-${g}`, parentLink: { parentSessionId: `g${g}-s${i - 1}`, kind: 'peer' } }
+                    })
+                    allSessions.push(child)
+                    group.push(child)
+                }
+            }
+            groups.push(group)
+        }
+
+        const runMultiGroup = () => {
+            const lookup = buildSessionLookup(allSessions)
+            let totalRoots = 0
+            for (const group of groups) {
+                totalRoots += buildSessionLineage(group, lookup).roots.length
+            }
+            return totalRoots
+        }
+
+        const warmup = 20
+        const runs = 100
+        let lastRoots = 0
+        for (let i = 0; i < warmup; i += 1) {
+            lastRoots = runMultiGroup()
+        }
+        const samples: number[] = []
+        for (let i = 0; i < runs; i += 1) {
+            const t0 = performance.now()
+            lastRoots = runMultiGroup()
+            const t1 = performance.now()
+            samples.push(t1 - t0)
+        }
+        samples.sort((a, b) => a - b)
+        const medianMs = samples[Math.floor(samples.length * 0.5)]!
+        const p95Ms = samples[Math.floor(samples.length * 0.95)]!
+
+        console.info(
+            `[sessionLineage-bench] multi-group N=${allSessions.length} G=${groupCount} runs=${runs} ` +
+            `median=${medianMs.toFixed(3)}ms p95=${p95Ms.toFixed(3)}ms roots=${lastRoots}`
+        )
+
+        expect(lastRoots).toBe(expectedTotalRoots)
+        expect(medianMs).toBeLessThan(25)
     })
 })
