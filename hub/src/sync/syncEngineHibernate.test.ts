@@ -1,3 +1,6 @@
+import { Hono } from 'hono'
+import type { WebAppEnv } from '../web/middleware/auth'
+import { createSessionsRoutes } from '../web/routes/sessions'
 import { registerTerminalHandlers } from '../socket/handlers/terminal'
 import { TerminalRegistry } from '../socket/terminalRegistry'
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test'
@@ -108,7 +111,9 @@ describe('SyncEngine hibernation', () => {
         stopImpl = endingStop('stopped')
         gateway().stopRunnerSession = async (machineId: string, sessionId: string) => {
             stopCalls.push({ machineId, sessionId })
-            return await stopImpl(machineId, sessionId)
+            const owner = engine.getSessions().find(row => row.metadata?.hibernation?.state === 'stopping'
+                && row.metadata.machineId === machineId && `PID-${row.metadata.hostPid}` === sessionId)
+            return await stopImpl(machineId, owner?.id ?? sessionId)
         }
         gateway().killSession = async (sessionId: string) => {
             killCalls.push(sessionId)
@@ -133,7 +138,7 @@ describe('SyncEngine hibernation', () => {
         expect(session.metadata?.hibernation?.state).toBe('hibernated')
         expect(session.metadata?.hibernation?.reason).toBe('idle')
         expect(session.updatedAt).toBe(updatedAtBefore)
-        expect(stopCalls).toEqual([{ machineId: MACHINE, sessionId: id }])
+        expect(stopCalls).toEqual([{ machineId: MACHINE, sessionId: `PID-${session.metadata!.hostPid}` }])
         expect(killCalls).toEqual([id])
     })
 
@@ -258,21 +263,38 @@ describe('SyncEngine hibernation', () => {
         expect(cache().getSession(id)?.active).toBe(true)
     })
 
-    it('uses the archive stop sequence and accepts its PID fallback confirmation', async () => {
-        const id = insertIdleSession('archive-fallback')
+    it('uses only the selected generation for both shutdown RPCs when another wrapper owns the generic handler', async () => {
+        const id = insertIdleSession('generation-fallback')
+        const { hostPid, hostStartMarker } = cache().getSession(id)!.metadata!
         const calls: string[] = []
-        gateway().killSession = async () => {
+        gateway().killSession = async (_id: string, opts: unknown) => {
+            expect(opts).toEqual({ expectedMachineId: MACHINE, expectedPid: hostPid, expectedProcessStartMarker: hostStartMarker })
             calls.push('kill')
-            return { pid: 4242, processStartMarker: 'wrapper-start' }
+            throw new RpcTargetMissingError('killSession', 'socket-disconnected')
         }
-        gateway().stopRunnerSession = async (_machine: string, target: string, opts: { processStartMarker?: string }) => {
+        gateway().stopRunnerSession = async (machine: string, target: string, opts: { processStartMarker?: string }) => {
+            expect(machine).toBe(MACHINE)
+            expect(opts.processStartMarker).toBe(hostStartMarker)
             calls.push(target)
-            if (target === id) return 'unknown'
-            expect(opts.processStartMarker).toBe('wrapper-start')
-            return 'already_gone'
+            return 'unknown'
         }
-        expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([id])
-        expect(calls).toEqual(['kill', id, 'PID-4242'])
+        expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([])
+        expect(calls).toEqual(['kill', `PID-${hostPid}`])
+    })
+
+    it('returns a deletion conflict after an unconfirmed stop until recovery settles', async () => {
+        const id = insertIdleSession('unconfirmed-delete')
+        stopImpl = async () => { engine.handleSessionEnd({ sid: id, time: Date.now() }); return 'still_alive' }
+        await engine.hibernateSession(id, { now: later(), hibernateMs: WINDOW })
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', NAMESPACE); await next() })
+        app.route('/api', createSessionsRoutes(() => engine))
+        const remove = () => app.request(`/api/sessions/${id}`, { method: 'DELETE' })
+        expect((await remove()).status).toBe(409)
+        expect(engine.getSession(id)?.metadata?.hibernation?.state).toBe('stopping')
+        gateway().inspectWorker = async () => ({ state: 'gone', confirmedWake: false, stopState: 'clear' })
+        expect(await engine.reconcileInterruptedStop(id, NAMESPACE)).toBe(true)
+        expect((await remove()).status).toBe(200)
     })
 
     it('hibernates only the single-session Codex root on a shared-runtime-capable runner', async () => {
@@ -283,7 +305,7 @@ describe('SyncEngine hibernation', () => {
         const single = insertIdleSession('single', { machineId, flavor: 'codex', codexSessionId: 'single-thread' })
         expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([single])
         expect(cache().getSession(shared)?.active).toBe(true)
-        expect(stopCalls).toEqual([{ machineId, sessionId: single }])
+        expect(stopCalls).toEqual([{ machineId, sessionId: `PID-${cache().getSession(single)!.metadata!.hostPid}` }])
         expect(killCalls).toEqual([single])
     })
 

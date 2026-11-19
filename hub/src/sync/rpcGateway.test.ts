@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import type { Server, Socket } from 'socket.io'
-import { getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS } from '@hapi/protocol/rpcMethods'
+import { getGenerationKillMethod, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import { RpcRegistry } from '../socket/rpcRegistry'
 import { PermissionRequestNotFoundError, RpcGateway, RpcTargetMissingError } from './rpcGateway'
 
@@ -194,6 +194,7 @@ describe('RpcGateway no-target diagnostics (tiann/hapi#916)', () => {
         const newer = fixture('new', 43)
         registry.register(old as unknown as Socket, `session-1:${RPC_METHODS.KillSession}`)
         registry.register(newer as unknown as Socket, `session-1:${RPC_METHODS.KillSession}`)
+        registry.register(old as unknown as Socket, `session-1:${getGenerationKillMethod('machine-1', 42)}`)
         registry.register(old as unknown as Socket, `session-1:${getSessionStopPreparationMethod('machine-1', 42)}`)
         registry.register(newer as unknown as Socket, `session-1:${getSessionStopPreparationMethod('machine-1', 43)}`)
         const sockets = new Map([['old', old], ['new', newer]])
@@ -203,7 +204,8 @@ describe('RpcGateway no-target diagnostics (tiann/hapi#916)', () => {
         registry.unregisterAll(newer as unknown as Socket)
         sockets.delete('new')
         expect((await gateway.killSession('session-1', options)).pid).toBe(42)
-        expect(calls).toEqual(['old', 'old'])
+        expect((await gateway.killSession('session-1', { ...options, prepareOnly: false })).pid).toBe(42)
+        expect(calls).toEqual(['old', 'old', 'old'])
     })
 
     it('does not fall back to the newer generic wrapper when an older process alias is unavailable', async () => {

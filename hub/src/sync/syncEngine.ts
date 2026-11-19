@@ -4330,10 +4330,14 @@ export class SyncEngine {
         // machine-level StopSession RPC when we know a machineId, and refuse
         // to archive while the runner reports still_alive / unknown.
         let cliUnreachable = false
+        const selected = stillOwnsSession ? this.getSession(sessionId)?.metadata?.hibernation?.worker : undefined
+        if (stillOwnsSession && (!selected || !stillOwnsSession())) throw new ArchiveCleanupError('unconfirmed')
         let killPid: number | undefined
         let killProcessStartMarker: string | undefined
         try {
-            const killResult = (await this.rpcGateway.killSession(sessionId)) ?? {}
+            const killResult = (await this.rpcGateway.killSession(sessionId, selected ? {
+                expectedMachineId: selected.machineId, expectedPid: selected.pid, expectedProcessStartMarker: selected.startMarker
+            } : undefined)) ?? {}
             killPid = killResult.pid
             killProcessStartMarker = killResult.processStartMarker
         } catch (error) {
@@ -4360,7 +4364,9 @@ export class SyncEngine {
         if (stillOwnsSession && (!stillOwnsSession() || !machineId || !runnerSpawned)) throw new ArchiveCleanupError('unconfirmed')
         if (machineId && runnerSpawned) {
             // Missing Runner acknowledgement leaves cleanup unconfirmed.
-            let status = await stopRunner(machineId, sessionId)
+            let status = selected
+                ? await stopRunner(selected.machineId, `PID-${selected.pid}`, selected.startMarker)
+                : await stopRunner(machineId, sessionId)
             // KillSession acknowledges before cleanupAndExit finishes, and socket
             // loss is not exit proof. When the runner cannot find the HAPI id,
             // confirm the KillSession-reported OS pid + start marker.
@@ -4370,7 +4376,7 @@ export class SyncEngine {
                 && typeof killProcessStartMarker === 'string'
                 && killProcessStartMarker.length > 0
             )
-            if (!wakeMachine && status === 'unknown' && killPidConfirmable) {
+            if (!selected && !wakeMachine && status === 'unknown' && killPidConfirmable) {
                 status = await stopRunner(machineId, `PID-${killPid}`, killProcessStartMarker)
             }
             // Estate dogfood (#1911 / Peer #1820): KillSession often supplies no
@@ -4379,7 +4385,7 @@ export class SyncEngine {
             // without a start marker the runner returns already_gone only when
             // the OS pid is dead (alive → unknown; never tree-kills). Refuse
             // still_alive / unknown on that confirm.
-            if (!wakeMachine && status === 'unknown' && !killPidConfirmable) {
+            if (!selected && !wakeMachine && status === 'unknown' && !killPidConfirmable) {
                 const hostPid = sessionMeta?.hostPid
                 if (typeof hostPid === 'number' && hostPid > 0) {
                     status = await stopRunner(machineId, `PID-${hostPid}`)
@@ -4760,7 +4766,9 @@ export class SyncEngine {
 
     async deleteSession(sessionId: string): Promise<void> {
         if (this.openCodeRewindPending(sessionId)) throw new Error('OpenCode rewind requires reconciliation')
-        if (this.sessionCache.getSession(sessionId)?.metadata?.codexResumePending) throw new Error('Codex resume startup is unconfirmed; archive to confirm termination before deleting')
+        const metadata = this.getSession(sessionId)?.metadata
+        if (metadata?.hibernation && (this.historyActionsInFlight.has(sessionId) || metadata.codexResumePending)) throw new ArchiveCleanupError('unconfirmed')
+        if (metadata?.codexResumePending) throw new Error('Codex resume startup is unconfirmed; archive to confirm termination before deleting')
         if (this.historyActionsInFlight.has(sessionId) || this.archivedForkPending(sessionId)) {
             throw new Error('Archived fork is pending; reconcile it before deleting the source')
         }
@@ -6222,6 +6230,9 @@ export class SyncEngine {
             )
 
             if (spawnResult.type !== 'success') {
+                if (wakeAttemptId && spawnResult.childStarted === false && !previousWake) {
+                    this.sessionCache.clearUnstartedWake(access.sessionId, namespace, wakeAttemptId)
+                }
                 if (flavor === 'codex' && resumeToken) {
                     if (spawnResult.childStarted === false) this.writeCodexResumePending(access.sessionId, namespace, undefined)
                     else return { type: 'error', message: spawnResult.message, code: 'resume_failed', rollbackSafe: false }

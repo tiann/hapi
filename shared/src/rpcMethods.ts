@@ -94,6 +94,10 @@ export const RPC_METHODS = {
 export const RPC_TARGET_MISSING_ERROR_CODE = 'rpc_target_missing' as const
 
 /** Select the exact machine/PID; the handler still validates the OS start marker. */
+export function getGenerationKillMethod(machineId: string, pid: number): string {
+    return `${RPC_METHODS.KillSession}/generation/${encodeURIComponent(machineId)}/${pid}`
+}
+
 export function getSessionStopPreparationMethod(machineId: string, pid: number): string {
     return `${RPC_METHODS.KillSession}/process/${encodeURIComponent(machineId)}/${pid}`
 }

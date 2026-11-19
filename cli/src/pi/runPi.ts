@@ -319,7 +319,7 @@ export async function runPi(opts: {
     });
 
     lifecycle.registerProcessHandlers();
-    registerKillSessionHandler(apiSession.rpcHandlerManager, lifecycle, apiSession);
+    registerKillSessionHandler(apiSession.rpcHandlerManager, { ...lifecycle, machineId: bootstrap.machineId }, apiSession);
     registerLocalHandoffHandler(apiSession.rpcHandlerManager, lifecycle);
 
     let cleanupInitiated = false;

@@ -309,7 +309,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     });
 
     lifecycle.registerProcessHandlers();
-    registerKillSessionHandler(session.rpcHandlerManager, lifecycle, session);
+    registerKillSessionHandler(session.rpcHandlerManager, { ...lifecycle, machineId: bootstrap.machineId }, session);
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
 
     // Rewind and fork-at-message need native resume-time truncation

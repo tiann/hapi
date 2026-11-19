@@ -1769,6 +1769,7 @@ export function createSessionsRoutes(
             await engine.deleteSession(sessionResult.sessionId)
             return c.json({ ok: true })
         } catch (error) {
+            if (error instanceof ArchiveCleanupError) return c.json({ error: error.message, code: error.code }, error.status)
             const message = error instanceof Error ? error.message : 'Failed to delete session'
             // Map lifecycle conflicts to 409 (active race, or running attached job)
             if (message.includes('active') || message.includes('attached job')) {

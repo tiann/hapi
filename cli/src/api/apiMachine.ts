@@ -639,6 +639,7 @@ export class ApiMachineClient {
                         errorMessage: result.errorMessage,
                         code: result.code,
                         agent: result.agent,
+                        ...(result.childStarted === false ? { childStarted: false } : {}),
                     }
             }
         })

@@ -5,6 +5,7 @@ import type { BackgroundTask, CodexCollaborationMode, CopilotAgentMode, External
 import type { SessionTurnEndReason, SessionTurnTrigger, Store } from '../store'
 import type { TransferSessionJobsResult } from '../store/sessionJobs'
 import { clampAliveTime } from './aliveTime'
+import { ArchiveCleanupError } from './archiveCleanupError'
 import { EventPublisher } from './eventPublisher'
 import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
 import { InvalidExternalRefsError } from './externalRefErrors'
@@ -1425,6 +1426,21 @@ export class SessionCache {
         return result.result === 'success'
     }
 
+    clearUnstartedWake(sessionId: string, namespace: string, attemptId: string): void {
+        for (let i = 0; i < METADATA_RETRY_ATTEMPTS; i++) {
+            const session = this.getSessionByNamespace(sessionId, namespace)
+            const metadata = session?.metadata
+            const marker = metadata?.hibernation
+            if (!session || session.active || marker?.state !== 'hibernated' || marker.wake?.id !== attemptId) return
+            const next = { ...marker }
+            delete next.wake
+            const result = this.store.sessions.updateSessionMetadata(sessionId, { ...metadata, hibernation: next },
+                session.metadataVersion, namespace, { touchUpdatedAt: false })
+            this.refreshSession(sessionId)
+            if (result.result !== 'version-mismatch') return
+        }
+    }
+
     recordHibernationWake(session: Session, wake: NonNullable<NonNullable<Metadata['hibernation']>['wake']>): boolean {
         const current = this.sessions.get(session.id)
         if (!current?.metadata || current.active || current.metadata.hibernation?.state !== 'hibernated') return false
@@ -2106,6 +2122,11 @@ export class SessionCache {
             throw new Error('Session not found')
         }
 
+        const marker = session.metadata?.hibernation
+        if (marker && (marker.state === 'stopping' || marker.wake || session.metadata?.codexResumePending
+            || session.metadata?.piResumeAttempt || (marker.localResumeUntil ?? 0) > Date.now())) {
+            throw new ArchiveCleanupError('unconfirmed')
+        }
         if (session.active) {
             throw new Error('Cannot delete active session')
         }

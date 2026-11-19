@@ -1,5 +1,5 @@
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, PermissionMode } from '@hapi/protocol/types'
-import { DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease, type InspectWorkerRequest, type WorkerInspection } from '@hapi/protocol/rpcMethods'
+import { DEFAULT_RPC_TIMEOUT_MS, getGenerationKillMethod, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease, type InspectWorkerRequest, type WorkerInspection } from '@hapi/protocol/rpcMethods'
 import {
     UsageQueryResultSchema,
     UsageQuerySettingsResponseSchema,
@@ -239,6 +239,8 @@ export class RpcGateway {
                 throw new Error('Process shutdown preparation requires machine and process generation')
             }
             method = getSessionStopPreparationMethod(options.expectedMachineId, options.expectedPid)
+        } else if (options.expectedMachineId && options.expectedPid && options.expectedProcessStartMarker) {
+            method = getGenerationKillMethod(options.expectedMachineId, options.expectedPid)
         }
         const result = await this.sessionRpc(sessionId, method, options)
         if (result && typeof result === 'object' && ('error' in result || ('success' in result && result.success === false))) {

@@ -255,6 +255,16 @@ describe('SyncEngine resume of hibernated sessions', () => {
         expect(cache().getSession(id)?.active).toBe(true)
     })
 
+    it.each([false, undefined])('releases a failed wake for local preparation only with definite pre-spawn refusal (%s)', async childStarted => {
+        const id = await hibernatedSession('refused')
+        gateway().spawnSession = async () => ({ type: 'error', message: 'directory refused', childStarted })
+        expect((await engine.resumeSession(id, NAMESPACE)).type).toBe('error')
+        const marker = engine.getSession(id)?.metadata?.hibernation
+        expect(marker?.state).toBe('hibernated')
+        expect(Boolean(marker?.wake)).toBe(childStarted !== false)
+        expect((await engine.prepareLocalResume(id, NAMESPACE)).type).toBe(childStarted === false ? 'success' : 'error')
+    })
+
     it('keeps the session asleep when a selected runner lacks hibernation support', async () => {
         const id = await hibernatedSession('rollback')
         let spawns = 0
