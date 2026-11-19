@@ -138,6 +138,46 @@ describe('SyncEngine resume of hibernated sessions', () => {
         expect(cache().getSession(id)?.metadata?.hibernation).toBeUndefined()
     })
 
+    it('recovers Pi after hub restart only when the replacement generation loaded the requested conversation', async () => {
+        const id = await hibernatedSession('pi-restart', 'pi')
+        const original = engine
+        let spawned!: () => void
+        const started = new Promise<void>(resolve => { spawned = resolve })
+        let finish!: () => void
+        gateway().spawnSession = () => new Promise(resolve => {
+            finish = () => resolve({ type: 'success', sessionId: id })
+            spawned()
+        })
+        const wake = original.resumeSession(id, NAMESPACE)
+        await started
+        const row = cache().getSession(id)!
+        const attempt = row.metadata!.hibernation!.wake!
+        store.sessions.updateSessionMetadata(id, { ...row.metadata, hostPid: 22222, hostStartMarker: 'replacement' },
+            row.metadataVersion, NAMESPACE)
+        bootCli(id)
+        original.handleSessionReady({ sid: id, time: Date.now() })
+        original.stop()
+        engine = new SyncEngine(store, ioStub as never, new RpcRegistry(), { broadcast() {} } as never)
+        engine.handleMachineAlive({ machineId: MACHINE, time: Date.now() })
+        gateway().hasConnectedStopTarget = () => true
+        gateway().inspectWorker = async (_machine: string, request: unknown) => ({
+            state: 'matching', confirmedWake: (request as { wakeAttemptId: string }).wakeAttemptId === attempt.id
+        })
+        const heartbeat = { sid: id, time: Date.now(), hasPeerReplyWatch: false, hasActiveUpload: false }
+        for (const piNativeReady of [undefined, { pid: 22222, startMarker: 'replacement', nativeId: 'other' },
+            { pid: 22222, startMarker: 'old', nativeId: attempt.nativeId }]) {
+            engine.handleSessionAlive({ ...heartbeat, piNativeReady })
+            expect((await engine.resumeSession(id, NAMESPACE)).type).toBe('error')
+            expect(engine.blocksSessionInput(id)).toBe(true)
+        }
+        engine.handleSessionAlive({ ...heartbeat, piNativeReady: { pid: 22222, startMarker: 'replacement', nativeId: attempt.nativeId } })
+        expect(await engine.resumeSession(id, NAMESPACE)).toEqual({ type: 'success', sessionId: id })
+        expect(engine.getSession(id)?.metadata?.piResumeAttempt).toBeUndefined()
+        expect(engine.blocksSessionInput(id)).toBe(false)
+        finish()
+        await wake
+    })
+
     it('keeps the session asleep when a selected runner lacks hibernation support', async () => {
         const id = await hibernatedSession('rollback')
         let spawns = 0

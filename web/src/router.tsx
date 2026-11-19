@@ -46,7 +46,7 @@ import { createDeferredSuggestions } from '@/lib/deferredSuggestions'
 import type { Suggestion, SuggestionRequestContext } from '@/hooks/useActiveSuggestions'
 import { useSendMessage, type SendErrorInfo } from '@/hooks/mutations/useSendMessage'
 import type { ComposerSendError } from '@/components/AssistantChat/HappyComposer'
-import { ApiError } from '@/api/client'
+import { ApiError, apiErrorMessage } from '@/api/client'
 import type { MessageDeliveryMode } from '@hapi/protocol'
 import { isHibernatedLifecycleState } from '@hapi/protocol'
 import { queryKeys } from '@/lib/query-keys'
@@ -414,6 +414,9 @@ function classifySendError(
     error: unknown,
     t: (key: string) => string,
 ): { message: string; code: string | null } {
+    if (error instanceof ApiError && error.code === 'attachment_reupload_required') {
+        return { message: apiErrorMessage(error, t('chat.sendError.fallback')), code: error.code }
+    }
     if (error instanceof ApiError && error.status === 409 && error.code === 'session_inactive') {
         return { message: t('chat.sendError.sessionInactive'), code: 'session_inactive' }
     }
@@ -504,6 +507,7 @@ function SessionPage() {
     // record} x {current reopen state}.  See classifySendError + the
     // Reopen affordance below.
     type RawSendError = {
+        reuploadPaths?: string[]
         id: number
         text: string
         message: string
@@ -607,6 +611,7 @@ function SessionPage() {
     const sendError: ComposerSendError | null = rawSendError
         ? {
             id: rawSendError.id,
+            reuploadPaths: rawSendError.reuploadPaths,
             text: rawSendError.text,
             message: rawSendError.message,
             scheduledAt: rawSendError.scheduledAt,
@@ -742,6 +747,7 @@ function SessionPage() {
                 [info.sessionId]: {
                     id: sendErrorIdRef.current,
                     text: info.text,
+                    reuploadPaths: info.reuploadPaths,
                     message,
                     code,
                     scheduledAt: info.scheduledAt,

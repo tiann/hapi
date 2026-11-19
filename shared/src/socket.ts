@@ -260,6 +260,7 @@ export interface ClientToServerEvents {
     'session-alive': (data: {
         hasPeerReplyWatch?: boolean
         hasActiveUpload?: boolean
+        piNativeReady?: { nativeId: string; pid: number; startMarker: string }
         sid: string
         time: number
         thinking: boolean

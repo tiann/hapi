@@ -223,6 +223,7 @@ export class ApiSessionClient extends EventEmitter {
     private needsBackfill = false
     private hasConnectedOnce = false
     // Replayed on (re)connect: a volatile heartbeat sent while disconnected is dropped (#2053).
+    private piNativeReady?: { nativeId: string; pid: number; startMarker: string }
     private peerReplyWatches = 0
     private latestKeepAlive: Omit<Parameters<ClientToServerEvents['session-alive']>[0], 'sid' | 'time'> | null = null
     readonly rpcHandlerManager: RpcHandlerManager
@@ -1358,7 +1359,8 @@ if (isReconnect) {
         return {
             sid: this.sessionId, time: Date.now(), thinking: false, ...this.latestKeepAlive,
             hasPeerReplyWatch: this.peerReplyWatches > 0,
-            hasActiveUpload: hasActiveChunkedUpload(this.sessionId)
+            hasActiveUpload: hasActiveChunkedUpload(this.sessionId),
+            ...(this.piNativeReady ? { piNativeReady: this.piNativeReady } : {})
         }
     }
 
@@ -1397,7 +1399,10 @@ if (isReconnect) {
     }
 
     /** Hub waits for this before mergeSessions on Cursor ACP reopen (tiann/hapi#939). */
-    emitSessionReady(): void {
+    emitSessionReady(piNativeId?: string): void {
+        if (piNativeId && this.metadata?.hostStartMarker) {
+            this.piNativeReady = { nativeId: piNativeId, pid: process.pid, startMarker: this.metadata.hostStartMarker }
+        }
         this.emitOrQueue(() => {
             this.socket.emit('session-ready', {
                 sid: this.sessionId,

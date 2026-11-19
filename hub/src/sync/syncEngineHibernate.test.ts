@@ -160,6 +160,19 @@ describe('SyncEngine hibernation', () => {
         }
     })
 
+    it('reserves the worker until a single-request upload returns', async () => {
+        const id = insertIdleSession('small-file')
+        let finish!: () => void
+        gateway().uploadFile = () => new Promise(resolve => { finish = () => resolve({ success: true, path: '/file' }) })
+        const upload = engine.uploadFile(id, 'file', 'YQ==', 'text/plain')
+        expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([])
+        expect(killCalls).toEqual([])
+        finish()
+        expect((await upload).success).toBe(true)
+        expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([id])
+        expect(await engine.uploadFile(id, 'file', 'YQ==', 'text/plain')).toMatchObject({ success: false, code: 'upload_conflict' })
+    })
+
     it('excludes a chunked upload during initialization and between chunks', async () => {
         const id = insertIdleSession('upload')
         let initialized!: () => void

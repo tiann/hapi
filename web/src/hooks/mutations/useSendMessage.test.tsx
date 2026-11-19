@@ -450,6 +450,21 @@ describe('useSendMessage', () => {
             expect(info.text).toBe('hi from resumed')
         })
 
+        it('returns expired attachment paths to the composer and removes the stale retry bubble', async () => {
+            const error = new ApiError('Upload the file again', 409, 'attachment_reupload_required')
+            const onError = vi.fn()
+            const api = createMockApi(async () => { throw error })
+            const { result } = renderHook(() => useSendMessage(api, 'session-A', { onError }), { wrapper: createWrapper() })
+            act(() => { void result.current.sendMessage('look', [
+                { id: 'a', filename: 'a.txt', size: 1, mimeType: 'text/plain', path: '/expired' }
+            ]) })
+            await waitFor(() => expect(onError).toHaveBeenCalledWith(expect.objectContaining({
+                text: 'look', sessionId: 'session-A', error, reuploadPaths: ['/expired']
+            })))
+            const { removeOptimisticMessage } = await import('@/lib/message-window-store')
+            expect(removeOptimisticMessage).toHaveBeenCalledWith('session-A', 'local-id-1')
+        })
+
         it('attachment send: keeps the failed row in the thread and skips composer-restore', async () => {
             // The composer-restore path can't reinstate uploaded attachment
             // metadata, so for sends with attachments we fall back to the

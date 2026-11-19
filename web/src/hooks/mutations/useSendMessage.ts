@@ -1,6 +1,6 @@
 import { useMutation } from '@tanstack/react-query'
 import { useRef, useState } from 'react'
-import type { ApiClient } from '@/api/client'
+import { ApiError, type ApiClient } from '@/api/client'
 import type { AttachmentMetadata, DecryptedMessage } from '@/types/api'
 import { makeClientSideId } from '@/lib/messages'
 import {
@@ -56,11 +56,8 @@ type BlockedReason = 'no-api' | 'no-session' | 'pending'
  *   recovery retains queue, while turn-scoped steer safely degrades to queue
  *   because the original Pi generation can no longer be proven.
  *
- * Only fired for text-only sends.  Sends with attachments fall back to
- * the legacy failed-bubble UX (the optimistic row stays as `failed` and
- * the user retries via the in-thread retry button); the composer-restore
- * path can't reinstate uploaded attachment metadata, so doing the swap
- * for attachment sends would silently drop the attachments.
+ * Expired uploads return to the composer so it can stage the files again.
+ * Other attachment errors retain the failed bubble and its retry action.
  */
 export type SendErrorInfo = {
     sessionId: string
@@ -70,6 +67,7 @@ export type SendErrorInfo = {
     deliveryMode: MessageDeliveryMode
     /** True only after the message mutation was started. */
     mutationStarted: boolean
+    reuploadPaths?: string[]
 }
 
 export type ResolvedSession = {
@@ -235,19 +233,13 @@ export function useSendMessage(
             options?.onSuccess?.(input.sessionId)
         },
         onError: (error, input) => {
-            // Attachment sends keep the legacy failed-bubble UX: the
-            // composer-restore path can only re-seat text + scheduledAt,
-            // not the uploaded attachment metadata.  Removing the row
-            // would destroy the attachment preview AND leave the operator
-            // with no retry surface for it.  Keep the row as `failed` so
-            // the in-thread retry button can re-fire the send (with
-            // attachments) via retryMessage.
-            if (input.attachments && input.attachments.length > 0) {
+            const reupload = error instanceof ApiError && error.code === 'attachment_reupload_required'
+            if (input.attachments?.length && !reupload) {
                 updateMessageStatus(input.sessionId, input.localId, 'failed')
                 haptic.notification('error')
                 return
             }
-            // Text-only sends use the composer-restore path: drop the
+            // For composer recovery, drop the
             // optimistic row from the thread (otherwise the failed bubble
             // would visually duplicate the same text the composer is
             // about to restore, and the operator could stack a stale
@@ -263,6 +255,7 @@ export function useSendMessage(
                 scheduledAt: input.scheduledAt ?? null,
                 deliveryMode: input.deliveryMode,
                 mutationStarted: true,
+                ...(reupload ? { reuploadPaths: input.attachments?.map(file => file.path) } : {}),
             })
         },
     })

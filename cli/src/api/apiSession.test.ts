@@ -2084,6 +2084,20 @@ describe('explicit title action metadata refresh', () => {
 })
 
 describe('ApiSessionClient runtime heartbeat', () => {
+    it('replays validated Pi native identity with its process generation on reconnect', () => {
+        const client = new ApiSessionClient('token', createSession({
+            metadata: { path: '/tmp', host: 'test', flavor: 'pi', hostStartMarker: 'generation' }
+        }))
+        const socket = socketHarness.sockets.at(-1)!
+        socket.triggerConnect()
+        const lastAlive = () => socket.emitted.filter(entry => entry.event === 'session-alive').at(-1)?.args[0]
+        expect(lastAlive()).not.toHaveProperty('piNativeReady')
+        client.emitSessionReady('native-id')
+        socket.triggerConnect()
+        expect(lastAlive()).toMatchObject({ piNativeReady: { nativeId: 'native-id', pid: process.pid, startMarker: 'generation' } })
+        client.close()
+    })
+
     it('advertises overlapping peer reply watches through reconnect until the last one settles', async () => {
         const client = new ApiSessionClient('token', createSession())
         const socket = socketHarness.sockets.at(-1)!

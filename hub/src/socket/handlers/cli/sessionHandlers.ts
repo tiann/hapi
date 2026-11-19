@@ -29,6 +29,7 @@ function gateExternalRefs(metadata: unknown): unknown {
 type SessionAlivePayload = {
     hasPeerReplyWatch?: boolean
     hasActiveUpload?: boolean
+    piNativeReady?: { nativeId: string; pid: number; startMarker: string }
     sid: string
     time: number
     thinking?: boolean

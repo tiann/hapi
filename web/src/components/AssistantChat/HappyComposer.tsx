@@ -115,6 +115,7 @@ export function getComposerEscapeAction(input: {
  *  3. shows a red ring + inline message until the user types or sends.
  */
 export type ComposerSendError = {
+    reuploadPaths?: string[]
     id: number
     text: string
     message: string
@@ -632,6 +633,7 @@ export function HappyComposer(props: {
     const userAttachmentGenerationRef = useRef(0)
     const observedAttachmentIdsRef = useRef(new Set(attachments.map((attachment) => attachment.id)))
     const sendRestoreGuardRef = useRef<{
+        attachments: AttachmentDraftInput[]
         userEditGeneration: number
         userScheduleGeneration: number
         userAttachmentGeneration: number
@@ -829,6 +831,14 @@ export function HappyComposer(props: {
         restoredErrorIdRef.current = sendError.id
         restoredErrorSnapshotRef.current = { id: sendError.id, text: sendError.text, observed: false }
         api.composer().setText(sendError.text)
+        if (sendError.reuploadPaths && guard) {
+            for (const { file, path } of guard.attachments) {
+                if (path && sendError.reuploadPaths.includes(path)) {
+                    const fresh = new File([file], file.name, { type: file.type, lastModified: file.lastModified })
+                    void api.composer().addAttachment(fresh).catch(() => {})
+                }
+            }
+        }
         // `scheduledAt` is already absolute (presets resolve at send time), so
         // restore it through the normal controlled schedule path in the same
         // effect as text. For a pre-mutation rejection this updates the still
@@ -1275,6 +1285,7 @@ export function HappyComposer(props: {
         restoredErrorSnapshotRef.current = null
         if (sendError) onSuppressSendErrorRestore?.(sendError.id)
         sendRestoreGuardRef.current = {
+            attachments: attachmentDraftsRef.current,
             userEditGeneration: userEditGenerationRef.current,
             userScheduleGeneration: userScheduleGenerationRef.current,
             userAttachmentGeneration: userAttachmentGenerationRef.current,

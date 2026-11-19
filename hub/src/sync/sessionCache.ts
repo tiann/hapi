@@ -1439,6 +1439,9 @@ export class SessionCache {
             if (onlyState && marker?.state !== onlyState) return false
             const next: Record<string, unknown> = { ...current }
             delete next.hibernation
+            if (onlyState === 'hibernated' && marker?.wake?.flavor === 'pi' && current.piResumeAttempt?.state === 'resuming') {
+                delete next.piResumeAttempt
+            }
             if (onlyState === 'stopping' && current.lifecycleState === 'archived'
                 && current.archivedBy !== 'hub' && !current.supersededBySessionId) {
                 delete next.archivedBy
