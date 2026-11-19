@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, statSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { z } from 'zod'
 import { getAgentConfigDir, type SkillSummary } from '@/modules/common/skills'
@@ -14,6 +14,22 @@ export interface CatalogLaunch {
 }
 
 type CatalogLists = { tools?: string[], slashCommands?: string[] }
+
+const maxAge = 24 * 60 * 60 * 1000
+
+function pruneExpired(directory: string): void {
+    const marker = join(directory, '.last-prune')
+    const now = Date.now()
+    const previous = statSync(marker, { throwIfNoEntry: false })
+    if (previous && now - previous.mtimeMs < maxAge) return
+    writeFileSync(marker, '', { mode: 0o600 })
+    for (const name of readdirSync(directory)) {
+        if (!/^[a-f0-9]{64}\.json$/.test(name)) continue
+        const path = join(directory, name)
+        const stat = statSync(path, { throwIfNoEntry: false })
+        if (stat && now - stat.mtimeMs >= maxAge) rmSync(path, { force: true })
+    }
+}
 
 function stampPath(sessionId: string): string {
     return join(configuration.happyHomeDir, 'claude-catalog', hashObject(sessionId) + '.json')
@@ -49,6 +65,7 @@ export function recordCatalog(sessionId: string, launch: CatalogLaunch, lists: C
         const stamp = { fingerprint: catalogFingerprint(launch, lists), version, skills, time: Date.now() }
         writeFileSync(tmp, JSON.stringify(stamp), { mode: 0o600 })
         renameSync(tmp, file)
+        pruneExpired(dirname(file))
     } catch {
         // Cache I/O is best effort.
     } finally {
@@ -69,13 +86,15 @@ export function readCachedCatalog(
     metadata: (CatalogLists & { path: string }) | null | undefined
 ) {
     if (metadata?.path !== launch.cwd || !metadata.tools?.length || !metadata.slashCommands?.length
-        || filterCatalogAffectingClaudeArgs(launch.args).length) return null
+        || filterCatalogAffectingClaudeArgs(launch.args).some(arg =>
+            /^--(?:add-dir|plugin-dir|plugin-url|settings|setting-sources|mcp-config)(?:=|$)/.test(arg)
+        )) return null
     try {
         const stamp = stampSchema.parse(JSON.parse(readFileSync(stampPath(sessionId), 'utf8')))
         const age = Date.now() - stamp.time
-        if (age < 0 || age >= 24 * 60 * 60 * 1000
+        if (age < 0 || age >= maxAge
             || stamp.fingerprint !== catalogFingerprint(launch, metadata)) return null
-        return { version: stamp.version, skills: stamp.skills, commands: metadata.slashCommands, tools: metadata.tools }
+        return stamp
     } catch {
         return null
     }

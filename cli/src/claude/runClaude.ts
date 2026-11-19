@@ -101,6 +101,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         return { sdkMetadata, catalog: classifyClaudeSlashCatalog(sdkMetadata.slashCommands, discoveredSkills, sdkMetadata.skills) };
     };
     let catalogPromise: ReturnType<typeof readCatalog> | null = null;
+    let cachedSkills: SkillSummary[] | null = null;
     let lastPublished: string | undefined;
     let liveInitKey: string | undefined;
     const refreshCatalog = (source: Promise<SDKMetadata>, context: CatalogLaunch, initKey?: string) => {
@@ -108,6 +109,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         liveInitKey = initKey;
         const pending: ReturnType<typeof readCatalog> = readCatalog(source).then((result) => {
             if (catalogPromise !== pending) return catalogPromise ?? result;
+            cachedSkills = null;
             const { sdkMetadata, catalog } = result;
             if (sdkMetadata.slashCommands !== undefined) {
                 nativeSkills = catalog.skills;
@@ -130,6 +132,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
             return result;
         }).catch((error) => {
             if (catalogPromise && catalogPromise !== pending) return catalogPromise;
+            cachedSkills = null;
             catalogPromise = null;
             throw error;
         });
@@ -140,6 +143,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         cwd: workingDirectory, model: initialModel ?? undefined, claudeArgs: options.claudeArgs
     }), launch);
     session.rpcHandlerManager.registerHandler(RPC_METHODS.ListSkills, async () => {
+        if (cachedSkills) return { success: true, skills: cachedSkills };
         const result = await getCatalog();
         return result.sdkMetadata.slashCommands === undefined
             ? { success: false, error: 'Claude skill catalog unavailable' }
@@ -168,11 +172,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     }
     if (cached) {
         if (cached.version === claudeVersionOutput?.split(/\s+/)[0]) {
-            nativeSkills = cached.skills;
-            catalogPromise = Promise.resolve({
-                sdkMetadata: { tools: cached.tools, slashCommands: cached.commands },
-                catalog: { commands: cached.commands, skills: cached.skills }
-            });
+            cachedSkills = cached.skills;
         } else {
             startupCatalog = startCatalog();
         }
@@ -1105,6 +1105,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         }
         return !unknownRewindIntent;
     };
+    const needsSkillCatalog = (text: string) => cachedSkills !== null && /^\s*\$\S/.test(text);
     let drainingUserMessages = false;
     const flushUserMessages = async () => {
         if (drainingUserMessages || !messagePipelineReady || settleRetryAbort.signal.aborted) return;
@@ -1119,6 +1120,10 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                     return;
                 }
                 if (settleRetryAbort.signal.aborted) return;
+                if (deferredMessages.length && needsSkillCatalog(deferredMessages[0][0].content.text)) {
+                    await startCatalog();
+                    continue;
+                }
                 const next = deferredMessages.shift();
                 if (next) handleUserMessage(...next);
             }
@@ -1127,7 +1132,7 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         }
     };
     session.onUserMessage((...args) => {
-        if (!messagePipelineReady || unknownRewindIntent || drainingUserMessages || deferredMessages.length > 0 || settleInFlight !== null || rewindPersistInFlight !== null) {
+        if (!messagePipelineReady || needsSkillCatalog(args[0].content.text) || unknownRewindIntent || drainingUserMessages || deferredMessages.length > 0 || settleInFlight !== null || rewindPersistInFlight !== null) {
             deferredMessages.push(args);
             void flushUserMessages();
             return;

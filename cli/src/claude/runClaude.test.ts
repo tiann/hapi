@@ -1,4 +1,7 @@
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods'
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import type { ApiSessionClient } from '@/api/apiSession'
@@ -96,13 +99,42 @@ it('refreshes removed commands on a terminal local reopen with a valid stamp', a
     await vi.waitFor(() => expect(metadata.slashCommands).toEqual(['new-command']))
 })
 
-it('serves ListSkills and expands the first skill prompt from a valid reopen cache', async () => {
-    await reopen()
-    const handler = registerHandler.mock.calls.find(([name]) => name === RPC_METHODS.ListSkills)![1]
-    expect(await handler()).toEqual({ success: true, skills: [{ name: 'skill', description: 'cached description' }] })
-    send('$skill first', 'a')
-    expect(messages()).toEqual(['ready', '/skill first'])
-    expect(extractSDKMetadata).not.toHaveBeenCalled()
+it('serves cached skills to the picker, then revalidates the first skill prompt after a disk change', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'claude-skill-change-'))
+    const root = join(cwd, '.claude', 'skills')
+    try {
+        mkdirSync(join(root, 'old'), { recursive: true })
+        writeFileSync(join(root, 'old', 'SKILL.md'), '---\ndescription: A skill\n---\nDo the work.')
+        metadata.path = cwd
+        recordCatalog(id, { cwd }, metadata, catalog.version, [{ name: 'old' }])
+        renameSync(join(root, 'old'), join(root, 'new'))
+        await reopen({ workingDirectory: cwd })
+        const handler = registerHandler.mock.calls.find(([name]) => name === RPC_METHODS.ListSkills)![1]
+        expect(await handler()).toEqual({ success: true, skills: [{ name: 'old' }] })
+        expect(extractSDKMetadata).not.toHaveBeenCalled()
+        const { listSkills: scan } = await vi.importActual<typeof import('@/modules/common/skills')>('@/modules/common/skills')
+        vi.mocked(extractSDKMetadata).mockImplementationOnce(async () => {
+            const names = (await scan(cwd, { flavor: 'claude' })).map(skill => skill.name)
+            return { ...catalog, skills: names, slashCommands: ['help', ...names] }
+        })
+        send('$new first', 'a')
+        send('cancel me', 'b')
+        send('$old last', 'c')
+        expect(cancel('b')).toBe(true)
+        await vi.waitFor(() => expect(messages()).toEqual(['ready', '/new first', '$old last']))
+        expect(extractSDKMetadata).toHaveBeenCalledOnce()
+    } finally {
+        rmSync(cwd, { recursive: true, force: true })
+    }
+})
+
+it.each([
+    ['Read', 0],
+    ['Write', 1]
+])('reopens a cached --tools Read catalog with --tools %s using %i probes', async (tools, count) => {
+    recordCatalog(id, { cwd: path, args: ['--tools', 'Read'] }, metadata, catalog.version, [])
+    await reopen({ claudeArgs: ['--tools', String(tools)] })
+    expect(extractSDKMetadata).toHaveBeenCalledTimes(Number(count))
 })
 it.each(['version', 'model', 'args', 'plugin', 'empty tools', 'empty commands', 'cwd', '24 hours', 'missing stamp', 'profile'])(
     'refreshes the startup catalog on %s', async reason => {
