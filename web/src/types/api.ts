@@ -160,6 +160,7 @@ export type MessageStatus = 'queued' | 'sending' | 'sent' | 'failed'
 export type DecryptedMessage = ProtocolDecryptedMessage & {
     status?: MessageStatus
     originalText?: string
+    reuploadRequired?: boolean
     invokedAt?: number | null
     /**
      * Client-only: user force-dismissed an indeterminate queued row while the

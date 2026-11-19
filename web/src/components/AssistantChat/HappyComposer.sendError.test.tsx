@@ -363,6 +363,23 @@ describe('HappyComposer send-error atomic restore', () => {
         expect(input()).toHaveValue('failed text')
     })
 
+    it('keeps the failed attachment recovery action when a replacement draft prevents restoration', async () => {
+        const controls = renderComposer('original', null)
+        const file = new File(['draft'], 'draft.txt')
+        act(() => controls.current!.addAttachment(file))
+        send()
+        fireEvent.change(input(), { target: { value: 'replacement draft' } })
+        const onRestored = vi.fn()
+        const error = { ...fail(1, 'original', null), reuploadPaths: ['/expired'], onRestored }
+        setError(controls, error)
+        expect(input()).toHaveValue('replacement draft')
+        expect(onRestored).not.toHaveBeenCalled()
+        fireEvent.change(input(), { target: { value: '' } })
+        setError(controls, { ...error, id: 2, retryRecovery: true, mutationStarted: false })
+        await waitFor(() => expect(onRestored).toHaveBeenCalledTimes(1))
+        expect(input()).toHaveValue('original')
+    })
+
     it('restores untouched text and its absolute schedule after accepted-send clear', async () => {
         const controls = renderComposer()
         send()

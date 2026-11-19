@@ -450,7 +450,7 @@ describe('useSendMessage', () => {
             expect(info.text).toBe('hi from resumed')
         })
 
-        it('returns expired attachment paths to the composer and removes the stale retry bubble', async () => {
+        it('keeps expired attachments in a failed bubble until the composer acknowledges recovery', async () => {
             const error = new ApiError('Upload the file again', 409, 'attachment_reupload_required')
             const onError = vi.fn()
             const api = createMockApi(async () => { throw error })
@@ -462,6 +462,8 @@ describe('useSendMessage', () => {
                 text: 'look', sessionId: 'session-A', error, reuploadPaths: ['/expired']
             })))
             const { removeOptimisticMessage } = await import('@/lib/message-window-store')
+            expect(removeOptimisticMessage).not.toHaveBeenCalled()
+            onError.mock.calls[0]![0].onRestored()
             expect(removeOptimisticMessage).toHaveBeenCalledWith('session-A', 'local-id-1')
         })
 

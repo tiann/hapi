@@ -68,6 +68,8 @@ export type SendErrorInfo = {
     /** True only after the message mutation was started. */
     mutationStarted: boolean
     reuploadPaths?: string[]
+    retryRecovery?: boolean
+    onRestored?: () => void
 }
 
 export type ResolvedSession = {
@@ -246,7 +248,8 @@ export function useSendMessage(
             // failed turn next to a fresh send) and hand the text +
             // scheduledAt + sessionId back so the route can put both
             // back into the composer keyed to the right session.
-            removeOptimisticMessage(input.sessionId, input.localId)
+            if (reupload) updateMessageStatus(input.sessionId, input.localId, 'failed', true)
+            else removeOptimisticMessage(input.sessionId, input.localId)
             haptic.notification('error')
             options?.onError?.({
                 sessionId: input.sessionId,
@@ -255,7 +258,10 @@ export function useSendMessage(
                 scheduledAt: input.scheduledAt ?? null,
                 deliveryMode: input.deliveryMode,
                 mutationStarted: true,
-                ...(reupload ? { reuploadPaths: input.attachments?.map(file => file.path) } : {}),
+                ...(reupload ? {
+                    reuploadPaths: input.attachments?.map(file => file.path),
+                    onRestored: () => removeOptimisticMessage(input.sessionId, input.localId),
+                } : {}),
             })
         },
     })
@@ -363,7 +369,16 @@ export function useSendMessage(
         }
 
         const message = findMessageByLocalId(sessionId, localId)
-        if (!message?.originalText) return false
+        if (message?.originalText === undefined) return false
+        if (message.reuploadRequired) {
+            options?.onError?.({
+                sessionId, text: message.originalText, error: new ApiError('Upload the attachments again before sending.', 409, 'attachment_reupload_required'),
+                scheduledAt: message.scheduledAt ?? null, deliveryMode: getRetryDeliveryMode(getMessageDeliveryMode(message)),
+                mutationStarted: false, retryRecovery: true, reuploadPaths: getMessageAttachments(message)?.map(file => file.path),
+                onRestored: () => removeOptimisticMessage(sessionId, localId),
+            })
+            return true
+        }
 
         updateMessageStatus(sessionId, localId, 'sending')
 

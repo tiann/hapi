@@ -740,7 +740,7 @@ export class SyncEngine {
     }
 
     getDeliverableMessagesAfter(sessionId: string, options: { afterSeq: number; limit: number; now: number }): DecryptedMessage[] {
-        if (this.openCodeRewindPending(sessionId)) return []
+        if (this.blocksSessionInput(sessionId) || this.openCodeRewindPending(sessionId)) return []
         return this.messageService.getDeliverableMessagesAfter(sessionId, options)
     }
 
@@ -1414,6 +1414,8 @@ export class SyncEngine {
             return 'skipped'
         }
         if (observation?.state === 'gone' || observation?.state === 'replaced') {
+            const status = await this.rpcGateway.stopRunnerSession(worker.machineId, session.id).catch(() => 'unknown')
+            if (!currentOwner() || (status !== 'already_gone' && status !== 'stopped')) return 'failed'
             if (this.getSession(session.id)?.active) this.handleSessionEnd({ sid: session.id, time: Date.now() })
             if (this.sessionCache.markSessionHibernatedFromHub(session.id, marker.reason)) {
                 this.hibernateBackoffUntil.delete(session.id)
@@ -4274,6 +4276,7 @@ export class SyncEngine {
         const hasConfirmedStop = (session: Session | undefined) => session?.active === false
             && isHibernatedLifecycleState(session.metadata?.lifecycleState)
             && session.metadata?.hibernation?.state === 'hibernated'
+            && !session.metadata.hibernation.wake && !session.metadata.codexResumePending && !session.metadata.piResumeAttempt
         const initial = this.sessionCache.getSession(sessionId)
         if (hasConfirmedStop(initial)) {
             const machineId = initial?.metadata?.machineId
@@ -4328,14 +4331,17 @@ export class SyncEngine {
         }
 
         const sessionMeta = this.sessionCache.getSession(sessionId)?.metadata
-        const machineId = sessionMeta?.codexResumePending?.machineId ?? sessionMeta?.machineId
+        const wakeMachine = sessionMeta?.hibernation?.state === 'hibernated'
+            ? sessionMeta.hibernation.wake?.machineId ?? sessionMeta.codexResumePending?.machineId ?? sessionMeta.piResumeAttempt?.machineId
+            : undefined
+        const machineId = wakeMachine ?? sessionMeta?.codexResumePending?.machineId ?? sessionMeta?.machineId
         // Remember the drained generation so a concurrent prepare-stop can
         // still be honored after the CLI's cleanup disconnects the socket.
         if (machineId && typeof killPid === 'number' && killPid > 0
             && typeof killProcessStartMarker === 'string' && killProcessStartMarker.length > 0) {
             this.archiveDrainedGenerations.set(sessionId, { machineId, pid: killPid, processStartMarker: killProcessStartMarker })
         }
-        const runnerSpawned = Boolean(sessionMeta?.codexResumePending) || sessionMeta?.startedBy === 'runner'
+        const runnerSpawned = Boolean(wakeMachine || sessionMeta?.codexResumePending) || sessionMeta?.startedBy === 'runner'
             || sessionMeta?.startedFromRunner === true
         if (stillOwnsSession && (!stillOwnsSession() || !machineId || !runnerSpawned)) throw new ArchiveCleanupError('unconfirmed')
         if (machineId && runnerSpawned) {
@@ -4350,7 +4356,7 @@ export class SyncEngine {
                 && typeof killProcessStartMarker === 'string'
                 && killProcessStartMarker.length > 0
             )
-            if (status === 'unknown' && killPidConfirmable) {
+            if (!wakeMachine && status === 'unknown' && killPidConfirmable) {
                 status = await stopRunner(machineId, `PID-${killPid}`, killProcessStartMarker)
             }
             // Estate dogfood (#1911 / Peer #1820): KillSession often supplies no
@@ -4359,7 +4365,7 @@ export class SyncEngine {
             // without a start marker the runner returns already_gone only when
             // the OS pid is dead (alive → unknown; never tree-kills). Refuse
             // still_alive / unknown on that confirm.
-            if (status === 'unknown' && !killPidConfirmable) {
+            if (!wakeMachine && status === 'unknown' && !killPidConfirmable) {
                 const hostPid = sessionMeta?.hostPid
                 if (typeof hostPid === 'number' && hostPid > 0) {
                     status = await stopRunner(machineId, `PID-${hostPid}`)
@@ -4371,7 +4377,7 @@ export class SyncEngine {
             // ghost is not permanent while the runner is online (#1911 Opus Major).
             // A late-booting child that later hits reopen must not resurrect: CLI
             // bootstrapExistingSession refuses archived rows (#1911 cold-read M1).
-            if (status === 'unknown' && !stillOwnsSession) {
+            if (!wakeMachine && status === 'unknown' && !stillOwnsSession) {
                 const stored = this.store.sessions.getSession(sessionId)
                 if (
                     stored
@@ -6207,6 +6213,8 @@ export class SyncEngine {
             }
 
             if (fromHibernation && spawnResult.sessionId !== access.sessionId) {
+                // The reply carries no PID or start marker tying the returned ID to this spawn.
+                // It may name a foreign row. The runner can replay this result until its cached child exits.
                 if (flavor === 'codex' && resumeToken) this.writeCodexResumePending(access.sessionId, namespace, undefined)
                 this.hibernateWakeBackoffUntil.set(access.sessionId, Date.now() + SyncEngine.HIBERNATE_WAKE_BACKOFF_MS)
                 return {

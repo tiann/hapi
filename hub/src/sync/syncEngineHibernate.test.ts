@@ -223,6 +223,10 @@ describe('SyncEngine hibernation', () => {
         expect(engine.blocksSessionInput(id)).toBe(true)
         expect(cache().getSession(id)?.metadata?.hibernation?.state).toBe('stopping')
         gone = true
+        gateway().stopRunnerSession = async () => 'still_alive'
+        expect(await engine.reconcileInterruptedStop(id, NAMESPACE)).toBe(false)
+        expect(engine.blocksSessionInput(id)).toBe(true)
+        gateway().stopRunnerSession = async () => 'already_gone'
         if (restart) expect(await engine.hibernateIdleSessions(later() + 600_000, WINDOW)).toEqual([id])
         else expect(await engine.reconcileInterruptedStop(id, NAMESPACE)).toBe(true)
         expect(probe).toHaveBeenLastCalledWith(MACHINE, { sessionId: id, pid, startMarker: `gen-${pid}` })
@@ -414,9 +418,10 @@ describe('SyncEngine hibernation', () => {
         gateway().inspectWorker = async () => ({ state: 'matching', confirmedWake: false })
         expect(await engine.reconcileInterruptedStop(id, NAMESPACE)).toBe(false)
         gateway().inspectWorker = async () => ({ state: 'gone', confirmedWake: false })
+        stopImpl = async () => 'already_gone'
         expect(await engine.reconcileInterruptedStop(id, NAMESPACE)).toBe(true)
         expect(cache().getSession(id)?.metadata?.lifecycleState).toBe('hibernated')
-        expect(stopCalls).toHaveLength(1)
+        expect(stopCalls).toHaveLength(2)
     })
 
     it('ignores the idle reconciler stamp so the window is not stretched', async () => {
@@ -516,8 +521,9 @@ describe('SyncEngine hibernation', () => {
 
         engine.handleSessionEnd({ sid: id, time: Date.now() })
         gateway().inspectWorker = async () => ({ state: 'gone', confirmedWake: false })
+        stopImpl = async () => 'already_gone'
         expect(await engine.hibernateIdleSessions(now + 10 * 60_000, WINDOW)).toEqual([id])
-        expect(stopCalls).toHaveLength(1)
+        expect(stopCalls).toHaveLength(2)
     })
 
     it('never hibernates without the runner capability, inside the window, or for ineligible flavors', async () => {
@@ -733,6 +739,26 @@ describe('SyncEngine hibernation', () => {
         expect(killCalls).toEqual([])
         expect(cache().getSession(id)?.metadata).toMatchObject({ lifecycleState: 'archived', archivedBy: 'hub' })
         expect(cache().getSession(id)?.metadata?.hibernation).toBeUndefined()
+    })
+
+    it.each(['wake', 'codexResumePending'] as const)('requires the wake runner to confirm archive with an outstanding %s', async pending => {
+        const id = insertIdleSession('archive-wake')
+        await engine.hibernateSession(id, { now: later(), hibernateMs: WINDOW })
+        const row = engine.getSession(id)!
+        const machineId = 'wake-runner'
+        const metadata = pending === 'wake'
+            ? { ...row.metadata, hibernation: { ...row.metadata!.hibernation, wake: { id: 'attempt', machineId, nativeId: 'native', flavor: 'claude' } } }
+            : { ...row.metadata, codexResumePending: { machineId, nativeSessionId: 'native' } }
+        store.sessions.updateSessionMetadata(id, metadata, row.metadataVersion, NAMESPACE)
+        cache().refreshSession(id)
+        stopCalls.length = 0
+        stopImpl = async () => 'unknown'
+        await expect(engine.archiveSession(id)).rejects.toThrow()
+        expect(stopCalls).toEqual([{ machineId, sessionId: id }])
+        expect(engine.getSession(id)?.metadata?.hibernation?.state).toBe('hibernated')
+        stopImpl = async () => 'stopped'
+        await engine.archiveSession(id)
+        expect(engine.getSession(id)?.metadata?.lifecycleState).toBe('archived')
     })
 
     it('refuses to archive if the runner reports a hibernated session still alive', async () => {

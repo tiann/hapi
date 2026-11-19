@@ -508,6 +508,8 @@ function SessionPage() {
     // Reopen affordance below.
     type RawSendError = {
         reuploadPaths?: string[]
+        retryRecovery?: boolean
+        onRestored?: () => void
         id: number
         text: string
         message: string
@@ -612,6 +614,8 @@ function SessionPage() {
         ? {
             id: rawSendError.id,
             reuploadPaths: rawSendError.reuploadPaths,
+            retryRecovery: rawSendError.retryRecovery,
+            onRestored: rawSendError.onRestored,
             text: rawSendError.text,
             message: rawSendError.message,
             scheduledAt: rawSendError.scheduledAt,
@@ -748,6 +752,8 @@ function SessionPage() {
                     id: sendErrorIdRef.current,
                     text: info.text,
                     reuploadPaths: info.reuploadPaths,
+                    retryRecovery: info.retryRecovery,
+                    onRestored: info.onRestored,
                     message,
                     code,
                     scheduledAt: info.scheduledAt,

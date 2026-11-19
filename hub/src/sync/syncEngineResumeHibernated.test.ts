@@ -122,6 +122,8 @@ describe('SyncEngine resume of hibernated sessions', () => {
         expect(typeof attempt).toBe('string')
         engine.stop()
         engine = new SyncEngine(store, ioStub as never, new RpcRegistry(), { broadcast() {} } as never)
+        store.messages.addMessage(id, { role: 'user', content: { type: 'text', text: 'due' } }, 'due', Date.now() - 1)
+        const backfill = (afterSeq = 0) => engine.getDeliverableMessagesAfter(id, { afterSeq, limit: 10, now: Date.now() })
         let confirmedWake = false
         gateway().hasConnectedStopTarget = () => true
         gateway().inspectWorker = async (machine: string, request: unknown) => {
@@ -133,9 +135,13 @@ describe('SyncEngine resume of hibernated sessions', () => {
         engine.handleSessionAlive({ sid: id, time: Date.now(), hasPeerReplyWatch: false, hasActiveUpload: false })
         expect((await engine.resumeSession(id, NAMESPACE)).type).toBe('error')
         expect(cache().getSession(id)?.metadata?.hibernation?.wake?.id).toBe(attempt as string)
+        expect(backfill()).toEqual([])
         confirmedWake = true
         expect(await engine.resumeSession(id, NAMESPACE)).toEqual({ type: 'success', sessionId: id })
         expect(cache().getSession(id)?.metadata?.hibernation).toBeUndefined()
+        const delivered = backfill()
+        expect(delivered.map(message => message.localId)).toEqual(['due'])
+        expect(backfill(delivered[0]!.seq!)).toEqual([])
     })
 
     it('recovers Pi after hub restart only when the replacement generation loaded the requested conversation', async () => {
@@ -480,6 +486,7 @@ describe('SyncEngine resume of hibernated sessions', () => {
         expect(store.messages.getFirstMessages(id, 10)).toHaveLength(0)
         const probe = spyOn((engine as unknown as { rpcGateway: RpcGateway }).rpcGateway, 'inspectWorker')
             .mockResolvedValue({ state: 'gone', confirmedWake: false })
+        gateway().stopRunnerSession = async () => 'already_gone'
         expect((await post()).status).toBe(200)
         expect(probe).toHaveBeenCalledWith(MACHINE, { sessionId: id, pid, startMarker: `gen-${pid}` })
         expect(store.messages.getFirstMessages(id, 10).map(row => row.localId)).toEqual(['after-stop'])
