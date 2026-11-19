@@ -1208,8 +1208,14 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                                     // This path ends the turn (break below) without
                                     // retrying, same as the catch give-up branches —
                                     // it must surface and stamp Blocked the same way,
-                                    // not just record the model error silently.
-                                    this.surfacePromptFailure(settledMessage, { deferFooter: true });
+                                    // not just record the model error silently. A
+                                    // stderr-sourced failure already got its chat
+                                    // error row from wireStderrErrorListener at
+                                    // arrival time — do not show it twice.
+                                    this.surfacePromptFailure(settledMessage, {
+                                        deferFooter: true,
+                                        skipChatError: settled.source === 'stderr'
+                                    });
                                     // Earlier attempt's tools (if any) already ran —
                                     // attemptProducedToolActivity only covers *this*
                                     // attempt, so force non-bridgeable explicitly too.
@@ -1773,10 +1779,17 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
      * (#1724 bot Minor). Callers with no model-error decision to make
      * (e.g. backend-unavailable infra failures) use the default immediate path.
      */
-    private surfacePromptFailure(message: string, opts?: { deferFooter?: boolean }): void {
-        const converted = convertAgentMessage({ type: 'error', message });
-        if (converted) this.session.sendAgentMessage(converted);
-        this.messageBuffer.addMessage(message, 'status');
+    /**
+     * `skipChatError` is for a failure wireStderrErrorListener already surfaced
+     * as a chat error row (CursorAgentStreamFailure.source === 'stderr' settled
+     * via pendingStderrFailure) — re-announcing it here would double it up.
+     */
+    private surfacePromptFailure(message: string, opts?: { deferFooter?: boolean; skipChatError?: boolean }): void {
+        if (!opts?.skipChatError) {
+            const converted = convertAgentMessage({ type: 'error', message });
+            if (converted) this.session.sendAgentMessage(converted);
+            this.messageBuffer.addMessage(message, 'status');
+        }
         if (opts?.deferFooter) return;
         this.stampBlockedFooter(message);
     }

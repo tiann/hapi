@@ -2225,6 +2225,50 @@ describe('cursorAcpRemoteLauncher', () => {
         }));
     });
 
+    it('does not double the chat error for a settled stderr failure wireStderrErrorListener already announced', async () => {
+        // Minor (bot, 2026-11-19): wireStderrErrorListener sends a chat error
+        // row the moment a non-retryable stderr arrives while promptInFlight.
+        // The settled branch (added to fix the missing-footer Major) must not
+        // surface a second one for the same failure once it's picked up from
+        // pendingStderrFailure — only the footer/Bridge bookkeeping is new.
+        harness.promptStderrErrors = [{
+            type: 'rate_limit',
+            message: 'status 429',
+            raw: 'status 429'
+        }];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        const errorCallsForThisFailure = client.sendAgentMessage.mock.calls.filter(
+            ([message]) => message?.type === 'error' && message.message === 'status 429'
+        );
+        expect(errorCallsForThisFailure).toHaveLength(1);
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
+    });
+
     it('does not auto-bridge a settled text classification on the Continue attempt after tool side effects', async () => {
         // Audit (orchestrator-requested, 2026-11-19): the settled branch's
         // postToolAutoContinueUsed gate was only exercised via the thrown-error
