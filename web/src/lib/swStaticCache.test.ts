@@ -1,11 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+    CLEANUP_OUTDATED_CACHES_MESSAGE,
     HUB_WEB_BUILD_STORAGE_KEY,
     STATIC_CACHE_VERSION_STORAGE_KEY,
     cleanupClientStaticCachesOnVersionChange,
     cleanupOutdatedStaticCaches,
     computeStaticCacheVersion,
     getHapiStaticCacheName,
+    getSafeCacheStorage,
+    getSafeLocalStorage,
     getSyntaxGrammarsCacheName,
     isOutdatedStaticCacheName,
     shouldCheckSwUpdateForHubHealth,
@@ -87,7 +90,9 @@ describe('isOutdatedStaticCacheName and cleanupOutdatedStaticCaches', () => {
             'unrelated-cache',
         ])
 
-        const deleted = await cleanupOutdatedStaticCaches(cacheStorage, currentVersion)
+        const deleted = await cleanupOutdatedStaticCaches(cacheStorage, currentVersion, {
+            scope: 'https://hapi.example/',
+        })
 
         expect(deleted).toEqual([
             'syntax-grammars',
@@ -102,6 +107,31 @@ describe('isOutdatedStaticCacheName and cleanupOutdatedStaticCaches', () => {
             'api-sessions',
             'cdn-socketio',
             'unrelated-cache',
+        ])
+    })
+
+    it('deletes exact-scope legacy Workbox precaches without touching sibling subpath apps', async () => {
+        const currentVersion = '0.36.5-1234abcd'
+        const cacheStorage = createFakeCacheStorage([
+            'workbox-precache-https://example.com/',
+            'workbox-precache-v1-https://example.com/',
+            'workbox-precache-v2-https://example.com/',
+            'workbox-precache-v2-https://example.com/tools/',
+            'workbox-precache-v1-https://example.com/tools/',
+        ])
+
+        const deleted = await cleanupOutdatedStaticCaches(cacheStorage, currentVersion, {
+            scope: 'https://example.com/',
+        })
+
+        expect(deleted).toEqual([
+            'workbox-precache-https://example.com/',
+            'workbox-precache-v1-https://example.com/',
+        ])
+        expect(cacheStorage.remaining()).toEqual([
+            'workbox-precache-v2-https://example.com/',
+            'workbox-precache-v2-https://example.com/tools/',
+            'workbox-precache-v1-https://example.com/tools/',
         ])
     })
 
@@ -125,11 +155,40 @@ describe('cleanupClientStaticCachesOnVersionChange', () => {
             cacheStorage,
         })
 
-        expect(result).toEqual({ versionChanged: false, deletedCaches: [] })
+        expect(result).toEqual({ versionChanged: false, deletedCaches: [], delegatedToWorker: false })
         expect(cacheStorage.delete).not.toHaveBeenCalled()
     })
 
-    it('cleans outdated static caches and records new version when version changes', async () => {
+    it('delegates to the controlling service worker without deleting caches directly when an older worker is active', async () => {
+        const storage = createMemoryStorage({ [STATIC_CACHE_VERSION_STORAGE_KEY]: '0.36.4' })
+        const cacheStorage = createFakeCacheStorage([
+            'syntax-grammars',
+            'syntax-grammars-0.36.4-11112222',
+        ])
+        const postMessage = vi.fn()
+        const serviceWorker = {
+            controller: { postMessage } as unknown as ServiceWorker,
+            getRegistration: vi.fn(),
+        }
+
+        const result = await cleanupClientStaticCachesOnVersionChange({
+            appVersion: '0.36.5',
+            storage,
+            cacheStorage,
+            serviceWorker,
+        })
+
+        expect(result).toEqual({
+            versionChanged: true,
+            deletedCaches: [],
+            delegatedToWorker: true,
+        })
+        expect(postMessage).toHaveBeenCalledWith({ type: CLEANUP_OUTDATED_CACHES_MESSAGE })
+        expect(cacheStorage.delete).not.toHaveBeenCalled()
+        expect(storage.getItem(STATIC_CACHE_VERSION_STORAGE_KEY)).toBe('0.36.4')
+    })
+
+    it('cleans outdated static caches directly and records new version when no service worker is active', async () => {
         const storage = createMemoryStorage({ [STATIC_CACHE_VERSION_STORAGE_KEY]: '0.36.4' })
         const cacheStorage = createFakeCacheStorage([
             'syntax-grammars',
@@ -137,22 +196,55 @@ describe('cleanupClientStaticCachesOnVersionChange', () => {
             'syntax-grammars-0.36.5-33334444',
             'api-sessions',
         ])
+        const serviceWorker = {
+            controller: null,
+            getRegistration: vi.fn(async () => undefined),
+        }
 
         const result = await cleanupClientStaticCachesOnVersionChange({
             appVersion: '0.36.5',
             storage,
             cacheStorage,
+            serviceWorker,
         })
 
         expect(result).toEqual({
             versionChanged: true,
             deletedCaches: ['syntax-grammars', 'syntax-grammars-0.36.4-11112222'],
+            delegatedToWorker: false,
         })
         expect(storage.getItem(STATIC_CACHE_VERSION_STORAGE_KEY)).toBe('0.36.5')
         expect(cacheStorage.remaining()).toEqual([
             'syntax-grammars-0.36.5-33334444',
             'api-sessions',
         ])
+    })
+})
+
+describe('safe storage/cache getters', () => {
+    it('returns null/undefined when window.localStorage or window.caches getters throw SecurityError', () => {
+        const origLocalStorage = Object.getOwnPropertyDescriptor(window, 'localStorage')
+        const origCaches = Object.getOwnPropertyDescriptor(window, 'caches')
+        try {
+            Object.defineProperty(window, 'localStorage', {
+                configurable: true,
+                get() {
+                    throw new DOMException('Access denied', 'SecurityError')
+                },
+            })
+            Object.defineProperty(window, 'caches', {
+                configurable: true,
+                get() {
+                    throw new DOMException('Access denied', 'SecurityError')
+                },
+            })
+
+            expect(getSafeLocalStorage()).toBeNull()
+            expect(getSafeCacheStorage()).toBeUndefined()
+        } finally {
+            if (origLocalStorage) Object.defineProperty(window, 'localStorage', origLocalStorage)
+            if (origCaches) Object.defineProperty(window, 'caches', origCaches)
+        }
     })
 })
 

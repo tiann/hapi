@@ -3,6 +3,7 @@ export const SYNTAX_GRAMMARS_CACHE_PREFIX = 'syntax-grammars-'
 export const HAPI_STATIC_CACHE_PREFIX = 'hapi-static-'
 export const STATIC_CACHE_VERSION_STORAGE_KEY = 'hapi:static-cache-version'
 export const HUB_WEB_BUILD_STORAGE_KEY = 'hapi:hub-web-build'
+export const CLEANUP_OUTDATED_CACHES_MESSAGE = 'CLEANUP_OUTDATED_CACHES'
 
 export type PrecacheManifestEntry = string | {
     url: string
@@ -16,6 +17,22 @@ function fnv1aHex(input: string): string {
         hash = Math.imul(hash, 0x01000193)
     }
     return (hash >>> 0).toString(16).padStart(8, '0')
+}
+
+export function getSafeLocalStorage(): Pick<Storage, 'getItem' | 'setItem'> | null {
+    try {
+        return typeof window !== 'undefined' ? window.localStorage : null
+    } catch {
+        return null
+    }
+}
+
+export function getSafeCacheStorage(): Pick<CacheStorage, 'keys' | 'delete'> | undefined {
+    try {
+        return typeof window !== 'undefined' ? window.caches : undefined
+    } catch {
+        return undefined
+    }
 }
 
 export function computeStaticCacheVersion(
@@ -44,12 +61,27 @@ export function getHapiStaticCacheName(cacheVersion: string): string {
     return `${HAPI_STATIC_CACHE_PREFIX}${cacheVersion}`
 }
 
+function isOutdatedScopedWorkboxPrecache(cacheName: string, scope: string): boolean {
+    const match = /^workbox-precache(?:-v(\d+))?-(.+)$/.exec(cacheName)
+    if (!match) {
+        return false
+    }
+    const version = match[1]
+    const cacheScope = match[2]
+    // Exact scope match prevents deleting sibling apps hosted on subpaths under the same origin.
+    return cacheScope === scope && version !== '2'
+}
+
 export function isOutdatedStaticCacheName(
     cacheName: string,
     currentVersion: string,
-    options?: { matchPrefixOnly?: boolean },
+    options?: { matchPrefixOnly?: boolean; scope?: string },
 ): boolean {
     if (cacheName === SYNTAX_GRAMMARS_LEGACY_CACHE_NAME) {
+        return true
+    }
+
+    if (options?.scope && isOutdatedScopedWorkboxPrecache(cacheName, options.scope)) {
         return true
     }
 
@@ -71,7 +103,7 @@ export function isOutdatedStaticCacheName(
 export async function cleanupOutdatedStaticCaches(
     cacheStorage: Pick<CacheStorage, 'keys' | 'delete'> | undefined,
     currentVersion: string,
-    options?: { matchPrefixOnly?: boolean },
+    options?: { matchPrefixOnly?: boolean; scope?: string },
 ): Promise<string[]> {
     if (!cacheStorage) {
         return []
@@ -91,7 +123,8 @@ export async function cleanupClientStaticCachesOnVersionChange(options: {
     appVersion: string
     storage?: Pick<Storage, 'getItem' | 'setItem'> | null
     cacheStorage?: Pick<CacheStorage, 'keys' | 'delete'>
-}): Promise<{ versionChanged: boolean; deletedCaches: string[] }> {
+    serviceWorker?: Pick<ServiceWorkerContainer, 'controller' | 'getRegistration'> | null
+}): Promise<{ versionChanged: boolean; deletedCaches: string[]; delegatedToWorker: boolean }> {
     const normalizedVersion = options.appVersion.trim() || '0.0.0'
     let previousVersion: string | null = null
     try {
@@ -101,7 +134,24 @@ export async function cleanupClientStaticCachesOnVersionChange(options: {
     }
 
     if (previousVersion === normalizedVersion) {
-        return { versionChanged: false, deletedCaches: [] }
+        return { versionChanged: false, deletedCaches: [], delegatedToWorker: false }
+    }
+
+    // When a service worker is active, delegate cleanup to the active worker so it runs
+    // with its own build identity and never deletes caches still backing older tabs.
+    const sw = options.serviceWorker
+    if (sw) {
+        try {
+            const activeWorker = sw.controller
+                ?? (typeof sw.getRegistration === 'function' ? (await sw.getRegistration())?.active : null)
+                ?? null
+            if (activeWorker) {
+                activeWorker.postMessage({ type: CLEANUP_OUTDATED_CACHES_MESSAGE })
+                return { versionChanged: true, deletedCaches: [], delegatedToWorker: true }
+            }
+        } catch {
+            // Fall through to local cache cleanup when worker lookup fails.
+        }
     }
 
     let deletedCaches: string[] = []
@@ -121,7 +171,7 @@ export async function cleanupClientStaticCachesOnVersionChange(options: {
         // Ignore storage write errors (e.g. private mode / quota).
     }
 
-    return { versionChanged: true, deletedCaches }
+    return { versionChanged: true, deletedCaches, delegatedToWorker: false }
 }
 
 export function isSameOriginUrl(targetUrl: string, windowOrigin: string): boolean {

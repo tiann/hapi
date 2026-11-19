@@ -16,9 +16,13 @@ vi.mock('virtual:pwa-register', () => ({
 }))
 
 const originalCachesDescriptor = Object.getOwnPropertyDescriptor(window, 'caches')
+const originalLocalStorageDescriptor = Object.getOwnPropertyDescriptor(window, 'localStorage')
 
 beforeEach(() => {
     serviceWorkerListeners.clear()
+    if (originalLocalStorageDescriptor) {
+        Object.defineProperty(window, 'localStorage', originalLocalStorageDescriptor)
+    }
     window.localStorage.clear()
     if (originalCachesDescriptor) {
         Object.defineProperty(window, 'caches', originalCachesDescriptor)
@@ -28,6 +32,8 @@ beforeEach(() => {
     Object.defineProperty(navigator, 'serviceWorker', {
         configurable: true,
         value: {
+            controller: null,
+            getRegistration: vi.fn(async () => undefined),
             addEventListener: (type: string, listener: EventListener) => {
                 const bucket = serviceWorkerListeners.get(type) ?? new Set<EventListener>()
                 bucket.add(listener)
@@ -160,6 +166,7 @@ describe('usePwaUpdate', () => {
 
     beforeEach(() => {
         capturedOptions = {}
+        registerSWMock.mockClear()
         updateSW.mockClear()
         registerSWMock.mockImplementation((options) => {
             capturedOptions = options
@@ -292,5 +299,49 @@ describe('usePwaUpdate', () => {
             capturedOptions.onRegistered?.(registration)
         })
         expect(registration.update).toHaveBeenCalledTimes(1)
+    })
+
+    it('still registers the service worker when window.localStorage getter throws SecurityError', () => {
+        Object.defineProperty(window, 'localStorage', {
+            configurable: true,
+            get() {
+                throw new DOMException('Access denied', 'SecurityError')
+            },
+        })
+
+        renderHook(() => usePwaUpdate())
+
+        expect(registerSWMock).toHaveBeenCalledTimes(1)
+    })
+
+    it('delegates cache cleanup to an active controlling worker instead of deleting caches from window', async () => {
+        window.localStorage.setItem('hapi:static-cache-version', '0.36.4')
+        const deleteMock = vi.fn(async () => true)
+        const postMessage = vi.fn()
+        Object.defineProperty(window, 'caches', {
+            configurable: true,
+            value: {
+                keys: vi.fn(async () => ['syntax-grammars-0.36.4-old']),
+                delete: deleteMock,
+            },
+        })
+        Object.defineProperty(navigator, 'serviceWorker', {
+            configurable: true,
+            value: {
+                controller: { postMessage },
+                getRegistration: vi.fn(),
+                addEventListener: vi.fn(),
+                removeEventListener: vi.fn(),
+            },
+        })
+
+        renderHook(() => usePwaUpdate())
+
+        await act(async () => {
+            await Promise.resolve()
+        })
+
+        expect(postMessage).toHaveBeenCalledWith({ type: 'CLEANUP_OUTDATED_CACHES' })
+        expect(deleteMock).not.toHaveBeenCalled()
     })
 })

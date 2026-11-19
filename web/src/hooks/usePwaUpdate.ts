@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { registerSW } from 'virtual:pwa-register'
-import { cleanupClientStaticCachesOnVersionChange } from '@/lib/swStaticCache'
+import {
+    cleanupClientStaticCachesOnVersionChange,
+    getSafeCacheStorage,
+    getSafeLocalStorage,
+} from '@/lib/swStaticCache'
 
 export const PWA_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000
 export const PWA_UPDATE_RELOAD_FALLBACK_MS = 2000
@@ -89,10 +93,14 @@ export function usePwaUpdate() {
     useEffect(() => {
         if (typeof window !== 'undefined') {
             const appVersion = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0'
+            const serviceWorker = typeof navigator !== 'undefined' && 'serviceWorker' in navigator
+                ? navigator.serviceWorker
+                : null
             void cleanupClientStaticCachesOnVersionChange({
                 appVersion,
-                storage: window.localStorage,
-                cacheStorage: window.caches,
+                storage: getSafeLocalStorage(),
+                cacheStorage: getSafeCacheStorage(),
+                serviceWorker,
             })
         }
 

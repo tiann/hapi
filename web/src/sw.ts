@@ -1,5 +1,5 @@
 /// <reference lib="webworker" />
-import { cleanupOutdatedCaches, precacheAndRoute } from 'workbox-precaching'
+import { precacheAndRoute } from 'workbox-precaching'
 import { registerRoute } from 'workbox-routing'
 import { CacheFirst, NetworkFirst } from 'workbox-strategies'
 import { ExpirationPlugin } from 'workbox-expiration'
@@ -11,6 +11,7 @@ import {
 import { shareTargetPathname } from './lib/sharePath'
 import { cacheOkResponsesOnly, cacheJavaScriptOnly } from './lib/swCachePolicy'
 import {
+    CLEANUP_OUTDATED_CACHES_MESSAGE,
     cleanupOutdatedStaticCaches,
     computeStaticCacheVersion,
     getSyntaxGrammarsCacheName,
@@ -41,7 +42,6 @@ type PushPayload = {
     }
 }
 
-cleanupOutdatedCaches()
 precacheAndRoute(precacheManifest)
 
 registerRoute(
@@ -129,6 +129,16 @@ registerRoute(
 self.addEventListener('message', (event) => {
     if (event.data?.type === 'SKIP_WAITING') {
         self.skipWaiting()
+        return
+    }
+    if (event.data?.type === CLEANUP_OUTDATED_CACHES_MESSAGE) {
+        event.waitUntil(
+            cleanupOutdatedStaticCaches(self.caches, STATIC_CACHE_VERSION, {
+                scope: self.registration?.scope,
+            }).catch((error) => {
+                console.warn('static-cache cleanup failed', error)
+            })
+        )
     }
 })
 
@@ -136,7 +146,9 @@ self.addEventListener('activate', (event) => {
     event.waitUntil(
         Promise.all([
             self.clients.claim(),
-            cleanupOutdatedStaticCaches(self.caches, STATIC_CACHE_VERSION).catch((error) => {
+            cleanupOutdatedStaticCaches(self.caches, STATIC_CACHE_VERSION, {
+                scope: self.registration?.scope,
+            }).catch((error) => {
                 console.warn('static-cache cleanup failed', error)
             }),
             cleanupExpiredShareTransfers().catch((error) => {
