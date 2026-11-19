@@ -192,10 +192,12 @@ export class SharedCodexRoot {
 
     private resyncHub(): void {
         const signal = this.historyReplayAbort.signal;
-        if (!this.projection || this.closed || this.stopping || signal.aborted) return;
+        const connection = this.session.getSocketConnectionGeneration();
+        if (connection === undefined || !this.projection || this.closed || this.stopping || signal.aborted) return;
         const wasActivated = Boolean(this.heartbeat);
         const previous = this.hubResync?.signal === signal ? this.hubResync.promise : undefined;
-        const isCurrent = () => !signal.aborted && !this.stopping && this.hubResync?.promise === promise;
+        const isCurrent = () => !signal.aborted && !this.stopping && this.hubResync?.promise === promise
+            && this.session.getSocketConnectionGeneration() === connection;
         const promise = Promise.resolve()
             .then(async () => {
                 await previous;
@@ -215,7 +217,7 @@ export class SharedCodexRoot {
                 if (!isCurrent()) return;
                 this.hubResyncRequired = false;
                 // Restore the Hub's readiness fence after native revalidation.
-                if (wasActivated && this.heartbeat && !this.closed && !this.stopping && this.client.isInitialized()) this.session.emitSessionReady();
+                if (wasActivated && this.heartbeat && !this.closed && this.client.isInitialized()) this.session.emitSessionReady();
             })
             .catch(error => { if (isCurrent()) { logger.debug('[Codex shared] hub resync', error); this.failAttached(); } })
             .finally(() => { if (this.hubResync?.promise === promise) this.hubResync = undefined; });
@@ -255,8 +257,8 @@ export class SharedCodexRoot {
             const thread = threadId === this.threadId ? undefined : await this.readValidatedHistory(threadId, signal);
             if (this.host.attached) {
                 if (!thread) await this.refreshValidatedHistory();
-                if (signal.aborted || this.closed || this.stopping) throw new Error('Codex execution is stopping');
             }
+            if (signal.aborted || this.closed || this.stopping) throw new Error('Codex execution is stopping');
             const turnId = threadId === this.threadId ? this.currentTurn
                 : string((Array.isArray(thread?.turns) ? thread.turns.map(record) : []).find(turn => turn.status === 'inProgress')?.id);
             const params = { threadId, clientUserMessageId, input: buildUserInputFromMessage(text) };

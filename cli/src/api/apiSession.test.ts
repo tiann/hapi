@@ -2052,6 +2052,34 @@ describe('strict OpenCode rewind metadata and socket entry', () => {
             queue.close(); client.close();
         }
     });
+
+    it('advances the socket generation before metadata refresh and drops an older reconnect callback', async () => {
+        const metadata = { path: '/fixture', host: 'test' };
+        const client = new ApiSessionClient('test-token', createSession({ metadata, metadataVersion: 1 }));
+        const socket = socketHarness.sockets.at(-1)!;
+        const older = deferred<unknown>();
+        const newer = deferred<unknown>();
+        const response = { data: { session: { metadata, metadataVersion: 1 } } };
+        const reconnected = vi.fn();
+        client.onReconnect(reconnected);
+        const first = client.getSocketConnectionGeneration()!;
+        try {
+            axiosHarness.get.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+            socket.triggerConnect();
+            expect(client.getSocketConnectionGeneration()).toBe(first + 1);
+            socket.triggerConnect();
+            expect(client.getSocketConnectionGeneration()).toBe(first + 2);
+            older.resolve(response);
+            await new Promise<void>(resolve => setImmediate(resolve));
+            expect(reconnected).not.toHaveBeenCalled();
+            newer.resolve(response);
+            await vi.waitFor(() => expect(reconnected).toHaveBeenCalledOnce());
+        } finally {
+            older.resolve(response);
+            newer.resolve(response);
+            client.close();
+        }
+    });
 });
 
 describe('explicit title action metadata refresh', () => {

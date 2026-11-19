@@ -79,6 +79,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex' };
     if (opts?.attached) metadata.codexRuntime = { kind: 'attached', bindingId: '11111111-1111-4111-8111-111111111111', state: 'attached' };
     let reconnect: (() => void) | null = null;
+    let socketGeneration = 1;
     let userMessage: Parameters<ApiSessionClient['onUserMessage']>[0] | undefined;
     let retryMessage: Parameters<ApiSessionClient['onRetryQueuedMessage']>[0] | undefined;
     const updateState = vi.fn((fn: (value: AgentState) => AgentState) => { state = fn(state); });
@@ -98,6 +99,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         onCancelQueuedMessage() {},
         onRetryQueuedMessage: (callback: Parameters<ApiSessionClient['onRetryQueuedMessage']>[0]) => { retryMessage = callback; },
         onReconnect: (fn: (() => void) | null) => { reconnect = fn; },
+        getSocketConnectionGeneration: () => socketGeneration,
         on(event: string, listener: () => void) {
             if (event === 'hub-archived') hubArchivedListeners.push(listener);
         },
@@ -132,7 +134,9 @@ session, root, native, rpc, send, events, consumed, uncertain, sessionReady,
         submit: (text: string, id: string) => userMessage?.({ role: 'user', content: { type: 'text', text } }, id), metadata: () => metadata, state: () => state, updateState,
         drain: () => (root as unknown as { notifications: Promise<void> }).notifications,
         drainWork: () => (root as unknown as { work: Promise<unknown> }).work,
-        reconnect: () => reconnect?.(),
+        reconnect: () => { socketGeneration++; reconnect?.(); },
+        replaceSocket: () => { socketGeneration++; },
+        finishReconnect: () => reconnect?.(),
         emitHubArchived: () => { for (const listener of hubArchivedListeners) listener(); },
         hubArchivedListenerCount: () => hubArchivedListeners.length,
         end,
@@ -691,7 +695,7 @@ describe('externally attached root', () => {
 });
 
 describe('native readiness after Hub reconnect', () => {
-    it('replays the transcript prefix on the newest connection when a previous replay was interrupted', async () => {
+    it.each([false, true])('replays the transcript prefix on the newest connection (metadata refresh pending: %s)', async pendingMetadata => {
         const f = await fixture();
         await f.root.activate();
         const ids = Array.from({ length: 101 }, (_, index) => `message-${index}`);
@@ -704,11 +708,22 @@ describe('native readiness after Hub reconnect', () => {
             if (newestSocket && id) delivered.add(id);
         }).mockImplementationOnce(() => {
             // Drop the packets sent by the old replay before it yields.
-            setImmediate(() => { newestSocket = true; f.reconnect(); });
+            setImmediate(() => {
+                newestSocket = true;
+                if (pendingMetadata) f.replaceSocket();
+                else f.reconnect();
+            });
         });
         let readyMessages: string[] = [];
         const ready = f.sessionReady.mockImplementation(() => { readyMessages = [...delivered]; });
         f.reconnect();
+        if (pendingMetadata) {
+            const resync = (f.root as unknown as { hubResync: { promise: Promise<void> } }).hubResync;
+            await resync.promise;
+            expect(newestSocket).toBe(true);
+            expect(ready).toHaveBeenCalledOnce();
+            f.finishReconnect();
+        }
         await vi.waitFor(() => expect(ready).toHaveBeenCalledTimes(2));
         expect(readyMessages.sort()).toEqual([...ids].sort());
     });
@@ -765,6 +780,41 @@ describe('async question delivery', () => {
             expect(f.state().requests![q.id]).toBeUndefined();
             expect(f.state().completedRequests![q.id]).toMatchObject({ status: 'resolved' });
         } finally { request.mockRestore(); }
+    });
+
+    it('does not submit an owned child answer from a history read interrupted by archive', async () => {
+        const end = vi.fn(async () => {});
+        const f = await fixture({ end });
+        await f.root.activate();
+
+        const reading = Promise.withResolvers<void>();
+        const released = Promise.withResolvers<void>();
+        const child = { id: 'child', parentThreadId: 'thread', turns: [{ id: 'child-turn', status: 'inProgress', items: [] }] };
+        const original = f.root.client.request.bind(f.root.client);
+        const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            const p = params as { threadId?: string; includeTurns?: boolean };
+            if (method !== 'thread/read' || p.threadId !== child.id) return original(method, params);
+            if (!p.includeTurns) {
+                if (f.state().requests?.[question.id]) { reading.resolve(); await released.promise; }
+                return { thread: { id: child.id, parentThreadId: child.parentThreadId } };
+            }
+            return { thread: child };
+        });
+        const question = asyncQuestionsForItem(child.id, item)[0];
+        f.native.notify('item/completed', { threadId: child.id, turnId: 'child-turn', item });
+        await f.drain();
+        expect(f.state().requests?.[question.id]).toBeDefined();
+        const answer = expect(f.rpc.get(RPC_METHODS.Permission)!({
+            id: question.id, approved: true, answers: { [question.questionItemId]: ['Web'] }
+        })).rejects.toThrow('Codex execution is stopping');
+        try {
+            await reading.promise;
+            await f.root.archiveFromRunner();
+        } finally {
+            released.resolve();
+            await answer;
+        }
+        expect(request.mock.calls.some(([method]) => method === 'turn/start' || method === 'turn/steer')).toBe(false);
     });
 
     it('preserves an explicit dismissal when a new root replays the same native thread', async () => {

@@ -222,6 +222,7 @@ export class ApiSessionClient extends EventEmitter {
     private backfillInFlight: Promise<void> | null = null
     private needsBackfill = false
     private hasConnectedOnce = false
+    private socketConnectionGeneration = 0
     // Replayed on (re)connect: a volatile heartbeat sent while disconnected is dropped (#2053).
     private latestKeepAlive: Omit<Parameters<ClientToServerEvents['session-alive']>[0], 'sid' | 'time'> | null = null
     readonly rpcHandlerManager: RpcHandlerManager
@@ -304,6 +305,7 @@ export class ApiSessionClient extends EventEmitter {
         })
 
         this.socket.on('connect', () => {
+            const generation = ++this.socketConnectionGeneration
             logger.debug('Socket connected successfully')
             this.emit('connection-start')
             this.awaitingMaterializedConnection = false
@@ -320,11 +322,12 @@ export class ApiSessionClient extends EventEmitter {
                 ? this.refreshMetadata().then((refreshed) => { metadataRefreshed = refreshed })
                 : Promise.resolve()
             void afterMeta.finally(() => {
+                if (this.getSocketConnectionGeneration() !== generation) return
                 if (isReconnect && this.observedClaudeRewindId !== undefined) {
                     this.armRewindBackfill(`claude:${this.observedClaudeRewindId}`)
                 }
                 void this.backfillIfNeeded()
-if (isReconnect) {
+                if (isReconnect) {
                     this.reconnectHandler?.(metadataRefreshed)
                 }
                 if (this.state === 'active' && this.allowReconnect) this.emit('connected')
@@ -1391,6 +1394,10 @@ if (isReconnect) {
                 time: Date.now()
             })
         }, 'droppable')
+    }
+
+    getSocketConnectionGeneration(): number | undefined {
+        return this.socket.connected ? this.socketConnectionGeneration : undefined
     }
 
     emitMessagesConsumed(localIds: string[], options?: { clearQueuedThinkingGrace?: boolean; steered?: boolean }): void {
