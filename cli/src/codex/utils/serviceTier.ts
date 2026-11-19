@@ -92,7 +92,7 @@ export function nativeTierParams(params: Record<string, unknown>): Record<string
 }
 
 /** Explicitly re-resolve inherited intent so a saved native snapshot cannot pin it. */
-export async function inheritedResumeTier(client: Pick<CodexAppServerClient, 'readConfig'>, params: Record<string, unknown>, explicit: boolean | undefined, cwd: string, savedTier?: unknown): Promise<Record<string, unknown>> {
+export async function inheritedResumeTier(client: Pick<CodexAppServerClient, 'readConfig'> & Partial<Pick<CodexAppServerClient, 'supportsEffectiveUltrafastLaunch'>>, params: Record<string, unknown>, explicit: boolean | undefined, cwd: string, savedTier?: unknown): Promise<Record<string, unknown>> {
     params = nativeTierParams(params);
     if (params.serviceTier !== undefined) return params;
     if (explicit === true) {
@@ -104,7 +104,7 @@ export async function inheritedResumeTier(client: Pick<CodexAppServerClient, 're
     const configured = (await client.readConfig({ cwd, includeLayers: false })).config.service_tier;
     // Omission is different from native's explicit Standard sentinel. When no
     // account override exists, retain native snapshot/default behavior.
-    if (configured == null) return params;
+    if (configured == null || configured === 'ultrafast' && client.supportsEffectiveUltrafastLaunch?.() === false) return params;
     return { ...params, serviceTier: typeof configured === 'string' && configured !== 'default' ? configured : null };
 }
 

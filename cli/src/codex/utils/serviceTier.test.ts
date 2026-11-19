@@ -207,3 +207,9 @@ it.each(['thread/start', 'thread/fork', 'thread/resume'])('rejects unverifiable 
     await expect(resolveUltrafastLaunch(client, method, { model: 'eligible', serviceTier: 'ultrafast' }, '/project', 'openai')).rejects.toThrow('Codex 0.170');
     expect(client.listModels).not.toHaveBeenCalled();
 });
+
+it('keeps unverifiable inherited native Ultrafast omitted on a legacy engine', async () => {
+    const client = { readConfig: vi.fn().mockResolvedValue({ config: { service_tier: 'ultrafast' } }), supportsEffectiveUltrafastLaunch: () => false };
+    expect(await inheritedResumeTier(client, {}, false, '/project')).toEqual({});
+    expect(await inheritedResumeTier(client, { serviceTier: 'ultrafast' }, false, '/project')).toEqual({ serviceTier: 'ultrafast' });
+});

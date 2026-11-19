@@ -191,12 +191,16 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                 return originalRequest.call(this, method, params) as Promise<T>;
             });
             extraSpies.push(stalledSnapshot);
-            const accepted = third.client.request<{ turn: { id: string } }>('turn/start', { threadId: unsupported.thread.id,
+            state.sessions.get(unsupportedSid)!.metadata.codexServiceTierExplicit = false;
+            const accepted = third.client.request<{ turn: { id: string } }>('turn/start', { threadId: unsupported.thread.id, model: 'gpt-6.1-sol',
                 serviceTier: 'priority', input: [{ type: 'text', text: 'Local no-network acceptance test', text_elements: [] }] });
             await lookupStarted;
             const result = await Promise.race([accepted, new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Accepted turn blocked on snapshot')), 2_000))]);
             expect(result.turn.id).toBeTruthy();
+            expect(state.sessions.get(unsupportedSid)!.metadata.codexServiceTierExplicit).toBe(true);
+            await third.client.request('thread/settings/update', { threadId: unsupported.thread.id, model: 'gpt-6-astra' });
             releaseLaunch(); stalledSnapshot.mockRestore();
+            expect(state.sessions.get(unsupportedSid)!.metadata.codexServiceTierExplicit).toBe(true);
             await third.client.request('turn/interrupt', { threadId: unsupported.thread.id, turnId: result.turn.id }).catch(() => {});
             await configure();
             const unset = await start();

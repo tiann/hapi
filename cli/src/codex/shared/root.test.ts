@@ -1698,3 +1698,28 @@ it('does not forward a native turn or write settings after tier discovery failur
     await expect(f.root.prepareNativeTurn({ threadId: 'thread', serviceTier: 'ultrafast', input: [] })).rejects.toThrow('catalog unavailable');
     expect(request.mock.calls.some(([method]) => ['turn/start', 'thread/settings/update'].includes(method))).toBe(false);
 });
+
+it('preserves accepted explicit tier intent across a later model-only change', async () => {
+    const f = await fixture(); await f.root.activate({}, false);
+    let release!: (value: unknown) => void;
+    const snapshot = new Promise(resolve => { release = resolve; });
+    vi.spyOn(f.root.client, 'request').mockImplementationOnce(() => snapshot as never);
+    const pending = f.root.confirmNativeTurn({ model: 'mock', serviceTier: 'priority' }, true);
+    expect(f.metadata().codexServiceTierExplicit).toBe(true);
+    release({ model: 'changed-model', serviceTier: 'priority' }); await pending;
+    expect(f.metadata().codexServiceTierExplicit).toBe(true);
+    expect(f.root.freshParams()).toMatchObject({ model: 'changed-model', serviceTier: 'priority' });
+});
+it('does not reset a newer Fast choice during model-only native turn discovery', async () => {
+    const f = await fixture(); await f.root.activate();
+    f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' });
+    let release!: (value: unknown) => void;
+    const catalog = new Promise(resolve => { release = resolve; });
+    const models = vi.spyOn(f.root.client, 'listModels').mockImplementationOnce(() => catalog as never);
+    const pending = f.root.prepareNativeTurn({ model: 'standard-only' });
+    await vi.waitFor(() => expect(models).toHaveBeenCalled());
+    await f.root.applyNativeSettings({ serviceTier: 'priority' });
+    release({ data: [{ id: 'standard-only', serviceTiers: [{ id: 'priority' }] }] });
+    expect((await pending).params).toEqual({ model: 'standard-only' });
+    expect(f.root.freshParams().serviceTier).toBe('priority');
+});

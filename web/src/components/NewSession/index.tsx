@@ -557,7 +557,7 @@ export function NewSession(props: {
             setModel('auto')
         }
     }, [agent, codexModelsState.error, codexModelsState.isLoading, codexModelsState.models, model])
-    const showCodexUltrafastMode = agent === 'codex' && model !== 'auto' && !codexModelsState.error
+    const showCodexUltrafastMode = agent === 'codex' && !selectedCodexImportSessionId && model !== 'auto' && !codexModelsState.error
         && codexModelAdvertisesUltrafastTier(model === 'auto' ? null : model, codexModelsState.models)
     const showCodexFastMode = agent === 'codex'
         && !codexModelsState.error
@@ -2279,7 +2279,7 @@ export function NewSession(props: {
             && piModelsState.isLoading)
     const fastModeSelectionPending = agent === 'codex'
         && serviceTier !== 'standard'
-        && (codexModelsState.isLoading || (serviceTier === 'ultrafast' && Boolean(codexModelsState.error)))
+        && (codexModelsState.isLoading || (serviceTier === 'ultrafast' && (Boolean(codexModelsState.error) || Boolean(selectedCodexImportSessionId))))
     const canCreate = Boolean(
         machineId
         && trimmedDirectory
@@ -2605,7 +2605,7 @@ export function NewSession(props: {
                 visible={showCodexFastMode || showCodexUltrafastMode || (agent === 'codex' && (serviceTier === 'ultrafast' || serviceTierExplicit && !codexModelsState.isLoading))}
                 fastAvailable={showCodexFastMode}
                 ultrafastAvailable={showCodexUltrafastMode}
-                availabilityUnverified={agent === 'codex' && Boolean(codexModelsState.error) && serviceTierExplicit && serviceTier !== 'standard'}
+                availabilityUnverified={agent === 'codex' && (Boolean(codexModelsState.error) || Boolean(selectedCodexImportSessionId) && serviceTier === 'ultrafast') && serviceTierExplicit && serviceTier !== 'standard'}
                 value={serviceTierExplicit ? serviceTier : 'default'}
                 isDisabled={isFormDisabled}
                 onChange={value => { setServiceTier(value === 'default' ? 'standard' : value); setServiceTierExplicit(value !== 'default') }}

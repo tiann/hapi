@@ -620,6 +620,7 @@ export class SharedCodexRoot {
                 if ((!config.model && model !== this.settings.model) || provider !== this.modelProvider) continue;
                 const enabled = available && await isUltrafastEnabled(this.client, this.threadId, discoveryDeadline);
                 if ((!config.model && model !== this.settings.model) || provider !== this.modelProvider) continue;
+                if (config.serviceTier === undefined && !this.hasUltrafastTier) break;
                 // Pin only after every asynchronous discovery step has settled.
                 if (typeof model === 'string') config.model = model;
                 if (!available) { config.serviceTier = 'standard'; fallbackNotice = ULTRAFAST_FALLBACK_NOTICE; }
@@ -686,6 +687,8 @@ export class SharedCodexRoot {
                 const available = await isUltrafastAvailable(this.client, model, this.bootstrap.workingDirectory, deadline, provider, this.host.catalogProvider);
                 const enabled = available && await isUltrafastEnabled(this.client, this.threadId, deadline);
                 if ((!requestedModel && model !== this.settings.model) || provider !== this.modelProvider) continue;
+                // A model-only request must not reset a newer tier chosen during discovery.
+                if (params.serviceTier === undefined && !this.hasUltrafastTier) break;
                 params = { ...params, ...(typeof model === 'string' ? { model } : {}) };
                 if (!available || !enabled) {
                     params.serviceTier = null;
@@ -719,13 +722,14 @@ export class SharedCodexRoot {
     }
     /** Called only after native turn acceptance; a rejected input leaves intent unchanged. */
     async confirmNativeTurn(params: Record<string, unknown>, explicitTier: boolean, fallbackNotice?: string): Promise<void> {
+        // Native acceptance establishes intent even when a later client changes the model.
+        if (explicitTier) this.markTierExplicit();
         try {
             const snapshot = record(await this.client.request('thread/resume', { threadId: this.threadId, excludeTurns: true }));
             this.acceptSettings(snapshot);
             const model = string(record(record(params.collaborationMode).settings).model) ?? string(params.model);
             const expected = { ...(model ? { model } : {}), ...(params.serviceTier !== undefined ? { serviceTier: params.serviceTier } : {}) };
             if (!settingsMatch(this.settingsNative, expected)) throw new Error('Native turn settings are not confirmed');
-            if (explicitTier) this.markTierExplicit();
             this.alive();
             if (fallbackNotice) this.notice(fallbackNotice);
         } catch {

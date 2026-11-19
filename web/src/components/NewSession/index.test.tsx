@@ -214,7 +214,9 @@ vi.mock('../../utils/formatRunnerSpawnError', () => ({
     formatRunnerSpawnError: () => null
 }))
 vi.mock('@/components/CodexSessionSyncDialog', () => ({
-    CodexSessionSyncDialog: () => null
+    CodexSessionSyncDialog: (props: { isOpen: boolean; sessions: Array<{ id: string }>; onConfirm: (ids: string[]) => Promise<void> }) => props.isOpen ? (
+        <button data-testid="select-codex-history" disabled={!props.sessions.length} onClick={() => void props.onConfirm([props.sessions[0].id])}>select codex history</button>
+    ) : null
 }))
 vi.mock('@/components/PiSessionImportDialog', () => ({
     PiSessionImportDialog: (props: { isOpen: boolean; sessions: Array<{ id: string }>; onClose: () => void; onConfirm: (ids: string[]) => Promise<void> }) => props.isOpen ? (
@@ -2791,3 +2793,18 @@ describe('NewSession launch preferences', () => {
         }))
     })
 })
+
+it('withholds Ultrafast on native import until the retained provider can be verified', async () => {
+    savePreferredAgent('codex');
+    savePreferredLaunchSettings('machine-1', 'codex', { model: 'gpt-6.2-sol', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'high', serviceTier: 'ultrafast' });
+    const importApi = { ...api, getCodexSessions: vi.fn(async () => ({ sessions: [{ id: 'native-import', title: 'Native import', cwd: 'C:\\repo' }], machineId: 'machine-1' })) } as unknown as ApiClient;
+    renderWithQuery(<NewSession api={importApi} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />);
+    expect(await screen.findByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue('ultrafast');
+    fireEvent.click(screen.getByRole('button', { name: 'codexSync.newSessionInline.choose' }));
+    await waitFor(() => expect(screen.getByTestId('select-codex-history')).toBeEnabled());
+    fireEvent.click(screen.getByTestId('select-codex-history'));
+    await waitFor(() => expect(screen.getByRole('option', { name: 'misc.fastModeUltrafast' })).toBeDisabled());
+    expect(screen.getByTestId('create')).toBeDisabled();
+    fireEvent.change(screen.getByRole('combobox', { name: 'newSession.fastMode' }), { target: { value: 'standard' } });
+    await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled());
+});
