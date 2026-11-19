@@ -1,10 +1,12 @@
 import type { CodexAppServerClient } from '../codexAppServerClient';
 
 /** Validate against the same native account/provider that will execute the thread. */
-export async function assertUltrafastAvailable(
+export const ULTRAFAST_FALLBACK_NOTICE = 'Ultrafast is not supported by this model or subscription; changed to Standard.';
+
+export async function isUltrafastAvailable(
     client: Pick<CodexAppServerClient, 'listModels'>,
     model: unknown,
-): Promise<void> {
+): Promise<boolean> {
     const models = [];
     const seen = new Set<string>();
     let cursor: string | undefined;
@@ -18,7 +20,5 @@ export async function assertUltrafastAvailable(
     const selected = typeof model === 'string' && model.trim()
         ? models.find(entry => entry.id === model || entry.model === model)
         : models.find(entry => entry.isDefault);
-    if (!selected?.serviceTiers?.some(tier => tier.id === 'ultrafast')) {
-        throw new Error('Ultrafast is not available for this model in the current Codex account. Select Standard or Fast.');
-    }
+    return Boolean(selected?.serviceTiers?.some(tier => tier.id === 'ultrafast'));
 }

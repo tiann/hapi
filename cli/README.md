@@ -29,8 +29,9 @@ Codex sessions offer Standard, Fast (`priority`), and Ultrafast (`ultrafast`).
 Ultrafast appears only when the selected model advertises it in the current
 account catalog; model name or subscription alone is not proof of availability.
 Use `/ultrafast [on|off|status]` in chat or `--service-tier ultrafast` on launch.
-Unsupported model/account combinations are rejected before native settings or
-thread creation; switch to Standard or Fast before selecting an unsupported model.
+Unsupported model/account combinations switch to Standard with a HAPI system
+notice after the native change is confirmed. Catalog failures leave settings
+unchanged and surface an error; they are not treated as missing entitlement.
 An untouched tier continues to inherit the native account default.
 
 ### Session commands

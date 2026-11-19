@@ -1,5 +1,5 @@
 import { fromCodexServiceTier, toCodexServiceTier } from '@hapi/protocol';
-import { assertUltrafastAvailable } from '../utils/serviceTier';
+import { isUltrafastAvailable, ULTRAFAST_FALLBACK_NOTICE } from '../utils/serviceTier';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -574,8 +574,12 @@ export class SharedCodexRoot {
     }
     async applySettings(raw: unknown): Promise<{ applied: RuntimeSettings }> {
         const config = SettingsSchema.parse(raw);
+        let downgraded = false;
         if (config.serviceTier === 'ultrafast' || config.model && this.settings.serviceTier === 'ultrafast' && config.serviceTier === undefined) {
-            await assertUltrafastAvailable(this.client, config.model ?? this.settings.model);
+            if (!await isUltrafastAvailable(this.client, config.model ?? this.settings.model)) {
+                config.serviceTier = 'standard';
+                downgraded = true;
+            }
         }
         if (Object.keys(config).length === 0) return { applied: this.settings };
         if (typeof config.modelReasoningEffort === 'string') config.modelReasoningEffort = parseReasoningEffortValue(config.modelReasoningEffort);
@@ -617,7 +621,9 @@ export class SharedCodexRoot {
             await this.client.request('thread/settings/update', params);
             // The RPC only acknowledges queueing the settings operation. The
             // native notification, not our submitted candidate, establishes state.
-            await accepted; this.alive(); return { applied: this.settings };
+            await accepted;
+            if (downgraded) this.notice(ULTRAFAST_FALLBACK_NOTICE);
+            this.alive(); return { applied: this.settings };
         } finally { clearTimeout(timer); this.settingsListeners.delete(changed); }
     }
     async initialSettings(options: SharedLaunchOptions): Promise<void> {

@@ -1396,12 +1396,43 @@ it('splits queued user messages across a settings-changing slash command', async
 
 
 describe('Ultrafast native settings', () => {
-    it('preserves the native tier, permits explicit Standard and refuses unsupported model switches', async () => {
+    it('preserves the native tier, switches unsupported models to Standard with a system notice', async () => {
         const f = await fixture();
         expect((await f.root.applySettings({ serviceTier: 'ultrafast' })).applied.serviceTier).toBe('ultrafast');
         expect(f.root.client).toMatchObject({ settings: { serviceTier: 'ultrafast' } });
-        await expect(f.root.applySettings({ model: 'standard-only' })).rejects.toThrow('not available');
+        f.events.mockClear();
+        expect((await f.root.applySettings({ model: 'standard-only' })).applied.serviceTier).toBe('standard');
+        expect(f.events).toHaveBeenCalledWith({ type: 'message', message: 'Ultrafast is not supported by this model or subscription; changed to Standard.' });
         expect((await f.root.applySettings({ model: 'standard-only', serviceTier: 'standard' })).applied.serviceTier).toBe('standard');
         expect(f.root.client).toMatchObject({ settings: { serviceTier: null } });
+    });
+
+    it('does not announce fallback until the native settings notification confirms it', async () => {
+        const f = await fixture();
+        f.events.mockClear();
+        const original = f.root.client.request.bind(f.root.client);
+        const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (method === 'thread/settings/update') return {} as never;
+            return original(method, params);
+        });
+        const applied = f.root.applySettings({ model: 'standard-only', serviceTier: 'ultrafast' });
+        await vi.waitFor(() => expect(request).toHaveBeenCalledWith('thread/settings/update', expect.objectContaining({ serviceTier: null })));
+        expect(f.events).not.toHaveBeenCalled();
+        f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: { model: 'standard-only', serviceTier: null } });
+        expect((await applied).applied.serviceTier).toBe('standard');
+        expect(f.events).toHaveBeenCalledOnce();
+        request.mockRestore();
+    });
+
+    it('keeps settings unchanged on catalog failure instead of claiming missing entitlement', async () => {
+        const f = await fixture();
+        f.events.mockClear();
+        const catalog = vi.spyOn(f.root.client, 'listModels').mockRejectedValueOnce(new Error('catalog disconnected'));
+        const request = vi.spyOn(f.root.client, 'request');
+        await expect(f.root.applySettings({ serviceTier: 'ultrafast' })).rejects.toThrow('catalog disconnected');
+        expect(request).not.toHaveBeenCalled();
+        expect(f.events).not.toHaveBeenCalled();
+        catalog.mockRestore();
+        request.mockRestore();
     });
 });
