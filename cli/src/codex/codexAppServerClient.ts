@@ -369,11 +369,15 @@ export class CodexAppServerClient extends JsonLineParser {
     }
     supportsProviderScopedModels(): boolean {
         const version = this.catalogVersion();
-        return Boolean(version && (version[0] > 0 || version[1] >= 170));
+        return Boolean(version && (version[0] > 0 || version[1] >= 169));
+    }
+    retainsResumeModelProvider(): boolean {
+        const version = this.catalogVersion();
+        return Boolean(version && (version[0] > 0 || version[1] >= 166));
     }
     usesStartupModelCatalog(): boolean {
         const version = this.catalogVersion();
-        return Boolean(version && version[0] === 0 && version[1] < 170);
+        return Boolean(version && version[0] === 0 && version[1] < 164);
     }
 
     async readConfig(params: ConfigReadParams): Promise<ConfigReadResponse> {

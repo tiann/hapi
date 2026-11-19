@@ -18,7 +18,7 @@ import { SharedCodexRoot } from './root';
 import { buildForkSessionSummary } from '@hapi/protocol';
 
 export type RuntimeReady = { sessionId: string; runtime: CodexRuntimeRecord };
-type Reservation = { root: SharedCodexRoot; resumeId?: string };
+type Reservation = { root: SharedCodexRoot; resumeId?: string; serviceTierExplicit?: boolean };
 
 function gitInfo(cwd: string): { sha: string | null; branch: string | null; originUrl: string | null } {
     const git = (...args: string[]) => {
@@ -278,6 +278,11 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     const before = (request: Envelope, connection: string): Promise<Envelope> => operation(async () => {
         const params = record(request.params);
         const queueRoot = roots.get(string(params.threadId) ?? '');
+        if (queueRoot && request.method === 'thread/settings/update' && params.serviceTier !== undefined) {
+            if (request.id === undefined) throw new Error('Settings mutations require a JSON-RPC request ID');
+            await queueRoot.applyNativeSettings(params);
+            return { id: request.id, result: {} };
+        }
         if (queueRoot && ['thread/queue/add', 'thread/queue/update', 'thread/queue/delete',
             'thread/queue/reorder', 'thread/queue/start'].includes(request.method ?? '')) {
             if (request.id === undefined) throw new Error('Queue mutations require a JSON-RPC request ID');
@@ -317,8 +322,11 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             if (request.method !== 'thread/resume') {
                 runtime.pendingCreations = [...runtime.pendingCreations ?? [], root.session.sessionId]; await persist();
             }
-            reservations.set(key(connection, request), { root, resumeId: request.method === 'thread/resume' ? threadId : undefined });
-            return { ...request, params: root.config({ ...params, ...(request.method === 'thread/fork' ? { deferGoalContinuation: true } : {}) }) };
+            const resolved = request.method === 'thread/resume'
+                ? await inheritedResumeTier(control, params, root.session.getMetadata()?.codexServiceTierExplicit, cwd) : params;
+            reservations.set(key(connection, request), { root, resumeId: request.method === 'thread/resume' ? threadId : undefined,
+                serviceTierExplicit: params.serviceTier !== undefined ? true : request.method === 'thread/resume' ? undefined : false });
+            return { ...request, params: root.config({ ...resolved, ...(request.method === 'thread/fork' ? { deferGoalContinuation: true } : {}) }) };
         } catch (error) { prepared.delete(root); await root.close(true); throw error; }
     });
     const after = (request: Envelope, response: Envelope, connection: string): Promise<void | Envelope[]> => operation(async () => {
@@ -329,7 +337,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== reservation.root.session.sessionId);
                 await persist(); prepared.delete(reservation.root); await reservation.root.close(true); return;
             }
-            await bind(reservation.root, record(response.result), true, undefined, request.method === 'thread/start', record(request.params).serviceTier !== undefined ? true : undefined);
+            await bind(reservation.root, record(response.result), true, undefined, request.method === 'thread/start', reservation.serviceTierExplicit);
         } else if (request.method === 'thread/archive' && !response.error) {
             const root = roots.get(string(record(request.params).threadId) ?? ''); if (root) await end(root, false);
         } else if (request.method === 'thread/queue/delete' && !response.error && record(response.result).deleted === true) {
@@ -370,7 +378,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         assertRunning();
         // Legacy model/list stays bound to startup configuration. Newer native
         // versions use provider-scoped discovery and do not rely on this snapshot.
-        try { if (control.usesStartupModelCatalog()) catalogProvider = string((await control.readConfig({ includeLayers: false })).config.model_provider) ?? 'openai'; }
+        try { if (control.usesStartupModelCatalog()) catalogProvider = string((await control.readConfig({ cwd: launch.cwd, includeLayers: false })).config.model_provider) ?? 'openai'; }
         catch { logger.debug('[Codex shared] catalog provider snapshot unavailable'); }
         assertRunning();
         control.setTransportAbandonedHandler(reconnectControl);
@@ -413,7 +421,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 await reserveRecord(root, threadId); return root;
             });
             const resumeParams = await inheritedResumeTier(control, launch.threadParams, root.session.getMetadata()?.codexServiceTierExplicit, launch.cwd);
-            const tierContext = resumeTierContext(resumeParams, thread, control.supportsProviderScopedModels());
+            const tierContext = resumeTierContext(resumeParams, thread, control.retainsResumeModelProvider());
             const downgraded = launch.threadParams.serviceTier === 'ultrafast'
                 && !await isUltrafastAvailable(control, tierContext.model, launch.cwd, Date.now() + 10_000, tierContext.modelProvider, catalogProvider);
             const params = root.config({ ...resumeParams, ...(downgraded ? { serviceTier: null } : {}), threadId, excludeTurns: true });

@@ -37,6 +37,7 @@ vi.mock('../codexAppServerClient', () => ({
         async readConfig() { return { config: { model_provider: 'openai' } }; }
         async listModels() { return { data: [{ id: 'mock', isDefault: true, serviceTiers: [{ id: 'ultrafast' }] }, { id: 'standard-only' }] }; }
         async request(method: string, params: Record<string, unknown> = {}) {
+            if (method === 'experimentalFeature/list') return { data: [{ name: 'ultrafast_mode', enabled: true }] };
             if (method === 'thread/read' || method === 'thread/resume') return { ...this.settings, thread: structuredClone(this.thread) };
             if (method === 'thread/list') return { data: [] };
             if (method === 'thread/queue/list') return { data: this.queue };
@@ -1519,4 +1520,51 @@ it('uses provider-scoped native discovery for an attached modern engine', async 
     const catalog = vi.spyOn(f.root.client, 'listModels');
     expect((await f.root.applySettings({ model: 'mock' })).applied.serviceTier).toBe('ultrafast');
     expect(catalog).toHaveBeenCalledWith({ includeHidden: true, modelProvider: 'provider-a' });
+});
+
+it('confirms an identical tier from a fresh snapshot without requiring a duplicate event', async () => {
+    const f = await fixture(); await f.root.activate();
+    await f.root.applySettings({ serviceTier: 'ultrafast' });
+    const request = vi.spyOn(f.root.client, 'request');
+    await f.root.applySettings({ serviceTier: 'ultrafast' });
+    expect(request).toHaveBeenCalledWith('thread/resume', { threadId: 'thread', excludeTurns: true });
+    expect(request.mock.calls.some(([method]) => method === 'thread/settings/update')).toBe(false);
+    expect(f.metadata().codexServiceTierExplicit).toBe(true);
+});
+it('pins inherited Standard when an explicit identical selection has no native event', async () => {
+    const f = await fixture(); await f.root.activate();
+    await f.root.client.request('thread/settings/update', { threadId: 'thread', serviceTier: null });
+    expect(f.metadata().codexServiceTierExplicit).toBe(false);
+    const request = vi.spyOn(f.root.client, 'request');
+    await f.root.applySettings({ serviceTier: 'standard' });
+    expect(request.mock.calls.some(([method]) => method === 'thread/settings/update')).toBe(false);
+    expect(f.metadata().codexServiceTierExplicit).toBe(true);
+});
+it('confirms Standard when the catalog advertises Ultrafast but effective thread features disable it', async () => {
+    const f = await fixture(); await f.root.activate();
+    const original = f.root.client.request.bind(f.root.client);
+    vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'experimentalFeature/list') return { data: [{ name: 'ultrafast_mode', enabled: false }] } as never;
+        return original(method, params);
+    });
+    expect((await f.root.applySettings({ serviceTier: 'ultrafast' })).applied.serviceTier).toBe('standard');
+    expect(f.events).toHaveBeenCalledWith({ type: 'message', message: 'Ultrafast is disabled in the current Codex configuration; changed to Standard.' });
+});
+it('persists confirmed tier intent from a native frontend without pinning initial snapshots', async () => {
+    const f = await fixture(); await f.root.activate();
+    f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: { serviceTier: 'priority' } });
+    expect(f.metadata().codexServiceTierExplicit).toBe(false);
+    await f.root.applyNativeSettings({ threadId: 'thread', serviceTier: 'ultrafast' });
+    expect(f.metadata().codexServiceTierExplicit).toBe(true);
+    expect(f.root.freshParams().serviceTier).toBe('ultrafast');
+});
+it('does not pin a native tier when its write is rejected', async () => {
+    const f = await fixture(); await f.root.activate();
+    const original = f.root.client.request.bind(f.root.client);
+    vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/settings/update') throw new Error('write rejected');
+        return original(method, params);
+    });
+    await expect(f.root.applyNativeSettings({ threadId: 'thread', serviceTier: 'priority' })).rejects.toThrow('write rejected');
+    expect(f.metadata().codexServiceTierExplicit).toBe(false);
 });

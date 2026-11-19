@@ -1,5 +1,5 @@
 import { fromCodexServiceTier, toCodexServiceTier } from '@hapi/protocol';
-import { isUltrafastAvailable, ULTRAFAST_FALLBACK_NOTICE } from '../utils/serviceTier';
+import { isUltrafastAvailable, isUltrafastEnabled, ULTRAFAST_FALLBACK_NOTICE, ULTRAFAST_DISABLED_NOTICE } from '../utils/serviceTier';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -593,7 +593,7 @@ export class SharedCodexRoot {
         const config = SettingsSchema.parse(raw);
         // The existing live-settings API accepts null as a Standard reset.
         if (config.serviceTier === null) config.serviceTier = 'standard';
-        let downgraded = false;
+        let fallbackNotice: string | undefined;
         if (config.serviceTier === 'ultrafast' || config.model && this.settings.serviceTier === 'ultrafast' && config.serviceTier === undefined) {
             const discoveryDeadline = Math.min(deadline - 15_000, Date.now() + 10_000);
             for (;;) {
@@ -606,7 +606,10 @@ export class SharedCodexRoot {
                 if ((!config.model && model !== this.settings.model) || provider !== this.modelProvider) continue;
                 // Include the validated model in the write and its native confirmation.
                 if (typeof model === 'string') config.model = model;
-                if (!available) { config.serviceTier = 'standard'; downgraded = true; }
+                if (!available) { config.serviceTier = 'standard'; fallbackNotice = ULTRAFAST_FALLBACK_NOTICE; }
+                else if (!await isUltrafastEnabled(this.client, this.threadId)) {
+                    config.serviceTier = 'standard'; fallbackNotice = ULTRAFAST_DISABLED_NOTICE;
+                }
                 break;
             }
         }
@@ -625,7 +628,6 @@ export class SharedCodexRoot {
             if (config.modelReasoningEffort === null) throw new Error('Codex did not report a default reasoning effort; choose an explicit effort');
         }
         if (Date.now() >= deadline - 15_000) throw new Error('Settings discovery timed out; settings were not changed');
-        const revision = this.settingsRevision;
         const permission = config.permissionMode && resolveCodexPermissionModeConfig(config.permissionMode);
         const params = { threadId: this.threadId,
             ...(config.model ? { model: config.model } : {}),
@@ -639,10 +641,46 @@ export class SharedCodexRoot {
                 developer_instructions: null
             } } } : {})
         };
+        await this.writeNativeSettings(params);
+        if (config.serviceTier !== undefined) this.markTierExplicit();
+        if (fallbackNotice) this.notice(fallbackNotice);
+        this.alive(); return { applied: this.settings };
+    }
+    private markTierExplicit(): void {
+        this.serviceTierExplicit = true;
+        this.session.updateMetadata(metadata => ({ ...metadata, codexServiceTierExplicit: true }));
+    }
+    /** Native frontends share the same confirmation and explicit-intent rules. */
+    applyNativeSettings(params: Record<string, unknown>): Promise<void> {
+        const operation = this.settingsWrites.catch(() => {}).then(async () => {
+            let disabled = false;
+            if (params.serviceTier === 'ultrafast' && !await isUltrafastEnabled(this.client, this.threadId)) {
+                params = { ...params, serviceTier: null }; disabled = true;
+            }
+            // Other native fields may use public null-as-unchanged semantics.
+            // Only this request's tier is relevant to HAPI's inherited intent.
+            await this.writeNativeSettings(params, { serviceTier: params.serviceTier });
+            this.markTierExplicit();
+            if (disabled) this.notice(ULTRAFAST_DISABLED_NOTICE);
+        });
+        this.settingsWrites = operation;
+        return operation;
+    }
+    private async writeNativeSettings(params: Record<string, unknown>, expected = params): Promise<void> {
+        if (this.closed || this.stopping) throw new Error('Codex execution is stopping');
+        // Native suppresses identical notifications. Verify a current loaded
+        // snapshot rather than waiting for an event that will never be emitted.
+        const comparable = Object.fromEntries(Object.entries(params).filter(([key, value]) => value !== null || key === 'serviceTier'));
+        if (settingsMatch(this.settingsNative, comparable)) {
+            const snapshot = record(await this.client.request('thread/resume', { threadId: this.threadId, excludeTurns: true }));
+            this.acceptSettings(snapshot);
+            if (settingsMatch(this.settingsNative, comparable)) return;
+        }
+        const revision = this.settingsRevision;
         let changed!: () => void;
         let timer: ReturnType<typeof setTimeout> | undefined;
         const accepted = new Promise<void>((resolve, reject) => {
-            changed = () => { if (this.settingsRevision > revision && settingsMatch(this.settingsNative, params)) resolve(); };
+            changed = () => { if (this.settingsRevision > revision && settingsMatch(this.settingsNative, expected)) resolve(); };
             this.settingsListeners.add(changed);
             timer = setTimeout(() => reject(new Error('Native settings update is not confirmed; reconnect before retrying')), 15_000);
         });
@@ -652,16 +690,10 @@ export class SharedCodexRoot {
             // The RPC only acknowledges queueing the settings operation. The
             // native notification, not our submitted candidate, establishes state.
             await accepted;
-            if (config.serviceTier !== undefined) {
-                this.serviceTierExplicit = true;
-                this.session.updateMetadata(metadata => ({ ...metadata, codexServiceTierExplicit: true }));
-            }
-            if (downgraded) this.notice(ULTRAFAST_FALLBACK_NOTICE);
-            this.alive(); return { applied: this.settings };
         } finally { clearTimeout(timer); this.settingsListeners.delete(changed); }
     }
     async confirmUltrafastLaunch(): Promise<void> {
-        if (this.settings.serviceTier === 'ultrafast') return;
+        if (this.settings.serviceTier === 'ultrafast' && await isUltrafastEnabled(this.client, this.threadId)) return;
         await this.applySettings({ serviceTier: 'standard' });
         this.notice('Codex did not apply Ultrafast; changed to Standard.');
     }

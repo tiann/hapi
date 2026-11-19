@@ -1,5 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
-import { isUltrafastAvailable, inheritedResumeTier, resumeTierContext } from './serviceTier';
+import { isUltrafastAvailable, isUltrafastEnabled, inheritedResumeTier, resumeTierContext } from './serviceTier';
+
+it('reads effective thread feature state across native pagination', async () => {
+    const request = vi.fn().mockResolvedValueOnce({ data: [{ name: 'fast_mode', enabled: true }], nextCursor: 'next' })
+        .mockResolvedValueOnce({ data: [{ name: 'ultrafast_mode', enabled: false }] });
+    expect(await isUltrafastEnabled({ request }, 'native-thread')).toBe(false);
+    expect(request).toHaveBeenLastCalledWith('experimentalFeature/list', { threadId: 'native-thread', limit: 100, cursor: 'next' });
+});
+it('does not infer feature enablement when native feature discovery is unavailable', async () => {
+    await expect(isUltrafastEnabled({ request: vi.fn().mockResolvedValue({ data: [] }) }, 'thread')).rejects.toThrow('did not report');
+});
 
 describe('Ultrafast model/account availability', () => {
     const models = [

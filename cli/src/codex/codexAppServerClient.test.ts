@@ -333,6 +333,12 @@ describe('CodexAppServerClient process cwd', () => {
 
 it.each([
     ['codex_cli_rs/0.159.3', false, true],
+    ['hapi/0.163.0', false, true],
+    ['hapi/0.164.0', false, false],
+    ['hapi/0.165.0', false, false],
+    ['hapi/0.166.0', false, false],
+    ['hapi/0.168.0', false, false],
+    ['hapi/0.169.0', true, false],
     ['codex_cli_rs/0.170.0 (Windows)', true, false],
     ['hapi/0.170.0 (Windows)', true, false],
     ['hapi/0.159.3 (Windows)', false, true],
@@ -351,5 +357,7 @@ it.each([
         await client.initialize({ clientInfo: { name: 'hapi', version: '1' }, capabilities: { experimentalApi: true } });
         expect(client.supportsProviderScopedModels()).toBe(scoped);
         expect(client.usesStartupModelCatalog()).toBe(startup);
+        const minor = userAgent?.match(/\/0\.(\d+)/)?.[1];
+        expect(client.retainsResumeModelProvider()).toBe(Boolean(scoped || (minor && Number(minor) >= 166 && userAgent?.startsWith('hapi/'))));
     } finally { await client.disconnect(); }
 });

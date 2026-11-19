@@ -2,6 +2,31 @@ import type { CodexAppServerClient } from '../codexAppServerClient';
 
 /** Validate against the same native account/provider that will execute the thread. */
 export const ULTRAFAST_FALLBACK_NOTICE = 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.';
+export const ULTRAFAST_DISABLED_NOTICE = 'Ultrafast is disabled in the current Codex configuration; changed to Standard.';
+
+/** Selected tier notifications do not prove the native execution feature is enabled. */
+export async function isUltrafastEnabled(client: Pick<CodexAppServerClient, 'request'>, threadId: string): Promise<boolean> {
+    const seen = new Set<string>();
+    let cursor: string | undefined;
+    const deadline = Date.now() + 10_000;
+    do {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) throw new Error('Codex feature discovery timed out; settings were not changed');
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        let page: { data: Array<{ name: string; enabled: boolean }>; nextCursor?: string | null };
+        try {
+            page = await Promise.race([client.request<typeof page>(
+                'experimentalFeature/list', { threadId, limit: 100, ...(cursor ? { cursor } : {}) }),
+                new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Codex feature discovery timed out; settings were not changed')), remaining); })]);
+        } finally { clearTimeout(timer); }
+        const feature = page.data.find(entry => entry.name === 'ultrafast_mode');
+        if (feature) return feature.enabled === true;
+        cursor = page.nextCursor ?? undefined;
+        if (cursor && seen.has(cursor)) throw new Error('Codex feature pagination did not advance; settings were not changed');
+        if (cursor) seen.add(cursor);
+    } while (cursor);
+    throw new Error('Codex did not report effective Ultrafast enablement; settings were not changed');
+}
 
 /** Match native has_model_resume_override before choosing a catalog context. */
 export function resumeTierContext(params: Record<string, unknown>, saved: Record<string, unknown>, providerRetained = false): { model: unknown; modelProvider?: string } {
