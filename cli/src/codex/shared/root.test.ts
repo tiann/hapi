@@ -74,6 +74,60 @@ afterEach(async () => {
     finally { vi.useRealTimers(); }
 });
 
+it('publishes Ultrafast only after an effective snapshot, not a selected-settings notification', async () => {
+    const f = await fixture(); await f.root.activate();
+    f.root.acceptSettings({ model: 'mock', serviceTier: 'default' });
+    const keepAlive = vi.spyOn(f.session, 'keepAlive');
+    f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: { model: 'mock', serviceTier: 'ultrafast' } });
+    await f.drain();
+    (f.root as unknown as { alive(): void }).alive();
+    expect(keepAlive.mock.lastCall?.[2]?.serviceTier).toBe('standard');
+    expect(f.root.hasUltrafastTier).toBe(true);
+    f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' });
+    (f.root as unknown as { alive(): void }).alive();
+    expect(keepAlive.mock.lastCall?.[2]?.serviceTier).toBe('ultrafast');
+});
+
+it.each(['web', 'native'])('does not restore deferred Plan after an explicit Default change through %s', async origin => {
+    const f = await fixture(); await f.root.activate({ collaborationMode: 'plan' }, true, true);
+    if (origin === 'web') await f.root.applySettings({ collaborationMode: 'default' });
+    else await f.root.applyNativeSettings({ collaborationMode: { mode: 'default', settings: { model: 'mock', reasoning_effort: null, developer_instructions: null } } });
+    expect(f.root.needsTierConfirmation).toBe(true);
+    await f.root.applySettings({ serviceTier: 'standard' });
+    expect(f.native.settings.collaborationMode).toMatchObject({ mode: 'default' });
+    expect(f.root.needsTierConfirmation).toBe(false);
+});
+
+it.each([false, true])('rejects new queue input if tier confirmation pauses after the async preflight (existing batch %s)', async batch => {
+    const f = await fixture(); await f.root.activate();
+    if (batch) { f.submit('already queued', 'first'); await vi.waitFor(() => expect(f.native.queue).toHaveLength(1)); }
+    const original = f.root.client.request.bind(f.root.client);
+    vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        const result = await original(method, params);
+        if (method === 'thread/queue/list') f.root.beginTierConfirmation();
+        return result;
+    });
+    f.submit('must remain retryable', 'blocked');
+    await vi.waitFor(async () => expect((await f.ledger()).entries.blocked.state).toBe('rejected'));
+    expect(f.native.queue).toHaveLength(batch ? 1 : 0);
+    if (batch) expect(f.native.queue[0].input).toEqual([{ type: 'text', text: 'already queued' }]);
+});
+
+it.each(['current', 'latest', 'clear'])('passes Plan into activation and returns the recoverable %s child without a second settings write', async kind => {
+    const initialSettings = vi.fn(async () => { throw new Error('second settings write would archive or orphan the recoverable child'); });
+    const end = vi.fn(async () => {});
+    const create = vi.fn<RootHost['create']>(async () => ({ threadId: 'child', session: { sessionId: 'recoverable-child' }, initialSettings,
+        readThread: async () => ({ turns: [{ id: 'completed', status: 'completed', items: [] }] }) } as unknown as SharedCodexRoot));
+    const f = await fixture({ create, end });
+    f.native.thread.turns = [{ id: 'completed', status: 'completed', items: [] }];
+    await f.root.refresh(); await f.root.activate({ collaborationMode: 'plan' });
+    const result = kind === 'clear' ? await f.rpc.get(RPC_METHODS.ClearConversation)!({})
+        : await f.rpc.get(RPC_METHODS.ForkConversation)!(kind === 'latest' ? { latestCompleted: true } : {});
+    expect(result).toMatchObject({ sessionId: 'recoverable-child' });
+    expect(create.mock.calls[0][3]).toEqual({ collaborationMode: 'plan' });
+    expect(initialSettings).not.toHaveBeenCalled(); expect(end).not.toHaveBeenCalled();
+});
+
 async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; create?: RootHost['create'];
     attached?: boolean; beforeSubscribe?: RootHost['beforeSubscribe']; validateHistory?: RootHost['validateHistory']; initialState?: AgentState }) {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-shared-root-'));
@@ -431,7 +485,7 @@ describe('historical fork during generation', () => {
         const request = vi.spyOn(f.root.client, 'request')
         const fork = f.rpc.get(RPC_METHODS.ForkConversation)!
         await expect(fork({ messageLocalId: 'local-earlier' })).resolves.toEqual({ nativeSessionId: 'child', sessionId: 'child-session' })
-        expect(create).toHaveBeenCalledWith('thread/fork', expect.objectContaining({ threadId: 'thread', beforeTurnId: 'earlier' }), f.root)
+        expect(create).toHaveBeenCalledWith('thread/fork', expect.objectContaining({ threadId: 'thread', beforeTurnId: 'earlier' }), f.root, { collaborationMode: undefined })
         expect(f.state().steeringActive).toBe(true)
         expect(request.mock.calls.some(([method]) => method === 'turn/interrupt')).toBe(false)
         await expect(fork({})).rejects.toThrow('busy')
@@ -967,7 +1021,7 @@ describe('batch history fork boundaries', () => {
         await vi.waitFor(() => expect(f.metadata().conversationHistoryPoints?.['original-A']).toBe(true));
         const fork = f.rpc.get(RPC_METHODS.ForkConversation)!;
         expect(await fork({ messageLocalId: 'original-A' })).toEqual({ nativeSessionId: 'child-thread', sessionId: 'child-session' });
-        expect(create).toHaveBeenCalledWith('thread/fork', expect.objectContaining({ threadId: 'thread', beforeTurnId: 'batch-turn' }), f.root);
+        expect(create).toHaveBeenCalledWith('thread/fork', expect.objectContaining({ threadId: 'thread', beforeTurnId: 'batch-turn' }), f.root, { collaborationMode: undefined });
         if (count === 2) {
             await expect(fork({ messageLocalId: 'original-B' })).rejects.toThrow('Cannot cut inside');
         }
@@ -1223,7 +1277,7 @@ describe('fork preview boundary answers', () => {
         await expect(fork({ messageLocalId: 'original-A' })).resolves.toEqual({
             nativeSessionId: 'child-thread', sessionId: 'child-session'
         });
-        expect(create).toHaveBeenCalledWith('thread/fork', expect.objectContaining({ threadId: 'thread', beforeTurnId: 'two' }), f.root);
+        expect(create).toHaveBeenCalledWith('thread/fork', expect.objectContaining({ threadId: 'thread', beforeTurnId: 'two' }), f.root, { collaborationMode: undefined });
     });
 });
 

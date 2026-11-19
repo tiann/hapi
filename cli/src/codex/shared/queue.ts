@@ -80,7 +80,8 @@ export class SharedCodexQueue {
         private readonly file: string, private readonly consumed: (ids: string[], steered?: boolean) => void,
         private readonly uncertain: (ids: string[]) => void,
         private readonly mirror?: (id: string, input: QueueInput | null) => void,
-        private readonly requeued?: (ids: string[]) => Promise<unknown>) {}
+        private readonly requeued?: (ids: string[]) => Promise<unknown>,
+        private readonly assertInputAdmission: () => void = () => {}) {}
 
     async load(): Promise<void> {
         let raw: unknown;
@@ -427,6 +428,7 @@ export class SharedCodexQueue {
                 }
                 await this.save();
             }
+            if (method === 'thread/queue/add' || method === 'thread/queue/start') this.assertInputAdmission();
             const response = await this.client.request(method, values);
             if (method === 'thread/queue/delete' && nativeId && record(response).deleted === true) await this.deletedLocked(nativeId);
             return response;
@@ -437,7 +439,7 @@ export class SharedCodexQueue {
         const nativeId = string(values.queuedSubmissionId);
         const input = InputSchema.parse(values.input);
         const batch = nativeId ? Object.values(this.batches).find(candidate => candidate.nativeId === nativeId) : undefined;
-        if (!batch) return await this.client.request('thread/queue/update', values);
+        if (!batch) { this.assertInputAdmission(); return await this.client.request('thread/queue/update', values); }
         // Persist the edit proposal before the RPC so an event arriving first can prove replacement.
         const previousCurrent = batch.current;
         const applied = this.currentVersion(batch);
@@ -455,6 +457,7 @@ export class SharedCodexQueue {
         if (batch.state === 'queued') batch.state = 'unknown';
         await this.save();
         try {
+            this.assertInputAdmission();
             const response = await this.client.request('thread/queue/update', values);
             this.validateUpdate(response, batch, input);
             this.supersedeOlder(batch, proposal);
@@ -505,6 +508,7 @@ export class SharedCodexQueue {
         const entry: Entry = { state: 'unknown', input };
         this.entries[id] = entry; await this.save();
         try {
+            this.assertInputAdmission();
             const response = z.object({ queuedSubmission: SubmissionSchema }).parse(await this.client.request('thread/queue/add', {
                 threadId: this.threadId, input, clientUserMessageId: id
             }));
@@ -554,6 +558,7 @@ export class SharedCodexQueue {
         if (batch.state === 'queued') batch.state = 'unknown';
         await this.save();
         try {
+            this.assertInputAdmission();
             const response = await this.client.request('thread/queue/update', {
                 threadId: this.threadId, queuedSubmissionId: batch.nativeId, input: proposal.input
             });
@@ -592,6 +597,7 @@ export class SharedCodexQueue {
         this.batches[clientId] = batch; entry.batchId = clientId;
         await this.save();
         try {
+            this.assertInputAdmission();
             const response = z.object({ queuedSubmission: SubmissionSchema }).parse(await this.client.request('thread/queue/add', {
                 threadId: this.threadId, input, clientUserMessageId: clientId
             }));

@@ -37,7 +37,7 @@ export type RootHost = {
     beforeSubscribe?(threadId: string): Promise<void>;
     validateHistory?(threadId: string, thread: unknown): Promise<void>;
     settingsFor(threadId: string): Record<string, unknown> | undefined;
-    create(method: 'thread/start' | 'thread/fork', params: Record<string, unknown>, parent?: SharedCodexRoot): Promise<SharedCodexRoot>;
+    create(method: 'thread/start' | 'thread/fork', params: Record<string, unknown>, parent?: SharedCodexRoot, initialOptions?: SharedLaunchOptions): Promise<SharedCodexRoot>;
     end(root: SharedCodexRoot, nativeArchive?: boolean, reason?: 'unavailable' | 'history-changed' | 'archived'): Promise<void>;
 };
 const SettingsSchema = z.object({
@@ -87,7 +87,7 @@ export class SharedCodexRoot {
     private modelProvider?: string;
     private serviceTierExplicit = false;
     private tierConfirmationPending = false;
-    get hasUltrafastTier(): boolean { return this.settings.serviceTier === 'ultrafast'; }
+    get hasUltrafastTier(): boolean { return this.settingsNative.serviceTier === 'ultrafast'; }
     private tierAdmissionPending = false;
     beginTierConfirmation(): void { this.tierAdmissionPending = true; this.publishSteering(); }
     get needsTierConfirmation(): boolean { return this.tierAdmissionPending || this.tierConfirmationPending; }
@@ -115,7 +115,7 @@ export class SharedCodexRoot {
             if (method === 'serverRequest/resolved') {
                 this.permissions?.resolved(string(record(params).threadId) ?? '', record(params).requestId); return;
             }
-            if (method === 'thread/settings/updated' && record(params).threadId === this.threadId) this.acceptSettings(record(record(params).threadSettings));
+            if (method === 'thread/settings/updated' && record(params).threadId === this.threadId) this.acceptSettings(record(record(params).threadSettings), false);
             if (record(params).threadId === this.threadId) {
                 if (method === 'turn/started') {
                     this.turnRevision++; this.currentTurn = string(record(record(params).turn).id); this.interrupted = false;
@@ -304,7 +304,7 @@ export class SharedCodexRoot {
         if (this.threadId && this.threadId !== threadId) throw new Error('Cannot retarget a shared HAPI session');
         this.threadId = threadId;
         this.queue = new SharedCodexQueue({ request: <T = unknown>(method: string, params?: unknown): Promise<T> => {
-            if (method === 'turn/steer' && (this.closed || this.stopping || this.needsTierConfirmation)) {
+            if (['turn/steer', 'thread/queue/start'].includes(method) && (this.closed || this.stopping || this.needsTierConfirmation)) {
                 return Promise.reject(new Error('Service tier confirmation is pending or execution is stopping; input was not steered.'));
             }
             return this.client.request<T>(method, params);
@@ -315,7 +315,9 @@ export class SharedCodexRoot {
                 this.publishCompaction();
             }, ids => this.session.emitSteerIndeterminate(ids),
             (id, input) => this.session.syncNativeQueuedMessage(id, input === null ? null : inputText(input)),
-            ids => this.session.setSteerDeliveryState(ids, 'queued'));
+            ids => this.session.setSteerDeliveryState(ids, 'queued'), () => {
+                if (this.closed || this.stopping || this.needsTierConfirmation) throw new Error('Service tier confirmation is pending or execution is stopping; input was not submitted.');
+            });
         await this.queue.load();
         this.projection = new SharedCodexProjection(this.session, threadId, (id, content) => this.queue.committed(id, content),
             undefined, async () => record(await this.client.request('thread/read', { threadId, includeTurns: false })).thread,
@@ -336,7 +338,7 @@ export class SharedCodexRoot {
             response = record(await this.client.request('thread/resume', { threadId }));
         }
         this.modelProvider = string(response.modelProvider) ?? string(record(response.thread).modelProvider);
-        this.acceptSettings(response); this.acceptSettings(this.host.settingsFor(threadId) ?? {});
+        this.acceptSettings(response); this.acceptSettings(this.host.settingsFor(threadId) ?? {}, false);
         if (this.hasConfirmedStandardTier && this.session.getMetadata()?.codexTierConfirmationPending) {
             this.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: false }));
         }
@@ -392,7 +394,7 @@ export class SharedCodexRoot {
         this.publishedPlanId = id;
         this.session.updateAgentState(state => ({ ...state, codexPlanProposalId: id }));
     }
-    acceptSettings(value: Record<string, unknown>): void {
+    acceptSettings(value: Record<string, unknown>, effective = true): void {
         if (typeof value.model !== 'string') return;
         this.settingsRevision++;
         if ('collaborationMode' in value && 'sandboxPolicy' in value) this.settingsNotification = value;
@@ -403,7 +405,9 @@ export class SharedCodexRoot {
             modelReasoningEffort: string(value.effort ?? value.reasoningEffort) ?? null,
             ...(sandbox ? { permissionMode: sandbox === 'dangerFullAccess' ? 'yolo' : sandbox === 'readOnly' ? 'read-only'
                 : this.settingsNative.approvalsReviewer === 'auto_review' ? 'autoReview' : 'default' } : {}),
-            ...('serviceTier' in value ? { serviceTier: fromCodexServiceTier(value.serviceTier) } : {}),
+            ...('serviceTier' in value && (effective || value.serviceTier !== 'ultrafast')
+                ? { serviceTier: fromCodexServiceTier(value.serviceTier) }
+                : !effective && this.settings.serviceTier === 'ultrafast' && value.model !== this.settings.model ? { serviceTier: null } : {}),
             ...('collaborationMode' in value ? { collaborationMode: record(value.collaborationMode).mode === 'plan' ? 'plan' as const : 'default' as const } : {})
         };
         for (const listener of this.settingsListeners) listener();
@@ -603,7 +607,7 @@ export class SharedCodexRoot {
                     const response = record(await this.client.request('thread/resume', { threadId: this.threadId, excludeTurns: true }));
                     const observedSettings = this.settingsRevision !== settingsRevision;
                     this.acceptSettings(response);
-                    if (!observedSettings) this.acceptSettings(this.host.settingsFor(this.threadId) ?? {});
+                    if (!observedSettings) this.acceptSettings(this.host.settingsFor(this.threadId) ?? {}, false);
                     this.projection.reset(); await this.refresh(); this.queue.replay(); await this.refreshChildren(true);
                     return;
                 } catch (error) {
@@ -629,7 +633,7 @@ export class SharedCodexRoot {
         // The existing live-settings API accepts null as a Standard reset.
         if (config.serviceTier === null) config.serviceTier = 'standard';
         let fallbackNotice: string | undefined;
-        if (config.serviceTier === 'ultrafast' || config.model && this.settings.serviceTier === 'ultrafast' && config.serviceTier === undefined) {
+        if (config.serviceTier === 'ultrafast' || config.model && this.hasUltrafastTier && config.serviceTier === undefined) {
             const discoveryDeadline = Math.min(deadline - 15_000, Date.now() + 10_000);
             for (;;) {
                 const model = config.model ?? this.settings.model;
@@ -679,6 +683,7 @@ export class SharedCodexRoot {
         };
         const confirmsTier = config.serviceTier !== undefined || this.hasUltrafastTier;
         await this.writeNativeSettings(params, params, deadline, operationId);
+        if (config.collaborationMode) this.pendingLaunchCollaborationMode = undefined;
         if (explicitTier) this.markTierExplicit();
         if (fallbackNotice) this.notice(fallbackNotice);
         if (confirmsTier) this.completeTierConfirmation();
@@ -746,6 +751,7 @@ export class SharedCodexRoot {
                 ...(resolved.params.collaborationMode ? { collaborationMode: resolved.params.collaborationMode } : {}),
                 ...(effectiveModel ? { model: effectiveModel } : {})
             }, deadline, operationId);
+            if (resolved.params.collaborationMode) this.pendingLaunchCollaborationMode = undefined;
             if (explicitTier) this.markTierExplicit();
             if (confirmsTier) this.completeTierConfirmation();
             this.alive();
@@ -1000,7 +1006,7 @@ export class SharedCodexRoot {
                 // Shared children hydrate directly from native fork history, never a moving Hub tail.
                 const cutoff = lastTurnId ? this.verifyPinnedTurn(turns, lastTurnId) : latestCompletedForkCutoff(turns);
                 const child = await this.host.create('thread/fork', { ...this.freshParams(), threadId: this.threadId,
-                    lastTurnId: cutoff }, this);
+                    lastTurnId: cutoff }, this, { collaborationMode: this.settings.collaborationMode });
                 try {
                     const expected = turns.slice(0, turns.findIndex(turn => turn.id === cutoff) + 1).map(turn => string(turn.id));
                     const inherited = await child.readThread(child.threadId, true);
@@ -1008,7 +1014,6 @@ export class SharedCodexRoot {
                     if (actual.length !== expected.length || actual.some((id, index) => id !== expected[index])) {
                         throw new Error('Native fork history does not match the completed-turn cutoff');
                     }
-                    await child.initialSettings({ collaborationMode: this.settings.collaborationMode });
                     return { nativeSessionId: child.threadId, sessionId: child.session.sessionId, completedTurnId: cutoff };
                 } catch (error) {
                     await this.host.end(child).catch(cleanup => logger.debug('[Codex shared] invalid fork cleanup failed', cleanup));
@@ -1028,8 +1033,7 @@ export class SharedCodexRoot {
                 }
             }
             const child = await this.host.create('thread/fork', { ...this.freshParams(), threadId: this.threadId,
-                ...(beforeTurnId ? { beforeTurnId } : {}) }, this);
-            await child.initialSettings({ collaborationMode: this.settings.collaborationMode });
+                ...(beforeTurnId ? { beforeTurnId } : {}) }, this, { collaborationMode: this.settings.collaborationMode });
             return { nativeSessionId: child.threadId, sessionId: child.session.sessionId };
         });
         rpc.registerHandler(RPC_METHODS.RewindConversation, async () => {
@@ -1133,8 +1137,7 @@ export class SharedCodexRoot {
     private notice(message: string): void { this.session.sendSessionEvent({ type: 'message', message }); }
     private async newConversation(): Promise<SharedCodexRoot> {
         if (this.host.attached) throw new Error('Create new conversations in the owning desktop, then attach them explicitly');
-        const child = await this.host.create('thread/start', this.freshParams());
-        await child.initialSettings({ collaborationMode: this.settings.collaborationMode }); return child;
+        return this.host.create('thread/start', this.freshParams(), undefined, { collaborationMode: this.settings.collaborationMode });
     }
     private async command(text: string): Promise<string | null> {
         const command = text.trim();
