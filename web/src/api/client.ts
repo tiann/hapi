@@ -1,4 +1,5 @@
 import type { BranchConversationRequest, BranchConversationResponse } from '@hapi/protocol/apiTypes'
+import { isAuthRejectionStatus } from '@/lib/authConnection'
 import type {
     AttachmentMetadata,
     AbortChunkedUploadResponse,
@@ -346,7 +347,7 @@ export class ApiClient {
             catch (error) {
                 // Headers already establish a transient server failure. A partial
                 // credential rejection must still remain retryable.
-                if (res.status >= 500 || res.status === 408 || res.status === 429) {
+                if (!isAuthRejectionStatus(res.status)) {
                     throw new ApiError(`Auth failed: HTTP ${res.status} ${res.statusText}`, res.status)
                 }
                 throw error

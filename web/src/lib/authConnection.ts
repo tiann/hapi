@@ -1,6 +1,10 @@
 export const TELEGRAM_AUTH_DISABLED_MESSAGE = 'Telegram authentication is disabled. Configure TELEGRAM_BOT_TOKEN.'
 export type AuthConnectionFailure = { status?: number; diagnostic?: string }
 
+export function isAuthRejectionStatus(status: number): boolean {
+    return status === 400 || status === 401 || status === 403
+}
+
 /** A browser network error alone cannot identify which side is unavailable. */
 export function authConnectionMessage(failure: AuthConnectionFailure, isOnline: boolean): string {
     if (!isOnline) return 'Your device is offline. Reconnect to the internet to reach the hub.'

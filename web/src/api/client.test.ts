@@ -12,18 +12,18 @@ describe('ApiClient error mapping', () => {
         globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch
     })
 
-    it('propagates an aborted 401 authentication body instead of treating it as rejected credentials', async () => {
+    it.each([400, 401, 403])('propagates an aborted HTTP %s body instead of treating it as rejected credentials', async status => {
         const controller = new AbortController()
         const body = new ReadableStream({ start(stream) {
             controller.signal.addEventListener('abort', () => stream.error(controller.signal.reason), { once: true })
         } })
-        fetchMock.mockResolvedValueOnce(new Response(body, { status: 401 }))
+        fetchMock.mockResolvedValueOnce(new Response(body, { status }))
         const pending = new ApiClient('').authenticate({ accessToken: 'fixture' }, { signal: controller.signal })
         controller.abort()
         await expect(pending).rejects.toHaveProperty('name', 'AbortError')
     })
 
-    it.each([408, 429, 503])('retains HTTP %s when a transient auth response body is interrupted', async status => {
+    it.each([404, 408, 429, 503])('retains HTTP %s when a transient auth response body is interrupted', async status => {
         const body = new ReadableStream({ start(stream) { stream.error(new TypeError('connection lost')) } })
         fetchMock.mockResolvedValueOnce(new Response(body, { status }))
         await expect(new ApiClient('').authenticate({ accessToken: 'fixture' })).rejects.toMatchObject({ status })

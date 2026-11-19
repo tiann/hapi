@@ -609,7 +609,7 @@ it('keeps the explicit Telegram-disabled diagnostic actionable', async () => {
     await waitFor(() => expect(result.current.connectionError?.diagnostic).toBe(diagnostic))
 })
 
-it.each([401, 408, 429, 503])('preserves the active session when a deadline abort interrupts HTTP %s', async status => {
+it.each([400, 401, 403, 404, 408, 429, 503])('preserves the active session when a deadline abort interrupts HTTP %s', async status => {
     vi.useFakeTimers()
     const token = makeJwtWithExp(Math.floor(Date.now() / 1000) + 3600)
     h.setAuthenticateImpl((count, signal) => count === 1 ? Promise.resolve({ token, user: { id: 'u1' } }) : new Promise((_resolve, reject) => {
@@ -624,7 +624,7 @@ it.each([401, 408, 429, 503])('preserves the active session when a deadline abor
     await flushMicrotasks()
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000); await refresh })
     expect(result.current.token).toBe(token)
-    expect(result.current.connectionError).toEqual(status === 401 ? {} : { status })
+    expect(result.current.connectionError).toEqual([400, 401, 403].includes(status) ? {} : { status })
     expect(result.current.error).toBeNull()
     unmount()
 })

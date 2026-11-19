@@ -591,7 +591,7 @@ function AppInner() {
                     isReconnecting={showReconnectingBanner}
                 />
                 <RunnerVersionSkewBanner />
-                <div className="h-full min-h-0 flex flex-col">
+                <div className="h-full min-h-0 flex flex-col" style={{ paddingTop: connectionBannerHeight }}>
                     <Outlet />
                 </div>
                 <ToastContainer />

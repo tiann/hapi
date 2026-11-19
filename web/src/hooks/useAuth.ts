@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AuthProxyRedirectError } from '@/api/authProxy'
 import { ApiClient, ApiError } from '@/api/client'
 import type { AuthResponse } from '@/types/api'
-import { TELEGRAM_AUTH_DISABLED_MESSAGE, type AuthConnectionFailure } from '@/lib/authConnection'
+import { isAuthRejectionStatus, TELEGRAM_AUTH_DISABLED_MESSAGE, type AuthConnectionFailure } from '@/lib/authConnection'
 
 const AUTH_REQUEST_TIMEOUT_MS = 15_000
 
@@ -50,7 +50,7 @@ function classifyAuthError(error: unknown): AuthErrorKind {
         if (error.status === 401 && error.code === 'not_bound') {
             return 'not_bound'
         }
-        if (error.status === 400 || error.status === 401 || error.status === 403) {
+        if (isAuthRejectionStatus(error.status)) {
             return 'rejected'
         }
         return 'transient'
@@ -232,7 +232,7 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
                 // Transient network / gateway failure: schedule bounded retries.
                 // Preserve an active session even past JWT expMs so flaky networks
                 // do not dump authenticated users onto the login prompt.
-                setConnectionFailure({ source: currentSource, baseUrl, failure: error instanceof ApiError && (!controller.signal.aborted || error.status >= 500 || error.status === 408 || error.status === 429) ? { status: error.status,
+                setConnectionFailure({ source: currentSource, baseUrl, failure: error instanceof ApiError && (!controller.signal.aborted || !isAuthRejectionStatus(error.status)) ? { status: error.status,
                     ...(error.status === 503 && error.code === TELEGRAM_AUTH_DISABLED_MESSAGE ? { diagnostic: TELEGRAM_AUTH_DISABLED_MESSAGE } : {}) } : {} })
                 const attempt = transientFailureCountRef.current + 1
                 transientFailureCountRef.current = attempt
