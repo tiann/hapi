@@ -217,6 +217,20 @@ describe('buildSessionStatusData', () => {
         expect(status?.terminals).toEqual([])
     })
 
+    it('lists a linked child with only derived tool work as running', () => {
+        const child = makeSummary({
+            id: 'child',
+            active: true,
+            derivedToolWork: true,
+            metadata: { path: '/work/app', parentLink: { parentSessionId: 'parent', kind: 'peer' } },
+        })
+        const status = buildSessionStatusData({
+            sessionId: 'parent', goal: null, tasks: [], blocks: [], linkedSessions: [child],
+        })
+
+        expect(status?.subagents).toMatchObject([{ linkedSessionId: child.id, state: 'running' }])
+    })
+
     it('merges linked child sessions into subagents and deduplicates active tool blocks', () => {
         const blocks: ChatBlock[] = [
             toolBlock({

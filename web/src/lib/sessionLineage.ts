@@ -24,7 +24,7 @@ export type ChildAttentionContext = {
 }
 
 export function childIsWorking(session: SessionSummary): boolean {
-    return hasAgentForegroundWork(session) || hasRunningAttachedJob(session)
+    return hasAgentForegroundWork(session) || hasRunningAttachedJob(session) || session.derivedToolWork === true
 }
 
 export function childDemandsAttention(

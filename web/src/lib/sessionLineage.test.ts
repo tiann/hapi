@@ -95,6 +95,14 @@ describe('buildSessionLineage', () => {
 })
 
 describe('attention auto-folding predicates', () => {
+    it('counts a child with only derived tool work as working and expands its lineage', () => {
+        const child = makeSession({ id: 'child', active: true, derivedToolWork: true })
+
+        expect(childIsWorking(child)).toBe(true)
+        expect(isChildLineageExpandedByDefault([child], {})).toBe(true)
+        expect(childIsWorking({ ...child, active: false })).toBe(true)
+    })
+
     it('folds idle read settled children by default and expands when working or demanding attention', () => {
         const idleChild = makeSession({ id: 'c1', active: false })
         const workingChild = makeSession({ id: 'c2', active: true, thinking: true })
