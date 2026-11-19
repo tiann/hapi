@@ -1779,90 +1779,107 @@ describe('setSessionLastNotify / clearSessionLastNotify (#1717)', () => {
         expect(store.sessions.getSession(session.id)?.lastNotifyStatus).toBe('blocked')
     })
 
-    it('orders against the clear boundary by seq, not by two different clocks', () => {
+    it('measures the delivery boundary against hub ARRIVAL, not the runner clock', () => {
         const store = makeStore()
         const session = seed(store)
 
-        // Footer timestamps come off the agent runner (the transcript preserves
-        // them); the boundary is stamped when the hub delivers the reply. The
-        // two clocks are unrelated, so no comparison between them is sound —
-        // only the hub's message `seq` orders both sides.
-        const HUB_NOW = 1_000_000
-        store.sessions.clearSessionLastNotify(session.id, 'default', HUB_NOW, 10)
+        // A footer's own timestamp comes off the agent runner (the transcript
+        // preserves it verbatim); the boundary is stamped when the hub delivers
+        // the reply. Comparing those two is never sound in either direction.
+        // The footer's hub ARRIVAL is, because it is the same clock.
+        const HUB_NOW = 1_700_000_000_000
+        store.sessions.clearSessionLastNotify(session.id, 'default', HUB_NOW)
 
-        // Runner clock an hour FAST: a superseded footer from before the reply
-        // looks like the future. Clock ordering accepts it and the answered
-        // blocker comes back; seq 7 < 10 rejects it.
+        // Runner clock an hour FAST, so a superseded footer from before the
+        // reply looks like the future. Its arrival is what decides, and it
+        // arrived before the delivery.
         store.sessions.setSessionLastNotify(
             session.id,
-            { status: 'blocked', at: HUB_NOW + 3_600_000, note: 'superseded', seq: 7 },
+            { status: 'blocked', at: HUB_NOW + 3_600_000, note: 'superseded', receivedAt: HUB_NOW - 5_000 },
             'default'
         )
         expect(store.sessions.getSession(session.id)?.lastNotifyStatus).toBeNull()
 
-        // Runner clock an hour SLOW: a genuinely new blocker reported after the
-        // reply looks older than the boundary. Clock ordering drops it and the
-        // operator never learns the agent is stuck; seq 12 > 10 accepts it.
+        // Runner clock an hour SLOW, so a genuinely new blocker reported after
+        // the reply looks older than the boundary. It arrived after the
+        // delivery, so the operator still learns the agent is stuck.
         store.sessions.setSessionLastNotify(
             session.id,
-            { status: 'blocked', at: HUB_NOW - 3_600_000, note: 'live', seq: 12 },
+            { status: 'blocked', at: HUB_NOW - 3_600_000, note: 'live', receivedAt: HUB_NOW + 5_000 },
             'default'
         )
         const row = store.sessions.getSession(session.id)
         expect(row?.lastNotifyStatus).toBe('blocked')
         expect(row?.lastNotifyNote).toBe('live')
-        expect(row?.lastNotifySeq).toBe(12)
+        expect(row?.lastNotifyReceivedAt).toBe(HUB_NOW + 5_000)
     })
 
-    it('a rewind drops seq watermarks that point into deleted history', () => {
+    it('rejects delayed output from the turn the delivery already answered', () => {
         const store = makeStore()
         const session = seed(store)
 
-        // The operator replied at seq 100 and the boundary recorded it.
-        store.sessions.clearSessionLastNotify(session.id, 'default', 5000, 100)
-        expect(store.sessions.getSession(session.id)?.lastNotifyClearedSeq).toBe(100)
+        // The agent reported blocked, and the operator answered.
+        store.sessions.setSessionLastNotify(
+            session.id,
+            { status: 'blocked', at: 5_000, note: 'needs a key', receivedAt: 100_000 },
+            'default'
+        )
+        store.sessions.clearSessionLastNotify(session.id, 'default', 110_000)
+        // The clear captures what it superseded, so a late arrival from that
+        // same turn is still measurable once `last_notify_at` is null.
+        expect(store.sessions.getSession(session.id)?.lastNotifyClearedAuthorAt).toBe(5_000)
 
-        // A rewind then deletes everything past seq 20. The retained history
-        // holds no reply at all, so the boundary must come back with it.
+        // A second footer from BEFORE the reply, reaching the hub for the first
+        // time afterwards. Its arrival is genuinely later than the delivery, so
+        // only its author time can reveal that the reply already answered it.
+        expect(store.sessions.setSessionLastNotify(
+            session.id,
+            { status: 'blocked', at: 4_000, note: 'stale sibling', receivedAt: 120_000 },
+            'default'
+        )).toBe(false)
+        expect(store.sessions.getSession(session.id)?.lastNotifyStatus).toBeNull()
+
+        // A genuinely new report from after the answered turn still lands.
+        expect(store.sessions.setSessionLastNotify(
+            session.id,
+            { status: 'blocked', at: 6_000, note: 'stuck again', receivedAt: 130_000 },
+            'default'
+        )).toBe(true)
+        expect(store.sessions.getSession(session.id)?.lastNotifyNote).toBe('stuck again')
+    })
+
+    it('a rewind scopes both boundaries to the surviving transcript', () => {
+        const store = makeStore()
+        const session = seed(store)
+
+        store.sessions.setSessionLastNotify(
+            session.id,
+            { status: 'blocked', at: 5_000, note: 'old', receivedAt: 100_000 },
+            'default'
+        )
+        store.sessions.clearSessionLastNotify(session.id, 'default', 110_000)
+        expect(store.sessions.getSession(session.id)?.lastNotifyClearedAuthorAt).toBe(5_000)
+
+        // The rewind deletes the history both boundaries describe.
         expect(store.sessions.replaceNotifyAfterTruncate(
             session.id,
             'default',
             null,
-            null,
-            6000
+            0
         )).toBe(true)
-        expect(store.sessions.getSession(session.id)?.lastNotifyClearedSeq).toBeNull()
+        const cleared = store.sessions.getSession(session.id)
+        expect(cleared?.lastNotifyClearedAuthorAt).toBeNull()
+        expect(cleared?.lastNotifyClearedAt).toBe(0)
 
-        // New rows are numbered from the retained maximum, so the next genuine
-        // footer lands at a LOW seq. The stale watermark of 100 rejected every
-        // footer up to seq 100 — and the clear's MAX meant nothing could ever
-        // lower it again, so the session could not report blocked at all.
+        // Carried forward, the author boundary of 5000 would have suppressed
+        // every footer the retained transcript is entitled to report — and the
+        // clear's MAX meant nothing could ever lower it again.
         expect(store.sessions.setSessionLastNotify(
             session.id,
-            { status: 'blocked', at: 7000, note: 'stuck again', seq: 21 },
+            { status: 'blocked', at: 4_500, note: 'stuck again', receivedAt: 200_000 },
             'default'
         )).toBe(true)
         expect(store.sessions.getSession(session.id)?.lastNotifyStatus).toBe('blocked')
-    })
-
-    it('shifts seq watermarks by a merge renumbering offset', () => {
-        const store = makeStore()
-        const session = seed(store)
-        store.sessions.setSessionLastNotify(
-            session.id,
-            { status: 'blocked', at: 2000, note: null, seq: 4 },
-            'default'
-        )
-        store.sessions.clearSessionLastNotify(session.id, 'default', 3000, 6)
-
-        // A merge added the source's 50 messages beneath this row's history.
-        expect(store.sessions.shiftNotifySeqWatermarks(session.id, 'default', 50)).toBe(true)
-
-        const row = store.sessions.getSession(session.id)
-        expect(row?.lastNotifyClearedSeq).toBe(56)
-        // A no-op offset must not touch anything.
-        expect(store.sessions.shiftNotifySeqWatermarks(session.id, 'default', 0)).toBe(false)
-        expect(store.sessions.getSession(session.id)?.lastNotifyClearedSeq).toBe(56)
     })
 
     it('is namespace scoped', () => {

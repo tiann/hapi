@@ -28,8 +28,7 @@ import {
     touchSessionUpdatedAt,
     updateSessionAgentState,
     updateSessionMetadata,
-    replaceSessionNotifyAfterTruncate,
-    shiftNotifySeqWatermarks
+    replaceSessionNotifyAfterTruncate
 } from './sessions'
 
 export class SessionStore {
@@ -111,7 +110,7 @@ export class SessionStore {
 
     setSessionLastNotify(
         id: string,
-        signal: { status: string; at: number; note: string | null; seq?: number | null },
+        signal: { status: string; at: number; note: string | null; receivedAt?: number | null },
         namespace: string
     ): boolean {
         return setSessionLastNotify(this.db, id, signal, namespace)
@@ -128,24 +127,18 @@ export class SessionStore {
     clearSessionLastNotify(
         id: string,
         namespace: string,
-        clearedAt: number = Date.now(),
-        clearedSeq: number | null = null
+        clearedAt: number = Date.now()
     ): boolean {
-        return clearSessionLastNotify(this.db, id, namespace, clearedAt, clearedSeq)
+        return clearSessionLastNotify(this.db, id, namespace, clearedAt)
     }
 
     replaceNotifyAfterTruncate(
         id: string,
         namespace: string,
-        signal: { status: string; at: number; note: string | null; seq?: number | null } | null,
-        clearedSeq: number | null = null,
+        signal: { status: string; at: number; note: string | null; receivedAt?: number | null } | null,
         clearedAt: number = Date.now()
     ): boolean {
-        return replaceSessionNotifyAfterTruncate(this.db, id, namespace, signal, clearedAt, clearedSeq)
-    }
-
-    shiftNotifySeqWatermarks(id: string, namespace: string, offset: number): boolean {
-        return shiftNotifySeqWatermarks(this.db, id, namespace, offset)
+        return replaceSessionNotifyAfterTruncate(this.db, id, namespace, signal, clearedAt)
     }
 
     setSessionTeamState(id: string, teamState: unknown, updatedAt: number, namespace: string): boolean {

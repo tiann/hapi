@@ -290,8 +290,8 @@ type DbSessionRow = {
     blocked_ack_reason: string | null
     blocked_ack_key: string | null
     last_notify_cleared_at: number | null
-    last_notify_seq: number | null
-    last_notify_cleared_seq: number | null
+    last_notify_received_at: number | null
+    last_notify_cleared_author_at: number | null
     last_notify_updated_at: number | null
     active: number
     active_at: number | null
@@ -330,8 +330,8 @@ function toStoredSession(row: DbSessionRow): StoredSession {
         blockedAckReason: row.blocked_ack_reason,
         blockedAckKeys: parseAckKeys(row.blocked_ack_key),
         lastNotifyClearedAt: row.last_notify_cleared_at,
-        lastNotifySeq: row.last_notify_seq,
-        lastNotifyClearedSeq: row.last_notify_cleared_seq,
+        lastNotifyReceivedAt: row.last_notify_received_at,
+        lastNotifyClearedAuthorAt: row.last_notify_cleared_author_at,
         lastNotifyUpdatedAt: row.last_notify_updated_at,
         active: row.active === 1,
         activeAt: row.active_at,
@@ -727,7 +727,7 @@ function hasNewAgentStateRequest(prior: unknown, next: unknown): boolean {
 export function setSessionLastNotify(
     db: Database,
     id: string,
-    signal: { status: string; at: number; note: string | null; seq?: number | null },
+    signal: { status: string; at: number; note: string | null; receivedAt?: number | null },
     namespace: string
 ): boolean {
     try {
@@ -736,32 +736,46 @@ export function setSessionLastNotify(
             SET last_notify_status = @status,
                 last_notify_at = @at,
                 last_notify_note = @note,
-                last_notify_seq = @seq,
+                last_notify_received_at = @receivedAt,
                 last_notify_updated_at = MAX(COALESCE(last_notify_updated_at, 0) + 1, @rev),
                 seq = seq + 1
             WHERE id = @id
               AND namespace = @namespace
               -- Footer vs footer: both were stamped by the same agent runner
               -- inside one transcript, so authorship time IS the authoritative
-              -- order and applies unconditionally. Insertion seq is NOT: it
-              -- is allocated as MAX(seq)+1 at write time, so a replayed older
-              -- footer arriving after a newer one carries a HIGHER seq and
-              -- would win on seq while being older in fact — putting an
-              -- answered session back into Blocked.
+              -- order between them. Insertion seq is not: it is allocated as
+              -- MAX(seq)+1, so a replayed older footer arriving after a newer
+              -- one carries a HIGHER seq while being older in fact.
               AND (last_notify_at IS NULL OR last_notify_at <= @at)
-              -- Footer vs the operator's reply: the footer carries the runner's
-              -- clock and the reply is stamped by the hub, so no comparison
-              -- between those two is sound. Order them by seq instead, the
-              -- hub insertion domain both sides genuinely share. Clock
-              -- comparison survives only for seq-less callers.
-              AND (@seq IS NULL OR last_notify_cleared_seq IS NULL OR last_notify_cleared_seq < @seq)
-              AND (@seq IS NOT NULL OR last_notify_cleared_at IS NULL OR last_notify_cleared_at <= @at)
+              -- Footer arrival vs the operator's delivery: BOTH hub stamps, so
+              -- this is a single-clock comparison. The footer's own at cannot
+              -- be used here (runner clock), and a position cannot either —
+              -- cancelling a queued row frees its seq for reuse, and a merge
+              -- renumbers positions into something synthetic.
+              AND (@receivedAt IS NULL OR last_notify_cleared_at IS NULL
+                   OR last_notify_cleared_at <= @receivedAt)
+              -- Callers with no arrival stamp (older paths, and the ack/merge
+              -- transfers) keep the original author-time comparison. It is a
+              -- cross-domain guess, which is why every live path now supplies
+              -- an arrival, but dropping it entirely would let those paths
+              -- bypass the boundary altogether.
+              AND (@receivedAt IS NOT NULL OR last_notify_cleared_at IS NULL
+                   OR last_notify_cleared_at <= @at)
+              -- Delayed output from the turn the delivery already answered.
+              -- The clear nulls last_notify_at, so a footer authored BEFORE
+              -- the reply but arriving after it for the first time otherwise
+              -- has nothing to be measured against: its arrival is genuinely
+              -- later, and it would walk straight back in. This keeps the
+              -- superseded footer's author time, which is the same runner clock
+              -- the newcomer carries.
+              AND (last_notify_cleared_author_at IS NULL
+                   OR @at > last_notify_cleared_author_at)
         `).run({
             id,
             status: signal.status,
             at: signal.at,
             note: signal.note,
-            seq: signal.seq ?? null,
+            receivedAt: signal.receivedAt ?? null,
             namespace, rev: Date.now() })
         return result.changes === 1
     } catch {
@@ -818,8 +832,7 @@ export function clearSessionLastNotify(
     db: Database,
     id: string,
     namespace: string,
-    clearedAt: number = Date.now(),
-    clearedSeq: number | null = null
+    clearedAt: number = Date.now()
 ): boolean {
     try {
         const result = db.prepare(`
@@ -828,8 +841,19 @@ export function clearSessionLastNotify(
                 last_notify_at = NULL,
                 last_notify_note = NULL,
                 last_notify_cleared_at = MAX(COALESCE(last_notify_cleared_at, 0), @clearedAt),
-                last_notify_cleared_seq = MAX(COALESCE(last_notify_cleared_seq, 0), COALESCE(@clearedSeq, 0)),
-                last_notify_seq = NULL,
+                -- Capture the author time of the footer being cleared, in the
+                -- same move that nulls it. Delayed output from that turn is
+                -- then still rejectable even though nothing is stored any more.
+                --
+                -- Untouched when there is no footer to capture: a 0 sentinel
+                -- here would suppress every footer with a non-positive
+                -- timestamp, which is exactly the kind of silent suppression
+                -- this feature must not do.
+                last_notify_cleared_author_at = CASE
+                    WHEN last_notify_at IS NULL THEN last_notify_cleared_author_at
+                    WHEN last_notify_cleared_author_at IS NULL THEN last_notify_at
+                    ELSE MAX(last_notify_cleared_author_at, last_notify_at)
+                END,
                 last_notify_updated_at = MAX(COALESCE(last_notify_updated_at, 0) + 1, @clearedAt),
                 seq = seq + 1
             WHERE id = @id
@@ -840,9 +864,8 @@ export function clearSessionLastNotify(
               -- past it later. Still a no-op write when neither would move.
               AND (last_notify_status IS NOT NULL
                    OR last_notify_cleared_at IS NULL
-                   OR last_notify_cleared_at < @clearedAt
-                   OR COALESCE(last_notify_cleared_seq, 0) < COALESCE(@clearedSeq, 0))
-        `).run({ id, namespace, clearedAt, clearedSeq })
+                   OR last_notify_cleared_at < @clearedAt)
+        `).run({ id, namespace, clearedAt })
         return result.changes === 1
     } catch {
         return false
@@ -1234,23 +1257,26 @@ export function replaceSessionNotifyAfterTruncate(
     db: Database,
     id: string,
     namespace: string,
-    signal: { status: string; at: number; note: string | null; seq?: number | null } | null,
-    clearedAt: number,
-    clearedSeq: number | null = null
+    signal: { status: string; at: number; note: string | null; receivedAt?: number | null } | null,
+    clearedAt: number
 ): boolean {
     try {
-        // Every watermark is assigned ABSOLUTELY here, never via MAX. The
-        // rewind deleted the history these pointed into, so carrying the old
-        // values forward rejected genuine new footers numbered below them —
-        // and MAX meant no later delivery could lower them again (#1717).
+        // Every boundary is assigned ABSOLUTELY here, never via MAX, and
+        // scoped to the surviving transcript (#1717). The rewind deleted the
+        // history the old values described, so carrying them forward rejected
+        // genuine new footers with no way to ever lower them again.
         const result = db.prepare(`
             UPDATE sessions
             SET last_notify_status = @status,
                 last_notify_at = @at,
                 last_notify_note = @note,
-                last_notify_seq = @seq,
+                last_notify_received_at = @receivedAt,
                 last_notify_cleared_at = @clearedAt,
-                last_notify_cleared_seq = @clearedSeq,
+                -- Dropped outright: this records a turn that the deleted
+                -- history superseded, and the signal above was just re-derived
+                -- from what survives. Keeping it would suppress the very
+                -- footers the retained transcript is entitled to report.
+                last_notify_cleared_author_at = NULL,
                 last_notify_updated_at = MAX(COALESCE(last_notify_updated_at, 0) + 1, @rev),
                 seq = seq + 1
             WHERE id = @id AND namespace = @namespace
@@ -1260,45 +1286,14 @@ export function replaceSessionNotifyAfterTruncate(
             status: signal?.status ?? null,
             at: signal?.at ?? null,
             note: signal?.note ?? null,
-            seq: signal?.seq ?? null,
-            clearedSeq,
-            // A retained footer must survive its own boundary check, so the
-            // boundary sits just below it rather than at `now`.
-            clearedAt: signal ? Math.min(clearedAt, signal.at) : clearedAt,
+            receivedAt: signal?.receivedAt ?? null,
+            // The derived delivery boundary, already a hub stamp. No clamping
+            // against the retained footer is needed any more: the boundary is
+            // compared against a footer's hub ARRIVAL, and the retained footer
+            // is written here rather than re-validated through that guard.
+            clearedAt,
             rev: Date.now()
         })
-        return result.changes === 1
-    } catch {
-        return false
-    }
-}
-
-/**
- * Shift the notify seq watermarks by a merge's renumbering offset (#1717).
- *
- * `mergeSessionMessages` adds the source's max seq to every destination
- * message, so any position recorded in the old numbering is stale by exactly
- * that offset. Without this the destination's clear boundary sinks below the
- * incoming source footers and stops answering the one it did answer.
- */
-export function shiftNotifySeqWatermarks(
-    db: Database,
-    id: string,
-    namespace: string,
-    offset: number
-): boolean {
-    if (offset <= 0) return false
-    try {
-        const result = db.prepare(`
-            UPDATE sessions
-            SET last_notify_seq = CASE
-                    WHEN last_notify_seq IS NULL THEN NULL ELSE last_notify_seq + @offset END,
-                last_notify_cleared_seq = CASE
-                    WHEN last_notify_cleared_seq IS NULL THEN NULL ELSE last_notify_cleared_seq + @offset END
-            WHERE id = @id
-              AND namespace = @namespace
-              AND (last_notify_seq IS NOT NULL OR last_notify_cleared_seq IS NOT NULL)
-        `).run({ id, namespace, offset })
         return result.changes === 1
     } catch {
         return false

@@ -9,7 +9,7 @@ import { EventPublisher } from './eventPublisher'
 import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
 import { InvalidExternalRefsError } from './externalRefErrors'
 import { resolveSessionIdleTimeoutMs, shouldClearKeepaliveIdle, shouldMarkKeepaliveIdle } from './sessionIdle'
-import { deliveredOperatorReplyAt, deliveredOperatorReplySeq, isDeliveredOperatorReply } from './workGraphNotifyIngest'
+import { deliveredOperatorReplyAt, isDeliveredOperatorReply, messageReceivedAt } from './workGraphNotifyIngest'
 
 /** Transcript window scanned for a newer operator reply when merging a
  *  notify signal (#1717). Matches the startup backfill's scan depth. */
@@ -526,7 +526,7 @@ export class SessionCache {
      */
     setSessionLastNotify(
         sessionId: string,
-        signal: { status: string; at: number; note: string | null; seq?: number | null }
+        signal: { status: string; at: number; note: string | null; receivedAt?: number | null }
     ): void {
         const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
         if (!session) return
@@ -540,16 +540,23 @@ export class SessionCache {
         // from `activeTurnStartedAt`: that field resets when the agent goes
         // idle, so a footer arriving after the reply turn *ended* found both it
         // and `last_notify_at` null and was accepted. The persisted watermark
-        // also survives a restart. The store enforces the same rule in SQL; this
-        // is the in-memory fast path.
-        // Compare in seq when both sides have one; never across clock domains.
+        // also survives a restart. The store enforces the same rules in SQL;
+        // this is the in-memory fast path, and the two must agree.
+        //
+        // Each comparison stays inside ONE clock: the footer's hub arrival
+        // against the delivery boundary (both hub), and the footer's author
+        // time against the author time of the footer that delivery superseded
+        // (both this runner).
         const stored = this.store.sessions.getSessionByNamespace(sessionId, session.namespace)
-        const clearedSeq = stored?.lastNotifyClearedSeq ?? null
-        if (signal.seq != null && clearedSeq !== null && signal.seq <= clearedSeq) {
+        const clearedAt = stored?.lastNotifyClearedAt ?? null
+        if (signal.receivedAt != null && clearedAt !== null && signal.receivedAt < clearedAt) {
             return
         }
-        const clearedAt = stored?.lastNotifyClearedAt ?? null
-        if (signal.seq == null && clearedAt !== null && signal.at < clearedAt) {
+        if (signal.receivedAt == null && clearedAt !== null && signal.at < clearedAt) {
+            return
+        }
+        const clearedAuthorAt = stored?.lastNotifyClearedAuthorAt ?? null
+        if (clearedAuthorAt !== null && signal.at <= clearedAuthorAt) {
             return
         }
         // Unchanged status for the same turn: skip the write + SSE fan-out.
@@ -646,8 +653,8 @@ export class SessionCache {
 
     replaceNotifyAfterTruncate(
         sessionId: string,
-        signal: { status: string; at: number; note: string | null; seq?: number | null } | null,
-        boundarySeq: number | null = null
+        signal: { status: string; at: number; note: string | null; receivedAt?: number | null } | null,
+        boundaryAt: number = Date.now()
     ): void {
         const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
         if (!session) return
@@ -655,17 +662,13 @@ export class SessionCache {
             sessionId,
             session.namespace,
             signal,
-            boundarySeq
+            boundaryAt
         )) {
             this.applyLastNotifyToCache(session, signal)
         }
     }
 
-    clearSessionLastNotify(
-        sessionId: string,
-        boundaryAt: number = Date.now(),
-        boundarySeq: number | null = null
-    ): void {
+    clearSessionLastNotify(sessionId: string, boundaryAt: number = Date.now()): void {
         const session = this.sessions.get(sessionId)
         if (!session) return
         // The boundary advances even when no footer is cached. A turn that
@@ -676,8 +679,7 @@ export class SessionCache {
         const cleared = this.store.sessions.clearSessionLastNotify(
             sessionId,
             session.namespace,
-            boundaryAt,
-            boundarySeq
+            boundaryAt
         )
         if (session.lastNotify && cleared) {
             this.applyLastNotifyToCache(session, null)
@@ -750,15 +752,8 @@ export class SessionCache {
      * back to the old timestamp comparison: imperfect, but it is the only
      * evidence such a row carries, and it is what they already did.
      */
-    private replyAnswersFooter(
-        reply: StoredMessage,
-        footerSeq: number | null | undefined,
-        footerAt: number
-    ): boolean {
-        if (footerSeq != null) {
-            return deliveredOperatorReplySeq(reply) > footerSeq
-        }
-        return deliveredOperatorReplyAt(reply) > footerAt
+    private replyAnswersFooter(reply: StoredMessage, footerReceivedAt: number): boolean {
+        return deliveredOperatorReplyAt(reply) > footerReceivedAt
     }
 
     private latestDeliveredOperatorReply(sessionId: string): StoredMessage | null {
@@ -766,12 +761,8 @@ export class SessionCache {
         for (const message of this.store.messages.getInvokedMessages(sessionId)) {
             if (!isDeliveredOperatorReply(message)) continue
             // Selected by the same key `replyAnswersFooter` then compares.
-            // Picking the latest by timestamp and testing by position let the
-            // two disagree after a merge, where the destination's positions
-            // were renumbered and its replies' timestamps were not — so the
-            // reply chosen as "latest" could be the one that answers least.
             if (newest === null
-                || deliveredOperatorReplySeq(message) > deliveredOperatorReplySeq(newest)) {
+                || deliveredOperatorReplyAt(message) > deliveredOperatorReplyAt(newest)) {
                 newest = message
             }
         }
@@ -2404,17 +2395,6 @@ export class SessionCache {
         if (!metadataTransferred) throw new Error('Failed to preserve session metadata during merge')
 
         const movedMessages = this.store.messages.mergeSessionMessages(oldSessionId, newSessionId)
-        // The destination's messages were just renumbered above every source
-        // row, so its notify watermarks point into the old numbering (#1717).
-        // Shift them by the same offset or the destination's own clear boundary
-        // lands below the source's footers and stops answering them.
-        if (movedMessages.oldMaxSeq > 0 && movedMessages.newMaxSeq > 0) {
-            this.store.sessions.shiftNotifySeqWatermarks(
-                newSessionId,
-                namespace,
-                movedMessages.oldMaxSeq
-            )
-        }
         this.syncReadState(newSessionId)
         if (!options.deleteOldSession) this.syncReadState(oldSessionId)
         // mergeSessions deletes the source. mergeSessionHistory keeps it alive
@@ -2704,12 +2684,13 @@ export class SessionCache {
             const targetAt = target?.lastNotifyAt ?? null
             if (target && target.lastNotifyStatus !== null && targetAt !== null) {
                 const newest = this.latestDeliveredOperatorReply(newSessionId)
-                if (newest !== null && this.replyAnswersFooter(newest, target.lastNotifySeq, targetAt)) {
-                    this.clearSessionLastNotify(
-                        newSessionId,
-                        deliveredOperatorReplyAt(newest),
-                        deliveredOperatorReplySeq(newest)
-                    )
+                // Measured against the footer's HUB ARRIVAL, not its runner
+                // timestamp and not a position: after the merge renumbering,
+                // an EARLIER destination reply sits above every source row and
+                // read as proof it had answered a later source footer.
+                const targetReceivedAt = target.lastNotifyReceivedAt ?? targetAt
+                if (newest !== null && this.replyAnswersFooter(newest, targetReceivedAt)) {
+                    this.clearSessionLastNotify(newSessionId, deliveredOperatorReplyAt(newest))
                 }
             }
         }
@@ -2725,8 +2706,9 @@ export class SessionCache {
             // a delivered reply newer than the footer before carrying it over.
             // Mirrors the operator-reply boundary the startup backfill applies.
             const newestReply = this.latestDeliveredOperatorReply(newSessionId)
+            const oldReceivedAt = oldStored.lastNotifyReceivedAt ?? oldNotifyAt
             const answeredSince = newestReply !== null
-                && this.replyAnswersFooter(newestReply, oldStored.lastNotifySeq, oldNotifyAt)
+                && this.replyAnswersFooter(newestReply, oldReceivedAt)
             // Footer vs footer is a same-runner-clock comparison, so `at` is
             // the right key here even though the reply comparison above is not.
             if (latest && !answeredSince && (targetNotifyAt === null || oldNotifyAt > targetNotifyAt)) {
@@ -2734,7 +2716,7 @@ export class SessionCache {
                     status: oldStored.lastNotifyStatus,
                     at: oldNotifyAt,
                     note: oldStored.lastNotifyNote,
-                    seq: oldStored.lastNotifySeq
+                    receivedAt: oldStored.lastNotifyReceivedAt
                 })
             }
         }

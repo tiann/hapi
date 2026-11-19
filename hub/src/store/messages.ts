@@ -28,7 +28,7 @@ type DbMessageRow = {
     local_id: string | null
     invoked_at: number | null
     swept_at?: number | null
-    invoked_seq?: number | null
+    received_at?: number | null
     agent_delivered?: number | null
     scheduled_at: number | null
     delivery_state: string | null
@@ -83,15 +83,18 @@ export function addImportedMessage(
         const canonicalContent = truncateOversizedMessageContent(content)
         prepareCached(db, `
             INSERT INTO messages (
-                id, session_id, content, created_at, seq, local_id, invoked_at, scheduled_at
+                id, session_id, content, created_at, received_at, seq, local_id, invoked_at, scheduled_at
             ) VALUES (
-                @id, @session_id, @content, @created_at, @seq, @local_id, @invoked_at, NULL
+                @id, @session_id, @content, @created_at, @received_at, @seq, @local_id, @invoked_at, NULL
             )
         `).run({
             id,
             session_id: sessionId,
             content: encodeMessageContent(canonicalContent),
             created_at: stampedAt,
+            // Hub arrival, not the runner's clock: the key the delivery boundary
+            // is measured against (#1717).
+            received_at: Date.now(),
             seq: msgSeqRow.nextSeq,
             local_id: localId,
             invoked_at: stampedAt
@@ -123,7 +126,7 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
         localId: row.local_id,
         invokedAt: row.invoked_at ?? null,
         sweptAt: row.swept_at ?? null,
-        invokedSeq: row.invoked_seq ?? null,
+        receivedAt: row.received_at ?? null,
         agentDelivered: row.agent_delivered ?? null,
         scheduledAt: row.scheduled_at ?? null,
         ...(row.delivery_state && row.delivery_state !== 'queued' ? { deliveryState: 'indeterminate' as const } : {}),
@@ -142,7 +145,8 @@ export function addMessage(
     content: unknown,
     localId?: string,
     scheduledAt?: number | null,
-    createdAt?: number
+    createdAt?: number,
+    receivedAt?: number
 ): StoredMessage {
     const now = Date.now()
     // Client-provided origin timestamp (e.g. a Claude transcript entry's own
@@ -191,15 +195,20 @@ export function addMessage(
         const previousHead = getNewestMessagePosition(db, sessionId)
         prepareCached(db, `
             INSERT INTO messages (
-                id, session_id, content, created_at, seq, local_id, invoked_at, scheduled_at
+                id, session_id, content, created_at, received_at, seq, local_id, invoked_at, scheduled_at
             ) VALUES (
-                @id, @session_id, @content, @created_at, @seq, @local_id, @invoked_at, @scheduled_at
+                @id, @session_id, @content, @created_at, @received_at, @seq, @local_id, @invoked_at, @scheduled_at
             )
         `).run({
             id,
             session_id: sessionId,
             content: encoded,
             created_at: stampedAt,
+            // Hub arrival, not the runner's clock: the key the delivery
+            // boundary is measured against (#1717). Defaults to now because
+            // this runs when the hub receives the message — including for a
+            // replayed transcript, whose `created_at` is deliberately older.
+            received_at: receivedAt ?? Date.now(),
             seq: msgSeq,
             local_id: localId ?? null,
             invoked_at: invokedAt,
@@ -1647,14 +1656,9 @@ export function markMessagesInvoked(
     if (localIds.length === 0) return 0
     return runInTransaction(db, () => {
         const placeholders = localIds.map(() => '?').join(', ')
-        // `invoked_seq` puts the delivery in the same hub insertion domain as
-        // the footers it has to be ordered against (#1717). The row's own
-        // `seq` cannot: it was allocated when the prompt was queued, possibly
-        // long before the agent was handed it.
         const changes = prepareCached(db,
             `UPDATE messages
              SET invoked_at = ?,
-                 invoked_seq = (SELECT COALESCE(MAX(seq), 0) FROM messages WHERE session_id = ?),
                  agent_delivered = ?,
                  delivery_state = 'queued'
              WHERE session_id = ?
@@ -1662,7 +1666,6 @@ export function markMessagesInvoked(
                AND invoked_at IS NULL`
         ).run(
             invokedAt,
-            sessionId,
             options?.agentDelivered === false ? 0 : 1,
             sessionId,
             ...localIds
@@ -1881,16 +1884,12 @@ export function mergeSessionMessages(
         db.exec('BEGIN')
 
         if (newMaxSeq > 0 && oldMaxSeq > 0) {
-            // `invoked_seq` is a position in this same insertion domain, so it
-            // has to move with it (#1717). Left behind, a destination reply's
-            // recorded delivery position would suddenly sit below the source's
-            // footers and stop answering the footer it actually answered.
+            // Only `seq` moves. Nothing the notify ordering depends on is a
+            // position any more, precisely because this renumbering makes
+            // cross-session positions synthetic rather than real (#1717).
             prepareCached(db,
-                `UPDATE messages
-                 SET seq = seq + ?,
-                     invoked_seq = CASE WHEN invoked_seq IS NULL THEN NULL ELSE invoked_seq + ? END
-                 WHERE session_id = ?`
-            ).run(oldMaxSeq, oldMaxSeq, toSessionId)
+                'UPDATE messages SET seq = seq + ? WHERE session_id = ?'
+            ).run(oldMaxSeq, toSessionId)
         }
 
         const collisions = prepareCached(db, `

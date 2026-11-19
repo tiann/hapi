@@ -54,7 +54,7 @@ describe('a locally handled command does not answer the agent (#1717)', () => {
         const store = new Store(':memory:')
         const session = store.sessions.getOrCreateSession('local-command', {}, null, 'default')
         const socket = new FakeSocket()
-        const delivered = mock((_sid: string, _at: number, _seq: number | null) => {})
+        const delivered = mock((_sid: string, _at: number) => {})
         registerSessionHandlers(socket as unknown as CliSocketWithData, {
             store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {},
             onWebappEvent() {}, onPromptDelivered: delivered

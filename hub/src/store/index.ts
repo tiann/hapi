@@ -175,7 +175,7 @@ export class Store {
         invokedAt: number,
         namespace: string,
         options?: { agentDelivered?: boolean }
-    ): { updatedAt: number; consumed: number; deliveredSeq: number | null } {
+    ): { updatedAt: number; consumed: number } {
         return this.db.transaction(() => {
             // Which of these rows are actually the operator's prompts? Agent
             // OUTPUT also carries local ids and emits `messages-consumed`
@@ -210,19 +210,9 @@ export class Store {
             // a delivery (#1717).
             // `consumed` counts only operator prompts: a replayed ack, unknown
             // local ids, and agent output all deliver nothing (#1717).
-            // The clock-free boundary for "this reply came after that footer".
-            // `invoked_seq`, not the row's own `seq`: the row was numbered when
-            // the prompt was QUEUED, which can precede the footer it answers.
-            // Only rows that actually reached the agent can move the boundary.
-            const seqRow = localIds.length === 0 ? null : this.db.prepare(
-                `SELECT MAX(invoked_seq) AS maxSeq FROM messages
-                 WHERE session_id = ? AND local_id IN (${placeholders})
-                   AND agent_delivered IS NOT 0`
-            ).get(sessionId, ...localIds) as { maxSeq: number | null } | null
             return {
                 updatedAt: session.updatedAt,
-                consumed: operatorPrompts,
-                deliveredSeq: seqRow?.maxSeq ?? null
+                consumed: operatorPrompts
             }
         })()
     }
@@ -554,8 +544,8 @@ export class Store {
                 last_notify_at INTEGER,
                 last_notify_note TEXT,
                 last_notify_cleared_at INTEGER,
-                last_notify_seq INTEGER,
-                last_notify_cleared_seq INTEGER,
+                last_notify_received_at INTEGER,
+                last_notify_cleared_author_at INTEGER,
                 last_notify_updated_at INTEGER,
                 blocked_ack_at INTEGER,
                 blocked_ack_reason TEXT,
@@ -591,7 +581,7 @@ export class Store {
                 seq INTEGER NOT NULL,
                 local_id TEXT,
                 invoked_at INTEGER,
-                invoked_seq INTEGER,
+                received_at INTEGER,
                 agent_delivered INTEGER,
                 swept_at INTEGER,
                 scheduled_at INTEGER,
@@ -1393,16 +1383,19 @@ export class Store {
         if (!columns.has('last_notify_updated_at')) {
             this.db.exec('ALTER TABLE sessions ADD COLUMN last_notify_updated_at INTEGER')
         }
-        // Ordering moved off wall-clock entirely. Footers carry the RUNNER's
-        // clock (the transcript preserves it) while replies are stamped by the
-        // hub, so no timestamp comparison between them is sound in either
-        // direction. `seq` is hub-assigned and monotonic for every message in a
-        // session, which makes it the one domain both sides share.
-        if (!columns.has('last_notify_seq')) {
-            this.db.exec('ALTER TABLE sessions ADD COLUMN last_notify_seq INTEGER')
+        // The author time of the footer a delivery superseded, in the RUNNER's
+        // clock. Delivery nulls `last_notify_at`, so without this a footer from
+        // the already-answered turn arriving late for the first time has
+        // nothing to be measured against and walks back in. Two footers from
+        // one runner are a sound comparison; this is that, kept across the
+        // clear.
+        // The footer's HUB arrival, kept beside its runner-clock author time.
+        // Each guard then compares inside one clock domain.
+        if (!columns.has('last_notify_received_at')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN last_notify_received_at INTEGER')
         }
-        if (!columns.has('last_notify_cleared_seq')) {
-            this.db.exec('ALTER TABLE sessions ADD COLUMN last_notify_cleared_seq INTEGER')
+        if (!columns.has('last_notify_cleared_author_at')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN last_notify_cleared_author_at INTEGER')
         }
         if (!columns.has('blocked_ack_key')) {
             this.db.exec('ALTER TABLE sessions ADD COLUMN blocked_ack_key TEXT')
@@ -1415,16 +1408,16 @@ export class Store {
         if (messageColumns.size > 0 && !messageColumns.has('swept_at')) {
             this.db.exec('ALTER TABLE messages ADD COLUMN swept_at INTEGER')
         }
-        // `invoked_at` is a hub wall-clock stamp, so it cannot be ordered
-        // against a footer's runner-clock timestamp. `invoked_seq` records the
-        // session's message high-water mark at the moment of delivery, putting
-        // the delivery event in the SAME hub insertion domain as the footer's
-        // own `seq` — the only way to ask "did this reply reach the agent after
-        // that footer arrived?" without comparing two unrelated clocks. A
-        // reply's own `seq` cannot answer it either: that is allocated when the
-        // prompt is QUEUED, which can be long before it is delivered.
-        if (messageColumns.size > 0 && !messageColumns.has('invoked_seq')) {
-            this.db.exec('ALTER TABLE messages ADD COLUMN invoked_seq INTEGER')
+        // When the HUB received this message, as opposed to `created_at`, which
+        // is the agent runner's own clock preserved through transcript replay.
+        // This is what makes "did the operator's reply reach the agent after
+        // this footer arrived?" answerable: `invoked_at` is a hub stamp, so it
+        // belongs beside another hub stamp. Insertion `seq` cannot serve —
+        // allocation is MAX(seq)+1, so cancelling a queued row frees its number
+        // for reuse — and merge renumbering makes cross-session positions
+        // synthetic rather than real. A timestamp is durable under both.
+        if (messageColumns.size > 0 && !messageColumns.has('received_at')) {
+            this.db.exec('ALTER TABLE messages ADD COLUMN received_at INTEGER')
         }
         // Whether the delivery actually reached the agent. A locally handled
         // slash command, a rejected or aborted prompt and a failed steer all

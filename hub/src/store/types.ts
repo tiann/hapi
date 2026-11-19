@@ -31,8 +31,8 @@ export type StoredSession = {
     blockedAckReason: string | null
     blockedAckKeys: string[] | null
     lastNotifyClearedAt: number | null
-    lastNotifySeq: number | null
-    lastNotifyClearedSeq: number | null
+    lastNotifyReceivedAt: number | null
+    lastNotifyClearedAuthorAt: number | null
     lastNotifyUpdatedAt: number | null
     active: boolean
     activeAt: number | null
@@ -68,8 +68,8 @@ export type StoredMessage = {
     /** Set when the session-end sweep stamped `invokedAt` without a runtime
      *  ACK, so a reply can be told apart from one the agent actually got. */
     sweptAt?: number | null
-    /** Hub insertion high-water mark when this prompt was delivered (#1717). */
-    invokedSeq?: number | null
+    /** When the HUB received this message, vs `createdAt`'s runner clock (#1717). */
+    receivedAt?: number | null
     /** 1 if the delivery reached the agent, 0 if handled locally, NULL if unknown (#1717). */
     agentDelivered?: number | null
     scheduledAt: number | null

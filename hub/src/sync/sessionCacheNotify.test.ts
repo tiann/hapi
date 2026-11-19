@@ -65,7 +65,7 @@ describe('lastNotify clearing on turn start (#1717)', () => {
         // A footer arriving mid-turn must survive later keep-alives that carry
         // no rising edge, or a blocked report would be erased the moment the
         // next keep-alive tick lands.
-        cache.setSessionLastNotify(id, { status: 'blocked', at: Date.now(), note: 'still stuck' })
+        cache.setSessionLastNotify(id, { status: 'blocked', at: Date.now() + 1_000, note: 'still stuck' })
         cache.handleSessionAlive({ sid: id, time: Date.now(), thinking: true })
 
         expect(cache.getSession(id)?.lastNotify?.status).toBe('blocked')
@@ -119,6 +119,55 @@ describe('footer timestamp boundary on the live path (#1717)', () => {
         cache.setSessionLastNotify(id, { status: 'blocked', at: Date.now() + 1_000, note: 'stuck again' })
 
         expect(cache.getSession(id)?.lastNotify?.note).toBe('stuck again')
+    })
+})
+
+describe('cancelling a queued prompt cannot suppress the next blocker (#1717)', () => {
+    it('ingests a genuine footer after a higher-numbered scheduled prompt is cancelled', () => {
+        // Insertion `seq` is allocated as MAX(seq)+1, so deleting the
+        // highest-numbered row frees its number for the next message to reuse.
+        // Any boundary expressed as a POSITION therefore covers rows that do
+        // not exist yet: acknowledge prompt A while a future-scheduled prompt B
+        // holds the top number, cancel B, and the next footer is born beneath
+        // the boundary and silently rejected — the session never enters
+        // Blocked. The boundary is a hub timestamp, which deletion cannot
+        // rewind, so there is nothing here to reuse.
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, { emit: (_event: SyncEvent) => {} } as EventPublisher)
+        const session = cache.getOrCreateSession(
+            'cancel-reuse',
+            { path: '/tmp/project', host: 'localhost' },
+            null,
+            'default'
+        )
+        cache.markSessionActive(session.id)
+        const now = Date.now()
+
+        // Prompt A, delivered.
+        store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'answer' },
+            meta: { sentFrom: 'webapp' }
+        }, 'prompt-a', null, now - 10_000, now - 10_000)
+        // Prompt B, scheduled for later, taking the top seq.
+        store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'later' },
+            meta: { sentFrom: 'webapp' }
+        }, 'prompt-b', now + 3_600_000, now - 9_000, now - 9_000)
+        store.messages.markMessagesInvoked(session.id, ['prompt-a'], now - 8_000)
+        cache.clearSessionLastNotify(session.id, now - 8_000)
+
+        // B is cancelled, freeing its number.
+        store.messages.cancelQueuedMessage(session.id, 'prompt-b')
+
+        // The agent then genuinely blocks, and the new row reuses B's number.
+        cache.setSessionLastNotify(session.id, {
+            status: 'blocked', at: now - 1_000, note: 'needs a key', receivedAt: now - 1_000
+        })
+
+        expect(cache.getSession(session.id)?.lastNotify?.status).toBe('blocked')
+        expect(cache.getSession(session.id)?.lastNotify?.note).toBe('needs a key')
     })
 })
 
@@ -256,6 +305,61 @@ describe('blocked acknowledgement across a session merge (#1717)', () => {
                 content: { type: 'text', text: `working ${i}` }
             }, `target-${i}`, null, now - 4_000 + i)
         }
+
+        await cache.mergeSessionHistory(source, target, 'default')
+
+        expect(cache.getSession(target)?.lastNotify ?? null).toBeNull()
+    })
+
+    it('does not let an EARLIER destination reply answer a newer source footer', async () => {
+        // `mergeSessionMessages` renumbers every destination row above every
+        // source row, so position after a merge is synthetic: an earlier
+        // destination prompt ends up "above" a later source footer and read as
+        // proof it had answered it, dropping a blocker the merged transcript
+        // still plainly contains. Hub arrival times are real and comparable
+        // across both sides, so they say what actually happened.
+        const { cache, store } = makeCache()
+        const source = makeSession(cache, 'merge-order-source')
+        const target = makeSession(cache, 'merge-order-target')
+        const now = Date.now()
+
+        // Destination prompt delivered FIRST, an hour ago.
+        store.messages.addMessage(target, {
+            role: 'user',
+            content: { type: 'text', text: 'earlier, unrelated' },
+            meta: { sentFrom: 'webapp' }
+        }, 'early-reply', null, now - 3_600_000, now - 3_600_000)
+        store.messages.markMessagesInvoked(target, ['early-reply'], now - 3_600_000)
+
+        // Source blocked AFTER that, and nobody has answered it.
+        cache.setSessionLastNotify(source, {
+            status: 'blocked', at: now - 60_000, note: 'needs a key', receivedAt: now - 60_000
+        })
+
+        await cache.mergeSessionHistory(source, target, 'default')
+
+        expect(cache.getSession(target)?.lastNotify?.status).toBe('blocked')
+        expect(cache.getSession(target)?.lastNotify?.note).toBe('needs a key')
+    })
+
+    it('still lets a LATER destination reply answer the source footer', async () => {
+        // The other direction, so the test above cannot pass on a merge that
+        // simply never clears anything.
+        const { cache, store } = makeCache()
+        const source = makeSession(cache, 'merge-order-source-2')
+        const target = makeSession(cache, 'merge-order-target-2')
+        const now = Date.now()
+
+        cache.setSessionLastNotify(source, {
+            status: 'blocked', at: now - 60_000, note: 'needs a key', receivedAt: now - 60_000
+        })
+        // Delivered after the footer arrived: a genuine answer.
+        store.messages.addMessage(target, {
+            role: 'user',
+            content: { type: 'text', text: 'here you go' },
+            meta: { sentFrom: 'webapp' }
+        }, 'late-reply', null, now - 30_000, now - 30_000)
+        store.messages.markMessagesInvoked(target, ['late-reply'], now - 30_000)
 
         await cache.mergeSessionHistory(source, target, 'default')
 
@@ -409,7 +513,10 @@ describe('startup notify backfill (#1717)', () => {
                 type: 'output',
                 data: { type: 'assistant', message: { content: [{ type: 'text', text: footer }] } }
             }
-        }, undefined, null, now + 10_000 - RUNNER_BEHIND)
+        // Runner-stamped author time, hub-stamped arrival: it reached the hub
+        // ten seconds after the prompt was delivered, which is the truth the
+        // runner's slow clock hides.
+        }, undefined, null, now + 10_000 - RUNNER_BEHIND, now + 10_000)
 
         expect(engine.backfillRecentNotifySignals({ now })).toBe(1)
         expect(engine.getSession(session.id)?.lastNotify?.status).toBe('blocked')
@@ -441,7 +548,7 @@ describe('startup notify backfill (#1717)', () => {
                 type: 'output',
                 data: { type: 'assistant', message: { content: [{ type: 'text', text: footer }] } }
             }
-        }, undefined, null, now - 10_000)
+        }, undefined, null, now - 10_000, now - 10_000)
         // `/model` — consumed and stamped, but handled inside the CLI.
         store.messages.addMessage(session.id, {
             role: 'user',
@@ -477,12 +584,12 @@ describe('startup notify backfill (#1717)', () => {
                 type: 'output',
                 data: { type: 'assistant', message: { content: [{ type: 'text', text: footer }] } }
             }
-        }, undefined, null, now - 10_000)
+        }, undefined, null, now - 10_000, now - 10_000)
         store.messages.addMessage(session.id, {
             role: 'user',
             content: { type: 'text', text: 'here is the key' },
             meta: { sentFrom: 'webapp' }
-        }, 'reply-1', null, now - 5_000)
+        }, 'reply-1', null, now - 5_000, now - 5_000)
         store.messages.markMessagesInvoked(session.id, ['reply-1'], now - 5_000)
 
         expect(engine.backfillRecentNotifySignals({ now })).toBe(0)

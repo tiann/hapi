@@ -92,7 +92,7 @@ import { ArchiveCleanupError } from './archiveCleanupError'
 import { AutomaticTitleSuggestionService } from './automaticTitleSuggestion'
 import { extractMessageEventType } from '../notifications/eventParsing'
 import { SessionEnumerationCache } from './sessionEnumerationCache'
-import { buildOperatorUnblockEvent, deliveredOperatorReplyAt, deliveredOperatorReplySeq, extractSessionNotifySignal, ingestNotifySummaryFromMessage, isDeliveredOperatorReply, isOperatorReplyMessage } from './workGraphNotifyIngest'
+import { buildOperatorUnblockEvent, deliveredOperatorReplyAt, extractSessionNotifySignal, messageReceivedAt, ingestNotifySummaryFromMessage, isDeliveredOperatorReply, isOperatorReplyMessage } from './workGraphNotifyIngest'
 import { MetadataSchema, type OpenCodeRewindOperation } from '@hapi/protocol/schemas'
 import type { OpenCodeRewindReport } from '@hapi/protocol/apiTypes'
 import { extractTodoWriteTodosFromMessageContent } from './todos'
@@ -436,17 +436,12 @@ export class SyncEngine {
      * gap the reason prompt exists to close.
      */
     /** Confirmed prompt delivery cleared the agent's last self-report (#1717). */
-    clearSessionLastNotifyOnDelivery(
-        sessionId: string,
-        deliveredAt?: number,
-        deliveredSeq?: number | null
-    ): void {
-        // The boundary is stamped with the DELIVERED REPLY's own timestamp, not
-        // hub-now. Footers carry the runner's clock (Claude transcript output
-        // preserves it), so a hub-now boundary on a runner that is 30s behind
-        // rejected a genuinely newer footer. Both sides now come from the same
-        // clock domain — the transcript's.
-        this.sessionCache.clearSessionLastNotify(sessionId, deliveredAt, deliveredSeq ?? null)
+    clearSessionLastNotifyOnDelivery(sessionId: string, deliveredAt?: number): void {
+        // A hub stamp, and compared only against other hub stamps: a footer's
+        // hub ARRIVAL on the way in, and the author time of the footer this
+        // delivery superseded on the way past. The footer's own timestamp is
+        // the runner's clock and is never measured against this.
+        this.sessionCache.clearSessionLastNotify(sessionId, deliveredAt)
     }
 
     acknowledgeSessionBlocked(
@@ -573,38 +568,45 @@ export class SyncEngine {
         sessionId: string,
         scanDepth: number | null = NOTIFY_BACKFILL_MESSAGE_SCAN
     ): {
-        signal: { status: string; at: number; note: string | null; seq?: number | null } | null
-        boundarySeq: number | null
+        signal: { status: string; at: number; note: string | null; receivedAt?: number | null } | null
+        boundaryAt: number | null
     } {
         const scanned = scanDepth === null
             ? this.store.messages.getAllMessages(sessionId)
             : this.store.messages.getMessages(sessionId, scanDepth)
 
-        // Where the operator's most recent genuine reply sits. Only a reply the
-        // agent was actually given counts: a locally handled slash command has
-        // `invoked_at` stamped but answered nothing.
-        let boundarySeq: number | null = null
+        // When the operator's most recent genuine reply was delivered. Only a
+        // reply the agent was actually given counts: a locally handled slash
+        // command has `invoked_at` stamped but answered nothing.
+        let boundaryAt: number | null = null
         for (const message of scanned) {
             if (!isDeliveredOperatorReply(message)) continue
-            const seq = deliveredOperatorReplySeq(message)
-            if (boundarySeq === null || seq > boundarySeq) boundarySeq = seq
+            const at = deliveredOperatorReplyAt(message)
+            if (boundaryAt === null || at > boundaryAt) boundaryAt = at
         }
 
-        // The newest footer that the boundary does not already answer.
-        let best: { signal: { status: string; at: number; note: string | null }; seq: number } | null = null
+        // The newest footer that boundary does not already answer. Eligibility
+        // is decided on hub ARRIVAL (same clock as the boundary); which of the
+        // eligible footers is newest is decided on AUTHOR time (same clock as
+        // each other).
+        let best: {
+            signal: { status: string; at: number; note: string | null }
+            receivedAt: number
+        } | null = null
         for (const message of scanned) {
-            if (boundarySeq !== null && message.seq <= boundarySeq) continue
+            const receivedAt = messageReceivedAt(message)
+            if (boundaryAt !== null && receivedAt <= boundaryAt) continue
             const signal = extractSessionNotifySignal(message.content, message.createdAt)
             if (!signal) continue
             if (best === null
                 || signal.at > best.signal.at
-                || (signal.at === best.signal.at && message.seq > best.seq)) {
-                best = { signal, seq: message.seq }
+                || (signal.at === best.signal.at && receivedAt > best.receivedAt)) {
+                best = { signal, receivedAt }
             }
         }
         return {
-            signal: best === null ? null : { ...best.signal, seq: best.seq },
-            boundarySeq
+            signal: best === null ? null : { ...best.signal, receivedAt: best.receivedAt },
+            boundaryAt
         }
     }
 
@@ -630,17 +632,15 @@ export class SyncEngine {
         // does not delay the signal, it writes null and drops the session out
         // of Blocked while its transcript still ends unanswered. Rewind is
         // rare, so the full read is affordable.
-        // Scope the seq watermarks to the surviving transcript too. They were
-        // left pointing at deleted history: after a rewind that drops the
-        // reply at seq 100 and keeps history through 20, new rows are numbered
-        // from 21, so a stale clear watermark of 100 silently rejected every
-        // genuine footer up to seq 100 — and the clear uses MAX, so no later
-        // delivery could ever lower it again.
+        // Scope the boundaries to the surviving transcript too. They were left
+        // describing deleted history, and the clear's MAX meant no later
+        // delivery could lower them again — so after a rewind the session
+        // could reject every genuine footer it went on to emit.
         const retained = this.deriveNotifyStateFromTranscript(sessionId, null)
         this.sessionCache.replaceNotifyAfterTruncate(
             sessionId,
             retained.signal,
-            retained.boundarySeq
+            retained.boundaryAt ?? 0
         )
     }
 
@@ -1048,11 +1048,12 @@ export class SyncEngine {
                     event.message.createdAt
                 )
                 if (notifySignal) {
-                    // seq, not the timestamp, decides whether this footer
-                    // predates the reply that answered it.
+                    // Hub arrival is what the delivery boundary is compared
+                    // against — the footer's own timestamp is the runner's
+                    // clock, and a position is reusable and merge-renumbered.
                     this.sessionCache.setSessionLastNotify(session.id, {
                         ...notifySignal,
-                        seq: event.message.seq
+                        receivedAt: messageReceivedAt(event.message)
                     })
                 }
 

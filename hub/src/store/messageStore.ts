@@ -80,8 +80,8 @@ export class MessageStore {
         return truncateOpenCodeRewind(this.db, sessionId, cutoffSeq, boundaryId)
     }
 
-    addMessage(sessionId: string, content: unknown, localId?: string, scheduledAt?: number | null, createdAt?: number): StoredMessage {
-        return addMessage(this.db, sessionId, content, localId, scheduledAt, createdAt)
+    addMessage(sessionId: string, content: unknown, localId?: string, scheduledAt?: number | null, createdAt?: number, receivedAt?: number): StoredMessage {
+        return addMessage(this.db, sessionId, content, localId, scheduledAt, createdAt, receivedAt)
     }
     addMessageSweepingLiveSnapshots(
         sessionId: string,

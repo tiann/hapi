@@ -2750,11 +2750,16 @@ export function SessionList(props: {
         () => activeMachineFilter === null
             ? sessionFilteredSessions
             : sessionFilteredSessions.filter(session =>
-                session.id === filterExemptId
+                // `revealBlockedSessionId`, NOT `filterExemptId`. The latter
+                // falls back to the selected session, which widened the base
+                // machine filter: with a machine-A session open, switching the
+                // list to machine B left A's row on screen with no jump
+                // involved. Only an in-flight jump may cross machines, and
+                // only for as long as it holds its exemption.
+                session.id === revealBlockedSessionId
                 || (session.metadata?.machineId ?? UNKNOWN_MACHINE_ID) === activeMachineFilter
             ),
-        [sessionFilteredSessions, activeMachineFilter, filterExemptId]
-
+        [sessionFilteredSessions, activeMachineFilter, revealBlockedSessionId]
     )
     const globalPinnedSessions = useMemo(() => {
         const pinned = machineFilteredSessions.filter((session) => Boolean(session.globalPinned))

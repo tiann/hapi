@@ -642,22 +642,23 @@ export function isDeliveredOperatorReply(
 }
 
 /**
- * Where a delivered reply sits in the hub's insertion order (#1717).
+ * When the hub received a message, as opposed to when its author wrote it.
  *
- * This is the only sound key for "did this reply reach the agent after that
- * footer arrived?". The footer's position is its own `seq`; the reply's is
- * `invoked_seq`, the session high-water mark at delivery. Its own `seq` is not
- * usable — that was allocated when the prompt was queued, which can be well
- * before the footer it answers. Timestamps are not usable either: the footer
- * carries the runner's clock and `invokedAt` is the hub's.
+ * The key a delivery boundary is measured against (#1717). `createdAt` is the
+ * agent runner's own clock, preserved verbatim through transcript replay, so it
+ * cannot be compared with the hub-stamped `invokedAt` of a reply. Hub arrival
+ * can: both sides are then the same clock. A position cannot be used either —
+ * insertion `seq` is allocated as MAX(seq)+1, so cancelling a queued row frees
+ * its number for reuse, and a merge renumbers one side's positions into
+ * something synthetic rather than real.
  *
- * Falls back to the row's `seq` for rows written before `invoked_seq` existed,
- * which is the best available ordering for history already on disk.
+ * Rows written before `received_at` existed fall back to `createdAt`, the only
+ * evidence they carry.
  */
-export function deliveredOperatorReplySeq(
-    message: { seq: number; invokedSeq?: number | null }
+export function messageReceivedAt(
+    message: { createdAt: number; receivedAt?: number | null }
 ): number {
-    return message.invokedSeq ?? message.seq
+    return message.receivedAt ?? message.createdAt
 }
 
 /** When the agent actually saw a delivered reply. */

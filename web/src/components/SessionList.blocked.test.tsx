@@ -12,6 +12,7 @@ afterEach(() => {
     localStorage.removeItem('hapi-session-preview-limit')
     localStorage.removeItem('hapi-pin-in-progress-sessions')
     localStorage.removeItem('hapi-session-list-status')
+    localStorage.removeItem('hapi-session-list-machine-filter')
     delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView
 })
 
@@ -262,6 +263,51 @@ describe('SessionList blocked chrome (#1717)', () => {
 
         expect(screen.queryByTestId('blocked-section')).toBeNull()
         expect(screen.queryByTestId('blocked-jump-pill')).toBeNull()
+    })
+
+    it('does not let the selected session escape the machine filter', () => {
+        // The machine filter had no selected-session exception before the
+        // blocked jump, and must not gain one: with a machine-A session open,
+        // switching the list to machine B left A's row on screen. Only an
+        // in-flight jump may cross machines, and only while it holds its
+        // exemption — so the exception keys off `revealBlockedSessionId`, not
+        // `filterExemptId`, which falls back to the selected session.
+        localStorage.setItem('hapi-session-list-machine-filter', 'machine-b')
+        const onA = makeSession({
+            id: 'on-machine-a',
+            active: true,
+            metadata: { path: '/a', name: 'on-machine-a', flavor: 'claude', machineId: 'machine-a' }
+        })
+        const onB = makeSession({
+            id: 'on-machine-b',
+            active: true,
+            metadata: { path: '/b', name: 'on-machine-b', flavor: 'claude', machineId: 'machine-b' }
+        })
+        const queryClient = new QueryClient({
+            defaultOptions: { queries: { retry: false }, mutations: { retry: false } }
+        })
+        const wrap = (children: ReactNode) => (
+            <QueryClientProvider client={queryClient}>
+                <ToastProvider>
+                    <I18nProvider>{children}</I18nProvider>
+                </ToastProvider>
+            </QueryClientProvider>
+        )
+        render(wrap(
+            <SessionList
+                sessions={[onA, onB]}
+                selectedSessionId="on-machine-a"
+                onSelect={vi.fn()}
+                onNewSession={vi.fn()}
+                onRefresh={vi.fn()}
+                isLoading={false}
+                api={null}
+            />
+        ))
+
+        // The machine-B row proves the filter is active and the list rendered.
+        expect(document.querySelector('[data-session-id="on-machine-b"]')).not.toBeNull()
+        expect(document.querySelector('[data-session-id="on-machine-a"]')).toBeNull()
     })
 
     it('reveals a jump target that the operator\'s saved status filter hides', () => {

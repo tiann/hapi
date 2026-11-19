@@ -131,7 +131,7 @@ export type SessionHandlersDeps = {
      *  commands) don't leave the spinner stuck for the full grace window. */
     onMessagesConsumed?: (sessionId: string) => void
     /** Fired on CONFIRMED prompt consumption (#1717). */
-    onPromptDelivered?: (sessionId: string, deliveredAt: number, deliveredSeq: number | null) => void
+    onPromptDelivered?: (sessionId: string, deliveredAt: number) => void
 }
 
 export function registerSessionHandlers(socket: CliSocketWithData, deps: SessionHandlersDeps): void {
@@ -499,7 +499,6 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         // and one naming unknown local ids, consume nothing — clearing on
         // those erased a blocker the agent genuinely reported (#1717).
         let newlyDelivered = false
-        let deliveredSeq: number | null = null
         try {
             const consumedResult = store.recordMessagesConsumed(
                 data.sid,
@@ -515,7 +514,6 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             )
             sessionUpdatedAt = consumedResult.updatedAt
             newlyDelivered = consumedResult.consumed > 0
-            deliveredSeq = consumedResult.deliveredSeq
         } catch (err) {
             console.error('recordMessagesConsumed failed', err)
             return
@@ -542,7 +540,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         // agent and reports `steered` instead, so it still clears.
         if (newlyDelivered && data.clearQueuedThinkingGrace !== true) {
             try {
-                onPromptDelivered?.(data.sid, invokedAt, deliveredSeq)
+                onPromptDelivered?.(data.sid, invokedAt)
             } catch (err) {
                 console.error('onPromptDelivered failed', err)
             }
