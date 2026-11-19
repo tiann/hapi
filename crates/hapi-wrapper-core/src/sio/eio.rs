@@ -120,6 +120,7 @@ fn ping_timeout(_: tokio::time::error::Elapsed) -> io::Error {
 pub struct Transport {
     socket: Socket,
     pending_write: Option<Message>,
+    pending_pongs: std::collections::VecDeque<Message>,
     watchdog: Duration,
     expires: Instant,
 }
@@ -170,6 +171,7 @@ impl Transport {
         Ok(Self {
             socket,
             pending_write: None,
+            pending_pongs: Default::default(),
             watchdog,
             expires: deadline(watchdog)?,
         })
@@ -187,10 +189,8 @@ impl Transport {
         packet: Packet,
         mut receive: impl FnMut(Packet) -> io::Result<bool>,
     ) -> io::Result<bool> {
-        let mut frames =
-            std::collections::VecDeque::from([Message::text(packet.encode_with_prefix(b"4")?)]);
-        while let Some(frame) = frames.pop_front() {
-            self.pending_write = Some(frame);
+        self.pending_write = Some(Message::text(packet.encode_with_prefix(b"4")?));
+        while self.pending_write.is_some() {
             timeout_at(
                 self.expires,
                 poll_fn(|cx| Pin::new(&mut self.socket).poll_ready(cx)),
@@ -211,7 +211,7 @@ impl Transport {
                             Some(Message::Text(s)) => match EnginePacket::decode(&s)? {
                                 EnginePacket::Ping(data) => {
                                     self.expires = deadline(self.watchdog)?;
-                                    frames.push_back(Message::text(EnginePacket::Pong(data).encode()));
+                                    self.pending_pongs.push_back(Message::text(EnginePacket::Pong(data).encode()));
                                 }
                                 EnginePacket::Message(data) => {
                                     if !receive(Packet::decode(&data)?)? { return Ok(false); }
@@ -232,6 +232,7 @@ impl Transport {
                     _ = tokio::time::sleep_until(self.expires) => return Err(io::Error::new(io::ErrorKind::TimedOut, "ping timeout")),
                 }
             }
+            self.pending_write = self.pending_pongs.pop_front();
         }
         Ok(true)
     }
@@ -244,7 +245,7 @@ impl Transport {
             .map(Ok::<_, io::Error>)
             .chain(packets.map(|p| Ok(Message::text(p.encode_with_prefix(b"4")?))));
         let (mut sink, mut stream) = (&mut self.socket).split();
-        let mut pongs = std::collections::VecDeque::new();
+        let pongs = &mut self.pending_pongs;
         let mut prefer_pong = true;
         loop {
             let frame = if prefer_pong && !pongs.is_empty() {

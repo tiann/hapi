@@ -35,24 +35,12 @@ fn spawn(cmd: &mut Command) -> Option<tokio::process::Child> {
 }
 
 async fn connected(rx: &mut mpsc::UnboundedReceiver<Event>, ordinal: u32) {
-    let mut connected = false;
-    async fn next_message(
-        rx: &mut mpsc::UnboundedReceiver<Event>,
-        connected: &mut bool,
-    ) -> Option<Event> {
-        let event = rx.recv().await;
-        if matches!(event, Some(Event::Connected)) {
-            assert!(!*connected);
-            *connected = true;
-            return rx.recv().await;
-        }
-        event
-    }
+    assert!(matches!(rx.recv().await, Some(Event::Connected)));
     let Some(Event::Message {
         name,
         args,
         ack: Some(ack),
-    }) = next_message(rx, &mut connected).await
+    }) = rx.recv().await
     else {
         panic!("expected server ack request")
     };
@@ -63,15 +51,12 @@ async fn connected(rx: &mut mpsc::UnboundedReceiver<Event>, ordinal: u32) {
         name,
         args,
         ack: None,
-    }) = next_message(rx, &mut connected).await
+    }) = rx.recv().await
     else {
         panic!("expected server confirmation")
     };
     assert_eq!(name, "answered");
     assert_eq!(args, vec![json!("reply"), json!(ordinal)]);
-    if !connected {
-        assert!(matches!(rx.recv().await, Some(Event::Connected)));
-    }
 }
 
 #[tokio::test]
@@ -98,6 +83,9 @@ async fn real_server() {
         connected(&mut events, 1).await;
         assert!(client.volatile_emit("record", vec![json!("writable")]));
         assert!(!client.volatile_emit("record", vec![json!("unflushed")]));
+        let title = client.emit_with_ack("title", vec![], None).await.unwrap();
+        assert_eq!(title, vec![json!({"title": "�"})]);
+        assert!(client.is_connected());
         let args = vec![json!({"v":1}), json!(null)];
         assert_eq!(
             client

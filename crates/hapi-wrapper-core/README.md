@@ -8,3 +8,7 @@ not use this crate yet.
 
 The PEM files in `tests/fixtures/` contain a self-signed test CA and a localhost
 server certificate and private key. They are used only by the TLS tests.
+
+Socket.IO JSON decoding replaces each unpaired UTF-16 surrogate with U+FFFD.
+Valid surrogate pairs retain their character, and re-encoding preserves the
+normalized string.

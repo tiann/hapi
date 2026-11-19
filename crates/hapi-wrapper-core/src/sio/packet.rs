@@ -91,6 +91,39 @@ fn valid_name(name: &Value) -> bool {
     name.is_number() || name.as_str().is_some_and(|s| !reserved(s))
 }
 
+fn unicode_escape(input: &[u8]) -> Option<u16> {
+    let digits = input.strip_prefix(br"\u")?.get(..4)?;
+    if !digits.iter().all(u8::is_ascii_hexdigit) {
+        return None;
+    }
+    u16::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok()
+}
+
+fn decode_json<T: serde::de::DeserializeOwned>(data: &str) -> serde_json::Result<T> {
+    serde_json::from_str(data).or_else(|error| {
+        let bytes = data.as_bytes();
+        let mut normalized = None;
+        let mut pos = 0;
+        while let Some(offset) = bytes[pos..].iter().position(|&b| b == b'\\') {
+            let start = pos + offset;
+            let Some(unit) = unicode_escape(&bytes[start..]) else {
+                pos = (start + 2).min(bytes.len());
+                continue;
+            };
+            pos = start + 6;
+            if (0xd800..=0xdbff).contains(&unit)
+                && unicode_escape(&bytes[pos..]).is_some_and(|low| (0xdc00..=0xdfff).contains(&low))
+            {
+                pos += 6;
+            } else if (0xd800..=0xdfff).contains(&unit) {
+                normalized.get_or_insert_with(|| bytes.to_vec())[start + 2..pos]
+                    .copy_from_slice(b"fffd");
+            }
+        }
+        serde_json::from_slice(&normalized.ok_or(error)?)
+    })
+}
+
 impl Packet {
     pub fn encode(&self) -> Result<String> {
         self.encode_with_prefix(b"")
@@ -158,7 +191,7 @@ impl Packet {
                 let v: Option<Value> = if data.is_empty() {
                     None
                 } else {
-                    Some(serde_json::from_str(data)?)
+                    Some(decode_json(data)?)
                 };
                 if v.as_ref().is_some_and(|v| !v.is_object()) {
                     return Err(invalid("invalid CONNECT"));
@@ -167,7 +200,7 @@ impl Packet {
             }
             "1" if id.is_none() && data.is_empty() => Payload::Disconnect,
             "2" => {
-                let values: Vec<Value> = serde_json::from_str(data)?;
+                let values: Vec<Value> = decode_json(data)?;
                 let mut args = values.into_iter();
                 let Some(name) = args.next().filter(valid_name) else {
                     return Err(invalid("missing event name"));
@@ -180,10 +213,10 @@ impl Packet {
             }
             "3" => Payload::Ack {
                 id: id.ok_or_else(|| invalid("missing ack id"))?,
-                args: serde_json::from_str(data)?,
+                args: decode_json(data)?,
             },
             "4" if id.is_none() => {
-                let v: Value = serde_json::from_str(data)?;
+                let v: Value = decode_json(data)?;
                 if !v.is_string() && !v.is_object() {
                     return Err(invalid("invalid CONNECT_ERROR"));
                 }
@@ -217,6 +250,18 @@ mod tests {
             ]
         })
     }
+    #[test]
+    fn normalize_only_unpaired_surrogates() {
+        let packet = Packet::decode(
+            r#"2["title",{"\ud83d":"\ud83d\udc00\ud83d","literal":"\\ud83d","low":"\ude00"}]"#,
+        )
+        .unwrap();
+        let canonical = r#"2["title",{"�":"🐀�","literal":"\\ud83d","low":"�"}]"#;
+        assert_eq!(packet.encode().unwrap(), canonical);
+        assert_eq!(Packet::decode(canonical).unwrap(), packet);
+        assert!(Packet::decode(r#"30["\ud83d\u12zz"]"#).is_err());
+    }
+
     #[test]
     fn encode_ack_in_engine_frame() {
         let data = "xyz".repeat(1024 * 1024);

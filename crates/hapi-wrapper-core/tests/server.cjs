@@ -33,6 +33,7 @@ if (process.argv[2] === 'parser') {
         next()
     }).on('connection', socket => {
         connections++
+        socket.on('title', ack => ack({ title: '😀'.slice(0, 1) }))
         socket.on('echo', (...args) => args.pop()(...args))
         socket.on('record', value => received.push(value))
         socket.on('snapshot', ack => ack({ received, connections }))
