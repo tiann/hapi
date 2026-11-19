@@ -50,3 +50,44 @@ it('preserves an SSE question when a session GET started before issuance returns
         agentStateVersion: 3, agentState: { requests: {} }, activeAt: 3
     })
 })
+
+it.each(['snapshot', 'patch'])('fills missing issuance IDs from an equal-version %s', (source) => {
+    const id = 'session'
+    const key = queryKeys.session(id)
+    const client = createQueryClient()
+    const question = { tool: 'request_user_input', arguments: {} }
+    const current: AgentState = {
+        requests: { missing: question, known: { ...question, instanceId: 'known' } }
+    }
+    const incoming: AgentState = {
+        requests: { missing: { ...question, instanceId: 'learned' }, known: question, extra: question }
+    }
+    const expected = { requests: { missing: { ...question, instanceId: 'learned' }, known: { ...question, instanceId: 'known' } } }
+    const write = (agentStateVersion: number, agentState: AgentState) => client.setQueryData<SessionResponse>(key, previous => ({
+        session: (source === 'patch' && previous
+            ? applySessionDetailPatch(previous.session, { agentState: { version: agentStateVersion, value: agentState } }) ?? previous.session
+            : { id, agentStateVersion, agentState } as SessionResponse['session'])
+    }))
+    const read = () => client.getQueryData<SessionResponse>(key)?.session.agentState
+
+    write(2, current)
+    write(1, incoming)
+    expect(read()).toEqual(current)
+    write(2, incoming)
+    expect(read()).toEqual(expected)
+    write(2, { requests: { missing: question, known: { ...question, instanceId: 'different' } } })
+    expect(read()).toEqual(expected)
+})
+
+it('replaces legacy agent state when both detail snapshots omit the version', () => {
+    const id = 'session'
+    const key = queryKeys.session(id)
+    const client = createQueryClient()
+    const current: AgentState = { requests: { question: { tool: 'request_user_input', arguments: {} } } }
+    const incoming: AgentState = { requests: {} }
+
+    client.setQueryData(key, { session: { id, agentState: current } })
+    client.setQueryData(key, { session: { id, agentState: incoming } })
+
+    expect(client.getQueryData<SessionResponse>(key)?.session.agentState).toEqual(incoming)
+})

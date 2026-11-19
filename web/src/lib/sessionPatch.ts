@@ -1,5 +1,5 @@
 import { mergeReadState } from '@hapi/protocol'
-import type { Session, SessionPatch } from '@/types/api'
+import type { AgentState, Session, SessionPatch } from '@/types/api'
 
 // Pure session-patch application logic, extracted from useSSE.ts so the rules
 // are importable without React (unit tests, fixture generation, native-client
@@ -9,10 +9,27 @@ import type { Session, SessionPatch } from '@/types/api'
 // agentState. SSE reconnects + per-query invalidation can leave the cache
 // holding state that's NEWER than a buffered older patch about to replay;
 // applying that older patch would regress resume / session-id / pending-
-// requests state. Mirrors the CLI room handler contract: strictly newer
-// only. Exported so the rule is unit-testable in isolation from the hook.
+// requests state. Replacing a versioned field requires a strictly newer
+// version. Equal versions may supply missing request instance IDs.
 export function isNewerVersionedPatch(patchVersion: number, currentVersion: number): boolean {
     return patchVersion > currentVersion
+}
+
+/** At equal state versions, older hubs may omit issuance IDs on otherwise matching requests. */
+export function fillMissingPendingRequestInstanceIds(current: AgentState, incoming: AgentState | null | undefined): AgentState {
+    const currentRequests = current.requests
+    const incomingRequests = incoming?.requests
+    if (!currentRequests || !incomingRequests) return current
+
+    let enriched: AgentState['requests']
+    for (const [id, request] of Object.entries(currentRequests)) {
+        if (request.instanceId || !Object.hasOwn(incomingRequests, id)) continue
+        const candidate = incomingRequests[id]
+        if (!candidate.instanceId || candidate.tool !== request.tool) continue
+        enriched ??= { ...currentRequests }
+        enriched[id] = { ...request, instanceId: candidate.instanceId }
+    }
+    return enriched ? { ...current, requests: enriched } : current
 }
 
 /**
@@ -107,13 +124,14 @@ export function applySessionDetailPatch(session: Session, patch: SessionPatch): 
         nextSession.metadataVersion = patch.metadata.version
         changed = true
     }
-    if (patch.agentState !== undefined && (
-        !Number.isFinite(nextSession.agentStateVersion)
-        || isNewerVersionedPatch(patch.agentState.version, nextSession.agentStateVersion)
-    )) {
-        nextSession.agentState = patch.agentState.value
-        nextSession.agentStateVersion = patch.agentState.version
-        changed = true
+    if (patch.agentState !== undefined) {
+        const { version, value } = patch.agentState
+        if (!Number.isFinite(session.agentStateVersion) || isNewerVersionedPatch(version, session.agentStateVersion)) {
+            assign('agentState', value)
+            assign('agentStateVersion', version)
+        } else if (version === session.agentStateVersion && session.agentState) {
+            assign('agentState', fillMissingPendingRequestInstanceIds(session.agentState, value))
+        }
     }
     return changed ? nextSession : null
 }
