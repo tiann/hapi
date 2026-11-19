@@ -54,6 +54,38 @@ afterEach(() => {
 });
 
 describe('AcpSdkBackend', () => {
+    it('shares one teardown result between late startup disposal and verified disconnect', async () => {
+        const backend = new AcpSdkBackend({ command: 'opencode' });
+        const stopped = Promise.withResolvers<boolean>();
+        const close = vi.fn(() => stopped.promise);
+        Object.assign(backend, { transport: { close } });
+        const lateDisposal = backend.disconnect();
+        const verification = backend.disconnect({ verifyTermination: true });
+        stopped.resolve(true);
+        await lateDisposal;
+        await expect(verification).resolves.toBe(true);
+        await expect(backend.disconnect({ verifyTermination: true })).resolves.toBe(true);
+        expect(close).toHaveBeenCalledOnce();
+    });
+
+    it('verifies a failed transport creation but keeps a rejected close unverified', async () => {
+        const missing = new AcpSdkBackend({ command: 'opencode' });
+        const create = vi.spyOn(AcpStdioTransport, 'create').mockRejectedValueOnce(new Error('spawn failed'));
+        try {
+            await expect(missing.initialize()).rejects.toThrow('spawn failed');
+            await expect(missing.disconnect({ verifyTermination: true })).resolves.toBe(true);
+        } finally {
+            create.mockRestore();
+        }
+
+        const started = new AcpSdkBackend({ command: 'opencode' });
+        const close = vi.fn().mockRejectedValue(new Error('close failed'));
+        Object.assign(started, { transport: { close } });
+        await expect(started.disconnect()).rejects.toThrow('close failed');
+        await expect(started.disconnect({ verifyTermination: true })).resolves.toBe(false);
+        expect(close).toHaveBeenCalledOnce();
+    });
+
     it('closes an opening transport without sending initialize', async () => {
         const opening = Promise.withResolvers<AcpStdioTransport>();
         const transport = {

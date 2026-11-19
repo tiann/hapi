@@ -88,6 +88,9 @@ export class AcpStdioTransport {
     private readonly requestHandlers = new Map<string, RequestHandler>();
     private notificationHandler: ((method: string, params: unknown) => void) | null = null;
     private stderrErrorHandler: ((error: AcpStderrError) => void) | null = null;
+    private unexpectedExitHandler: ((error: Error, details: { childProcessExited: boolean }) => void) | null = null;
+    private closeRequested = false;
+    private reportedChildExit: boolean | null = null;
     private buffer = '';
     private recentStderr = '';
     private stderrParseBuffer = '';
@@ -102,7 +105,7 @@ export class AcpStdioTransport {
     private exited = false;
     private exitError: Error | null = null;
     /** ACP child PID when known (for lock attribution / exit logs). */
-    private childPid: number | null = null;
+    private readonly childPid: number | null;
 
     /** Rolling join window for stderr before close-time classification. */
     private static readonly RECENT_STDERR_WINDOW = 8_000;
@@ -149,9 +152,9 @@ export class AcpStdioTransport {
         this.command = command;
         this.process = process;
 
+        const childPid = typeof this.process.pid === 'number' ? this.process.pid : null;
+        this.childPid = childPid;
         if (this.shouldGuardAgentCli) {
-            const childPid = typeof this.process.pid === 'number' ? this.process.pid : null;
-            this.childPid = childPid;
             if (childPid !== null) {
                 recordActiveAcpChildPid(childPid);
             }
@@ -215,6 +218,11 @@ export class AcpStdioTransport {
             } else {
                 this.exitError = new Error(`ACP process exited (${attribution})`);
             }
+            if (this.closed) this.closeError = this.exitError;
+            this.reportGenerationLoss(this.exitError, guardState.childAlive !== true);
+            // A descendant can keep stdio open after the owned child has exited.
+            // Recovery clients must be able to settle the active turn in that gap.
+            if (this.unexpectedExitHandler && !this.closeRequested) this.rejectAllPending(this.exitError);
         });
 
         // Use 'close' (not only 'exit') so final stderr chunks are drained before we
@@ -228,7 +236,7 @@ export class AcpStdioTransport {
             let message = guardState.childAlive === true
                 ? `ACP transport closed (${attribution}) but OS PID ${this.childPid} is still alive ` +
                   `(lock=${getAgentAcpLockDir()})`
-                : `ACP process exited (${attribution})`;
+                : `${this.reportedChildExit === true ? 'ACP process exited' : 'ACP transport closed'} (${attribution})`;
             if (stderr) {
                 message = `${message}. stderr: ${stderr}`;
             }
@@ -237,7 +245,7 @@ export class AcpStdioTransport {
             if (stderr) {
                 (error as Error & { stderr?: string }).stderr = stderr;
             }
-            this.markClosed(error);
+            this.markClosed(error, this.reportedChildExit === true);
         });
 
         this.process.on('error', (error) => {
@@ -266,6 +274,11 @@ export class AcpStdioTransport {
 
     onStderrError(handler: ((error: AcpStderrError) => void) | null): void {
         this.stderrErrorHandler = handler;
+    }
+
+    /** Reports loss of this generation once, then confirmed child death if it arrives later. */
+    onUnexpectedExit(handler: ((error: Error, details: { childProcessExited: boolean }) => void) | null): void {
+        this.unexpectedExitHandler = handler;
     }
 
     registerRequestHandler(method: string, handler: RequestHandler): void {
@@ -443,9 +456,12 @@ export class AcpStdioTransport {
     }
 
     /** Ends the agent process; resolves true once its whole process tree is confirmed gone. */
-    async close(): Promise<boolean> {
+    async close(options?: { recovery?: boolean }): Promise<boolean> {
+        this.closeRequested = true;
         this.process.stdin.end();
-        const treeGone = await killProcessByChildProcess(this.process);
+        // Node assigns the PID before spawn() returns. A failed spawn emits
+        // its error later, but already has no child to terminate.
+        const treeGone = (options?.recovery && this.childPid === null) || await killProcessByChildProcess(this.process);
         this.releaseAgentCliGuard();
         this.markClosed(new Error('ACP transport closed'));
         return treeGone;
@@ -606,14 +622,23 @@ export class AcpStdioTransport {
         }
     }
 
-    private markClosed(error: Error): void {
-        if (this.closed) {
-            return;
+    private reportGenerationLoss(error: Error, childProcessExited: boolean): void {
+        if ((this.closeRequested && this.reportedChildExit === null) || this.reportedChildExit === true || this.reportedChildExit === childProcessExited) return;
+        this.reportedChildExit = childProcessExited;
+        try {
+            this.unexpectedExitHandler?.(error, { childProcessExited });
+        } catch (listenerError) {
+            logger.warn('[ACP] Transport loss listener failed', listenerError);
         }
+    }
 
+    private markClosed(error: Error, childProcessExited?: boolean): void {
+        const alreadyClosed = this.closed;
         this.closed = true;
-        this.closeError = error;
-        this.rejectAllPending(error);
+        if (childProcessExited !== undefined) this.closeError = error;
+        else if (!alreadyClosed) this.closeError = this.exitError ?? error;
+        this.reportGenerationLoss(this.closeError!, childProcessExited ?? false);
+        if (!alreadyClosed) this.rejectAllPending(this.closeError!);
     }
 
     private rejectAllPending(error: Error): void {

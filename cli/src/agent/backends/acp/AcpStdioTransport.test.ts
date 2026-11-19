@@ -90,6 +90,12 @@ vi.mock('node:child_process', () => ({
                 }
                 handlers.set(`proc:${event}`, [...(handlers.get(`proc:${event}`) ?? []), handler]);
             }),
+            once(event: string, handler: () => void) {
+                if (event === 'exit') spawnState.exitHandlers.push(handler);
+            },
+            off(event: string, handler: () => void) {
+                if (event === 'exit') spawnState.exitHandlers = spawnState.exitHandlers.filter(fn => fn !== handler);
+            },
             kill: (...args: unknown[]) => spawnState.kill(...args)
         };
         return proc;
@@ -131,6 +137,56 @@ describe('AcpStdioTransport agent CLI guard', () => {
         spawnState.exitHandlers = [];
         spawnState.closeHandlers = [];
         spawnState.stdoutDataHandlers = [];
+    });
+
+    test.each(['pipe first', 'exit first'])('reports generation loss and preserves confirmed death: %s', async order => {
+        const transport = await AcpStdioTransport.create({ command: 'opencode' });
+        const seen: boolean[] = [];
+        transport.onUnexpectedExit((_error, details) => {
+            seen.push(details.childProcessExited);
+            throw new Error('observer failed');
+        });
+        const pipe = () => spawnState.stdinErrorHandlers.forEach(handler => handler(new Error('EPIPE')));
+        const exit = () => spawnState.exitHandlers.forEach(handler => handler(null, 'SIGKILL'));
+        if (order === 'pipe first') {
+            pipe();
+            expect(seen).toEqual([false]);
+            exit();
+        } else {
+            exit();
+            pipe();
+        }
+        spawnState.closeHandlers.forEach(handler => handler(null, 'SIGKILL'));
+        expect(seen).toEqual(order === 'pipe first' ? [false, true] : [true]);
+        await expect(transport.sendRequest('session/new')).rejects.toThrow('SIGKILL');
+    });
+
+    test('a stdio close without a child exit leaves an unguarded child unconfirmed', async () => {
+        const transport = await AcpStdioTransport.create({ command: 'opencode' });
+        const loss = vi.fn();
+        transport.onUnexpectedExit(loss);
+        spawnState.closeHandlers.forEach(handler => handler(null, 'SIGKILL'));
+        expect(loss).toHaveBeenCalledExactlyOnceWith(expect.any(Error), { childProcessExited: false });
+    });
+
+    test('verifies a pidless spawn before its asynchronous error event', async () => {
+        spawnState.pid = undefined;
+        const transport = await AcpStdioTransport.create({ command: 'missing' });
+        await expect(transport.close({ recovery: true })).resolves.toBe(true);
+        expect(killProcessByChildProcess).not.toHaveBeenCalled();
+    });
+
+    test('does not report an unexpected exit when HAPI closes the transport', async () => {
+        const transport = await AcpStdioTransport.create({ command: 'opencode', args: ['acp'] });
+        const exits: Error[] = [];
+        transport.onUnexpectedExit((error) => exits.push(error));
+
+        await transport.close();
+        for (const handler of spawnState.closeHandlers) {
+            handler(null, 'SIGTERM');
+        }
+
+        expect(exits).toEqual([]);
     });
 
     test.each(['write accepted', 'early response', 'closed', 'write failure'] as const)(
@@ -370,7 +426,7 @@ describe('AcpStdioTransport closed stdin writes', () => {
         }
     });
 
-    test('rejects new requests after the ACP process exits instead of throwing from stdin.write', async () => {
+    test('rejects new requests after stdio closes without claiming a child exit', async () => {
         const transport = await AcpStdioTransport.create({ command: 'gemini' });
         spawnState.exitCode = 1;
         spawnState.stdinWrite.mockImplementation(() => {
@@ -382,7 +438,7 @@ describe('AcpStdioTransport closed stdin writes', () => {
         }
 
         await expect(transport.sendRequest('session/new')).rejects.toThrow(
-            'ACP process exited (code=1, signal=null)'
+            'ACP transport closed (code=1, signal=null)'
         );
         expect(() => transport.sendNotification('session/cancel', {})).not.toThrow();
     });
@@ -407,7 +463,7 @@ describe('AcpStdioTransport closed stdin writes', () => {
         }
 
         await expect(transport.sendRequest('session/load')).rejects.toThrow(
-            /ACP process exited \(code=1, signal=null(?:, childPid=\d+, lock=[^)]+)?\)\. stderr: Cannot use this model: grok-4\.5\[fast=true\]/
+            /ACP transport closed \(code=1, signal=null(?:, childPid=\d+, lock=[^)]+)?\)\. stderr: Cannot use this model: grok-4\.5\[fast=true\]/
         );
     });
 
@@ -682,6 +738,8 @@ describe('AcpStdioTransport closed stdin writes', () => {
         vi.useFakeTimers();
         try {
             const transport = await AcpStdioTransport.create({ command: 'gemini' });
+            const signal = vi.fn();
+            transport.onUnexpectedExit(signal);
             const request = transport.sendRequestWithDispatch('session/prompt', {}, {
                 timeoutMs: Infinity,
                 dispatchTimeoutMs: 10
@@ -695,6 +753,7 @@ describe('AcpStdioTransport closed stdin writes', () => {
             await completed;
             expect(isAcpIndeterminateError(dispatchError)).toBe(true);
             expect(isAcpIndeterminateError(completedError)).toBe(true);
+            expect(signal).toHaveBeenCalledExactlyOnceWith(expect.any(Error), { childProcessExited: false });
             await transport.close();
         } finally {
             vi.useRealTimers();
