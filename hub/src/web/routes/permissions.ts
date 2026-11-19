@@ -1,8 +1,8 @@
 import { isPermissionModeAllowedForFlavor } from '@hapi/protocol'
 import { PermissionModeSchema } from '@hapi/protocol/schemas'
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { z } from 'zod'
-import { PermissionAnswerRejectedError, PermissionRequestNotFoundError } from '../../sync/rpcGateway'
+import { PermissionDecisionRejectedError, PermissionRequestNotFoundError } from '../../sync/rpcGateway'
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
@@ -26,6 +26,16 @@ const approveBodySchema = z.object({
 const denyBodySchema = z.object({
     decision: decisionSchema.optional()
 })
+
+function permissionFailure(c: Context<WebAppEnv>, error: unknown): Response {
+    if (error instanceof PermissionRequestNotFoundError) {
+        return c.json({ error: error.message }, 409)
+    }
+    if (error instanceof PermissionDecisionRejectedError) {
+        return c.json({ error: error.message }, 422)
+    }
+    throw error
+}
 
 export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null): Hono<WebAppEnv> {
     const app = new Hono<WebAppEnv>()
@@ -68,13 +78,7 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
         try {
             await engine.approvePermission(sessionId, requestId, mode, allowTools, decision, answers)
         } catch (error) {
-            if (error instanceof PermissionRequestNotFoundError) {
-                return c.json({ error: error.message }, 409)
-            }
-            if (error instanceof PermissionAnswerRejectedError) {
-                return c.json({ error: error.message }, 422)
-            }
-            throw error
+            return permissionFailure(c, error)
         }
         return c.json({ ok: true })
     })
@@ -107,10 +111,7 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
         try {
             await engine.denyPermission(sessionId, requestId, parsed.data.decision)
         } catch (error) {
-            if (error instanceof PermissionRequestNotFoundError) {
-                return c.json({ error: error.message }, 409)
-            }
-            throw error
+            return permissionFailure(c, error)
         }
         return c.json({ ok: true })
     })

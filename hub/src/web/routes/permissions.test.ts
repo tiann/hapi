@@ -94,6 +94,39 @@ describe('permissions routes (tiann/hapi#1735)', () => {
         expect((await answer(['None of the above', 'user_note: corrected'])).status).toBe(200)
     })
 
+    it('rejects dismiss while an async answer is in flight even if the answer later fails', async () => {
+        const id = `${CODEX_ASYNC_QUESTION_REQUEST_PREFIX}test`
+        const session = createSession('codex')
+        session.agentState = { requests: { [id]: { tool: 'request_user_input', arguments: { isBlocking: false } } } }
+        const started = Promise.withResolvers<void>()
+        const inFlight = Promise.withResolvers<string>()
+        const socket = { timeout: () => ({ emitWithAck: async (_event: string, request: { params: string }) => {
+            if (!JSON.parse(request.params).approved) {
+                return JSON.stringify({ error: 'Question already submitted or unavailable' })
+            }
+            started.resolve()
+            return inFlight.promise
+        } }) }
+        const io = { of: () => ({ sockets: new Map([['socket-1', socket]]) }) } as unknown as Server
+        const registry = { getSocketIdForMethod: () => 'socket-1' } as unknown as RpcRegistry
+        const gateway = new RpcGateway(io, registry)
+        const app = createApp({
+            session, approvePermission: gateway.approvePermission.bind(gateway), denyPermission: gateway.denyPermission.bind(gateway)
+        })
+        const post = (action: 'approve' | 'deny') => app.request(`/api/sessions/session-1/permissions/${encodeURIComponent(id)}/${action}`, {
+            method: 'POST', headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(action === 'approve' ? { answers: { q: ['Web'] } } : {})
+        })
+
+        const answering = post('approve')
+        await started.promise
+        const dismissal = await post('deny')
+        inFlight.resolve(JSON.stringify({ error: 'Native input failed' }))
+        expect(dismissal.status).toBe(422)
+        expect((await answering).status).toBe(422)
+        expect(session.agentState.requests?.[id]).toBeDefined()
+    })
+
     it('returns 409 when the CLI no longer has the request pending on approve', async () => {
         const app = createApp({
             approvePermission: async () => { throw new PermissionRequestNotFoundError('request-1') }

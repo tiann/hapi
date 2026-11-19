@@ -118,21 +118,22 @@ export class PermissionRequestNotFoundError extends Error {
     }
 }
 
-export class PermissionAnswerRejectedError extends Error {
-    constructor() {
-        super('The agent rejected the answer')
-        this.name = 'PermissionAnswerRejectedError'
+export class PermissionDecisionRejectedError extends Error {
+    constructor(action: 'answer' | 'dismissal') {
+        super(`The agent rejected the ${action}`)
+        this.name = 'PermissionDecisionRejectedError'
     }
 }
 
-// Matches on the specific shared message rather than treating any error on
-// the Permission RPC method as "not found" — a future, unrelated throw in
-// handlePermissionResponse's success path should surface as a genuine error,
-// not get relabeled as a stale request.
-function isPermissionRequestNotFoundResponse(response: unknown): boolean {
-    if (!response || typeof response !== 'object') return false
-    const error = (response as Record<string, unknown>).error
-    return error === PERMISSION_REQUEST_NOT_FOUND_MESSAGE
+function assertPermissionDecisionAccepted(requestId: string, response: unknown, action: 'answer' | 'dismissal'): void {
+    if (!isObject(response) || typeof response.error !== 'string') return
+    if (response.error === PERMISSION_REQUEST_NOT_FOUND_MESSAGE) {
+        throw new PermissionRequestNotFoundError(requestId)
+    }
+    // HTTP success closes Codex async forms before the agent publishes completion.
+    if (requestId.startsWith(CODEX_ASYNC_QUESTION_REQUEST_PREFIX)) {
+        throw new PermissionDecisionRejectedError(action)
+    }
 }
 
 export type RpcCommandResponse = CommandResponse
@@ -195,13 +196,7 @@ export class RpcGateway {
             decision,
             answers
         })
-        if (isPermissionRequestNotFoundResponse(response)) {
-            throw new PermissionRequestNotFoundError(requestId)
-        }
-        // A Codex async answer's HTTP success closes its form before the agent publishes completion.
-        if (requestId.startsWith(CODEX_ASYNC_QUESTION_REQUEST_PREFIX) && isObject(response) && typeof response.error === 'string') {
-            throw new PermissionAnswerRejectedError()
-        }
+        assertPermissionDecisionAccepted(requestId, response, 'answer')
     }
 
     async denyPermission(
@@ -214,9 +209,7 @@ export class RpcGateway {
             approved: false,
             decision
         })
-        if (isPermissionRequestNotFoundResponse(response)) {
-            throw new PermissionRequestNotFoundError(requestId)
-        }
+        assertPermissionDecisionAccepted(requestId, response, 'dismissal')
     }
 
     async abortSession(sessionId: string): Promise<void> {
