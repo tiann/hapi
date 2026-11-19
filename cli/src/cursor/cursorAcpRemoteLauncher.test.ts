@@ -2135,6 +2135,47 @@ describe('cursorAcpRemoteLauncher', () => {
         setAutoBridgeTransientModelErrors(false);
     });
 
+    it('stamps Blocked when a settled text classification ends the turn without a thrown error', async () => {
+        // Cold-review Major 2026-11-19: this branch calls recordModelError but
+        // never surfaced a chat error or stamped the blocked footer at all —
+        // unlike every other path that ends the turn without recovering.
+        harness.promptMessages = [
+            { type: 'text', text: 'Error: RetriableError: [resource_exhausted] quota hit' }
+        ];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(harness.promptCalls).toBe(1);
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: 'Error: RetriableError: [resource_exhausted] quota hit'
+        }));
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
+    });
+
     it('gives up after one Continue instead of retrying it when the continuation itself fails without tool activity', async () => {
         harness.promptMessageBatches = [[{
             type: 'tool_call',

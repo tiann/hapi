@@ -1190,15 +1190,29 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                                 this.pendingRetryableError = null;
                             }
                             if (!this.pendingRetryableError) {
-                                const settled = this.pendingStderrFailure ?? this.pendingTextFailure;
+                                // `as` defeats a TS control-flow quirk: it narrows
+                                // these two private fields to the `null` they held
+                                // at loop-top and (wrongly) keeps that narrowing
+                                // across the `await … prompt()` above, even though
+                                // its onMessage callback can set them through
+                                // handleAgentMessage — the runtime value here is
+                                // whatever that callback last wrote, not null.
+                                const settled = (this.pendingStderrFailure ?? this.pendingTextFailure) as CursorAgentStreamFailure | null;
                                 if (settled && !this.turnHasModelError) {
+                                    const settledMessage: string = settled.raw;
+                                    // This path ends the turn (break below) without
+                                    // retrying, same as the catch give-up branches —
+                                    // it must surface and stamp Blocked the same way,
+                                    // not just record the model error silently.
+                                    this.surfacePromptFailure(settledMessage, { deferFooter: true });
                                     // Earlier attempt's tools (if any) already ran —
                                     // attemptProducedToolActivity only covers *this*
                                     // attempt, so force non-bridgeable explicitly too.
-                                    this.recordModelError(
+                                    const { bridgeQueued } = this.recordModelError(
                                         settled,
                                         postToolAutoContinueUsed ? { bridgeable: false } : undefined
                                     );
+                                    if (!bridgeQueued) this.stampBlockedFooter(settledMessage);
                                 }
                                 this.pendingStderrFailure = null;
                                 this.pendingTextFailure = null;
