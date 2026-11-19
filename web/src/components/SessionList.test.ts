@@ -2,12 +2,16 @@ import { describe, expect, it } from 'vitest'
 import { toSessionSummary, type Session } from '@hapi/protocol'
 import type { SessionSummary } from '@/types/api'
 import { createSessionComparator } from '@/lib/sessionListOrder'
+import { sessionIsUnread } from '@/lib/sessionAttention'
 import {
+    computeOpenSessionTickRatio,
     deduplicateSessionsByAgentId,
     expandSelectedSessionCollapseOverrides,
     groupSessionsByDirectory,
     filterActiveSessionsOnly,
+    filterScratchlistSessionsOnly,
     filterUnreadSessionsOnly,
+    filterWorkingSessionsOnly,
     UNKNOWN_MACHINE_ID,
     bucketRunningSessions,
     filterSessionsForListStatus,
@@ -23,6 +27,7 @@ import {
     prepareSidebarSessions,
     sessionMatchesQuery,
     sessionMatchesSearchMode,
+    shouldShowOpenSessionTick,
     shouldShowPinnedDivider,
     shouldShowSessionInSidebar
 } from './SessionList'
@@ -683,22 +688,149 @@ describe('filterActiveSessionsOnly', () => {
 })
 
 describe('filterUnreadSessionsOnly', () => {
-    const sessions = [
-        makeSession({ id: 'unread', metadata: { path: '/p' } }),
-        makeSession({ id: 'read', metadata: { path: '/p' } }),
-        makeSession({ id: 'open', metadata: { path: '/p' } })
-    ]
-    const isUnread = (s: { id: string }) => s.id === 'unread'
+    const lastSeen = (id: string): number => {
+        if (id === 'unread' || id === 'unread-a') return 1000
+        return 10_000
+    }
+    const isUnread = (session: SessionSummary) => sessionIsUnread(session, {
+        lastSeenAt: lastSeen(session.id),
+        manualUnreadAt: session.id === 'manual-thinking' ? 0 : null
+    })
+
+    it('keeps only sessions newer than lastSeen; drops seen and selected-only quiet rows stay when selected', () => {
+        const sessions = [
+            makeSession({ id: 'unread', contentRevision: 5000, metadata: { path: '/p' } }),
+            makeSession({ id: 'seen', contentRevision: 1000, metadata: { path: '/p' } }),
+            makeSession({
+                id: 'permission-but-seen',
+                pendingRequestKinds: ['permission'],
+                pendingRequestsCount: 1,
+                contentRevision: 1000,
+                metadata: { path: '/p' },
+            }),
+        ]
+        expect(filterUnreadSessionsOnly(sessions, isUnread).map(s => s.id))
+            .toEqual(['unread'])
+    })
+
+    it('keeps the selected session visible even when it would otherwise filter out', () => {
+        const sessions = [
+            makeSession({ id: 'unread', contentRevision: 5000, metadata: { path: '/p' } }),
+            makeSession({ id: 'selected-quiet', contentRevision: 1000, metadata: { path: '/p' } }),
+        ]
+        expect(filterUnreadSessionsOnly(sessions, isUnread, 'selected-quiet').map(s => s.id))
+            .toEqual(['unread', 'selected-quiet'])
+    })
+
+    it('composes with machine filter as empty intersection (unread after machine scope stays selected)', () => {
+        // Mirrors SessionList pipeline: unread on visibleSessions, then machine filter.
+        // Machine B selected + only machine A unread → empty list, not "all unread".
+        const sessions = [
+            makeSession({
+                id: 'unread-a',
+                contentRevision: 5000,
+                metadata: { path: '/a', machineId: 'machine-a' },
+            }),
+            makeSession({
+                id: 'seen-b',
+                contentRevision: 1000,
+                metadata: { path: '/b', machineId: 'machine-b' },
+            }),
+        ]
+        const unreadFiltered = filterUnreadSessionsOnly(sessions, isUnread)
+        const machineB = unreadFiltered.filter(
+            session => (session.metadata?.machineId ?? UNKNOWN_MACHINE_ID) === 'machine-b'
+        )
+        expect(unreadFiltered.map(s => s.id)).toEqual(['unread-a'])
+        expect(machineB).toEqual([])
+    })
+
+    it('keeps an explicitly unread generating session in the unread lens', () => {
+        const sessions = [
+            makeSession({ id: 'manual-thinking', active: true, thinking: true, contentRevision: 5000, metadata: { path: '/p' } })
+        ]
+
+        expect(filterUnreadSessionsOnly(
+            sessions,
+            isUnread
+        ).map(s => s.id)).toEqual(['manual-thinking'])
+    })
 
     it('keeps only unread sessions when nothing is open', () => {
-        expect(filterUnreadSessionsOnly(sessions, isUnread).map(s => s.id)).toEqual(['unread'])
+        const sessions = [
+            makeSession({ id: 'unread', metadata: { path: '/p' } }),
+            makeSession({ id: 'read', metadata: { path: '/p' } }),
+            makeSession({ id: 'open', metadata: { path: '/p' } })
+        ]
+        const byId = (s: { id: string }) => s.id === 'unread'
+        expect(filterUnreadSessionsOnly(sessions, byId).map(s => s.id)).toEqual(['unread'])
     })
 
     it('keeps the open session visible even when read', () => {
-        expect(filterUnreadSessionsOnly(sessions, isUnread, 'open').map(s => s.id)).toEqual(['unread', 'open'])
+        const sessions = [
+            makeSession({ id: 'unread', metadata: { path: '/p' } }),
+            makeSession({ id: 'read', metadata: { path: '/p' } }),
+            makeSession({ id: 'open', metadata: { path: '/p' } })
+        ]
+        const byId = (s: { id: string }) => s.id === 'unread'
+        expect(filterUnreadSessionsOnly(sessions, byId, 'open').map(s => s.id)).toEqual(['unread', 'open'])
     })
 })
 
+describe('filterScratchlistSessionsOnly', () => {
+    it('keeps sessions with scratchlist entries and drops empty sessions', () => {
+        const sessions = [
+            makeSession({ id: 'with-draft', metadata: { path: '/p' } }),
+            makeSession({ id: 'without-draft', metadata: { path: '/p' } }),
+        ]
+
+        expect(filterScratchlistSessionsOnly(sessions, null, new Set(['with-draft'])).map(s => s.id))
+            .toEqual(['with-draft'])
+    })
+
+    it('keeps the selected session visible even without a scratchlist entry', () => {
+        const sessions = [
+            makeSession({ id: 'with-draft', metadata: { path: '/p' } }),
+            makeSession({ id: 'selected-quiet', metadata: { path: '/p' } }),
+        ]
+
+        expect(filterScratchlistSessionsOnly(sessions, 'selected-quiet', new Set(['with-draft'])).map(s => s.id))
+            .toEqual(['with-draft', 'selected-quiet'])
+    })
+})
+describe('filterWorkingSessionsOnly', () => {
+    it('keeps connected thinking sessions and sessions with a running background task', () => {
+        const sessions = [
+            makeSession({ id: 'thinking', active: true, thinking: true, metadata: { path: '/p' } }),
+            makeSession({ id: 'background-job', active: true, backgroundTaskCount: 1, metadata: { path: '/p' } }),
+            makeSession({ id: 'idle', active: true, metadata: { path: '/p' } }),
+        ]
+
+        expect(filterWorkingSessionsOnly(sessions).map(s => s.id).sort())
+            .toEqual(['background-job', 'thinking'])
+    })
+
+    it('keeps the selected session visible even when idle', () => {
+        const sessions = [
+            makeSession({ id: 'thinking', active: true, thinking: true, metadata: { path: '/p' } }),
+            makeSession({ id: 'selected-idle', metadata: { path: '/p' } }),
+        ]
+
+        expect(filterWorkingSessionsOnly(sessions, 'selected-idle').map(s => s.id).sort())
+            .toEqual(['selected-idle', 'thinking'])
+    })
+
+    it('excludes a disconnected session with stale thinking/backgroundTaskCount data', () => {
+        const sessions = [
+            makeSession({ id: 'disconnected-stale-thinking', active: false, thinking: true, metadata: { path: '/p' } }),
+            makeSession({ id: 'disconnected-stale-job', active: false, backgroundTaskCount: 1, metadata: { path: '/p' } }),
+            makeSession({ id: 'connected-thinking', active: true, thinking: true, metadata: { path: '/p' } }),
+        ]
+
+        expect(filterWorkingSessionsOnly(sessions).map(s => s.id))
+            .toEqual(['connected-thinking'])
+    })
+})
 describe('getNextSessionVisibleCount', () => {
     it('reveals one batch of step size per call', () => {
         expect(getNextSessionVisibleCount(8, 8, 20)).toBe(16)
@@ -984,5 +1116,87 @@ describe('filterSessionsForListStatus', () => {
         const closed = base('closed')
         expect(filterSessionsForListStatus([sleeper, closed], 'active', null).map(s => s.id)).toEqual(['sleeper'])
         expect(filterSessionsForListStatus([sleeper, closed], 'archived', null).map(s => s.id)).toEqual(['closed'])
+    })
+})
+
+describe('computeOpenSessionTickRatio', () => {
+    it('maps the row midpoint into the scroll extent as a 0..1 rail ratio', () => {
+        expect(computeOpenSessionTickRatio({
+            scrollHeight: 1000,
+            clientHeight: 400,
+            contentOffsetTop: 200,
+            targetHeight: 40,
+        })).toBeCloseTo(0.22)
+    })
+
+    it('clamps to the rail ends', () => {
+        expect(computeOpenSessionTickRatio({
+            scrollHeight: 1000,
+            clientHeight: 400,
+            contentOffsetTop: -10,
+            targetHeight: 20,
+        })).toBe(0)
+        expect(computeOpenSessionTickRatio({
+            scrollHeight: 1000,
+            clientHeight: 400,
+            contentOffsetTop: 990,
+            targetHeight: 40,
+        })).toBe(1)
+    })
+
+    it('hides when the list does not overflow (no scrollbar)', () => {
+        expect(computeOpenSessionTickRatio({
+            scrollHeight: 300,
+            clientHeight: 400,
+            contentOffsetTop: 40,
+            targetHeight: 40,
+        })).toBeNull()
+    })
+
+    it('hides when the row has no laid-out height', () => {
+        expect(computeOpenSessionTickRatio({
+            scrollHeight: 1000,
+            clientHeight: 400,
+            contentOffsetTop: 200,
+            targetHeight: 0,
+        })).toBeNull()
+    })
+})
+
+describe('shouldShowOpenSessionTick', () => {
+    it('shows only when the open session row is present and not collapsed away', () => {
+        expect(shouldShowOpenSessionTick({
+            selectedSessionId: 's-1',
+            rowFound: true,
+            insideCollapsedPanel: false,
+            tickRatio: 0.4,
+        })).toBe(true)
+    })
+
+    it('hides when nothing is open, the row is missing, collapsed, or the ratio is null', () => {
+        expect(shouldShowOpenSessionTick({
+            selectedSessionId: null,
+            rowFound: true,
+            insideCollapsedPanel: false,
+            tickRatio: 0.4,
+        })).toBe(false)
+        expect(shouldShowOpenSessionTick({
+            selectedSessionId: 's-1',
+            rowFound: false,
+            insideCollapsedPanel: false,
+            tickRatio: 0.4,
+        })).toBe(false)
+        expect(shouldShowOpenSessionTick({
+            selectedSessionId: 's-1',
+            rowFound: true,
+            insideCollapsedPanel: true,
+            tickRatio: 0.4,
+        })).toBe(false)
+        expect(shouldShowOpenSessionTick({
+            selectedSessionId: 's-1',
+            rowFound: true,
+            insideCollapsedPanel: false,
+            tickRatio: null,
+        })).toBe(false)
     })
 })
