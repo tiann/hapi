@@ -63,7 +63,7 @@ describe('SyncEngine hibernation', () => {
     }
 
     function registerMachine(capabilities: Record<string, unknown> = { sessionHibernation: true }, machineId = MACHINE): void {
-        engine.getOrCreateMachine(machineId, { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+        engine.getOrCreateMachine(machineId, { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0', capabilities: ['resume-hibernated-session'] },
             { status: 'running', capabilities }, NAMESPACE)
         engine.handleMachineAlive({ machineId, time: Date.now() })
     }

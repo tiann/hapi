@@ -13,7 +13,7 @@ function createGateway() {
             return {
                 async emitWithAck(_event: string, payload: { method: string; params: string }) {
                     calls.push(payload)
-                    if (payload.method.endsWith(':stop-session')) return JSON.stringify({ status: 'already_gone' })
+                    if (payload.method.endsWith(':stop-session') || payload.method.endsWith(':stop-hibernating-session')) return JSON.stringify({ status: 'already_gone' })
                     if (payload.method.endsWith(':cursor-chat-store-status')) {
                         return JSON.stringify({ onDisk: false, store: null })
                     }
@@ -61,6 +61,16 @@ describe('RpcGateway RPC timeouts', () => {
         await gateway.spawnSession('machine-1', 'C:\\workspace', 'codex')
         await gateway.spawnSession('machine-1', 'C:\\workspace', 'claude')
         expect(timeouts).toEqual([60_000, 30_000])
+    })
+
+    it('dispatches hibernation only to handlers that enforce its generation and same-ID requirements', async () => {
+        const { gateway, calls } = createGateway()
+        await gateway.stopRunnerSession('machine', 'row', { expectedPid: 42, processStartMarker: 'gen', requireProcessGroupCleanup: true })
+        await gateway.spawnSession('machine', '/tmp', 'claude', undefined, undefined, undefined, undefined, undefined,
+            'native', undefined, undefined, undefined, 'row', undefined, undefined, undefined, undefined, undefined, undefined, true)
+        expect(calls.map(call => call.method)).toEqual([
+            `machine:${RPC_METHODS.StopHibernatingSession}`, `machine:${RPC_METHODS.ResumeHibernatedSession}`
+        ])
     })
 
     it('uses the archive stop budget without putting timeout options on the wire', async () => {

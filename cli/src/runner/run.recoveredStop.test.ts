@@ -1,4 +1,6 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { once } from 'node:events'
+import { spawn } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -10,7 +12,7 @@ const mocks = vi.hoisted(() => ({
     findRuntime: vi.fn(),
     reapOrphans: vi.fn<typeof import('./orphanReap')['reapRunnerSpawnedOrphans']>(),
     kill: vi.fn(),
-    sweep: vi.fn(async () => true),
+    sweep: vi.fn<typeof import('@/utils/process')['sweepProcessGroup']>(async () => true),
     prepare: vi.fn(),
     windows: vi.fn(() => false),
     alive: vi.fn(() => true),
@@ -98,6 +100,60 @@ describe('runner stop of recovered persisted sessions while the Hub is unavailab
     })
 
     afterEach(() => rmSync(home, { recursive: true, force: true }))
+
+    it.skipIf(process.platform !== 'linux' && process.platform !== 'darwin')(
+        'reloads pending member identities and reaps an orphan after interruption before sweep confirmation', async () => {
+            const real = await vi.importActual<typeof import('@/utils/process')>('@/utils/process')
+            const wrapper = spawn('sh', ['-c', 'sh -c "sleep 60 >/dev/null 2>&1 &"; echo ready; exec sleep 60'],
+                { detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+            const pid = wrapper.pid!
+            try {
+                await once(wrapper.stdout, 'data')
+                const marker = real.getProcessStartMarker(pid)!
+                const opts = { requireProcessGroupCleanup: true, expectedPid: pid, processStartMarker: marker }
+                mocks.marker.mockReturnValue(marker)
+                await startWith([{ requestedSessionId: 'interrupted', pid, processStartMarker: marker, flavor: 'claude' }])
+                mocks.kill.mockImplementation(async (...args: Parameters<typeof real.killProcessTreeByPid>) => {
+                    const ledger = JSON.parse(readFileSync(join(home, 'runner.json.cleanup-receipts.json'), 'utf8'))
+                    expect(ledger.pending).toContainEqual(['interrupted', pid, marker, expect.arrayContaining([
+                        { pid: expect.any(Number), identity: expect.any(String) }
+                    ])])
+                    return real.killProcessTreeByPid(...args)
+                })
+                mocks.sweep.mockResolvedValueOnce(false)
+                expect(await stopSession('interrupted', opts)).toBe('still_alive')
+                expect(real.isProcessAlive(pid)).toBe(false)
+                expect(real.processGroupGone(pid)).toBe(false)
+                const file = join(home, 'runner.json.cleanup-receipts.json')
+                const checkpoint = readFileSync(file, 'utf8')
+                const stale = JSON.parse(checkpoint)
+                for (const [, , , members] of stale.pending) {
+                    for (const member of members) member.identity = 'replaced-generation'
+                }
+                writeFileSync(file, JSON.stringify(stale))
+                await startWith([], home)
+                mocks.kill.mockClear()
+                mocks.sweep.mockImplementation(real.sweepProcessGroup)
+                expect(await stopSession('interrupted', opts)).toBe('still_alive')
+                expect(real.processGroupGone(pid)).toBe(false)
+                writeFileSync(file, checkpoint)
+                await startWith([], home)
+                expect(await stopSession('interrupted', opts)).toBe('already_gone')
+                expect(real.processGroupGone(pid)).toBe(true)
+                expect(mocks.kill).not.toHaveBeenCalled()
+            } finally {
+                if (!real.processGroupGone(pid)) process.kill(-pid, 'SIGKILL')
+            }
+        }
+    )
+
+    it('does not kill the wrapper if the pending generation cannot be saved', async () => {
+        await startWith([{ requestedSessionId: 'write-failed', pid: 4242, processStartMarker: 'generation', flavor: 'claude' }])
+        mkdirSync(join(home, 'runner.json.cleanup-receipts.json'))
+        const opts = { requireProcessGroupCleanup: true, expectedPid: 4242, processStartMarker: 'generation' }
+        expect(await stopSession('write-failed', opts)).toBe('unknown')
+        expect(mocks.kill).not.toHaveBeenCalled()
+    })
 
     it('recovers a confirmed generation after runner restart and a lost stop acknowledgement', async () => {
         await startWith([{ requestedSessionId: 'lost-ack', pid: 4242, processStartMarker: 'generation', flavor: 'claude' }])

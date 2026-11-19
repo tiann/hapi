@@ -98,7 +98,7 @@ describe('SyncEngine resume of hibernated sessions', () => {
         engine = new SyncEngine(store, ioStub as never, new RpcRegistry(), { broadcast() {} } as never)
         stopCalls = []
         mergeCalls = 0
-        engine.getOrCreateMachine(MACHINE, { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
+        engine.getOrCreateMachine(MACHINE, { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0', capabilities: ['resume-hibernated-session'] },
             { status: 'running', capabilities: { sessionHibernation: true, piExistingSessionResume: true } }, NAMESPACE)
         engine.handleMachineAlive({ machineId: MACHINE, time: Date.now() })
         gateway().stopRunnerSession = async (_machineId: string, sessionId: string) => {
@@ -134,6 +134,22 @@ describe('SyncEngine resume of hibernated sessions', () => {
 
         expect(await engine.hibernateIdleSessions(Date.now() + WINDOW / 2, WINDOW)).toEqual([])
         expect(cache().getSession(id)!.active).toBe(true)
+    })
+
+    it('keeps the session asleep when a rolled-back runner lacks strict wake support', async () => {
+        const id = await hibernatedSession('rollback')
+        let spawns = 0
+        const spawn = spawnImpl
+        spawnImpl = async sid => { spawns++; return spawn(sid) }
+        engine.getOrCreateMachine(MACHINE, { host: 'localhost', platform: 'linux', happyCliVersion: 'old' },
+            { status: 'running', capabilities: { sessionHibernation: true } }, NAMESPACE)
+        expect(await engine.resumeSession(id, NAMESPACE)).toMatchObject({ type: 'error', code: 'resume_unavailable', message: expect.stringContaining('Upgrade') })
+        expect(spawns).toBe(0)
+        expect(cache().getSession(id)?.metadata?.hibernation?.state).toBe('hibernated')
+        engine.getOrCreateMachine(MACHINE, { host: 'localhost', platform: 'linux', happyCliVersion: 'new', capabilities: ['resume-hibernated-session'] },
+            { status: 'running', capabilities: { sessionHibernation: true } }, NAMESPACE)
+        expect(await engine.resumeSession(id, NAMESPACE)).toEqual({ type: 'success', sessionId: id })
+        expect(spawns).toBe(1)
     })
 
     it('clears a settled wake marker and backoff on reopening an already connected session', async () => {
@@ -369,6 +385,31 @@ describe('SyncEngine resume of hibernated sessions', () => {
             expect(mergeCalls).toBe(0)
             expect(cache().getSession(id)).toBeDefined()
         })
+    })
+
+    it('keeps the authorized wake joinable after the marker clears and before Pi finalization', async () => {
+        const id = await hibernatedSession('finishing-wake', 'pi')
+        engine.waitForSessionReady = async () => 'ready'
+        const internals = engine as unknown as { writePiResumeAttempt(sid: string, ns: string, attempt: unknown): Promise<void> }
+        const original = internals.writePiResumeAttempt.bind(engine)
+        let finish!: () => void
+        let reached!: () => void
+        const finalizing = new Promise<void>(resolve => { reached = resolve })
+        internals.writePiResumeAttempt = async (sid, ns, attempt) => {
+            if (attempt === null) {
+                reached()
+                await new Promise<void>(resolve => { finish = resolve })
+            }
+            return original(sid, ns, attempt)
+        }
+        const wake = engine.resumeSession(id, NAMESPACE)
+        await finalizing
+        expect(cache().getSession(id)?.metadata?.hibernation).toBeUndefined()
+        expect(engine.pendingSessionWake(id, NAMESPACE)).toBeDefined()
+        expect(engine.pendingSessionWake(id, 'foreign')).toBeUndefined()
+        finish()
+        expect(await wake).toEqual({ type: 'success', sessionId: id })
+        expect(engine.pendingSessionWake(id, NAMESPACE)).toBeUndefined()
     })
 
     it.each(['ready', 'ended'] as const)('joins a Pi wake before sending while transport is active (%s)', async readiness => {

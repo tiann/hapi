@@ -8,7 +8,7 @@ export class ExitedProcessGroups {
 
   private saved: string;
 
-  constructor(private readonly maxAliases = 1024, private readonly storage?: { file: string; machineId: string }) {
+  constructor(private readonly maxAliases = 1024, private readonly storage?: { file: string; machineId: string; bootId?: string | null }) {
     this.saved = this.serialize();
     if (!storage) return;
     try {
@@ -22,6 +22,17 @@ export class ExitedProcessGroups {
           this.bySessionId.set(id, { pgid, startMarker, confirmed: true });
         }
       }
+      if (Array.isArray(saved.pending)) {
+        for (const row of saved.pending.slice(-maxAliases)) {
+          if (!Array.isArray(row) || this.bySessionId.size >= maxAliases) continue;
+          const [id, pgid, startMarker, members] = row;
+          if (typeof id !== 'string' || !id || id.startsWith('PID-') || this.bySessionId.has(id)
+            || !Number.isSafeInteger(pgid) || pgid <= 1 || typeof startMarker !== 'string' || !startMarker
+            || !Array.isArray(members) || !members.every(m => m && Number.isSafeInteger(m.pid) && m.pid > 1
+              && m.pid !== pgid && typeof m.identity === 'string' && m.identity.length > 0)) continue;
+          this.bySessionId.set(id, { pgid, startMarker, members: storage.bootId && storage.bootId === saved.bootId ? members : [] });
+        }
+      }
       this.saved = this.serialize();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.warn('[runner] Could not read cleanup receipts', error);
@@ -31,7 +42,9 @@ export class ExitedProcessGroups {
   private serialize(): string {
     const receipts = [...this.bySessionId].flatMap(([id, group]) =>
       group.confirmed && !id.startsWith('PID-') ? [[id, group.pgid, group.startMarker]] : []);
-    return JSON.stringify({ machineId: this.storage?.machineId, receipts });
+    const pending = [...this.bySessionId].flatMap(([id, group]) =>
+      !group.confirmed && group.members && !id.startsWith('PID-') ? [[id, group.pgid, group.startMarker, group.members]] : []);
+    return JSON.stringify({ machineId: this.storage?.machineId, bootId: this.storage?.bootId, receipts, pending });
   }
 
   persist(): boolean {
@@ -59,19 +72,19 @@ export class ExitedProcessGroups {
     if (this.bySessionId.delete(id)) this.persist();
   }
 
-  remember(group: ExitedProcessGroup, ids: Iterable<string | undefined>): void {
+  remember(group: ExitedProcessGroup, ids: Iterable<string | undefined>): boolean {
     for (const id of ids) {
       if (!id) continue;
       const prior = this.bySessionId.get(id);
       if (prior?.pgid === group.pgid && prior.startMarker === group.startMarker
-        && (prior.confirmed || (prior.members?.length && !group.members?.length && !group.confirmed))) continue;
+        && (prior.confirmed || (prior.members && !group.members?.length && !group.confirmed))) continue;
       this.bySessionId.delete(id);
       this.bySessionId.set(id, group);
       if (this.bySessionId.size > this.maxAliases) {
         this.bySessionId.delete(this.bySessionId.keys().next().value!);
       }
     }
-    this.persist();
+    return this.persist();
   }
 
   prune(isGone: (pgid: number) => boolean): void {

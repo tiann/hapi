@@ -90,6 +90,14 @@ export function getSystemBootId(): string | null {
   }
 }
 
+export function getGroupWitnessBootId(): string | null {
+  if (process.platform === 'darwin') {
+    const result = spawn.sync('sysctl', ['-n', 'kern.bootsessionuuid'], { encoding: 'utf8', timeout: SPAWN_SYNC_TIMEOUT_MS });
+    return result.status === 0 ? normalizeBootId(result.stdout) : null;
+  }
+  return getSystemBootId();
+}
+
 export function getProcessThreadGroupId(pid: number): number | null {
   if (process.platform !== 'linux' || !Number.isSafeInteger(pid) || pid <= 0) return null;
   try {
@@ -647,13 +655,12 @@ export async function sweepProcessGroup(
   const checkOwnership = (): 'verified' | 'gone' | 'unknown' => {
     if (processGroupGone(rootPid)) return 'gone';
     if (!opts.expectedStartMarker) return 'unknown';
-    if (!isProcessAlive(rootPid)) {
-      return opts.members?.some(member => groupMemberIdentity(member.pid, rootPid) === member.identity) ? 'verified' : 'unknown';
-    }
+    const hasWitness = () => opts.members?.some(member => groupMemberIdentity(member.pid, rootPid) === member.identity);
+    if (!isProcessAlive(rootPid)) return hasWitness() ? 'verified' : 'unknown';
     const marker = getProcessStartMarker(rootPid);
     if (!marker) return 'unknown';
     if (marker !== opts.expectedStartMarker) return 'gone';
-    if (opts.leaderExited) return 'unknown';
+    if (opts.leaderExited) return hasWitness() ? 'verified' : 'unknown';
     return readProcessGroupId(rootPid) === rootPid ? 'verified' : 'unknown';
   };
   const waitGone = async (waitMs: number): Promise<boolean> => {

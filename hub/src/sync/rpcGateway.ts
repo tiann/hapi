@@ -273,7 +273,9 @@ export class RpcGateway {
             ...(opts?.requireProcessGroupCleanup ? { requireProcessGroupCleanup: true } : {}),
         }
         try {
-            result = await this.machineRpc(machineId, RPC_METHODS.StopSession, request, timeoutMs)
+            const method = request.requireProcessGroupCleanup && request.expectedPid !== undefined
+                ? RPC_METHODS.StopHibernatingSession : RPC_METHODS.StopSession
+            result = await this.machineRpc(machineId, method, request, timeoutMs)
         } catch (error) {
             if (error instanceof RpcTargetMissingError) throw error
             // Ack timeout does not cancel the remote stop. Preserve uncertainty
@@ -351,7 +353,7 @@ export class RpcGateway {
         try {
             const result = await this.machineRpc(
                 machineId,
-                RPC_METHODS.SpawnHappySession,
+                requireSameSessionId ? RPC_METHODS.ResumeHibernatedSession : RPC_METHODS.SpawnHappySession,
                 {
                     type: 'spawn-in-directory',
                     directory,
@@ -423,6 +425,9 @@ export class RpcGateway {
                 })()
             return { type: 'error', message: `Unexpected spawn result: ${details}` }
         } catch (error) {
+            if (requireSameSessionId && error instanceof RpcTargetMissingError) {
+                return { type: 'error', message: 'Hibernation wake requires a connected, upgraded runner with same-ID resume support', childStarted: false }
+            }
             // Ambiguous: the machine RPC may have started a child before failing.
             // Do not claim childStarted: false — hub keeps the stub.
             return { type: 'error', message: error instanceof Error ? error.message : String(error) }

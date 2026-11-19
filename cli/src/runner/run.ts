@@ -16,7 +16,7 @@ import { isBunCompiled } from '@/projectPath';
 import { describeChildFatalContext } from './childFatalDiagnostics';
 import { writeRunnerState, RunnerLocallyPersistedState, readRunnerState, acquireRunnerLock, releaseRunnerLock } from '@/persistence';
 import { getCliArgs } from '@/utils/cliArgs';
-import { getProcessStartMarker, getSystemBootId, getProcessThreadGroupId, normalizeBootId, isProcessAlive, isWindows, killProcess, killProcessByChildProcess, killProcessTreeByPid, captureGroupMembers, type GroupMember, processGroupGone, sweepProcessGroup } from '@/utils/process';
+import { getProcessStartMarker, getSystemBootId, getGroupWitnessBootId, getProcessThreadGroupId, normalizeBootId, isProcessAlive, isWindows, killProcess, killProcessByChildProcess, killProcessTreeByPid, captureGroupMembers, type GroupMember, processGroupGone, sweepProcessGroup } from '@/utils/process';
 import { findStopSessionOrphanTargets, listWindowsProcessesWithCommandLine, reapRunnerSpawnedOrphans } from '@/runner/orphanReap';
 import { decideUntrackedRunnerWebhook } from '@/runner/lateRunnerWebhook';
 import { cleanupFailedStartupAfterExit, sessionStartupTimeout, waitForRecoverableStartup } from './sessionStartup';
@@ -79,7 +79,11 @@ export function createSpawnDeduplicator(
     }
     const existing = completedOrInFlight.get(key);
     if (existing) {
-      return await existing;
+      const result = await existing;
+      if (options.requireSameSessionId && result.type === 'success' && result.sessionId !== key) {
+        return { type: 'error', errorMessage: 'Cached spawn belongs to another session ID' };
+      }
+      return result;
     }
 
     const task = spawnOnce(options);
@@ -158,8 +162,8 @@ export function releaseRecoveredSpawnDedupe(
 ): void {
   const existingSessionId = existingSessionIdByChildPid.get(pid);
   if (!existingSessionId) return;
-  spawnSession.onChildExited(existingSessionId);
   existingSessionIdByChildPid.delete(pid);
+  if (![...existingSessionIdByChildPid.values()].includes(existingSessionId)) spawnSession.onChildExited(existingSessionId);
 }
 
 export async function startRunner(options: { workspaceRoots?: string[] } = {}): Promise<void> {
@@ -314,7 +318,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
     // Setup state - key by PID
     const pidToTrackedSession = new Map<number, TrackedSession>();
-    const exitedProcessGroups = new ExitedProcessGroups(1024, { file: `${configuration.runnerStateFile}.cleanup-receipts.json`, machineId });
+    const retiredChildren = new WeakSet<TrackedSession>();
+    const exitedProcessGroups = new ExitedProcessGroups(1024, { file: `${configuration.runnerStateFile}.cleanup-receipts.json`, machineId, bootId: getGroupWitnessBootId() });
     // Retained until actual child exit even if webhook timeout removes normal
     // tracking, so confirmed exit can be attributed to the requested HAPI row.
     const pidToRequestedSessionId = new Map<number, string>();
@@ -1031,6 +1036,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         }
 
         happyProcess.on('exit', (code, signal) => {
+          if (retiredChildren.has(trackedSession)) return;
           observedExitCode = typeof code === 'number' ? code : null;
           observedExitSignal = signal ?? null;
           logger.debug(`[RUNNER RUN] Child PID ${pid} exited with code ${code}, signal ${signal}`);
@@ -1047,6 +1053,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         });
 
         happyProcess.on('error', (error) => {
+          if (retiredChildren.has(trackedSession)) return;
           logger.debug(`[RUNNER RUN] Child process error:`, error);
           const errorAwaiter = pidToErrorAwaiter.get(pid);
           if (errorAwaiter) {
@@ -1402,9 +1409,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       const captureMembers = (pid: number, marker?: string) => {
         if (!opts?.requireProcessGroupCleanup || !marker) return undefined;
         const members = isWindows() ? undefined : captureGroupMembers(pid, marker);
-        exitedProcessGroups.remember({ pgid: pid, startMarker: marker, members },
+        const saved = exitedProcessGroups.remember({ pgid: pid, startMarker: marker, members },
           exitedGroupAliases(pid, pidToTrackedSession.get(pid), sessionId));
-        return members;
+        if (!saved) return null;
+        return exitedProcessGroups.get(sessionId)?.members ?? members;
       };
       const sweepVerifiedGroup = async (pid: number, expectedStartMarker?: string, members?: GroupMember[], treeStopped = false): Promise<boolean> => {
         if (opts?.requireProcessGroupCleanup !== true) return true;
@@ -1518,6 +1526,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           if (!isProcessAlive(pid)) return await finishGoneWithGroupSweep(pid, opts?.processStartMarker);
           if (getProcessStartMarker(pid) !== opts?.processStartMarker) return 'unknown';
           const members = captureMembers(pid, opts?.processStartMarker);
+          if (members === null) return 'unknown';
           if (!(await killProcessTreeByPid(pid, false, undefined, signalDeadlines.get(pid), undefined, opts?.requireProcessGroupCleanup ? opts?.processStartMarker : undefined))) return 'still_alive';
           if (!(await sweepVerifiedGroup(pid, opts?.processStartMarker, members, true))) return 'still_alive';
           terminated.add(pid);
@@ -1632,6 +1641,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
                 logger.debug('[RUNNER RUN] Windows tree stop confirmation', { sessionId, pid, ...report });
               };
               const members = captureMembers(pid, trackedMarker);
+              if (members === null) return 'unknown';
               const requiredMarker = opts?.requireProcessGroupCleanup ? trackedMarker : undefined;
               const treeStopped = session.childProcess
                 ? await killProcessByChildProcess(session.childProcess, false, reportStop, signalDeadlines.get(pid), undefined, requiredMarker)
@@ -1678,13 +1688,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
             logger.debug(`[RUNNER RUN] Session ${sessionId} process ${pid} is still alive after stop request`);
             return 'still_alive';
           }
-          if (session.happySessionId) rememberVerifiedExit(session.happySessionId);
-          if (session.requestedHappySessionId) rememberVerifiedExit(session.requestedHappySessionId);
-          rememberVerifiedExit(`PID-${pid}`);
-          pidToTrackedSession.delete(pid);
-          pidToRequestedSessionId.delete(pid);
-          pidToConfirmedSessionId.delete(pid);
-          if (persistedResumeProcesses.delete(pid)) persistResumeProcesses();
+          if (pidToTrackedSession.get(pid) === session) onChildExited(pid);
           logger.debug(`[RUNNER RUN] Removed terminated session ${sessionId} from tracking`);
           return await finishWithOrphanSweep('stopped');
         }
@@ -1738,6 +1742,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           if (!isProcessAlive(pid)) return await finishGoneWithGroupSweep(pid, persisted.processStartMarker);
           if (persisted.processStartMarker && getProcessStartMarker(pid) !== persisted.processStartMarker) return 'unknown';
           const members = captureMembers(pid, persisted.processStartMarker);
+          if (members === null) return 'unknown';
           if (!(await killProcessTreeByPid(pid, false, undefined, signalDeadlines.get(pid), undefined, opts?.requireProcessGroupCleanup ? persisted.processStartMarker : undefined))) return 'still_alive';
           if (!(await sweepVerifiedGroup(pid, persisted.processStartMarker, members, true))) return 'still_alive';
           terminated.add(pid);
@@ -1832,16 +1837,26 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     ): Promise<'stopped' | 'already_gone' | 'still_alive' | 'unknown'> => {
       if (!isWindows()) exitedProcessGroups.prune(processGroupGone);
       let target = sessionId;
-      if (opts?.expectedPid !== undefined) {
-        const pid = opts.expectedPid;
-        const marker = opts.processStartMarker;
-        const binding = persistedResumeProcesses.get(pid);
+      const expectedPid = opts?.expectedPid;
+      const stopBinding = expectedPid === undefined ? undefined : persistedResumeProcesses.get(expectedPid);
+      if (expectedPid !== undefined) {
+        const pid = expectedPid;
+        const marker = opts?.processStartMarker;
+        const binding = stopBinding;
         const exited = exitedProcessGroups.get(sessionId);
         const bound = binding && binding.processStartMarker === marker
           && (binding.requestedSessionId === sessionId || binding.confirmedSessionId === sessionId);
         const recorded = exited && exited.pgid === pid && exited.startMarker === marker;
         if (!marker || (!bound && !recorded)) return 'unknown';
-        if (recorded && exited.confirmed && !bound) return exitedProcessGroups.persist() ? 'already_gone' : 'unknown';
+        if (recorded && !bound) {
+          if (!exited.confirmed) {
+            if (!opts?.requireProcessGroupCleanup || isWindows()) return 'unknown';
+            const swept = await sweepProcessGroup(pid, { expectedStartMarker: marker, leaderExited: true, members: exited.members });
+            if (!swept) return 'still_alive';
+            exitedProcessGroups.confirm(exited);
+          }
+          return exitedProcessGroups.persist() ? 'already_gone' : 'unknown';
+        }
         target = `PID-${pid}`;
       }
       const intentional = markIntentionalStop(target);
@@ -1869,6 +1884,10 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           return 'unknown';
         }
         if (requireCleanup && !exitedProcessGroups.persist()) return 'unknown';
+        if (expectedPid !== undefined && stopBinding && stopBinding.processStartMarker === opts?.processStartMarker
+          && persistedResumeProcesses.get(expectedPid) === stopBinding && !groupCleanup.keepSharedWrapper) {
+          onChildExited(expectedPid);
+        }
         return status;
       } finally {
         for (const pid of intentional.marked) {
@@ -1898,6 +1917,8 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
     // A reused PID invalidates a binding, not every runtime for that session.
     const discardStaleProcess = (pid: number) => {
+      const session = pidToTrackedSession.get(pid);
+      if (session) retiredChildren.add(session);
       pidToErrorAwaiter.get(pid)?.(`Session process PID ${pid} generation changed before startup was confirmed`);
       pidToTrackedSession.delete(pid);
       pidToAwaiter.delete(pid);
@@ -1912,6 +1933,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     const onChildExited = (pid: number) => {
       pidToErrorAwaiter.get(pid)?.(`Session process PID ${pid} exited before startup was confirmed`);
       const session = pidToTrackedSession.get(pid);
+      if (session) retiredChildren.add(session);
       rememberExitedProcessGroup(pid, session);
       for (const id of Object.keys(session?.sharedSessions ?? {})) rememberVerifiedExit(id);
       const requestedSessionId = session?.requestedHappySessionId ?? pidToRequestedSessionId.get(pid);
@@ -1921,10 +1943,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       rememberVerifiedExit(`PID-${pid}`);
       logger.debug(`[RUNNER RUN] Removing exited process PID ${pid} from tracking`);
       const existingSessionId = existingSessionIdByChildPid.get(pid);
-      if (existingSessionId) {
-        spawnSession.onChildExited(existingSessionId);
-        existingSessionIdByChildPid.delete(pid);
-      }
+      releaseRecoveredSpawnDedupe(pid, existingSessionIdByChildPid, spawnSession);
       // Tell the hub this generation died, unless we killed it on purpose.
       // The marker from the durable resume record outlives a dropped
       // TrackedSession (webhook timeout), so a late exit still carries the

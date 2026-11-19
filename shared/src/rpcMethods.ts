@@ -20,6 +20,8 @@ export const RPC_METHODS = {
     KillSession: 'killSession',
     HandoffLocal: 'handoff-local',
     SpawnHappySession: 'spawn-happy-session',
+    ResumeHibernatedSession: 'resume-hibernated-session',
+    StopHibernatingSession: 'stop-hibernating-session',
     StopSession: 'stop-session',
     StopRunner: 'stop-runner',
     ListMachineDirectory: 'list-directory',

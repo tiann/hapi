@@ -143,6 +143,7 @@ describe('runner intentional-stop marker cleanup', () => {
         // 'sess-gone' and the generation probe verifies it as alive.
         writeFileSync(`${configuration.runnerStateFile}.resume-processes.json`, JSON.stringify([
             { requestedSessionId: 'sess-gone', pid: PID_GONE, processStartMarker: 'generation' },
+            { requestedSessionId: 'recovered-wake', confirmedSessionId: 'recovered-wake', pid: 5010, processStartMarker: 'generation', flavor: 'claude' },
         ]))
         runnerPromise = startRunner()
         await vi.waitFor(() => expect(handlers.stopSession).toBeTypeOf('function'))
@@ -200,6 +201,18 @@ describe('runner intentional-stop marker cleanup', () => {
         expect(mocks.kill).toHaveBeenCalledTimes(1)
         expect(mocks.kill.mock.calls[0][0]).toBe(child)
         expect(mocks.kill.mock.calls[0].at(-1)).toBe('generation')
+    })
+
+    it('spawns a new same-ID wrapper immediately after a generation-checked recovered stop', async () => {
+        const id = 'recovered-wake'
+        const opts = { requireProcessGroupCleanup: true, expectedPid: 5010, processStartMarker: 'generation' }
+        await expect(handlers.stopSession(id, opts)).resolves.toBe('stopped')
+        const child = makeFakeChild(5011)
+        mocks.spawnHappyCLI.mockReturnValue(child)
+        const spawn = handlers.spawnSession({ directory: home, agent: 'claude', existingSessionId: id, requireSameSessionId: true })
+        await confirmSpawn(spawn, id, child.pid)
+        expect(await spawn).toEqual({ type: 'success', sessionId: id })
+        expect(mocks.spawnHappyCLI).toHaveBeenCalledTimes(1)
     })
 
     it('reports a reused pid unexpected exit after a stop that returned already_gone', async () => {

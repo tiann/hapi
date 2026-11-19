@@ -35,6 +35,7 @@ export const MACHINE_CAPABILITIES = {
     AgentQuotas: RPC_METHODS.AgentQuotas,
     CursorChatStoreStatus: RPC_METHODS.CursorChatStoreStatus,
     StopRunner: RPC_METHODS.StopRunner,
+    ResumeHibernatedSession: RPC_METHODS.ResumeHibernatedSession,
     UsageQuery: RPC_METHODS.UsageQuery,
     /** Read-only file/Git/search RPCs available on the long-lived runner. */
     WorkspaceFileAccess: 'workspace-file-access',
@@ -52,6 +53,7 @@ export const CURRENT_MACHINE_CAPABILITIES: readonly MachineCapability[] = [
     MACHINE_CAPABILITIES.AgentQuotas,
     MACHINE_CAPABILITIES.CursorChatStoreStatus,
     MACHINE_CAPABILITIES.StopRunner,
+    MACHINE_CAPABILITIES.ResumeHibernatedSession,
     MACHINE_CAPABILITIES.UsageQuery,
     MACHINE_CAPABILITIES.WorkspaceFileAccess,
     MACHINE_CAPABILITIES.LocalSessionImport,

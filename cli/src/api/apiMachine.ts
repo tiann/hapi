@@ -576,7 +576,7 @@ export class ApiMachineClient {
             const { forkArchivedCodex } = await import('@/codex/shared/archivedFork')
             return forkArchivedCodex(request, () => this.pathPolicy.allowsSpawn(request.directory))
         })
-        this.rpcHandlerManager.registerHandler(RPC_METHODS.SpawnHappySession, async (params: any) => {
+        const spawnInDirectory = async (params: any) => {
             const { directory, sessionId, existingSessionId, reservedSessionId, resumeSessionId, machineId, approvedNewDirectoryCreation, agent, model, effort, modelReasoningEffort, yolo, permissionMode, serviceTier, collaborationMode, copilotAgentMode, token, sessionType, worktreeName, startingMode, forkSession, resumeSessionAt } = params || {}
 
             if (!directory) {
@@ -634,9 +634,16 @@ export class ApiMachineClient {
                         agent: result.agent,
                     }
             }
+        }
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.SpawnHappySession, spawnInDirectory)
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.ResumeHibernatedSession, async (params: any) => {
+            if (typeof params?.existingSessionId !== 'string' || !params.existingSessionId.trim()) {
+                return { type: 'error', errorMessage: 'Hibernation wake requires an existing session ID', childStarted: false }
+            }
+            return spawnInDirectory({ ...params, requireSameSessionId: true })
         })
 
-        this.rpcHandlerManager.registerHandler(RPC_METHODS.StopSession, async (params: any) => {
+        const handleStopSession = async (params: any) => {
             const { sessionId, expectedPid, processStartMarker, requireProcessGroupCleanup } = params || {}
             if (!sessionId) {
                 throw new Error('Session ID is required')
@@ -655,6 +662,11 @@ export class ApiMachineClient {
                 Object.keys(stopOpts).length > 0 ? stopOpts : undefined
             )
             return { status }
+        }
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.StopSession, handleStopSession)
+        this.rpcHandlerManager.registerHandler(RPC_METHODS.StopHibernatingSession, async (params: any) => {
+            if (params?.expectedPid === undefined || typeof params?.processStartMarker !== 'string') return { status: 'unknown' }
+            return handleStopSession({ ...params, requireProcessGroupCleanup: true })
         })
 
         this.rpcHandlerManager.registerHandler(RPC_METHODS.StopRunner, () => {

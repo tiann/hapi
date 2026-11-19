@@ -1287,7 +1287,7 @@ export class SyncEngine {
         if (machine?.namespace !== session.namespace) return false
         if (!session.active && session.metadata?.hibernation?.state === 'stopping') {
             return !!session.metadata.hibernation.generation
-                && machine.active
+                && machine.active && machine.runnerState?.capabilities?.sessionHibernation === true
                 && !this.hibernationOperationInFlight(session.id, holdsHistoryLock)
         }
         if (!this.aliveSinceHubStartIds.has(session.id) || !session.metadata?.hostPid || !session.metadata.hostStartMarker) return false
@@ -1296,7 +1296,7 @@ export class SyncEngine {
         const progressAt = this.getHibernationProgressAt(session)
         if (now - progressAt <= hibernateMs) return false
         const capabilities = this.hibernationRunnerCapabilities(session)
-        if (capabilities?.sessionHibernation !== true) return false
+        if (capabilities?.sessionHibernation !== true || !machine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.ResumeHibernatedSession)) return false
         return shouldHibernate(session, () => this.collectHibernationSignals(session, holdsHistoryLock),
             progressAt, now, hibernateMs, capabilities)
     }
@@ -5754,7 +5754,7 @@ export class SyncEngine {
 
     pendingSessionWake(sessionId: string, namespace: string): Promise<ResumeSessionResult | ReopenSessionResult> | undefined {
         const session = this.sessionCache.getSessionByNamespace(sessionId, namespace)
-        if (session?.metadata?.hibernation?.state !== 'hibernated') return undefined
+        if (!session) return undefined
         return this.resumeTails.get(sessionId) ?? this.reopenTails.get(sessionId)
     }
 
@@ -5800,10 +5800,6 @@ export class SyncEngine {
         let initialSession = access.session
         const fromHibernation = isHibernatedLifecycleState(initialSession.metadata?.lifecycleState)
             || initialSession.metadata?.hibernation !== undefined
-        if (initialSession.metadata?.hibernation?.state === 'stopping') {
-            this.sessionCache.recoverUnconfirmedHibernationStop(access.sessionId)
-            initialSession = this.sessionCache.getSessionByNamespace(access.sessionId, namespace) ?? initialSession
-        }
         if (initialSession.metadata?.codexResumePending) {
             if (!await this.reconcileCodexResume(initialSession)) return { type: 'error', message: 'Codex resume startup is still unconfirmed', code: 'resume_failed', rollbackSafe: false }
             initialSession = this.sessionCache.getSessionByNamespace(sessionId, namespace) ?? initialSession
@@ -5844,6 +5840,7 @@ export class SyncEngine {
             initialSession = this.sessionCache.getSessionByNamespace(access.sessionId, namespace) ?? initialSession
         }
         if (initialSession.active) {
+            if (initialSession.metadata?.hibernation?.state === 'stopping') this.sessionCache.recoverUnconfirmedHibernationStop(access.sessionId)
             // A live CLI behind a settled marker is a confirmed wake.
             if (initialSession.metadata?.hibernation?.state === 'hibernated') {
                 this.sessionCache.clearSessionHibernation(access.sessionId)
@@ -5881,8 +5878,6 @@ export class SyncEngine {
             return targetResult
         }
 
-        const metadata = session.metadata!
-
         const targetMachine = this.resolveOnlineMachineForSession(
             session,
             namespace,
@@ -5895,9 +5890,19 @@ export class SyncEngine {
             return { type: 'error', message: 'No machine online', code: 'no_machine_online' }
         }
 
+        if (fromHibernation && (targetMachine.runnerState?.capabilities?.sessionHibernation !== true
+            || !targetMachine.metadata?.capabilities?.includes(MACHINE_CAPABILITIES.ResumeHibernatedSession))) {
+            return { type: 'error', message: 'Upgrade the runner to wake this session under its existing ID', code: 'resume_unavailable' }
+        }
+
         if (flavor === 'pi' && resumeToken && targetMachine.runnerState?.capabilities?.piExistingSessionResume !== true) {
             return { type: 'error', message: 'Pi resume requires an upgraded runner', code: 'resume_failed' }
         }
+
+        if (session.metadata?.hibernation?.state === 'stopping') {
+            this.sessionCache.recoverUnconfirmedHibernationStop(access.sessionId)
+        }
+        const metadata = this.sessionCache.getSessionByNamespace(access.sessionId, namespace)?.metadata ?? session.metadata!
 
         const requiresPiNativeReady = flavor === 'pi' && resumeToken !== undefined
         if (requiresPiNativeReady) {
@@ -6041,7 +6046,7 @@ export class SyncEngine {
                     if (spawnResult.childStarted === false) this.writeCodexResumePending(access.sessionId, namespace, undefined)
                     else return { type: 'error', message: spawnResult.message, code: 'resume_failed', rollbackSafe: false }
                 }
-                if (requiresPiNativeReady) {
+                if (requiresPiNativeReady && !(fromHibernation && spawnResult.childStarted === false)) {
                     const stopped = await this.terminateInPlacePiResume(
                         targetMachine.id,
                         access.sessionId,
