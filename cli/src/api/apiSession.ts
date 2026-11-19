@@ -1,6 +1,7 @@
 type QueueCancelResult = boolean | 'in-flight' | 'indeterminate' | 'consumed'
 import { EventEmitter } from 'node:events'
 import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import { io, type Socket } from 'socket.io-client'
 import axios from 'axios'
 import type { ZodType } from 'zod'
@@ -1560,17 +1561,29 @@ if (isReconnect) {
             return
         }
         this.agentStateLock.inLock(async () => {
+            let unconfirmed: { expectedVersion: number; agentState: AgentState } | undefined
+            const alreadyCommitted = () => unconfirmed !== undefined
+                && this.agentStateVersion === unconfirmed.expectedVersion + 1
+                && isDeepStrictEqual(this.agentState, unconfirmed.agentState)
             await backoff(async () => {
-                if (this.isClosed()) return
+                if (this.isClosed() || alreadyCommitted()) return
                 if (!this.socket.connected) throw new Error('Socket not connected')
+                const expectedVersion = this.agentStateVersion
                 const current = this.agentState ?? ({} as AgentState)
-                const updated = handler(current)
-
-                const answer = await this.socket.timeout(SESSION_UPDATE_ACK_TIMEOUT_MS).emitWithAck('update-state', {
-                    sid: this.sessionId,
-                    expectedVersion: this.agentStateVersion,
-                    agentState: updated
-                }) as unknown
+                const updated = unconfirmed?.expectedVersion === expectedVersion ? unconfirmed.agentState : handler(current)
+                let answer: unknown
+                try {
+                    answer = await this.socket.timeout(SESSION_UPDATE_ACK_TIMEOUT_MS).emitWithAck('update-state', {
+                        sid: this.sessionId,
+                        expectedVersion,
+                        agentState: updated
+                    })
+                } catch (error) {
+                    // Retain the value as encoded on the wire, without re-running a
+                    // time-sensitive updater when the Hub may have committed it.
+                    unconfirmed = { expectedVersion, agentState: JSON.parse(JSON.stringify(updated)) as AgentState }
+                    throw error
+                }
                 if (this.isClosed()) return
 
                 applyVersionedAck(answer, {

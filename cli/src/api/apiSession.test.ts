@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { Session } from './types'
+import type { AgentState, Session } from './types'
 import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -2457,6 +2457,39 @@ describe('ApiSessionClient metadata cancellation and reconnect ordering', () => 
             expect(seen).toEqual([true, true, false])
             expect(socket.timeoutEmits.filter(({ event }) => event === 'update-state').map(({ ms }) => ms))
                 .toEqual([5_000, 5_000, 5_000])
+        } finally {
+            client.close()
+            vi.useRealTimers()
+        }
+    })
+
+    it('preserves the permission timestamp when the Hub committed a write before its ACK was lost', async () => {
+        vi.useFakeTimers()
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]!
+        const writes: Array<{ expectedVersion: number; agentState: AgentState }> = []
+        socket.emitWithAckImpl = async (event, payload) => {
+            if (event !== 'update-state') return {}
+            const request = payload as (typeof writes)[number]
+            writes.push(request)
+            if (writes.length === 1) return await new Promise<never>(() => {})
+            if (request.expectedVersion === 0) {
+                return { result: 'version-mismatch', version: 1, agentState: writes[0]!.agentState }
+            }
+            return { result: 'success', version: request.expectedVersion + 1, agentState: request.agentState }
+        }
+        const addRequest = vi.fn((state: AgentState): AgentState => ({
+            ...state, requests: { pending: { tool: 'AskUserQuestion', arguments: {}, createdAt: Date.now() } }
+        }))
+        try {
+            client.updateAgentState(addRequest)
+            client.updateAgentState(state => ({ ...state, steeringActive: true }))
+            await vi.advanceTimersByTimeAsync(6_100)
+            expect(addRequest).toHaveBeenCalledOnce()
+            expect(writes.map(write => write.expectedVersion)).toEqual([0, 0, 1])
+            expect(writes[1]!.agentState.requests).toEqual(writes[0]!.agentState.requests)
+            expect(writes[2]!.agentState).toEqual({ ...writes[0]!.agentState, steeringActive: true })
         } finally {
             client.close()
             vi.useRealTimers()
