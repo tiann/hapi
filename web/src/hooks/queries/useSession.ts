@@ -1,8 +1,7 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import type { Session } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
-import { mergeSessionDetailSnapshot } from '@/lib/sessionPatch'
 
 export function isSessionNotFoundError(error: unknown): boolean {
     return error instanceof Error
@@ -27,7 +26,6 @@ export function useSession(api: ApiClient | null, sessionId: string | null): {
     notFound: boolean
     refetch: () => Promise<unknown>
 } {
-    const queryClient = useQueryClient()
     const resolvedSessionId = sessionId ?? 'unknown'
     const query = useQuery({
         queryKey: queryKeys.session(resolvedSessionId),
@@ -35,9 +33,7 @@ export function useSession(api: ApiClient | null, sessionId: string | null): {
             if (!api || !sessionId) {
                 throw new Error('Session unavailable')
             }
-            const response = await api.getSession(sessionId)
-            const current = queryClient.getQueryData<{ session: Session }>(queryKeys.session(sessionId))?.session
-            return { ...response, session: mergeSessionDetailSnapshot(current, response.session) }
+            return api.getSession(sessionId)
         },
         enabled: Boolean(api && sessionId),
         staleTime: SESSION_DETAIL_STALE_TIME_MS,

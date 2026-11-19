@@ -298,7 +298,7 @@ function AppInner() {
             // freshness window on `useSession`, a previously-viewed session that
             // received updates during the SSE gap would otherwise serve stale
             // cached data on remount.  See tiann/hapi#884.
-            queryClient.invalidateQueries({ queryKey: ['session'] }),
+            queryClient.invalidateQueries({ queryKey: queryKeys.sessionDetails }),
             refreshAllAgyCatalogs(queryClient)
         ]
         const refreshMessages = (selectedSessionId && api)

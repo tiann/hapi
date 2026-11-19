@@ -15,19 +15,6 @@ export function isNewerVersionedPatch(patchVersion: number, currentVersion: numb
     return patchVersion > currentVersion
 }
 
-/** A full REST or SSE snapshot can arrive after a newer agent-state patch. */
-export function mergeSessionDetailSnapshot(current: Session | undefined, incoming: Session): Session {
-    const newerAgentState = current && current.agentStateVersion > incoming.agentStateVersion
-        ? { agentState: current.agentState, agentStateVersion: current.agentStateVersion }
-        : undefined
-    return {
-        ...incoming,
-        ...newerAgentState,
-        contentRevision: Math.max(current?.contentRevision ?? 0, incoming.contentRevision ?? 0),
-        readState: mergeReadState(current?.readState, incoming.readState)
-    }
-}
-
 /**
  * True when applying `patch` to `session` would change nothing that renders.
  *
@@ -120,7 +107,10 @@ export function applySessionDetailPatch(session: Session, patch: SessionPatch): 
         nextSession.metadataVersion = patch.metadata.version
         changed = true
     }
-    if (patch.agentState !== undefined && isNewerVersionedPatch(patch.agentState.version, nextSession.agentStateVersion)) {
+    if (patch.agentState !== undefined && (
+        !Number.isFinite(nextSession.agentStateVersion)
+        || isNewerVersionedPatch(patch.agentState.version, nextSession.agentStateVersion)
+    )) {
         nextSession.agentState = patch.agentState.value
         nextSession.agentStateVersion = patch.agentState.version
         changed = true

@@ -1,9 +1,10 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClientProvider } from '@tanstack/react-query'
 import { act, renderHook } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionSummary } from '@/types/api'
 import type { Session } from '@/types/api'
+import { createQueryClient } from '@/lib/query-client'
 import { queryKeys } from '@/lib/query-keys'
 import {
     applySessionDetailPatch,
@@ -60,7 +61,7 @@ class FakeEventSource {
 function renderUseSSE(options?: {
     onDisconnect?: (reason: string) => void
 }) {
-    const queryClient = new QueryClient()
+    const queryClient = createQueryClient()
     const wrapper = ({ children }: { children: ReactNode }) =>
         createElement(QueryClientProvider, { client: queryClient }, children)
     const hook = renderHook(() => useSSE({

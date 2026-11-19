@@ -1,8 +1,9 @@
 import type { ReactNode } from 'react'
 import { act, renderHook, waitFor } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClientProvider } from '@tanstack/react-query'
 import { expect, it, vi } from 'vitest'
 import type { ApiClient } from '@/api/client'
+import { createQueryClient } from '@/lib/query-client'
 import { queryKeys } from '@/lib/query-keys'
 import { applySessionDetailPatch } from '@/lib/sessionPatch'
 import type { AgentState, SessionResponse } from '@/types/api'
@@ -11,7 +12,7 @@ import { useSession } from './useSession'
 it('preserves an SSE question when a session GET started before issuance returns afterward', async () => {
     const id = 'session'
     const key = queryKeys.session(id)
-    const client = new QueryClient()
+    const client = createQueryClient()
     const snapshot = (agentStateVersion: number, agentState: AgentState, activeAt: number): SessionResponse => ({
         session: { id, agentStateVersion, agentState, activeAt } as SessionResponse['session']
     })

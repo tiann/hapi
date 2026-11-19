@@ -1,11 +1,15 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClientProvider, skipToken, useQuery } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from '@/App'
 import { ApiError, type ApiClient } from '@/api/client'
 import { I18nProvider } from '@/lib/i18n-context'
-import type { DecryptedMessage, Session } from '@/types/api'
+import { createQueryClient } from '@/lib/query-client'
+import { queryKeys } from '@/lib/query-keys'
+import { refreshSessionDetailPreservingActive } from '@/lib/session-detail-optimistic'
+import { applySessionDetailPatch } from '@/lib/sessionPatch'
+import type { DecryptedMessage, Session, SessionResponse } from '@/types/api'
 import { SessionChat } from './SessionChat'
 
 const shell = vi.hoisted(() => ({
@@ -52,14 +56,21 @@ function state(instance?: string): Session['agentState'] {
     return { requests: { [requestId]: request } }
 }
 
-function setup() {
+const detailKey = queryKeys.session('session-1')
+
+function CachedChat({ renderChat }: { renderChat: (agentState: Session['agentState']) => ReactNode }) {
+    const { data } = useQuery<SessionResponse>({ queryKey: detailKey, queryFn: skipToken })
+    return data ? renderChat(data.session.agentState) : null
+}
+
+function setup(fromCache = false) {
     shell.api.approvePermission.mockReset().mockResolvedValue(undefined)
     const onRefresh = vi.fn()
     const onInitialPendingRequestConsumed = vi.fn()
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const queryClient = createQueryClient()
     const app = () => <QueryClientProvider client={queryClient}><I18nProvider><App /></I18nProvider></QueryClientProvider>
-    const setState = (agentState: Session['agentState'], mounted = true, pendingRequestId?: string) => {
-        shell.outlet = mounted ? <SessionChat
+    const renderChat = (agentState: Session['agentState'], pendingRequestId?: string) => (
+        <SessionChat
             api={shell.api as unknown as ApiClient}
             session={{ id: 'session-1', active: true, agentState } as Session}
             messages={messages}
@@ -82,9 +93,13 @@ function setup() {
             onSend={async () => false}
             onViewModeChange={() => {}}
             onJumpToTail={() => {}}
-        /> : null
+        />
+    )
+    const setState = (agentState: Session['agentState'], mounted = true, pendingRequestId?: string) => {
+        shell.outlet = mounted ? renderChat(agentState, pendingRequestId) : null
     }
-    setState(state('first'))
+    if (fromCache) shell.outlet = <CachedChat renderChat={renderChat} />
+    else setState(state('first'))
     const view = render(app())
     const update = (agentState: Session['agentState'], mounted = true, pendingRequestId?: string) => {
         setState(agentState, mounted, pendingRequestId)
@@ -96,7 +111,7 @@ function setup() {
         fireEvent.change(transcript().getByRole('textbox'), { target: { value: 'Web' } })
         fireEvent.click(transcript().getByRole('button', { name: 'Submit' }))
     }
-    return { update, transcript, submit, onRefresh, onInitialPendingRequestConsumed }
+    return { update, transcript, submit, onRefresh, onInitialPendingRequestConsumed, queryClient }
 }
 
 describe('Codex question receipts in the session chat', () => {
@@ -136,6 +151,28 @@ describe('Codex question receipts in the session chat', () => {
         expect(screen.getByRole('button', { name: 'Awaiting your reply 1' })).toBeVisible()
         await submit()
         await waitFor(() => expect(transcript().getByText('Answer sent. Waiting for the agent.')).toBeVisible())
+    })
+
+    it('keeps an accepted receipt when the resume detail GET arrives after question SSE', async () => {
+        const { queryClient, submit, transcript } = setup(true)
+        const before: SessionResponse = {
+            session: { id: 'session-1', active: true, agentStateVersion: 1, agentState: {} } as Session
+        }
+        const delayed = Promise.withResolvers<SessionResponse>()
+        queryClient.setQueryData(detailKey, before)
+        const refresh = refreshSessionDetailPreservingActive(queryClient, 'session-1', () => delayed.promise)
+        const issued = applySessionDetailPatch(before.session, { agentState: { version: 2, value: state('first') } })!
+        act(() => { queryClient.setQueryData(detailKey, { session: issued }) })
+        await submit()
+        await waitFor(() => expect(transcript().getByText('Answer sent. Waiting for the agent.')).toBeVisible())
+
+        await act(async () => {
+            delayed.resolve(before)
+            await refresh
+        })
+        expect(queryClient.getQueryData<SessionResponse>(detailKey)?.session.agentStateVersion).toBe(2)
+        expect(transcript().getByText('Answer sent. Waiting for the agent.')).toBeVisible()
+        expect(transcript().queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument()
     })
 
     it('closes the transcript form on 404 and refreshes the session', async () => {

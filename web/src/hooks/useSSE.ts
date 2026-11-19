@@ -28,8 +28,7 @@ import { clearMessageWindow, getMessageWindowState, ingestIncomingMessages, mark
 import {
     applySessionDetailPatch,
     isNewerVersionedPatch,
-    isRenderIrrelevantSessionPatch,
-    mergeSessionDetailSnapshot
+    isRenderIrrelevantSessionPatch
 } from '@/lib/sessionPatch'
 
 // Pure patch-application rules live in @/lib/sessionPatch (React-free, shared
@@ -768,10 +767,7 @@ export function useSSE(options: {
                     void queryClient.removeQueries({ queryKey: queryKeys.session(event.sessionId) })
                     clearMessageWindow(event.sessionId)
                 } else if (isSessionRecord(event.data) && event.data.id === event.sessionId) {
-                    const incoming = event.data
-                    queryClient.setQueryData<SessionResponse>(queryKeys.session(event.sessionId), previous => ({
-                        session: mergeSessionDetailSnapshot(previous?.session, incoming)
-                    }))
+                    queryClient.setQueryData<SessionResponse>(queryKeys.session(event.sessionId), { session: event.data })
                     upsertSessionSummary(event.data)
                 } else {
                     const patch = getSessionPatch(event.data)

@@ -1,6 +1,9 @@
+const sessionDetails = ['session'] as const
+
 export const queryKeys = {
     sessions: ['sessions'] as const,
-    session: (sessionId: string) => ['session', sessionId] as const,
+    sessionDetails,
+    session: (sessionId: string) => [...sessionDetails, sessionId] as const,
     messages: (sessionId: string) => ['messages', sessionId] as const,
     sessionContentSearch: (sessionId: string, query: string) => ['session-content-search', sessionId, query] as const,
     machines: ['machines'] as const,
