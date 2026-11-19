@@ -75,6 +75,8 @@ export class SharedCodexRoot {
     private steeringActive: boolean | undefined;
     private turnRevision = 0;
     private settingsRevision = 0;
+    private attachedTierObservation?: Promise<void>;
+    private attachedTierObservationRequested = false;
     private refreshing?: Promise<void>;
     private interrupted = false;
     private closed = false;
@@ -117,7 +119,10 @@ export class SharedCodexRoot {
             if (method === 'serverRequest/resolved') {
                 this.permissions?.resolved(string(record(params).threadId) ?? '', record(params).requestId); return;
             }
-            if (method === 'thread/settings/updated' && record(params).threadId === this.threadId) this.acceptSettings(record(record(params).threadSettings), false);
+            if (method === 'thread/settings/updated' && record(params).threadId === this.threadId) {
+                this.acceptSettings(record(record(params).threadSettings), false);
+                this.observeAttachedTier();
+            }
             if (record(params).threadId === this.threadId) {
                 if (method === 'turn/started') {
                     this.turnRevision++; this.currentTurn = string(record(record(params).turn).id); this.interrupted = false;
@@ -341,7 +346,7 @@ export class SharedCodexRoot {
             response = record(await this.client.request('thread/resume', { threadId }));
         }
         this.modelProvider = string(response.modelProvider) ?? string(record(response.thread).modelProvider);
-        this.acceptSettings(response, true); this.acceptSettings(this.host.settingsFor(threadId) ?? {}, false);
+        this.acceptSettings(this.host.settingsFor(threadId) ?? {}, false); this.acceptSettings(response, true);
         if (this.hasConfirmedStandardTier) {
             this.tierConfirmationPending = false;
             this.tierConfirmationResolved = true;
@@ -427,19 +432,26 @@ export class SharedCodexRoot {
         for (const listener of this.settingsListeners) listener();
         this.publishPlan();
     }
+    private observeAttachedTier(): void {
+        if (!this.host.attached || this.closed || this.stopping || !this.hasUltrafastTier || !this.client.supportsEffectiveUltrafastLaunch()) return;
+        this.attachedTierObservationRequested = true;
+        if (this.attachedTierObservation) return;
+        this.attachedTierObservation = (async () => {
+            while (this.attachedTierObservationRequested && !this.closed && !this.stopping) {
+                this.attachedTierObservationRequested = false;
+                const revision = this.settingsRevision;
+                try {
+                    const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, Date.now() + 10_000));
+                    if (!this.closed && !this.stopping && this.settingsRevision === revision) this.acceptSettings(snapshot, true);
+                } catch (error) { logger.debug('[Codex attached] effective tier snapshot unavailable', error); }
+            }
+        })().finally(() => { this.attachedTierObservation = undefined; });
+    }
     private async notification(method: string, params: unknown, modelAtReceipt?: string, receivedAt = Date.now()): Promise<void> {
         // Native broadcasts can arrive while bind() is loading the local
         // ledger, before a projection exists. bind's full read reconciles them.
         if (!this.threadId || !this.projection || this.closed || this.host.attached && this.stopping) return;
         const p = record(params);
-        if (this.host.attached && p.threadId === this.threadId && method === 'thread/settings/updated'
-            && this.hasUltrafastTier && this.client.supportsEffectiveUltrafastLaunch()) {
-            const revision = this.settingsRevision;
-            try {
-                const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, Date.now() + 10_000));
-                if (!this.closed && !this.stopping && this.settingsRevision === revision) this.acceptSettings(snapshot, true);
-            } catch (error) { logger.debug('[Codex attached] effective tier snapshot unavailable', error); }
-        }
         if (method === 'thread/started') {
             const thread = record(p.thread); const id = string(thread.id);
             if (id) this.ancestry.set(id, string(thread.parentThreadId) ?? null);

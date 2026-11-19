@@ -77,6 +77,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     const prepared = new Set<SharedCodexRoot>();
     const reservations = new Map<string, Reservation>();
     const pendingAdmission = new Set<string>();
+    const resumingThreads = new Set<string>();
     const nativeTurns = new Map<string, { root: SharedCodexRoot; params: Record<string, unknown>; explicitTier: boolean; fallbackNotice?: string }>();
     const runtime: CodexRuntimeRecord = { id, pid: process.pid, marker: getProcessStartMarker(process.pid) ?? '',
         endpoint: '', command: command.command, args: command.args, codexHome: home, hub: configuration.apiUrl, authHash: runtimeAuthHash(), sessions: {} };
@@ -162,6 +163,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         ending.add(root);
         try { if (nativeArchive) await root.client.request('thread/archive', { threadId: root.threadId }); } catch (error) { ending.delete(root); throw error; }
         roots.delete(root.threadId);
+        nativeSettings.delete(root.threadId);
         runtime.sessions[root.session.sessionId].active = false; await persist();
         // Let the RPC acknowledgement leave both gateway and hub sockets before detach.
         setTimeout(() => {
@@ -347,8 +349,12 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         if (threadId) await withThreadOwnership(home, threadId, id, async () => {});
         const root = request.method === 'thread/resume' && threadId
             ? await withThreadOwnership(home, threadId, id, async () => {
-                const root = await prepare(cwd, await findColdBinding(home, threadId));
-                await reserveRecord(root, threadId); return root;
+                if (resumingThreads.has(threadId) || roots.has(threadId)) throw new Error('Thread is already being attached in this runtime; retry after it is ready');
+                resumingThreads.add(threadId);
+                try {
+                    const root = await prepare(cwd, await findColdBinding(home, threadId));
+                    await reserveRecord(root, threadId); return root;
+                } catch (error) { resumingThreads.delete(threadId); throw error; }
             }) : await prepare(cwd, undefined, request.method === 'thread/fork' ? existing : undefined);
         try {
             if (request.method !== 'thread/resume') {
@@ -363,6 +369,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             if (request.method === 'thread/resume' && threadId && (tier.params.serviceTier === 'ultrafast' || root.session.getMetadata()?.codexTierConfirmationPending === true)) pendingAdmission.add(threadId);
             return { ...request, params: root.config({ ...tier.params, ...(request.method === 'thread/fork' ? { deferGoalContinuation: true } : {}) }) };
         } catch (error) {
+            if (request.method === 'thread/resume' && threadId) resumingThreads.delete(threadId);
             const binding = runtime.sessions[root.session.sessionId];
             if (binding) binding.active = false;
             runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== root.session.sessionId);
@@ -379,12 +386,14 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         const reservation = reservations.get(key(connection, request)); reservations.delete(key(connection, request));
         if (reservation) {
             if (response.error) {
+                if (reservation.resumeId) resumingThreads.delete(reservation.resumeId);
                 if (reservation.resumeId) pendingAdmission.delete(reservation.resumeId);
                 const binding = runtime.sessions[reservation.root.session.sessionId]; if (binding) binding.active = false;
                 runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== reservation.root.session.sessionId);
                 await persist(); prepared.delete(reservation.root); await reservation.root.close(!reservation.resumeId); return;
             }
             await bind(reservation.root, record(response.result), true, undefined, request.method === 'thread/start', reservation.serviceTierExplicit, reservation.requestedUltrafast);
+            if (reservation.resumeId) resumingThreads.delete(reservation.resumeId);
             if (reservation.downgraded) reservation.root.session.sendSessionEvent({ type: 'message', message: ULTRAFAST_FALLBACK_NOTICE });
         } else if (request.method === 'thread/archive' && !response.error) {
             const root = roots.get(string(record(request.params).threadId) ?? ''); if (root) await end(root, false);

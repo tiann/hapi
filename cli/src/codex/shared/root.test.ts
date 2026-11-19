@@ -100,8 +100,38 @@ it.each([false, true])('observes effective attached desktop Ultrafast without ov
     await reading;
     if (superseded) f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: { model: 'mock', serviceTier: 'priority' } });
     release(); await f.drain();
+    await vi.waitFor(() => expect((f.root as unknown as { attachedTierObservation?: Promise<void> }).attachedTierObservation).toBeUndefined());
     (f.root as unknown as { alive(): void }).alive();
     expect(keepAlive.mock.lastCall?.[2]?.serviceTier).toBe(superseded ? 'fast' : 'ultrafast');
+});
+
+it('keeps a fresh resume tier authoritative over cached selected settings', async () => {
+    const f = await fixture({ bindTier: 'ultrafast', settingsFor: () => ({ model: 'mock', serviceTier: 'priority', collaborationMode: { mode: 'plan' } }) });
+    expect(f.root.hasUltrafastTier).toBe(true);
+    const request = vi.spyOn(f.root.client, 'request');
+    await f.root.confirmUltrafastLaunch();
+    expect(request).not.toHaveBeenCalledWith('thread/settings/update', expect.anything());
+});
+
+it('projects attached chat updates while a coalesced tier snapshot is stalled', async () => {
+    const f = await fixture({ attached: true }); await f.root.activate();
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const original = f.root.client.request.bind(f.root.client);
+    let reads = 0;
+    vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/resume') { reads++; await held; return { model: 'mock', serviceTier: 'ultrafast' } as never; }
+        return original(method, params);
+    });
+    try {
+        for (let i = 0; i < 3; i++) f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: { model: 'mock', serviceTier: 'ultrafast' } });
+        f.native.notify('thread/name/updated', { threadId: 'thread', threadName: 'Live desktop title' });
+        await f.drain();
+        expect(f.metadata().name).toBe('Live desktop title');
+        expect(reads).toBe(1);
+    } finally { release(); }
+    await vi.waitFor(() => expect((f.root as unknown as { attachedTierObservation?: Promise<void> }).attachedTierObservation).toBeUndefined());
+    expect(reads).toBe(2);
 });
 
 it('registers recovery controls when initial Plan confirmation times out after a confirmed Ultrafast launch', async () => {
@@ -191,7 +221,7 @@ it.each(['current', 'latest', 'clear'])('passes Plan into activation and returns
 
 async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; create?: RootHost['create'];
     initialTierPending?: boolean; holdTierMetadata?: boolean; bindTier?: string;
-    attached?: boolean; beforeSubscribe?: RootHost['beforeSubscribe']; validateHistory?: RootHost['validateHistory']; initialState?: AgentState }) {
+    attached?: boolean; settingsFor?: RootHost['settingsFor']; beforeSubscribe?: RootHost['beforeSubscribe']; validateHistory?: RootHost['validateHistory']; initialState?: AgentState }) {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-shared-root-'));
     let state: AgentState = opts?.initialState ?? { steeringActive: true };
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex', ...(opts?.initialTierPending ? { codexTierConfirmationPending: true } : {}) };
@@ -226,7 +256,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     } as unknown as ApiSessionClient;
     const end = opts?.end ?? (async () => { throw new Error('Unexpected root archive'); });
     const root = new SharedCodexRoot({ session, sessionInfo: { agentState: state }, workingDirectory: directory } as SessionBootstrapResult, {
-        directory, generation: 'test', endpoint: 'mock', catalogProvider: opts?.attached ? undefined : 'openai', settingsFor: () => undefined,
+        directory, generation: 'test', endpoint: 'mock', catalogProvider: opts?.attached ? undefined : 'openai', settingsFor: opts?.settingsFor ?? (() => undefined),
         create: opts?.create ?? (async () => { throw new Error('Unexpected root creation'); }),
         attached: opts?.attached, beforeSubscribe: opts?.beforeSubscribe, validateHistory: opts?.validateHistory,
         end

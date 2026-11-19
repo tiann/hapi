@@ -101,6 +101,21 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             original.abort.abort(); await original.done;
             await configure('default');
             const second = await start();
+            const concurrent = new CodexAppServerClient({ endpoint: second.runtime.endpoint, token: second.runtime.token });
+            clients.push(concurrent); await initializeSharedClient(concurrent);
+            let enteredConfig!: () => void, releaseConfig!: () => void;
+            const enteredRead = new Promise<void>(resolve => { enteredConfig = resolve; });
+            const configGate = new Promise<void>(resolve => { releaseConfig = resolve; });
+            failConfig = vi.spyOn(CodexAppServerClient.prototype, 'readConfig').mockImplementationOnce(async () => {
+                enteredConfig(); await configGate; throw new Error('fixture concurrent config unavailable');
+            });
+            const firstResume = second.client.request('thread/resume', { threadId, excludeTurns: true });
+            void firstResume.catch(() => {});
+            await enteredRead;
+            try { await expect(concurrent.request('thread/resume', { threadId, excludeTurns: true })).rejects.toThrow('already being attached'); }
+            finally { releaseConfig(); }
+            await expect(firstResume).rejects.toThrow('fixture concurrent config unavailable');
+            failConfig.mockRestore(); failConfig = undefined;
             failConfig = vi.spyOn(CodexAppServerClient.prototype, 'readConfig').mockRejectedValueOnce(new Error('fixture config unavailable'));
             await expect(second.client.request('thread/resume', { threadId, excludeTurns: true })).rejects.toThrow('fixture config unavailable');
             failConfig.mockRestore(); failConfig = undefined;
