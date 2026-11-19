@@ -23,6 +23,31 @@ describe('StatusBar pending requests', () => {
         expect(screen.getByText('Awaiting your answer')).toHaveClass('text-[var(--app-badge-warning-text)]')
     })
 
+    it('labels and opens the sole actionable request when another request is hidden', () => {
+        const onClick = vi.fn()
+        render(
+            <I18nProvider>
+                <StatusBar
+                    active
+                    thinking={false}
+                    agentState={{ requests: {
+                        hiddenQuestion: { tool: 'request_user_input', arguments: {}, createdAt: 1 },
+                        approval: { tool: 'Bash', arguments: {}, createdAt: 2 },
+                    } }}
+                    hiddenPendingRequestIds={new Set(['hiddenQuestion'])}
+                    onPendingRequestClick={onClick}
+                />
+            </I18nProvider>
+        )
+
+        const shortcut = screen.getByRole('button', { name: 'Approval required' })
+        expect(shortcut).toHaveTextContent('Approval required')
+        expect(shortcut).toHaveAttribute('title', 'Approval required')
+        expect(shortcut).not.toHaveAttribute('aria-haspopup')
+        fireEvent.click(shortcut)
+        expect(onClick).toHaveBeenCalledExactlyOnceWith('approval')
+    })
+
     it('labels Cursor questions as awaiting an answer', () => {
         renderStatus({
             cursor: { tool: 'CursorAskQuestion', arguments: { prompt: 'Choose one' }, createdAt: 1 },

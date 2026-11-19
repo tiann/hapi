@@ -245,9 +245,11 @@ export function StatusBar(props: {
             : pendingRequests,
         [pendingRequests, props.hiddenPendingRequestIds]
     )
+    const hasActionableShortcut = Boolean(props.onPendingRequestClick && actionableRequests.length > 0)
+    const statusRequests = hasActionableShortcut ? actionableRequests : pendingRequests
     const connectionStatus = useMemo(
-        () => getConnectionStatus(props.active, props.thinking, pendingRequests, props.voiceStatus, props.backgroundTaskCount ?? 0, t),
-        [props.active, props.thinking, pendingRequests, props.voiceStatus, props.backgroundTaskCount, t]
+        () => getConnectionStatus(props.active, props.thinking, statusRequests, props.voiceStatus, props.backgroundTaskCount ?? 0, t),
+        [props.active, props.thinking, statusRequests, props.voiceStatus, props.backgroundTaskCount, t]
     )
 
     const contextHeuristicModel = props.contextModel ?? props.model
@@ -321,7 +323,7 @@ export function StatusBar(props: {
     return (
         <div className="flex min-w-0 items-baseline justify-between gap-2 px-2 pb-1">
             <div className="flex min-w-0 items-baseline gap-2">
-                {connectionStatus.hasPendingRequests && props.onPendingRequestClick && actionableRequests.length > 0 ? (
+                {connectionStatus.hasPendingRequests && hasActionableShortcut ? (
                     actionableRequests.length === 1 ? (
                         <button
                             type="button"
