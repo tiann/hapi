@@ -46,7 +46,7 @@ function normalizeFlavor(flavor?: string): string {
     return (flavor ?? 'claude').trim().toLowerCase();
 }
 
-export function getAgentConfigDir(flavor?: string): string {
+function getAgentConfigDir(flavor?: string): string {
     const normalizedFlavor = normalizeFlavor(flavor);
     switch (normalizedFlavor) {
         case 'claude':

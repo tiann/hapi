@@ -13,7 +13,7 @@ import { getSystemPrompt } from "./utils/systemPrompt";
 import { PermissionResult } from "./sdk/types";
 import { getHapiBlobsDir } from "@/constants/uploadPaths";
 import { getDefaultClaudeCodePath } from "./sdk/utils";
-import { filterCatalogAffectingClaudeArgs, sdkInitCatalog, type SDKMetadata } from "./sdk/metadataExtractor";
+import { filterCatalogAffectingClaudeArgs } from "./sdk/metadataExtractor";
 import { buildCompactCompletionEvent } from "./utils/compactCompletion";
 import { findLatestCompactSummary } from "./utils/compactSummaryLookup";
 
@@ -61,8 +61,6 @@ function nativePermissionMode(mode: PermissionMode): PermissionMode {
     return mode === 'acceptEdits' || mode === 'bypassPermissions' ? 'default' : mode;
 }
 
-export type ClaudeCatalogHandler = (metadata: SDKMetadata, model?: string, args?: string[]) => void;
-
 export async function claudeRemote(opts: {
 
     // Fixed parameters
@@ -90,7 +88,6 @@ export async function claudeRemote(opts: {
     isAborted: (toolCallId: string) => boolean,
 
     // Callbacks
-    onCatalog?: ClaudeCatalogHandler,
     onSessionFound: (id: string, extras?: { forkedFrom?: string }) => void,
     onThinkingChange?: (thinking: boolean) => void,
     onMessage: (message: SDKMessage) => void,
@@ -767,7 +764,6 @@ export async function claudeRemote(opts: {
                 if (initial) updateThinking(true);
 
                 const systemInit = message as SDKSystemMessage;
-                opts.onCatalog?.(sdkInitCatalog(systemInit), sdkOptions.model, opts.claudeArgs);
 
                 if (opts.onContextUsage) {
                     // Older CLIs may not support get_context_usage; the converter's seed stays.

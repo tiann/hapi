@@ -12,9 +12,7 @@ const { getCliArgsMock, resolveCommandMock, selectAgentMock, ensureLoopbackProxy
     runMock: vi.fn<(_: CommandContext) => Promise<void>>(async () => {})
 }))
 
-vi.mock('@/utils/cliArgs', async original => ({
-    ...await original<typeof import('@/utils/cliArgs')>(), getCliArgs: getCliArgsMock
-}))
+vi.mock('@/utils/cliArgs', () => ({ getCliArgs: getCliArgsMock }))
 vi.mock('./registry', () => ({ resolveCommand: resolveCommandMock }))
 vi.mock('@/ui/selectAgent', () => ({ selectAgent: selectAgentMock }))
 vi.mock('@/runtime/assets', () => ({ ensureRuntimeAssets: ensureRuntimeAssetsMock }))

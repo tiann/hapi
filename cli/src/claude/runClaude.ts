@@ -3,9 +3,7 @@ import { loop } from '@/claude/loop';
 import { AgentState, SessionEffort, SessionModel } from '@/api/types';
 import { claudeBatchModeHash, EnhancedMode, PermissionMode } from './loop';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
-import { hashObject } from '@/utils/deterministicJson';
-import { classifyClaudeSlashCatalog, extractSDKMetadata, type SDKMetadata } from '@/claude/sdk/metadataExtractor';
-import { readCachedCatalog, catalogFingerprint, recordCatalog, type CatalogLaunch } from './catalogCache';
+import { classifyClaudeSlashCatalog, extractSDKMetadata } from '@/claude/sdk/metadataExtractor';
 import { parseSpecialCommand } from '@/parsers/specialCommands';
 import { getEnvironmentInfo } from '@/ui/doctor';
 import { startHappyServer, toClaudeAllowedHapiMcpTools } from '@/claude/utils/startHappyServer';
@@ -95,88 +93,63 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     });
     let nativeSkills: SkillSummary[] | null = null;
 
-    const launch = { cwd: workingDirectory, model: initialModel, args: options.claudeArgs };
-    const readCatalog = async (source: Promise<SDKMetadata>) => {
-        const [sdkMetadata, discoveredSkills] = await Promise.all([source, listSkills(workingDirectory, { flavor: 'claude' })]);
-        return { sdkMetadata, catalog: classifyClaudeSlashCatalog(sdkMetadata.slashCommands, discoveredSkills, sdkMetadata.skills) };
+    const loadCatalog = async () => {
+        const [sdkMetadata, discoveredSkills] = await Promise.all([
+            extractSDKMetadata({ cwd: workingDirectory, claudeArgs: options.claudeArgs }),
+            listSkills(workingDirectory, { flavor: 'claude' })
+        ]);
+        return {
+            sdkMetadata,
+            catalog: classifyClaudeSlashCatalog(
+                sdkMetadata.slashCommands,
+                discoveredSkills,
+                sdkMetadata.skills
+            )
+        };
     };
-    let catalogPromise: ReturnType<typeof readCatalog> | null = null;
-    let cachedSkills: SkillSummary[] | null = null;
-    let lastPublished: string | undefined;
-    let liveInitKey: string | undefined;
-    const refreshCatalog = (source: Promise<SDKMetadata>, context: CatalogLaunch, initKey?: string) => {
-        if (initKey && initKey === liveInitKey && catalogPromise) return catalogPromise;
-        liveInitKey = initKey;
-        const pending: ReturnType<typeof readCatalog> = readCatalog(source).then((result) => {
-            if (catalogPromise !== pending) return catalogPromise ?? result;
-            cachedSkills = null;
-            const { sdkMetadata, catalog } = result;
-            if (sdkMetadata.slashCommands !== undefined) {
+    let catalogPromise: ReturnType<typeof loadCatalog> | null = null;
+    const getCatalog = (): ReturnType<typeof loadCatalog> => {
+        if (!catalogPromise) {
+            catalogPromise = loadCatalog().then((result) => {
+                const { sdkMetadata, catalog } = result;
+                logger.debug('[start] SDK metadata extracted, updating session:', sdkMetadata);
+                if (sdkMetadata.slashCommands === undefined) {
+                    catalogPromise = null;
+                    if (sdkMetadata.tools !== undefined) {
+                        session.updateMetadata((currentMetadata) => ({
+                            ...currentMetadata,
+                            tools: sdkMetadata.tools
+                        }));
+                    }
+                    return result;
+                }
                 nativeSkills = catalog.skills;
-                currentSessionRef.current?.setNativeSkillNames(catalog.skills.map(skill => skill.name));
-            } else {
-                catalogPromise = null;
-            }
-            const lists = { tools: sdkMetadata.tools, slashCommands: sdkMetadata.slashCommands && catalog.commands };
-            const publication = hashObject([catalogFingerprint(context, lists), sdkMetadata.version]);
-            recordCatalog(sessionInfo.id, context, lists, sdkMetadata.version, catalog.skills);
-            if (publication === lastPublished) return result;
-            if (lists.tools !== undefined || lists.slashCommands !== undefined) {
-                session.updateMetadata(current => ({
-                    ...current,
-                    ...(lists.tools !== undefined && { tools: lists.tools }),
-                    ...(lists.slashCommands !== undefined && { slashCommands: lists.slashCommands })
+                currentSessionRef.current?.setNativeSkillNames(catalog.skills.map((skill) => skill.name));
+                session.updateMetadata((currentMetadata) => ({
+                    ...currentMetadata,
+                    tools: sdkMetadata.tools,
+                    slashCommands: catalog.commands
                 }));
-            }
-            lastPublished = publication;
-            return result;
-        }).catch((error) => {
-            if (catalogPromise && catalogPromise !== pending) return catalogPromise;
-            cachedSkills = null;
-            catalogPromise = null;
-            throw error;
-        });
-        catalogPromise = pending;
-        return pending;
+                logger.debug('[start] Session metadata updated with SDK capabilities');
+                return result;
+            }).catch((error) => {
+                catalogPromise = null;
+                throw error;
+            });
+        }
+        return catalogPromise;
     };
-    const getCatalog = () => catalogPromise ?? refreshCatalog(extractSDKMetadata({
-        cwd: workingDirectory, model: initialModel ?? undefined, claudeArgs: options.claudeArgs
-    }), launch);
     session.rpcHandlerManager.registerHandler(RPC_METHODS.ListSkills, async () => {
-        if (cachedSkills) return { success: true, skills: cachedSkills };
         const result = await getCatalog();
         return result.sdkMetadata.slashCommands === undefined
             ? { success: false, error: 'Claude skill catalog unavailable' }
             : { success: true, skills: result.catalog.skills };
     });
 
-    const cached = startedBy === 'runner' && !process.stdout.isTTY && options.existingSessionId
-        ? readCachedCatalog(options.existingSessionId, launch, sessionInfo.metadata) : null;
-    const startCatalog = () => getCatalog().catch(error => logger.debug('[start] Failed to update session metadata:', error));
-    let startupCatalog = cached ? undefined : startCatalog();
-
-    // Rewind and fork-at-message need native resume-time truncation
-    // (Claude Code v2.1.223+); fork-current works on any version. Detect the
-    // actual binary version once at startup so the web UI only shows the
-    // affordances when they can work; a failed probe conservatively keeps
-    // fork-current only.
-    let claudeVersionOutput: string | null = null;
-    try {
-        claudeVersionOutput = execFileSync(getDefaultClaudeCodePath(), ['--version'], {
-            encoding: 'utf8',
-            timeout: 10_000,
-            stdio: ['pipe', 'pipe', 'pipe']
-        }).trim();
-    } catch (error) {
-        logger.debug(`[claude] --version probe failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
-    if (cached) {
-        if (cached.version === claudeVersionOutput?.split(/\s+/)[0]) {
-            cachedSkills = cached.skills;
-        } else {
-            startupCatalog = startCatalog();
-        }
-    }
+    // Extract SDK metadata in background and update session when ready
+    void getCatalog().catch((error) => {
+        logger.debug('[start] Failed to update session metadata:', error);
+    });
 
     // Start HAPI MCP server (pass session cwd so spawn_peer "." anchors here)
     const happyServer = await startHappyServer(session, { workingDirectory });
@@ -339,6 +312,21 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     registerKillSessionHandler(session.rpcHandlerManager, lifecycle, session);
     registerLocalHandoffHandler(session.rpcHandlerManager, lifecycle);
 
+    // Rewind and fork-at-message need native resume-time truncation
+    // (Claude Code v2.1.223+); fork-current works on any version. Detect the
+    // actual binary version once at startup so the web UI only shows the
+    // affordances when they can work; a failed probe conservatively keeps
+    // fork-current only.
+    let claudeVersionOutput: string | null = null;
+    try {
+        claudeVersionOutput = execFileSync(getDefaultClaudeCodePath(), ['--version'], {
+            encoding: 'utf8',
+            timeout: 10_000,
+            stdio: ['pipe', 'pipe', 'pipe']
+        }).trim();
+    } catch (error) {
+        logger.debug(`[claude] --version probe failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
     const conversationHistory = claudeConversationHistoryCapabilities(claudeVersionOutput);
     session.updateMetadata((metadata) => ({
         ...metadata,
@@ -1105,7 +1093,6 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         }
         return !unknownRewindIntent;
     };
-    const needsSkillCatalog = (text: string) => cachedSkills !== null && /^\s*\$\S/.test(text);
     let drainingUserMessages = false;
     const flushUserMessages = async () => {
         if (drainingUserMessages || !messagePipelineReady || settleRetryAbort.signal.aborted) return;
@@ -1120,10 +1107,6 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
                     return;
                 }
                 if (settleRetryAbort.signal.aborted) return;
-                if (deferredMessages.length && needsSkillCatalog(deferredMessages[0][0].content.text)) {
-                    await startCatalog();
-                    continue;
-                }
                 const next = deferredMessages.shift();
                 if (next) handleUserMessage(...next);
             }
@@ -1132,14 +1115,14 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
         }
     };
     session.onUserMessage((...args) => {
-        if (!messagePipelineReady || needsSkillCatalog(args[0].content.text) || unknownRewindIntent || drainingUserMessages || deferredMessages.length > 0 || settleInFlight !== null || rewindPersistInFlight !== null) {
+        if (!messagePipelineReady || unknownRewindIntent || drainingUserMessages || deferredMessages.length > 0 || settleInFlight !== null || rewindPersistInFlight !== null) {
             deferredMessages.push(args);
             void flushUserMessages();
             return;
         }
         handleUserMessage(...args);
     });
-    void Promise.allSettled([sessionReady, startupCatalog]).then(() => {
+    void Promise.allSettled([sessionReady, getCatalog()]).then(() => {
         messagePipelineReady = true;
         void flushUserMessages();
     });
@@ -1226,13 +1209,6 @@ export async function runClaude(options: StartOptions = {}): Promise<void> {
     let loopFailed = false;
     try {
         await loop({
-            onCatalog: (metadata, model, args) => {
-                if (metadata.slashCommands === undefined && metadata.tools === undefined) return;
-                const context = { cwd: workingDirectory, model, args };
-                const initKey = hashObject([catalogFingerprint(context, metadata), metadata.version, metadata.skills]);
-                void refreshCatalog(Promise.resolve(metadata), context, initKey)
-                    .catch(error => logger.debug('[start] Failed to refresh live SDK metadata:', error));
-            },
             path: workingDirectory,
             model: currentModel,
             effort: currentEffort,

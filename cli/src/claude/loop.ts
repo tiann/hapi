@@ -4,7 +4,6 @@ import { logger } from "@/ui/logger"
 import { hashObject } from "@/utils/deterministicJson"
 import { runLocalRemoteSession } from "@/agent/loopBase"
 import { Session } from "./session"
-import type { ClaudeCatalogHandler } from "./claudeRemote"
 import { claudeRemoteLauncher } from "./claudeRemoteLauncher"
 import { ApiClient } from "@/lib"
 import type { SessionEffort, SessionModel } from "@/api/types"
@@ -52,7 +51,6 @@ export function claudeBatchModeHash(mode: EnhancedMode): string {
 }
 
 interface LoopOptions {
-    onCatalog?: ClaudeCatalogHandler
     path: string
     model?: SessionModel
     effort?: SessionEffort
@@ -113,7 +111,7 @@ export async function loop(opts: LoopOptions) {
             const { claudeLocalLauncher } = await import('./claudeLocalLauncher');
             return claudeLocalLauncher(instance);
         },
-        runRemote: instance => claudeRemoteLauncher(instance, opts.onCatalog),
+        runRemote: claudeRemoteLauncher,
         onSessionReady: opts.onSessionReady
     });
 }

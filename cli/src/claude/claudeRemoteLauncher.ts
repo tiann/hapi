@@ -1,5 +1,5 @@
 import { Session } from "./session";
-import { claudeRemote, type ClaudeCatalogHandler, type ClaudeSteerTarget, type CompactSummaryPayload } from "./claudeRemote";
+import { claudeRemote, type ClaudeSteerTarget, type CompactSummaryPayload } from "./claudeRemote";
 import { convertAgentMessage } from "@/agent/messageConverter";
 import { PermissionHandler } from "./utils/permissionHandler";
 import { Future } from "@/utils/future";
@@ -61,7 +61,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
     private restartRequested = false;
     private steerTarget: { target: ClaudeSteerTarget; modeHash: string | null; signal: AbortSignal } | null = null;
 
-    constructor(session: Session, private readonly onCatalog?: ClaudeCatalogHandler) {
+    constructor(session: Session) {
         super(process.env.DEBUG ? session.logPath : undefined);
         this.session = session;
     }
@@ -722,7 +722,6 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
 
                             return null;
                         },
-                        onCatalog: this.onCatalog,
                         onSessionFound: (sessionId) => {
                             session.onSessionFound(sessionId);
                             // The one-time --resume/--fork-session flags must only
@@ -1048,7 +1047,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
     }
 }
 
-export async function claudeRemoteLauncher(session: Session, onCatalog?: ClaudeCatalogHandler): Promise<'switch' | 'exit'> {
-    const launcher = new ClaudeRemoteLauncher(session, onCatalog);
+export async function claudeRemoteLauncher(session: Session): Promise<'switch' | 'exit'> {
+    const launcher = new ClaudeRemoteLauncher(session);
     return launcher.launch();
 }

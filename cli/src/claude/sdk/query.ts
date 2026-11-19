@@ -465,7 +465,7 @@ export function query(config: {
 
     // Spawn Claude Code process
     const spawnEnv = withBunRuntimeEnv(process.env, { allowBunBeBun: false })
-    logDebug(`Spawning Claude Code process: ${spawnCommand}`)
+    logDebug(`Spawning Claude Code process: ${spawnCommand} ${spawnArgs.join(' ')}`)
 
     const child = spawn(spawnCommand, spawnArgs, {
         cwd,

@@ -1,4 +1,3 @@
-import { redactMcpConfigArgs } from '@/utils/cliArgs'
 import { LocalPermissionBridge } from './utils/localPermissionBridge';
 import { ApiClient, ApiSessionClient } from '@/lib';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
@@ -206,7 +205,7 @@ export class Session extends AgentSessionBase<EnhancedMode> {
         }
 
         this.claudeArgs = filteredArgs.length > 0 ? filteredArgs : undefined;
-        logger.debug(`[Session] Consumed one-time flags, remaining args:`, redactMcpConfigArgs(filteredArgs));
+        logger.debug(`[Session] Consumed one-time flags, remaining args:`, this.claudeArgs);
     };
 
     /**

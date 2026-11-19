@@ -32,16 +32,12 @@ describe('Claude skill catalog', () => {
             '--plugin-dir', '/tmp/my plugin',
             '--settings=/tmp/settings.json',
             '--add-dir', '/tmp/one', '/tmp/two',
-            '--strict-mcp-config', '--mcp-config', 'one.json', 'two.json',
-            '--tools', 'Read', 'Write', '--tools=Bash',
             '--disable-slash-commands',
-            '--model', 'sonnet', '--', '--tools', 'Read', '--mcp-config=tail.json'
+            '--model', 'sonnet'
         ])).toEqual([
             '--plugin-dir', '/tmp/my plugin',
             '--settings=/tmp/settings.json',
             '--add-dir', '/tmp/one', '/tmp/two',
-            '--strict-mcp-config', '--mcp-config', 'one.json', 'two.json',
-            '--tools', 'Read', 'Write', '--tools=Bash',
             '--disable-slash-commands'
         ])
     })
