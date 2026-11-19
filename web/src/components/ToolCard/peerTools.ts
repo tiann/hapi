@@ -83,10 +83,10 @@ function isErrorResultEnvelope(result: unknown, depth: number = 0): boolean {
     return false
 }
 
-function isFailedPeerToolCall(
+export function isFailedPeerToolCall(
     result: unknown,
-    resultText: string,
-    state?: ChatToolCall['state']
+    state?: ChatToolCall['state'],
+    resultText: string = flattenResultText(result)
 ): boolean {
     return state === 'error'
         || isErrorResultEnvelope(result)
@@ -104,7 +104,7 @@ export function extractSpawnedSessionId(
     }
     const structured = extractStructuredSessionId(result)
     if (structured) return structured
-    if (isFailedPeerToolCall(result, text, state)) return null
+    if (isFailedPeerToolCall(result, state, text)) return null
     if (!text) return null
     const cited = extractSessionCitationIds(text)[0]
     if (cited) return cited
@@ -135,7 +135,7 @@ export function extractPeerTargetSessionId(
     const structured = extractStructuredSessionId(result)
     if (structured) return structured
 
-    if (isFailedPeerToolCall(result, resultText, state)) return null
+    if (isFailedPeerToolCall(result, state, resultText)) return null
 
     if (resultText) {
         const cited = extractSessionCitationIds(resultText)[0]

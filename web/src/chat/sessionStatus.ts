@@ -5,7 +5,7 @@ import { isSubagentToolName } from '@/chat/subagentTool'
 import { hasUrgentModelError } from '@/components/ModelErrorBanner'
 import { childIsWorking } from '@/lib/sessionLineage'
 import { getCodexAgentActivity, getCodexAgentSummary } from '@/components/ToolCard/codexAgents'
-import { extractSpawnedSessionId, parsePeerToolName } from '@/components/ToolCard/peerTools'
+import { extractSpawnedSessionId, isFailedPeerToolCall, parsePeerToolName } from '@/components/ToolCard/peerTools'
 import { getSessionTitle } from '@/lib/sessionTitle'
 import { getInputStringAny, truncate } from '@/lib/toolInputUtils'
 
@@ -98,7 +98,8 @@ function subagentTitle(block: ToolCallBlock): string {
 function subagentFromBlock(block: ToolCallBlock): SessionStatusSubagent | null {
     const isPeerSpawn = parsePeerToolName(block.tool.name) === 'spawn_peer'
     if (block.tool.name !== 'CodexAgent' && !isSubagentToolName(block.tool.name) && !isPeerSpawn) return null
-    if (block.tool.state === 'completed') return null
+    const isFailedPeerSpawn = isPeerSpawn && isFailedPeerToolCall(block.tool.result, block.tool.state)
+    if (block.tool.state === 'completed' && !isFailedPeerSpawn) return null
 
     const latestChild = block.children.at(-1)
     const activity = isPeerSpawn
@@ -110,6 +111,7 @@ function subagentFromBlock(block: ToolCallBlock): SessionStatusSubagent | null {
                 : null
     const waiting = block.tool.state === 'pending'
         || (activity?.toLowerCase().startsWith('waiting') ?? false)
+    const isError = block.tool.state === 'error' || isFailedPeerSpawn
     const resolvedTitle = isPeerSpawn
         ? getInputStringAny(block.tool.input, ['name']) ?? subagentTitle(block)
         : subagentTitle(block)
@@ -119,9 +121,9 @@ function subagentFromBlock(block: ToolCallBlock): SessionStatusSubagent | null {
         blockId: block.id,
         title: resolvedTitle,
         detail: activity,
-        state: block.tool.state === 'error' ? 'error' : waiting ? 'waiting' : 'running',
+        state: isError ? 'error' : waiting ? 'waiting' : 'running',
         startedAt: block.tool.startedAt ?? (block.tool.state === 'pending' ? null : block.createdAt),
-        endedAt: block.tool.state === 'error'
+        endedAt: isError
             ? block.tool.completedAt ?? block.tool.startedAt ?? block.createdAt
             : null,
         ...(isPeerSpawn ? { linkedSessionId: extractSpawnedSessionId(block.tool.result, block.tool.state) } : {}),

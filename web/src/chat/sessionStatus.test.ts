@@ -160,6 +160,56 @@ describe('buildSessionStatusData', () => {
         ])
     })
 
+    it('keeps a completed spawn_peer block visible as error when its MCP result carries an error envelope', () => {
+        const blocks: ChatBlock[] = [
+            toolBlock({
+                id: 'block-codex-peer-failed',
+                name: 'mcp__hapi__spawn_peer',
+                createdAt: 1000,
+                tool: {
+                    id: 'call-codex-peer-failed',
+                    state: 'completed',
+                    startedAt: 1000,
+                    completedAt: 1500,
+                    input: { name: 'Codex worker', directory: '/work/app' },
+                    result: {
+                        isError: true,
+                        content: [{ type: 'text', text: 'Failed to spawn peer: directory does not exist' }],
+                    },
+                }
+            }),
+            toolBlock({
+                id: 'block-codex-peer-ok',
+                name: 'mcp__hapi__spawn_peer',
+                createdAt: 2000,
+                tool: {
+                    id: 'call-codex-peer-ok',
+                    state: 'completed',
+                    startedAt: 2000,
+                    completedAt: 2500,
+                    input: { name: 'Healthy worker', directory: '/work/app' },
+                    result: {
+                        isError: false,
+                        content: [{ type: 'text', text: 'Spawned 55555555-5555-4555-8555-555555555555 (Healthy worker)' }],
+                    },
+                }
+            }),
+        ]
+
+        expect(buildSessionStatusData({ goal: null, tasks: [], blocks })?.subagents).toEqual([
+            expect.objectContaining({
+                id: 'call-codex-peer-failed',
+                blockId: 'block-codex-peer-failed',
+                title: 'Codex worker',
+                detail: '/work/app',
+                state: 'error',
+                startedAt: 1000,
+                endedAt: 1500,
+                linkedSessionId: null,
+            })
+        ])
+    })
+
     it('lists a linked child with only derived tool work as running', () => {
         const child = makeSummary({
             id: 'child',
