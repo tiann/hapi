@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { CODEX_ASYNC_QUESTION_REQUEST_PREFIX } from '@hapi/protocol/rpcMethods';
 import type { ApiSessionClient } from '@/api/apiSession';
 import type { AgentState } from '@/api/types';
 import { isIndeterminateError } from '../codexAppServerClient';
@@ -18,7 +19,7 @@ type AsyncQuestion = {
 };
 
 function requestId(threadId: string, questionItemId: string): string {
-    return `codex-async-question:${JSON.stringify([threadId, questionItemId])}`;
+    return `${CODEX_ASYNC_QUESTION_REQUEST_PREFIX}${JSON.stringify([threadId, questionItemId])}`;
 }
 
 export function asyncQuestionReplies(text: string): Array<{ questionItemId: string; question?: string; answer: string }> {

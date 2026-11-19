@@ -1,5 +1,6 @@
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, PermissionMode } from '@hapi/protocol/types'
-import { DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
+import { isObject } from '@hapi/protocol'
+import { CODEX_ASYNC_QUESTION_REQUEST_PREFIX, DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
 import {
     UsageQueryResultSchema,
     UsageQuerySettingsResponseSchema,
@@ -117,6 +118,13 @@ export class PermissionRequestNotFoundError extends Error {
     }
 }
 
+export class PermissionAnswerRejectedError extends Error {
+    constructor() {
+        super('The agent rejected the answer')
+        this.name = 'PermissionAnswerRejectedError'
+    }
+}
+
 // Matches on the specific shared message rather than treating any error on
 // the Permission RPC method as "not found" — a future, unrelated throw in
 // handlePermissionResponse's success path should surface as a genuine error,
@@ -189,6 +197,10 @@ export class RpcGateway {
         })
         if (isPermissionRequestNotFoundResponse(response)) {
             throw new PermissionRequestNotFoundError(requestId)
+        }
+        // A Codex async answer's HTTP success closes its form before the agent publishes completion.
+        if (requestId.startsWith(CODEX_ASYNC_QUESTION_REQUEST_PREFIX) && isObject(response) && typeof response.error === 'string') {
+            throw new PermissionAnswerRejectedError()
         }
     }
 

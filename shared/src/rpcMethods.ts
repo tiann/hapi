@@ -103,4 +103,6 @@ export function getSessionStopPreparationMethod(machineId: string, pid: number):
  */
 export const PERMISSION_REQUEST_NOT_FOUND_MESSAGE = 'Permission request not found or already resolved' as const
 
+export const CODEX_ASYNC_QUESTION_REQUEST_PREFIX = 'codex-async-question:'
+
 export type RpcMethod = typeof RPC_METHODS[keyof typeof RPC_METHODS]

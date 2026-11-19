@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'bun:test'
 import { Hono } from 'hono'
+import { CODEX_ASYNC_QUESTION_REQUEST_PREFIX } from '@hapi/protocol/rpcMethods'
+import type { Server } from 'socket.io'
+import type { RpcRegistry } from '../../socket/rpcRegistry'
 import type { Session, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
-import { PermissionRequestNotFoundError } from '../../sync/rpcGateway'
+import { PermissionRequestNotFoundError, RpcGateway } from '../../sync/rpcGateway'
 import { createPermissionsRoutes } from './permissions'
 
-function createSession(): Session {
+function createSession(flavor: 'claude' | 'codex' = 'claude'): Session {
     return {
         id: 'session-1',
         namespace: 'default',
@@ -14,7 +17,7 @@ function createSession(): Session {
         updatedAt: 1,
         active: true,
         activeAt: 1,
-        metadata: { path: '/tmp/project', host: 'localhost', flavor: 'claude' },
+        metadata: { path: '/tmp/project', host: 'localhost', flavor },
         metadataVersion: 1,
         agentState: {
             controlledByUser: false,
@@ -36,10 +39,11 @@ function createSession(): Session {
 }
 
 function createApp(opts?: {
+    session?: Session
     approvePermission?: SyncEngine['approvePermission']
     denyPermission?: SyncEngine['denyPermission']
 }) {
-    const session = createSession()
+    const session = opts?.session ?? createSession()
     const engine = {
         resolveSessionAccess: () => ({ ok: true, sessionId: session.id, session }),
         approvePermission: opts?.approvePermission ?? (async () => {}),
@@ -67,6 +71,27 @@ describe('permissions routes (tiann/hapi#1735)', () => {
         })
         expect(res.status).toBe(200)
         expect(await res.json()).toEqual({ ok: true })
+    })
+
+    it('rejects a failed Codex async answer RPC and accepts a subsequent corrected answer', async () => {
+        const id = `${CODEX_ASYNC_QUESTION_REQUEST_PREFIX}test`
+        const session = createSession('codex')
+        session.agentState = { requests: { [id]: { tool: 'request_user_input', arguments: { isBlocking: false } } } }
+        let reply = { error: 'An answer is required' } as { error: string } | { ok: true }
+        const socket = { timeout: () => ({ emitWithAck: async () => JSON.stringify(reply) }) }
+        const io = { of: () => ({ sockets: new Map([['socket-1', socket]]) }) } as unknown as Server
+        const registry = { getSocketIdForMethod: () => 'socket-1' } as unknown as RpcRegistry
+        const gateway = new RpcGateway(io, registry)
+        const app = createApp({ session, approvePermission: gateway.approvePermission.bind(gateway) })
+        const answer = (answers: string[]) => app.request(`/api/sessions/session-1/permissions/${encodeURIComponent(id)}/approve`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ answers: { q: { answers } } })
+        })
+
+        expect((await answer(['None of the above'])).status).toBe(422)
+        reply = { ok: true }
+        expect((await answer(['None of the above', 'user_note: corrected'])).status).toBe(200)
     })
 
     it('returns 409 when the CLI no longer has the request pending on approve', async () => {

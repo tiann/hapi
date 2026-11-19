@@ -778,6 +778,7 @@ export default {
   'tool.requestUserInput.addNote': 'メモを追加',
   'tool.requestUserInput.notePlaceholder': 'メモを追加…',
   'tool.requestUserInput.otherLabel': '上記のいずれでもない',
+  'tool.requestUserInput.otherAnswerRequired': '別の回答を入力してください。',
   'tool.requestUserInput.otherDescription': '必要に応じて、メモに詳細を追加してください。',
   'tool.requestUserInput.popupBlocked': 'サインインページを開けませんでした。ポップアップを許可してもう一度お試しください。',
   'toolGroup.title': 'ツールのアクティビティ',

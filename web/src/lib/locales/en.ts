@@ -808,6 +808,7 @@ export default {
   'tool.requestUserInput.addNote': 'Add a note',
   'tool.requestUserInput.notePlaceholder': 'Add a note…',
   'tool.requestUserInput.otherLabel': 'None of the above',
+  'tool.requestUserInput.otherAnswerRequired': 'Enter a different answer.',
   'tool.requestUserInput.otherDescription': 'Optionally, add details in notes.',
   'tool.requestUserInput.popupBlocked': 'Could not open the sign-in page. Allow popups and try again.',
   'toolGroup.title': 'Tool activity',

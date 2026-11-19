@@ -2,7 +2,7 @@ import { isPermissionModeAllowedForFlavor } from '@hapi/protocol'
 import { PermissionModeSchema } from '@hapi/protocol/schemas'
 import { Hono } from 'hono'
 import { z } from 'zod'
-import { PermissionRequestNotFoundError } from '../../sync/rpcGateway'
+import { PermissionAnswerRejectedError, PermissionRequestNotFoundError } from '../../sync/rpcGateway'
 import type { SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
@@ -70,6 +70,9 @@ export function createPermissionsRoutes(getSyncEngine: () => SyncEngine | null):
         } catch (error) {
             if (error instanceof PermissionRequestNotFoundError) {
                 return c.json({ error: error.message }, 409)
+            }
+            if (error instanceof PermissionAnswerRejectedError) {
+                return c.json({ error: error.message }, 422)
             }
             throw error
         }

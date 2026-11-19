@@ -806,6 +806,7 @@ export default {
   'tool.requestUserInput.addNote': '添加备注',
   'tool.requestUserInput.notePlaceholder': '添加备注…',
   'tool.requestUserInput.otherLabel': '以上都不是',
+  'tool.requestUserInput.otherAnswerRequired': '请输入其他答案。',
   'tool.requestUserInput.otherDescription': '可在备注中补充说明（可选）。',
   'tool.requestUserInput.popupBlocked': '无法打开登录页面。请允许弹出窗口后重试。',
   'toolGroup.title': '工具活动',

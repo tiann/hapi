@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { CODEX_ASYNC_QUESTION_REQUEST_PREFIX } from '@hapi/protocol/rpcMethods'
 import { ApiError, type ApiClient } from '@/api/client'
 import type { ChatToolCall } from '@/chat/types'
 import { useCodexQuestionSubmission, type CodexQuestionSubmission } from '@/components/ToolCard/CodexQuestionSubmission'
@@ -6,6 +7,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { MarkdownRenderer } from '@/components/MarkdownRenderer'
 import {
+    REQUEST_USER_INPUT_OTHER,
     isRequestUserInputToolName,
     isAsyncRequestUserInput,
     parseRequestUserInputInput,
@@ -88,6 +90,7 @@ function RequestUserInputForm(props: RequestUserInputFooterProps) {
     if (!permission || permission.status !== 'pending') return null
     if (!isRequestUserInputToolName(props.tool.name)) return null
 
+    const isCodexAsync = isAsync && permission.id.startsWith(CODEX_ASYNC_QUESTION_REQUEST_PREFIX)
     const instanceId = isAsync ? permission.instanceId : undefined
     const recordSubmission = instanceId && record
         ? (submission: CodexQuestionSubmission) => record(props.sessionId, permission.id, instanceId, submission)
@@ -115,8 +118,18 @@ function RequestUserInputForm(props: RequestUserInputFooterProps) {
     const clampedStep = Math.min(Math.max(step, 0), total - 1)
     const currentQuestion = questions[clampedStep] as RequestUserInputQuestion | undefined
 
-    const validateQuestion = (question: RequestUserInputQuestion): boolean => {
-        return isRequestUserInputQuestionAnswered(question, stateByQuestion[question.id])
+    const usesGeneratedOther = (question: RequestUserInputQuestion, answer: QuestionState | undefined) => (
+        isCodexAsync && question.isOther
+        && answer?.selected.length === 1 && answer.selected[0] === REQUEST_USER_INPUT_OTHER
+        && !question.options.some(option => option.label === REQUEST_USER_INPUT_OTHER)
+    )
+
+    const validationError = (question: RequestUserInputQuestion): string | null => {
+        const answer = stateByQuestion[question.id]
+        if (answer && usesGeneratedOther(question, answer) && !answer.userNote.trim()) {
+            return t('tool.requestUserInput.otherAnswerRequired')
+        }
+        return isRequestUserInputQuestionAnswered(question, answer) ? null : t('tool.selectOption')
     }
 
     const submit = async () => {
@@ -125,8 +138,9 @@ function RequestUserInputForm(props: RequestUserInputFooterProps) {
         // Validate all questions
         for (let i = 0; i < questions.length; i += 1) {
             const q = questions[i]
-            if (!validateQuestion(q)) {
-                setError(t('tool.selectOption'))
+            const error = validationError(q)
+            if (error) {
+                setError(error)
                 setStep(i)
                 return
             }
@@ -156,8 +170,9 @@ function RequestUserInputForm(props: RequestUserInputFooterProps) {
 
     const next = () => {
         if (!currentQuestion) return
-        if (!validateQuestion(currentQuestion)) {
-            setError(t('tool.selectOption'))
+        const error = validationError(currentQuestion)
+        if (error) {
+            setError(error)
             return
         }
         setError(null)
@@ -235,7 +250,10 @@ function RequestUserInputForm(props: RequestUserInputFooterProps) {
         })
     }
 
-    const currentState = currentQuestion ? stateByQuestion[currentQuestion.id] : null
+    const currentState = currentQuestion ? stateByQuestion[currentQuestion.id] : undefined
+    const noteLabel = t(currentQuestion && usesGeneratedOther(currentQuestion, currentState)
+        ? 'tool.requestUserInput.otherAnswerRequired'
+        : 'tool.requestUserInput.noteLabel')
     const isPureTextQuestion = currentQuestion && currentQuestion.options.length === 0
     const hasSelection = (currentState?.selected.length ?? 0) > 0
     const hasNoteContent = (currentState?.userNote.trim().length ?? 0) > 0
@@ -296,7 +314,7 @@ function RequestUserInputForm(props: RequestUserInputFooterProps) {
                                             checked={isSelected}
                                             disabled={props.disabled || loading}
                                             title={opt.isOther ? t('tool.requestUserInput.otherLabel') : opt.label}
-                                            description={opt.isOther ? t('tool.requestUserInput.otherDescription') : opt.description}
+                                            description={opt.isOther && !isCodexAsync ? t('tool.requestUserInput.otherDescription') : opt.description}
                                             markdown
                                             onClick={() => selectOption(currentQuestion, opt)}
                                         />
@@ -307,11 +325,11 @@ function RequestUserInputForm(props: RequestUserInputFooterProps) {
                             {isNoteExpanded ? (
                                 <div className="mt-3">
                                     <div className="text-xs text-[var(--app-hint)] mb-1">
-                                        {t('tool.requestUserInput.noteLabel')}
+                                        {noteLabel}
                                     </div>
                                     <textarea
                                         ref={noteRef}
-                                        aria-label={t('tool.requestUserInput.noteLabel')}
+                                        aria-label={noteLabel}
                                         value={currentState?.userNote ?? ''}
                                         onChange={(e) => updateUserNote(currentQuestion, e.target.value)}
                                         disabled={props.disabled || loading}
