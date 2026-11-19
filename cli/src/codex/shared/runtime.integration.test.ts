@@ -22,6 +22,7 @@ class MockSession extends EventEmitter {
     readonly sessionId: string;
     state: AgentState = { requests: { 'old-worker': { tool: 'request_user_input', arguments: {}, createdAt: 0 } } }; metadata: Metadata;
     messages: unknown[] = []; consumed: string[] = []; dead = false;
+    serviceTier?: string | null;
     user?: (message: { content: { text: string } }, id?: string) => void;
     rpc = new Map<string, (params: unknown) => Promise<unknown>>();
     rpcHandlerManager = { registerHandler: (name: string, fn: (params: unknown) => Promise<unknown>) => { this.rpc.set(name, fn); } };
@@ -35,7 +36,9 @@ class MockSession extends EventEmitter {
     sendAgentMessage(body: unknown) { this.messages.push(body); }
     sendSessionEvent(body: unknown) { this.messages.push(body); }
     emitMessagesConsumed(ids: string[]) { this.consumed.push(...ids); }
-    emitSteerIndeterminate() {} keepAlive() {} emitSessionReady() {}
+    emitSteerIndeterminate() {}
+    keepAlive(_thinking?: boolean, _mode?: unknown, settings?: { serviceTier?: string | null }) { if (settings && 'serviceTier' in settings) this.serviceTier = settings.serviceTier; }
+    emitSessionReady() {}
     async setSteerDeliveryState() { return true; }
     syncNativeQueuedMessage() {}
     sendSessionDeath() { this.dead = true; } async flush() {} close() {} isPending() { return false; }
@@ -80,9 +83,9 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
         try {
             vi.mocked(bootstrapExistingSession).mockImplementation(async options => {
                 const previous = state.sessions.get(options.sessionId)!;
-                const session = new MockSession(cwd, previous.sessionId); session.metadata = { ...previous.metadata };
+                const session = new MockSession(cwd, previous.sessionId); session.metadata = { ...previous.metadata }; session.serviceTier = previous.serviceTier;
                 state.sessions.set(session.sessionId, session);
-                return { session: session as unknown as ApiSessionClient, sessionInfo: { id: session.sessionId, namespace: 'test' }, metadata: session.metadata,
+                return { session: session as unknown as ApiSessionClient, sessionInfo: { id: session.sessionId, namespace: 'test', serviceTier: session.serviceTier }, metadata: session.metadata,
                     workingDirectory: cwd, machineId: 'test', startedBy: 'terminal', api: {} } as never;
             });
             await configure('priority');
@@ -115,16 +118,21 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             expect(childSession.metadata.codexTierConfirmationPending).toBe(true);
             expect(second.runtime.sessions[second.sessionId].active).toBe(true);
             await expect(second.client.request('turn/start', { threadId: child.thread.id, input: [{ type: 'text', text: 'must not execute' }] })).rejects.toThrow('tier confirmation');
+            await expect(second.client.request('thread/queue/start', { threadId: child.thread.id })).rejects.toThrow('tier confirmation');
             failSettings.mockRestore();
-            await childSession.rpc.get(RPC_METHODS.SetSessionConfig)!({ serviceTier: 'standard' });
+            await second.client.request('thread/settings/update', { threadId: child.thread.id, serviceTier: null });
             expect(childSession.metadata.codexTierConfirmationPending).toBe(false);
             expect((await second.client.request<{ serviceTier: string }>('thread/resume', { threadId: child.thread.id, excludeTurns: true })).serviceTier).toBe('default');
             const unsupported = await second.client.request<{ thread: { id: string }; serviceTier: string }>('thread/start', { cwd, model: 'gpt-6.1-sol', serviceTier: 'ultrafast' });
             expect(unsupported.serviceTier).toBe('default');
             const unsupportedSid = Object.entries(second.runtime.sessions).find(([, binding]) => binding.threadId === unsupported.thread.id)![0];
             expect(state.sessions.get(unsupportedSid)?.messages).toContainEqual({ type: 'message', message: 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.' });
+            await second.client.request('thread/settings/update', { threadId: unsupported.thread.id, serviceTier: 'priority' });
             second.abort.abort(); await second.done;
-            const resumed = await third.client.request<{ serviceTier: string }>('thread/resume', { threadId: unsupported.thread.id, model: 'gpt-6.1-sol', serviceTier: 'ultrafast', excludeTurns: true });
+            // Re-import selected Ultrafast in HAPI while the native snapshot still stores Fast.
+            state.sessions.get(unsupportedSid)!.serviceTier = 'ultrafast';
+            state.sessions.get(unsupportedSid)!.metadata.codexServiceTierExplicit = true;
+            const resumed = await third.client.request<{ serviceTier: string }>('thread/resume', { threadId: unsupported.thread.id, model: 'gpt-6.1-sol', excludeTurns: true });
             expect(resumed.serviceTier).toBe('default');
         } finally {
             for (const spy of extraSpies.reverse()) spy.mockRestore();

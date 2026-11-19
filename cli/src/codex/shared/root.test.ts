@@ -1645,3 +1645,20 @@ it.each([null, 'ultrafast'])('clears restored pending state after successful lau
     expect(f.sessionReady).not.toHaveBeenCalled();
     await f.root.activate(); expect(f.sessionReady).toHaveBeenCalledOnce();
 });
+it('confirms a native turn fallback before returning input for forwarding', async () => {
+    const f = await fixture(); await f.root.activate(); f.events.mockClear();
+    const input = [{ type: 'text', text: 'native input' }];
+    const request = vi.spyOn(f.root.client, 'request');
+    expect(await f.root.prepareNativeTurn({ threadId: 'thread', input, model: 'standard-only', serviceTier: 'ultrafast' }))
+        .toEqual({ threadId: 'thread', input, model: 'standard-only', serviceTier: null });
+    expect(f.root.freshParams().serviceTier).toBe('default');
+    expect(f.events).toHaveBeenCalledWith({ type: 'message', message: 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.' });
+    expect(request.mock.calls.some(([method]) => method === 'turn/start')).toBe(false);
+});
+it('does not forward a native turn or write settings after tier discovery failure', async () => {
+    const f = await fixture(); await f.root.activate();
+    vi.spyOn(f.root.client, 'listModels').mockRejectedValueOnce(new Error('catalog unavailable'));
+    const request = vi.spyOn(f.root.client, 'request');
+    await expect(f.root.prepareNativeTurn({ threadId: 'thread', serviceTier: 'ultrafast', input: [] })).rejects.toThrow('catalog unavailable');
+    expect(request.mock.calls.some(([method]) => ['turn/start', 'thread/settings/update'].includes(method))).toBe(false);
+});

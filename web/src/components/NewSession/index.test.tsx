@@ -589,6 +589,22 @@ describe('NewSession launch preferences', () => {
         await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ serviceTier: 'standard' })))
     })
 
+    it('keeps saved Standard visible during catalog errors and permits account default', async () => {
+        savePreferredAgent('codex')
+        savePreferredLaunchSettings('machine-1', 'codex', { model: 'gpt-6.2-sol', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'high', serviceTier: 'standard' })
+        mocks.codexModelsError = 'catalog disconnected'
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'default-recovery' })
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        const tier = await screen.findByRole('combobox', { name: 'newSession.fastMode' })
+        expect(tier).toHaveValue('standard')
+        fireEvent.change(tier, { target: { value: 'default' } })
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalled())
+        expect(mocks.spawnSession.mock.calls[0][0].serviceTier).toBeUndefined()
+        expect(loadPreferredLaunchSettings('machine-1', 'codex')?.serviceTier).toBeUndefined()
+    })
+
     it('inherits the account tier with a visible untouched picker', async () => {
         savePreferredAgent('codex')
         savePreferredLaunchSettings('machine-1', 'codex', { model: 'gpt-6.2-sol', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'high' })

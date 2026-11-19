@@ -155,3 +155,9 @@ it('does not replace explicit or legacy native tier intent', async () => {
     expect(await inheritedResumeTier({ readConfig }, {}, undefined, '/project')).toEqual({});
     expect(readConfig).not.toHaveBeenCalled();
 });
+it.each([['standard', null], ['fast', 'priority'], ['ultrafast', 'ultrafast']] as const)('restores an explicit saved HAPI %s tier before native resume', async (saved, native) => {
+    const readConfig = vi.fn();
+    expect(await inheritedResumeTier({ readConfig }, {}, true, '/project', saved)).toEqual({ serviceTier: native });
+    expect(await inheritedResumeTier({ readConfig }, { serviceTier: null }, true, '/project', saved)).toEqual({ serviceTier: null });
+    expect(readConfig).not.toHaveBeenCalled();
+});

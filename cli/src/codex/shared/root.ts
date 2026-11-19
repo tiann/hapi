@@ -701,6 +701,18 @@ export class SharedCodexRoot {
         this.settingsWrites = operation;
         return operation;
     }
+    /** Confirm persistent turn overrides before forwarding input on its own client. */
+    async prepareNativeTurn(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+        const tier = params.serviceTier;
+        const persistentTier = tier === null || tier === 'priority' || tier === 'default' || tier === 'ultrafast';
+        if (!persistentTier && !(params.model && tier === undefined && this.hasUltrafastTier)) return params;
+        await this.applyNativeSettings({ threadId: this.threadId,
+            ...(typeof params.model === 'string' ? { model: params.model } : {}),
+            ...(persistentTier ? { serviceTier: tier } : {}) });
+        return { ...params,
+            ...(typeof this.settingsNative.model === 'string' ? { model: this.settingsNative.model } : {}),
+            ...(persistentTier ? { serviceTier: this.settingsNative.serviceTier === 'default' ? null : this.settingsNative.serviceTier } : {}) };
+    }
     private async writeNativeSettings(params: Record<string, unknown>, expected = params): Promise<void> {
         if (this.closed || this.stopping) throw new Error('Codex execution is stopping');
         // Native suppresses identical notifications. Verify a current loaded

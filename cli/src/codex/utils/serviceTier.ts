@@ -82,8 +82,14 @@ export async function isUltrafastAvailable(
 }
 
 /** Explicitly re-resolve inherited intent so a saved native snapshot cannot pin it. */
-export async function inheritedResumeTier(client: Pick<CodexAppServerClient, 'readConfig'>, params: Record<string, unknown>, explicit: boolean | undefined, cwd: string): Promise<Record<string, unknown>> {
-    if (params.serviceTier !== undefined || explicit !== false) return params;
+export async function inheritedResumeTier(client: Pick<CodexAppServerClient, 'readConfig'>, params: Record<string, unknown>, explicit: boolean | undefined, cwd: string, savedTier?: unknown): Promise<Record<string, unknown>> {
+    if (params.serviceTier !== undefined) return params;
+    if (explicit === true) {
+        if (savedTier === 'standard') return { ...params, serviceTier: null };
+        if (savedTier === 'fast') return { ...params, serviceTier: 'priority' };
+        if (savedTier === 'ultrafast') return { ...params, serviceTier: 'ultrafast' };
+    }
+    if (explicit !== false) return params;
     const configured = (await client.readConfig({ cwd, includeLayers: false })).config.service_tier;
     return { ...params, serviceTier: typeof configured === 'string' && configured !== 'default' ? configured : null };
 }

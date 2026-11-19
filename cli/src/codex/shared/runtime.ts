@@ -285,15 +285,16 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     const before = (request: Envelope, connection: string): Promise<Envelope> => operation(async () => {
         const params = record(request.params);
         const queueRoot = roots.get(string(params.threadId) ?? '');
-        if (queueRoot?.needsTierConfirmation && request.method === 'turn/start') throw new Error('Service tier confirmation is pending. Select a service tier in settings before sending input.');
+        const queueMutation = ['thread/queue/add', 'thread/queue/update', 'thread/queue/delete', 'thread/queue/reorder', 'thread/queue/start'].includes(request.method ?? '');
+        if (queueRoot?.needsTierConfirmation && (request.method === 'turn/start' || queueMutation)) throw new Error('Service tier confirmation is pending. Select a service tier in settings before sending input.');
         if (queueRoot?.needsTierConfirmation && request.method === 'thread/fork') throw new Error('Confirm the service tier in settings before forking this conversation.');
+        if (queueRoot && request.method === 'turn/start') return { ...request, params: await queueRoot.prepareNativeTurn(params) };
         if (queueRoot && request.method === 'thread/settings/update' && (params.serviceTier !== undefined || params.model && queueRoot.hasUltrafastTier)) {
             if (request.id === undefined) throw new Error('Settings mutations require a JSON-RPC request ID');
             await queueRoot.applyNativeSettings(params);
             return { id: request.id, result: {} };
         }
-        if (queueRoot && ['thread/queue/add', 'thread/queue/update', 'thread/queue/delete',
-            'thread/queue/reorder', 'thread/queue/start'].includes(request.method ?? '')) {
+        if (queueRoot && queueMutation) {
             if (request.id === undefined) throw new Error('Queue mutations require a JSON-RPC request ID');
             return { id: request.id, result: await queueRoot.nativeQueueMutation(request.method!, params) };
         }
@@ -334,7 +335,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 runtime.pendingCreations = [...runtime.pendingCreations ?? [], root.session.sessionId]; await persist();
             }
             const resolved = request.method === 'thread/resume'
-                ? await inheritedResumeTier(control, params, root.session.getMetadata()?.codexServiceTierExplicit, cwd) : params;
+                ? await inheritedResumeTier(control, params, root.session.getMetadata()?.codexServiceTierExplicit, cwd, root.bootstrap.sessionInfo.serviceTier) : params;
             const tier = await resolveUltrafastLaunch(control, request.method!, resolved, cwd, catalogProvider);
             reservations.set(key(connection, request), { root, resumeId: request.method === 'thread/resume' ? threadId : undefined,
                 serviceTierExplicit: params.serviceTier !== undefined ? true : request.method === 'thread/resume' ? undefined : false,
@@ -439,7 +440,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 const root = await prepare(launch.cwd, existing);
                 await reserveRecord(root, threadId); return root;
             });
-            const resumeParams = await inheritedResumeTier(control, launch.threadParams, root.session.getMetadata()?.codexServiceTierExplicit, launch.cwd);
+            const resumeParams = await inheritedResumeTier(control, launch.threadParams, root.session.getMetadata()?.codexServiceTierExplicit, launch.cwd, root.bootstrap.sessionInfo.serviceTier);
             const resolved = await resolveUltrafastLaunch(control, 'thread/resume', resumeParams, launch.cwd, catalogProvider, thread);
             const downgraded = resolved.downgraded;
             const params = root.config({ ...resolved.params, threadId, excludeTurns: true });

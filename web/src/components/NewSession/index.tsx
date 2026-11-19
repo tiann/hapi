@@ -2602,7 +2602,7 @@ export function NewSession(props: {
                 onChange={setCopilotAgentMode}
             />
             <FastModeSelector
-                visible={showCodexFastMode || showCodexUltrafastMode || (agent === 'codex' && (serviceTier === 'ultrafast' || serviceTier === 'fast' && Boolean(codexModelsState.error)))}
+                visible={showCodexFastMode || showCodexUltrafastMode || (agent === 'codex' && (serviceTier === 'ultrafast' || serviceTierExplicit && !codexModelsState.isLoading))}
                 fastAvailable={showCodexFastMode}
                 ultrafastAvailable={showCodexUltrafastMode}
                 availabilityUnverified={agent === 'codex' && Boolean(codexModelsState.error) && serviceTierExplicit && serviceTier !== 'standard'}
