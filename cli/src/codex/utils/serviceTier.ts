@@ -99,6 +99,9 @@ export async function inheritedResumeTier(client: Pick<CodexAppServerClient, 're
     }
     if (explicit !== false) return params;
     const configured = (await client.readConfig({ cwd, includeLayers: false })).config.service_tier;
+    // Omission is different from native's explicit Standard sentinel. When no
+    // account override exists, retain native snapshot/default behavior.
+    if (configured == null) return params;
     return { ...params, serviceTier: typeof configured === 'string' && configured !== 'default' ? configured : null };
 }
 

@@ -35,10 +35,12 @@ RPC failures leave settings unchanged and surface the error. Codex can return
 a bundled fallback after a backend refresh failure without exposing that failure
 or catalog provenance; a negative catalog result is not an independent entitlement
 check. A detected thread/catalog provider mismatch is an error, not a downgrade.
-An untouched tier continues to inherit the native account default, including
-after cold resume. HAPI stores explicit tier intent separately from the effective
-tier displayed by Codex. Cold resume explicitly re-resolves an inherited tier from
-current configuration instead of keeping a native settings snapshot. Codex 0.169+
+HAPI stores explicit tier intent separately from the effective tier displayed by
+Codex. Cold resume re-resolves a configured inherited tier from current settings.
+When the account tier is unset, HAPI omits the override: Codex may restore its
+persisted native snapshot. The native API cannot clear that snapshot to omission;
+HAPI does not silently turn an unset tier into explicit Standard. Select Standard
+explicitly to reset a saved tier. Codex 0.169+
 uses provider-scoped model discovery; 0.166+ retains the saved provider independently
 of model/reasoning overrides. Versions before 0.164 use the startup catalog context.
 Reloading unscoped catalogs on 0.164–0.168 cannot be verified from that snapshot.

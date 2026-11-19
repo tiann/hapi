@@ -88,11 +88,11 @@ it.each(['empty', 'failure'])('allows Standard recovery when catalog is %s', asy
     await waitFor(() => expect(setServiceTier).toHaveBeenCalledWith('tier-session', 'standard'))
 })
 
-it('hides unverified attached Ultrafast while retaining Standard recovery', async () => {
+it.each(['attached', 'owned'])('hides unverified %s Ultrafast while retaining Standard recovery', async kind => {
     const catalog = vi.fn(async () => ({ success: true, models: [{ id: 'gpt-6.2-sol', model: 'gpt-6.2-sol', supportsFastTier: false, serviceTiers: ['ultrafast'] }] }));
     const setServiceTier = vi.fn(async () => ({}));
     const session = { id: 'tier-session', active: true, serviceTier: 'ultrafast', model: 'gpt-6.2-sol', metadata: {
-        flavor: 'codex', machineId: 'machine', startingMode: 'remote', codexRuntime: { kind: 'attached', bindingId: 'attached' }, capabilities: { concurrentClients: true }
+        flavor: 'codex', machineId: 'machine', startingMode: 'remote', codexProviderScopedCatalog: false, codexRuntime: { kind, bindingId: 'attached' }, capabilities: { concurrentClients: true }
     } } as unknown as Session;
     render(shell(session, catalog, setServiceTier));
     await waitFor(() => expect(catalog).toHaveBeenCalled());
@@ -110,11 +110,11 @@ it('displays the Standard recovery instruction when a model change fails', async
     expect(await screen.findByRole('alert')).toHaveTextContent('Switch to Standard before changing models.');
 });
 
-it('offers attached Ultrafast when native provider-scoped discovery is verified', async () => {
+it.each(['attached', 'owned'])('offers %s Ultrafast when native provider-scoped discovery is verified', async kind => {
     const catalog = vi.fn(async () => ({ success: true, models: [{ id: 'gpt-6.2-sol', model: 'gpt-6.2-sol', serviceTiers: ['ultrafast'] }] }));
     const session = { id: 'tier-session', active: true, model: 'gpt-6.2-sol', serviceTier: 'ultrafast', metadata: {
         flavor: 'codex', machineId: 'machine', startingMode: 'remote', codexProviderScopedCatalog: true,
-        codexRuntime: { kind: 'attached', bindingId: 'attached' }, capabilities: { concurrentClients: true }
+        codexRuntime: { kind, bindingId: 'attached' }, capabilities: { concurrentClients: true }
     } } as unknown as Session;
     render(shell(session, catalog, vi.fn()));
     expect(await screen.findByRole('button', { name: 'Reset Standard / fast:false / ultra:true' })).toBeTruthy();
@@ -131,4 +131,14 @@ it('keeps Standard recovery available for a paused launch without a usable tier 
     const button = await screen.findByRole('button', { name: 'Reset Standard / fast:false / ultra:false' });
     expect(button).toBeEnabled(); fireEvent.click(button);
     await waitFor(() => expect(setServiceTier).toHaveBeenCalledWith('tier-session', 'standard'));
+});
+it('does not offer a tier control solely from an unverified owned Ultrafast catalog', async () => {
+    const catalog = vi.fn(async () => ({ success: true, models: [{ id: 'gpt-6.2-sol', model: 'gpt-6.2-sol', serviceTiers: ['ultrafast'] }] }));
+    const session = { id: 'tier-session', active: true, model: 'gpt-6.2-sol', serviceTier: 'standard', metadata: {
+        flavor: 'codex', machineId: 'machine', startingMode: 'remote', codexProviderScopedCatalog: false,
+        capabilities: { concurrentClients: true }
+    } } as unknown as Session;
+    render(shell(session, catalog, vi.fn()));
+    await waitFor(() => expect(catalog).toHaveBeenCalled());
+    expect(screen.getByRole('button', { name: 'Reset Standard / fast:false / ultra:false' })).toBeDisabled();
 });

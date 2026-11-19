@@ -76,6 +76,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     const roots = new Map<string, SharedCodexRoot>();
     const prepared = new Set<SharedCodexRoot>();
     const reservations = new Map<string, Reservation>();
+    const pendingAdmission = new Set<string>();
     const nativeTurns = new Map<string, { root: SharedCodexRoot; params: Record<string, unknown>; explicitTier: boolean; fallbackNotice?: string }>();
     const runtime: CodexRuntimeRecord = { id, pid: process.pid, marker: getProcessStartMarker(process.pid) ?? '',
         endpoint: '', command: command.command, args: command.args, codexHome: home, hub: configuration.apiUrl, authHash: runtimeAuthHash(), sessions: {} };
@@ -220,6 +221,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         assertRunning();
         const threadId = string(record(response.thread).id);
         if (!threadId) throw new Error('Codex lifecycle response has no thread ID');
+        if (requestedUltrafast || root.session.getMetadata()?.codexTierConfirmationPending === true) pendingAdmission.add(threadId);
         const reserved = runtime.sessions[root.session.sessionId];
         if (reserved && reserved.threadId !== threadId) throw new Error('Codex retargeted a reserved thread');
         if (!reserved) await reserve(root, threadId);
@@ -252,6 +254,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             }
         }
         await root.activate(initialOptions, serviceTierExplicit, tierConfirmationPending);
+        pendingAdmission.delete(threadId);
         await root.session.flush();
         await persist();
         // The hub's view of the metadata is what the hub kept of it: a hub
@@ -292,8 +295,10 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         const params = ['thread/start', 'thread/resume', 'thread/fork'].includes(request.method ?? '') ? nativeTierParams(record(request.params)) : record(request.params);
         const queueRoot = roots.get(string(params.threadId) ?? '');
         const queueMutation = ['thread/queue/add', 'thread/queue/update', 'thread/queue/delete', 'thread/queue/reorder', 'thread/queue/start'].includes(request.method ?? '');
-        if (queueRoot?.needsTierConfirmation && (request.method === 'turn/start' || queueMutation)) throw new Error('Service tier confirmation is pending. Select a service tier in settings before sending input.');
-        if (queueRoot?.needsTierConfirmation && request.method === 'thread/fork') throw new Error('Confirm the service tier in settings before forking this conversation.');
+        const tierPending = pendingAdmission.has(string(params.threadId) ?? '') || queueRoot?.needsTierConfirmation;
+        if (tierPending && (request.method === 'turn/start' || queueMutation)) throw new Error('Service tier confirmation is pending. Select a service tier in settings before sending input.');
+        if (tierPending && request.method === 'thread/fork') throw new Error('Confirm the service tier in settings before forking this conversation.');
+        if (tierPending && !queueRoot && request.method === 'thread/settings/update') throw new Error('Codex thread initialization is pending. Retry settings when the thread is ready.');
         if (queueRoot && request.method === 'turn/start') {
             if (params.serviceTier === undefined && !((params.model || record(record(params.collaborationMode).settings).model) && queueRoot.hasUltrafastTier)) return request;
             if (request.id === undefined) throw new Error('Turn mutations require a JSON-RPC request ID');
@@ -354,6 +359,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             reservations.set(key(connection, request), { root, resumeId: request.method === 'thread/resume' ? threadId : undefined,
                 serviceTierExplicit: params.serviceTier !== undefined ? true : request.method === 'thread/resume' ? undefined : false,
                 requestedUltrafast: tier.params.serviceTier === 'ultrafast', downgraded: tier.downgraded });
+            if (request.method === 'thread/resume' && threadId && (tier.params.serviceTier === 'ultrafast' || root.session.getMetadata()?.codexTierConfirmationPending === true)) pendingAdmission.add(threadId);
             return { ...request, params: root.config({ ...tier.params, ...(request.method === 'thread/fork' ? { deferGoalContinuation: true } : {}) }) };
         } catch (error) {
             const binding = runtime.sessions[root.session.sessionId];
@@ -368,6 +374,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         const reservation = reservations.get(key(connection, request)); reservations.delete(key(connection, request));
         if (reservation) {
             if (response.error) {
+                if (reservation.resumeId) pendingAdmission.delete(reservation.resumeId);
                 const binding = runtime.sessions[reservation.root.session.sessionId]; if (binding) binding.active = false;
                 runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== reservation.root.session.sessionId);
                 await persist(); prepared.delete(reservation.root); await reservation.root.close(!reservation.resumeId); return;
@@ -462,9 +469,10 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 await reserveRecord(root, threadId); return root;
             });
             const resumeParams = await inheritedResumeTier(control, launch.threadParams, root.session.getMetadata()?.codexServiceTierExplicit, root.bootstrap.workingDirectory, root.bootstrap.sessionInfo.serviceTier);
-            const resolved = await resolveUltrafastLaunch(control, 'thread/resume', resumeParams, root.bootstrap.workingDirectory, catalogProvider, thread);
+            const resolved = await resolveUltrafastLaunch(control, 'thread/resume', { ...resumeParams, cwd: root.bootstrap.workingDirectory }, root.bootstrap.workingDirectory, catalogProvider, thread);
             const downgraded = resolved.downgraded;
             const params = root.config({ ...resolved.params, threadId, excludeTurns: true });
+            if (resolved.params.serviceTier === 'ultrafast' || root.session.getMetadata()?.codexTierConfirmationPending === true) pendingAdmission.add(threadId);
             let response: Record<string, unknown>;
             try {
                 response = record(await root.client.request('thread/resume', params));

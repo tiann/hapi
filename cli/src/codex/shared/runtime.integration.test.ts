@@ -64,7 +64,14 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
         const home = await mkdtemp(join(tmpdir(), 'hapi-shared-tier-retry-')); state.home = home;
         const ch = join(home, 'codex'), cwd = join(home, 'work'); await mkdir(ch); await mkdir(cwd);
         vi.stubEnv('CODEX_HOME', ch);
-        const configure = (tier: string) => writeFile(join(ch, 'config.toml'), `model = "gpt-6-astra"\nmodel_provider = "mock"\nservice_tier = "${tier}"\n[features]\nfast_mode = true\nultrafast_mode = false\n[model_providers.mock]\nname = "No model calls"\nbase_url = "http://127.0.0.1:1/v1"\nwire_api = "responses"\nrequires_openai_auth = false\n[analytics]\nenabled = false\n[feedback]\nenabled = false\n`);
+        const configure = (tier?: string) => writeFile(join(ch, 'config.toml'), [
+            'model = "gpt-6-astra"', 'model_provider = "mock"',
+            ...(tier === undefined ? [] : [`service_tier = "${tier}"`]),
+            '[features]', 'fast_mode = true', 'ultrafast_mode = false',
+            '[model_providers.mock]', 'name = "No model calls"', 'base_url = "http://127.0.0.1:1/v1"',
+            'wire_api = "responses"', 'requires_openai_auth = false',
+            '[analytics]', 'enabled = false', '[feedback]', 'enabled = false', ''
+        ].join('\n'));
         const running: Array<{ abort: AbortController; done: Promise<void> }> = [];
         const clients: CodexAppServerClient[] = [];
         const { runSharedRuntime } = await import('./runtime');
@@ -156,20 +163,32 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             state.sessions.get(childSid)!.serviceTier = 'fast';
             const recoveryClient = new CodexAppServerClient({ endpoint: third.runtime.endpoint, token: third.runtime.token });
             clients.push(recoveryClient); await initializeSharedClient(recoveryClient);
-            const originalBind = SharedCodexRoot.prototype.bind;
             let binding!: () => void;
             const enteredBind = new Promise<void>(resolve => { binding = resolve; });
             const bindGate = new Promise<void>(resolve => { releaseLaunch = resolve; });
-            extraSpies.push(vi.spyOn(SharedCodexRoot.prototype, 'bind').mockImplementationOnce(async function(this: InstanceType<typeof SharedCodexRoot>, ...args) {
-                binding(); await bindGate; return originalBind.apply(this, args);
-            }));
+            const metadataDelay = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
+                if (method === 'thread/metadata/update' && (params as { threadId?: string })?.threadId === child.thread.id) {
+                    binding(); return bindGate.then(() => originalRequest.call(this, method, params)) as Promise<T>;
+                }
+                return originalRequest.call(this, method, params) as Promise<T>;
+            });
+            extraSpies.push(metadataDelay);
             const coldPending = third.client.request('thread/resume', { threadId: child.thread.id, excludeTurns: true });
             await enteredBind;
             await expect(recoveryClient.request('thread/queue/start', { threadId: child.thread.id })).rejects.toThrow('tier confirmation');
             releaseLaunch(); await coldPending;
             await recoveryClient.request('thread/settings/update', { threadId: child.thread.id, serviceTier: null });
             expect(state.sessions.get(childSid)?.metadata.codexTierConfirmationPending).toBe(false);
+            metadataDelay.mockRestore();
+            await configure();
+            const unset = await start();
+            const unsetThread = unset.runtime.sessions[unset.sessionId].threadId;
+            expect((await unset.client.request<{ serviceTier: string | null }>('thread/resume', { threadId: unsetThread, excludeTurns: true })).serviceTier).toBeNull();
+            unset.abort.abort(); await unset.done;
+            const inherited = await start();
+            expect((await inherited.client.request<{ serviceTier: string | null }>('thread/resume', { threadId: unsetThread, excludeTurns: true })).serviceTier).toBeNull();
         } finally {
+            releaseLaunch();
             for (const spy of extraSpies.reverse()) spy.mockRestore();
             failConfig?.mockRestore(); vi.mocked(bootstrapExistingSession).mockReset();
             for (const item of running) item.abort.abort();

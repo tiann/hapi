@@ -144,9 +144,9 @@ it('scopes each native 0.170 catalog page to the retained provider after account
     expect(listModels).toHaveBeenNthCalledWith(2, { includeHidden: true, modelProvider: 'provider-a', cursor: 'next' });
     expect(readConfig).not.toHaveBeenCalled();
 });
-it.each([['priority', 'priority'], ['ultrafast', 'ultrafast'], ['default', null], [null, null]] as const)('overrides a saved native snapshot with the current inherited default %s', async (configured, native) => {
+it.each([['priority', 'priority'], ['ultrafast', 'ultrafast'], ['default', null], [null, undefined], [undefined, undefined]] as const)('resolves the current inherited default %s without inventing Standard', async (configured, native) => {
     const readConfig = vi.fn().mockResolvedValue({ config: { service_tier: configured } });
-    expect(await inheritedResumeTier({ readConfig }, { model: 'saved' }, false, '/project')).toEqual({ model: 'saved', serviceTier: native });
+    expect(await inheritedResumeTier({ readConfig }, { model: 'saved' }, false, '/project')).toEqual({ model: 'saved', ...(native === undefined ? {} : { serviceTier: native }) });
     expect(readConfig).toHaveBeenCalledWith({ cwd: '/project', includeLayers: false });
 });
 it('does not replace explicit or legacy native tier intent', async () => {
@@ -185,4 +185,16 @@ it('validates Ultrafast supplied through native lifecycle config', async () => {
     const result = await resolveUltrafastLaunch(client, 'thread/start', { config: { service_tier: 'ultrafast' } }, '/project');
     expect(result.downgraded).toBe(true); expect(result.params.serviceTier).toBeNull();
     expect(result.params.config).toEqual({ service_tier: 'ultrafast' });
+});
+it('uses the explicit execution cwd instead of a saved resume directory for discovery', async () => {
+    const client = {
+        request: vi.fn(),
+        readConfig: vi.fn().mockResolvedValue({ config: { model: 'eligible', model_provider: 'requested-provider' } }),
+        listModels: vi.fn().mockResolvedValue({ data: [{ id: 'eligible', serviceTiers: [{ id: 'ultrafast' }] }] }),
+        supportsProviderScopedModels: () => true, retainsResumeModelProvider: () => true,
+    };
+    const result = await resolveUltrafastLaunch(client, 'thread/resume', { cwd: '/requested', serviceTier: 'ultrafast' }, '/runtime', undefined, { cwd: '/saved' });
+    expect(result.downgraded).toBe(false);
+    expect(result.params.cwd).toBe('/requested');
+    expect(client.readConfig).toHaveBeenCalledWith({ cwd: '/requested', includeLayers: false });
 });
