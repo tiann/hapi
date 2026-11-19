@@ -232,26 +232,33 @@ function AppInner() {
         queryClient.clear()
     }, [baseUrl, queryClient])
 
-    const clearSignInUrl = useCallback(() => {
-        const { pathname, search, hash, state } = router.history.location
-        const searchParams = new URLSearchParams(search)
-        if (!searchParams.has('server') && !searchParams.has('hub') && !searchParams.has('token')) {
-            return
+    const clearSignInUrl = useCallback((dropLaunchData = false) => {
+        const cleanParams = (value: string, prefix: '?' | '#') => {
+            const params = new URLSearchParams(value.slice(1))
+            let changed = false
+            for (const key of [...params.keys()]) {
+                if (['token', 'server', 'hub'].includes(key) || dropLaunchData && (key === 'initData' || key === 'startapp' || key.startsWith('tgWebApp'))) {
+                    params.delete(key); changed = true
+                }
+            }
+            const cleaned = params.toString()
+            return changed ? cleaned ? prefix + cleaned : '' : value
         }
-        searchParams.delete('server')
-        searchParams.delete('hub')
-        searchParams.delete('token')
-        const nextSearch = searchParams.toString()
-        const nextHref = `${pathname}${nextSearch ? `?${nextSearch}` : ''}${hash}`
-        router.history.replace(nextHref, state)
+        const { pathname, search, hash, state } = router.history.location
+        const browserUrl = new URL(window.location.href)
+        const nextHref = pathname + cleanParams(search, '?') + (dropLaunchData ? cleanParams(hash, '#') : hash)
+        const browserHref = browserUrl.pathname + cleanParams(browserUrl.search, '?') + (dropLaunchData ? cleanParams(browserUrl.hash, '#') : browserUrl.hash)
+        if (nextHref !== pathname + search + hash) router.history.replace(nextHref, state)
+        // Telegram bootstrap may use memory history; auth reads the real URL.
+        if (browserHref !== browserUrl.pathname + browserUrl.search + browserUrl.hash) window.history.replaceState(window.history.state, '', browserHref)
     }, [router])
     // Clean up direct access links after success or an explicit abandoned recovery.
     useEffect(() => { if (token && api) clearSignInUrl() }, [token, api, clearSignInUrl])
     const abandonRecovery = useCallback(() => {
         if (authSource?.type === 'telegram' || isTelegramApp()) return
         cancelRecovery()
-        clearSignInUrl()
         clearAuth()
+        clearSignInUrl(true)
     }, [authSource, cancelRecovery, clearSignInUrl, clearAuth])
 
     useEffect(() => {

@@ -82,7 +82,7 @@ test.beforeEach(async ({ page }, testInfo) => {
     }, { server: origin, passkey: testInfo.title.includes('passkey recovery') })
 })
 
-for (const credential of ['pairing-link', 'passkey']) test(`${credential} recovery cannot forward its credential to another hub`, async ({ page }) => {
+for (const credential of ['pairing-link', 'pairing-link-memory', 'passkey']) test(`${credential} recovery cannot forward its credential to another hub`, async ({ page }) => {
     const otherCredentials: Array<Record<string, unknown>> = []
     const other = createServer((req, res) => {
         res.setHeader('Access-Control-Allow-Origin', req.headers.origin ?? '*')
@@ -101,15 +101,16 @@ for (const credential of ['pairing-link', 'passkey']) test(`${credential} recove
     })
     try {
         mode = 'unavailable'
-        await page.goto('/sessions' + (credential === 'pairing-link' ? '?hub=' + encodeURIComponent(origin) + '&token=fixture-pairing' : ''))
+        if (credential === 'pairing-link-memory') await page.route('https://telegram.org/js/telegram-web-app.js', route => route.abort())
+        await page.goto('/sessions' + (credential.startsWith('pairing-link') ? '?hub=' + encodeURIComponent(origin) + '&token=fixture-pairing' + (credential === 'pairing-link-memory' ? '&tgWebAppVersion=9.0' : '') : ''))
         await expect(page.getByText('Reconnecting to hub', { exact: true })).toBeVisible()
-        if (credential === 'pairing-link') expect(new URL(page.url()).searchParams.get('token')).toBe('fixture-pairing')
+        if (credential.startsWith('pairing-link')) expect(new URL(page.url()).searchParams.get('token')).toBe('fixture-pairing')
         await expect(page.getByRole('button', { name: /^Hub / })).toHaveCount(0)
         await expect(page.locator('input[type=url]')).toHaveCount(0)
         await page.getByRole('button', { name: 'Retry now' }).click()
         await expect.poll(() => authAttempts).toBeGreaterThan(1)
         expect(requests.length).toBeGreaterThan(1)
-        expect(requests.every(r => r.origin === origin && (credential === 'pairing-link'
+        expect(requests.every(r => r.origin === origin && (credential.startsWith('pairing-link')
             ? r.body.accessToken === 'fixture-pairing' : r.body.passkeySession === 'fixture-passkey'))).toBe(true)
         expect(otherCredentials).toHaveLength(0)
         expect(await page.evaluate(server => localStorage.getItem('hapi_access_token::' + server), otherOrigin)).toBeNull()
@@ -117,6 +118,7 @@ for (const credential of ['pairing-link', 'passkey']) test(`${credential} recove
         await expect(page.locator('input[type=password]')).toBeVisible()
         expect(new URL(page.url()).searchParams.has('token')).toBe(false)
         expect(new URL(page.url()).searchParams.has('hub')).toBe(false)
+        expect(new URL(page.url()).searchParams.has('tgWebAppVersion')).toBe(false)
         expect(await page.evaluate(server => localStorage.getItem('hapi_access_token::' + server), origin)).toBeNull()
         expect(await page.evaluate(server => localStorage.getItem('hapi_passkey_session::' + server), origin)).toBeNull()
         await page.getByRole('button', { name: /^Hub / }).click()
