@@ -45,4 +45,14 @@ describe('Ultrafast model/account availability', () => {
         expect(await isUltrafastAvailable({ readConfig, listModels }, 'gpt-6.2-sol', '/project')).toBe(true);
         expect(readConfig).not.toHaveBeenCalled();
     });
+
+    it('bounds a stalled catalog without treating timeout as missing entitlement', async () => {
+        vi.useFakeTimers();
+        try {
+            const pending = isUltrafastAvailable({ readConfig: vi.fn(), listModels: vi.fn(() => new Promise(() => {})) }, 'gpt-6.2-sol');
+            const rejected = expect(pending).rejects.toThrow('timed out');
+            await vi.advanceTimersByTimeAsync(10_001);
+            await rejected;
+        } finally { vi.useRealTimers(); }
+    });
 });

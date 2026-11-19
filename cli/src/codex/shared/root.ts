@@ -572,13 +572,27 @@ export class SharedCodexRoot {
             }
         } finally { this.reconnecting = false; this.publishSteering(); this.publishPlan(); }
     }
-    async applySettings(raw: unknown): Promise<{ applied: RuntimeSettings }> {
+    private settingsWrites: Promise<unknown> = Promise.resolve();
+    applySettings(raw: unknown): Promise<{ applied: RuntimeSettings }> {
+        const deadline = Date.now() + 25_000;
+        const operation = this.settingsWrites.catch(() => {}).then(() => this.applySettingsNow(raw, deadline));
+        this.settingsWrites = operation;
+        return operation;
+    }
+    private async applySettingsNow(raw: unknown, deadline: number): Promise<{ applied: RuntimeSettings }> {
+        if (Date.now() >= deadline) throw new Error('Settings update timed out before execution; settings were not changed');
         const config = SettingsSchema.parse(raw);
         let downgraded = false;
         if (config.serviceTier === 'ultrafast' || config.model && this.settings.serviceTier === 'ultrafast' && config.serviceTier === undefined) {
-            if (!await isUltrafastAvailable(this.client, config.model ?? this.settings.model, this.bootstrap.workingDirectory)) {
-                config.serviceTier = 'standard';
-                downgraded = true;
+            const discoveryDeadline = Math.min(deadline - 15_000, Date.now() + 10_000);
+            for (;;) {
+                const model = config.model ?? this.settings.model;
+                const available = await isUltrafastAvailable(this.client, model, this.bootstrap.workingDirectory, discoveryDeadline);
+                if (!config.model && model !== this.settings.model) continue;
+                // Include the validated model in the write and its native confirmation.
+                if (typeof model === 'string') config.model = model;
+                if (!available) { config.serviceTier = 'standard'; downgraded = true; }
+                break;
             }
         }
         if (Object.keys(config).length === 0) return { applied: this.settings };
@@ -595,6 +609,7 @@ export class SharedCodexRoot {
             } while (cursor);
             if (config.modelReasoningEffort === null) throw new Error('Codex did not report a default reasoning effort; choose an explicit effort');
         }
+        if (Date.now() >= deadline - 15_000) throw new Error('Settings discovery timed out; settings were not changed');
         const revision = this.settingsRevision;
         const permission = config.permissionMode && resolveCodexPermissionModeConfig(config.permissionMode);
         const params = { threadId: this.threadId,

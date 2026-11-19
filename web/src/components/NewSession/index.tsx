@@ -555,7 +555,7 @@ export function NewSession(props: {
             setModel('auto')
         }
     }, [agent, codexModelsState.error, codexModelsState.isLoading, codexModelsState.models, model])
-    const showCodexUltrafastMode = agent === 'codex' && !codexModelsState.error
+    const showCodexUltrafastMode = agent === 'codex' && model !== 'auto' && !codexModelsState.error
         && codexModelAdvertisesUltrafastTier(model === 'auto' ? null : model, codexModelsState.models)
     const showCodexFastMode = agent === 'codex'
         && !codexModelsState.error
@@ -568,7 +568,7 @@ export function NewSession(props: {
         if (agent === 'codex' && (codexModelsState.isLoading || (serviceTier === 'ultrafast' && codexModelsState.error))) {
             return
         }
-        if ((!showCodexFastMode && serviceTier !== 'standard') || (serviceTier === 'ultrafast' && !showCodexUltrafastMode)) {
+        if ((serviceTier === 'fast' && !showCodexFastMode) || (serviceTier === 'ultrafast' && !showCodexUltrafastMode)) {
             setServiceTier('standard')
         }
     }, [agent, codexModelsState.isLoading, showCodexFastMode, showCodexUltrafastMode, codexModelsState.error, serviceTier])
@@ -2048,10 +2048,10 @@ export function NewSession(props: {
                 cursorSelectedBase,
                 effort,
                 modelReasoningEffort,
-                ...(agent === 'codex' && showCodexFastMode ? { serviceTier } : {}),
+                ...(agent === 'codex' ? { serviceTier } : {}),
                 ...(usesSharedPermissionMode ? { permissionMode: nativePermissionMode } : {})
             }
-            const resolvedServiceTier = agent === 'codex' && showCodexFastMode
+            const resolvedServiceTier = agent === 'codex'
                 ? serviceTier
                 : undefined
             const resolvedCollaborationMode = agent === 'codex' && collaborationMode !== 'default'
@@ -2596,7 +2596,8 @@ export function NewSession(props: {
                 onChange={setCopilotAgentMode}
             />
             <FastModeSelector
-                visible={showCodexFastMode || (agent === 'codex' && serviceTier === 'ultrafast')}
+                visible={showCodexFastMode || showCodexUltrafastMode || (agent === 'codex' && serviceTier === 'ultrafast')}
+                fastAvailable={showCodexFastMode}
                 ultrafastAvailable={showCodexUltrafastMode}
                 value={serviceTier}
                 isDisabled={isFormDisabled}

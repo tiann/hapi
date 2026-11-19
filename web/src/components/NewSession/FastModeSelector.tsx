@@ -5,6 +5,7 @@ import { SelectControl } from '@/components/ui/select-control'
 export type { NewSessionServiceTier }
 
 export function FastModeSelector(props: {
+    fastAvailable?: boolean
     ultrafastAvailable?: boolean
     visible: boolean
     value: NewSessionServiceTier
@@ -31,7 +32,7 @@ export function FastModeSelector(props: {
                 className="py-2 pl-3 text-sm rounded-lg border border-[var(--app-divider)] bg-[var(--app-bg)] text-[var(--app-text)] focus:outline-none focus:ring-2 focus:ring-[var(--app-link)] disabled:opacity-50"
             >
                 <option value="standard">{t('misc.fastModeStandard')}</option>
-                <option value="fast">{t('misc.fastModeFast')}</option>
+                {props.fastAvailable !== false && <option value="fast">{t('misc.fastModeFast')}</option>}
                 {(props.ultrafastAvailable || props.value === 'ultrafast') && <option value="ultrafast" disabled={!props.ultrafastAvailable}>{t('misc.fastModeUltrafast')}</option>}
             </SelectControl>
         </div>

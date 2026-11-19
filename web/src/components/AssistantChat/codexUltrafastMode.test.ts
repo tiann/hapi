@@ -18,7 +18,7 @@ describe('Ultrafast picker availability', () => {
     })
 
     it('shows the control for an Ultrafast-only catalog and preserves its selection', () => {
-        expect(codexModelAdvertisesFastTier('gpt-6-astra', models)).toBe(true)
+        expect(codexModelAdvertisesFastTier('gpt-6-astra', models)).toBe(false)
         expect(getDisplayedCodexServiceTier('ultrafast')).toBe('ultrafast')
         expect(getDisplayedCodexServiceTier('priority')).toBe('fast')
     })

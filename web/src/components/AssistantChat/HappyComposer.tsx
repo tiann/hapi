@@ -347,6 +347,7 @@ export function HappyComposer(props: {
     /** Codex Fast mode (service tier): current value ('fast' or null/standard). */
     serviceTier?: string | null
     /** When provided, a Fast-mode toggle renders (Codex GPT-5.5 / GPT-5.4 only). */
+    fastAvailable?: boolean
     ultrafastAvailable?: boolean
     onServiceTierChange?: (serviceTier: string | null) => void
     onSwitchToRemote?: () => void
@@ -462,6 +463,7 @@ export function HappyComposer(props: {
         onEffortChange,
         serviceTier: rawServiceTier,
         onServiceTierChange,
+        fastAvailable = true,
         ultrafastAvailable = false,
         onSwitchToRemote,
         onTerminal,
@@ -1712,9 +1714,9 @@ export function HappyComposer(props: {
     // distinctly from an untouched/account-default session.
     const fastModeOptions: Array<{ value: string; label: string }> = useMemo(() => [
         { value: 'standard', label: t('misc.fastModeStandard') },
-        { value: 'fast', label: t('misc.fastModeFast') },
+        ...(fastAvailable ? [{ value: 'fast', label: t('misc.fastModeFast') }] : []),
         ...(ultrafastAvailable ? [{ value: 'ultrafast', label: t('misc.fastModeUltrafast') }] : [])
-    ], [t, ultrafastAvailable])
+    ], [t, fastAvailable, ultrafastAvailable])
 
     const showCollaborationSettings = Boolean(onCollaborationModeChange && collaborationModeOptions.length > 0)
     const showCopilotAgentModeSettings = Boolean(onCopilotAgentModeChange && copilotAgentModeOptions.length > 0)
@@ -2568,7 +2570,7 @@ export function HappyComposer(props: {
                                 modelValueOpen={showSettings && settingsSection !== 'effort'}
                                 onModelValueToggle={handleModelValueToggle}
                                 fastModeEnabled={displayedServiceTier === 'fast'}
-                                onFastModeToggle={onServiceTierChange
+                                onFastModeToggle={onServiceTierChange && fastAvailable
                                     ? () => handleServiceTierChange(displayedServiceTier === 'fast' ? 'standard' : 'fast')
                                     : undefined}
                                 effortValueLabel={effortValueLabel}

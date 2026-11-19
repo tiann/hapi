@@ -584,6 +584,9 @@ describe('NewSession launch preferences', () => {
         view.rerender(<QueryClientProvider client={new QueryClient()}>{form}</QueryClientProvider>)
         fireEvent.change(screen.getByRole('combobox', { name: 'newSession.fastMode' }), { target: { value: 'standard' } })
         await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'standard-recovery' })
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ serviceTier: 'standard' })))
     })
 
     it('remembers fast mode after a successful Codex launch and restores it on the same machine', async () => {
@@ -1030,6 +1033,7 @@ describe('NewSession launch preferences', () => {
             cursorSelectedBase: 'auto',
             effort: 'auto',
             modelReasoningEffort: 'max',
+            serviceTier: 'standard',
             permissionMode: 'yolo'
         })
     })

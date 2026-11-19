@@ -14,7 +14,7 @@ type CodexModelCatalogEntry = {
 }
 
 function isFastTierId(tierId: string): boolean {
-    return /^(fast|priority|ultrafast)$/i.test(tierId.trim())
+    return /^(fast|priority)$/i.test(tierId.trim())
 }
 
 /**

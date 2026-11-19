@@ -1444,4 +1444,17 @@ describe('Ultrafast native settings', () => {
         expect(f.events).toHaveBeenCalledOnce();
         expect(f.events).toHaveBeenCalledWith({ type: 'message', message: 'Ultrafast is not supported by this model or subscription; changed to Standard.' });
     });
+
+    it('rechecks the latest model after another client changes it during catalog discovery', async () => {
+        const f = await fixture();
+        let release!: (value: { data: Array<{ id: string; serviceTiers?: Array<{ id: string }> }> }) => void;
+        const catalog = vi.spyOn(f.root.client, 'listModels').mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+        const pending = f.root.applySettings({ serviceTier: 'ultrafast' });
+        await vi.waitFor(() => expect(catalog).toHaveBeenCalledOnce());
+        f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: { model: 'standard-only', serviceTier: 'default' } });
+        release({ data: [{ id: 'mock', serviceTiers: [{ id: 'ultrafast' }] }] });
+        expect((await pending).applied).toMatchObject({ model: 'standard-only', serviceTier: 'standard' });
+        expect(catalog).toHaveBeenCalledTimes(2);
+        catalog.mockRestore();
+    });
 });
