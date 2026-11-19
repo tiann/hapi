@@ -367,11 +367,38 @@ const BLOCKED_DIRECTION_GLYPH: Record<BlockedJumpDirection, string | null> = {
     both: '\u2195'
 }
 
-function BlockedFilterIcon(props: { className?: string }) {
+/**
+ * Search-expanded escape hatch only (#1717 / #1996). The normal toolbar's
+ * blocked lens lives in the combined Sort-and-filter menu; that menu
+ * unmounts along with the rest of the actions row while search is expanded,
+ * so turning "Blocked only" on there and then expanding search would leave
+ * no way to turn it back off. Do not resurrect this as a standalone
+ * normal-toolbar control — the menu row is the only toggle outside search.
+ */
+function BlockedSearchLensToggle(props: {
+    active: boolean
+    onToggle: () => void
+}) {
+    const { t } = useTranslation()
+    const label = t('sessions.view.blockedOnly')
+
     return (
-        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={props.className} aria-hidden="true">
-            <path d="M3 5h18l-7 8v6l-4 2v-8Z" />
-        </svg>
+        <button
+            type="button"
+            onClick={props.onToggle}
+            data-testid="blocked-lens-toggle"
+            aria-pressed={props.active}
+            title={label}
+            aria-label={label}
+            className={cn(
+                'flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]',
+                props.active
+                    ? 'bg-[var(--app-badge-warning-bg)] text-[var(--app-badge-warning-text)]'
+                    : 'text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)]'
+            )}
+        >
+            {props.active ? <CheckIcon className="h-4 w-4" /> : <BlockedFlagIcon className="h-4 w-4" />}
+        </button>
     )
 }
 
@@ -427,37 +454,6 @@ function BlockedJumpPill(props: {
             <BlockedFlagIcon className="h-3.5 w-3.5" />
             <span>{props.count}</span>
             {glyph ? <span aria-hidden="true">{glyph}</span> : null}
-        </button>
-    )
-}
-
-/** Blocked-only lens, mirroring the existing unread-only header toggle. */
-function BlockedLensToggle(props: {
-    active: boolean
-    count: number
-    onToggle: () => void
-}) {
-    const { t } = useTranslation()
-    const label = props.active
-        ? t('sessions.blockedFilter.showingOnly', { count: props.count })
-        : t('sessions.blockedFilter.hint')
-
-    return (
-        <button
-            type="button"
-            onClick={props.onToggle}
-            data-testid="blocked-lens-toggle"
-            aria-pressed={props.active}
-            title={label}
-            aria-label={label}
-            className={cn(
-                'flex h-9 w-9 shrink-0 items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--app-link)]',
-                props.active
-                    ? 'bg-[var(--app-badge-warning-bg)] text-[var(--app-badge-warning-text)]'
-                    : 'text-[var(--app-hint)] hover:bg-[var(--app-subtle-bg)]'
-            )}
-        >
-            <BlockedFilterIcon className="h-4 w-4" />
         </button>
     )
 }
@@ -2564,7 +2560,7 @@ export function SessionList(props: {
     const normalizedQuery = normalizeSearch(searchQuery)
     const timeRange = getSessionTimeRange(customStart, customEnd)
     const isSearchFiltering = normalizedQuery.length > 0 || timeRange !== null
-    const isFiltering = isSearchFiltering || listView.unreadOnly || showScratchlistOnly || showActiveOnly || showWorkingOnly
+    const isFiltering = isSearchFiltering || listView.unreadOnly || showScratchlistOnly || showActiveOnly || showWorkingOnly || showBlockedOnly
 
     const contentSearchActive = searchMode === 'content' && normalizedQuery.length > 0
     const contentSearchReady = contentSearchActive
@@ -4155,9 +4151,8 @@ export function SessionList(props: {
                                     onJump={jumpToNextBlocked}
                                 />
                             ) : null}
-                            <BlockedLensToggle
+                            <BlockedSearchLensToggle
                                 active={showBlockedOnly}
-                                count={blockedCount}
                                 onToggle={() => setShowBlockedOnly(!showBlockedOnly)}
                             />
                         </div>
@@ -4211,6 +4206,7 @@ export function SessionList(props: {
                                                 setShowScratchlistOnly(false)
                                                 setShowActiveOnly(false)
                                                 setShowWorkingOnly(false)
+                                                setShowBlockedOnly(false)
                                                 setCustomStart('')
                                                 setCustomEnd('')
                                                 setMachineFilter(null)
@@ -4221,6 +4217,8 @@ export function SessionList(props: {
                                             onActiveChange={setShowActiveOnly}
                                             workingOnly={showWorkingOnly}
                                             onWorkingChange={setShowWorkingOnly}
+                                            blockedOnly={showBlockedOnly}
+                                            onBlockedChange={setShowBlockedOnly}
                                             customStart={customStart}
                                             customEnd={customEnd}
                                             sessionActivityDates={sessionActivityDates}
@@ -4317,28 +4315,17 @@ export function SessionList(props: {
                                             actions row but outside `definedSlots`, so without
                                             reserving their width the shedder keeps icons inline
                                             that no longer fit and the row overflows (#2039). */}
-                                        {blockedCount > 0 || showBlockedOnly ? (
+                                        {blockedCount > 0 ? (
                                             <div
                                                 ref={blockedControlsRef}
                                                 data-testid="blocked-toolbar-controls"
                                                 className="flex shrink-0 items-center gap-1"
                                             >
-                                                {blockedCount > 0 ? (
-                                                    <BlockedJumpPill
-                                                        count={blockedCount}
-                                                        direction={blockedDirection}
-                                                        alerting={blockedAlerting}
-                                                        onJump={jumpToNextBlocked}
-                                                    />
-                                                ) : null}
-                                                {/* Survives `blockedCount` reaching zero while the
-                                                    lens is on. Dropping it there would leave the
-                                                    list filtered to blocked-only with every row
-                                                    hidden and no control left to turn it off. */}
-                                                <BlockedLensToggle
-                                                    active={showBlockedOnly}
+                                                <BlockedJumpPill
                                                     count={blockedCount}
-                                                    onToggle={() => setShowBlockedOnly((value) => !value)}
+                                                    direction={blockedDirection}
+                                                    alerting={blockedAlerting}
+                                                    onJump={jumpToNextBlocked}
                                                 />
                                             </div>
                                         ) : null}

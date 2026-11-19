@@ -64,11 +64,12 @@ test.describe('#1717 blocked session-list chrome', () => {
         await expect(pill).toContainText(/[↑↓↕]/)
     })
 
-    test('the lens toggle narrows the list to blocked work only', async ({ page }) => {
-        const toggle = page.getByTestId('blocked-lens-toggle')
-        await toggle.click()
+    test('the combined filter menu narrows the list to blocked work only (#1996)', async ({ page }) => {
+        await page.getByRole('button', { name: 'Sort and filter', exact: true }).click()
+        const checkbox = page.getByRole('menuitemcheckbox', { name: 'Blocked only', exact: true })
+        await checkbox.click()
 
-        await expect(toggle).toHaveAttribute('aria-pressed', 'true')
+        await expect(checkbox).toHaveAttribute('aria-checked', 'true')
         await expect(page.getByTestId('session-blocked-chip')).toHaveCount(11)
         // Every remaining row carries the blocked flag.
         const rows = page.locator('[data-session-id]')

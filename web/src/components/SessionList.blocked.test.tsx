@@ -137,24 +137,35 @@ describe('SessionList blocked chrome (#1717)', () => {
         expect(within(pill).getByText('2')).toBeTruthy()
     })
 
-    it('narrows to blocked work through a real toggle button', () => {
+    it('narrows to blocked work through the combined filter menu (#1996)', () => {
         renderList([blocked('stuck-one'), blocked('stuck-two'), makeSession({ id: 'fine-one' })])
 
         // 'fine-one' is an inactive, unpinned session, so its directory group
         // starts collapsed — expand it to see the row before narrowing.
         fireEvent.click(screen.getByTitle('/home/ubuntu'))
-
-        const toggle = screen.getByTestId('blocked-lens-toggle')
-        expect(toggle.getAttribute('aria-pressed')).toBe('false')
         expect(screen.getByText('fine-one')).toBeTruthy()
 
-        // A native button, so keyboard and assistive activation reach the lens
-        // that `aria-pressed` advertises.
-        fireEvent.click(toggle)
+        fireEvent.click(screen.getByRole('button', { name: 'Sort and filter' }))
+        const checkbox = screen.getByRole('menuitemcheckbox', { name: 'Blocked only' })
+        expect(checkbox.getAttribute('aria-checked')).toBe('false')
+        fireEvent.click(checkbox)
 
-        expect(screen.getByTestId('blocked-lens-toggle').getAttribute('aria-pressed')).toBe('true')
         expect(screen.queryByText('fine-one')).toBeNull()
         expect(screen.getAllByTestId('session-blocked-chip')).toHaveLength(2)
+    })
+
+    it('expands a collapsed Blocked section when Blocked only is turned on (#1996)', () => {
+        renderList([blocked('stuck-one')])
+
+        const header = screen.getByTitle('Blocked')
+        expect(header.getAttribute('aria-expanded')).toBe('true')
+        fireEvent.click(header)
+        expect(header.getAttribute('aria-expanded')).toBe('false')
+
+        fireEvent.click(screen.getByRole('button', { name: 'Sort and filter' }))
+        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Blocked only' }))
+
+        expect(screen.getByTitle('Blocked').getAttribute('aria-expanded')).toBe('true')
     })
 
     it('counts a session awaiting a permission prompt as blocked', () => {
@@ -339,7 +350,7 @@ describe('SessionList blocked chrome (#1717)', () => {
         renderList([makeSession({ id: 'fine-one' }), makeSession({ id: 'fine-two' })])
 
         expect(screen.queryByTestId('blocked-jump-pill')).toBeNull()
-        expect(screen.queryByTestId('blocked-lens-toggle')).toBeNull()
+        expect(screen.queryByTestId('blocked-toolbar-controls')).toBeNull()
         expect(screen.queryByTestId('blocked-section')).toBeNull()
     })
 
