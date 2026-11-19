@@ -333,7 +333,11 @@ export class SyncEngine {
         rpcRegistry: RpcRegistry,
         sseManager: SSEManager,
     ) {
-        this.eventPublisher = new EventPublisher(sseManager, (event) => this.resolveNamespace(event))
+        this.eventPublisher = new EventPublisher(
+            sseManager,
+            (event) => this.resolveNamespace(event),
+            (sessionId) => this.store.messages.getFutureSessionSchedule(sessionId)
+        )
         this.sessionCache = new SessionCache(store, this.eventPublisher, {
             // mergeSessionData is the single choke point that deletes rows for
             // merges — resume-id rotation here and sessionCache's internal

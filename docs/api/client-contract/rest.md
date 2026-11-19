@@ -44,13 +44,15 @@ Source: `hub/src/web/routes/sessions.ts`; shapes `SessionSchema` (`shared/src/sc
 
 | Method & path | Request | Response |
 |---|---|---|
-| `GET /api/sessions` | Query: `limit?` (1–500), `order?=updatedAt` | `{sessions: (SessionSummary & {futureScheduledMessageCount, nextScheduledAt})[]}` |
+| `GET /api/sessions` | Query: `limit?` (1–500), `order?=updatedAt` | `{sessions: (SessionSummary & {futureScheduledMessageCount, nextScheduledAt})[], sessionScheduleCursor?: string}` |
 | `GET /api/sessions/content-search` | Query: `query`, `limit?` (1–100, default 50), repeated `sessionId?` to scope | `SessionContentSearchResponse` `{results: [{session: SessionSummary, match}], hasPotentiallyIncompleteResults}` — message-text search across sessions |
 | `POST /api/sessions/content-search` | `{query, limit?, sessionIds?: string[]}` | Same as `GET`; use for long `sessionIds` scopes (`413` above the body limit) |
 | `GET /api/sessions/:id/content-search` | Query: `query`, `limit?` (1–1000) | `SessionContentMatchesResponse` `{matches, total, hasPotentiallyIncompleteResults}` — matches inside one session; empty `query` returns no matches |
 | `PUT /api/sessions/:id/read-state` | `{type: "read", readRevision, expectedVersion}` or `{type: "unread", expectedVersion}` | `{status, contentRevision, readState}`; see [Read state](./read-state.md) |
 | `GET /api/sessions/:id` | — | `{session: Session}` (full record incl. `metadata`, `agentState`, `todos`, versions) |
 | `GET /api/sessions/scratchlist-status` | — | `{sessionIds: string[]}` — session IDs in the caller's namespace with at least one scratchlist entry |
+
+The optional `sessionScheduleCursor` identifies the SSE position covered by the list's scheduled-message fields. See [Scheduled-message list updates](./sse.md#scheduled-message-list-updates) for how the web reconciles it with message events.
 
 Default list order is `globalPinned` → `pinned` →
 `lastUserMessageAt ?? createdAt` descending, then `createdAt` descending and

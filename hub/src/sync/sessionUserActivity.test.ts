@@ -34,3 +34,30 @@ describe('user-activity ordering SSE', () => {
         }
     })
 })
+
+describe('session schedule SSE', () => {
+    it('publishes the remaining schedule on a consumed message event', () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const engine = new SyncEngine(store, {} as never, new RpcRegistry(), {
+            broadcast: (event: SyncEvent) => events.push(event)
+        } as never)
+        try {
+            const session = engine.getOrCreateSession('schedule', { path: '/project', host: 'mac' }, null, 'default')
+            const now = Date.now()
+            for (const [localId, at] of [['first', now + 60_000], ['next', now + 120_000]] as const) {
+                store.messages.addMessage(session.id, { role: 'user' }, localId, at)
+            }
+            store.messages.markMessagesInvoked(session.id, ['first'], now)
+            engine.handleRealtimeEvent({ type: 'messages-consumed', sessionId: session.id, localIds: ['first'], invokedAt: now })
+            expect(events.at(-1)).toMatchObject({
+                type: 'messages-consumed',
+                sessionId: session.id,
+                sessionSchedule: { futureScheduledMessageCount: 1, nextScheduledAt: now + 120_000 }
+            })
+        } finally {
+            engine.stop()
+            store.close()
+        }
+    })
+})

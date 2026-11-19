@@ -931,6 +931,16 @@ const SessionChangedSchema = SessionEventBaseSchema.extend({
     sessionId: z.string()
 })
 
+export const SessionScheduleSchema = z.object({
+    futureScheduledMessageCount: z.number().int().nonnegative(),
+    nextScheduledAt: z.number().nullable()
+})
+export type SessionSchedule = z.infer<typeof SessionScheduleSchema>
+
+const SessionScheduleChangedSchema = SessionChangedSchema.extend({
+    sessionSchedule: SessionScheduleSchema.optional()
+})
+
 const MachineChangedSchema = SessionEventBaseSchema.extend({
     machineId: z.string()
 })
@@ -948,7 +958,7 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
         type: z.literal('session-removed'),
         sessionId: z.string()
     }),
-    SessionChangedSchema.extend({
+    SessionScheduleChangedSchema.extend({
         type: z.literal('message-received'),
         message: DecryptedMessageSchema
     }),
@@ -957,7 +967,7 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
         reason: z.literal('rewind').optional(),
         truncateFromLocalId: z.string().min(1).optional()
     }),
-    SessionChangedSchema.extend({
+    SessionScheduleChangedSchema.extend({
         type: z.literal('scheduled-matured')
     }),
     SessionChangedSchema.extend({
@@ -985,24 +995,24 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
             url: z.string()
         })
     }),
-    SessionChangedSchema.extend({
+    SessionScheduleChangedSchema.extend({
         type: z.literal('messages-consumed'),
         localIds: z.array(z.string()),
         invokedAt: z.number(),
         // True when messages were steered into an active turn (not a normal queue drain).
         steered: z.boolean().optional()
     }),
-    SessionChangedSchema.extend({
+    SessionScheduleChangedSchema.extend({
         type: z.literal('messages-indeterminate'),
         localIds: z.array(z.string()),
         // Older clients conservatively retain the unresolved row.
         dispatching: z.literal(true).optional()
     }),
-    SessionChangedSchema.extend({
+    SessionScheduleChangedSchema.extend({
         type: z.literal('messages-requeued'),
         localIds: z.array(z.string())
     }),
-    SessionChangedSchema.extend({
+    SessionScheduleChangedSchema.extend({
         type: z.literal('message-cancelled'),
         messageId: z.string(),
         localId: z.string().optional()
@@ -1030,6 +1040,28 @@ export const SyncEventSchema = z.discriminatedUnion('type', [
 ])
 
 export type SyncEvent = z.infer<typeof SyncEventSchema>
+
+type SessionScheduleEvent = Extract<SyncEvent, { sessionSchedule?: SessionSchedule }>
+type ScheduledMessageReceived = Extract<SessionScheduleEvent, { type: 'message-received' }> & {
+    message: { scheduledAt: number }
+}
+
+export function affectsSessionSchedule(
+    event: SyncEvent
+): event is Exclude<SessionScheduleEvent, { type: 'message-received' }> | ScheduledMessageReceived {
+    switch (event.type) {
+        case 'message-received':
+            return event.message.scheduledAt != null
+        case 'messages-consumed':
+        case 'messages-indeterminate':
+        case 'messages-requeued':
+        case 'message-cancelled':
+        case 'scheduled-matured':
+            return true
+        default:
+            return false
+    }
+}
 
 export const CancelMessageResponseSchema = z.discriminatedUnion('status', [
     z.object({ status: z.literal('cancelled'), localId: z.string().nullable() }),

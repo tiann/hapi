@@ -3,7 +3,7 @@ import { act, renderHook } from '@testing-library/react'
 import { createElement, type ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionSummary } from '@/types/api'
-import type { Session } from '@/types/api'
+import type { Session, SessionsResponse } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
 import {
     applySessionDetailPatch,
@@ -52,13 +52,14 @@ class FakeEventSource {
         this.onopen?.()
     }
 
-    simulateMessage(data: unknown): void {
-        this.onmessage?.({ data: JSON.stringify(data) } as MessageEvent<string>)
+    simulateMessage(data: unknown, lastEventId = ''): void {
+        this.onmessage?.({ data: JSON.stringify(data), lastEventId } as MessageEvent<string>)
     }
 }
 
 function renderUseSSE(options?: {
     onDisconnect?: (reason: string) => void
+    scope?: Parameters<typeof useSSE>[0]['scope']
 }) {
     const queryClient = new QueryClient()
     const wrapper = ({ children }: { children: ReactNode }) =>
@@ -69,10 +70,58 @@ function renderUseSSE(options?: {
         baseUrl: 'http://hub.test',
         subscription: { all: true },
         onEvent: () => {},
+        scope: options?.scope,
         onDisconnect: options?.onDisconnect
     }), { wrapper })
     return { ...hook, queryClient }
 }
+
+it('patches a newer schedule and refetches when the event cannot be applied', () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('EventSource', FakeEventSource)
+    FakeEventSource.instances = []
+    const { queryClient, unmount } = renderUseSSE({ scope: 'global' })
+    const row = { id: 'scheduled', futureScheduledMessageCount: 0, nextScheduledAt: null } as SessionSummary
+    queryClient.setQueryData(queryKeys.sessions, { sessions: [row], sessionScheduleCursor: 'epoch:2:ns' })
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    const cached = () => queryClient.getQueryData<SessionsResponse>(queryKeys.sessions)!.sessions[0]!
+    const emit = (id: string, sessionSchedule?: { futureScheduledMessageCount: number; nextScheduledAt: number | null }) => {
+        act(() => {
+            FakeEventSource.instances[0]?.simulateMessage({
+                type: 'messages-consumed', sessionId: row.id, localIds: ['prompt'], invokedAt: 5, sessionSchedule
+            }, id)
+            vi.advanceTimersByTime(16)
+        })
+    }
+    try {
+        const schedule = { futureScheduledMessageCount: 2, nextScheduledAt: 200 }
+        emit('epoch:3:ns', schedule)
+        expect(cached()).toMatchObject(schedule)
+        emit('epoch:2:ns', { futureScheduledMessageCount: 0, nextScheduledAt: null })
+        expect(cached()).toMatchObject(schedule)
+        expect(invalidate).not.toHaveBeenCalled()
+
+        const stale = { futureScheduledMessageCount: 1, nextScheduledAt: 100 }
+        emit('old-epoch:4:ns', stale)
+        emit('epoch:5:other-ns', stale)
+        emit('epoch:6:ns')
+        expect(cached()).toMatchObject(schedule)
+        expect(invalidate).toHaveBeenCalledTimes(3)
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.sessions })
+
+        const queryState = queryClient.getQueryState(queryKeys.sessions)!
+        const getQueryState = vi.spyOn(queryClient, 'getQueryState').mockReturnValueOnce({
+            ...queryState, fetchStatus: 'fetching'
+        })
+        emit('epoch:7:ns', schedule)
+        getQueryState.mockRestore()
+        expect(cached()).toMatchObject({ sessionScheduleEventId: 'epoch:7:ns' })
+    } finally {
+        unmount()
+        vi.unstubAllGlobals()
+        vi.useRealTimers()
+    }
+})
 
 describe('useSSE connection liveness (mobile suspend/resume)', () => {
     beforeEach(() => {

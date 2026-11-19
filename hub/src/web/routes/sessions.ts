@@ -68,6 +68,7 @@ const MAX_CONTENT_SEARCH_QUERY_CHARACTERS = 200
 
 export type SessionsRouteOptions = {
     isGithubPrAwarenessEnabled?: () => boolean
+    getSessionScheduleCursor?: (namespace: string) => string | undefined
 }
 
 function defaultGithubPrAwarenessEnabled(): boolean {
@@ -245,13 +246,17 @@ export function createSessionsRoutes(
         if (limit !== null) {
             sessionRecords = sessionRecords.slice(0, limit)
         }
-        const scheduledCounts = engine.getFutureScheduledMessageCounts(sessionRecords.map((session) => session.id))
-        const nextScheduledAt = engine.getNextScheduledAtBySessionIds(sessionRecords.map((session) => session.id))
+        const sessionIds = sessionRecords.map((session) => session.id)
+        // Read the cursor before the schedule aggregates in the same synchronous turn.
+        // An await between them would allow a broadcast to split the snapshot.
+        const sessionScheduleCursor = options.getSessionScheduleCursor?.(namespace)
+        const now = Date.now()
+        const scheduledCounts = engine.getFutureScheduledMessageCounts(sessionIds, now)
+        const nextScheduledAt = engine.getNextScheduledAtBySessionIds(sessionIds, now)
         // Watermark BEFORE reading jobs. If a mutation lands between read and
         // allocate, SSE gets version V with the new value while this response
         // would return the older value labeled V+1 — useSSE then rejects the
         // real patch as stale. Allocate first so concurrent emits always win.
-        const sessionIds = sessionRecords.map((session) => session.id)
         const attachedJobVersions = new Map(
             sessionIds.map((id) => [id, engine.allocateAttachedJobVersion(id)])
         )
@@ -269,7 +274,7 @@ export function createSessionsRoutes(
             }
         })
 
-        return c.json({ sessions })
+        return c.json({ sessions, sessionScheduleCursor })
     })
 
     app.get('/sessions/scratchlist-status', (c) => {

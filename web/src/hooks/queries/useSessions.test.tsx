@@ -40,3 +40,34 @@ it('does not let a delayed REST snapshot undo newer user input from SSE', async 
     expect(data.sessions.map(s => s.id)).toEqual(['a', 'b'])
     expect(data.sessions[0]!.lastUserMessageAt).toBe(300)
 })
+
+it.each([
+    ['matching scope', 'epoch:2:ns', 'epoch:3:ns', 0],
+    ['different epoch', 'epoch:2:ns', 'older-epoch:3:ns', 1],
+    ['different namespace', 'epoch:2:ns', 'epoch:3:other-ns', 1]
+])('reconciles a delayed scheduled-message snapshot with %s', async (_case, snapshotCursor, eventId, expectedCount) => {
+    const client = new QueryClient()
+    const session = row('scheduled', 100)
+    client.setQueryData(queryKeys.sessions, { sessions: [session], sessionScheduleCursor: snapshotCursor })
+    let resolve!: (response: SessionsResponse) => void
+    const api = { getSessions: () => new Promise<SessionsResponse>(done => { resolve = done }) } as unknown as ApiClient
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children)
+    const { result } = renderHook(() => useSessions(api, { enabled: false }), { wrapper })
+    await act(async () => {
+        const pending = result.current.refetch()
+        // A cancellation restored the prior visible values after the hub took this snapshot.
+        client.setQueryData(queryKeys.sessions, {
+            sessions: [{ ...session, sessionScheduleEventId: eventId }],
+            sessionScheduleCursor: snapshotCursor
+        })
+        resolve({
+            sessions: [{ ...session, futureScheduledMessageCount: 1, nextScheduledAt: 200 }],
+            sessionScheduleCursor: snapshotCursor
+        })
+        await pending
+    })
+    expect(client.getQueryData<SessionsResponse>(queryKeys.sessions)?.sessions[0]).toMatchObject({
+        futureScheduledMessageCount: expectedCount,
+        nextScheduledAt: expectedCount ? 200 : null
+    })
+})

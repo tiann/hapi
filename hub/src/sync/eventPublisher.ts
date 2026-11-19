@@ -1,3 +1,4 @@
+import { affectsSessionSchedule, type SessionSchedule } from '@hapi/protocol/schemas'
 import type { SyncEvent } from '@hapi/protocol/types'
 import type { SSEManager } from '../sse/sseManager'
 
@@ -8,7 +9,8 @@ export class EventPublisher {
 
     constructor(
         private readonly sseManager: SSEManager,
-        private readonly resolveNamespace: (event: SyncEvent) => string | undefined
+        private readonly resolveNamespace: (event: SyncEvent) => string | undefined,
+        private readonly readSessionSchedule?: (sessionId: string) => SessionSchedule
     ) {
     }
 
@@ -29,6 +31,19 @@ export class EventPublisher {
             }
         }
 
+        // Read after listeners run so the snapshot reflects the state at broadcast time.
+        if (namespace && this.readSessionSchedule && affectsSessionSchedule(enrichedEvent)) {
+            let sessionSchedule: SessionSchedule | undefined
+            try {
+                sessionSchedule = this.readSessionSchedule(enrichedEvent.sessionId)
+            } catch (error) {
+                console.error('[SyncEngine] Failed to read session schedule:', error)
+            }
+            if (sessionSchedule) {
+                this.sseManager.broadcast({ ...enrichedEvent, sessionSchedule })
+                return
+            }
+        }
         this.sseManager.broadcast(enrichedEvent)
     }
 }

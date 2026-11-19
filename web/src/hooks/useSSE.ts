@@ -11,7 +11,7 @@ import {
     toSessionSummary,
     toSessionSummaryMetadata
 } from '@hapi/protocol'
-import { MachinePatchSchema, MachineSchema, SessionPatchSchema, SessionSchema } from '@hapi/protocol/schemas'
+import { affectsSessionSchedule, MachinePatchSchema, MachineSchema, SessionPatchSchema, SessionSchema } from '@hapi/protocol/schemas'
 import type {
     Machine,
     MachinesResponse,
@@ -23,6 +23,7 @@ import type {
     SyncEvent
 } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
+import { applySessionSchedule, type CachedSessionsResponse } from '@/lib/sessionSchedule'
 import { applyAgyCatalogAnnouncement } from '@/lib/agyCatalogAnnouncement'
 import { clearMessageWindow, getMessageWindowState, ingestIncomingMessages, markMessagesConsumed, markMessagesIndeterminate, markMessagesDispatching, markMessagesRequeued, removeOptimisticMessage, updateMessageStatus } from '@/lib/message-window-store'
 import {
@@ -481,7 +482,7 @@ export function useSSE(options: {
         }
 
         const upsertSessionSummary = (session: Session) => {
-            queryClient.setQueryData<SessionsResponse | undefined>(queryKeys.sessions, (previous) => {
+            queryClient.setQueryData<CachedSessionsResponse | undefined>(queryKeys.sessions, (previous) => {
                 if (!previous) {
                     return previous
                 }
@@ -498,7 +499,8 @@ export function useSSE(options: {
                         ? existing?.lastUserMessageAt
                         : Math.max(existing?.lastUserMessageAt ?? 0, session.lastUserMessageAt),
                     futureScheduledMessageCount: existing?.futureScheduledMessageCount ?? 0,
-                    nextScheduledAt: existing?.nextScheduledAt ?? null
+                    nextScheduledAt: existing?.nextScheduledAt ?? null,
+                    sessionScheduleEventId: existing?.sessionScheduleEventId
                 }
                 const nextSessions = previous.sessions.slice()
                 if (existingIndex >= 0) {
@@ -673,7 +675,7 @@ export function useSSE(options: {
             })
         }
 
-        const handleSyncEvent = (event: SyncEvent) => {
+        const handleSyncEvent = (event: SyncEvent, eventId: string) => {
             lastActivityAtRef.current = Date.now()
 
             if (event.type === 'heartbeat') {
@@ -707,17 +709,20 @@ export function useSSE(options: {
             }
 
             if (scope === 'global' && MESSAGE_STREAM_EVENT_TYPES.has(event.type)) {
-                if (event.type === 'message-received' && event.message.scheduledAt != null) {
-                    queueSessionListInvalidation()
-                }
-                if (
-                    event.type === 'message-cancelled'
-                    || event.type === 'messages-consumed'
-                    || event.type === 'messages-indeterminate'
-                    || event.type === 'messages-requeued'
-                    || event.type === 'scheduled-matured'
-                ) {
-                    queueSessionListInvalidation()
+                if (affectsSessionSchedule(event)) {
+                    const previous = queryClient.getQueryData<CachedSessionsResponse>(queryKeys.sessions)
+                    const next = applySessionSchedule(
+                        previous,
+                        event.sessionId,
+                        eventId,
+                        event.sessionSchedule,
+                        queryClient.getQueryState(queryKeys.sessions)?.fetchStatus === 'fetching'
+                    )
+                    if (!next) {
+                        queueSessionListInvalidation()
+                    } else if (next !== previous) {
+                        queryClient.setQueryData(queryKeys.sessions, next)
+                    }
                 }
                 // The global `all` subscription also receives message-stream events.
                 // Session-scoped SSE normally drives the message window, but during
@@ -853,7 +858,7 @@ export function useSSE(options: {
                 return
             }
 
-            handleSyncEvent(parsed as SyncEvent)
+            handleSyncEvent(parsed as SyncEvent, message.lastEventId)
 
             // Track the hub's replay cursor - after handling, so a throwing
             // handler leaves the cursor behind the event and the hub replays

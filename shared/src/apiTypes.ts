@@ -140,7 +140,11 @@ export type AuthResponse = {
     }
 }
 
-export type SessionsResponse = { sessions: SessionSummary[] }
+export type SessionsResponse = {
+    sessions: SessionSummary[]
+    /** SSE position included in this snapshot's scheduled-message fields. */
+    sessionScheduleCursor?: string
+}
 export type ScratchlistSessionIdsResponse = { sessionIds: string[] }
 export type SessionContentMatch = {
     messageId: string

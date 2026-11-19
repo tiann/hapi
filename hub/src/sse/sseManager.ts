@@ -163,6 +163,11 @@ export class SSEManager {
         return `${this.epoch}:${seq}:${this.namespaceTag(namespace)}`
     }
 
+    /** Sequence zero is a valid snapshot position before the first broadcast. */
+    getSnapshotCursor(namespace: string): string {
+        return this.eventIdFor(this.nextSeq - 1, namespace)
+    }
+
     private resolveResume(connection: SSEConnection, resumeFrom: string | null): SSEResumeResult {
         if (!resumeFrom) {
             return { resume: 'gap', replay: [] }
