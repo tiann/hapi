@@ -548,18 +548,21 @@ async function launchLocal(
                     ?? getString(metadata?.tool_call_id);
 
             const createdAt = Date.now();
-            session.client.updateAgentState((currentState) => ({
-                ...currentState,
-                requests: {
-                    ...currentState.requests,
-                    [id]: {
-                        tool: toolName,
-                        ...(toolCallId ? { toolCallId } : {}),
-                        arguments: toolInput,
-                        createdAt: currentState.requests?.[id]?.createdAt ?? createdAt
+            session.client.updateAgentState((currentState) => {
+                if (Object.hasOwn(currentState.completedRequests ?? {}, id)) return currentState;
+                return {
+                    ...currentState,
+                    requests: {
+                        ...currentState.requests,
+                        [id]: {
+                            tool: toolName,
+                            ...(toolCallId ? { toolCallId } : {}),
+                            arguments: toolInput,
+                            createdAt: currentState.requests?.[id]?.createdAt ?? createdAt
+                        }
                     }
-                }
-            }));
+                };
+            });
             return;
         }
 

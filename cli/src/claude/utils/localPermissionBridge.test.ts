@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { AgentState } from '@hapi/protocol/schemas'
 import type { PermissionHandlerClient } from '@/modules/common/permission/BasePermissionHandler'
 import { LocalPermissionBridge } from './localPermissionBridge'
@@ -18,8 +18,9 @@ const question: PermissionRequestHook = {
 function setup() {
     let state: AgentState = { controlledByUser: true }
     let reply: (data: unknown) => unknown = () => { throw new Error('No handler') }
+    const updateAgentState = vi.fn((update: (state: AgentState) => AgentState) => { state = update(state) })
     const client: PermissionHandlerClient = {
-        updateAgentState: update => { state = update(state) },
+        updateAgentState,
         rpcHandlerManager: {
             registerHandler: <TRequest, TResponse>(_method: string, handler: (data: TRequest) => TResponse | Promise<TResponse>) => {
                 reply = data => handler(data as TRequest)
@@ -31,10 +32,32 @@ function setup() {
     const observe = (id = 'tool-1', data = question) => bridge.onHook({ ...data, hook_event_name: 'PreToolUse', tool_use_id: id })
     const request = (data = question, signal = new AbortController().signal) => bridge.request(data, signal)
     const finish = (result: unknown = {}, id = 'tool-1') => bridge.onHook({ ...question, hook_event_name: 'PostToolUse', tool_use_id: id, tool_response: result })
-    return { bridge, observe, request, finish, state: () => state, reply: (data: unknown) => reply(data), id: () => Object.keys(state.requests ?? {})[0] }
+    return { bridge, observe, request, finish, updateAgentState, state: () => state,
+        reply: (data: unknown) => reply(data), id: () => Object.keys(state.requests ?? {})[0] }
 }
 
 describe('LocalPermissionBridge', () => {
+    it('preserves the native completion time when a lost ACK is followed by a newer Hub snapshot', async () => {
+        const h = setup()
+        const now = vi.spyOn(Date, 'now').mockReturnValue(100)
+        try {
+            h.observe()
+            const decision = h.request()
+            const id = h.id()
+            now.mockReturnValue(200)
+            h.finish({ answers: { 'Which colors?': 'Green', 'Which platform?': 'Linux' } })
+            expect(await decision).toBeNull()
+            const completion = h.state().completedRequests![id]!
+            const retry = h.updateAgentState.mock.lastCall![0]
+            now.mockReturnValue(6_000)
+            expect(retry({ ...h.state(), steeringActive: true }).completedRequests?.[id]).toEqual(completion)
+            expect(retry({ ...h.state(), completedRequests: undefined }).completedRequests?.[id]?.completedAt).toBe(200)
+        } finally {
+            h.bridge.stop()
+            now.mockRestore()
+        }
+    })
+
     it('uses independent reply ids and returns all answers without switching modes or fabricating acceptance', async () => {
         const h = setup()
         h.observe()

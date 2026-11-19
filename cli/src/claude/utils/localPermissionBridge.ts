@@ -235,14 +235,21 @@ export class LocalPermissionBridge {
                     ? [[String(i), [actual[q.question] as string]]]
                     : []))
         }
+        const completedAt = Date.now()
         this.client.updateAgentState(state => {
             const requests = { ...state.requests }
             delete requests[id]
+            const prior = state.completedRequests?.[id]
+            const matches = prior?.status === status && prior.toolCallId === pending.entry.toolCallId
+                && prior.reason === reason && isDeepStrictEqual(prior.answers, answers)
             return {
                 ...state, requests,
                 completedRequests: {
                     ...state.completedRequests,
-                    [id]: { ...pending.entry, status, completedAt: Date.now(), ...(reason ? { reason } : {}), ...(answers ? { answers } : {}) }
+                    [id]: {
+                        ...pending.entry, status, completedAt: matches ? prior.completedAt ?? completedAt : completedAt,
+                        ...(reason ? { reason } : {}), ...(answers ? { answers } : {})
+                    }
                 }
             }
         })

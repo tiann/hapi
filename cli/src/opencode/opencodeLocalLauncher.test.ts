@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Metadata } from '@/api/types';
+import type { AgentState, Metadata } from '@/api/types';
 import type { OpencodeSession } from './session';
 import type { OpencodeHookEvent } from './types';
 import type { OpencodeHookServer } from './utils/startOpencodeHookServer';
@@ -248,8 +248,8 @@ describe('local tool call ids reused by the model (shell:0 every step)', () => {
         let metadata: Metadata = { path: '/tmp/project', host: 'fixture', opencodeHistoryCheckpoint: {
             sessionId: 'native', messageIds: [], userMessageIds: [], localMessageIds: []
         } };
-        let agentState: Record<string, any> = {};
-        let updateAgentState: ((current: Record<string, any>) => Record<string, any>) | undefined;
+        let agentState: AgentState = {};
+        let updateAgentState: ((current: AgentState) => AgentState) | undefined;
         const messages: Array<Record<string, unknown>> = [];
         const session = {
             path: '/tmp/project', sessionId: 'native', startedBy: 'terminal', startingMode: 'local',
@@ -259,7 +259,7 @@ describe('local tool call ids reused by the model (shell:0 every step)', () => {
                 getMetadata: () => metadata,
                 rpcHandlerManager: { registerHandler: vi.fn() },
                 updateMetadata(update: (current: Metadata) => Metadata) { metadata = update(metadata); },
-                updateAgentState(update: (current: Record<string, any>) => Record<string, any>) {
+                updateAgentState(update: (current: AgentState) => AgentState) {
                     updateAgentState = update;
                     agentState = update(agentState);
                 },
@@ -289,10 +289,13 @@ describe('local tool call ids reused by the model (shell:0 every step)', () => {
                 id: 'per_1', type: 'bash', sessionID: 'native', messageID: 'msg-2', callID: 'shell:0', title: 'pwd', metadata: {}
             } } as OpencodeHookEvent);
             expect(agentState.requests?.per_1).toMatchObject({ toolCallId: 'shell:0#msg-2' });
+            const registerPermission = updateAgentState!;
             handler!({ event: 'permission.replied', sessionId: 'native', payload: {
                 id: 'per_1', type: 'bash', response: 'once'
             } } as OpencodeHookEvent);
             const newer = { ...agentState, steeringActive: true };
+            expect(registerPermission(newer)).toBe(newer);
+            expect(newer.requests?.per_1).toBeUndefined();
             expect(updateAgentState!(newer).completedRequests?.per_1).toMatchObject({
                 toolCallId: 'shell:0#msg-2', status: 'approved'
             });
