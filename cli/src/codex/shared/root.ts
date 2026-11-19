@@ -724,8 +724,11 @@ export class SharedCodexRoot {
     async confirmNativeTurn(params: Record<string, unknown>, explicitTier: boolean, fallbackNotice?: string): Promise<void> {
         // Native acceptance establishes intent even when a later client changes the model.
         if (explicitTier) this.markTierExplicit();
+        const revision = this.settingsRevision;
         try {
             const snapshot = record(await this.client.request('thread/resume', { threadId: this.threadId, excludeTurns: true }));
+            // A notification received during the lookup is newer than its captured snapshot.
+            if (this.settingsRevision !== revision) return;
             this.acceptSettings(snapshot);
             const model = string(record(record(params.collaborationMode).settings).model) ?? string(params.model);
             const expected = { ...(model ? { model } : {}), ...(params.serviceTier !== undefined ? { serviceTier: params.serviceTier } : {}) };

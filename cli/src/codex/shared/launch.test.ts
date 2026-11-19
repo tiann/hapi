@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { checkSharedCapabilities, sharedLaunchConfig, takeReservedSessionId } from './launch';
+import { checkSharedCapabilities, sharedLaunchConfig, coldResumeDirectory, takeReservedSessionId } from './launch';
 import { parseCodexCliOverrides } from '../utils/codexCliOverrides';
 import { resolveCodexPermissionModeConfig } from '../utils/permissionModeConfig';
 
@@ -75,4 +75,11 @@ describe('takeReservedSessionId', () => {
 it('rejects an engine without atomic queue replacement before accepting batched messages', async () => {
     const client = { supportsMethod: async (method: string) => method !== 'thread/queue/update' };
     await expect(checkSharedCapabilities(client)).rejects.toThrow('Codex lacks thread/queue/update');
+});
+
+it('keeps runner validation authoritative over native saved cwd and terminal flags', () => {
+    expect(coldResumeDirectory({ startedBy: 'runner', workingDirectory: '/allowed' }, { cwd: '/allowed', cwdExplicit: false }, '/outside')).toBe('/allowed');
+    expect(coldResumeDirectory({ startedBy: 'runner', workingDirectory: '/allowed' }, { cwd: '/flag-outside', cwdExplicit: true }, '/outside')).toBe('/allowed');
+    expect(coldResumeDirectory({ startedBy: 'terminal' }, { cwd: '/shell', cwdExplicit: false }, '/saved')).toBe('/saved');
+    expect(coldResumeDirectory({ startedBy: 'terminal' }, { cwd: '/explicit', cwdExplicit: true }, '/saved')).toBe('/explicit');
 });

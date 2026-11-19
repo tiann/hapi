@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer } from 'node:http';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -75,10 +75,10 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
         const running: Array<{ abort: AbortController; done: Promise<void> }> = [];
         const clients: CodexAppServerClient[] = [];
         const { runSharedRuntime } = await import('./runtime');
-        const start = async () => {
+        const start = async (overrides: Partial<import('./launch').SharedLaunchOptions> = {}) => {
             const abort = new AbortController(); let ready!: (value: import('./runtime').RuntimeReady) => void;
             const pending = new Promise<import('./runtime').RuntimeReady>(resolve => { ready = resolve; });
-            const done = runSharedRuntime({ workingDirectory: cwd }, ready, abort.signal);
+            const done = runSharedRuntime({ workingDirectory: cwd, ...overrides }, ready, abort.signal);
             running.push({ abort, done });
             const value = await Promise.race([pending, done.then(() => { throw new Error('Runtime stopped before ready'); })]);
             const client = new CodexAppServerClient({ endpoint: value.runtime.endpoint, token: value.runtime.token });
@@ -91,10 +91,10 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
         try {
             vi.mocked(bootstrapExistingSession).mockImplementation(async options => {
                 const previous = state.sessions.get(options.sessionId)!;
-                const session = new MockSession(cwd, previous.sessionId); session.metadata = { ...previous.metadata }; session.serviceTier = previous.serviceTier;
+                const session = new MockSession(options.workingDirectory, previous.sessionId); session.metadata = { ...previous.metadata }; session.serviceTier = previous.serviceTier;
                 state.sessions.set(session.sessionId, session);
                 return { session: session as unknown as ApiSessionClient, sessionInfo: { id: session.sessionId, namespace: 'test', serviceTier: session.serviceTier }, metadata: session.metadata,
-                    workingDirectory: cwd, machineId: 'test', startedBy: 'terminal', api: {} } as never;
+                    workingDirectory: options.workingDirectory, machineId: 'test', startedBy: options.startedBy, api: {} } as never;
             });
             await configure('priority');
             const original = await start(); const threadId = original.runtime.sessions[original.sessionId].threadId;
@@ -209,6 +209,12 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             unset.abort.abort(); await unset.done;
             const inherited = await start();
             expect((await inherited.client.request<{ serviceTier: string | null }>('thread/resume', { threadId: unsetThread, excludeTurns: true })).serviceTier).toBeNull();
+            inherited.abort.abort(); await inherited.done;
+            const validatedCwd = join(home, 'runner-validated'); await mkdir(validatedCwd);
+            const runner = await start({ startedBy: 'runner', workingDirectory: validatedCwd, resumeSessionId: unsetThread });
+            expect(vi.mocked(bootstrapExistingSession).mock.calls.at(-1)?.[0].workingDirectory).toBe(validatedCwd);
+            const saved = await runner.client.request<{ thread: { cwd: string } }>('thread/read', { threadId: unsetThread, includeTurns: false });
+            expect((await realpath(saved.thread.cwd)).toLowerCase()).toBe((await realpath(validatedCwd)).toLowerCase());
         } finally {
             releaseLaunch();
             for (const spy of extraSpies.reverse()) spy.mockRestore();

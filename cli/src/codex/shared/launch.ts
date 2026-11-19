@@ -44,6 +44,12 @@ export function resolveSharedCodex(): CodexCommand {
     return command;
 }
 
+/** Runner cwd has already passed workspace-root validation; native history cannot replace it. */
+export function coldResumeDirectory(options: SharedLaunchOptions, launch: { cwd: string; cwdExplicit: boolean }, savedCwd?: string): string {
+    if (options.startedBy === 'runner') return options.workingDirectory ?? launch.cwd;
+    return launch.cwdExplicit ? launch.cwd : savedCwd ?? launch.cwd;
+}
+
 export function sharedLaunchConfig(options: SharedLaunchOptions, cwd: string): {
     cwd: string; cwdExplicit: boolean; serverArgs: string[]; tuiArgs: string[]; threadParams: Record<string, unknown>;
 } {

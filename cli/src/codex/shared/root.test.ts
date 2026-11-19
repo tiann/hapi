@@ -1723,3 +1723,15 @@ it('does not reset a newer Fast choice during model-only native turn discovery',
     expect((await pending).params).toEqual({ model: 'standard-only' });
     expect(f.root.freshParams().serviceTier).toBe('priority');
 });
+
+it('does not overwrite a newer tier notification with a delayed native snapshot', async () => {
+    const f = await fixture(); await f.root.activate();
+    let release!: (value: unknown) => void;
+    const snapshot = new Promise(resolve => { release = resolve; });
+    vi.spyOn(f.root.client, 'request').mockImplementationOnce(() => snapshot as never);
+    const pending = f.root.confirmNativeTurn({ serviceTier: 'priority' }, true);
+    f.root.acceptSettings({ model: 'mock', serviceTier: 'default' });
+    release({ model: 'mock', serviceTier: 'priority' }); await pending;
+    expect(f.root.freshParams().serviceTier).toBe('default');
+    expect(f.metadata().codexServiceTierExplicit).toBe(true);
+});
