@@ -7,7 +7,7 @@ import { CopilotPermissionHandler } from '@/copilot/utils/permissionHandler';
 import { GrokPermissionHandler } from '@/grok/utils/permissionHandler';
 import { OpencodePermissionHandler } from '@/opencode/utils/permissionHandler';
 import { AcpPermissionHandler } from './AcpPermissionHandler';
-import { STALE_REQUEST_REASON } from './settleStaleRequests';
+import { settleRequestsOfPreviousAgentProcess, STALE_REQUEST_REASON } from './settleStaleRequests';
 
 function storedState(): AgentState {
     return {
@@ -43,6 +43,21 @@ function makeBackend(): AgentBackend {
 }
 
 describe('ACP permission writers settle requests of the previous agent process on bind', () => {
+    it('keeps the startup cancellation time if a newer Hub version still contains the stale request', () => {
+        const state = storedState();
+        const updateAgentState = vi.fn<(update: (current: AgentState) => AgentState) => void>();
+        const clock = vi.spyOn(Date, 'now').mockReturnValue(100);
+        try {
+            settleRequestsOfPreviousAgentProcess(makeBackend(), { getAgentStateSnapshot: () => state, updateAgentState });
+            clock.mockReturnValue(6_100);
+            const retry = updateAgentState.mock.lastCall![0];
+            expect(retry({ ...state, steeringActive: true }).completedRequests?.['shell:0'])
+                .toMatchObject({ status: 'canceled', completedAt: 100 });
+        } finally {
+            clock.mockRestore();
+        }
+    });
+
     const writers: Array<[string, (session: ApiSessionClient, backend: AgentBackend) => unknown]> = [
         ['PermissionAdapter (generic ACP, Cursor)', (session, backend) => new PermissionAdapter(session, backend, () => 'default')],
         ['AcpPermissionHandler (agy, dsh, Kimi)', (session, backend) => new AcpPermissionHandler(session, backend, () => 'default')],

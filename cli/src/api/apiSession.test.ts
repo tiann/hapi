@@ -2645,6 +2645,47 @@ describe('ApiSessionClient agent state acknowledgement retries', () => {
         }
     })
 
+    it('retries cleanup for an explicitly targeted orphan missing from the first local snapshot', async () => {
+        vi.useFakeTimers()
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({ namespace: 'default' }))
+        const socket = socketHarness.sockets[0]!
+        const orphan = { tool: 'Read', arguments: {}, createdAt: 10 }
+        const unrelated = { tool: 'Read', arguments: {}, createdAt: 20 }
+        const writes: Array<{ expectedVersion: number; agentState: AgentState }> = []
+        socket.emitWithAckImpl = async (event, payload) => {
+            if (event !== 'update-state') return {}
+            const request = payload as (typeof writes)[number]
+            writes.push(request)
+            if (writes.length === 1) return await new Promise<never>(() => {})
+            if (request.expectedVersion === 0) return { result: 'version-mismatch', version: 2, agentState: {
+                requests: { orphan, unrelated }
+            } }
+            return { result: 'success', version: request.expectedVersion + 1, agentState: request.agentState }
+        }
+        try {
+            client.updateAgentState(state => {
+                if (!state.requests?.orphan) return state
+                const { orphan: pending, ...requests } = state.requests
+                return {
+                    ...state, requests, completedRequests: {
+                        ...state.completedRequests, orphan: { ...pending, completedAt: 25, status: 'canceled' }
+                    }
+                }
+            }, { requestIds: ['orphan'] })
+            await vi.advanceTimersByTimeAsync(6_100)
+            expect(writes.map(write => write.expectedVersion)).toEqual([0, 0, 2])
+            expect(writes[2]!.agentState).toMatchObject({
+                requests: { unrelated },
+                completedRequests: { orphan: { ...orphan, completedAt: 25, status: 'canceled' } }
+            })
+            expect(writes[2]!.agentState.requests).not.toHaveProperty('orphan')
+        } finally {
+            client.close()
+            vi.useRealTimers()
+        }
+    })
+
     it.each([false, true])('preserves a committed permission timestamp after ACK loss (concurrent update: %s)', async (concurrent) => {
         vi.useFakeTimers()
         const jitter = vi.spyOn(Math, 'random').mockReturnValue(0.5)

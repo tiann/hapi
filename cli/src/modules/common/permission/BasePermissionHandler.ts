@@ -1,5 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
-import type { AgentState } from "@/api/types";
+import type { ApiSessionClient } from '@/api/apiSession';
 import type { PermissionMode } from "@hapi/protocol/types";
 import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 
@@ -148,7 +148,7 @@ export function resolveToolAutoApprovalDecision(
 
 export type PermissionHandlerClient = {
     rpcHandlerManager: RpcHandlerManagerLike;
-    updateAgentState: (handler: (state: AgentState) => AgentState) => void;
+    updateAgentState: ApiSessionClient['updateAgentState'];
 };
 
 export type PendingPermissionRequest<TResult> = {
@@ -366,7 +366,7 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
                 requests: nextRequests,
                 completedRequests
             };
-        });
+        }, onlyId === undefined ? undefined : { requestIds: [onlyId] });
     }
 
     private setupRpcHandler(): void {

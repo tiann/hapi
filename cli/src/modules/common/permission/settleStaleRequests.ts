@@ -23,6 +23,7 @@ export function settleRequestsOfPreviousAgentProcess(backend: AgentBackend, sess
     if (!hasLiveRequest) return;
     const stored = session.getAgentStateSnapshot?.()?.requests;
     if (!stored || Object.keys(stored).length === 0) return;
+    const completedAt = Date.now();
     session.updateAgentState((state) => {
         const requests = state.requests ?? {};
         const remaining: NonNullable<AgentState['requests']> = {};
@@ -36,7 +37,7 @@ export function settleRequestsOfPreviousAgentProcess(backend: AgentBackend, sess
             changed = true;
             completedRequests[id] = {
                 ...request,
-                completedAt: Date.now(),
+                completedAt,
                 status: 'canceled',
                 reason: STALE_REQUEST_REASON,
                 decision: 'abort'

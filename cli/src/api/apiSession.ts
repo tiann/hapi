@@ -1625,7 +1625,8 @@ if (isReconnect) {
         })
     }
 
-    updateAgentState(handler: (state: AgentState) => AgentState): void {
+    /** Explicit request IDs can carry the caller's intent across a stale local snapshot. */
+    updateAgentState(handler: (state: AgentState) => AgentState, options?: { requestIds: readonly string[] }): void {
         if (this.state !== 'active') {
             if (this.state === 'closed') return
             const current = this.agentState ?? ({} as AgentState)
@@ -1665,7 +1666,7 @@ if (isReconnect) {
                     // Retain the value as encoded on the wire, without re-running a
                     // time-sensitive updater when the Hub may have committed it.
                     unconfirmed = { expectedVersion, agentState: JSON.parse(JSON.stringify(updated)) as AgentState }
-                    targetedRequests ??= changedAgentStateRequestIds(current, updated)
+                    targetedRequests ??= options ? new Set(options.requestIds) : changedAgentStateRequestIds(current, updated)
                     throw error
                 }
                 if (this.isClosed()) return
