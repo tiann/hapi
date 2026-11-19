@@ -1900,18 +1900,66 @@ body:
         expect(calls).toEqual(['no-local-templates', '.github'])
     })
 
-    it('does not fall back to .github when the target repo has its own directory, even an empty one', async () => {
+    it('does not fall back to .github when the target repo already has a usable template of its own', async () => {
         const calls: string[] = []
         const app = await createApp(
             () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
             (target: { repo: string }) => {
                 calls.push(target.repo)
-                return { data: { repository: { issueTemplateDir: { entries: [] } } } }
+                return {
+                    data: {
+                        repository: {
+                            issueTemplateDir: { entries: [{ name: 'bug_report.yml', object: { text: BUG_REPORT_YAML } }] }
+                        }
+                    }
+                }
             }
         )
         const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/hapi`)
         expect(response.status).toBe(200)
         expect(calls).toEqual(['hapi'])
+    })
+
+    // Review finding (tiann/hapi#2147): a directory that *exists* but defines
+    // nothing GitHub's own chooser would recognize — a README.md documenting
+    // the templates, or genuinely no entries at all — must still trigger the
+    // owner's `.github` inheritance fallback. The old check only asked
+    // whether the directory was present, not whether it had a template or
+    // config.yml, so a README-only directory silently blocked an owner's
+    // `blank_issues_enabled: false` policy from ever applying.
+    it('falls back to .github when the target directory exists but only has a README', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            (target: { repo: string }) => {
+                calls.push(target.repo)
+                if (target.repo === '.github') {
+                    return {
+                        data: {
+                            repository: {
+                                visibility: 'PUBLIC',
+                                issueTemplateDir: {
+                                    entries: [{ name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }]
+                                }
+                            }
+                        }
+                    }
+                }
+                return {
+                    data: {
+                        repository: {
+                            issueTemplateDir: { entries: [{ name: 'README.md', object: { text: 'See the templates above.' } }] }
+                        }
+                    }
+                }
+            }
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/readme-only`)
+        expect(response.status).toBe(200)
+        const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
+        expect(body.templates).toEqual([])
+        expect(body.blankAllowed).toBe(false)
+        expect(calls).toEqual(['readme-only', '.github'])
     })
 
     it('does not recurse when the target repo being queried is already .github', async () => {

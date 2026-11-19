@@ -719,6 +719,23 @@ function repoHasNoIssueTemplateDir(response: GhIssueTemplateDirResponse): boolea
     return response.data?.repository?.issueTemplateDir == null
 }
 
+// repoHasNoIssueTemplateDir alone only proves the *directory* exists, not
+// that it defines anything GitHub's own chooser would recognize (review
+// finding, tiann/hapi#2147): a directory containing only a README.md (a
+// widespread convention for documenting the templates in this directory)
+// still passes that check, which used to skip the owner's `.github`
+// inheritance fallback entirely — exactly backwards, since GitHub itself
+// would still inherit for a repo whose local directory has no valid
+// template or config.yml. Counts every entry parseIssueTemplateDirResponse
+// would accept as a template candidate, including one HAPI's own picker
+// can't render (`kind: 'unsupported'`) — GitHub's chooser still offers it,
+// so it's still a local override as far as inheritance eligibility goes.
+function repoHasLocalIssueTemplateCoverage(response: GhIssueTemplateDirResponse): boolean {
+    if (repoHasNoIssueTemplateDir(response)) return false
+    const { templates, hasConfig } = parseIssueTemplateDirResponse(response)
+    return templates.length > 0 || hasConfig
+}
+
 // GitHub only inherits default community files (issue templates, config.yml)
 // from an owner's `.github` repo when that repo is eligible: PUBLIC always
 // is; PRIVATE never is, even for repos the same owner controls (review
@@ -754,15 +771,17 @@ function isInternalGithubFallbackAllowed(): boolean {
     return raw === '1' || raw === 'true' || raw === 'yes'
 }
 
-function parseIssueTemplateDirResponse(response: GhIssueTemplateDirResponse): { templates: IssueTemplate[]; blankIssuesEnabled: boolean } {
+function parseIssueTemplateDirResponse(response: GhIssueTemplateDirResponse): { templates: IssueTemplate[]; blankIssuesEnabled: boolean; hasConfig: boolean } {
     const entries = response.data?.repository?.issueTemplateDir?.entries ?? []
     const templates: IssueTemplate[] = []
     let blankIssuesEnabled = true
+    let hasConfig = false
     for (const entry of entries) {
         if (!entry || typeof entry.object?.text !== 'string') continue
         const lowerName = entry.name.toLowerCase()
         if (lowerName === 'config.yml' || lowerName === 'config.yaml') {
             blankIssuesEnabled = parseIssueTemplateConfig(entry.object.text).blankIssuesEnabled
+            hasConfig = true
         } else if (lowerName.endsWith('.yml') || lowerName.endsWith('.yaml')) {
             templates.push(parseIssueFormYaml(entry.name, entry.object.text))
         } else if (
@@ -781,7 +800,7 @@ function parseIssueTemplateDirResponse(response: GhIssueTemplateDirResponse): { 
             templates.push(parseLegacyIssueTemplate(entry.name, entry.object.text))
         }
     }
-    return { templates, blankIssuesEnabled }
+    return { templates, blankIssuesEnabled, hasConfig }
 }
 
 const execFileAsync = promisify(execFile)
@@ -1366,10 +1385,10 @@ export function createBoardRoutes(
         // See the GET route's prior comment for why: GitHub inherits
         // issue templates (and blank_issues_enabled) from the owner's
         // `.github` repo when the target repo has none of its own.
-        if (repoHasNoIssueTemplateDir(response) && repo.toLowerCase() !== '.github') {
+        if (!repoHasLocalIssueTemplateCoverage(response) && repo.toLowerCase() !== '.github') {
             try {
                 const inherited = await runGraphqlIssueTemplateDir({ host, owner, repo: '.github' })
-                if (!inherited.errors?.length && !repoHasNoIssueTemplateDir(inherited) && isEligibleIssueTemplateFallback(inherited)) {
+                if (!inherited.errors?.length && repoHasLocalIssueTemplateCoverage(inherited) && isEligibleIssueTemplateFallback(inherited)) {
                     response = inherited
                 }
             } catch (error) {
@@ -1379,7 +1398,8 @@ export function createBoardRoutes(
                 // No .github repo — fall through with the target repo's own (empty) result.
             }
         }
-        return parseIssueTemplateDirResponse(response)
+        const { templates, blankIssuesEnabled } = parseIssueTemplateDirResponse(response)
+        return { templates, blankIssuesEnabled }
     }
 
     app.get('/todo-boards', async (c) => {
