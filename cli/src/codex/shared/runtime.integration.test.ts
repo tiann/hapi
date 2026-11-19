@@ -203,10 +203,26 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             await expect(observer.request('turn/steer', { threadId: child.thread.id, expectedTurnId: 'not-running', input: [{ type: 'text', text: 'must not steer' }] })).rejects.toThrow('tier confirmation');
             expect(record((await observer.request<{ thread: unknown }>('thread/read', { threadId: child.thread.id, includeTurns: true })).thread).turns).toEqual([]);
             pause.mockRestore(); prepare.mockRestore();
+            const originalStandard = SharedCodexRoot.prototype.confirmStandardLaunch;
+            const standardRace = vi.spyOn(SharedCodexRoot.prototype, 'confirmStandardLaunch').mockImplementationOnce(async function(this: InstanceType<typeof SharedCodexRoot>, explicit) {
+                await this.client.request('thread/settings/update', { threadId: this.threadId, serviceTier: 'priority' });
+                return originalStandard.call(this, explicit);
+            }); extraSpies.push(standardRace);
             const unsupported = await second.client.request<{ thread: { id: string }; serviceTier: string }>('thread/start', { cwd, model: 'gpt-6.1-sol', serviceTier: 'ultrafast' });
+            standardRace.mockRestore();
             expect(unsupported.serviceTier).toBe('default');
+            expect((await second.client.request<{ serviceTier: string }>('thread/resume', { threadId: unsupported.thread.id, excludeTurns: true })).serviceTier).toBe('default');
             const unsupportedSid = Object.entries(second.runtime.sessions).find(([, binding]) => binding.threadId === unsupported.thread.id)![0];
             expect(state.sessions.get(unsupportedSid)?.messages).toContainEqual({ type: 'message', message: 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.' });
+            const failedStandard = vi.spyOn(SharedCodexRoot.prototype, 'confirmStandardLaunch').mockRejectedValueOnce(new Error('fixture fallback confirmation unavailable'));
+            extraSpies.push(failedStandard);
+            const pausedFallback = await second.client.request<{ thread: { id: string } }>('thread/start', { cwd, model: 'gpt-6.1-sol', serviceTier: 'ultrafast' });
+            failedStandard.mockRestore();
+            const pausedSid = Object.entries(second.runtime.sessions).find(([, binding]) => binding.threadId === pausedFallback.thread.id)![0];
+            expect(state.sessions.get(pausedSid)?.metadata.codexTierConfirmationPending).toBe(true);
+            expect(state.sessions.get(pausedSid)?.messages).not.toContainEqual({ type: 'message', message: 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.' });
+            await second.client.request('thread/settings/update', { threadId: pausedFallback.thread.id, serviceTier: null });
+            expect(state.sessions.get(pausedSid)?.metadata.codexTierConfirmationPending).toBe(false);
             await second.client.request('thread/settings/update', { threadId: unsupported.thread.id, serviceTier: 'priority' });
             second.abort.abort(); await second.done;
             // Re-import selected Ultrafast in HAPI while the native snapshot still stores Fast.

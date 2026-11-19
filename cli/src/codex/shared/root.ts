@@ -75,6 +75,7 @@ export class SharedCodexRoot {
     private steeringActive: boolean | undefined;
     private turnRevision = 0;
     private settingsRevision = 0;
+    private activated = false;
     private attachedTierObservation?: Promise<void>;
     private attachedTierObservationRequested = false;
     private refreshing?: Promise<void>;
@@ -374,6 +375,7 @@ export class SharedCodexRoot {
         }
         if (this.stopping) throw new Error('Codex execution is stopping');
         this.registerControls();
+        this.activated = true;
         this.ready();
         if (!this.tierConfirmationPending) this.inputReady();
         this.heartbeat = setInterval(() => this.alive(), SESSION_KEEP_ALIVE_INTERVAL_MS); this.alive();
@@ -743,7 +745,7 @@ export class SharedCodexRoot {
         this.pendingLaunchCollaborationMode = undefined;
         this.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: false }));
         this.publishSteering();
-        if (paused) { this.alive(); this.inputReady(); this.session.emitSessionReady(); }
+        if (paused && this.activated) { this.alive(); this.inputReady(); this.session.emitSessionReady(); }
     }
     /** Resolve native intent without committing settings before input is accepted. */
     private async resolveNativeSettings(params: Record<string, unknown>, operationDeadline = Date.now() + 25_000): Promise<{ params: Record<string, unknown>; fallbackNotice?: string }> {
@@ -939,6 +941,13 @@ export class SharedCodexRoot {
             this.session.updateMetadata(metadata => ({ ...metadata, codexServiceTierExplicit: false }));
         }
         this.notice('Codex did not apply Ultrafast; changed to Standard.');
+    }
+    async confirmStandardLaunch(explicitTier = true): Promise<void> {
+        await this.applySettings({ serviceTier: 'standard' });
+        if (!explicitTier) {
+            this.serviceTierExplicit = false;
+            this.session.updateMetadata(metadata => ({ ...metadata, codexServiceTierExplicit: false }));
+        }
     }
     async initialSettings(options: SharedLaunchOptions): Promise<void> {
         if (options.collaborationMode) await this.applySettings({ collaborationMode: options.collaborationMode });

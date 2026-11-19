@@ -219,18 +219,18 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== root.session.sessionId); await persist();
     };
     const reserve = async (root: SharedCodexRoot, threadId: string) => withThreadOwnership(home, threadId, id, () => reserveRecord(root, threadId));
-    const bind = async (root: SharedCodexRoot, response: Record<string, unknown>, subscribe: boolean, initialOptions?: SharedLaunchOptions, freshThread = false, serviceTierExplicit?: boolean, requestedUltrafast = false) => {
+    const bind = async (root: SharedCodexRoot, response: Record<string, unknown>, subscribe: boolean, initialOptions?: SharedLaunchOptions, freshThread = false, serviceTierExplicit?: boolean, requestedUltrafast = false, downgraded = false) => {
         assertRunning();
         const threadId = string(record(response.thread).id);
         if (!threadId) throw new Error('Codex lifecycle response has no thread ID');
-        if (requestedUltrafast || root.session.getMetadata()?.codexTierConfirmationPending === true) pendingAdmission.add(threadId);
+        if (requestedUltrafast || downgraded || root.session.getMetadata()?.codexTierConfirmationPending === true) pendingAdmission.add(threadId);
         const reserved = runtime.sessions[root.session.sessionId];
         if (reserved && reserved.threadId !== threadId) throw new Error('Codex retargeted a reserved thread');
         if (!reserved) await reserve(root, threadId);
         // No fake user turn/name. Metadata write materializes an empty legacy rollout for native resume.
         await control.request('thread/metadata/update', { threadId, gitInfo: gitInfo(string(record(response.thread).cwd) ?? root.bootstrap.workingDirectory) });
         assertRunning();
-        if (requestedUltrafast || root.session.getMetadata()?.codexTierConfirmationPending === true) root.beginTierConfirmation();
+        if (requestedUltrafast || downgraded || root.session.getMetadata()?.codexTierConfirmationPending === true) root.beginTierConfirmation();
         roots.set(threadId, root);
         await root.bind(threadId, response, subscribe);
         // A thread this runtime created (thread/start) starts from zero
@@ -245,16 +245,22 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         // new-thread subscription. Subscribe once without changing settings.
         await control.request('thread/resume', { threadId, excludeTurns: true });
         let tierConfirmationPending = false;
-        if (requestedUltrafast) {
-            try { await root.confirmUltrafastLaunch(serviceTierExplicit ?? root.session.getMetadata()?.codexServiceTierExplicit === true); }
+        let standardConfirmed = false;
+        if (requestedUltrafast || downgraded) {
+            try {
+                const explicit = serviceTierExplicit ?? root.session.getMetadata()?.codexServiceTierExplicit === true;
+                if (downgraded) { await root.confirmStandardLaunch(explicit); standardConfirmed = true; }
+                else await root.confirmUltrafastLaunch(explicit);
+            }
             catch (error) {
-                tierConfirmationPending = !root.hasConfirmedStandardTier;
+                tierConfirmationPending = downgraded || !root.hasConfirmedStandardTier;
                 root.session.sendSessionEvent({ type: 'message', message: tierConfirmationPending
                     ? 'Ultrafast was not applied and Standard could not be confirmed. Input is paused. Select a service tier in settings to retry on this conversation.'
                     : 'Ultrafast was not applied; Standard is active.' });
                 logger.debug('[Codex shared] tier confirmation pending', error);
             }
         }
+        if (downgraded && standardConfirmed) root.session.sendSessionEvent({ type: 'message', message: ULTRAFAST_FALLBACK_NOTICE });
         await root.activate(initialOptions, serviceTierExplicit, tierConfirmationPending);
         pendingAdmission.delete(threadId);
         await root.session.flush();
@@ -279,8 +285,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             runtime.pendingCreations = [...runtime.pendingCreations ?? [], root.session.sessionId]; await persist();
             const response = record(await root.client.request(method, root.config({ ...params, ...(method === 'thread/fork' ? { deferGoalContinuation: true } : {}) })));
             nativeSucceeded = true;
-            await bind(root, response, true, initialOptions, method === 'thread/start', serviceTierExplicit, params.serviceTier === 'ultrafast');
-            if (downgraded) root.session.sendSessionEvent({ type: 'message', message: ULTRAFAST_FALLBACK_NOTICE });
+            await bind(root, response, true, initialOptions, method === 'thread/start', serviceTierExplicit, params.serviceTier === 'ultrafast', downgraded);
             return root;
         } catch (error) {
             // A timed-out native mutation may have succeeded. Never replay it or kill unrelated roots.
@@ -366,7 +371,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             reservations.set(key(connection, request), { root, resumeId: request.method === 'thread/resume' ? threadId : undefined,
                 serviceTierExplicit: params.serviceTier !== undefined ? true : request.method === 'thread/resume' ? undefined : false,
                 requestedUltrafast: tier.params.serviceTier === 'ultrafast', downgraded: tier.downgraded });
-            if (request.method === 'thread/resume' && threadId && (tier.params.serviceTier === 'ultrafast' || root.session.getMetadata()?.codexTierConfirmationPending === true)) pendingAdmission.add(threadId);
+            if (request.method === 'thread/resume' && threadId && (tier.downgraded || tier.params.serviceTier === 'ultrafast' || root.session.getMetadata()?.codexTierConfirmationPending === true)) pendingAdmission.add(threadId);
             return { ...request, params: root.config({ ...tier.params, ...(request.method === 'thread/fork' ? { deferGoalContinuation: true } : {}) }) };
         } catch (error) {
             await root.close(request.method !== 'thread/resume');
@@ -396,9 +401,8 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 if (reservation.resumeId) resumingThreads.delete(reservation.resumeId);
                 return;
             }
-            await bind(reservation.root, record(response.result), true, undefined, request.method === 'thread/start', reservation.serviceTierExplicit, reservation.requestedUltrafast);
+            await bind(reservation.root, record(response.result), true, undefined, request.method === 'thread/start', reservation.serviceTierExplicit, reservation.requestedUltrafast, reservation.downgraded);
             if (reservation.resumeId) resumingThreads.delete(reservation.resumeId);
-            if (reservation.downgraded) reservation.root.session.sendSessionEvent({ type: 'message', message: ULTRAFAST_FALLBACK_NOTICE });
         } else if (request.method === 'thread/archive' && !response.error) {
             const root = roots.get(string(record(request.params).threadId) ?? ''); if (root) await end(root, false);
         } else if (request.method === 'thread/queue/delete' && !response.error && record(response.result).deleted === true) {
@@ -490,7 +494,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             const resolved = await resolveUltrafastLaunch(control, 'thread/resume', { ...resumeParams, cwd: root.bootstrap.workingDirectory }, root.bootstrap.workingDirectory, catalogProvider, thread);
             const downgraded = resolved.downgraded;
             const params = root.config({ ...resolved.params, threadId, excludeTurns: true });
-            if (resolved.params.serviceTier === 'ultrafast' || root.session.getMetadata()?.codexTierConfirmationPending === true) pendingAdmission.add(threadId);
+            if (downgraded || resolved.params.serviceTier === 'ultrafast' || root.session.getMetadata()?.codexTierConfirmationPending === true) pendingAdmission.add(threadId);
             let response: Record<string, unknown>;
             try {
                 response = record(await root.client.request('thread/resume', params));
@@ -503,8 +507,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 await root.client.request('thread/unarchive', { threadId });
                 response = record(await root.client.request('thread/resume', params));
             }
-            await bind(root, response, false, options, false, launch.threadParams.serviceTier !== undefined ? true : undefined, resolved.params.serviceTier === 'ultrafast');
-            if (downgraded) root.session.sendSessionEvent({ type: 'message', message: ULTRAFAST_FALLBACK_NOTICE });
+            await bind(root, response, false, options, false, launch.threadParams.serviceTier !== undefined ? true : undefined, resolved.params.serviceTier === 'ultrafast', downgraded);
         } else root = await create('thread/start', { ...launch.threadParams, cwd: launch.cwd }, undefined, options);
         assertRunning();
         onReady?.({ sessionId: root.session.sessionId, runtime });

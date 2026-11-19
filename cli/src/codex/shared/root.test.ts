@@ -104,6 +104,34 @@ it.each([false, true])('observes effective attached desktop Ultrafast without ov
     expect(keepAlive.mock.lastCall?.[2]?.serviceTier).toBe(superseded ? 'fast' : 'ultrafast');
 });
 
+it('does not publish cold-resume readiness before startup controls are registered', async () => {
+    const f = await fixture({ initialTierPending: true, bindTier: 'ultrafast' });
+    await f.root.confirmUltrafastLaunch();
+    expect(f.sessionReady).not.toHaveBeenCalled();
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(f.root, 'initialSettings').mockImplementationOnce(() => held);
+    const activating = f.root.activate({ collaborationMode: 'plan' });
+    await Promise.resolve();
+    expect(f.rpc.has(RPC_METHODS.SetSessionConfig)).toBe(false);
+    expect(f.sessionReady).not.toHaveBeenCalled();
+    release(); await activating;
+    expect(f.rpc.has(RPC_METHODS.SetSessionConfig)).toBe(true);
+    expect(f.sessionReady).toHaveBeenCalledTimes(1);
+});
+
+it('confirms Standard over a concurrent Fast selection without pinning inherited intent', async () => {
+    const f = await fixture({ bindTier: 'priority' });
+    f.native.settings.serviceTier = 'priority'; f.root.beginTierConfirmation();
+    await f.root.confirmStandardLaunch(false);
+    expect(f.root.hasConfirmedStandardTier).toBe(true);
+    expect(f.native.settings.serviceTier).toBe('default');
+    expect(f.metadata().codexServiceTierExplicit).toBe(false);
+    expect(f.sessionReady).not.toHaveBeenCalled();
+    await f.root.activate({}, false);
+    expect(f.sessionReady).toHaveBeenCalledTimes(1);
+});
+
 it('keeps a reconnect snapshot authoritative over the stale control tier', async () => {
     const f = await fixture({ settingsFor: () => ({ model: 'mock', serviceTier: 'priority', collaborationMode: { mode: 'plan' } }) });
     await f.root.activate();
