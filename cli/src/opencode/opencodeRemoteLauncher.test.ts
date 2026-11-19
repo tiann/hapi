@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { runWithAcpChildRecovery } from '@/modules/common/remote/acpChildRecovery';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
 import type { OpencodeMode, PermissionMode } from './types';
@@ -9,6 +10,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import * as procChildren from './oldTreeFence';
 import { OpencodeConversationHistory } from './conversationHistory';
 import type { OpenCodeRewindOperation } from '@hapi/protocol/schemas';
 import type { OpenCodeRewindReport } from '@hapi/protocol/apiTypes';
@@ -41,6 +43,7 @@ const harness = vi.hoisted(() => ({
     // polluting the events list other assertions compare exactly.
     thoughtLevelLookups: [] as number[],
     stderrHandler: null as null | ((error: { type: string; message: string; raw: string }) => void),
+    unexpectedExitHandler: null as null | ((error: Error, details?: { childProcessExited: boolean }) => void),
     hangPrompt: false,
     resolvePrompt: null as null | (() => void),
     // The message callback backend.prompt() receives, so tests can emit
@@ -67,6 +70,7 @@ const harness = vi.hoisted(() => ({
     loadSessionImpl: null as null | (() => Promise<string>),
     clientMetadata: undefined as undefined | Record<string, unknown>,
     metadataUpdates: [] as Array<Record<string, unknown>>,
+    treeGone: true,
     disconnectImpl: null as null | (() => Promise<void>),
     permissionCancelError: null as Error | null,
     permissionCancelReasons: [] as string[],
@@ -100,6 +104,8 @@ const harness = vi.hoisted(() => ({
     promptRequestInFlight: null as null | boolean,
     // v2-compat harness: flavor detection + port/password discovery stubs.
     detectedVersion: null as null | 'v1' | 'v2',
+    exactVersion: undefined as string | null | undefined,
+    pauseDispatch: null as null | ((phase: 'before' | 'after') => Promise<void>),
     loopbackListeners: [] as number[],
     discoveredPort: null as null | number,
     discoveredPassword: null as null | string,
@@ -125,6 +131,11 @@ vi.mock('ink', () => ({
         return { unmount: () => {} };
     })
 }));
+
+vi.mock('@/modules/common/remote/acpChildRecovery', async importOriginal => {
+    const real = await importOriginal<typeof import('@/modules/common/remote/acpChildRecovery')>();
+    return { ...real, runWithAcpChildRecovery: vi.fn(real.runWithAcpChildRecovery) };
+});
 
 vi.mock('./utils/opencodeBackend', () => ({
     allocateFreePort: vi.fn(async () => 48273),
@@ -170,7 +181,17 @@ vi.mock('./utils/opencodeBackend', () => ({
                 harness.thoughtLevelOption = { ...harness.thoughtLevelOption, currentValue: value };
             }
         }),
-        prompt: vi.fn(async (_sessionId: string, content: PromptContent[], onMessage?: (message: unknown) => void) => {
+        prompt: vi.fn(async (
+            _sessionId: string,
+            content: PromptContent[],
+            onMessage?: (message: unknown) => void,
+            options?: { shouldSend?: () => boolean; timing?: { onDispatchStart?: () => void; onSent?: () => void } }
+        ) => {
+            if (harness.pauseDispatch) await harness.pauseDispatch('before');
+            if (options?.shouldSend && !options.shouldSend()) return false;
+            options?.timing?.onDispatchStart?.();
+            if (harness.pauseDispatch) await harness.pauseDispatch('after');
+            options?.timing?.onSent?.();
             harness.promptOnMessage = onMessage ?? null;
             harness.promptContents.push(content);
             harness.events.push('prompt:start');
@@ -185,6 +206,7 @@ vi.mock('./utils/opencodeBackend', () => ({
                 await new Promise<void>((resolve) => setImmediate(resolve));
             }
             harness.events.push('prompt:end');
+            return true;
         }),
         isPromptRequestInFlight: vi.fn(() =>
             // The override models the real backend's window where ACP already
@@ -215,6 +237,9 @@ vi.mock('./utils/opencodeBackend', () => ({
         onStderrError: vi.fn((handler: (error: { type: string; message: string; raw: string }) => void) => {
             harness.stderrHandler = handler;
         }),
+        setUnexpectedExitListener: vi.fn((handler: (error: Error, details?: { childProcessExited: boolean }) => void) => {
+            harness.unexpectedExitHandler = handler;
+        }),
         setSessionInfoUpdateListener: vi.fn(),
         refreshSessionInfo: vi.fn(async (sessionId: string, cwd: string) => {
             harness.refreshSessionInfoCalls.push({ sessionId, cwd });
@@ -225,6 +250,7 @@ vi.mock('./utils/opencodeBackend', () => ({
             if (harness.disconnectImpl) {
                 await harness.disconnectImpl();
             }
+            return harness.treeGone;
         }),
         getSessionModelsMetadata: vi.fn(() => harness.sessionModelsMetadata),
         getThoughtLevelConfigOption: vi.fn(() => {
@@ -240,7 +266,10 @@ vi.mock('./utils/opencodeBackend', () => ({
         };
     }),
     listChildPids: vi.fn(async () => []),
-    detectOpencodeFlavorVersion: vi.fn(async () => harness.detectedVersion ?? 'v1'),
+    detectOpencodeVersion: vi.fn(async () => ({
+        major: harness.detectedVersion ?? 'v1',
+        version: harness.exactVersion === undefined ? (harness.detectedVersion === 'v2' ? '2.3.2' : '1.0.0') : harness.exactVersion
+    })),
     listLoopbackListeners: vi.fn(async () => new Set(harness.loopbackListeners)),
     discoverOpencodeV2RestPort: vi.fn(async (opts: { beforeSnapshot: Set<number>; ownerPids?: number[] }) => {
         harness.v2DiscoveryCalls.push({ beforeSnapshot: opts.beforeSnapshot, ownerPids: opts.ownerPids ?? null });
@@ -732,6 +761,7 @@ afterEach(async () => {
     harness.thoughtLevelOption = null;
     harness.thoughtLevelLookups = [];
     harness.stderrHandler = null;
+    harness.unexpectedExitHandler = null;
     harness.servePid = null;
     harness.servePidCalls = [];
     harness.hangPrompt = false;
@@ -760,6 +790,7 @@ afterEach(async () => {
     harness.loadSessionImpl = null;
     harness.clientMetadata = undefined;
     harness.metadataUpdates.length = 0;
+    harness.treeGone = true;
     harness.disconnectImpl = null;
     harness.permissionCancelError = null;
     harness.permissionCancelReasons = [];
@@ -789,6 +820,9 @@ afterEach(async () => {
     harness.abortSoftSteersCalls = 0;
     harness.promptRequestInFlight = null;
     harness.detectedVersion = null;
+    vi.mocked(runWithAcpChildRecovery).mockClear();
+    harness.exactVersion = undefined;
+    harness.pauseDispatch = null;
     harness.loopbackListeners = [];
     harness.discoveredPort = null;
     harness.discoveredPassword = null;
@@ -799,13 +833,154 @@ afterEach(async () => {
     inkHarness.lastRenderProps = null;
     const backendModule = await import('./utils/opencodeBackend');
     const backendModuleFns = backendModule as unknown as Record<string, ReturnType<typeof vi.fn>>;
-    for (const name of ['createOpencodeBackend', 'detectOpencodeFlavorVersion', 'discoverOpencodeV2RestPort', 'listLoopbackListeners']) {
+    for (const name of ['createOpencodeBackend', 'detectOpencodeVersion', 'discoverOpencodeV2RestPort', 'listLoopbackListeners']) {
         backendModuleFns[name]?.mockClear();
     }
 });
 
 
+const linuxRecoveryTest = it.skipIf(!procChildren.canEnumerateProcChildren());
+
 describe('opencodeRemoteLauncher inline model switch', () => {
+
+    it.each([
+        ['linux', '1.0.0', true, false], ['linux', '2.3.0', true, true], ['linux', '2.3.2', true, true],
+        ['linux', '2.3.1', true, false], ['linux', '2.3.3', true, false], ['linux', null, true, false],
+        ['darwin', '2.3.2', true, false], ['win32', '2.3.0', true, false], ['linux', '2.3.2', false, false]
+    ] as const)('gates child recovery on %s version %s with readable child lists %s', async (platform, version, readable, expected) => {
+        const probe = vi.spyOn(procChildren, 'canEnumerateProcChildren').mockReturnValue(readable);
+        const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+        harness.detectedVersion = version?.startsWith('1.') ? 'v1' : 'v2';
+        harness.exactVersion = version;
+        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        Object.defineProperty(process, 'platform', { ...originalPlatform, value: platform });
+        const runtimeGate = new OpenCodeRuntimeGate();
+        const launcher = opencodeRemoteLauncher(Object.assign(session, { runtimeGate }) as never, { recoveryBackoffsMs: [0] });
+        try {
+            expect(runtimeGate.isBlocked()).toBe(true);
+            await vi.waitFor(() => expect(rpcHandlers.has(RPC_METHODS.Switch)).toBe(true));
+            expect(harness.createBackendArgs[0]?.recoverChildExit === true).toBe(expected);
+            expect(runWithAcpChildRecovery).toHaveBeenCalledTimes(expected ? 1 : 0);
+            expect(Boolean(harness.unexpectedExitHandler)).toBe(expected);
+            harness.unexpectedExitHandler?.(new Error('lost child'), { childProcessExited: true });
+            session.queue.push('next turn', createMode(), 'next');
+            await vi.waitFor(() => expect(harness.promptCount).toBe(1));
+            expect(harness.createBackendArgs).toHaveLength(expected ? 2 : 1);
+        } finally {
+            session.queue.close();
+            try { await launcher; } finally {
+                Object.defineProperty(process, 'platform', originalPlatform);
+                probe.mockRestore();
+            }
+        }
+    });
+
+    linuxRecoveryTest.each(['loss before dispatch', 'loss after dispatch', 'Stop before dispatch'] as const)(
+        'settles delayed prompt input on %s', async event => {
+            harness.detectedVersion = 'v2';
+            const dispatched = event === 'loss after dispatch';
+            const stop = event === 'Stop before dispatch';
+            const entered = Promise.withResolvers<void>();
+            const resume = Promise.withResolvers<void>();
+            harness.pauseDispatch = async phase => {
+                if (phase === (dispatched ? 'after' : 'before')) {
+                    entered.resolve();
+                    await resume.promise;
+                }
+            };
+            const { session, sessionEvents, rpcHandlers } = createSessionStub([], { keepOpen: true });
+            session.sessionId = 'acp-session-1';
+            const acknowledgements: string[] = [];
+            const requeued = vi.spyOn(session.queue, 'unshiftBatch');
+            session.queue.onBatchConsumed = ids => acknowledgements.push(...ids);
+            const launcher = opencodeRemoteLauncher(session as never, { recoveryBackoffsMs: [0] });
+            try {
+                session.queue.pushIsolated('first message', createMode(), 'first');
+                await entered.promise;
+                expect(acknowledgements).toEqual(dispatched ? ['first'] : []);
+                if (stop) await rpcHandlers.get(RPC_METHODS.Abort)!({});
+                else harness.unexpectedExitHandler!(new Error('lost child'), { childProcessExited: true });
+                session.queue.pushIsolated('next message', createMode(), 'next');
+                harness.pauseDispatch = null;
+                if (dispatched) resume.reject(new Error('stdin write failed'));
+                else resume.resolve();
+                await vi.waitFor(() => expect(acknowledgements).toEqual(['first', 'next']));
+                await vi.waitFor(() => expect(harness.promptContents).toHaveLength(dispatched ? 1 : 2));
+                const delivered = harness.promptContents.map(content => content.filter(part => part.type === 'text')
+                    .map(part => part.text).join(' '));
+                expect(delivered.at(-1)).toContain('next message');
+                if (!dispatched) expect(delivered[0]).toContain('first message');
+                expect(sessionEvents.filter(e => String(e.message).includes('turn interrupted'))).toHaveLength(dispatched ? 1 : 0);
+                expect(harness.createBackendArgs).toHaveLength(stop ? 1 : 2);
+                expect(requeued).toHaveBeenCalledTimes(event === 'loss before dispatch' ? 1 : 0);
+                const { createOpencodeBackend } = await import('./utils/opencodeBackend');
+                const lastBackend = vi.mocked(createOpencodeBackend).mock.results.at(-1)?.value;
+                expect(lastBackend?.prompt).toHaveBeenCalledTimes(dispatched ? 1 : 2);
+            } finally {
+                resume.resolve();
+                session.queue.close();
+                await launcher;
+            }
+        }
+    );
+
+    it.each(['switch', 'clear'] as const)('uses ordinary v2 teardown for %s without transport loss', async action => {
+        harness.detectedVersion = 'v2';
+        harness.treeGone = false;
+        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true });
+        const launcher = opencodeRemoteLauncher(session as never);
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.has(RPC_METHODS.Switch)).toBe(true));
+            if (action === 'switch') await rpcHandlers.get(RPC_METHODS.Switch)!({});
+            else session.queue.push('', createClearMode(), 'clear');
+            await expect(launcher).resolves.toBe(action === 'switch' ? 'switch' : 'exit');
+            const { createOpencodeBackend } = await import('./utils/opencodeBackend');
+            const backend = vi.mocked(createOpencodeBackend).mock.results[0]?.value;
+            expect(backend?.disconnect).toHaveBeenCalledWith();
+        } finally {
+            session.queue.close();
+        }
+    });
+
+    linuxRecoveryTest('resumes the same v2 native conversation only after the old serve tree is verified', async () => {
+        harness.detectedVersion = 'v2';
+        const stopped = Promise.withResolvers<void>();
+        const stop = vi.fn(async () => stopped.promise);
+        harness.disconnectImpl = stop;
+        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        const load = vi.fn(async () => 'acp-session-1');
+        harness.loadSessionImpl = load;
+        const launcher = opencodeRemoteLauncher(session as never, { recoveryBackoffsMs: [0] });
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.has(RPC_METHODS.Switch)).toBe(true));
+            harness.unexpectedExitHandler!(new Error('child exit'), { childProcessExited: true });
+            session.queue.push('next input', createMode(), 'second');
+            await vi.waitFor(() => expect(stop).toHaveBeenCalledOnce());
+            expect(harness.createBackendArgs).toHaveLength(1);
+            stopped.resolve();
+            await vi.waitFor(() => expect(harness.promptCount).toBe(1));
+            expect(load).toHaveBeenCalledTimes(2);
+            expect(session.sessionId).toBe('acp-session-1');
+        } finally {
+            stopped.resolve();
+            session.queue.close();
+            await launcher;
+        }
+    });
+
+    linuxRecoveryTest.each([true, false])('ends v2 recovery when the old tree remains unverified (child exit %s)', async confirmed => {
+        harness.detectedVersion = 'v2';
+        harness.treeGone = false;
+        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        const launcher = opencodeRemoteLauncher(session as never, { recoveryBackoffsMs: [0] });
+        await vi.waitFor(() => expect(rpcHandlers.has(RPC_METHODS.Switch)).toBe(true));
+        harness.unexpectedExitHandler!(new Error('lost connection'), { childProcessExited: confirmed });
+        await expect(launcher).rejects.toThrow('server termination cannot be verified');
+        expect(harness.createBackendArgs).toHaveLength(1);
+    });
 
     it('holds the fork busy guard across an in-flight batch', async () => {
         let resolvePrompt: (() => void) | null = null;
@@ -2259,9 +2434,11 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         };
         internal.transport = {
             getProcessPid: () => process.pid,
+            onUnexpectedExit: () => {},
             close: async () => {},
             sendNotification: () => {},
-            sendRequest: async (method: string) => {
+            sendRequest: async (method: string, _params: unknown, options?: { onDispatchStart?: () => void }) => {
+                options?.onDispatchStart?.();
                 if (method === 'session/load') {
                     if (++loadCount > 1) {
                         if (timing === 'queued-after-restore') {
@@ -3130,6 +3307,96 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         ]);
     });
 
+    linuxRecoveryTest('requeues a v2 compact when its child exits during the pre-POST identity snapshot', async () => {
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'fixture-password';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        let snapshotCalls = 0;
+        let firstSnapshotSignal: AbortSignal | null = null;
+        compactHarness.snapshotV2Impl = (signal) => {
+            snapshotCalls++;
+            if (snapshotCalls > 1) return Promise.resolve([]);
+            firstSnapshotSignal = signal;
+            return new Promise(resolve => signal?.addEventListener('abort', () => resolve(null)));
+        };
+        const statusMessage = vi.spyOn(MessageBuffer.prototype, 'addMessage');
+        const { session, rpcHandlers, sessionEvents } = createSessionStub([
+            { message: '', mode: createCompactMode('ollama/x') }
+        ], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        const launcherPromise = opencodeRemoteLauncher(session as never, { recoveryBackoffsMs: [0, 0, 0] } as never);
+
+        try {
+            await vi.waitFor(() => expect(firstSnapshotSignal).not.toBeNull());
+            await vi.waitFor(() => expect(harness.unexpectedExitHandler).toBeTypeOf('function'));
+            harness.unexpectedExitHandler!(new Error('ACP process exited (signal=SIGKILL)'), { childProcessExited: true });
+            await vi.waitFor(() => expect(firstSnapshotSignal?.aborted).toBe(true));
+            const { createOpencodeBackend } = await import('./utils/opencodeBackend');
+            await vi.waitFor(() => expect(createOpencodeBackend).toHaveBeenCalledTimes(2));
+            await vi.waitFor(() => expect(compactHarness.v2Calls).toHaveLength(1));
+            expect(sessionEvents.filter((event) => event.type === 'message' && event.message === '📦 Compaction started'))
+                .toHaveLength(1);
+            expect(statusMessage.mock.calls.filter(([message, kind]) =>
+                message === 'Compaction was interrupted because the agent connection was lost. Run /compact again if needed.'
+                    && kind === 'status'
+            )).toHaveLength(0);
+            await expect(rpcHandlers.get(RPC_METHODS.Switch)!({})).resolves.toBeUndefined();
+            await expect(launcherPromise).resolves.toBe('switch');
+        } finally {
+            compactHarness.snapshotV2Impl = null;
+            statusMessage.mockRestore();
+        }
+    });
+
+    linuxRecoveryTest('reports an admitted v2 compact as interrupted when child exit follows poll completion but precedes history reconciliation', async () => {
+        harness.detectedVersion = 'v2';
+        harness.discoveredPort = 41234;
+        harness.discoveredPassword = 'fixture-password';
+        harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+        compactHarness.preExistingCompactionIds = [];
+        compactHarness.triggerV2Impl = async () => ({ kind: 'admitted' as const, compactionId: 'compaction-1' });
+        let releasePoll!: (result: { status: 'unverified'; reason: string }) => void;
+        compactHarness.pollImpl = async () => await new Promise(resolve => { releasePoll = resolve; });
+        let releaseReconcile!: () => void;
+        const reconcileHold = new Promise<void>(resolve => { releaseReconcile = resolve; });
+        const statusMessage = vi.spyOn(MessageBuffer.prototype, 'addMessage');
+        let restoreReconcile: (() => void) | undefined;
+        const { session, rpcHandlers } = createSessionStub([
+            { message: '', mode: createCompactMode('ollama/x') }
+        ], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        const launcherPromise = opencodeRemoteLauncher(session as never, { recoveryBackoffsMs: [0, 0, 0] } as never);
+
+        try {
+            await vi.waitFor(() => expect(compactHarness.v2Calls).toHaveLength(1));
+            await vi.waitFor(() => expect(compactHarness.v2VerifyCalls).toHaveLength(1));
+            const reconcile = vi.spyOn(OpencodeConversationHistory.prototype, 'reconcileHistory').mockImplementation(async () => {
+                await reconcileHold;
+                return 0;
+            });
+            restoreReconcile = () => reconcile.mockRestore();
+            releasePoll({ status: 'unverified', reason: 'server stopped responding' });
+            await vi.waitFor(() => expect(reconcile).toHaveBeenCalled());
+            await vi.waitFor(() => expect(harness.unexpectedExitHandler).toBeTypeOf('function'));
+            harness.unexpectedExitHandler!(new Error('ACP process exited (signal=SIGKILL)'), { childProcessExited: true });
+            expect(statusMessage.mock.calls.filter(([message, kind]) =>
+                message === 'Compaction was interrupted because the agent connection was lost. Run /compact again if needed.'
+                    && kind === 'status'
+            )).toHaveLength(1);
+            releaseReconcile();
+            const { createOpencodeBackend } = await import('./utils/opencodeBackend');
+            await vi.waitFor(() => expect(createOpencodeBackend).toHaveBeenCalledTimes(2));
+            expect(compactHarness.v2Calls).toHaveLength(1);
+            await expect(rpcHandlers.get(RPC_METHODS.Switch)!({})).resolves.toBeUndefined();
+            await expect(launcherPromise).resolves.toBe('switch');
+        } finally {
+            releaseReconcile?.();
+            restoreReconcile?.();
+            statusMessage.mockRestore();
+        }
+    });
+
     it('a plain Stop aborts the pre-POST marker snapshot GET and skips summarize because no server-side compaction has started', async () => {
         harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
         let capturedSignal: AbortSignal | undefined;
@@ -3370,11 +3637,11 @@ describe('opencodeRemoteLauncher inline model switch', () => {
 
             // setupTerminal() runs synchronously as the very first thing
             // start() does, before runMainLoop() (and hence before the
-            // pending newSession()) gets a chance to run — so by the time
-            // control returns here, ink's render() (mocked above) has
-            // already captured onExit/onSwitchToLocal.
+            // pending newSession()) gets a chance to run. Wait until that
+            // promise is actually held before switching so this regression
+            // covers the intended startup race rather than scheduler timing.
             expect(inkHarness.lastRenderProps?.onSwitchToLocal).toBeDefined();
-            expect(resolveNewSession).toBeNull();
+            await vi.waitFor(() => expect(resolveNewSession).toBeTypeOf('function'));
             expect(availabilityEvents).toEqual([]);
 
             await inkHarness.lastRenderProps!.onSwitchToLocal!();
@@ -5550,7 +5817,7 @@ describe('opencodeRemoteLauncher mid-turn steer', () => {
         harness.servePid = null;
         harness.servePidCalls = [];
         const backendModule = await import('./utils/opencodeBackend');
-        for (const name of ['createOpencodeBackend', 'detectOpencodeFlavorVersion', 'discoverOpencodeV2RestPort', 'listLoopbackListeners'] as const) {
+        for (const name of ['createOpencodeBackend', 'detectOpencodeVersion', 'discoverOpencodeV2RestPort', 'listLoopbackListeners'] as const) {
             vi.mocked(backendModule[name]).mockClear();
         }
     });
@@ -8490,7 +8757,7 @@ describe('opencodeRemoteLauncher v2 flavor wiring', () => {
         compactHarness.markerSnapshot = { markerIds: ['before-this-request'] };
         const backendModule = await import('./utils/opencodeBackend');
         const backendModuleFns = backendModule as unknown as Record<string, ReturnType<typeof vi.fn>>;
-        for (const name of ['createOpencodeBackend', 'detectOpencodeFlavorVersion', 'discoverOpencodeV2RestPort', 'listLoopbackListeners']) {
+        for (const name of ['createOpencodeBackend', 'detectOpencodeVersion', 'discoverOpencodeV2RestPort', 'listLoopbackListeners']) {
             backendModuleFns[name]?.mockClear();
         }
     });
@@ -8731,10 +8998,25 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
         compactHarness.resultCalls = [];
         const backendModule = await import('./utils/opencodeBackend');
         const backendModuleFns = backendModule as unknown as Record<string, ReturnType<typeof vi.fn>>;
-        for (const name of ['createOpencodeBackend', 'detectOpencodeFlavorVersion', 'discoverOpencodeV2RestPort', 'listLoopbackListeners']) {
+        for (const name of ['createOpencodeBackend', 'detectOpencodeVersion', 'discoverOpencodeV2RestPort', 'listLoopbackListeners']) {
             backendModuleFns[name]?.mockClear();
         }
     });
+
+    linuxRecoveryTest.each([['2.3.1', 1], ['2.3.2', 0]] as const)(
+        'preserves the compact POST boundary for a cancellation during the snapshot on %s', async (version, posts) => {
+            harness.detectedVersion = 'v2';
+            harness.exactVersion = version;
+            harness.discoveredPort = 41234;
+            harness.discoveredPassword = 'fixture-password';
+            harness.sessionModelsMetadata = { currentModelId: 'ollama/x', availableModels: [] };
+            const cancelled = new Set<string>();
+            compactHarness.snapshotV2Impl = async () => { cancelled.add('compact'); return []; };
+            const { session } = createSessionStub([{ message: '', mode: createCompactMode(), localId: 'compact' }]);
+            await opencodeRemoteLauncher(session as never, { isLocalIdCancelled: id => cancelled.delete(id) });
+            expect(compactHarness.v2Calls).toHaveLength(posts);
+        }
+    );
 
     it('v2: verifies the compact via the v2 message GET and never calls the v1 snapshot/result bridge', async () => {
         harness.detectedVersion = 'v2';
@@ -9006,3 +9288,122 @@ describe('opencodeRemoteLauncher v2 compact verification and discovery notice', 
         expect(String((notice as { message?: string }).message)).toContain('upstream retry status and /compact are unavailable');
     });
 });
+
+const realOpencode = process.env.HAPI_TEST_OPENCODE_V2_BIN;
+const realScratch = process.env.HAPI_TEST_OPENCODE_V2_DIR || tmpdir();
+it.skipIf(!realOpencode || !procChildren.canEnumerateProcChildren())(
+    'resumes a real OpenCode v2 session after SIGKILL while a prompt is in flight', async () => {
+        const { createServer } = await import('node:http');
+        const { rmSync, symlinkSync } = await import('node:fs');
+        const { isAbsolute } = await import('node:path');
+        const envModule = await import('./utils/config');
+        const backendModule = await import('./utils/opencodeBackend');
+        const real = await vi.importActual<typeof backendModule>('./utils/opencodeBackend');
+        const executable = realOpencode!;
+        expect(isAbsolute(executable)).toBe(true);
+        const root = mkdtempSync(join(realScratch, 'local-opencode-v2-'));
+        const work = join(root, 'work');
+        const env = {
+            HOME: join(root, 'home'), TMPDIR: join(root, 'tmp'), XDG_CONFIG_HOME: join(root, 'config'),
+            XDG_DATA_HOME: join(root, 'data'), XDG_STATE_HOME: join(root, 'state'), XDG_CACHE_HOME: join(root, 'cache'),
+            XDG_RUNTIME_DIR: join(root, 'runtime')
+        };
+        const bin = join(root, 'bin');
+        for (const directory of [work, bin, ...Object.values(env)]) mkdirSync(directory, { mode: 0o700 });
+        symlinkSync(executable, join(bin, 'opencode'));
+        const isolatedEnv = { ...env, PATH: bin + ':/usr/bin:/bin', LANG: 'C.UTF-8' };
+        const first = 'user-turn-before-crash';
+        const pending = 'user-turn-held-at-provider';
+        const next = 'user-turn-after-crash';
+        const conversations: string[][] = [];
+        let heldRequest = false;
+        const provider = createServer(async (req, res) => {
+            let raw = '';
+            for await (const chunk of req) raw += chunk;
+            if (!raw) { res.end(JSON.stringify({ data: [] })); return; }
+            const body = JSON.parse(raw) as { messages: Array<{ role: string; content: unknown }> };
+            const users = body.messages.filter(message => message.role === 'user').map(message => JSON.stringify(message.content));
+            conversations.push(users);
+            if (!heldRequest && users.at(-1)?.includes(pending)) {
+                heldRequest = true;
+                return; // Keep the response open until the owned ACP process dies.
+            }
+            res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+            for (const choice of [
+                { index: 0, delta: { role: 'assistant', content: 'local answer' }, finish_reason: null },
+                { index: 0, delta: {}, finish_reason: 'stop' }
+            ]) {
+                res.write('data: ' + JSON.stringify({ id: 'fixture-response', object: 'chat.completion.chunk',
+                    created: 0, model: 'local-test', choices: [choice] }) + '\n\n');
+            }
+            res.end('data: [DONE]\n\n');
+        });
+        const backends: AcpSdkBackend[] = [];
+        const loaded = vi.spyOn(AcpSdkBackend.prototype, 'loadSession');
+        const buildEnv = vi.spyOn(envModule, 'buildOpencodeEnv').mockReturnValue(isolatedEnv);
+        const killOwnedAcp = (backend: AcpSdkBackend) => {
+            const pid = backend.getProcessPid();
+            if (!pid) return;
+            try {
+                const environment = readFileSync('/proc/' + pid + '/environ', 'utf8').split('\0');
+                expect(environment).toContain('HOME=' + env.HOME);
+                expect(readFileSync('/proc/' + pid + '/cmdline', 'utf8').split('\0')).toContain('acp');
+                process.kill(pid, 'SIGKILL');
+            } catch (error) {
+                if (!['ENOENT', 'ESRCH'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+            }
+        };
+        try {
+            const probe = spawnSync(executable, ['--version'], { env: isolatedEnv, cwd: work, encoding: 'utf8' });
+            expect(probe.status).toBe(0);
+            harness.exactVersion = /^opencode v(\S+)$/.exec(probe.stdout.trim())?.[1] ?? null;
+            expect(['2.3.0', '2.3.2']).toContain(harness.exactVersion);
+            await new Promise<void>(resolve => provider.listen(0, '127.0.0.1', resolve));
+            const address = provider.address();
+            if (!address || typeof address === 'string') throw new Error('Missing local provider address');
+            writeFileSync(join(work, 'opencode.json'), JSON.stringify({
+                model: 'fixture/local-test', small_model: 'fixture/local-test', enabled_providers: ['fixture'],
+                provider: { fixture: { npm: '@ai-sdk/openai-compatible', name: 'fixture',
+                    options: { baseURL: 'http://127.0.0.1:' + address.port + '/v1', apiKey: 'local-fixture' },
+                    models: { 'local-test': { name: 'local-test' } } } }
+            }));
+            await vi.mocked(backendModule.createOpencodeBackend).withImplementation(opts => {
+                const backend = real.createOpencodeBackend(opts);
+                backends.push(backend);
+                return backend;
+            }, async () => {
+                harness.detectedVersion = 'v2';
+                const { session } = createSessionStub([], { keepOpen: true });
+                session.path = work;
+                session.logPath = join(work, 'session.log');
+                const launcher = opencodeRemoteLauncher(session as never);
+                const wait = (check: () => void) => Promise.race([
+                    vi.waitFor(check, { timeout: 15_000, interval: 20 }),
+                    launcher.then(reason => { throw new Error('Launcher ended early: ' + reason); })
+                ]);
+                try {
+                    session.queue.pushIsolated(first, createMode(), 'first');
+                    session.queue.pushIsolated(pending, createMode(), 'pending');
+                    await wait(() => expect(heldRequest).toBe(true));
+                    const sessionId = session.sessionId;
+                    expect(sessionId).toBeTruthy();
+                    killOwnedAcp(backends[0]!);
+                    await wait(() => expect(backends).toHaveLength(2));
+                    session.queue.push(next, createMode(), 'next');
+                    await wait(() => expect(conversations.some(turns =>
+                        turns.some(message => message.includes(first)) && turns.at(-1)?.includes(next))).toBe(true));
+                    expect(loaded).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ sessionId }));
+                } finally {
+                    for (const backend of backends) killOwnedAcp(backend);
+                    session.queue.close();
+                    await launcher;
+                }
+            });
+        } finally {
+            loaded.mockRestore();
+            buildEnv.mockRestore();
+            provider.closeAllConnections();
+            await new Promise<void>(resolve => provider.close(() => resolve()));
+            rmSync(root, { recursive: true, force: true });
+        }
+    }, 45_000);

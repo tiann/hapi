@@ -29,7 +29,7 @@ vi.mock('node:child_process', async (importOriginal) => ({
     }
 }));
 
-function makeFakeChild(stdoutText: string, opts?: { error?: Error; noClose?: boolean }): FakeChild {
+function makeFakeChild(stdoutText: string, opts?: { error?: Error; noClose?: boolean; code?: number }): FakeChild {
     const handlers = new Map<string, Array<(arg?: unknown) => void>>();
     const stdoutHandlers = new Map<string, Array<(chunk: string) => void>>();
     const child: FakeChild = {
@@ -52,13 +52,13 @@ function makeFakeChild(stdoutText: string, opts?: { error?: Error; noClose?: boo
         if (opts?.error) {
             for (const cb of handlers.get('error') ?? []) cb(opts.error);
         } else if (!opts?.noClose) {
-            for (const cb of handlers.get('close') ?? []) cb();
+            for (const cb of handlers.get('close') ?? []) cb(opts?.code ?? 0);
         }
     });
     return child;
 }
 
-function configureSpawn(stdoutText: string, opts?: { error?: Error }): void {
+function configureSpawn(stdoutText: string, opts?: { error?: Error; code?: number }): void {
     fakeSpawnImpl = () => makeFakeChild(stdoutText, opts);
 }
 
@@ -77,9 +77,9 @@ vi.mock('node:fs/promises', async (importOriginal) => ({
     readdir: vi.fn(async () => ['self'])
 }));
 
-import { allocateFreePort, createOpencodeBackend, detectOpencodeFlavorVersion, discoverOpencodeV2RestPort, listChildPids, listLoopbackListeners, listLoopbackListenersForPids, parseLsofListeners, parseSsListeners, parseSsPidListeners } from './opencodeBackend';
+import { allocateFreePort, createOpencodeBackend, detectOpencodeVersion, discoverOpencodeV2RestPort, listChildPids, listLoopbackListeners, listLoopbackListenersForPids, parseLsofListeners, parseSsListeners, parseSsPidListeners } from './opencodeBackend';
 
-describe('detectOpencodeFlavorVersion', () => {
+describe('detectOpencodeVersion', () => {
     beforeEach(() => {
         spawnCalls.length = 0;
         fakeSpawnImpl = null;
@@ -87,28 +87,26 @@ describe('detectOpencodeFlavorVersion', () => {
 
     it('detects v2 from "opencode v2.0.29" stdout', async () => {
         configureSpawn('opencode v2.0.29\n');
-        await expect(detectOpencodeFlavorVersion('myopencode')).resolves.toBe('v2');
+        await expect(detectOpencodeVersion('myopencode')).resolves.toEqual({ major: 'v2', version: '2.0.29' });
         expect(spawnCalls).toEqual([{ command: 'myopencode', args: ['--version'], options: expect.objectContaining({ stdio: ['ignore', 'pipe', 'ignore'] }) }]);
     });
 
-    it('detects v1 from "1.19.0" stdout', async () => {
-        configureSpawn('1.19.0\n');
-        await expect(detectOpencodeFlavorVersion('opencode')).resolves.toBe('v1');
-    });
-
-    it('detects v2 from "opencode 2.1.0" stdout without v prefix', async () => {
-        configureSpawn('opencode 2.1.0\n');
-        await expect(detectOpencodeFlavorVersion('opencode')).resolves.toBe('v2');
-    });
-
-    it('falls back to v1 when stdout is empty', async () => {
-        configureSpawn('');
-        await expect(detectOpencodeFlavorVersion('opencode')).resolves.toBe('v1');
+    it.each([
+        ['1.19.0', 0, 'v1', '1.19.0'],
+        ['opencode 2.1.0', 0, 'v2', '2.1.0'],
+        ['2.3.2', 0, 'v2', '2.3.2'],
+        ['2.3.2-beta.1', 0, 'v2', null],
+        ['unexpected output 2.3.2', 0, 'v2', null],
+        ['2.3.2', 1, 'v2', null],
+        ['', 0, 'v1', null],
+    ] as const)('classifies the CLI family and exact release from "%s" (exit %i)', async (output, code, major, version) => {
+        configureSpawn(output, { code });
+        await expect(detectOpencodeVersion('opencode')).resolves.toEqual({ major, version });
     });
 
     it('falls back to v1 when spawn errors', async () => {
         configureSpawn('', { error: new Error('spawn failed') });
-        await expect(detectOpencodeFlavorVersion('opencode')).resolves.toBe('v1');
+        await expect(detectOpencodeVersion('opencode')).resolves.toEqual({ major: 'v1', version: null });
     });
 
     it('spawns through a shell on Windows so .cmd shims resolve', async () => {
@@ -116,7 +114,7 @@ describe('detectOpencodeFlavorVersion', () => {
         Object.defineProperty(process, 'platform', { value: 'win32' });
         try {
             configureSpawn('opencode v2.0.29\n');
-            await expect(detectOpencodeFlavorVersion('opencode')).resolves.toBe('v2');
+            await expect(detectOpencodeVersion('opencode')).resolves.toEqual({ major: 'v2', version: '2.0.29' });
         } finally {
             Object.defineProperty(process, 'platform', { value: originalPlatform });
         }

@@ -385,34 +385,8 @@ export async function runOpencode(opts: {
                         sessionWrapperRef.current?.onThinkingChange(false);
                         return;
                     }
-                    // No manual emitMessagesConsumed here (unlike the
-                    // synchronous 'handled' branch below): `messageQueue`
-                    // (== session.queue, wired in AgentSessionBase's
-                    // constructor — see sessionBase.ts) already acks
-                    // automatically at dequeue time via `onBatchConsumed`,
-                    // exactly like any regular prompt — `collectBatch()` in
-                    // MessageQueue2.ts calls it right after shifting an
-                    // item off the queue, which for /compact happens in
-                    // opencodeRemoteLauncher.ts's dequeue loop. An earlier
-                    // version of this branch (from when /compact ran via a
-                    // trigger function invoked directly from this chain,
-                    // bypassing the queue entirely) called
-                    // `session.emitMessagesConsumed([localId])` manually
-                    // right here, before the item was even queued — that
-                    // stopped mattering for FIFO ordering once /compact
-                    // moved to `pushIsolated` below, but it kept firing the
-                    // hub ack immediately regardless, which is what actually
-                    // broke cancellation of an already-queued-but-not-yet-
-                    // dequeued /compact: the hub marked it invoked the
-                    // instant it was queued, so `cancelByLocalId` in
-                    // `onCancelQueuedMessage` below always found it already
-                    // gone from the queue and could never remove it before
-                    // that premature ack landed. Removing the manual call
-                    // lets the automatic dequeue-time ack (and therefore
-                    // `messageQueue.cancelByLocalId`) work the same way it
-                    // already does for prompts — a queued /compact can now
-                    // actually be cancelled before opencodeRemoteLauncher.ts
-                    // dequeues it and calls `runCompactOperation()`.
+                    // Recovery-enabled sessions acknowledge /compact when the POST starts.
+                    // Other sessions keep the dequeue-time acknowledgement.
                     //
                     // pushIsolated (not push): must never batch with a
                     // sibling prompt, but must still occupy its real FIFO
