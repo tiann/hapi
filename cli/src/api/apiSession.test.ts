@@ -2135,6 +2135,20 @@ describe('ApiSessionClient durable status identity', () => {
 });
 
 describe('ApiSessionClient metadata cancellation and reconnect ordering', () => {
+    it('skips an opted-in no-op without emitting a metadata update', async () => {
+        const client = new ApiSessionClient('token', createSession({
+            namespace: 'default', metadata: { path: '/tmp', host: 'fixture' }
+        }))
+        const socket = socketHarness.sockets.at(-1)!
+        try {
+            client.updateMetadata(current => current, { skipUnchanged: true })
+            expect(await client.flushMetadata()).toBe(true)
+            expect(socket.timeoutEmits.some(({ event }) => event === 'update-metadata')).toBe(false)
+        } finally {
+            client.close()
+        }
+    })
+
     it('abandons a retrying updateMetadata write without sending when signal aborts', async () => {
         socketHarness.sockets.length = 0
         axiosHarness.get.mockResolvedValue({ data: { messages: [] } })
