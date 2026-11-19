@@ -161,6 +161,7 @@ export class SharedCodexAsyncQuestions {
 
     private resolve(question: AsyncQuestion, resolution: Resolution, emitResult = true): void {
         this.pending.delete(question.id);
+        const completedAt = Date.now();
         const answers = resolution.status === 'resolved' ? {
             [question.questionItemId]: { answers: [question.options.includes(resolution.answer) ? resolution.answer : `user_note: ${resolution.answer}`] }
         } : undefined;
@@ -180,7 +181,7 @@ export class SharedCodexAsyncQuestions {
             delete requests[question.id];
             return { ...state, requests, completedRequests: { ...state.completedRequests, [question.id]: {
                 tool: 'request_user_input', toolCallId: question.id, arguments: question.input,
-                createdAt: prior?.createdAt, completedAt: completed?.completedAt ?? Date.now(),
+                createdAt: prior?.createdAt, completedAt: completed?.completedAt ?? completedAt,
                 status: resolution.status, ...(answers ? { answers } : {}), decision: resolution.status === 'canceled' ? resolution.decision : undefined
             } } };
         });

@@ -24,6 +24,24 @@ function fixture(initialState: AgentState = {}) {
 }
 
 describe('Codex queued follow-up questions', () => {
+    it('records the answer time when a newer Hub snapshot still has the question pending', () => {
+        const f = fixture();
+        const clock = vi.spyOn(Date, 'now').mockReturnValue(100);
+        try {
+            f.manager.observeItem('thread', item);
+            const question = questions[0];
+            const pending = f.state();
+            clock.mockReturnValue(500);
+            f.manager.observeItem('thread', nativeReply(question.questionItemId, 'Web'));
+            const finish = f.updates.at(-1)!;
+            clock.mockReturnValue(6_100);
+            expect(finish({ ...pending, steeringActive: true }).completedRequests?.[question.id])
+                .toMatchObject({ createdAt: 100, completedAt: 500, status: 'resolved' });
+        } finally {
+            clock.mockRestore();
+        }
+    });
+
     it('keeps the merged answer if a Web dismissal was queued before registration ACK recovery', async () => {
         const f = fixture();
         f.manager.observeItem('thread', item);
