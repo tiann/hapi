@@ -196,13 +196,13 @@
               "version": "<version>"
             },
             "result": "success",
-            "version": 2
+            "version": 3
           }
         ],
         "ackRequested": true,
         "args": [
           {
-            "expectedVersion": 1,
+            "expectedVersion": 2,
             "metadata": {
               "capabilities": {
                 "terminal": true
@@ -262,13 +262,13 @@
               "version": "<version>"
             },
             "result": "success",
-            "version": 3
+            "version": 4
           }
         ],
         "ackRequested": true,
         "args": [
           {
-            "expectedVersion": 2,
+            "expectedVersion": 3,
             "metadata": {
               "capabilities": {
                 "conversationHistory": {
@@ -334,13 +334,13 @@
               "version": "<version>"
             },
             "result": "success",
-            "version": 4
+            "version": 5
           }
         ],
         "ackRequested": true,
         "args": [
           {
-            "expectedVersion": 3,
+            "expectedVersion": 4,
             "metadata": {
               "capabilities": {
                 "conversationHistory": {
@@ -413,13 +413,13 @@
               "version": "<version>"
             },
             "result": "success",
-            "version": 5
+            "version": 6
           }
         ],
         "ackRequested": true,
         "args": [
           {
-            "expectedVersion": 4,
+            "expectedVersion": 5,
             "metadata": {
               "capabilities": {
                 "conversationHistory": {
@@ -470,7 +470,7 @@
               "startingMode": "remote"
             },
             "result": "success",
-            "version": 2
+            "version": 3
           }
         ],
         "ackRequested": true,
@@ -480,13 +480,26 @@
               "controlledByUser": false,
               "startingMode": "remote"
             },
-            "expectedVersion": 1,
+            "expectedVersion": 2,
             "sid": "<uuid:1>"
           }
         ]
       }
     ],
-    "1/message": [
+    "1/chat": [
+      {
+        "event": "messages-consumed",
+        "connection": 1,
+        "ackRequested": false,
+        "args": [
+          {
+            "localIds": [
+              "local-1"
+            ],
+            "sid": "<uuid:1>"
+          }
+        ]
+      },
       {
         "event": "message",
         "connection": 1,
@@ -529,21 +542,6 @@
               },
               "role": "agent"
             },
-            "sid": "<uuid:1>"
-          }
-        ]
-      }
-    ],
-    "1/messages-*": [
-      {
-        "event": "messages-consumed",
-        "connection": 1,
-        "ackRequested": false,
-        "args": [
-          {
-            "localIds": [
-              "local-1"
-            ],
             "sid": "<uuid:1>"
           }
         ]
@@ -644,13 +642,13 @@
               "version": "<version>"
             },
             "result": "success",
-            "version": 6
+            "version": 7
           }
         ],
         "ackRequested": true,
         "args": [
           {
-            "expectedVersion": 5,
+            "expectedVersion": 6,
             "metadata": {
               "capabilities": {
                 "conversationHistory": {
@@ -742,13 +740,13 @@
               "version": "<version>"
             },
             "result": "success",
-            "version": 7
+            "version": 8
           }
         ],
         "ackRequested": true,
         "args": [
           {
-            "expectedVersion": 6,
+            "expectedVersion": 7,
             "metadata": {
               "capabilities": {
                 "conversationHistory": {
@@ -807,7 +805,7 @@
               "steeringActive": true
             },
             "result": "success",
-            "version": 3
+            "version": 4
           }
         ],
         "ackRequested": true,
@@ -818,7 +816,7 @@
               "startingMode": "remote",
               "steeringActive": true
             },
-            "expectedVersion": 2,
+            "expectedVersion": 3,
             "sid": "<uuid:1>"
           }
         ]
@@ -843,7 +841,7 @@
               "steeringActive": true
             },
             "result": "success",
-            "version": 4
+            "version": 5
           }
         ],
         "ackRequested": true,
@@ -863,13 +861,13 @@
               "startingMode": "remote",
               "steeringActive": true
             },
-            "expectedVersion": 3,
+            "expectedVersion": 4,
             "sid": "<uuid:1>"
           }
         ]
       }
     ],
-    "2/message": [
+    "2/chat": [
       {
         "event": "message",
         "connection": 1,
@@ -1111,13 +1109,13 @@
               "version": "<version>"
             },
             "result": "success",
-            "version": 8
+            "version": 9
           }
         ],
         "ackRequested": true,
         "args": [
           {
-            "expectedVersion": 7,
+            "expectedVersion": 8,
             "metadata": {
               "capabilities": {
                 "conversationHistory": {
@@ -1192,7 +1190,7 @@
               "steeringActive": true
             },
             "result": "success",
-            "version": 5
+            "version": 6
           }
         ],
         "ackRequested": true,
@@ -1215,7 +1213,7 @@
               "startingMode": "remote",
               "steeringActive": true
             },
-            "expectedVersion": 4,
+            "expectedVersion": 5,
             "sid": "<uuid:1>"
           }
         ]
@@ -1243,7 +1241,7 @@
               "steeringActive": false
             },
             "result": "success",
-            "version": 6
+            "version": 7
           }
         ],
         "ackRequested": true,
@@ -1266,7 +1264,7 @@
               "startingMode": "remote",
               "steeringActive": false
             },
-            "expectedVersion": 5,
+            "expectedVersion": 6,
             "sid": "<uuid:1>"
           }
         ]
@@ -1373,13 +1371,13 @@
               "version": "<version>"
             },
             "result": "success",
-            "version": 9
+            "version": 10
           }
         ],
         "ackRequested": true,
         "args": [
           {
-            "expectedVersion": 8,
+            "expectedVersion": 9,
             "metadata": {
               "archiveReason": "Hub restart",
               "archivedBy": "cli",

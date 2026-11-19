@@ -23,6 +23,18 @@ describe('transcript normalization', () => {
         expect(clean([metadata, second, first])).not.toEqual(clean([first, second, metadata]))
     })
 
+    it('retains the order of chat output and pickup receipts across unrelated metadata', () => {
+        const message = row('message', { text: 'before pickup' })
+        const pickup = row('messages-consumed', { localIds: ['next'] })
+        const metadata = row('update-metadata', {})
+        expect(clean([message, metadata, pickup])).toEqual(clean([metadata, message, pickup]))
+        expect(clean([message, metadata, pickup])).not.toEqual(clean([pickup, metadata, message]))
+    })
+
+    it('rejects an RPC registration that requests an acknowledgement', () => {
+        expect(() => clean([{ ...row('rpc-register', { method: 's:abort' }), ackRequested: true }])).toThrow('fire-and-forget')
+    })
+
     it.each([
         { time: 0 }, { createdAt: Math.floor(now / 1000) }, { completedAt: now + 1 },
         { timestamp: now }, { timestamp: '11/19/2026' }, { timestamp: new Date(now + 60000).toISOString() },

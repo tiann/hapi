@@ -63,9 +63,55 @@
       ]
     },
     {
+      "rpc": "set-session-config",
+      "params": {
+        "model": "sonnet",
+        "effort": "low"
+      }
+    },
+    {
+      "sendUpdate": {
+        "t": "new-message",
+        "message": {
+          "id": "message-2",
+          "localId": "local-2",
+          "seq": 2,
+          "createdAt": 2,
+          "content": {
+            "role": "user",
+            "content": {
+              "type": "text",
+              "text": "Continue at low effort"
+            }
+          }
+        }
+      },
+      "until": [
+        {
+          "event": "message",
+          "contains": "\"type\":\"ready\""
+        },
+        {
+          "event": "update-state",
+          "result": "success",
+          "count": 2
+        },
+        {
+          "event": "update-state",
+          "contains": "\"steeringActive\":false",
+          "result": "success"
+        },
+        {
+          "event": "update-metadata",
+          "contains": "\"local-2\":",
+          "result": "success"
+        }
+      ]
+    },
+    {
       "signal": "SIGTERM",
       "settledAlive": {
-        "effort": "high",
+        "effort": "low",
         "mode": "remote",
         "model": "sonnet",
         "permissionMode": "default",

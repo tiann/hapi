@@ -196,13 +196,13 @@
               "version": "<version>"
             },
             "result": "success",
-            "version": 2
+            "version": 3
           }
         ],
         "ackRequested": true,
         "args": [
           {
-            "expectedVersion": 1,
+            "expectedVersion": 2,
             "metadata": {
               "capabilities": {
                 "terminal": true
@@ -262,13 +262,13 @@
               "version": "<version>"
             },
             "result": "success",
-            "version": 3
+            "version": 4
           }
         ],
         "ackRequested": true,
         "args": [
           {
-            "expectedVersion": 2,
+            "expectedVersion": 3,
             "metadata": {
               "capabilities": {
                 "conversationHistory": {
@@ -334,13 +334,13 @@
               "version": "<version>"
             },
             "result": "success",
-            "version": 4
+            "version": 5
           }
         ],
         "ackRequested": true,
         "args": [
           {
-            "expectedVersion": 3,
+            "expectedVersion": 4,
             "metadata": {
               "capabilities": {
                 "conversationHistory": {
@@ -413,13 +413,13 @@
               "version": "<version>"
             },
             "result": "success",
-            "version": 5
+            "version": 6
           }
         ],
         "ackRequested": true,
         "args": [
           {
-            "expectedVersion": 4,
+            "expectedVersion": 5,
             "metadata": {
               "capabilities": {
                 "conversationHistory": {
@@ -470,7 +470,7 @@
               "startingMode": "remote"
             },
             "result": "success",
-            "version": 2
+            "version": 3
           }
         ],
         "ackRequested": true,
@@ -480,13 +480,26 @@
               "controlledByUser": false,
               "startingMode": "remote"
             },
-            "expectedVersion": 1,
+            "expectedVersion": 2,
             "sid": "<uuid:1>"
           }
         ]
       }
     ],
-    "1/message": [
+    "1/chat": [
+      {
+        "event": "messages-consumed",
+        "connection": 1,
+        "ackRequested": false,
+        "args": [
+          {
+            "localIds": [
+              "local-1"
+            ],
+            "sid": "<uuid:1>"
+          }
+        ]
+      },
       {
         "event": "message",
         "connection": 1,
@@ -588,21 +601,6 @@
         ]
       }
     ],
-    "1/messages-*": [
-      {
-        "event": "messages-consumed",
-        "connection": 1,
-        "ackRequested": false,
-        "args": [
-          {
-            "localIds": [
-              "local-1"
-            ],
-            "sid": "<uuid:1>"
-          }
-        ]
-      }
-    ],
     "1/step": [
       {
         "event": "step",
@@ -688,13 +686,13 @@
               "version": "<version>"
             },
             "result": "success",
-            "version": 6
+            "version": 7
           }
         ],
         "ackRequested": true,
         "args": [
           {
-            "expectedVersion": 5,
+            "expectedVersion": 6,
             "metadata": {
               "capabilities": {
                 "conversationHistory": {
@@ -748,7 +746,7 @@
               "startingMode": "remote"
             },
             "result": "success",
-            "version": 3
+            "version": 4
           }
         ],
         "ackRequested": true,
@@ -760,7 +758,7 @@
               "requests": {},
               "startingMode": "remote"
             },
-            "expectedVersion": 2,
+            "expectedVersion": 3,
             "sid": "<uuid:1>"
           }
         ]
@@ -857,13 +855,13 @@
               "version": "<version>"
             },
             "result": "success",
-            "version": 7
+            "version": 8
           }
         ],
         "ackRequested": true,
         "args": [
           {
-            "expectedVersion": 6,
+            "expectedVersion": 7,
             "metadata": {
               "archiveReason": "Hub restart",
               "archivedBy": "cli",

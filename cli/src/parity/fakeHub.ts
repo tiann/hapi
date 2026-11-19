@@ -49,6 +49,7 @@ export async function fakeHub(out: string, changed: () => void = () => {}) {
     let leaseExpiry: number | undefined
     const registrations = new Map<Socket, Set<string>>()
     let socket: Socket
+    let adoptedTag: string | undefined
     let sequence = 0
     const messages: Record<string, any>[] = []
     const now = Date.now()
@@ -71,9 +72,23 @@ export async function fakeHub(out: string, changed: () => void = () => {}) {
         if (event === 'POST /cli/machines') {
             response = { machine: { ...base, ...data, runnerStateVersion: 1 } }
         } else if (event === 'POST /cli/sessions') {
-            Object.assign(session, { metadata: data.metadata, agentState: data.agentState ?? null,
-                model: data.model ?? null, effort: data.effort ?? null, modelReasoningEffort: data.modelReasoningEffort ?? null })
-            response = { session, sessionSummaryContract: false, autoBridgeTransientModelErrors: false }
+            if (data.id !== sid) {
+                res.statusCode = 404
+                response = { error: 'Session not found' }
+            } else if (!data.adopt || typeof data.tag !== 'string' || (adoptedTag !== undefined && adoptedTag !== data.tag)) {
+                res.statusCode = 409
+                response = { error: 'Session is not a preallocated stub' }
+            } else {
+                if (adoptedTag === undefined) {
+                    adoptedTag = data.tag
+                    Object.assign(session, { metadata: data.metadata, agentState: data.agentState ?? null,
+                        model: data.model ?? null, effort: data.effort ?? null, modelReasoningEffort: data.modelReasoningEffort ?? null })
+                    session.metadataVersion++
+                    session.agentStateVersion++
+                    session.seq++
+                }
+                response = { session, sessionSummaryContract: false, autoBridgeTransientModelErrors: false }
+            }
         } else if (event === 'GET /cli/sessions/' + sid) {
             response = { session, sessionSummaryContract: false, autoBridgeTransientModelErrors: false }
         } else if (event === 'GET /cli/sessions/' + sid + '/messages') {
@@ -134,6 +149,7 @@ export async function fakeHub(out: string, changed: () => void = () => {}) {
                     ? { ...common, metadata: session.metadata } : { ...common, agentState: session.agentState }
                 ack = [answer]
             } else if (event === 'messages-steer-state') ack = [{ ok: true }]
+            else if (event !== 'ping') return
             const reply = () => {
                 cb(...ack)
                 row.ack = structuredClone(ack)

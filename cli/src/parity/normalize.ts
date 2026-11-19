@@ -18,9 +18,10 @@ interface ProcessFacts {
 
 function channel(event: string) {
     if (event.startsWith('GET ') || event.startsWith('POST ')) return 'http'
+    if (event === 'message' || event === 'messages-consumed') return 'chat'
     if (event.startsWith('messages-')) return 'messages-*'
     if (event === 'session-ready' || event === 'session-end') return 'lifecycle'
-    if (['message', 'update-metadata', 'update-state', 'auth', 'rpc-register', 'session-alive', 'step'].includes(event)) return event
+    if (['update-metadata', 'update-state', 'auth', 'rpc-register', 'session-alive', 'step'].includes(event)) return event
     return 'others'
 }
 
@@ -117,6 +118,7 @@ export function normalize(rows: Row[], facts: ProcessFacts, launches: unknown[],
                 }
                 const normalized = clean(payload, '', event)
                 if (event === 'rpc-register') {
+                    assert.equal(normalized.ackRequested, false, 'rpc-register must be fire-and-forget')
                     const list = methods[connection] ??= []
                     if (!list.includes(normalized.args[0].method)) list.push(normalized.args[0].method)
                 } else if (event === 'session-alive') {

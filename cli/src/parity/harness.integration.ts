@@ -69,8 +69,10 @@ it('sends a preparation lease valid across a one-second host clock difference', 
             () => {}, { pid: process.pid, marker: '' })
         await expect(dispatch()).rejects.toThrow('not registered')
         const registration = { method: sid + ':killSession' }
-        socket.emit('rpc-register', registration)
+        let registrationAcknowledged = false
+        socket.emit('rpc-register', registration, () => { registrationAcknowledged = true })
         await socket.timeout(5000).emitWithAck('ping')
+        expect(registrationAcknowledged).toBe(false)
         await dispatch()
         socket.emit('rpc-unregister', registration)
         await socket.timeout(5000).emitWithAck('ping')
@@ -80,6 +82,28 @@ it('sends a preparation lease valid across a one-second host clock difference', 
         expect(expiresAt).toBeLessThan(now - 1000 + 30_000)
     } finally {
         socket.close()
+        await hub.close()
+        rmSync(dir, { recursive: true, force: true })
+    }
+})
+
+it('advances both bootstrap versions exactly once when adopting the stub', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'parity-adopt-'))
+    const hub = await fakeHub(dir)
+    try {
+        const adopt = async (name: string) => {
+            const response = await fetch('http://127.0.0.1:' + hub.port + '/cli/sessions', {
+                method: 'POST', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ adopt: true, id: sid, tag: 'wrapper', metadata: { name } })
+            })
+            expect(response.status).toBe(200)
+            return response.json()
+        }
+        expect(await adopt('original')).toMatchObject({ session: { metadataVersion: 2, agentStateVersion: 2, seq: 1 } })
+        expect(await adopt('retry')).toMatchObject({
+            session: { metadataVersion: 2, agentStateVersion: 2, seq: 1, metadata: { name: 'original' } }
+        })
+    } finally {
         await hub.close()
         rmSync(dir, { recursive: true, force: true })
     }
