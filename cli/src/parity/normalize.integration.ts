@@ -43,6 +43,12 @@ describe('transcript normalization', () => {
         expect(() => normalize(layout(runtimeDir, facts.cli), { ...facts, runtimeDir }, [], [])).toThrow()
     })
 
+    it('requires the envelope to retain the timestamp of Claude output', () => {
+        const message = { content: { type: 'output', data: { timestamp: new Date(now - 1).toISOString() } } }
+        expect(() => clean([row('message', { message, createdAt: now })])).toThrow('Claude output creation time')
+        expect(() => clean([row('message', { message, createdAt: now - 1 })])).not.toThrow()
+    })
+
     it('preserves user date values', () => {
         expect(JSON.stringify(clean([row('message', { arguments: { date: 'tomorrow' } })]))).toContain('tomorrow')
     })

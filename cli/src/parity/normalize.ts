@@ -108,6 +108,13 @@ export function normalize(rows: Row[], facts: ProcessFacts, launches: unknown[],
         for (const name of [...groups.keys()].sort()) {
             for (const { event, connection, step: _, ...payload } of groups.get(name)!) {
                 if (event === 'rpc-ack') payload.args = payload.args.map(v => JSON.parse(String(v)))
+                if (event === 'message') {
+                    const envelope = payload.args[0] as { createdAt?: number; message?: { content?: { type?: string; data?: { timestamp?: string } } } }
+                    const content = envelope.message?.content
+                    if (content?.type === 'output' && content.data?.timestamp !== undefined) {
+                        assert.equal(envelope.createdAt, Date.parse(content.data.timestamp), 'Claude output creation time')
+                    }
+                }
                 const normalized = clean(payload, '', event)
                 if (event === 'rpc-register') {
                     const list = methods[connection] ??= []

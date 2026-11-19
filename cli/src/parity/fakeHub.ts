@@ -7,7 +7,7 @@ import type { UpdateMetadataAck, UpdateStateAck } from '@hapi/protocol'
 import { monotonicTimeMs } from '../utils/time'
 
 export const sid = 'a1111111-1111-4111-8111-111111111111'
-export type Row = { connection: number; step: number; event: string; args: unknown[]; ackRequested: boolean; ack?: unknown[] }
+export type Row = { connection: number; step: number; event: string; args: unknown[]; ackRequested: boolean; ack?: unknown[]; flush?: ReturnType<typeof flushState> }
 export type ScriptStep =
     | { sendUpdate: Record<string, any> }
     | { rpc: string; params: unknown }
@@ -27,6 +27,16 @@ export async function listen(server: HttpServer) {
     return (server.address() as { port: number }).port
 }
 
+export function flushState(rows: Row[], connection: number, archived: boolean) {
+    const received = rows.filter(row => row.connection === connection)
+    return {
+        archived,
+        sessionEnded: received.some(row => row.event === 'session-end'),
+        pendingWrites: received.filter(row => (row.event === 'update-state' || row.event === 'update-metadata')
+            && row.ackRequested && !row.ack).length
+    }
+}
+
 export async function fakeHub(out: string, changed: () => void = () => {}) {
     const rows: Row[] = []
     let connection = 0
@@ -37,6 +47,7 @@ export async function fakeHub(out: string, changed: () => void = () => {}) {
     const pendingAcks = new Set<NodeJS.Timeout>()
     let closed = false
     let leaseExpiry: number | undefined
+    const registrations = new Map<Socket, Set<string>>()
     let socket: Socket
     let sequence = 0
     const messages: Record<string, any>[] = []
@@ -82,13 +93,25 @@ export async function fakeHub(out: string, changed: () => void = () => {}) {
     const io = new Server(server, { transports: ['websocket'] } as Partial<ServerOptions>)
     io.of('/cli').on('connection', client => {
         latestAlive = undefined
+        const methods = new Set<string>()
+        registrations.set(client, methods)
+        client.once('disconnect', () => registrations.delete(client))
         socket = client
         const ordinal = ++connection
         record('auth', [client.handshake.auth])
         client.onAny((event: string, ...args) => {
             const cb = typeof args.at(-1) === 'function' ? args.pop() : undefined
             if (event === 'session-alive' && ordinal === connection) latestAlive = args[0]
+            const method = args[0]?.method
+            if (typeof method === 'string' && method.length) {
+                if (event === 'rpc-register') methods.add(method)
+                if (event === 'rpc-unregister') methods.delete(method)
+            }
             const row = record(event, args, Boolean(cb), ordinal)
+            if (event === 'ping') {
+                row.flush = flushState(rows, ordinal,
+                    (session.metadata as { lifecycleState?: string } | null)?.lifecycleState === 'archived')
+            }
             if (!cb) return
             let ack: unknown[] = []
             if (event === 'update-metadata' || event === 'update-state') {
@@ -135,6 +158,8 @@ export async function fakeHub(out: string, changed: () => void = () => {}) {
             step++
             record('step', [action])
             if ('rpc' in action) {
+                const method = sid + ':' + action.rpc
+                if (!registrations.get(socket)?.has(method)) throw Error('RPC method is not registered: ' + method)
                 const params = JSON.stringify(action.params, (_, value) => {
                     if (value === '$pid') return facts.pid
                     if (value === '$marker') return facts.marker
@@ -144,7 +169,7 @@ export async function fakeHub(out: string, changed: () => void = () => {}) {
                     }
                     return value
                 })
-                const response = await socket.timeout(30_000).emitWithAck('rpc-request', { method: sid + ':' + action.rpc, params })
+                const response = await socket.timeout(30_000).emitWithAck('rpc-request', { method, params })
                 record('rpc-ack', response === undefined ? [] : [response])
             } else if ('sendUpdate' in action) {
                 const update: Record<string, any> = { ...action.sendUpdate, sid }

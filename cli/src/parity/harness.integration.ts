@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { expect, it } from 'vitest'
 import { claimLaunch, readLaunches } from './launchLog'
 import { reached } from './fences'
-import { fakeHub, type Row } from './fakeHub'
+import { fakeHub, flushState, sid, type Row } from './fakeHub'
 
 it('retains concurrent invocation records when an older process writes last', () => {
     const dir = mkdtempSync(join(tmpdir(), 'parity-launch-'))
@@ -37,6 +37,18 @@ it('holds the step until both documents acknowledge their final writes', () => {
     expect(reached(rows, fences)).toBe(true)
 })
 
+it('distinguishes a flush before session end, before archive, and before the write acknowledgement', () => {
+    const rows: Row[] = []
+    const snapshot = (archived: boolean) => flushState(rows, 1, archived)
+    expect(snapshot(false)).toEqual({ sessionEnded: false, archived: false, pendingWrites: 0 })
+    rows.push({ connection: 1, step: 1, event: 'session-end', args: [], ackRequested: false })
+    expect(snapshot(false)).toEqual({ sessionEnded: true, archived: false, pendingWrites: 0 })
+    rows.push({ connection: 1, step: 1, event: 'update-metadata', args: [], ackRequested: true })
+    expect(snapshot(true)).toEqual({ sessionEnded: true, archived: true, pendingWrites: 1 })
+    rows[1].ack = [{ result: 'success' }]
+    expect(snapshot(true)).toEqual({ sessionEnded: true, archived: true, pendingWrites: 0 })
+})
+
 it('sends a preparation lease valid across a one-second host clock difference', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'parity-lease-'))
     const hub = await fakeHub(dir)
@@ -53,8 +65,16 @@ it('sends a preparation lease valid across a one-second host clock difference', 
             expiresAt = JSON.parse(request.params).preparationLease.expiresAt
             ack('{}')
         })
-        await hub.execute({ rpc: 'killSession', params: { prepareOnly: true, preparationLease: { expiresAt: '$leaseExpiry' } } },
+        const dispatch = () => hub.execute({ rpc: 'killSession', params: { prepareOnly: true, preparationLease: { expiresAt: '$leaseExpiry' } } },
             () => {}, { pid: process.pid, marker: '' })
+        await expect(dispatch()).rejects.toThrow('not registered')
+        const registration = { method: sid + ':killSession' }
+        socket.emit('rpc-register', registration)
+        await socket.timeout(5000).emitWithAck('ping')
+        await dispatch()
+        socket.emit('rpc-unregister', registration)
+        await socket.timeout(5000).emitWithAck('ping')
+        await expect(dispatch()).rejects.toThrow('not registered')
         const now = monotonicTimeMs()
         expect(expiresAt).toBeGreaterThan(now + 1000)
         expect(expiresAt).toBeLessThan(now - 1000 + 30_000)
@@ -73,8 +93,10 @@ it('acknowledges the runner webhook', async () => {
         const [line] = await once(lines, 'line')
         const { port } = JSON.parse(line)
         runner.stdin.end('connected\n')
-        const response = await fetch('http://127.0.0.1:' + port + '/session-started', {
-            method: 'POST', body: JSON.stringify({ sessionId: 'test', metadata: {} })
+        const url = 'http://127.0.0.1:' + port + '/session-started'
+        expect((await fetch(url, { method: 'POST', body: '{}' })).status).toBe(415)
+        const response = await fetch(url, {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sessionId: 'test', metadata: {} })
         })
         expect(response.status).toBe(200)
         expect(await response.json()).toEqual({ status: 'ok' })

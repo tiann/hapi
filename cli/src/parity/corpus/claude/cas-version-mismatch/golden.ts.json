@@ -1248,7 +1248,12 @@
         "connection": 1,
         "ack": [],
         "ackRequested": true,
-        "args": []
+        "args": [],
+        "flush": {
+          "archived": true,
+          "pendingWrites": 0,
+          "sessionEnded": true
+        }
       }
     ],
     "5/step": [
