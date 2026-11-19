@@ -758,4 +758,211 @@ describe('SessionList lineage grouping and attention folding', () => {
         expect(restoredToggle).toHaveAttribute('aria-expanded', 'false')
         expect(screen.queryByRole('button', { name: /Live Worker/ })).toBeNull()
     })
+
+    it('reveals a worker first linked while already running under an explicitly collapsed lineage when unread peeking is off', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'off')
+        localStorage.setItem('hapi-keep-unread-sessions-visible', 'false')
+        markSessionSeen('parent', 500)
+        markSessionSeen('first-worker', 450)
+        markSessionSeen('late-linked-worker', 480)
+        markSessionSeen('fresh-running-worker', 490)
+
+        const parent = makeSession({
+            id: 'parent',
+            active: true,
+            updatedAt: 500,
+            metadata: { path: '/work/proj', name: 'Coordinator' }
+        })
+        const firstWorker = makeSession({
+            id: 'first-worker',
+            active: true,
+            thinking: true,
+            updatedAt: 450,
+            metadata: {
+                path: '/work/proj',
+                name: 'First Worker',
+                parentLink: { parentSessionId: 'parent', kind: 'peer' }
+            }
+        })
+        const unlinkedRunningWorker = makeSession({
+            id: 'late-linked-worker',
+            active: true,
+            thinking: true,
+            updatedAt: 480,
+            metadata: { path: '/work/proj', name: 'Late Linked Worker' }
+        })
+
+        const { rerenderList } = renderList([parent, firstWorker, unlinkedRunningWorker])
+        const toggle = screen.getByTestId('session-lineage-toggle')
+        expect(toggle).toHaveAttribute('aria-expanded', 'true')
+
+        // Explicitly collapse the lineage while first-worker is already running.
+        fireEvent.click(toggle)
+        expect(toggle).toHaveAttribute('aria-expanded', 'false')
+        expect(screen.getByTitle('First Worker').closest('.collapsible-panel')?.hasAttribute('data-open')).toBe(false)
+
+        // Existing already-running session gains its parent link for the first time.
+        const linkedWorker = makeSession({
+            ...unlinkedRunningWorker,
+            metadata: {
+                path: '/work/proj',
+                name: 'Late Linked Worker',
+                parentLink: { parentSessionId: 'parent', kind: 'peer' }
+            }
+        })
+        rerenderList([parent, firstWorker, linkedWorker])
+        expect(toggle).toHaveTextContent('2 linked · 2 running')
+        expect(toggle).toHaveAttribute('aria-expanded', 'true')
+        expect(screen.getByTitle('Late Linked Worker').closest('.collapsible-panel')?.hasAttribute('data-open')).toBe(true)
+
+        // Collapse again, then a brand-new session first appears already working and linked.
+        fireEvent.click(toggle)
+        expect(toggle).toHaveAttribute('aria-expanded', 'false')
+
+        const freshRunningWorker = makeSession({
+            id: 'fresh-running-worker',
+            active: true,
+            thinking: true,
+            updatedAt: 490,
+            metadata: {
+                path: '/work/proj',
+                name: 'Fresh Running Worker',
+                parentLink: { parentSessionId: 'parent', kind: 'peer' }
+            }
+        })
+        rerenderList([parent, firstWorker, linkedWorker, freshRunningWorker])
+        expect(toggle).toHaveTextContent('3 linked · 3 running')
+        expect(toggle).toHaveAttribute('aria-expanded', 'true')
+        expect(screen.getByTitle('Fresh Running Worker').closest('.collapsible-panel')?.hasAttribute('data-open')).toBe(true)
+    })
+
+    it('preserves explicit lineage collapse of an already-working child across global pin/unpin of the child or its root', () => {
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'off')
+        localStorage.setItem('hapi-keep-unread-sessions-visible', 'false')
+        markSessionSeen('parent', 500)
+        markSessionSeen('working-child', 450)
+
+        const parent = makeSession({
+            id: 'parent',
+            active: true,
+            updatedAt: 500,
+            metadata: { path: '/work/proj', name: 'Coordinator' }
+        })
+        const workingChild = makeSession({
+            id: 'working-child',
+            active: true,
+            thinking: true,
+            updatedAt: 450,
+            metadata: {
+                path: '/work/proj',
+                name: 'Live Worker',
+                parentLink: { parentSessionId: 'parent', kind: 'peer' }
+            }
+        })
+
+        const { rerenderList } = renderList([parent, workingChild])
+        const toggle = screen.getByTestId('session-lineage-toggle')
+        expect(toggle).toHaveAttribute('aria-expanded', 'true')
+
+        fireEvent.click(toggle)
+        expect(toggle).toHaveAttribute('aria-expanded', 'false')
+        expect(screen.getByTitle('Live Worker').closest('.collapsible-panel')?.hasAttribute('data-open')).toBe(false)
+
+        // Global pin then unpin of the working child must not clear explicit collapse.
+        rerenderList([parent, { ...workingChild, globalPinned: true }])
+        expect(screen.queryByTestId('session-lineage-toggle')).toBeNull()
+
+        rerenderList([parent, { ...workingChild, globalPinned: false }])
+        const toggleAfterChildUnpin = screen.getByTestId('session-lineage-toggle')
+        expect(toggleAfterChildUnpin).toHaveAttribute('aria-expanded', 'false')
+        expect(screen.queryByRole('button', { name: /Live Worker/ })).toBeNull()
+
+        // Global pin then unpin of the root must also keep explicit collapse intact.
+        rerenderList([{ ...parent, globalPinned: true }, workingChild])
+        expect(screen.queryByTestId('session-lineage-toggle')).toBeNull()
+
+        rerenderList([{ ...parent, globalPinned: false }, workingChild])
+        const toggleAfterRootUnpin = screen.getByTestId('session-lineage-toggle')
+        expect(toggleAfterRootUnpin).toHaveAttribute('aria-expanded', 'false')
+        expect(screen.queryByRole('button', { name: /Live Worker/ })).toBeNull()
+    })
+
+    it('reveals an explicitly collapsed lineage after an idle child starts working during ranked text search and the query is cleared', () => {
+        const searchButtonLabel = 'Search sessions (title, path, Agent, machine name, ID, and more)'
+        const searchPlaceholder = 'Search title/path/Agent/machine/ID…'
+        localStorage.setItem('hapi-pin-in-progress-sessions', 'off')
+        localStorage.setItem('hapi-keep-unread-sessions-visible', 'false')
+        markSessionSeen('parent', 500)
+        markSessionSeen('idle-child', 450)
+
+        const parent = makeSession({
+            id: 'parent',
+            active: true,
+            updatedAt: 500,
+            metadata: { path: '/work/proj', name: 'Coordinator' }
+        })
+        const idleChild = makeSession({
+            id: 'idle-child',
+            active: false,
+            thinking: false,
+            updatedAt: 450,
+            metadata: {
+                path: '/work/proj',
+                name: 'Idle Worker',
+                parentLink: { parentSessionId: 'parent', kind: 'peer' }
+            }
+        })
+
+        const { rerenderList } = renderList([parent, idleChild])
+        const toggle = screen.getByTestId('session-lineage-toggle')
+
+        // Explicitly expand then collapse to store a `false` collapse override.
+        fireEvent.click(toggle)
+        expect(toggle).toHaveAttribute('aria-expanded', 'true')
+        fireEvent.click(toggle)
+        expect(toggle).toHaveAttribute('aria-expanded', 'false')
+        expect(screen.getByTitle('Idle Worker').closest('.collapsible-panel')?.hasAttribute('data-open')).toBe(false)
+
+        // Enter a ranked text search query in default match mode (flattens lineage).
+        fireEvent.click(screen.getByRole('button', { name: searchButtonLabel }))
+        const searchInput = screen.getByPlaceholderText(searchPlaceholder)
+        fireEvent.change(searchInput, { target: { value: 'worker' } })
+        expect(screen.queryByTestId('session-lineage-toggle')).toBeNull()
+
+        // Child starts working (and stays read) while the ranked search query is active.
+        markSessionSeen('idle-child', 600)
+        const workingChild = makeSession({
+            id: 'idle-child',
+            active: true,
+            thinking: true,
+            updatedAt: 600,
+            contentRevision: 600,
+            metadata: {
+                path: '/work/proj',
+                name: 'Idle Worker',
+                parentLink: { parentSessionId: 'parent', kind: 'peer' }
+            }
+        })
+        rerenderList([parent, workingChild])
+        expect(screen.queryByTestId('session-lineage-toggle')).toBeNull()
+
+        // Clearing the search restores lineage nesting and reveals the newly working child.
+        fireEvent.change(searchInput, { target: { value: '' } })
+        const restoredToggle = screen.getByTestId('session-lineage-toggle')
+        expect(restoredToggle).toHaveTextContent('1 linked · 1 running')
+        expect(restoredToggle).toHaveAttribute('aria-expanded', 'true')
+        const childRowButton = screen.getByRole('button', { name: /Idle Worker/ })
+        expect(childRowButton).toBeInTheDocument()
+        expect(childRowButton.closest('.collapsible-panel')?.hasAttribute('data-open')).toBe(true)
+
+        // Re-collapsing while already running and cycling ranked search keeps it collapsed.
+        fireEvent.click(restoredToggle)
+        expect(restoredToggle).toHaveAttribute('aria-expanded', 'false')
+        fireEvent.change(searchInput, { target: { value: 'worker' } })
+        expect(screen.queryByTestId('session-lineage-toggle')).toBeNull()
+        fireEvent.change(searchInput, { target: { value: '' } })
+        const collapsedToggle = screen.getByTestId('session-lineage-toggle')
+        expect(collapsedToggle).toHaveAttribute('aria-expanded', 'false')
+        expect(screen.queryByRole('button', { name: /Idle Worker/ })).toBeNull()
+    })
 })

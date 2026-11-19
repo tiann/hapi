@@ -2223,42 +2223,77 @@ export function SessionList(props: {
         }
         return map
     }, [groups, buildGroupLineage])
-    const prevDescendantWorkingRef = useRef<Map<string, boolean> | null>(null)
-    // Reveal a collapsed lineage only when a previously-seen descendant transitions
-    // from not-working to working, so children leaving and re-entering groups
-    // (e.g. via machine/status/unread filters) do not reset explicit collapse.
+    const prevSessionLineageStateRef = useRef<Map<string, { working: boolean; parentSessionId: string | null }> | null>(null)
+    const pendingRevealChildIdsRef = useRef<Set<string>>(new Set())
+    // Track id → { working, parentSessionId } over unfiltered props.sessions so a
+    // collapsed lineage reveals when a descendant starts working, first appears
+    // already working and linked, or gains its parent link while already working —
+    // without clearing explicit collapse when an already-working, already-linked
+    // child leaves and re-enters rendered groups (filters, ranked search, global
+    // pin/unpin, or directory moves). Triggers that happen while lineage nesting is
+    // hidden (e.g. during ranked search or filtering) stay pending until the child
+    // renders under a lineage root or stops being working and linked.
     useLayoutEffect(() => {
-        if (isRankedTextSearch) return
-        const currentDescendantWorking = new Map<string, boolean>()
-        const rootsToReveal: string[] = []
-        const prevDescendantWorking = prevDescendantWorkingRef.current
+        const current = new Map<string, { working: boolean; parentSessionId: string | null }>()
+        for (const s of props.sessions) {
+            current.set(s.id, {
+                working: childIsWorking(s),
+                parentSessionId: s.metadata?.parentLink?.parentSessionId || null,
+            })
+        }
 
-        for (const lineage of lineageByGroupKey.values()) {
-            for (const [rootId, descendants] of lineage.descendantsByRootId) {
-                for (const { session: child } of descendants) {
-                    const working = childIsWorking(child)
-                    currentDescendantWorking.set(child.id, working)
-                    if (working && prevDescendantWorking?.get(child.id) === false) {
-                        rootsToReveal.push(rootId)
-                    }
+        const prev = prevSessionLineageStateRef.current
+        prevSessionLineageStateRef.current = current
+        const pendingRevealChildIds = pendingRevealChildIdsRef.current
+
+        if (prev) {
+            for (const [sessionId, nextState] of current) {
+                if (!nextState.working || !nextState.parentSessionId) continue
+                const prevState = prev.get(sessionId)
+                const becameWorking = !prevState || !prevState.working
+                const firstLinked = prevState !== undefined && prevState.parentSessionId === null
+                if (becameWorking || firstLinked) {
+                    pendingRevealChildIds.add(sessionId)
                 }
             }
         }
 
-        prevDescendantWorkingRef.current = currentDescendantWorking
-        if (rootsToReveal.length === 0) return
+        for (const sessionId of pendingRevealChildIds) {
+            const state = current.get(sessionId)
+            if (!state || !state.working || !state.parentSessionId) {
+                pendingRevealChildIds.delete(sessionId)
+            }
+        }
+        if (pendingRevealChildIds.size === 0) return
 
-        setExpandedLineageParentIds((prev) => {
+        const rootsToReveal = new Set<string>()
+        const resolvedChildIds = new Set<string>()
+        for (const lineage of lineageByGroupKey.values()) {
+            for (const [rootId, descendants] of lineage.descendantsByRootId) {
+                for (const { session: child } of descendants) {
+                    if (pendingRevealChildIds.has(child.id)) {
+                        rootsToReveal.add(rootId)
+                        resolvedChildIds.add(child.id)
+                    }
+                }
+            }
+        }
+        for (const childId of resolvedChildIds) {
+            pendingRevealChildIds.delete(childId)
+        }
+        if (rootsToReveal.size === 0) return
+
+        setExpandedLineageParentIds((existing) => {
             let next: Map<string, boolean> | null = null
             for (const rootId of rootsToReveal) {
-                if (prev.get(rootId) === false) {
-                    next ??= new Map(prev)
+                if (existing.get(rootId) === false) {
+                    next ??= new Map(existing)
                     next.delete(rootId)
                 }
             }
-            return next ?? prev
+            return next ?? existing
         })
-    }, [lineageByGroupKey, isRankedTextSearch])
+    }, [props.sessions, lineageByGroupKey])
     const lineageAttentionCtx = useMemo(
         () => ({
             selectedSessionId,
