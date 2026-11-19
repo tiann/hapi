@@ -32,7 +32,7 @@ export function FastModeSelector(props: {
             >
                 <option value="standard">{t('misc.fastModeStandard')}</option>
                 <option value="fast">{t('misc.fastModeFast')}</option>
-                {props.ultrafastAvailable && <option value="ultrafast">{t('misc.fastModeUltrafast')}</option>}
+                {(props.ultrafastAvailable || props.value === 'ultrafast') && <option value="ultrafast" disabled={!props.ultrafastAvailable}>{t('misc.fastModeUltrafast')}</option>}
             </SelectControl>
         </div>
     )

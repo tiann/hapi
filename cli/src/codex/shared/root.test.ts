@@ -1418,7 +1418,7 @@ describe('Ultrafast native settings', () => {
         const applied = f.root.applySettings({ model: 'standard-only', serviceTier: 'ultrafast' });
         await vi.waitFor(() => expect(request).toHaveBeenCalledWith('thread/settings/update', expect.objectContaining({ serviceTier: null })));
         expect(f.events).not.toHaveBeenCalled();
-        f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: { model: 'standard-only', serviceTier: null } });
+        f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: { model: 'standard-only', serviceTier: 'default' } });
         expect((await applied).applied.serviceTier).toBe('standard');
         expect(f.events).toHaveBeenCalledOnce();
         request.mockRestore();
@@ -1434,5 +1434,14 @@ describe('Ultrafast native settings', () => {
         expect(f.events).not.toHaveBeenCalled();
         catalog.mockRestore();
         request.mockRestore();
+    });
+
+    it('does not follow a confirmed fallback with an Ultrafast-enabled slash reply', async () => {
+        const f = await fixture();
+        await f.root.applySettings({ model: 'standard-only', serviceTier: 'standard' });
+        f.events.mockClear();
+        await (f.root as unknown as { command(text: string): Promise<string | null> }).command('/ultrafast on');
+        expect(f.events).toHaveBeenCalledOnce();
+        expect(f.events).toHaveBeenCalledWith({ type: 'message', message: 'Ultrafast is not supported by this model or subscription; changed to Standard.' });
     });
 });

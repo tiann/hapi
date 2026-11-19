@@ -565,13 +565,13 @@ export function NewSession(props: {
         // Wait for the Codex model catalog to settle before clearing Fast;
         // otherwise Browse → remount restores serviceTier: 'fast' and this
         // effect would wipe it while models are still loading.
-        if (agent === 'codex' && codexModelsState.isLoading) {
+        if (agent === 'codex' && (codexModelsState.isLoading || (serviceTier === 'ultrafast' && codexModelsState.error))) {
             return
         }
         if ((!showCodexFastMode && serviceTier !== 'standard') || (serviceTier === 'ultrafast' && !showCodexUltrafastMode)) {
             setServiceTier('standard')
         }
-    }, [agent, codexModelsState.isLoading, showCodexFastMode, showCodexUltrafastMode, serviceTier])
+    }, [agent, codexModelsState.isLoading, showCodexFastMode, showCodexUltrafastMode, codexModelsState.error, serviceTier])
     const cursorModelsState = useCursorModelsForMachine({
         api: props.api,
         machineId,
@@ -2273,7 +2273,7 @@ export function NewSession(props: {
             && piModelsState.isLoading)
     const fastModeSelectionPending = agent === 'codex'
         && serviceTier !== 'standard'
-        && codexModelsState.isLoading
+        && (codexModelsState.isLoading || (serviceTier === 'ultrafast' && Boolean(codexModelsState.error)))
     const canCreate = Boolean(
         machineId
         && trimmedDirectory
@@ -2596,7 +2596,7 @@ export function NewSession(props: {
                 onChange={setCopilotAgentMode}
             />
             <FastModeSelector
-                visible={showCodexFastMode}
+                visible={showCodexFastMode || (agent === 'codex' && serviceTier === 'ultrafast')}
                 ultrafastAvailable={showCodexUltrafastMode}
                 value={serviceTier}
                 isDisabled={isFormDisabled}

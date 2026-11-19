@@ -247,7 +247,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         await notifyRunnerSessionStarted(root.session.sessionId, { ...(root.session.getMetadata() ?? root.bootstrap.metadata), hostStartMarker: root.bootstrap.metadata.hostStartMarker });
     };
     const create = (method: 'thread/start' | 'thread/fork', params: Record<string, unknown>, parent?: SharedCodexRoot, initialOptions?: SharedLaunchOptions): Promise<SharedCodexRoot> => operation(async () => {
-        const downgraded = params.serviceTier === 'ultrafast' && !await isUltrafastAvailable(control, params.model);
+        const downgraded = params.serviceTier === 'ultrafast' && !await isUltrafastAvailable(control, params.model, string(params.cwd) ?? launch.cwd);
         if (downgraded) params = { ...params, serviceTier: null };
         const root = await prepare(string(params.cwd) ?? launch.cwd, undefined, parent);
         let nativeSucceeded = false;
@@ -402,7 +402,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 await reserveRecord(root, threadId); return root;
             });
             const downgraded = launch.threadParams.serviceTier === 'ultrafast'
-                && !await isUltrafastAvailable(control, launch.threadParams.model ?? thread.model);
+                && !await isUltrafastAvailable(control, launch.threadParams.model ?? thread.model, launch.cwd);
             const params = root.config({ ...launch.threadParams, ...(downgraded ? { serviceTier: null } : {}), threadId, excludeTurns: true });
             let response: Record<string, unknown>;
             try {

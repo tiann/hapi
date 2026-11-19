@@ -794,7 +794,7 @@ export function HappyThread(props: {
                 text: `${headerMetadata.showLabels ? `${t(modelLabel.key)}: ` : ''}${modelLabel.value}`,
             } : undefined,
             reasoning: reasoningLabel ? { text: reasoningLabel } : undefined,
-            fastMode: showFastBadge ? { text: 'fast' } : undefined,
+            fastMode: showFastBadge ? { text: (props.serviceTier ?? props.session.serviceTier) === 'ultrafast' ? 'ultrafast' : 'fast' } : undefined,
             createdAt: createdAtLabel ? {
                 text: `${headerMetadata.showLabels ? `${t('session.header.createdAt')}: ` : ''}${createdAtLabel}`,
             } : undefined,

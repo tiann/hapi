@@ -576,7 +576,7 @@ export class SharedCodexRoot {
         const config = SettingsSchema.parse(raw);
         let downgraded = false;
         if (config.serviceTier === 'ultrafast' || config.model && this.settings.serviceTier === 'ultrafast' && config.serviceTier === undefined) {
-            if (!await isUltrafastAvailable(this.client, config.model ?? this.settings.model)) {
+            if (!await isUltrafastAvailable(this.client, config.model ?? this.settings.model, this.bootstrap.workingDirectory)) {
                 config.serviceTier = 'standard';
                 downgraded = true;
             }
@@ -894,8 +894,9 @@ export class SharedCodexRoot {
         }
         if (slash.updates?.proactiveMultiAgent !== undefined) throw new Error('This Codex version uses Ultra reasoning effort instead of a multi-agent toggle');
         if (slash.updates?.model === null) throw new Error('Choose an explicit model in a shared thread');
-        if (slash.updates) await this.applySettings(slash.updates);
-        if (slash.message) this.notice(slash.message);
+        const applied = slash.updates ? await this.applySettings(slash.updates) : undefined;
+        const tierFellBack = slash.updates?.serviceTier === 'ultrafast' && applied?.applied.serviceTier !== 'ultrafast';
+        if (slash.message && !tierFellBack) this.notice(slash.message);
         return slash.kind === 'replace' ? slash.text : null;
     }
     stopAccepting(): void {

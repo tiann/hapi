@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
         'agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'grok', 'kimi', 'opencode', 'pi'
     ].map((agent) => ({ agent, available: true })) as AgentAvailabilityEntry[],
     codexModelsLoading: false,
+    codexModelsError: null as string | null,
     agyModelsLoading: false,
     agyModels: [{ modelId: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' }],
     dshModels: [] as Array<{ modelId: string; name?: string }>,
@@ -118,7 +119,7 @@ vi.mock('@/hooks/queries/useCodexModels', () => ({
             }
         ],
         isLoading: mocks.codexModelsLoading,
-        error: null
+        error: mocks.codexModelsError
     })
 }))
 vi.mock('@/hooks/queries/useAgyModels', () => ({
@@ -392,6 +393,7 @@ describe('NewSession launch preferences', () => {
                 .map((agent) => ({ agent, available: true })) as AgentAvailabilityEntry[]
         )
         mocks.codexModelsLoading = false
+        mocks.codexModelsError = null
         mocks.agyModelsLoading = false
         mocks.agyModels = [{ modelId: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' }]
         mocks.directoryExists = true
@@ -563,6 +565,25 @@ describe('NewSession launch preferences', () => {
         fireEvent.click(screen.getByTestId('create'))
         await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-6.2-sol', serviceTier: 'ultrafast' })))
         expect(loadPreferredLaunchSettings('machine-1', 'codex')?.serviceTier).toBe('ultrafast')
+    })
+
+    it('preserves saved Ultrafast on catalog errors and permits recovery or explicit Standard', async () => {
+        savePreferredAgent('codex')
+        savePreferredLaunchSettings('machine-1', 'codex', { model: 'gpt-6.2-sol', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'high', serviceTier: 'ultrafast' })
+        mocks.codexModelsError = 'catalog disconnected'
+        const form = <NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />
+        const view = renderWithQuery(form)
+        const tier = await screen.findByRole('combobox', { name: 'newSession.fastMode' })
+        expect(tier).toHaveValue('ultrafast')
+        expect(screen.getByTestId('create')).toBeDisabled()
+        mocks.codexModelsError = null
+        view.rerender(<QueryClientProvider client={new QueryClient()}>{form}</QueryClientProvider>)
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        expect(tier).toHaveValue('ultrafast')
+        mocks.codexModelsError = 'catalog disconnected'
+        view.rerender(<QueryClientProvider client={new QueryClient()}>{form}</QueryClientProvider>)
+        fireEvent.change(screen.getByRole('combobox', { name: 'newSession.fastMode' }), { target: { value: 'standard' } })
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
     })
 
     it('remembers fast mode after a successful Codex launch and restores it on the same machine', async () => {
