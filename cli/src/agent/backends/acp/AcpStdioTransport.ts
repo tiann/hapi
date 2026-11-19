@@ -75,7 +75,7 @@ export function buildAcpStdioSpawnOptions(env?: Record<string, string>, cwd?: st
     };
 }
 
-export type ChildExitFence = { refresh(): void; verify(): Promise<boolean> };
+export type ChildExitFence = { readonly complete: boolean; refresh(): void; verify(): Promise<boolean> };
 
 export class AcpStdioTransport {
     /** Only Cursor's `agent` CLI is single-process; other ACP backends must not block model probes. */
@@ -482,6 +482,17 @@ export class AcpStdioTransport {
             // The ChildProcess handle loses its ability to signal once reaped.
             this.process.kill(signal);
         });
+    }
+
+    get hasCompleteWriterCapture(): boolean {
+        return this.ownedServers?.complete === true;
+    }
+
+    /** Passive recheck of the same child handle and the previously captured server identities. */
+    async verifyTermination(): Promise<boolean> {
+        if (this.childPid === null) return true;
+        if (!this.exited && this.process.exitCode === null && this.process.signalCode == null) return false;
+        return (await this.ownedServers?.verify()) === true;
     }
 
     private async terminateForRecovery(): Promise<boolean> {

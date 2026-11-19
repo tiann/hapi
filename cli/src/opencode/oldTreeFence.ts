@@ -90,7 +90,11 @@ export function createServeFence(
         }
     };
     refresh();
-    return { refresh, verify: () => complete ? verifyExit(recorded) : Promise.resolve(false) };
+    return {
+        get complete() { return complete; },
+        refresh,
+        verify: () => complete ? verifyExit(recorded) : Promise.resolve(false)
+    };
 }
 
 // OpenCode v2.3.0 and v2.3.2 wait 2s for MCP helpers (packages/core/src/mcp/stdio.ts:11,71).

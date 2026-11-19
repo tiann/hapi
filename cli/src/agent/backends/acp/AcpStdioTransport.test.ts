@@ -173,7 +173,7 @@ describe('AcpStdioTransport agent CLI guard', () => {
         const events: string[] = [];
         const transport = await AcpStdioTransport.create({
             command: 'opencode',
-            captureChildExitFence: () => ({ refresh: () => events.push('refresh'), verify: async () => true })
+            captureChildExitFence: () => ({ complete: true, refresh: () => events.push('refresh'), verify: async () => true })
         });
         transport.captureChildExitFence();
         spawnState.stdinWrite.mockImplementation(line => {
@@ -230,7 +230,7 @@ describe('AcpStdioTransport agent CLI guard', () => {
 
     test('uses tree teardown for normal close and only the owned child handle for recovery', async () => {
         const verify = vi.fn(async () => true);
-        const options = { command: 'opencode', captureChildExitFence: () => ({ verify, refresh: () => {} }) };
+        const options = { command: 'opencode', captureChildExitFence: () => ({ complete: true, verify, refresh: () => {} }) };
         const normal = await AcpStdioTransport.create(options);
         normal.captureChildExitFence();
         vi.mocked(killProcessByChildProcess).mockResolvedValueOnce(true);

@@ -123,7 +123,7 @@ describe('AcpSdkBackend', () => {
             onNotification: vi.fn(), onStderrError: vi.fn(), registerRequestHandler: vi.fn()
         };
         const create = vi.spyOn(AcpStdioTransport, 'create').mockResolvedValueOnce(transport as unknown as AcpStdioTransport);
-        const captureChildExitFence = () => ({ refresh: vi.fn(), verify: vi.fn(async () => true) });
+        const captureChildExitFence = () => ({ complete: true, refresh: vi.fn(), verify: vi.fn(async () => true) });
         try {
             const backend = new AcpSdkBackend({ command: 'opencode', captureChildExitFence });
             const initializing = backend.initialize();

@@ -48,6 +48,23 @@ it.skipIf(!canEnumerateProcChildren())('passively verifies every captured direct
     }
 });
 
+it.skipIf(!canEnumerateProcChildren())('distinguishes a missing writer identity even after the real child exits', async () => {
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)', '--', 'serve', '--stdio']);
+    const exited = once(child, 'exit');
+    try {
+        const verify = vi.fn(waitForServeExit);
+        const fence = createServeFence(() => [], verify);
+        child.kill();
+        await exited;
+        expect(fence.complete).toBe(false);
+        await expect(fence.verify()).resolves.toBe(false);
+        expect(verify).not.toHaveBeenCalled();
+    } finally {
+        child.kill();
+        await exited;
+    }
+});
+
 it('keeps every observed generation when the direct serve changes at dispatch', async () => {
     const lateServe = [{ pid: 11, startMarker: 'b' }];
     const snapshots = [[{ pid: 10, startMarker: 'a' }], lateServe, lateServe];

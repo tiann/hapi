@@ -156,6 +156,7 @@ export class AcpSdkBackend implements AgentBackend {
     private initializeInFlight: Promise<void> | null = null;
     private initializeRetryAbort: AbortController | null = null;
     private transportCreationFailed = false;
+    private verifyDisconnectedWriter?: () => Promise<boolean>;
     private disconnectResult: Promise<boolean> | null = null;
     private transportOpening: Promise<AcpStdioTransport> | null = null;
     private setModeSupported: boolean | undefined = undefined;
@@ -312,6 +313,7 @@ export class AcpSdkBackend implements AgentBackend {
         }
 
         this.disconnectResult = null;
+        this.verifyDisconnectedWriter = undefined;
         this.transport = transport;
 
         this.transport.onNotification((method, params) => {
@@ -1311,6 +1313,14 @@ export class AcpSdkBackend implements AgentBackend {
         });
     }
 
+    get canRecheckTermination(): boolean {
+        return this.verifyDisconnectedWriter !== undefined;
+    }
+
+    async recheckTermination(): Promise<boolean> {
+        return await this.verifyDisconnectedWriter?.() ?? false;
+    }
+
     async disconnect(options: { verifyTermination: true; waitForTransport?: boolean }): Promise<boolean>;
     async disconnect(options?: { waitForTransport?: boolean }): Promise<void>;
     async disconnect(options?: { waitForTransport?: boolean; verifyTermination?: boolean }): Promise<boolean | void> {
@@ -1370,6 +1380,13 @@ export class AcpSdkBackend implements AgentBackend {
             // (kill unverified, close threw, or this process dies first) the
             // record stays for a restore.
             this.settleToolCallLifetimeRecord(recordSessionId, agentEnded);
+            if (recovery && !agentEnded && transport.hasCompleteWriterCapture) {
+                this.verifyDisconnectedWriter = async () => {
+                    const stopped = await transport.verifyTermination();
+                    if (stopped) this.settleToolCallLifetimeRecord(recordSessionId, true);
+                    return stopped;
+                };
+            }
         }
         return agentEnded;
     }
