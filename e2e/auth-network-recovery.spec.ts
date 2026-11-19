@@ -136,8 +136,15 @@ test('phone navigation remains reachable below wrapped auth and outage warnings'
     test.setTimeout(60_000)
     await page.clock.install()
     await page.setViewportSize({ width: 390, height: 844 })
+    // Desktop Chromium has no display cutout. Simulate its inset in the same
+    // utility declarations, retaining the inherited route override.
     const back = page.locator('button').filter({ has: page.locator('polyline[points="15 18 9 12 15 6"]') }).first()
     await page.goto('/sessions/network-chat-A')
+    await page.addStyleTag({ content: `
+        [class*="pt-[env(safe-area-inset-top)]"] { padding-top: 36px; }
+        [class*="pt-[var(--route-safe-area-top,env(safe-area-inset-top))]"] { padding-top: var(--route-safe-area-top, 36px); }
+        [class*="pt-[calc(env(safe-area-inset-top)+0.5rem)]"] { padding-top: 44px; }
+    ` })
     await expect(page.getByText('Cached message A', { exact: true })).toBeVisible()
     await back.click()
     await page.getByText('Offline fixture B', { exact: true }).first().click()
@@ -148,6 +155,8 @@ test('phone navigation remains reachable below wrapped auth and outage warnings'
     mode = 'auth-unavailable'; closeGlobalOnce = true; disconnect()
     const refresh = page.getByText(/^Sign-in refresh failed\. Live updates are connected; retrying automatically\./)
     await expect(refresh).toBeVisible()
+    await expect.poll(() => refresh.evaluate(element => getComputedStyle(element).paddingTop)).toBe('44px')
+    await expect.poll(() => back.evaluate(element => getComputedStyle(element.parentElement!.parentElement!).paddingTop)).toBe('0px')
     await expect.poll(async () => (await back.boundingBox())!.y - (await refresh.boundingBox())!.y - (await refresh.boundingBox())!.height).toBeGreaterThanOrEqual(0)
     await back.click()
     await page.getByText('Offline fixture B', { exact: true }).first().click()

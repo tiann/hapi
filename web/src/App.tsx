@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { Outlet, useLocation, useMatchRoute, useRouter } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
 import { getTelegramWebApp, isTelegramApp } from '@/hooks/useTelegram'
@@ -605,7 +605,10 @@ function AppInner() {
                     isReconnecting={showReconnectingBanner}
                 />
                 <RunnerVersionSkewBanner />
-                <div className="h-full min-h-0 flex flex-col" style={{ paddingTop: connectionBannerHeight }}>
+                <div className="h-full min-h-0 flex flex-col" style={{
+                    paddingTop: connectionBannerHeight,
+                    '--route-safe-area-top': connectionBannerHeight ? '0px' : undefined
+                } as CSSProperties}>
                     <Outlet />
                 </div>
                 <ToastContainer />
