@@ -736,9 +736,10 @@ describe('AcpStdioTransport inbound request lifetime', () => {
         frame({ method: '$/cancel_request', params: { requestId: 0 } });
         expect(handler).toHaveBeenCalledWith(null, 0, undefined);
         complete();
-        await vi.waitFor(() => expect(spawnState.stdinWrite).toHaveBeenCalledWith(
-            JSON.stringify({ jsonrpc: '2.0', id: 0, result: { action: 'accept' } }) + '\n'
-        ));
+        await vi.waitFor(() => expect(spawnState.stdinWrite).toHaveBeenCalledTimes(1));
+        expect(JSON.parse(spawnState.stdinWrite.mock.calls[0]![0])).toEqual({
+            jsonrpc: '2.0', id: 0, result: { action: 'accept' }
+        });
         spawnState.closeHandlers[0]!(0, null);
     });
 
