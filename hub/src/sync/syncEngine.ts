@@ -1324,6 +1324,10 @@ export class SyncEngine {
         return this.store.sessionJobs.getPrimaryRunningBySessionIds(sessionIds)
     }
 
+    retargetChildParentLinks(oldParentId: string, newParentId: string, namespace: string): void {
+        this.sessionCache.retargetChildParentLinks(oldParentId, newParentId, namespace)
+    }
+
     /** Move outliving jobs + redirects onto another session (pre-delete). */
     transferAttachedJobs(fromSessionId: string, toSessionId: string, namespace: string): void {
         this.sessionCache.transferAttachedJobs(fromSessionId, toSessionId, namespace)

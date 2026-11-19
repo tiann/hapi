@@ -1783,7 +1783,7 @@ export class SessionCache {
      * Re-point children linked to a session before it was merged/deduped away
      * so sidebar lineage and parent status panels remain intact under `newParentId`.
      */
-    private retargetChildParentLinks(oldParentId: string, newParentId: string, namespace: string): void {
+    retargetChildParentLinks(oldParentId: string, newParentId: string, namespace: string): void {
         if (oldParentId === newParentId) return
         for (const candidate of this.getSessionsByNamespace(namespace)) {
             const meta = candidate.metadata

@@ -2,7 +2,7 @@ import { appendFileSync, existsSync, mkdirSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
-import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
+import { AGENT_MESSAGE_PAYLOAD_TYPE, resolveSessionParentLink } from '@hapi/protocol'
 import type { Store, StoredMessage } from '../../store'
 import { truncateOversizedMessageContent } from '../../store/contentCodec'
 import type { SyncEngine } from '../../sync/syncEngine'
@@ -851,6 +851,15 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
         )
     }
 
+    if (!engine) {
+        const donorIds = new Set(sessionStates.slice(1).map(source => source.sessionId))
+        const hasLinkedChild = collectImportCandidates(options.store, options.namespace).some(candidate => {
+            const parent = resolveSessionParentLink(candidate.metadata, candidate.sessionId)
+            return parent && donorIds.has(parent.parentSessionId)
+        })
+        if (hasLinkedChild) throw new Error('Sync engine unavailable; retry merge so child session links are preserved')
+    }
+
     for (const source of sessionStates.slice(1)) {
         latestActivity = Math.max(latestActivity, source.updatedAt)
         for (const message of source.storedMessages) {
@@ -876,6 +885,7 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
         // so refuse rather than orphan a supervisor still holding the source session id.
         if (engine) {
             engine.transferAttachedJobs(source.sessionId, canonical.sessionId, options.namespace)
+            engine.retargetChildParentLinks(source.sessionId, canonical.sessionId, options.namespace)
             await engine.deleteSession(source.sessionId)
         } else {
             const deleted = options.store.sessions.deleteSession(source.sessionId, options.namespace)
