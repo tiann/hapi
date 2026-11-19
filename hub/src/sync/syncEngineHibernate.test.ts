@@ -1,3 +1,5 @@
+import { registerTerminalHandlers } from '../socket/handlers/terminal'
+import { TerminalRegistry } from '../socket/terminalRegistry'
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test'
 import type { Database } from 'bun:sqlite'
 import type { Session } from '@hapi/protocol/types'
@@ -291,7 +293,7 @@ describe('SyncEngine hibernation', () => {
         expect(await engine.hibernateIdleSessions(Date.now() + 3 * HOUR, WINDOW)).toEqual([id])
     })
 
-    it('awaitHibernation settles an in-flight stop before callers re-read', async () => {
+    it('rejects a terminal open while waiting for the hibernation stop RPC', async () => {
         const id = insertIdleSession('await-stop')
         expect(await engine.awaitHibernation(id)).toBe(false)
         let release!: () => void
@@ -304,6 +306,19 @@ describe('SyncEngine hibernation', () => {
         const running = engine.hibernateSession(id, { now: later(), hibernateMs: WINDOW })
         for (let i = 0; i < 10 && !release; i += 1) await Promise.resolve()
         expect(cache().getSession(id)!.active).toBe(true)
+        const registry = new TerminalRegistry({ idleTimeoutMs: 0 })
+        const handlers = new Map<string, (data: unknown) => void>()
+        const events: string[] = []
+        registerTerminalHandlers({
+            data: { namespace: NAMESPACE }, on: (event: string, fn: (data: unknown) => void) => handlers.set(event, fn),
+            emit: (event: string) => events.push(event)
+        } as never, {
+            io: { of: () => ({}) } as never, terminalRegistry: registry, maxTerminalsPerSession: 4, maxTerminalsPerSocket: 4,
+            getSession: sid => engine.getSession(sid) ?? null, hibernationInFlight: sid => engine.hibernationInFlight(sid)
+        })
+        handlers.get('terminal:create')!({ sessionId: id, terminalId: 'new-terminal', cols: 80, rows: 24 })
+        expect(events).toEqual(['terminal:error'])
+        expect(registry.countForSession(id)).toBe(0)
         const waited = engine.awaitHibernation(id)
         release()
         expect(await waited).toBe(true)

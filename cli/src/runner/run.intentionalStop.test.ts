@@ -111,8 +111,8 @@ it('evicts the oldest exited group aliases and preserves a rebound ID when clean
     groups.remember(newer, ['rebound', 'last'])
     expect(groups.get('first')).toBeUndefined()
     expect(groups.get('second')).toBe(old)
-    groups.forget(old)
-    expect(groups.get('second')).toBeUndefined()
+    groups.confirm(old)
+    expect(groups.get('second')).toEqual({ ...old, confirmed: true })
     expect(groups.get('rebound')).toBe(newer)
     expect(groups.get('last')).toBe(newer)
 })
@@ -225,8 +225,7 @@ describe('runner intentional-stop marker cleanup', () => {
         await expect(handlers.stopSession('sess-exited', { requireProcessGroupCleanup: true })).resolves.toBe('already_gone')
         expect(mocks.sweep).toHaveBeenCalledTimes(2)
 
-        // Swept once: the record is dropped, so a later archive does not resweep.
-        await expect(handlers.stopSession('sess-exited')).resolves.toBe('already_gone')
+        await expect(handlers.stopSession('sess-exited', { requireProcessGroupCleanup: true })).resolves.toBe('already_gone')
         expect(mocks.sweep).toHaveBeenCalledTimes(2)
         expect(mocks.kill).not.toHaveBeenCalled()
     })
@@ -244,12 +243,30 @@ describe('runner intentional-stop marker cleanup', () => {
         child.emit('exit', 0, null)
         await vi.waitFor(() => expect(mocks.reportChildExit).toHaveBeenCalled())
         if (!emptyAtExit) {
+            mocks.sweep.mockResolvedValueOnce(false)
+            await expect(handlers.stopSession(id, { requireProcessGroupCleanup: true })).resolves.toBe('still_alive')
+            expect(mocks.sweep).toHaveBeenCalledTimes(1)
+            mocks.sweep.mockClear()
             mocks.groupGone.mockImplementation(candidate => candidate === pid)
             await handlers.stopSession('unrelated-session')
         }
         mocks.groupGone.mockReturnValue(false)
-        await expect(handlers.stopSession(id, { requireProcessGroupCleanup: true })).resolves.toBe('unknown')
+        await expect(handlers.stopSession(id, { requireProcessGroupCleanup: true })).resolves.toBe('already_gone')
         expect(mocks.sweep).not.toHaveBeenCalled()
+    })
+
+    it('acknowledges a repeated stop after the first successful sweep reply is lost', async () => {
+        const id = 'lost-stop-ack'
+        const child = makeFakeChild(6499)
+        mocks.spawnHappyCLI.mockImplementation(() => child)
+        const spawned = handlers.spawnSession({ directory: home, agent: 'claude', existingSessionId: id })
+        await confirmSpawn(spawned, id, 6499)
+        const opts = { requireProcessGroupCleanup: true }
+        await expect(handlers.stopSession(id, opts)).resolves.toBe('stopped')
+        mocks.isProcessAlive.mockImplementation(pid => pid !== 6499)
+        child.emit('exit', 0, null)
+        await expect(handlers.stopSession(id, opts)).resolves.toBe('already_gone')
+        expect(mocks.sweep).toHaveBeenCalledTimes(1)
     })
 
     it('archive of an exited wrapper leaves its recorded process group alone', async () => {
@@ -302,7 +319,7 @@ describe('runner intentional-stop marker cleanup', () => {
         await expect(handlers.stopSession(id, { requireProcessGroupCleanup: true })).resolves.toBe('still_alive')
         await expect(handlers.stopSession(id, { requireProcessGroupCleanup: true })).resolves.toBe('already_gone')
         expect(mocks.sweep).toHaveBeenCalledTimes(2)
-        expect(mocks.sweep).toHaveBeenLastCalledWith(6700, { expectedStartMarker: 'generation' })
+        expect(mocks.sweep).toHaveBeenLastCalledWith(6700, { expectedStartMarker: 'generation', leaderExited: true })
     })
 
     it('archive kills the tracked tree without signalling the whole process group', async () => {

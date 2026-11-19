@@ -1377,13 +1377,15 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       // requires process-group cleanup; archive keeps its prior outcome.
       const sweepVerifiedGroup = async (pid: number, expectedStartMarker?: string): Promise<boolean> => {
         if (opts?.requireProcessGroupCleanup !== true) return true;
-        if (await sweepProcessGroup(pid, { deadlineMs: signalDeadlines.get(pid), expectedStartMarker })) {
+        const aliases = exitedGroupAliases(pid, pidToTrackedSession.get(pid), sessionId);
+        if (expectedStartMarker) exitedProcessGroups.remember({ pgid: pid, startMarker: expectedStartMarker }, aliases);
+        if (await sweepProcessGroup(pid, { deadlineMs: signalDeadlines.get(pid), expectedStartMarker, leaderExited: true })) {
           groupCleanup.verified = true;
-          if (expectedStartMarker) exitedProcessGroups.forget({ pgid: pid, startMarker: expectedStartMarker });
+          if (expectedStartMarker) exitedProcessGroups.confirm({ pgid: pid, startMarker: expectedStartMarker });
           return true;
         }
         if (expectedStartMarker && !isProcessAlive(pid)) {
-          rememberExitedProcessGroup(pid, pidToTrackedSession.get(pid), expectedStartMarker, sessionId);
+          for (const id of aliases) if (id) rememberVerifiedExit(id);
         }
         logger.debug(`[RUNNER RUN] Process group ${pid} for session ${sessionId} outlived its root`);
         return false;
@@ -1801,15 +1803,16 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         if (status !== 'stopped' && status !== 'already_gone') return status;
         const requireCleanup = opts?.requireProcessGroupCleanup === true;
         const exited = exitedProcessGroups.get(sessionId);
-        if (requireCleanup && exited && !groupCleanup.verified) {
+        if (requireCleanup && exited && !groupCleanup.verified
+          && (!opts?.processStartMarker || opts.processStartMarker === exited.startMarker)) {
           // Recorded when this runner saw the wrapper exit: the group id and
           // leader generation are verified even though the root is long gone.
-          const swept = await sweepProcessGroup(exited.pgid, { expectedStartMarker: exited.startMarker });
+          const swept = exited.confirmed || await sweepProcessGroup(exited.pgid, { expectedStartMarker: exited.startMarker, leaderExited: true });
           if (!swept) {
             logger.debug(`[RUNNER RUN] Exited process group ${exited.pgid} for session ${sessionId} still alive`);
             return 'still_alive';
           }
-          exitedProcessGroups.forget(exited);
+          exitedProcessGroups.confirm(exited);
           groupCleanup.verified = true;
         }
         if (requireCleanup && !groupCleanup.verified && !groupCleanup.keepSharedWrapper && !isWindows()) {
@@ -1824,27 +1827,23 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
       }
     });
 
-    // Runner-spawned wrappers are detached group leaders. When one exits on
-    // its own, keep {pgid, leader marker} so a later stop can still reap
-    // grandchildren left in that group; dropped once the session is stopped.
-    function rememberExitedProcessGroup(
-      pid: number, session: TrackedSession | undefined, verifiedMarker?: string, stopId?: string
-    ): void {
+    function exitedGroupAliases(pid: number, session: TrackedSession | undefined, stopId?: string) {
       const persisted = persistedResumeProcesses.get(pid);
-      if (isWindows() || (!verifiedMarker && processGroupGone(pid))) return;
-      if (!verifiedMarker && !persisted && session?.startedBy !== 'runner') return;
-      const startMarker = verifiedMarker ?? persisted?.processStartMarker;
-      if (!startMarker) return;
-      const ids = [
+      return new Set([
         stopId,
+        `PID-${pid}`,
         ...Object.keys(session?.sharedSessions ?? {}),
         session?.requestedHappySessionId ?? pidToRequestedSessionId.get(pid) ?? persisted?.requestedSessionId,
         session?.happySessionId ?? pidToConfirmedSessionId.get(pid) ?? persisted?.confirmedSessionId,
-      ];
-      exitedProcessGroups.remember({ pgid: pid, startMarker }, ids);
-      if (verifiedMarker) {
-        for (const id of new Set(ids)) if (id) rememberVerifiedExit(id);
-      }
+      ]);
+    }
+
+    function rememberExitedProcessGroup(pid: number, session: TrackedSession | undefined): void {
+      const persisted = persistedResumeProcesses.get(pid);
+      if (isWindows() || !persisted?.processStartMarker) return;
+      exitedProcessGroups.remember({
+        pgid: pid, startMarker: persisted.processStartMarker, confirmed: processGroupGone(pid)
+      }, exitedGroupAliases(pid, session));
     }
 
     // A reused PID invalidates a binding, not every runtime for that session.

@@ -884,7 +884,16 @@ export class SyncEngine {
             this.sessionCache.recoverUnconfirmedHibernationStop(payload.sid)
         }
         this.sessionCache.handleSessionAlive(payload)
-        if (this.sessionCache.getSession(payload.sid)) this.aliveSinceHubStartIds.add(payload.sid)
+        const current = this.sessionCache.getSession(payload.sid)
+        if (current) this.aliveSinceHubStartIds.add(payload.sid)
+        const metadata = current?.metadata
+        if (current?.active && metadata?.hibernation?.state === 'hibernated'
+            && metadata.lifecycleState === 'running' && metadata.startedBy === 'terminal'
+            && metadata.startedFromRunner === false && (metadata.hostPid ?? 0) > 0
+            && !this.resumeTails.has(payload.sid) && !this.reopenTails.has(payload.sid)) {
+            this.sessionCache.clearSessionHibernation(payload.sid, 'hibernated')
+            this.hibernateWakeBackoffUntil.delete(payload.sid)
+        }
         if (wasThinking && !this.sessionCache.getSession(payload.sid)?.thinking) {
             this.titleTurnCompletedIds.add(payload.sid)
             void this.automaticTitleSuggestionService.onTurnCompleted(payload.sid)
@@ -1452,19 +1461,6 @@ export class SyncEngine {
         if (woke) this.hibernateWakeBackoffUntil.delete(sessionId)
         else if (this.hibernateWakeBackoffUntil.get(sessionId) !== Number.POSITIVE_INFINITY) {
             this.hibernateWakeBackoffUntil.set(sessionId, now + SyncEngine.HIBERNATE_WAKE_BACKOFF_MS)
-        }
-    }
-
-    /** The runner confirmed the stray child is gone: drop its row too. */
-    private async removeConfirmedStrayResumeRow(straySessionId: string): Promise<void> {
-        if (!this.sessionCache.getSession(straySessionId)) return
-        if (this.sessionCache.getSession(straySessionId)?.active) {
-            this.handleSessionEnd({ sid: straySessionId, time: Date.now() })
-        }
-        try {
-            await this.deleteSession(straySessionId)
-        } catch (error) {
-            console.warn('[hibernate] failed to delete stray resume row', { straySessionId, error })
         }
     }
 
@@ -5739,6 +5735,12 @@ export class SyncEngine {
         }
     }
 
+    pendingSessionWake(sessionId: string, namespace: string): Promise<ResumeSessionResult | ReopenSessionResult> | undefined {
+        const session = this.sessionCache.getSessionByNamespace(sessionId, namespace)
+        if (session?.metadata?.hibernation?.state !== 'hibernated') return undefined
+        return this.resumeTails.get(sessionId) ?? this.reopenTails.get(sessionId)
+    }
+
     async resumeSession(sessionId: string, namespace: string, opts?: { permissionMode?: PermissionMode }): Promise<ResumeSessionResult> {
         if (this.hibernationInFlight(sessionId)) await this.awaitHibernation(sessionId)
         if (this.archivedForkPending(sessionId, namespace)) {
@@ -6040,6 +6042,16 @@ export class SyncEngine {
                 return { type: 'error', message: spawnResult.message, code: 'resume_failed' }
             }
 
+            if (fromHibernation && spawnResult.sessionId !== access.sessionId) {
+                this.hibernateWakeBackoffUntil.set(access.sessionId, Number.POSITIVE_INFINITY)
+                return {
+                    type: 'error',
+                    message: 'Runner returned an unverified session ID for the hibernation wake',
+                    code: 'resume_failed',
+                    rollbackSafe: false
+                }
+            }
+
             if (requiresPiNativeReady && spawnResult.sessionId !== access.sessionId) {
                 const removed = await this.terminateUnexpectedPiTemp(
                     targetMachine.id,
@@ -6052,36 +6064,6 @@ export class SyncEngine {
                     message: removed
                         ? 'Pi runner created an unexpected session; upgrade the runner and retry'
                         : 'Pi runner created an unexpected live session; upgrade the runner and retry',
-                    code: 'resume_failed'
-                }
-            }
-
-            if (fromHibernation && spawnResult.sessionId !== access.sessionId) {
-                // A hibernated row must come back under its own id; never
-                // merge a stray replacement into it.
-                let strayStatus: 'stopped' | 'already_gone' | 'still_alive' | 'unknown'
-                try {
-                    strayStatus = await this.rpcGateway.stopRunnerSession(targetMachine.id, spawnResult.sessionId)
-                } catch {
-                    strayStatus = 'unknown'
-                }
-                // Either way, automatic (scheduled) wakes stop until a user,
-                // peer or web resume succeeds.
-                this.hibernateWakeBackoffUntil.set(access.sessionId, Number.POSITIVE_INFINITY)
-                if (strayStatus !== 'stopped' && strayStatus !== 'already_gone') {
-                    // The stray child may still be live: fail closed.
-                    return {
-                        type: 'error',
-                        message: 'Hibernated session resumed under a different id and the stray child could not be stopped',
-                        code: 'resume_failed',
-                        rollbackSafe: false
-                    }
-                }
-                if (flavor === 'codex' && resumeToken) this.writeCodexResumePending(access.sessionId, namespace, undefined)
-                await this.removeConfirmedStrayResumeRow(spawnResult.sessionId)
-                return {
-                    type: 'error',
-                    message: 'Hibernated session resumed under a different id',
                     code: 'resume_failed'
                 }
             }

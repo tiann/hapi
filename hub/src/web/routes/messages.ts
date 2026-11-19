@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import { MessagesQuerySchema, QueuedStateRequestSchema, SendMessageRequestSchema, isHibernatedLifecycleState } from '@hapi/protocol'
-import { HISTORY_ACTION_IN_PROGRESS_MESSAGE, type SyncEngine } from '../../sync/syncEngine'
+import { HISTORY_ACTION_IN_PROGRESS_MESSAGE, type ReopenSessionResult, type ResumeSessionResult, type SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { requireSessionFromParam, requireSyncEngine } from './guards'
 
@@ -156,6 +156,15 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
         const payload = parsed.data
         const namespace = c.get('namespace')
 
+        const wakeError = (result: Extract<ResumeSessionResult | ReopenSessionResult, { type: 'error' }>) => {
+            const status = result.code === 'no_machine_online' ? 503
+                : result.code === 'access_denied' ? 403
+                    : result.code === 'session_not_found' ? 404
+                        : result.code === 'resume_unavailable' ? 409
+                            : 500
+            return c.json({ error: result.message, code: result.code }, status)
+        }
+
         // Resolve the delivery target: wait out an in-flight hibernation stop
         // (it holds the history lock), re-read, and wake a hibernated session
         // transparently (same id). A future scheduled send waits for its due time.
@@ -170,6 +179,14 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
                     return current
                 }
             }
+            const pending = engine.pendingSessionWake?.(current.sessionId, namespace)
+            if (pending) {
+                const wake = await pending
+                if (wake.type === 'error') return wakeError(wake)
+                if (wake.type === 'incomplete') return c.json({ error: wake.message, code: 'resume_unavailable' }, 409)
+                current = requireSessionFromParam(c, engine)
+                if (current instanceof Response) return current
+            }
             const hibernated = !current.session.active
                 && isHibernatedLifecycleState(current.session.metadata?.lifecycleState)
             if (!current.session.active && !hibernated) {
@@ -180,14 +197,7 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
                 return current.sessionId
             }
             const result = await engine.resumeSession(current.sessionId, namespace)
-            if (result.type === 'error') {
-                const status = result.code === 'no_machine_online' ? 503
-                    : result.code === 'access_denied' ? 403
-                        : result.code === 'session_not_found' ? 404
-                            : result.code === 'resume_unavailable' ? 409
-                                : 500
-                return c.json({ error: result.message, code: result.code }, status)
-            }
+            if (result.type === 'error') return wakeError(result)
             return result.sessionId
         }
 
@@ -213,7 +223,7 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             // the send. Wait it out and retry once through the wake branch.
             const historyBusy = error instanceof Error && error.message === HISTORY_ACTION_IN_PROGRESS_MESSAGE
             if (!historyBusy) throw error
-            if (!engine.hibernationInFlight?.(target)) {
+            if (!engine.hibernationInFlight?.(target) && !engine.pendingSessionWake?.(target, namespace)) {
                 const current = requireSessionFromParam(c, engine)
                 if (current instanceof Response) return current
                 if (current.session.active || !isHibernatedLifecycleState(current.session.metadata?.lifecycleState)) {

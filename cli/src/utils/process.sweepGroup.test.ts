@@ -46,13 +46,13 @@ describe.skipIf(!posix)('sweepProcessGroup (POSIX)', () => {
         await expect(sweepProcessGroup(pgid)).resolves.toBe(true)
     })
 
-    it('reaps a straggler left after the group leader exits', async () => {
+    it('leaves surviving processes untouched when the original leader cannot prove group ownership', async () => {
         const pgid = spawnGroup('sleep 30 & kill -TERM $$')
         await waitFor(() => groupAlive(pgid))
         await new Promise(r => setTimeout(r, 100))
         expect(groupAlive(pgid)).toBe(true)
-        await expect(sweepProcessGroup(pgid)).resolves.toBe(true)
-        expect(groupAlive(pgid)).toBe(false)
+        await expect(sweepProcessGroup(pgid, { expectedStartMarker: 'exited-generation' })).resolves.toBe(false)
+        expect(groupAlive(pgid)).toBe(true)
     })
 
     it('escalates to SIGKILL when the group ignores SIGTERM', async () => {
@@ -92,6 +92,14 @@ describe.skipIf(!posix)('sweepProcessGroup (POSIX)', () => {
         expect(groupAlive(pgid)).toBe(true)
     })
 
+    it('leaves a live group untouched if the recorded leader already exited even when its marker matches', async () => {
+        const pgid = spawnGroup('sleep 30')
+        await waitFor(() => groupAlive(pgid))
+        const expectedStartMarker = getProcessStartMarker(pgid)!
+        await expect(sweepProcessGroup(pgid, { leaderExited: true, expectedStartMarker })).resolves.toBe(false)
+        expect(groupAlive(pgid)).toBe(true)
+    })
+
     it('treats a leader with a different start marker as a recycled PID and leaves its group alone', async () => {
         const pgid = spawnGroup('sleep 30')
         await waitFor(() => groupAlive(pgid))
@@ -106,7 +114,7 @@ describe.skipIf(!posix)('sweepProcessGroup (POSIX)', () => {
         let groupGone = false
         const ps = vi.spyOn(crossSpawn, 'sync').mockImplementation((_command, args) => {
             const markerQuery = Array.isArray(args) && args.includes('lstart=')
-            const output = markerQuery ? (++probes === 1 ? 'generation' : '') : '99'
+            const output = markerQuery ? (++probes === 1 ? 'generation' : '') : (Array.isArray(args) && args.includes(String(pgid)) ? String(pgid) : '99')
             return { status: 0, stdout: Buffer.from(output) } as ReturnType<typeof crossSpawn.sync>
         })
         const kill = vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
@@ -117,36 +125,33 @@ describe.skipIf(!posix)('sweepProcessGroup (POSIX)', () => {
             return true
         }) as typeof process.kill)
         try {
-            await expect(sweepProcessGroup(pgid, { graceMs: 0, expectedStartMarker: 'generation' })).resolves.toBe(!alive)
-            expect(groupGone).toBe(!alive)
+            await expect(sweepProcessGroup(pgid, { graceMs: 0, expectedStartMarker: 'generation' })).resolves.toBe(false)
+            expect(groupGone).toBe(false)
         } finally {
             kill.mockRestore()
             ps.mockRestore()
         }
     })
 
-    it('stops without SIGKILL once the dead leader PID is recycled mid-sweep', async () => {
+    it('sends no signal to a reused group whose replacement leader also exited', async () => {
         const pgid = 4_000_001
-        let recycled = false
         const signals: Array<[number, string | number | undefined]> = []
         const kill = vi.spyOn(process, 'kill').mockImplementation(((pid: number, signal?: string | number) => {
             signals.push([pid, signal])
             if (pid === -pgid) {
-                if (signal === 'SIGTERM') recycled = true
                 return true
             }
             if (pid === pgid && signal === 0) {
-                if (recycled) return true
                 throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' })
             }
             throw new Error(`unexpected kill(${pid}, ${String(signal)})`)
         }) as typeof process.kill)
         try {
-            await expect(sweepProcessGroup(pgid, { graceMs: 2_000 })).resolves.toBe(true)
+            await expect(sweepProcessGroup(pgid, { graceMs: 0, expectedStartMarker: 'original' })).resolves.toBe(false)
         } finally {
             kill.mockRestore()
         }
-        expect(signals).toContainEqual([-pgid, 'SIGTERM'])
+        expect(signals).not.toContainEqual([-pgid, 'SIGTERM'])
         expect(signals).not.toContainEqual([-pgid, 'SIGKILL'])
     })
 })

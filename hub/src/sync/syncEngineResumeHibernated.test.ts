@@ -73,7 +73,7 @@ describe('SyncEngine resume of hibernated sessions', () => {
         engine.handleSessionAlive({ sid, time: Date.now() })
     }
 
-    async function hibernatedSession(tag: string, flavor: 'claude' | 'codex' = 'claude'): Promise<string> {
+    async function hibernatedSession(tag: string, flavor: 'claude' | 'codex' | 'pi' = 'claude'): Promise<string> {
         const id = cache().getOrCreateSession(tag, {
             path: '/tmp/project',
             host: 'localhost',
@@ -81,7 +81,7 @@ describe('SyncEngine resume of hibernated sessions', () => {
             startedBy: 'runner',
             startedFromRunner: true,
             machineId: MACHINE,
-            [flavor === 'codex' ? 'codexSessionId' : 'claudeSessionId']: `native-${tag}`,
+            [`${flavor}SessionId`]: `native-${tag}`,
             lifecycleState: 'running',
         }, null, NAMESPACE).id
         engine.handleSessionAlive({ sid: id, time: Date.now() })
@@ -96,7 +96,7 @@ describe('SyncEngine resume of hibernated sessions', () => {
         stopCalls = []
         mergeCalls = 0
         engine.getOrCreateMachine(MACHINE, { host: 'localhost', platform: 'linux', happyCliVersion: '0.1.0' },
-            { status: 'running', capabilities: { sessionHibernation: true } }, NAMESPACE)
+            { status: 'running', capabilities: { sessionHibernation: true, piExistingSessionResume: true } }, NAMESPACE)
         engine.handleMachineAlive({ machineId: MACHINE, time: Date.now() })
         gateway().stopRunnerSession = async (_machineId: string, sessionId: string) => {
             stopCalls.push(sessionId)
@@ -163,7 +163,7 @@ describe('SyncEngine resume of hibernated sessions', () => {
         expect(cache().getSession(id)?.active).toBe(true)
     })
 
-    it.each(['claude', 'codex'] as const)('rejects a different spawned id and clears the confirmed %s attempt', async flavor => {
+    it.each(['claude', 'codex', 'pi'] as const)('rejects an unverified mismatched id from a %s wake', async flavor => {
         const id = await hibernatedSession('different-id', flavor)
         spawnImpl = async () => {
             const stray = cache().getOrCreateSession('stray', { path: '/tmp/project', host: 'localhost', flavor: 'claude', machineId: MACHINE }, null, NAMESPACE).id
@@ -173,14 +173,26 @@ describe('SyncEngine resume of hibernated sessions', () => {
         const result = await engine.resumeSession(id, NAMESPACE)
         expect(result.type).toBe('error')
         if (result.type === 'error') expect(result.code).toBe('resume_failed')
-        expect(stopCalls).toHaveLength(1)
-        expect(cache().getSession(id)?.metadata?.codexResumePending).toBeUndefined()
-        expect(stopCalls[0]).not.toBe(id)
+        expect(stopCalls).toEqual([])
+        if (flavor === 'codex') expect(cache().getSession(id)?.metadata?.codexResumePending?.machineId).toBe(MACHINE)
         expect(mergeCalls).toBe(0)
         expect(cache().getSession(id)!.metadata?.lifecycleState).toBe('hibernated')
     })
 
-    it('deletes a confirmed-stopped stray row and leaves wakes manual-only until a real resume', async () => {
+    it.each([['default', MACHINE], ['foreign', MACHINE], ['default', 'other-machine']])(
+        'preserves a pre-existing mismatched row in namespace %s on machine %s', async (namespace, machineId) => {
+            const id = await hibernatedSession('owned')
+            const other = cache().getOrCreateSession('another', { path: '/tmp', host: 'h', machineId }, null, namespace)
+            engine.handleSessionAlive({ sid: other.id, time: Date.now() })
+            const before = store.sessions.getSession(other.id)
+            spawnImpl = async () => ({ type: 'success', sessionId: other.id })
+            expect(await engine.resumeSession(id, NAMESPACE)).toMatchObject({ type: 'error', code: 'resume_failed' })
+            expect(stopCalls).toEqual([])
+            expect(store.sessions.getSession(other.id)).toEqual(before)
+        }
+    )
+
+    it('preserves a concurrently created row and leaves wakes manual-only until a real resume', async () => {
         const id = await hibernatedSession('stray-delete')
         let strayId = ''
         spawnImpl = async () => {
@@ -190,9 +202,9 @@ describe('SyncEngine resume of hibernated sessions', () => {
         }
         const result = await engine.resumeSession(id, NAMESPACE)
         expect(result).toMatchObject({ type: 'error', code: 'resume_failed' })
-        expect(stopCalls).toEqual([strayId])
-        expect(cache().getSession(strayId)).toBeUndefined()
-        expect(store.sessions.getSession(strayId)).toBeNull()
+        expect(stopCalls).toEqual([])
+        expect(cache().getSession(strayId)?.active).toBe(true)
+        expect(store.sessions.getSession(strayId)).not.toBeNull()
         expect(cache().getSession(id)!.metadata?.lifecycleState).toBe('hibernated')
 
         store.messages.addMessage(id, { role: 'user', content: { type: 'text', text: 'due' } }, 'local-due', Date.now() + 1_000)
@@ -211,6 +223,22 @@ describe('SyncEngine resume of hibernated sessions', () => {
         expect(spawns).toBe(1)
         const backoff = (engine as unknown as { hibernateWakeBackoffUntil: Map<string, number> }).hibernateWakeBackoffUntil
         expect(backoff.has(id)).toBe(false)
+    })
+
+    it('preserves a local Claude resume and its subsequent normal CLI archive', async () => {
+        const id = await hibernatedSession('local-resume')
+        const publish = (patch: object) => {
+            const stored = store.sessions.getSession(id)!
+            store.sessions.updateSessionMetadata(id, { ...(stored.metadata as object), ...patch }, stored.metadataVersion, NAMESPACE)
+            cache().refreshSession(id)
+        }
+        publish({ startedBy: 'terminal', startedFromRunner: false, hostPid: 4321,
+            lifecycleState: 'running', lifecycleStateSince: Date.now() })
+        engine.handleSessionAlive({ sid: id, time: Date.now(), mode: 'local' })
+        expect(cache().getSession(id)?.metadata?.hibernation).toBeUndefined()
+        publish({ lifecycleState: 'archived', archivedBy: 'cli' })
+        engine.handleSessionEnd({ sid: id, time: Date.now() })
+        expect(cache().getSession(id)?.metadata?.lifecycleState).toBe('archived')
     })
 
     it('keeps the hub-owned marker until resume succeeds and re-hibernates if the woken CLI exits first', async () => {
@@ -280,7 +308,7 @@ describe('SyncEngine resume of hibernated sessions', () => {
         }
         const result = await engine.resumeSession(id, NAMESPACE)
         expect(result).toMatchObject({ type: 'error', code: 'resume_failed', rollbackSafe: false })
-        expect(stopCalls).toEqual(['stray-live'])
+        expect(stopCalls).toEqual([])
         expect(mergeCalls).toBe(0)
 
         store.messages.addMessage(id, { role: 'user', content: { type: 'text', text: 'due' } }, 'local-due', Date.now() + 1_000)
@@ -338,6 +366,38 @@ describe('SyncEngine resume of hibernated sessions', () => {
             expect(mergeCalls).toBe(0)
             expect(cache().getSession(id)).toBeDefined()
         })
+    })
+
+    it.each(['ready', 'ended'] as const)('joins a Pi wake before sending while transport is active (%s)', async readiness => {
+        const id = await hibernatedSession('join-wake', 'pi')
+        let finish!: (status: typeof readiness) => void
+        const waiting = new Promise<void>(resolve => {
+            engine.waitForSessionReady = () => {
+                resolve()
+                return new Promise(done => { finish = done })
+            }
+        })
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => { c.set('namespace', NAMESPACE); await next() })
+        app.route('/api', createMessagesRoutes(() => engine))
+        const post = (text: string) => app.request(`/api/sessions/${id}/messages`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text, localId: text })
+        })
+        const first = post('first')
+        await waiting
+        expect(cache().getSession(id)?.active).toBe(true)
+        const second = post('second')
+        await new Promise(resolve => setTimeout(resolve, 0))
+        expect(store.messages.getFirstMessages(id, 10)).toHaveLength(0)
+        finish(readiness)
+        const responses = await Promise.all([first, second])
+        expect(responses.map(response => response.status)).toEqual(readiness === 'ready' ? [200, 200] : [500, 500])
+        if (readiness === 'ended') {
+            for (const response of responses) expect(await response.json()).toMatchObject({ code: 'resume_failed' })
+        }
+        expect(store.messages.getFirstMessages(id, 10).map(message => message.localId).sort())
+            .toEqual(readiness === 'ready' ? ['first', 'second'] : [])
     })
 
     it('wakes a hibernated session when its scheduled message matures', async () => {

@@ -140,7 +140,7 @@ describe('runner stop of recovered persisted sessions while the Hub is unavailab
         await expect(stopSession('confirmed', { requireProcessGroupCleanup: true })).resolves.toBe('already_gone')
         expect(mocks.kill).toHaveBeenCalledTimes(1)
         expect(mocks.sweep).toHaveBeenCalledTimes(2)
-        expect(mocks.sweep).toHaveBeenLastCalledWith(4242, { expectedStartMarker: 'generation' })
+        expect(mocks.sweep).toHaveBeenLastCalledWith(4242, { expectedStartMarker: 'generation', leaderExited: true })
     })
 
     it('does not sweep when the tree kill fails', async () => {
