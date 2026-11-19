@@ -32,6 +32,8 @@ type RuntimeSettings = NonNullable<Parameters<ApiSessionClient['keepAlive']>[2]>
 export type RootHost = {
     directory: string; generation: string; endpoint: string; token?: string;
     attached?: boolean;
+    /** Provider captured for the native catalog when its app-server started. */
+    catalogProvider?: string;
     beforeSubscribe?(threadId: string): Promise<void>;
     validateHistory?(threadId: string, thread: unknown): Promise<void>;
     settingsFor(threadId: string): Record<string, unknown> | undefined;
@@ -83,6 +85,7 @@ export class SharedCodexRoot {
     private settings: RuntimeSettings = {};
     private settingsNative: Record<string, unknown> = {};
     private modelProvider?: string;
+    private serviceTierExplicit = false;
     private settingsNotification?: Record<string, unknown>;
     private readonly settingsListeners = new Set<() => void>();
     private ready!: () => void;
@@ -316,7 +319,9 @@ export class SharedCodexRoot {
         if (!this.host.attached) await this.projectHistory(this.projection, response.thread);
         await this.refresh(); await this.refreshChildren(true);
     }
-    async activate(options: SharedLaunchOptions = {}): Promise<void> {
+    async activate(options: SharedLaunchOptions = {}, serviceTierExplicit?: boolean): Promise<void> {
+        this.serviceTierExplicit = serviceTierExplicit ?? (options.serviceTier !== undefined || this.session.getMetadata()?.codexServiceTierExplicit === true);
+        this.session.updateMetadata(metadata => ({ ...metadata, codexServiceTierExplicit: this.serviceTierExplicit }));
         // Restored input cannot run before the cold-resume settings are applied.
         if (!this.host.attached) await this.initialSettings(options);
         if (this.stopping) throw new Error('Codex execution is stopping');
@@ -586,13 +591,15 @@ export class SharedCodexRoot {
     private async applySettingsNow(raw: unknown, deadline: number): Promise<{ applied: RuntimeSettings }> {
         if (Date.now() >= deadline) throw new Error('Settings update timed out before execution; settings were not changed');
         const config = SettingsSchema.parse(raw);
+        // The existing live-settings API accepts null as a Standard reset.
+        if (config.serviceTier === null) config.serviceTier = 'standard';
         let downgraded = false;
         if (config.serviceTier === 'ultrafast' || config.model && this.settings.serviceTier === 'ultrafast' && config.serviceTier === undefined) {
             const discoveryDeadline = Math.min(deadline - 15_000, Date.now() + 10_000);
             for (;;) {
                 const model = config.model ?? this.settings.model;
                 const provider = this.modelProvider;
-                const available = await isUltrafastAvailable(this.client, model, this.bootstrap.workingDirectory, discoveryDeadline, provider);
+                const available = await isUltrafastAvailable(this.client, model, this.bootstrap.workingDirectory, discoveryDeadline, provider, this.host.catalogProvider);
                 if ((!config.model && model !== this.settings.model) || provider !== this.modelProvider) continue;
                 // Include the validated model in the write and its native confirmation.
                 if (typeof model === 'string') config.model = model;
@@ -642,6 +649,10 @@ export class SharedCodexRoot {
             // The RPC only acknowledges queueing the settings operation. The
             // native notification, not our submitted candidate, establishes state.
             await accepted;
+            if (config.serviceTier !== undefined) {
+                this.serviceTierExplicit = true;
+                this.session.updateMetadata(metadata => ({ ...metadata, codexServiceTierExplicit: true }));
+            }
             if (downgraded) this.notice(ULTRAFAST_FALLBACK_NOTICE);
             this.alive(); return { applied: this.settings };
         } finally { clearTimeout(timer); this.settingsListeners.delete(changed); }
@@ -873,7 +884,7 @@ export class SharedCodexRoot {
     freshParams(): Record<string, unknown> {
         const sandbox = inheritedSandbox(this.settingsNative);
         return { ...sandbox, cwd: this.settingsNative.cwd ?? this.bootstrap.workingDirectory, model: this.settingsNative.model, modelProvider: this.settingsNative.modelProvider,
-            approvalPolicy: this.settingsNative.approvalPolicy, serviceTier: this.settingsNative.serviceTier,
+            approvalPolicy: this.settingsNative.approvalPolicy, serviceTier: this.serviceTierExplicit ? this.settingsNative.serviceTier : undefined,
             approvalsReviewer: this.settingsNative.approvalsReviewer, personality: this.settingsNative.personality,
             developerInstructions: getCodexSystemPrompt(),
             config: { ...record(sandbox.config), model_reasoning_effort: this.settings.modelReasoningEffort ?? undefined } };

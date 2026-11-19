@@ -2775,14 +2775,14 @@ function SessionChatInner(props: SessionChatProps) {
                                 : handleEffortChange
                         }
                         serviceTier={effectiveCodexServiceTier}
-                        fastAvailable={codexModelAdvertisesFastTier(props.session.model, codexModelsState.models)}
-                        ultrafastAvailable={codexModelAdvertisesUltrafastTier(props.session.model, codexModelsState.models)}
+                        fastAvailable={!codexModelsState.error && codexModelAdvertisesFastTier(props.session.model, codexModelsState.models)}
+                        ultrafastAvailable={!codexModelsState.error && codexModelAdvertisesUltrafastTier(props.session.model, codexModelsState.models)}
                         onServiceTierChange={
                             agentFlavor === 'codex'
                                 && props.session.active
                                 && !controlledByUser
-                                && !codexModelsState.error
-                                && (codexModelAdvertisesFastTier(props.session.model, codexModelsState.models) || codexModelAdvertisesUltrafastTier(props.session.model, codexModelsState.models))
+                                && (props.session.serviceTier === 'ultrafast' || props.session.serviceTier === 'fast'
+                                    || !codexModelsState.error && (codexModelAdvertisesFastTier(props.session.model, codexModelsState.models) || codexModelAdvertisesUltrafastTier(props.session.model, codexModelsState.models)))
                                 ? handleServiceTierChange
                                 : undefined
                         }

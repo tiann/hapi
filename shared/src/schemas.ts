@@ -225,6 +225,8 @@ export const MetadataSchema = z.object({
         workspace: z.enum(['current', 'worktree'])
     }).optional(),
     codexSessionId: z.string().optional(),
+    // Distinguish a HAPI tier override from the effective native configuration.
+    codexServiceTierExplicit: z.boolean().optional(),
     // A bridge to an externally owned app-server, never an owned cold-resume target.
     codexRuntime: z.object({
         kind: z.literal('attached'),

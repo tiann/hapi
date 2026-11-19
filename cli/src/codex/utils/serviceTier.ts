@@ -9,6 +9,7 @@ export async function isUltrafastAvailable(
     cwd?: string,
     deadline = Date.now() + 10_000,
     modelProvider?: string,
+    catalogProvider?: string,
 ): Promise<boolean> {
     const bounded = async <T>(operation: () => Promise<T>): Promise<T> => {
         const remaining = deadline - Date.now();
@@ -20,14 +21,13 @@ export async function isUltrafastAvailable(
             })]);
         } finally { clearTimeout(timer); }
     };
-    if (modelProvider) {
-        const startup = (await bounded(() => client.readConfig({ includeLayers: false }))).config;
-        const catalogProvider = typeof startup.model_provider === 'string' ? startup.model_provider : 'openai';
-        if (catalogProvider !== modelProvider) throw new Error('Cannot verify Ultrafast for a different Codex model provider; settings were not changed');
-    }
+    if (!catalogProvider) throw new Error('Cannot verify the Codex catalog provider; settings were not changed');
     const explicitModel = typeof model === 'string' && model.trim() ? model : undefined;
-    const configured = explicitModel ? undefined : (await bounded(() => client.readConfig({ cwd, includeLayers: false }))).config.model;
-    const effectiveModel = explicitModel ?? (typeof configured === 'string' && configured.trim() ? configured : undefined);
+    const configured = !explicitModel || !modelProvider
+        ? (await bounded(() => client.readConfig({ cwd, includeLayers: false }))).config : undefined;
+    const effectiveProvider = modelProvider ?? (typeof configured?.model_provider === 'string' ? configured.model_provider : 'openai');
+    if (catalogProvider !== effectiveProvider) throw new Error('Cannot verify Ultrafast for a different Codex model provider; settings were not changed');
+    const effectiveModel = explicitModel ?? (typeof configured?.model === 'string' && configured.model.trim() ? configured.model : undefined);
     const models = [];
     const seen = new Set<string>();
     let cursor: string | undefined;

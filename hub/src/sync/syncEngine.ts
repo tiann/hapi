@@ -5618,7 +5618,7 @@ export class SyncEngine {
                 resumeToken,
                 session.effort ?? undefined,
                 preferredPermissionMode,
-                session.serviceTier ?? undefined,
+                flavor === 'codex' && session.metadata?.codexServiceTierExplicit === false ? undefined : session.serviceTier ?? undefined,
                 access.sessionId,
                 session.collaborationMode ?? undefined,
                 session.copilotAgentMode ?? undefined,

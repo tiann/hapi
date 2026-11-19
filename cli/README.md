@@ -35,7 +35,10 @@ RPC failures leave settings unchanged and surface the error. Codex can return
 a bundled fallback after a backend refresh failure without exposing that failure
 or catalog provenance; a negative catalog result is not an independent entitlement
 check. A detected thread/catalog provider mismatch is an error, not a downgrade.
-An untouched tier continues to inherit the native account default.
+An untouched tier continues to inherit the native account default, including
+after cold resume. HAPI stores explicit tier intent separately from the effective
+tier displayed by Codex. Catalog provider identity is captured at runtime startup;
+an unavailable snapshot leaves Ultrafast eligibility unverified.
 
 ### Session commands
 

@@ -11,7 +11,6 @@ import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { asyncQuestionsForItem } from './asyncQuestions';
 import { CodexAppServerClient } from '../codexAppServerClient';
 import { buildHapiMcpBridge } from '../utils/buildHapiMcpBridge';
-import { sharedLaunchConfig } from './launch';
 
 type NativeTurn = { id: string; status: string; items: unknown[] };
 type NativeRequest = { id: string | number; method: string; params: unknown };
@@ -108,7 +107,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     } as unknown as ApiSessionClient;
     const end = opts?.end ?? (async () => { throw new Error('Unexpected root archive'); });
     const root = new SharedCodexRoot({ session, sessionInfo: { agentState: state }, workingDirectory: directory } as SessionBootstrapResult, {
-        directory, generation: 'test', endpoint: 'mock', settingsFor: () => undefined,
+        directory, generation: 'test', endpoint: 'mock', catalogProvider: 'openai', settingsFor: () => undefined,
         create: opts?.create ?? (async () => { throw new Error('Unexpected root creation'); }),
         attached: opts?.attached, beforeSubscribe: opts?.beforeSubscribe, validateHistory: opts?.validateHistory,
         end
@@ -1462,15 +1461,26 @@ describe('Ultrafast native settings', () => {
     });
 });
 
-it.each([[null, null, undefined], ['default', 'standard', null]] as const)('preserves native tier %s through heartbeat and cold-resume launch', async (nativeTier, hapiTier, resumedTier) => {
+it.each([[null, null], ['default', 'standard'], ['priority', 'fast'], ['ultrafast', 'ultrafast']] as const)('keeps inherited native tier %s for display without pinning it on resume or clear', async (nativeTier, hapiTier) => {
     const f = await fixture();
     const heartbeat = vi.spyOn(f.session, 'keepAlive');
     f.root.acceptSettings({ model: 'mock', serviceTier: nativeTier });
     await f.root.activate();
-    const settings = heartbeat.mock.calls.at(-1)?.[2];
-    expect(settings?.serviceTier).toBe(hapiTier);
-    const launch = sharedLaunchConfig({ model: 'mock', ...(typeof settings?.serviceTier === 'string' ? { serviceTier: settings.serviceTier } : {}) }, f.root.bootstrap.workingDirectory);
-    expect(launch.threadParams.serviceTier).toBe(resumedTier);
+    expect(heartbeat.mock.calls.at(-1)?.[2]?.serviceTier).toBe(hapiTier);
+    expect(f.metadata().codexServiceTierExplicit).toBe(false);
+    expect(f.root.freshParams().serviceTier).toBeUndefined();
+});
+it.each(['standard', 'fast', 'ultrafast'] as const)('persists explicit %s only after native confirmation', async tier => {
+    const f = await fixture(); await f.root.activate();
+    await f.root.applySettings({ serviceTier: tier });
+    expect(f.metadata().codexServiceTierExplicit).toBe(true);
+    expect(f.root.freshParams().serviceTier).toBe(tier === 'fast' ? 'priority' : tier === 'standard' ? 'default' : tier);
+});
+it('accepts null as an explicit Standard reset rather than account inheritance', async () => {
+    const f = await fixture(); await f.root.activate();
+    await f.root.applySettings({ serviceTier: null });
+    expect(f.metadata().codexServiceTierExplicit).toBe(true);
+    expect(f.root.freshParams().serviceTier).toBe('default');
 });
 
 it('preserves settings when an active thread provider differs from the startup catalog', async () => {

@@ -81,6 +81,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     if (!runtime.marker) throw new Error('Cannot verify the runtime process generation');
     let writes = Promise.resolve();
     const persist = () => { writes = writes.catch(() => {}).then(() => saveRuntime(runtime)); return writes; };
+    let catalogProvider: string | undefined;
     const control = new CodexAppServerClient({ endpoint: upstream, token: upstreamToken, cwd: launch.cwd });
     control.setServerRequestHandler(() => {});
     // An independent observer preserves settings when a root's side-client
@@ -200,7 +201,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 agentState: { controlledByUser: false },
             });
         const root = new SharedCodexRoot(bootstrap, { directory: join(runtimeDirectory(), 'queues'), generation: id, endpoint: upstream, token: upstreamToken,
-            settingsFor: threadId => nativeSettings.get(threadId), create, end });
+            settingsFor: threadId => nativeSettings.get(threadId), get catalogProvider() { return catalogProvider; }, create, end });
         prepared.add(root);
         try { assertRunning(); await root.prepare(); assertRunning(); return root; }
         catch (error) { await root.close(!stopping && !existingSessionId); prepared.delete(root); throw error; }
@@ -214,7 +215,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== root.session.sessionId); await persist();
     };
     const reserve = async (root: SharedCodexRoot, threadId: string) => withThreadOwnership(home, threadId, id, () => reserveRecord(root, threadId));
-    const bind = async (root: SharedCodexRoot, response: Record<string, unknown>, subscribe: boolean, initialOptions?: SharedLaunchOptions, freshThread = false) => {
+    const bind = async (root: SharedCodexRoot, response: Record<string, unknown>, subscribe: boolean, initialOptions?: SharedLaunchOptions, freshThread = false, serviceTierExplicit?: boolean) => {
         assertRunning();
         const threadId = string(record(response.thread).id);
         if (!threadId) throw new Error('Codex lifecycle response has no thread ID');
@@ -237,7 +238,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         // Cold-resumed threads predate the control connection's automatic
         // new-thread subscription. Subscribe once without changing settings.
         await control.request('thread/resume', { threadId, excludeTurns: true });
-        await root.activate(initialOptions);
+        await root.activate(initialOptions, serviceTierExplicit);
         await root.session.flush();
         await persist();
         // The hub's view of the metadata is what the hub kept of it: a hub
@@ -247,10 +248,11 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         await notifyRunnerSessionStarted(root.session.sessionId, { ...(root.session.getMetadata() ?? root.bootstrap.metadata), hostStartMarker: root.bootstrap.metadata.hostStartMarker });
     };
     const create = (method: 'thread/start' | 'thread/fork', params: Record<string, unknown>, parent?: SharedCodexRoot, initialOptions?: SharedLaunchOptions): Promise<SharedCodexRoot> => operation(async () => {
+        const serviceTierExplicit = params.serviceTier !== undefined;
         const source = params.serviceTier === 'ultrafast' && method === 'thread/fork'
             ? record(record(await control.request('thread/read', { threadId: params.threadId, includeTurns: false })).thread) : {};
         const downgraded = params.serviceTier === 'ultrafast' && !await isUltrafastAvailable(control, params.model ?? source.model,
-            string(params.cwd) ?? launch.cwd, Date.now() + 10_000, string(params.modelProvider ?? source.modelProvider));
+            string(params.cwd) ?? launch.cwd, Date.now() + 10_000, string(params.modelProvider ?? source.modelProvider), catalogProvider);
         if (downgraded) params = { ...params, serviceTier: null };
         const root = await prepare(string(params.cwd) ?? launch.cwd, undefined, parent);
         let nativeSucceeded = false;
@@ -258,7 +260,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             runtime.pendingCreations = [...runtime.pendingCreations ?? [], root.session.sessionId]; await persist();
             const response = record(await root.client.request(method, root.config({ ...params, ...(method === 'thread/fork' ? { deferGoalContinuation: true } : {}) })));
             nativeSucceeded = true;
-            await bind(root, response, true, initialOptions, method === 'thread/start');
+            await bind(root, response, true, initialOptions, method === 'thread/start', serviceTierExplicit);
             if (downgraded) root.session.sendSessionEvent({ type: 'message', message: ULTRAFAST_FALLBACK_NOTICE });
             return root;
         } catch (error) {
@@ -326,7 +328,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== reservation.root.session.sessionId);
                 await persist(); prepared.delete(reservation.root); await reservation.root.close(true); return;
             }
-            await bind(reservation.root, record(response.result), true, undefined, request.method === 'thread/start');
+            await bind(reservation.root, record(response.result), true, undefined, request.method === 'thread/start', record(request.params).serviceTier !== undefined ? true : undefined);
         } else if (request.method === 'thread/archive' && !response.error) {
             const root = roots.get(string(record(request.params).threadId) ?? ''); if (root) await end(root, false);
         } else if (request.method === 'thread/queue/delete' && !response.error && record(response.result).deleted === true) {
@@ -364,6 +366,11 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             try { await initializeSharedClient(control); break; }
             catch (error) { if (Date.now() > deadline || stopping) throw error; await new Promise(resolve => setTimeout(resolve, 100)); }
         }
+        assertRunning();
+        // model/list remains bound to startup configuration even when config/read
+        // later reports edited files. Capture once before exposing this runtime.
+        try { catalogProvider = string((await control.readConfig({ includeLayers: false })).config.model_provider) ?? 'openai'; }
+        catch { logger.debug('[Codex shared] catalog provider snapshot unavailable'); }
         assertRunning();
         control.setTransportAbandonedHandler(reconnectControl);
         await checkSharedCapabilities(control);
@@ -405,7 +412,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 await reserveRecord(root, threadId); return root;
             });
             const downgraded = launch.threadParams.serviceTier === 'ultrafast'
-                && !await isUltrafastAvailable(control, launch.threadParams.model ?? thread.model, launch.cwd, Date.now() + 10_000, string(launch.threadParams.modelProvider ?? thread.modelProvider));
+                && !await isUltrafastAvailable(control, launch.threadParams.model ?? thread.model, launch.cwd, Date.now() + 10_000, string(launch.threadParams.modelProvider ?? thread.modelProvider), catalogProvider);
             const params = root.config({ ...launch.threadParams, ...(downgraded ? { serviceTier: null } : {}), threadId, excludeTurns: true });
             let response: Record<string, unknown>;
             try {
@@ -419,7 +426,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 await root.client.request('thread/unarchive', { threadId });
                 response = record(await root.client.request('thread/resume', params));
             }
-            await bind(root, response, false, options);
+            await bind(root, response, false, options, false, launch.threadParams.serviceTier !== undefined ? true : undefined);
             if (downgraded) root.session.sendSessionEvent({ type: 'message', message: ULTRAFAST_FALLBACK_NOTICE });
         } else root = await create('thread/start', { ...launch.threadParams, cwd: launch.cwd }, undefined, options);
         assertRunning();
