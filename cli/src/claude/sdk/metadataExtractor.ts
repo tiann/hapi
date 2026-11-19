@@ -9,20 +9,33 @@ import { logger } from '@/ui/logger'
 import type { SkillSummary } from '@/modules/common/skills'
 
 export interface SDKMetadata {
+    version?: string
     tools?: string[]
     skills?: string[]
     slashCommands?: string[]
 }
 
+export function sdkInitCatalog(message: SDKSystemMessage): SDKMetadata {
+    return {
+        version: typeof message.claude_code_version === 'string' ? message.claude_code_version : undefined,
+        tools: message.tools,
+        skills: message.skills,
+        slashCommands: message.slash_commands
+    }
+}
+
 const CATALOG_FLAGS = new Set([
     '--bare',
     '--disable-slash-commands',
-    '--safe-mode'
+    '--safe-mode',
+    '--strict-mcp-config'
 ])
 const CATALOG_VALUE_FLAGS = new Set([
     '--add-dir',
     '--plugin-dir',
     '--plugin-url',
+    '--mcp-config',
+    '--tools',
     '--settings',
     '--setting-sources'
 ])
@@ -41,7 +54,7 @@ export function filterCatalogAffectingClaudeArgs(args: readonly string[] | undef
         filtered.push(arg)
         while (i + 1 < args.length && !args[i + 1].startsWith('-')) {
             filtered.push(args[++i])
-            if (arg !== '--add-dir') break
+            if (!['--add-dir', '--mcp-config', '--tools'].includes(arg)) break
         }
     }
     return filtered
@@ -78,6 +91,7 @@ export function classifyClaudeSlashCatalog(
  */
 export async function extractSDKMetadata(options: {
     cwd?: string
+    model?: string
     claudeArgs?: readonly string[]
 } = {}): Promise<SDKMetadata> {
     const abortController = new AbortController()
@@ -91,6 +105,7 @@ export async function extractSDKMetadata(options: {
             prompt: 'hello',
             options: {
                 cwd: options.cwd,
+                model: options.model,
                 additionalArgs: filterCatalogAffectingClaudeArgs(options.claudeArgs),
                 allowedTools: ['Bash(echo)'],
                 maxTurns: 1,
@@ -103,12 +118,8 @@ export async function extractSDKMetadata(options: {
             if (message.type === 'system' && message.subtype === 'init') {
                 const systemMessage = message as SDKSystemMessage
                 
-                const metadata: SDKMetadata = {
-                    tools: systemMessage.tools,
-                    skills: systemMessage.skills,
-                    slashCommands: systemMessage.slash_commands
-                }
-                
+                const metadata = sdkInitCatalog(systemMessage)
+
                 logger.debug('[metadataExtractor] Captured SDK metadata:', metadata)
                 
                 // Abort the query since we got what we need

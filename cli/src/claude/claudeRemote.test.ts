@@ -90,8 +90,10 @@ describe('claudeRemote async message handling', () => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
         const onFirstResult = vi.fn();
+        const onCatalog = vi.fn();
 
         queryMock.mockReturnValueOnce(createAsyncStream([
+            { type: 'system', subtype: 'init', tools: ['Write'], skills: ['skill'], slash_commands: ['help', 'skill'], claude_code_version: '2.1.0' },
             { type: 'result', subtype: 'success' } as unknown as SDKMessage,
             { type: 'result', subtype: 'success' } as unknown as SDKMessage
         ]));
@@ -114,9 +116,13 @@ describe('claudeRemote async message handling', () => {
                 isAborted: () => false,
                 onSessionFound: () => {},
                 onMessage: () => {},
-                onFirstResult
+                onFirstResult,
+                onCatalog
             });
 
+            expect(onCatalog).toHaveBeenCalledWith({
+                tools: ['Write'], skills: ['skill'], slashCommands: ['help', 'skill'], version: '2.1.0'
+            }, undefined, []);
             expect(onFirstResult).toHaveBeenCalledTimes(1);
             expect(onFirstResult).toHaveBeenCalledWith('Review this project');
         } finally {

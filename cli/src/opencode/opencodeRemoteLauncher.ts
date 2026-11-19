@@ -1,3 +1,4 @@
+import { render } from 'ink';
 import React from 'react';
 import { randomUUID } from 'node:crypto';
 import { Buffer } from 'node:buffer';
@@ -402,6 +403,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             onExit: () => this.handleExitFromUi(),
             onSwitchToLocal: () => this.handleSwitchFromUi()
         });
+    }
+
+    protected renderDisplay(context: RemoteLauncherDisplayContext): ReturnType<typeof render> {
+        return render(this.createDisplay(context), { exitOnCtrlC: false, patchConsole: false });
     }
 
     protected createDisplay(context: RemoteLauncherDisplayContext): React.ReactElement {
