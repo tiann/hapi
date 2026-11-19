@@ -49,7 +49,7 @@ describe('Ultrafast model/account availability', () => {
     it('bounds a stalled catalog without treating timeout as missing entitlement', async () => {
         vi.useFakeTimers();
         try {
-            const pending = isUltrafastAvailable({ readConfig: vi.fn(), listModels: vi.fn(() => new Promise(() => {})) }, 'gpt-6.2-sol');
+            const pending = isUltrafastAvailable({ readConfig: vi.fn(), listModels: vi.fn(() => new Promise<never>(() => {})) }, 'gpt-6.2-sol');
             const rejected = expect(pending).rejects.toThrow('timed out');
             await vi.advanceTimersByTimeAsync(10_001);
             await rejected;
