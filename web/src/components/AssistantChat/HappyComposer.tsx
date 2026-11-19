@@ -1019,7 +1019,7 @@ export function HappyComposer(props: {
     }, [api, suggestions, inputState, autocompletePrefixes, haptic, richMentionsEnabled, handleUserEdit])
 
     const canAbortRun = threadIsRunning || (
-        agentFlavor === 'opencode'
+        active && agentFlavor === 'opencode'
         && Object.values(agentState?.requests ?? {}).some(request => isAskUserQuestionToolName(request.tool))
     )
     const abortDisabled = controlsDisabled || isAborting || !canAbortRun

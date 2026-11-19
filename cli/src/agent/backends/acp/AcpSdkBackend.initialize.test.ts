@@ -69,16 +69,19 @@ describe('AcpSdkBackend.initialize', () => {
     it.each(['opencode', 'agy'] as const)('wires form request lifetime for %s only as supported', async (flavor) => {
         transportState.registerRequestHandler.mockClear();
         const backend = new AcpSdkBackend({ command: flavor, flavor, elicitationForm: true });
-        const receiveForm = vi.fn(async () => ({ action: 'cancel' as const }));
+        const receiveForm = vi.fn(async (_request: { signal?: AbortSignal }) => ({ action: 'cancel' as const }));
         backend.onFormElicitation(receiveForm);
         await backend.initialize();
 
         const registration = transportState.registerRequestHandler.mock.calls.find(([method]) => method === 'elicitation/create');
         expect(registration?.[2]).toEqual({ cancellable: flavor === 'opencode' });
         if (flavor === 'opencode') {
-            const { signal } = new AbortController();
-            await registration![1]({ mode: 'form', sessionId: 'session-1', requestedSchema: {} }, 0, signal);
-            expect(receiveForm).toHaveBeenCalledWith(expect.objectContaining({ signal }));
+            const withdrawal = new AbortController();
+            await registration![1]({ mode: 'form', sessionId: 'session-1', requestedSchema: {} }, 0, withdrawal.signal);
+            const signal = receiveForm.mock.calls[0]?.[0].signal;
+            expect(signal?.aborted).toBe(false);
+            withdrawal.abort();
+            expect(signal?.aborted).toBe(true);
         }
     });
 

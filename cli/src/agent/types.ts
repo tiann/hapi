@@ -117,6 +117,7 @@ export type PermissionResponse =
 
 export const ACP_REQUEST_ABORT_REASON = {
     agentCancelled: 'agent-cancelled',
+    locallyCancelled: 'locally-cancelled',
     connectionClosed: 'connection-closed'
 } as const;
 
@@ -133,7 +134,7 @@ export type FormElicitationRequest = {
     message: string;
     /** JSON-Schema-like object schema; shape is owned by the agent. */
     requestedSchema: unknown;
-    /** Aborted if the agent withdraws the request or its ACP connection closes. */
+    /** Aborted if the request is withdrawn, cancelled locally, or its ACP connection closes. */
     signal?: AbortSignal;
 };
 

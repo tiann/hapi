@@ -139,7 +139,9 @@ export class OpencodePermissionHandler extends BasePermissionHandler<PermissionR
                     decision: 'abort',
                     reason: signal?.reason === ACP_REQUEST_ABORT_REASON.connectionClosed
                         ? 'OpenCode connection closed'
-                        : 'OpenCode withdrew the question'
+                        : signal?.reason === ACP_REQUEST_ABORT_REASON.locallyCancelled
+                            ? 'User aborted'
+                            : 'OpenCode withdrew the question'
                 });
             };
             signal?.addEventListener('abort', onWithdrawn, { once: true });

@@ -1,5 +1,6 @@
 import type { AgentFlavor } from '@hapi/protocol';
 import type { AgentBackend, AgentMessage, AgentSessionConfig, FormElicitationRequest, FormElicitationResponse, PermissionRequest, PermissionResponse, PromptContent } from '@/agent/types';
+import { ACP_REQUEST_ABORT_REASON } from '@/agent/types';
 import { asString, isObject } from '@hapi/protocol';
 import { AcpStdioTransport, isAcpIndeterminateError, type AcpStderrError } from './AcpStdioTransport';
 import { AcpMessageHandler, type AcpTextChunkMode } from './AcpMessageHandler';
@@ -35,6 +36,7 @@ type PendingPermission = {
 type PendingElicitation = {
     sessionId: string;
     settle: (response: FormElicitationResponse) => void;
+    cancelLocally: (reason: string) => void;
 };
 
 type AcpPromptUsage = {
@@ -1116,7 +1118,9 @@ export class AcpSdkBackend implements AgentBackend {
     private settlePendingElicitations(sessionId?: string): void {
         for (const pending of Array.from(this.pendingElicitations)) {
             if (sessionId === undefined || pending.sessionId === sessionId) {
-                pending.settle({ action: 'cancel' });
+                pending.cancelLocally(sessionId === undefined
+                    ? ACP_REQUEST_ABORT_REASON.connectionClosed
+                    : ACP_REQUEST_ABORT_REASON.locallyCancelled);
             }
         }
     }
@@ -1136,12 +1140,18 @@ export class AcpSdkBackend implements AgentBackend {
             ? this.resolveToolCallLifetimeId(agentToolCallId, 'request', sessionId)
             : null;
         const requestId = toolCallId ? this.toolCallLifetimes.allocateRequestId(toolCallId) : null;
+        const localCancellation = this.options.flavor === 'opencode' ? new AbortController() : undefined;
+        // A local cancellation still needs to send a reply over ACP. Only the
+        // downstream form handler sees the combined signal.
+        const formSignal = localCancellation
+            ? signal ? AbortSignal.any([signal, localCancellation.signal]) : localCancellation.signal
+            : signal;
         const request: FormElicitationRequest = {
             sessionId,
             ...(toolCallId && requestId ? { toolCallId, requestId } : {}),
             message: asString(params.message) ?? '',
             requestedSchema: params.requestedSchema,
-            ...(signal ? { signal } : {})
+            ...(formSignal ? { signal: formSignal } : {})
         };
 
         return await new Promise<FormElicitationResponse>((resolve) => {
@@ -1152,6 +1162,10 @@ export class AcpSdkBackend implements AgentBackend {
                     if (requestId) this.liveRequestIds.delete(requestId);
                     if (toolCallId) this.toolCallLifetimes.settleRequest(toolCallId);
                     resolve(response);
+                },
+                cancelLocally: (reason) => {
+                    pending.settle(cancel);
+                    localCancellation?.abort(reason);
                 }
             };
             this.pendingElicitations.add(pending);

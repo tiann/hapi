@@ -612,6 +612,21 @@ describe('HappyComposer generic model/effort value buttons', () => {
         expect(runtime.cancelRun).not.toHaveBeenCalled()
     })
 
+    it('disables Stop and Escape for an offline OpenCode session with a retained question', () => {
+        localStorage.setItem('hapi.fue.v1.rich-composer-mentions', '1')
+        renderComposer('opencode', {
+            active: false,
+            allowSendWhenInactive: true,
+            agentState: { requests: { question: { tool: 'AskUserQuestion', arguments: {}, createdAt: 1 } } }
+        })
+
+        const stop = screen.getByRole('button', { name: 'Abort' })
+        expect(stop).toBeDisabled()
+        fireEvent.click(stop)
+        fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Escape' })
+        expect(runtime.cancelRun).not.toHaveBeenCalled()
+    })
+
     it('keeps settings and input focus during IME Escape', () => {
         localStorage.setItem('hapi.fue.v1.rich-composer-mentions', '1')
         runtime.snapshot.thread.isRunning = true
