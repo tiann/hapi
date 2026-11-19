@@ -1,3 +1,4 @@
+import type { ChildProcess } from 'node:child_process'
 import chalk from 'chalk'
 import { HAPI_SESSION_ID_ENV } from '@/agent/hapiSessionEnv'
 import { isPeerToolsDisabled } from '@/modules/common/peerTools'
@@ -62,13 +63,22 @@ function parseJsonArgs(raw: string): unknown {
     }
 }
 
-function startDetachedReplyForwarder(options: { peerSessionId: string; taskLocalId: string; callerSessionId: string }): void {
-    const child = spawnHappyCLI(
-        ['peer-tool', FORWARD_REPLY_MODE, options.peerSessionId, options.taskLocalId, options.callerSessionId],
-        { detached: true, stdio: 'ignore' }
-    )
-    child.on('error', () => {})
-    child.unref()
+function startDetachedReplyForwarder(options: { peerSessionId: string; taskLocalId: string; callerSessionId: string }): Promise<boolean> {
+    return new Promise((resolve) => {
+        let child: ChildProcess
+        try {
+            child = spawnHappyCLI(
+                ['peer-tool', FORWARD_REPLY_MODE, options.peerSessionId, options.taskLocalId, options.callerSessionId],
+                { detached: true, stdio: 'ignore' }
+            )
+        } catch {
+            resolve(false)
+            return
+        }
+        child.on('error', () => resolve(false))
+        child.once('spawn', () => resolve(true))
+        child.unref()
+    })
 }
 
 async function runReplyForwarder(args: string[]): Promise<null> {
@@ -76,7 +86,7 @@ async function runReplyForwarder(args: string[]): Promise<null> {
     if (!peerSessionId || !taskLocalId || !callerSessionId || rest.length > 0) {
         throw new PeerToolUsageError(`usage: hapi peer-tool ${FORWARD_REPLY_MODE} <peerSessionId> <taskLocalId> <callerSessionId>`)
     }
-    await initializeToken()
+    await initializeToken({ interactive: false })
     await forwardPeerReply({ peerSessionId, taskLocalId, callerSessionId })
     return null
 }
@@ -94,6 +104,9 @@ export async function runPeerToolCommand(commandArgs: string[], readInput: () =>
     if (!name) {
         throw new PeerToolUsageError(`missing tool name; usage: hapi peer-tool <${PEER_TOOL_NAMES.join('|')}>`)
     }
+    if (isPeerToolsDisabled()) {
+        throw new PeerToolUsageError('peer session tools are disabled on this machine (HAPI_DISABLE_PEER_TOOLS is set)')
+    }
     if (name === FORWARD_REPLY_MODE) {
         return await runReplyForwarder(rest)
     }
@@ -102,9 +115,6 @@ export async function runPeerToolCommand(commandArgs: string[], readInput: () =>
     }
     if (!isPeerToolName(name)) {
         throw new PeerToolUsageError(`unknown peer tool '${name}' (expected ${PEER_TOOL_NAMES.join(', ')})`)
-    }
-    if (isPeerToolsDisabled()) {
-        throw new PeerToolUsageError('peer session tools are disabled on this machine (HAPI_DISABLE_PEER_TOOLS is set)')
     }
 
     const parsed = PEER_TOOL_DEFINITIONS[name].inputSchema.safeParse(parseJsonArgs(await readInput()))
@@ -116,7 +126,7 @@ export async function runPeerToolCommand(commandArgs: string[], readInput: () =>
     }
 
     try {
-        await initializeToken()
+        await initializeToken({ interactive: false })
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         return { content: [{ type: 'text', text: `Failed to run ${name}: ${message}` }], isError: true }

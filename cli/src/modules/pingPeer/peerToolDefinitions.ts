@@ -129,8 +129,8 @@ export type PeerToolContext = {
         parent?: PeerParentIdentity | null
         requireParent: boolean
     }
-    /** Starts reply forwarding; defaults to polling in this process. */
-    forwardReply?: (options: { peerSessionId: string; taskLocalId: string; callerSessionId: string }) => void
+    /** Starts reply forwarding; defaults to polling in this process. Resolving false means it could not start. */
+    forwardReply?: (options: { peerSessionId: string; taskLocalId: string; callerSessionId: string }) => void | Promise<boolean>
 }
 
 export type PeerToolHandlers = {
@@ -171,15 +171,16 @@ export function forwardPeerReplyInProcess(options: { peerSessionId: string; task
 export function createPeerToolHandlers(ctx: PeerToolContext): PeerToolHandlers {
     const forwardReply = ctx.forwardReply ?? forwardPeerReplyInProcess
     /** Start reply forwarding when asked; returns the note for the tool result. */
-    const forwardReplyIfRequested = (
+    const forwardReplyIfRequested = async (
         waitForReply: boolean | undefined,
         task: { sessionId: string; localId?: string; flavor?: string | null }
-    ): string => {
+    ): Promise<string> => {
         if (!waitForReply) return ''
         if (!task.localId) return '; the delivered message could not be identified, so check the reply with inspect_peer'
         if (!supportsPeerReply(task.flavor)) return `; ${task.flavor} peers do not report turn ends, so check the reply with inspect_peer`
         if (!ctx.callerSessionId) return '; no calling session (HAPI_SESSION_ID is unset), so check the reply with inspect_peer'
-        forwardReply({ peerSessionId: task.sessionId, taskLocalId: task.localId, callerSessionId: ctx.callerSessionId })
+        const started = await forwardReply({ peerSessionId: task.sessionId, taskLocalId: task.localId, callerSessionId: ctx.callerSessionId })
+        if (started === false) return '; reply forwarding could not start, so check the reply with inspect_peer'
         return '; its reply will be posted here'
     }
 
@@ -193,7 +194,7 @@ export function createPeerToolHandlers(ctx: PeerToolContext): PeerToolHandlers {
                     deliveryMode: args.deliveryMode,
                     wake: args.wake === true,
                 })
-                const replyNote = forwardReplyIfRequested(args.waitForReply, result)
+                const replyNote = await forwardReplyIfRequested(args.waitForReply, result)
                 return textResult(result.delivery === 'accepted'
                     ? `Accepted for ${result.sessionId}${result.resumed ? ' (resumed)' : ''} (${result.name}) localId=${result.localId} — delivery shows in the recipient chat when its runtime consumes it${result.steerNote ? ` (${result.steerNote})` : ''}${replyNote}`
                     : `${result.delivery} to ${result.sessionId}${result.resumed ? ' (resumed)' : ''} (${result.name}) localId=${result.localId}${replyNote}`, false)
@@ -222,7 +223,7 @@ export function createPeerToolHandlers(ctx: PeerToolContext): PeerToolHandlers {
                     ...(spawnCtx.parent !== undefined ? { parent: spawnCtx.parent } : {}),
                     requireParent: spawnCtx.requireParent,
                 })
-                return textResult(`Spawned ${result.sessionId} (${result.name})${forwardReplyIfRequested(args.waitForReply, result)}`, false)
+                return textResult(`Spawned ${result.sessionId} (${result.name})${await forwardReplyIfRequested(args.waitForReply, result)}`, false)
             } catch (error) {
                 const message = errorMessage(error)
                 logger.debug('[hapiMCP] spawn_peer failed:', message)
