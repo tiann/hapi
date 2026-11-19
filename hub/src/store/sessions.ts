@@ -288,6 +288,7 @@ type DbSessionRow = {
     last_notify_note: string | null
     blocked_ack_at: number | null
     blocked_ack_reason: string | null
+    last_notify_cleared_at: number | null
     active: number
     active_at: number | null
     seq: number
@@ -323,6 +324,7 @@ function toStoredSession(row: DbSessionRow): StoredSession {
         lastNotifyNote: row.last_notify_note,
         blockedAckAt: row.blocked_ack_at,
         blockedAckReason: row.blocked_ack_reason,
+        lastNotifyClearedAt: row.last_notify_cleared_at,
         active: row.active === 1,
         activeAt: row.active_at,
         seq: row.seq
@@ -730,6 +732,7 @@ export function setSessionLastNotify(
             WHERE id = @id
               AND namespace = @namespace
               AND (last_notify_at IS NULL OR last_notify_at <= @at)
+              AND (last_notify_cleared_at IS NULL OR last_notify_cleared_at <= @at)
         `).run({
             id,
             status: signal.status,
@@ -777,18 +780,24 @@ export function setSessionBlockedAck(
  * self-report no longer describes the present. No-op (returns false) when
  * nothing was stored, so callers can guard cheap.
  */
-export function clearSessionLastNotify(db: Database, id: string, namespace: string): boolean {
+export function clearSessionLastNotify(
+    db: Database,
+    id: string,
+    namespace: string,
+    clearedAt: number = Date.now()
+): boolean {
     try {
         const result = db.prepare(`
             UPDATE sessions
             SET last_notify_status = NULL,
                 last_notify_at = NULL,
                 last_notify_note = NULL,
+                last_notify_cleared_at = MAX(COALESCE(last_notify_cleared_at, 0), @clearedAt),
                 seq = seq + 1
             WHERE id = @id
               AND namespace = @namespace
               AND last_notify_status IS NOT NULL
-        `).run({ id, namespace })
+        `).run({ id, namespace, clearedAt })
         return result.changes === 1
     } catch {
         return false

@@ -9,7 +9,7 @@ import { EventPublisher } from './eventPublisher'
 import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
 import { InvalidExternalRefsError } from './externalRefErrors'
 import { resolveSessionIdleTimeoutMs, shouldClearKeepaliveIdle, shouldMarkKeepaliveIdle } from './sessionIdle'
-import { isOperatorReplyMessage } from './workGraphNotifyIngest'
+import { deliveredOperatorReplyAt, isDeliveredOperatorReply } from './workGraphNotifyIngest'
 
 /** Transcript window scanned for a newer operator reply when merging a
  *  notify signal (#1717). Matches the startup backfill's scan depth. */
@@ -527,12 +527,17 @@ export class SessionCache {
         // timestamp-monotonic check has nothing left to compare against — and
         // Claude replays keep their original transcript timestamps. Without a
         // boundary, a delayed footer from before the operator's reply walks
-        // straight back in and the row reappears as blocked when thinking ends.
-        // The turn that did the clearing is that boundary: anything stamped
-        // earlier was answered by the prompt which started it. Startup
-        // restoration and the merge apply the same rule via the transcript.
-        const turnBoundary = session.activeTurnStartedAt ?? null
-        if (turnBoundary !== null && signal.at < turnBoundary) {
+        // straight back in and the row reappears as blocked.
+        //
+        // The boundary is persisted (`last_notify_cleared_at`) rather than read
+        // from `activeTurnStartedAt`: that field resets when the agent goes
+        // idle, so a footer arriving after the reply turn *ended* found both it
+        // and `last_notify_at` null and was accepted. The persisted watermark
+        // also survives a restart. The store enforces the same rule in SQL; this
+        // is the in-memory fast path.
+        const clearedAt = this.store.sessions.getSessionByNamespace(sessionId, session.namespace)
+            ?.lastNotifyClearedAt ?? null
+        if (clearedAt !== null && signal.at < clearedAt) {
             return
         }
         // Unchanged status for the same turn: skip the write + SSE fan-out.
@@ -566,6 +571,7 @@ export class SessionCache {
         // In place + full-session emit, for the same reason as the notify
         // writes: refreshSession would discard in-memory runtime state.
         session.blockedAck = ack
+        session.notifyUpdatedAt = Math.max((session.notifyUpdatedAt ?? 0) + 1, Date.now())
         this.publisher.emit({ type: 'session-updated', sessionId: session.id, data: session })
         return ack
     }
@@ -602,6 +608,10 @@ export class SessionCache {
         signal: { status: string; at: number; note: string | null } | null
     ): void {
         session.lastNotify = signal
+        // Bumped on every write INCLUDING a clear: without an ordering key a
+        // delayed snapshot on the other SSE stream re-applies the pre-clear
+        // state and the row flips back to blocked.
+        session.notifyUpdatedAt = Math.max((session.notifyUpdatedAt ?? 0) + 1, Date.now())
         this.publisher.emit({ type: 'session-updated', sessionId: session.id, data: session })
     }
 
@@ -2479,12 +2489,10 @@ export class SessionCache {
             // that was dealt with, so check the (already merged) transcript for
             // a delivered reply newer than the footer before carrying it over.
             // Mirrors the operator-reply boundary the startup backfill applies.
-            const mergedNow = Date.now()
             const answeredSince = this.store.messages
                 .getMessages(newSessionId, NOTIFY_MERGE_MESSAGE_SCAN)
-                .some((message) => message.createdAt > oldNotifyAt
-                    && !(message.scheduledAt != null && message.scheduledAt > mergedNow)
-                    && isOperatorReplyMessage(message.content))
+                .some((message) => isDeliveredOperatorReply(message)
+                    && deliveredOperatorReplyAt(message) > oldNotifyAt)
             if (latest && !answeredSince && (targetNotifyAt === null || oldNotifyAt > targetNotifyAt)) {
                 this.setSessionLastNotify(newSessionId, {
                     status: oldStored.lastNotifyStatus,

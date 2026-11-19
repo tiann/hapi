@@ -661,6 +661,10 @@ export const SessionSchema = z.object({
     /** Operator dismissed blocked chrome up to this point; newer blockers still
      *  count. See `SessionBlockedAck`. */
     blockedAck: SessionBlockedAckSchema.nullish(),
+    /** Monotonic watermark for `lastNotify` / `blockedAck` (#1717). Both ride
+     *  full-session snapshots on two SSE streams, so a client needs an ordering
+     *  key to reject a stale snapshot that would revive a cleared blocker. */
+    notifyUpdatedAt: z.number().int().nonnegative().safe().optional(),
     model: z.string().nullable().optional().default(null),
     modelReasoningEffort: z.string().nullable().optional().default(null),
     effort: z.string().nullable().optional().default(null),

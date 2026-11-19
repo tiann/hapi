@@ -88,6 +88,24 @@ describe('footer timestamp boundary on the live path (#1717)', () => {
         expect(cache.getSession(id)?.lastNotify ?? null).toBeNull()
     })
 
+    it('rejects a delayed footer that arrives after the reply turn ended', () => {
+        // The gap the earlier `activeTurnStartedAt` version missed: that field
+        // resets when the agent goes idle, so once the turn ends both it and
+        // `last_notify_at` are null and the stale footer was accepted. The
+        // persisted clear watermark has to outlive the turn.
+        const { cache } = makeCache()
+        const id = seedBlocked(cache, 'notify-boundary-after-turn')
+        const beforeReply = Date.now() - 60_000
+
+        cache.markMessageQueued(id)
+        // Turn ends; agent goes idle without emitting another footer.
+        cache.handleSessionEnd({ sid: id, time: Date.now() })
+
+        cache.setSessionLastNotify(id, { status: 'blocked', at: beforeReply, note: 'stale replay' })
+
+        expect(cache.getSession(id)?.lastNotify ?? null).toBeNull()
+    })
+
     it('still accepts a footer from the current turn', () => {
         const { cache } = makeCache()
         const id = seedBlocked(cache, 'notify-boundary-live')
@@ -262,6 +280,42 @@ describe('startup notify backfill (#1717)', () => {
         const stamped = engine.backfillRecentNotifySignals({ now })
 
         expect(stamped).toBe(1)
+        expect(engine.getSession(session.id)?.lastNotify?.status).toBe('blocked')
+    })
+
+    it('does not treat an overdue but never-invoked reply as an answer', async () => {
+        // Due time is not delivery. A scheduled reply can pass its due time
+        // while the agent is offline and still have a null invokedAt — the
+        // agent never saw it, so the blocker it was meant to answer stands.
+        const { SyncEngine } = await import('./syncEngine')
+        const { RpcRegistry } = await import('../socket/rpcRegistry')
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const session = engine.getOrCreateSession(
+            'backfill-overdue',
+            { path: '/tmp/project', host: 'localhost' },
+            null,
+            'default'
+        )
+        const now = Date.now()
+        const footer = 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs a key' })
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'assistant', message: { content: [{ type: 'text', text: footer }] } }
+            }
+        }, undefined, null, now - 10_000)
+        // Due an hour ago, never invoked: the agent was offline throughout.
+        store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'here is the key' },
+            meta: { sentFrom: 'webapp' }
+        }, 'overdue-1', now - 3_600_000, now - 5_000)
+
+        expect(engine.backfillRecentNotifySignals({ now })).toBe(1)
         expect(engine.getSession(session.id)?.lastNotify?.status).toBe('blocked')
     })
 })

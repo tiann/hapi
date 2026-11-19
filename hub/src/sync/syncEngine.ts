@@ -92,7 +92,7 @@ import { ArchiveCleanupError } from './archiveCleanupError'
 import { AutomaticTitleSuggestionService } from './automaticTitleSuggestion'
 import { extractMessageEventType } from '../notifications/eventParsing'
 import { SessionEnumerationCache } from './sessionEnumerationCache'
-import { buildOperatorUnblockEvent, extractSessionNotifySignal, ingestNotifySummaryFromMessage, isOperatorReplyMessage } from './workGraphNotifyIngest'
+import { buildOperatorUnblockEvent, extractSessionNotifySignal, ingestNotifySummaryFromMessage, isDeliveredOperatorReply } from './workGraphNotifyIngest'
 import { MetadataSchema, type OpenCodeRewindOperation } from '@hapi/protocol/schemas'
 import type { OpenCodeRewindReport } from '@hapi/protocol/apiTypes'
 import { extractTodoWriteTodosFromMessageContent } from './todos'
@@ -431,12 +431,24 @@ export class SyncEngine {
      * silently would leave a state change with no "why", which is exactly the
      * gap the reason prompt exists to close.
      */
-    acknowledgeSessionBlocked(sessionId: string, reason: string): { at: number; reason: string } | null {
+    acknowledgeSessionBlocked(
+        sessionId: string,
+        reason: string,
+        observedAt?: number
+    ): { at: number; reason: string } | null {
         const session = this.getSession(sessionId)
         if (!session) return null
 
         const priorNotify = session.lastNotify ?? null
-        const ack = this.sessionCache.setSessionBlockedAck(sessionId, reason)
+        // Watermark the blocker the operator actually reviewed, not the hub's
+        // receive time. A permission request or footer that landed between the
+        // dialog opening and this call is a blocker they never saw, and
+        // stamping `now` would silence it under a reason written for another.
+        // Clamped so a skewed or forged client clock cannot dismiss the future.
+        const ackAt = typeof observedAt === 'number'
+            ? Math.min(observedAt, Date.now())
+            : Date.now()
+        const ack = this.sessionCache.setSessionBlockedAck(sessionId, reason, ackAt)
         if (!ack) return null
 
         try {
@@ -511,12 +523,11 @@ export class SyncEngine {
             // Stop at the newest operator prompt. Anything older was already
             // answered, and clear-on-new-turn deliberately erased it — a
             // restart must not resurrect a blocker the operator dealt with.
-            // A future-scheduled reply is withheld from the agent by
-            // `MessageService.sendMessage`, so it has answered nothing. Stopping
-            // on it would bury an unanswered footer on restart — the same blind
-            // spot the live path has at `markMessageQueued`.
-            const futureScheduled = message.scheduledAt != null && message.scheduledAt > now
-            if (!futureScheduled && isOperatorReplyMessage(message.content)) break
+            // Only a reply the agent was actually given ends the scan. A
+            // scheduled message that passed its due time but was never invoked
+            // has still answered nothing, so stopping on it would bury an
+            // unanswered footer on restart.
+            if (isDeliveredOperatorReply(message)) break
             const signal = extractSessionNotifySignal(message.content, message.createdAt)
             if (!signal) continue
             this.sessionCache.setSessionLastNotify(sessionId, signal)

@@ -149,6 +149,8 @@ export type SessionSummary = {
     lastNotify?: SessionNotifySignal | null
     /** Operator's manual "not blocked" watermark + rationale. */
     blockedAck?: SessionBlockedAck | null
+    /** Ordering key for the two fields above; see `Session.notifyUpdatedAt`. */
+    notifyUpdatedAt?: number
     futureScheduledMessageCount: number
     /** Epoch ms of the soonest uninvoked future scheduled message, or null. */
     nextScheduledAt: number | null
@@ -369,6 +371,7 @@ export function toSessionSummary(
         derivedToolWork: session.derivedToolWork === true,
         lastNotify: session.lastNotify ?? null,
         blockedAck: session.blockedAck ?? null,
+        notifyUpdatedAt: session.notifyUpdatedAt ?? 0,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
         attachedJob,

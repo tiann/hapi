@@ -1645,6 +1645,9 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     const quickUnpinFocusRef = useContext(QuickUnpinFocusContext)
     const panelOpen = useContext(CollapsiblePanelOpenContext)
     const [unblockOpen, setUnblockOpen] = useState(false)
+    // Pinned when the dialog opens so the watermark covers the blocker the
+    // operator reviewed, not whatever arrived while they were typing.
+    const [unblockObservedAt, setUnblockObservedAt] = useState<number | null>(null)
     const {
         status: cursorChatStoreStatus,
         isApplicable: cursorChatStoreApplicable,
@@ -2016,7 +2019,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                     ? () => forkFlow.openFork()
                     : undefined}
                 forkDisabledReason={forkDisabledReason}
-                onMarkUnblocked={blocked ? () => setUnblockOpen(true) : undefined}
+                onMarkUnblocked={blocked ? () => { setUnblockObservedAt(blocked.at); setUnblockOpen(true) } : undefined}
                 onArchive={() => setArchiveOpen(true)}
                 onReopen={cursorReopenDisabledReason ? undefined : () => void handleReopen()}
                 reopenDisabledReason={cursorReopenDisabledReason}
@@ -2078,8 +2081,11 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                     blockedLabel={blocked ? t(getSessionBlockedLabelKey(blocked)) : null}
                     blockedNote={blocked?.note ?? null}
                     isPending={isPending}
-                    onClose={() => setUnblockOpen(false)}
-                    onConfirm={acknowledgeBlocked}
+                    onClose={() => { setUnblockOpen(false); setUnblockObservedAt(null) }}
+                    onConfirm={(reason) => acknowledgeBlocked({
+                        reason,
+                        ...(unblockObservedAt !== null ? { observedAt: unblockObservedAt } : {})
+                    })}
                 />
             ) : null}
 
@@ -3591,7 +3597,14 @@ export function SessionList(props: {
     const jumpToNextBlocked = () => {
         if (blockedSessions.length === 0) return
         const renderedIds = new Set(machineFilteredSessions.map((session) => session.id))
-        if (blockedSessions.some((session) => !renderedIds.has(session.id))) {
+        // Pick the target BEFORE deciding to clear anything. Testing "is any
+        // blocker hidden" threw away the operator's saved status/unread
+        // preferences even when the row we are about to travel to is already
+        // on screen — a filter they set is not ours to discard speculatively.
+        const cursor = blockedJumpCursorRef.current % blockedSessions.length
+        blockedJumpCursorRef.current = cursor + 1
+        const target = blockedSessions[cursor]!
+        if (!renderedIds.has(target.id)) {
             // The pill counts blocked work the active filters hide. Travelling
             // without clearing them would skip rows the count promised.
             setSearchQuery('')
@@ -3611,9 +3624,7 @@ export function SessionList(props: {
         // inside a collapsed panel and appears to do nothing.
         setBlockedSectionCollapsed(false)
         setPinnedSectionCollapsed(false)
-        const cursor = blockedJumpCursorRef.current % blockedSessions.length
-        blockedJumpCursorRef.current = cursor + 1
-        setPendingBlockedScrollId(blockedSessions[cursor]!.id)
+        setPendingBlockedScrollId(target.id)
     }
 
     useEffect(() => {
@@ -4146,8 +4157,12 @@ export function SessionList(props: {
                                 ({blockedSectionSessions.length})
                             </span>
                         </div>
-                        <div className="collapsible-panel" data-open={(!blockedSectionCollapsed || isFiltering) || undefined}>
-                            <div className="collapsible-inner">
+                        {/* CollapsiblePanel unmounts its children once the close
+                            transition settles. The raw panel markup kept the row
+                            buttons mounted and focusable, so a keyboard user tabbing
+                            out of a collapsed header landed on invisible rows — one
+                            dead tab stop per blocker. */}
+                        <CollapsiblePanel open={!blockedSectionCollapsed || isFiltering}>
                                 <div className="flex flex-col gap-0.5 ml-3 pl-1 py-1">
                                     {blockedSectionSessions.map((s) => (
                                         <SessionItem
@@ -4178,8 +4193,7 @@ export function SessionList(props: {
                                         />
                                     ))}
                                 </div>
-                            </div>
-                        </div>
+                        </CollapsiblePanel>
                     </div>
                 ) : null}
 

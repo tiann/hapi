@@ -606,6 +606,31 @@ export function ingestNotifySummaryFromMessage(input: NotifyIngestInput): Notify
 }
 
 /**
+ * True for an operator prompt the agent has actually been given.
+ *
+ * A scheduled message is withheld from the CLI until it matures AND is
+ * invoked, so an overdue-but-uninvoked one has still answered nothing — the
+ * due time alone is not delivery. Ordering uses the invocation time, because
+ * that is when the agent saw it.
+ */
+export function isDeliveredOperatorReply(
+    message: { content: unknown; scheduledAt: number | null; invokedAt: number | null }
+): boolean {
+    if (!isOperatorReplyMessage(message.content)) return false
+    if (message.scheduledAt != null) return message.invokedAt !== null
+    return true
+}
+
+/** When the agent actually saw a delivered reply. */
+export function deliveredOperatorReplyAt(
+    message: { createdAt: number; scheduledAt: number | null; invokedAt: number | null }
+): number {
+    return message.scheduledAt != null
+        ? (message.invokedAt ?? message.createdAt)
+        : message.createdAt
+}
+
+/**
  * True for a real operator prompt — the thing that answers a blocked agent.
  * Excludes the Claude jsonl transcript echo, which replays the same prompt as
  * a second `role=user` row and would otherwise look like a fresh reply.

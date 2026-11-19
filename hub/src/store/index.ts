@@ -60,7 +60,7 @@ export {
     WorkGraphValidationError
 } from './workGraph'
 
-const SCHEMA_VERSION: number = 38
+const SCHEMA_VERSION: number = 39
 const REQUIRED_TABLES = [
     'sessions',
     'machines',
@@ -412,6 +412,7 @@ export class Store {
             35: () => this.migrateFromV35ToV36(),
             36: () => this.migrateFromV36ToV37(),
             37: () => this.migrateFromV37ToV38(),
+            38: () => this.migrateFromV38ToV39(),
         })
 
         if (currentVersion === 0) {
@@ -510,6 +511,7 @@ export class Store {
                 last_notify_status TEXT,
                 last_notify_at INTEGER,
                 last_notify_note TEXT,
+                last_notify_cleared_at INTEGER,
                 blocked_ack_at INTEGER,
                 blocked_ack_reason TEXT,
                 active INTEGER DEFAULT 0,
@@ -1327,6 +1329,17 @@ export class Store {
         }
         if (!columns.has('blocked_ack_reason')) {
             this.db.exec('ALTER TABLE sessions ADD COLUMN blocked_ack_reason TEXT')
+        }
+    }
+
+    /** Persisted clear boundary (#1717): an incoming footer older than the
+     *  turn that cleared the last one has already been answered. Survives the
+     *  turn ending and a restart, which `activeTurnStartedAt` does not. */
+    private migrateFromV38ToV39(): void {
+        const columns = this.getSessionColumnNames()
+        if (columns.size === 0) return
+        if (!columns.has('last_notify_cleared_at')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN last_notify_cleared_at INTEGER')
         }
     }
 

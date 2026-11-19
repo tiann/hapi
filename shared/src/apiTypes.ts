@@ -511,7 +511,13 @@ export type SetSessionPinnedRequest = z.infer<typeof SetSessionPinnedRequestSche
 
 /** Manual unblock (#1717). Reason is required — see `SessionBlockedAck`. */
 export const SetSessionBlockedAckRequestSchema = z.object({
-    reason: z.string().trim().min(1).max(BLOCKED_ACK_REASON_MAX_CHARS)
+    reason: z.string().trim().min(1).max(BLOCKED_ACK_REASON_MAX_CHARS),
+    /** Timestamp of the blocker the operator was looking at when they opened
+     *  the dialog. The watermark is set to this rather than to the hub's
+     *  receive time, so a blocker that arrived while the dialog was open is
+     *  not silently covered by a reason written for an earlier one.
+     *  Optional: an older client omits it and keeps the previous behaviour. */
+    observedAt: z.number().int().nonnegative().safe().optional()
 })
 export type SetSessionBlockedAckRequest = z.infer<typeof SetSessionBlockedAckRequestSchema>
 export type SessionPinMode = SetSessionPinnedRequest['mode']

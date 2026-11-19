@@ -489,8 +489,24 @@ export function useSSE(options: {
 
                 const existingIndex = previous.sessions.findIndex((item) => item.id === session.id)
                 const existing = existingIndex >= 0 ? previous.sessions[existingIndex] : undefined
+                // Notify/ack ride full-session snapshots on BOTH the global and
+                // session-scoped streams with no delivery ordering between
+                // them, so an older snapshot arriving after a newer clear would
+                // revive the blocker. Keep whichever side has the higher
+                // watermark, exactly as attachedJob does below.
+                const incomingNotifyAt = session.notifyUpdatedAt ?? 0
+                const existingNotifyAt = existing?.notifyUpdatedAt ?? 0
+                const keepExistingNotify = existing !== undefined
+                    && existingNotifyAt > incomingNotifyAt
                 const summary = {
                     ...toSessionSummary(session),
+                    ...(keepExistingNotify
+                        ? {
+                            lastNotify: existing?.lastNotify ?? null,
+                            blockedAck: existing?.blockedAck ?? null,
+                            notifyUpdatedAt: existingNotifyAt
+                        }
+                        : {}),
                     attachedJob: existing?.attachedJob ?? null,
                     attachedJobUpdatedAt: existing?.attachedJobUpdatedAt ?? 0,
                     contentRevision: Math.max(existing?.contentRevision ?? 0, session.contentRevision ?? 0),

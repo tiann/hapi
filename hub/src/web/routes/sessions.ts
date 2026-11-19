@@ -1767,7 +1767,11 @@ export function createSessionsRoutes(
             return c.json({ error: 'Invalid body: reason is required' }, 400)
         }
 
-        const ack = engine.acknowledgeSessionBlocked(sessionResult.sessionId, parsed.data.reason)
+        const ack = engine.acknowledgeSessionBlocked(
+            sessionResult.sessionId,
+            parsed.data.reason,
+            parsed.data.observedAt
+        )
         if (!ack) {
             return c.json({ error: 'Failed to acknowledge' }, 500)
         }
