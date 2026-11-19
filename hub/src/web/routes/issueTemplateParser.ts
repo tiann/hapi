@@ -258,9 +258,18 @@ function asStringListField(value: unknown): string[] {
  */
 export function parseLegacyIssueTemplate(id: string, raw: string): IssueTemplate {
     const { frontmatter, body } = splitFrontmatter(raw)
+    const name = asString(frontmatter.name) ?? id
+    // Same "fail loudly" principle the YAML form path above already applies
+    // to an unsupported `type:` (review finding, hapi#238): this UI has no
+    // way to carry a GitHub issue type through creation, so silently
+    // dropping a declared `type:` here would file an untyped issue despite
+    // the template's own frontmatter saying otherwise.
+    if (asString(frontmatter.type)) {
+        return { id, name, kind: 'unsupported', reason: 'Uses a template feature not supported yet (type)' }
+    }
     return {
         id,
-        name: asString(frontmatter.name) ?? id,
+        name,
         description: asString(frontmatter.about),
         titlePrefix: asString(frontmatter.title),
         labels: asStringListField(frontmatter.labels),

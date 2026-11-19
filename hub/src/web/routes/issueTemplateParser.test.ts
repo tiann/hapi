@@ -271,6 +271,23 @@ Body text.
         expect(template.body).toBe('Just some text, no frontmatter.')
         expect(template.labels).toEqual([])
     })
+
+    // Regression (bot review, hapi#238): a declared `type:` used to be
+    // silently dropped, filing an untyped issue despite the template's own
+    // frontmatter. Mirrors the YAML form path's existing "fail loudly"
+    // handling of the same unsupported feature.
+    it('marks a template declaring an issue type as unsupported instead of silently dropping it', () => {
+        const markdown = `---
+name: Bug
+type: Bug
+---
+Body text.
+`
+        const template = parseLegacyIssueTemplate('bug.md', markdown)
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.reason).toContain('type')
+    })
 })
 
 describe('hasRequiredLegacyTemplateFrontmatter', () => {
