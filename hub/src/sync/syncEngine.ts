@@ -3907,10 +3907,10 @@ export class SyncEngine {
             // Terminal / non-runner sessions: KillSession is the primary stop.
             // Best-effort machine StopSession when a runner is connected; do not
             // refuse archive when no runner exists (#1911 bot Major).
-            try {
-                await this.rpcGateway.stopRunnerSession(machineId, sessionId)
-            } catch {
-                // ignore — terminal archive proceeds after KillSession
+            const status = await this.rpcGateway.stopRunnerSession(machineId, sessionId).catch(() => undefined)
+            if (cliUnreachable && status === 'still_alive' && sessionMeta?.flavor === 'codex'
+                && sessionMeta.capabilities?.concurrentClients === true) {
+                throw new ArchiveCleanupError('unconfirmed')
             }
         }
 

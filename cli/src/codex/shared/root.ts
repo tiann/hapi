@@ -339,7 +339,14 @@ export class SharedCodexRoot {
         }
         this.acceptSettings(response); this.acceptSettings(this.host.settingsFor(threadId) ?? {});
         if (!this.host.attached) await this.projectHistory(this.projection, response.thread);
-        await this.refresh(); await this.refreshChildren(true);
+        while (await this.waitForArchiveRecovery()) {
+            const signal = this.historyReplayAbort.signal;
+            await this.refresh();
+            if (signal.aborted) continue;
+            await this.refreshChildren(true, signal);
+            if (!signal.aborted) return;
+        }
+        throw new Error('Codex execution is stopping');
     }
     async activate(options: SharedLaunchOptions = {}): Promise<void> {
         if (!await this.waitForArchiveRecovery()) throw new Error('Codex execution is stopping');
@@ -983,18 +990,18 @@ export class SharedCodexRoot {
     }
 
     private archiveFromHub(): Promise<void> {
-        return this.archiveWithHistory(true);
+        return this.archiveWithHistory();
     }
 
     archiveFromRunner(): Promise<void> {
-        return this.archiveWithHistory(false);
+        return this.archiveWithHistory();
     }
 
-    private archiveWithHistory(requireFlush: boolean): Promise<void> {
-        return this.archiveAttempt ??= this.tryArchiveWithHistory(requireFlush).finally(() => { this.archiveAttempt = undefined; });
+    private archiveWithHistory(): Promise<void> {
+        return this.archiveAttempt ??= this.tryArchiveWithHistory().finally(() => { this.archiveAttempt = undefined; });
     }
 
-    private async tryArchiveWithHistory(requireFlush: boolean): Promise<void> {
+    private async tryArchiveWithHistory(): Promise<void> {
         const recovery = Promise.withResolvers<boolean>();
         this.archiveRecovery = recovery.promise;
         let recovered = false;
@@ -1012,7 +1019,7 @@ export class SharedCodexRoot {
                     // An offline session socket can still be stopped through the Runner
                     // once there is no unconfirmed fork metadata to preserve.
                     return remaining > 0 && (this.session.hubArchived
-                        || (!requireFlush && !this.projection?.hasUnpublishedHistory())
+                        || !this.projection?.hasUnpublishedHistory()
                         || (await this.session.flushMetadata(remaining) && !this.projection?.hasUnpublishedHistory()));
                 }),
                 new Promise<boolean>(resolve => {

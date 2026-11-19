@@ -26,7 +26,7 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
         tag: string,
         machineId?: string,
         hostPid?: number,
-        opts?: { startedBy?: 'runner' | 'terminal'; startedFromRunner?: boolean; flavor?: 'claude' | 'opencode' }
+        opts?: { startedBy?: 'runner' | 'terminal'; startedFromRunner?: boolean; flavor?: 'claude' | 'opencode' | 'codex'; sharedCodex?: boolean }
     ): string {
         const startedBy = opts?.startedBy ?? 'runner'
         const created = cache().getOrCreateSession(
@@ -35,6 +35,7 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
                 path: '/tmp/proj',
                 host: 'localhost',
                 flavor: opts?.flavor ?? 'claude',
+                ...(opts?.sharedCodex ? { capabilities: { concurrentClients: true } } : {}),
                 startedBy,
                 ...(opts?.startedFromRunner !== undefined
                     ? { startedFromRunner: opts.startedFromRunner }
@@ -563,6 +564,24 @@ describe('SyncEngine.archiveSession runner reaping (#1910)', () => {
 
         expect(cache().getSession(sessionId)?.active).toBe(false)
         expect(cache().getSession(sessionId)?.metadata?.lifecycleState).toBe('archived')
+    })
+
+    it.each(['still_alive', 'unavailable'] as const)('handles terminal Shared Codex archive when the Runner is %s', async status => {
+        const id = insertActiveSession('terminal-codex-' + status, 'machine-x', undefined, {
+            startedBy: 'terminal', flavor: 'codex', sharedCodex: true
+        })
+        setKillSessionMissingTarget()
+        ;(engine as any).rpcGateway.stopRunnerSession = async () => {
+            if (status === 'unavailable') throw new Error('machine offline')
+            return status
+        }
+        if (status === 'still_alive') {
+            await expect(engine.archiveSession(id)).rejects.toMatchObject({ code: 'archive-cleanup-unconfirmed' })
+            expect(cache().getSession(id)?.active).toBe(true)
+        } else {
+            await engine.archiveSession(id)
+            expect(cache().getSession(id)?.metadata?.lifecycleState).toBe('archived')
+        }
     })
 
     it('archives a never-started machine-spawn stub when StopSession returns unknown (no hostPid)', async () => {

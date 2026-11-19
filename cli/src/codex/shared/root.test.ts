@@ -164,6 +164,17 @@ it('flushes fork points for replayed messages when archive interrupts history re
     expect(flushed?.lifecycleState).toBe('archived');
 });
 
+// The fixture applies metadata synchronously. Model a pending Hub ACK separately
+// when a test needs the archive to wait for durability.
+function holdForkMappings(root: SharedCodexRoot): () => void {
+    const projection = (root as unknown as { projection: SharedCodexProjection }).projection;
+    const original = projection.hasUnpublishedHistory.bind(projection);
+    let pending = true;
+    vi.spyOn(projection, 'hasUnpublishedHistory').mockImplementation((...args) =>
+        args.length === 0 && pending || original(...args));
+    return () => { pending = false; };
+}
+
 it('persists replayed fork points before acknowledging Web archive without a Runner', async () => {
     const end = vi.fn(async () => {});
     const f = await fixture({ end });
@@ -174,6 +185,7 @@ it('persists replayed fork points before acknowledging Web archive without a Run
         }]
     }));
     const ack = Promise.withResolvers<boolean>();
+    const confirmForkMappings = holdForkMappings(f.root);
     const flush = vi.spyOn(f.session, 'flushMetadata').mockReturnValueOnce(ack.promise);
     let archive: Promise<unknown> | undefined;
     const send = vi.spyOn(f.session, 'sendUserMessage').mockImplementationOnce(() => {
@@ -184,6 +196,7 @@ it('persists replayed fork points before acknowledging Web archive without a Run
     await vi.waitFor(() => expect(flush).toHaveBeenCalledOnce());
     expect(f.metadata().conversationHistoryPoints).toEqual({ first: true });
     expect(end).not.toHaveBeenCalled();
+    confirmForkMappings();
     ack.resolve(true);
     expect(await archive).toEqual({ success: true });
     expect(send.mock.calls.map(([, , id]) => id)).toEqual(['first']);
@@ -194,13 +207,25 @@ it('keeps Web archive retryable if the history metadata is not confirmed', async
     const end = vi.fn(async () => {});
     const f = await fixture({ end });
     await f.root.activate();
+    const confirmForkMappings = holdForkMappings(f.root);
     const flush = vi.spyOn(f.session, 'flushMetadata').mockResolvedValueOnce(false);
     const archive = f.rpc.get(RPC_METHODS.KillSession)!;
 
     await expect(archive({})).rejects.toThrow('Could not confirm Codex history metadata');
     expect(end).not.toHaveBeenCalled();
+    confirmForkMappings();
     await expect(archive({})).resolves.toEqual({ success: true });
-    expect(flush).toHaveBeenCalledTimes(2);
+    expect(flush).toHaveBeenCalledOnce();
+    expect(end).toHaveBeenCalledOnce();
+});
+
+it('archives through Web without draining unrelated writes when fork metadata is durable', async () => {
+    const end = vi.fn(async () => {});
+    const f = await fixture({ end });
+    await f.root.activate();
+    const flush = vi.spyOn(f.session, 'flushMetadata').mockResolvedValue(false);
+    await expect(f.rpc.get(RPC_METHODS.KillSession)!({})).resolves.toEqual({ success: true });
+    expect(flush).not.toHaveBeenCalled();
     expect(end).toHaveBeenCalledOnce();
 });
 
@@ -270,6 +295,7 @@ it('rejects attached controls and drops a deferred send when archive succeeds', 
     validateHistory.mockClear();
     const read = Promise.withResolvers<{ thread: typeof f.native.thread }>();
     const ack = Promise.withResolvers<boolean>();
+    const confirmForkMappings = holdForkMappings(f.root);
     const flush = vi.spyOn(f.session, 'flushMetadata').mockReturnValueOnce(ack.promise);
     const request = vi.spyOn(f.root.client, 'request').mockReturnValueOnce(read.promise);
     const refresh = vi.spyOn(f.root, 'refresh');
@@ -287,6 +313,7 @@ it('rejects attached controls and drops a deferred send when archive succeeds', 
         expect(end).not.toHaveBeenCalled();
     } finally {
         read.resolve({ thread: f.native.thread });
+        confirmForkMappings();
         ack.resolve(true);
         await archive;
         await f.drainWork();
@@ -300,6 +327,7 @@ it('delivers an attached Web prompt once under its original ID after archive fai
     const read = Promise.withResolvers<{ thread: typeof f.native.thread }>();
     const ack = Promise.withResolvers<boolean>();
     const request = vi.spyOn(f.root.client, 'request').mockReturnValueOnce(read.promise);
+    holdForkMappings(f.root);
     const flush = vi.spyOn(f.session, 'flushMetadata').mockReturnValueOnce(ack.promise);
     f.submit('keep this prompt', 'web-message-id');
     await vi.waitFor(() => expect(request).toHaveBeenCalledWith('thread/read', expect.anything()));
@@ -376,6 +404,40 @@ it('stops through the Runner before queue loading completes and never activates 
     expect(f.sessionReady).not.toHaveBeenCalled();
 });
 
+it('retries initial child discovery before activation when the Runner cannot archive', async () => {
+    const end = vi.fn(async () => {});
+    const f = await fixture({ end, bind: false });
+    const discovery = Promise.withResolvers<void>();
+    const child = { id: 'child', parentThreadId: 'thread' };
+    const firstPage = Promise.withResolvers<{ data: typeof child[] }>();
+    const original = f.root.client.request.bind(f.root.client);
+    let scans = 0;
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/list') {
+            if (++scans === 1) { discovery.resolve(); return firstPage.promise; }
+            return { data: [child] };
+        }
+        if (method === 'thread/loaded/list') return { data: ['child'] };
+        return original(method, params);
+    });
+    const binding = f.root.bind('thread', { thread: { turns: [] } }, false);
+    try {
+        await discovery.promise;
+        const confirm = holdForkMappings(f.root);
+        vi.spyOn(f.session, 'flushMetadata').mockResolvedValueOnce(false);
+        await expect(f.root.archiveFromRunner()).rejects.toThrow('Could not confirm Codex history metadata');
+        confirm();
+    } finally {
+        firstPage.resolve({ data: [child] });
+        await binding;
+    }
+    expect(scans).toBe(2);
+    expect(request).toHaveBeenCalledWith('thread/resume', { threadId: 'child', excludeTurns: true });
+    await f.root.activate();
+    expect(f.sessionReady).toHaveBeenCalledOnce();
+    expect(end).not.toHaveBeenCalled();
+});
+
 it('restarts the complete Hub reconnect on the same connection after archive fails', async () => {
     const end = vi.fn(async () => {});
     const f = await fixture({ end });
@@ -383,6 +445,7 @@ it('restarts the complete Hub reconnect on the same connection after archive fai
     const replay = vi.spyOn(SharedCodexQueue.prototype, 'replay');
     const olderRead = Promise.withResolvers<{ thread: typeof f.native.thread }>();
     const request = vi.spyOn(f.root.client, 'request').mockReturnValueOnce(olderRead.promise);
+    holdForkMappings(f.root);
     vi.spyOn(f.session, 'flushMetadata').mockResolvedValueOnce(false);
     try {
         f.reconnect();
@@ -419,6 +482,7 @@ it('resumes native child subscriptions when archive interrupts child discovery a
         return original(method, params);
     });
     const initialize = vi.spyOn(f.root.client, 'initialize');
+    holdForkMappings(f.root);
     vi.spyOn(f.session, 'flushMetadata').mockResolvedValueOnce(false);
     try {
         f.native.initialized = false;
@@ -440,6 +504,7 @@ describe('externally attached root', () => {
         const f = await fixture({ attached: true, end });
         await f.root.activate();
         const ack = Promise.withResolvers<boolean>();
+        const confirmForkMappings = holdForkMappings(f.root);
         const flush = vi.spyOn(f.session, 'flushMetadata').mockReturnValueOnce(ack.promise);
         const archive = f.rpc.get(RPC_METHODS.KillSession)!({});
         const settled = state === 'archived'
@@ -455,6 +520,7 @@ describe('externally attached root', () => {
             await new Promise<void>(resolve => setImmediate(resolve));
             expect(f.state().requests ?? {}).toEqual({});
         } finally {
+            confirmForkMappings();
             ack.resolve(state === 'archived');
             await settled;
         }
