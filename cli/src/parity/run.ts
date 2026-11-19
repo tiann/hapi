@@ -1,4 +1,4 @@
-import { spawn, execFileSync } from 'node:child_process'
+import { spawn, execFileSync, type ChildProcess } from 'node:child_process'
 import { watch, readdirSync, mkdirSync, mkdtempSync, existsSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -20,6 +20,10 @@ export const repo = resolve(cli, '..')
 export const testTimeout = 150_000
 export const corpus = join(parity, 'corpus/claude')
 export const names = readdirSync(corpus, { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => entry.name).sort()
+function waitForClose(child: ChildProcess) {
+    return new Promise<void>(resolve => child.once('close', () => resolve()))
+}
+
 export async function run(name: string, binary?: string) {
     const startedAt = Date.now()
     const directory = join(corpus, name)
@@ -49,6 +53,7 @@ export async function run(name: string, binary?: string) {
     }
     writeFileSync(join(home, 'settings.json'), JSON.stringify({ machineId }))
     const runner = spawn(bun, [join(parity, 'fakes/runner.ts'), 'runner', 'start-sync'], { env, cwd, stdio: ['pipe', 'pipe', 'inherit'] })
+    const runnerClosed = waitForClose(runner)
     let port = 0
     createInterface({ input: runner.stdout }).on('line', line => {
         const data = JSON.parse(line)
@@ -56,12 +61,19 @@ export async function run(name: string, binary?: string) {
         else hub.record('POST /session-started', [data.webhook], false, 0)
     })
     let child: ReturnType<typeof spawn> | undefined
-    function cleanup() {
+    let childClosed: Promise<void> | undefined
+    function killChildren() {
         if (child?.pid) { try { process.kill(-child.pid, 'SIGKILL') } catch {} }
         runner.kill('SIGKILL')
+    }
+    function removeOutput() {
         if (!process.env.PARITY_KEEP_OUTPUT) rmSync(out, { recursive: true, force: true })
     }
-    process.once('exit', cleanup)
+    function cleanupOnExit() {
+        killChildren()
+        removeOutput()
+    }
+    process.once('exit', cleanupOnExit)
     let output = ''
     let runnerFailure: string | undefined
     runner.on('error', error => { runnerFailure = error.message; changed() })
@@ -101,6 +113,7 @@ export async function run(name: string, binary?: string) {
         }))
         child = spawn(binary ?? bun, [...(binary ? [] : [join(cli, 'src/bootstrap.ts')]), ...scenario.argv],
             { cwd, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+        childClosed = waitForClose(child)
         child.stdout!.on('data', part => output += part)
         child.stderr!.on('data', part => output += part)
         child.on('error', error => { output += error.message; exited = true; changed() })
@@ -160,10 +173,12 @@ export async function run(name: string, binary?: string) {
     } finally {
         watcher.close()
         try {
+            killChildren()
+            await Promise.all([childClosed, runnerClosed])
             await hub.close()
         } finally {
-            process.off('exit', cleanup)
-            cleanup()
+            process.off('exit', cleanupOnExit)
+            removeOutput()
         }
     }
 }

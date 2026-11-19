@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
+import { connect } from 'node:net'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { io } from 'socket.io-client'
@@ -21,6 +22,24 @@ it('retains concurrent invocation records when an older process writes last', ()
         first.save({ index: first.index })
         expect(readLaunches(dir)).toEqual([{ index: 1 }, { index: 2 }])
     } finally {
+        rmSync(dir, { recursive: true, force: true })
+    }
+})
+
+it('closes a hub with an unfinished REST request', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'parity-http-'))
+    const hub = await fakeHub(dir)
+    const socket = connect(hub.port, '127.0.0.1')
+    try {
+        const continued = once(socket, 'data')
+        socket.write('POST /cli/sessions HTTP/1.1\r\nHost: localhost\r\nContent-Length: 10\r\nExpect: 100-continue\r\n\r\n{')
+        expect(String((await continued)[0])).toContain('100 Continue')
+        const closed = once(socket, 'close')
+        await hub.close()
+        await closed
+        expect(hub.rows).toHaveLength(0)
+    } finally {
+        socket.destroy()
         rmSync(dir, { recursive: true, force: true })
     }
 })

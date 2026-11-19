@@ -77,9 +77,9 @@ if (versionProbe) {
                 assert.ok(matches(line, step.expectStdin), JSON.stringify({ expected: step.expectStdin, received: line }))
             }
             if (step.awaitMarker) await waitMarker(step.awaitMarker)
-            for (const line of step.emit) emit(line === "$replay" ? { ...matched, isReplay: true } : line)
             log.completed++
             save()
+            for (const line of step.emit) emit(line === "$replay" ? { ...matched, isReplay: true } : line)
             if (step.exit !== undefined) process.exit(step.exit)
         }
         while (true) await read()

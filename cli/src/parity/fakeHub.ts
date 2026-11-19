@@ -65,7 +65,20 @@ export async function fakeHub(out: string, changed: () => void = () => {}) {
     }
     const server = createServer(async (req, res) => {
         const url = new URL(req.url!, 'http://localhost')
-        const data = await body(req)
+        if (closed) {
+            req.destroy()
+            return
+        }
+        let data
+        try {
+            data = await body(req)
+        } catch {
+            if (!req.aborted) {
+                res.writeHead(400)
+                res.end()
+            }
+            return
+        }
         const event = req.method + ' ' + url.pathname
         record(event, [{ body: data, query: Object.fromEntries(url.searchParams), authorization: req.headers.authorization }], false, 0)
         let response
@@ -213,7 +226,9 @@ export async function fakeHub(out: string, changed: () => void = () => {}) {
             closed = true
             for (const timer of pendingAcks) clearTimeout(timer)
             pendingAcks.clear()
-            return io.close()
+            const closing = io.close()
+            server.closeAllConnections()
+            return closing
         }
     }
 }

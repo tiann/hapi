@@ -10,4 +10,4 @@ Run `bun run test:parity` from the repository root on Linux. Each scenario launc
 
 The normalizer validates process IDs, paths, ports, and timestamps before replacing variable values. It preserves event order within each step and channel and compares the first and last volatile heartbeat on each connection.
 
-Set `HAPI_PARITY_WRAPPER_BIN` to an executable to run a second wrapper against the same goldens. Relative paths resolve from the repository root. The executable receives the scenario's CLI arguments and environment.
+Set `HAPI_PARITY_WRAPPER_BIN` to an executable to run a second wrapper against the same goldens. Relative paths resolve from the repository root. The executable receives the scenario's CLI arguments and environment. The supplied wrapper must match the CLI version in `cli/package.json` because the fake runner advertises that version during startup.
