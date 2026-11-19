@@ -49,6 +49,55 @@ it('does not rebroadcast stored messages and retains repeated consumption acknow
     store.close()
 })
 
+describe('a locally handled command does not answer the agent (#1717)', () => {
+    function harness() {
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('local-command', {}, null, 'default')
+        const socket = new FakeSocket()
+        const delivered = mock((_sid: string, _at: number, _seq: number | null) => {})
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {},
+            onWebappEvent() {}, onPromptDelivered: delivered
+        })
+        return { store, session, socket, delivered }
+    }
+
+    function sendPrompt(socket: FakeSocket, sid: string, localId: string): void {
+        socket.trigger('message', {
+            sid, localId, message: { role: 'user', content: { type: 'text', text: '/status' } }
+        })
+    }
+
+    it('clears the blocker when the prompt actually reaches the agent', () => {
+        // Positive control: the same shape WITHOUT the local-handler flag must
+        // still clear, or the assertion below would pass on a handler that
+        // never fires at all.
+        const { socket, session, delivered, store } = harness()
+        sendPrompt(socket, session.id, 'answer-1')
+        socket.trigger('messages-consumed', { sid: session.id, localIds: ['answer-1'] })
+
+        expect(delivered).toHaveBeenCalledTimes(1)
+        store.close()
+    })
+
+    it('leaves the blocker alone for a command the CLI handled itself', () => {
+        // Copilot `/model`, Pi `/stats`, a rejected or aborted message, a
+        // failed steer: the CLI consumes the row and returns without ever
+        // prompting the agent. The operator typed something, so the row is
+        // genuinely consumed — but the question the agent asked is still
+        // unanswered, and clearing here dropped it out of the Blocked section
+        // with nobody having answered it.
+        const { socket, session, delivered, store } = harness()
+        sendPrompt(socket, session.id, 'slash-1')
+        socket.trigger('messages-consumed', {
+            sid: session.id, localIds: ['slash-1'], clearQueuedThinkingGrace: true
+        })
+
+        expect(delivered).not.toHaveBeenCalled()
+        store.close()
+    })
+})
+
 function redundantGoalStatusContent(message: string): unknown {
     return {
         role: 'agent',

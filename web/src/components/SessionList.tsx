@@ -2439,12 +2439,23 @@ export function SessionList(props: {
     // The jump target is exempted exactly where the selected session already
     // is, so revealing one row needs no change to saved preferences.
     const filterExemptId = revealBlockedSessionId ?? selectedSessionId
+    // Release a held exemption once nothing is using it — in practice, after an
+    // unblock dialog opened on the revealed row is closed.
+    //
+    // `flashBlockedSessionId === null` cannot carry that decision on its own:
+    // it reads the same before the flash starts as after it ends. This effect
+    // ran on the render right after the pill set the exemption and revoked it
+    // immediately, so the jump target was filtered back out before the scroll
+    // effect below could ever find it — the jump did nothing at all.
+    // `pendingBlockedScrollId` is what distinguishes the two: it is non-null
+    // for exactly the in-flight window between the two.
     useEffect(() => {
         if (blockedDialogSessionId !== null) return
         if (revealBlockedSessionId === null) return
+        if (pendingBlockedScrollId !== null) return
         if (flashBlockedSessionId !== null) return
         setRevealBlockedSessionId(null)
-    }, [blockedDialogSessionId, revealBlockedSessionId, flashBlockedSessionId])
+    }, [blockedDialogSessionId, revealBlockedSessionId, flashBlockedSessionId, pendingBlockedScrollId])
     const allSessions = useMemo(
         () => filterSessionsForListStatus(sidebarSessions, listView.status, filterExemptId),
         [sidebarSessions, filterExemptId, listView.status]
@@ -3715,8 +3726,11 @@ export function SessionList(props: {
             setFlashBlockedSessionId(null)
             // Only drop the exemption if no dialog is open against that row.
             // Expiring it underneath an open Mark-unblocked dialog unmounted
-            // the row mid-entry and took the dialog with it.
-            setRevealBlockedSessionId(null)
+            // the row mid-entry and took the dialog with it. The effect above
+            // releases it once that dialog closes.
+            if (blockedDialogSessionId === null) {
+                setRevealBlockedSessionId(null)
+            }
         }, 2000)
         return () => clearTimeout(timer)
     }, [flashBlockedSessionId, blockedDialogSessionId])

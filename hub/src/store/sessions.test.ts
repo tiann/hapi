@@ -1779,6 +1779,41 @@ describe('setSessionLastNotify / clearSessionLastNotify (#1717)', () => {
         expect(store.sessions.getSession(session.id)?.lastNotifyStatus).toBe('blocked')
     })
 
+    it('orders against the clear boundary by seq, not by two different clocks', () => {
+        const store = makeStore()
+        const session = seed(store)
+
+        // Footer timestamps come off the agent runner (the transcript preserves
+        // them); the boundary is stamped when the hub delivers the reply. The
+        // two clocks are unrelated, so no comparison between them is sound —
+        // only the hub's message `seq` orders both sides.
+        const HUB_NOW = 1_000_000
+        store.sessions.clearSessionLastNotify(session.id, 'default', HUB_NOW, 10)
+
+        // Runner clock an hour FAST: a superseded footer from before the reply
+        // looks like the future. Clock ordering accepts it and the answered
+        // blocker comes back; seq 7 < 10 rejects it.
+        store.sessions.setSessionLastNotify(
+            session.id,
+            { status: 'blocked', at: HUB_NOW + 3_600_000, note: 'superseded', seq: 7 },
+            'default'
+        )
+        expect(store.sessions.getSession(session.id)?.lastNotifyStatus).toBeNull()
+
+        // Runner clock an hour SLOW: a genuinely new blocker reported after the
+        // reply looks older than the boundary. Clock ordering drops it and the
+        // operator never learns the agent is stuck; seq 12 > 10 accepts it.
+        store.sessions.setSessionLastNotify(
+            session.id,
+            { status: 'blocked', at: HUB_NOW - 3_600_000, note: 'live', seq: 12 },
+            'default'
+        )
+        const row = store.sessions.getSession(session.id)
+        expect(row?.lastNotifyStatus).toBe('blocked')
+        expect(row?.lastNotifyNote).toBe('live')
+        expect(row?.lastNotifySeq).toBe(12)
+    })
+
     it('is namespace scoped', () => {
         const store = makeStore()
         const session = seed(store)

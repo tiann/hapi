@@ -2,7 +2,7 @@ import { mergeClaudeSessionIdHistory, mergeReadState } from '@hapi/protocol'
 import { SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING } from '@hapi/protocol'
 import { AgentStateSchema, ExternalRefsSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
 import type { BackgroundTask, CodexCollaborationMode, CopilotAgentMode, ExternalRef, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
-import type { SessionTurnEndReason, SessionTurnTrigger, Store, StoredSession } from '../store'
+import type { SessionTurnEndReason, SessionTurnTrigger, Store, StoredMessage, StoredSession } from '../store'
 import type { TransferSessionJobsResult } from '../store/sessionJobs'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
@@ -13,7 +13,6 @@ import { deliveredOperatorReplyAt, isDeliveredOperatorReply } from './workGraphN
 
 /** Transcript window scanned for a newer operator reply when merging a
  *  notify signal (#1717). Matches the startup backfill's scan depth. */
-const NOTIFY_MERGE_MESSAGE_SCAN = 6
 
 export { InvalidExternalRefsError } from './externalRefErrors'
 
@@ -527,7 +526,7 @@ export class SessionCache {
      */
     setSessionLastNotify(
         sessionId: string,
-        signal: { status: string; at: number; note: string | null }
+        signal: { status: string; at: number; note: string | null; seq?: number | null }
     ): void {
         const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
         if (!session) return
@@ -543,9 +542,14 @@ export class SessionCache {
         // and `last_notify_at` null and was accepted. The persisted watermark
         // also survives a restart. The store enforces the same rule in SQL; this
         // is the in-memory fast path.
-        const clearedAt = this.store.sessions.getSessionByNamespace(sessionId, session.namespace)
-            ?.lastNotifyClearedAt ?? null
-        if (clearedAt !== null && signal.at < clearedAt) {
+        // Compare in seq when both sides have one; never across clock domains.
+        const stored = this.store.sessions.getSessionByNamespace(sessionId, session.namespace)
+        const clearedSeq = stored?.lastNotifyClearedSeq ?? null
+        if (signal.seq != null && clearedSeq !== null && signal.seq <= clearedSeq) {
+            return
+        }
+        const clearedAt = stored?.lastNotifyClearedAt ?? null
+        if (signal.seq == null && clearedAt !== null && signal.at < clearedAt) {
             return
         }
         // Unchanged status for the same turn: skip the write + SSE fan-out.
@@ -597,9 +601,7 @@ export class SessionCache {
         // timestamp; broadcasting a now-based revision made a later refresh
         // look older than the SSE patch, and the browser rejected a dismissal
         // a merge had legitimately transferred.
-        session.notifyUpdatedAt = this.store.sessions
-            .getSessionByNamespace(sessionId, session.namespace)?.lastNotifyUpdatedAt
-            ?? ((session.notifyUpdatedAt ?? 0) + 1)
+        session.notifyUpdatedAt = this.readNotifyRevision(session)
         this.publisher.emit({ type: 'session-updated', sessionId: session.id, data: session })
         return ack
     }
@@ -653,7 +655,11 @@ export class SessionCache {
         }
     }
 
-    clearSessionLastNotify(sessionId: string, boundaryAt: number = Date.now()): void {
+    clearSessionLastNotify(
+        sessionId: string,
+        boundaryAt: number = Date.now(),
+        boundarySeq: number | null = null
+    ): void {
         const session = this.sessions.get(sessionId)
         if (!session) return
         // The boundary advances even when no footer is cached. A turn that
@@ -664,12 +670,13 @@ export class SessionCache {
         const cleared = this.store.sessions.clearSessionLastNotify(
             sessionId,
             session.namespace,
-            boundaryAt
+            boundaryAt,
+            boundarySeq
         )
         if (session.lastNotify && cleared) {
             this.applyLastNotifyToCache(session, null)
         } else if (cleared) {
-            session.notifyUpdatedAt = Math.max((session.notifyUpdatedAt ?? 0) + 1, Date.now())
+            session.notifyUpdatedAt = this.readNotifyRevision(session)
         }
     }
 
@@ -694,8 +701,50 @@ export class SessionCache {
         // Bumped on every write INCLUDING a clear: without an ordering key a
         // delayed snapshot on the other SSE stream re-applies the pre-clear
         // state and the row flips back to blocked.
-        session.notifyUpdatedAt = Math.max((session.notifyUpdatedAt ?? 0) + 1, Date.now())
+        //
+        // Read BACK from the row, for the same reason the acknowledgement path
+        // does. SQLite versions a clear off the *boundary* timestamp — which is
+        // the answering message's clock, usually well in the past — so a
+        // now-based revision invented here outruns the row. A merge clears the
+        // footer, then transfers the dismissal, then re-emits from a refresh:
+        // with a now-based revision that final, correct payload looked OLDER
+        // than this patch and the browser rejected it, keeping the pre-merge
+        // acknowledgement and re-blocking a row the operator had dismissed.
+        session.notifyUpdatedAt = this.readNotifyRevision(session)
         this.publisher.emit({ type: 'session-updated', sessionId: session.id, data: session })
+    }
+
+    /**
+     * The notify revision as SQLite computed it — the single source of truth.
+     *
+     * Every in-memory broadcast must carry the row's value, or two independent
+     * counters drift and the browser's ordering guard starts rejecting good
+     * payloads. Falls back to a local bump only if the row vanished mid-merge.
+     */
+    /**
+     * The most recently delivered operator reply on a session, or null (#1717).
+     *
+     * Ordered by delivery time, not by `seq`. A merge renumbers the
+     * destination's rows above every source row, so the highest seq is not the
+     * latest reply — a recency-bounded scan after a merge could hold only
+     * destination rows and miss the source reply that answered the blocker,
+     * leaving the merged row showing a blocker its own transcript answers.
+     */
+    private latestDeliveredOperatorReply(sessionId: string): StoredMessage | null {
+        let newest: StoredMessage | null = null
+        for (const message of this.store.messages.getInvokedMessages(sessionId)) {
+            if (!isDeliveredOperatorReply(message)) continue
+            if (newest === null || deliveredOperatorReplyAt(message) > deliveredOperatorReplyAt(newest)) {
+                newest = message
+            }
+        }
+        return newest
+    }
+
+    private readNotifyRevision(session: Session): number {
+        return this.store.sessions
+            .getSessionByNamespace(session.id, session.namespace)?.lastNotifyUpdatedAt
+            ?? ((session.notifyUpdatedAt ?? 0) + 1)
     }
 
     markSessionActive(sessionId: string, time: number = Date.now()): void {
@@ -2606,16 +2655,9 @@ export class SessionCache {
             const target = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
             const targetAt = target?.lastNotifyAt ?? null
             if (target && target.lastNotifyStatus !== null && targetAt !== null) {
-                const answered = this.store.messages
-                    .getMessages(newSessionId, NOTIFY_MERGE_MESSAGE_SCAN)
-                    .some((message) => isDeliveredOperatorReply(message)
-                        && deliveredOperatorReplyAt(message) > targetAt)
-                if (answered) {
-                    this.clearSessionLastNotify(newSessionId, deliveredOperatorReplyAt(
-                        this.store.messages.getMessages(newSessionId, NOTIFY_MERGE_MESSAGE_SCAN)
-                            .filter(isDeliveredOperatorReply)
-                            .reduce((a, b) => deliveredOperatorReplyAt(a) > deliveredOperatorReplyAt(b) ? a : b)
-                    ))
+                const newest = this.latestDeliveredOperatorReply(newSessionId)
+                if (newest !== null && deliveredOperatorReplyAt(newest) > targetAt) {
+                    this.clearSessionLastNotify(newSessionId, deliveredOperatorReplyAt(newest))
                 }
             }
         }
@@ -2630,10 +2672,9 @@ export class SessionCache {
             // that was dealt with, so check the (already merged) transcript for
             // a delivered reply newer than the footer before carrying it over.
             // Mirrors the operator-reply boundary the startup backfill applies.
-            const answeredSince = this.store.messages
-                .getMessages(newSessionId, NOTIFY_MERGE_MESSAGE_SCAN)
-                .some((message) => isDeliveredOperatorReply(message)
-                    && deliveredOperatorReplyAt(message) > oldNotifyAt)
+            const newestReply = this.latestDeliveredOperatorReply(newSessionId)
+            const answeredSince = newestReply !== null
+                && deliveredOperatorReplyAt(newestReply) > oldNotifyAt
             if (latest && !answeredSince && (targetNotifyAt === null || oldNotifyAt > targetNotifyAt)) {
                 this.setSessionLastNotify(newSessionId, {
                     status: oldStored.lastNotifyStatus,

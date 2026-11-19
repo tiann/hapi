@@ -111,7 +111,7 @@ export class SessionStore {
 
     setSessionLastNotify(
         id: string,
-        signal: { status: string; at: number; note: string | null },
+        signal: { status: string; at: number; note: string | null; seq?: number | null },
         namespace: string
     ): boolean {
         return setSessionLastNotify(this.db, id, signal, namespace)
@@ -129,8 +129,13 @@ export class SessionStore {
         return advanceNotifyClearBoundary(this.db, id, namespace, clearedAt)
     }
 
-    clearSessionLastNotify(id: string, namespace: string, clearedAt: number = Date.now()): boolean {
-        return clearSessionLastNotify(this.db, id, namespace, clearedAt)
+    clearSessionLastNotify(
+        id: string,
+        namespace: string,
+        clearedAt: number = Date.now(),
+        clearedSeq: number | null = null
+    ): boolean {
+        return clearSessionLastNotify(this.db, id, namespace, clearedAt, clearedSeq)
     }
 
     replaceNotifyAfterTruncate(

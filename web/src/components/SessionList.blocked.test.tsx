@@ -11,6 +11,8 @@ afterEach(() => {
     cleanup()
     localStorage.removeItem('hapi-session-preview-limit')
     localStorage.removeItem('hapi-pin-in-progress-sessions')
+    localStorage.removeItem('hapi-session-list-status')
+    delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView
 })
 
 function makeSession(overrides: Partial<SessionSummary> & { id: string }): SessionSummary {
@@ -260,5 +262,26 @@ describe('SessionList blocked chrome (#1717)', () => {
 
         expect(screen.queryByTestId('blocked-section')).toBeNull()
         expect(screen.queryByTestId('blocked-jump-pill')).toBeNull()
+    })
+
+    it('reveals a jump target that the operator\'s saved status filter hides', () => {
+        // The pill refuses to rewrite persisted preferences, so an exemption is
+        // the only thing that can bring this row on screen. "Archived" hides
+        // every active session, and an agent parked on a permission prompt is
+        // active by definition — so the row the pill is counting is one the
+        // list will not render until the jump exempts it.
+        // jsdom has no layout, so it ships no `scrollIntoView` at all.
+        Element.prototype.scrollIntoView = vi.fn()
+        localStorage.setItem('hapi-session-list-status', 'archived')
+        renderList([pending('stuck-one'), makeSession({ id: 'old-one' })])
+
+        expect(document.querySelector('[data-session-id="stuck-one"]')).toBeNull()
+
+        fireEvent.click(screen.getByTestId('blocked-jump-pill'))
+
+        // Regression: the exemption was released on the very next render,
+        // before the scroll effect could use it, so the row was filtered
+        // straight back out and clicking the pill did nothing at all.
+        expect(document.querySelector('[data-session-id="stuck-one"]')).not.toBeNull()
     })
 })

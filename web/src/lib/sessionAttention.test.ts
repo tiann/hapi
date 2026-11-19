@@ -608,6 +608,44 @@ describe('getSessionBlockedState', () => {
         expect(state?.reason).toBe('blocked')
     })
 
+    it('does not label an overflow prompt with a dismissed question\'s kind', () => {
+        // The visible slice is a question the operator dismissed; the live
+        // blocker is an overflow prompt whose kind the summary does not carry.
+        // `pendingRequestKinds` is a deduped set over ALL prompts, so reading
+        // the label off it reported "Question" — borrowed wholesale from the
+        // prompt that was already dealt with.
+        const state = getSessionBlockedState(makeSummary({
+            id: 'a',
+            pendingRequestsCount: 2,
+            pendingRequestKinds: ['permission', 'input'],
+            pendingRequests: [{ id: 'r1', kind: 'input', tool: 'AskUser', since: now - 2000 }],
+            pendingRequestIds: ['r1', 'r2'],
+            pendingRequestsNewestAt: now - 1000,
+            blockedAck: { at: now, reason: 'answered that one', keys: ['request:r1'] }
+        }), { now })
+
+        // Still blocked — the overflow prompt is real and unanswered — and
+        // acknowledging it has to target the overflow prompt, not the
+        // dismissed one.
+        expect(state?.key).toBe('request:r2')
+        expect(state?.reason).toBe('permission')
+    })
+
+    it('still reads the kind list when the hub sent no prompt array at all', () => {
+        // Positive control for the fallback the fix had to preserve: an older
+        // hub reports a count and kinds with no `pendingRequests`, where
+        // nothing visible could have been dismissed, so the kind list is the
+        // only evidence there is and must still be honoured.
+        const state = getSessionBlockedState(makeSummary({
+            id: 'a',
+            pendingRequestsCount: 1,
+            pendingRequestKinds: ['input'],
+            pendingRequests: []
+        }), { now })
+
+        expect(state?.reason).toBe('question')
+    })
+
     it('returns null when nothing is blocking', () => {
         expect(getSessionBlockedState(makeSummary({ id: 'a' }), { now })).toBeNull()
     })

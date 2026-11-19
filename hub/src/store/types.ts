@@ -31,6 +31,8 @@ export type StoredSession = {
     blockedAckReason: string | null
     blockedAckKeys: string[] | null
     lastNotifyClearedAt: number | null
+    lastNotifySeq: number | null
+    lastNotifyClearedSeq: number | null
     lastNotifyUpdatedAt: number | null
     active: boolean
     activeAt: number | null

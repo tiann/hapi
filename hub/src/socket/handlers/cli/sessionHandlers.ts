@@ -131,7 +131,7 @@ export type SessionHandlersDeps = {
      *  commands) don't leave the spinner stuck for the full grace window. */
     onMessagesConsumed?: (sessionId: string) => void
     /** Fired on CONFIRMED prompt consumption (#1717). */
-    onPromptDelivered?: (sessionId: string, deliveredAt: number) => void
+    onPromptDelivered?: (sessionId: string, deliveredAt: number, deliveredSeq: number | null) => void
 }
 
 export function registerSessionHandlers(socket: CliSocketWithData, deps: SessionHandlersDeps): void {
@@ -499,6 +499,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         // and one naming unknown local ids, consume nothing — clearing on
         // those erased a blocker the agent genuinely reported (#1717).
         let newlyDelivered = false
+        let deliveredSeq: number | null = null
         try {
             const consumedResult = store.recordMessagesConsumed(
                 data.sid,
@@ -508,6 +509,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
             )
             sessionUpdatedAt = consumedResult.updatedAt
             newlyDelivered = consumedResult.consumed > 0
+            deliveredSeq = consumedResult.deliveredSeq
         } catch (err) {
             console.error('recordMessagesConsumed failed', err)
             return
@@ -524,9 +526,17 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         // queue time erased a footer on an idempotent retry of an
         // already-consumed message (no new turn started), and on a prompt
         // cancelled before it was ever delivered.
-        if (newlyDelivered) {
+        //
+        // `clearQueuedThinkingGrace` is the CLI saying it consumed the row
+        // synchronously and no agent turn will follow: a slash command it
+        // handled itself (Copilot `/model`, Pi `/stats`), a message it rejected
+        // or aborted, or a steer that failed. The operator typed something, so
+        // the row counts as consumed — but the agent never saw it, so whatever
+        // it was waiting on is still unanswered. A successful steer reaches the
+        // agent and reports `steered` instead, so it still clears.
+        if (newlyDelivered && data.clearQueuedThinkingGrace !== true) {
             try {
-                onPromptDelivered?.(data.sid, invokedAt)
+                onPromptDelivered?.(data.sid, invokedAt, deliveredSeq)
             } catch (err) {
                 console.error('onPromptDelivered failed', err)
             }

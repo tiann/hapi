@@ -46,6 +46,7 @@ import {
     addMessageSweepingLiveSnapshots,
     deleteLiveTextSnapshots,
     getAllMessages,
+    getInvokedMessages,
     getMessagesAfterSeq,
     getMaxSeq,
     getMinSeq,
@@ -135,6 +136,10 @@ export class MessageStore {
 
     getAllMessages(sessionId: string): StoredMessage[] {
         return getAllMessages(this.db, sessionId)
+    }
+
+    getInvokedMessages(sessionId: string): StoredMessage[] {
+        return getInvokedMessages(this.db, sessionId)
     }
 
     getMessagesAfterSeq(sessionId: string, afterSeq: number): StoredMessage[] {

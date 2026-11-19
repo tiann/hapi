@@ -190,10 +190,22 @@ function getPendingBlockedState(
 
     // A question outranks a permission: "answer me" is a heavier ask than
     // "approve this tool", and it is the one the operator asked to be loud.
-    // Contest only what still needs answering; fall back to the uncapped kind
-    // list when the capped slice carries none of it.
+    // Contest only what still needs answering.
+    //
+    // The uncapped `kinds` list is a legitimate fallback for ONE case: an
+    // older hub that sends a count and kinds but no `pendingRequests` array,
+    // where nothing visible could have been dismissed. It is NOT a fallback
+    // when the slice is present and every entry in it was acknowledged — the
+    // live blocker is then an overflow prompt, and `kinds` is a deduped set
+    // over all prompts including the dismissed ones, so consulting it labelled
+    // the overflow prompt with a dismissed question's kind. `pendingRequestIds`
+    // carries ids only, so the real kind is genuinely unknown here; take the
+    // neutral label rather than escalating on evidence that belongs to a
+    // prompt the operator already dealt with.
     const unackedKinds = unacked.map(request => request.kind)
-    const contest = unackedKinds.length > 0 ? unackedKinds : kinds
+    const contest = unackedKinds.length > 0
+        ? unackedKinds
+        : (all.length === 0 ? kinds : [])
     const reason: SessionBlockedReason = contest.includes('input') ? 'question' : 'permission'
 
     const wantedKind = reason === 'question' ? 'input' : 'permission'

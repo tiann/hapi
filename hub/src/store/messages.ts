@@ -870,6 +870,28 @@ export function getAllMessages(
     return rows.map(toStoredMessage)
 }
 
+/**
+ * Every message the agent was actually handed, oldest first (#1717).
+ *
+ * For "has anything answered this blocker?". A recency-bounded scan cannot
+ * answer that across a merge: `mergeSessionMessages` shifts the destination's
+ * seqs above every source row, so the newest-by-seq window can hold nothing but
+ * destination messages while the reply that answered the blocker sits below it.
+ * `invoked_at IS NOT NULL` is a necessary condition for a delivered reply, and
+ * delivered operator prompts are a small fraction of a transcript, so this is
+ * selective enough to take unbounded and exact rather than bounded and wrong.
+ */
+export function getInvokedMessages(
+    db: Database,
+    sessionId: string
+): StoredMessage[] {
+    const rows = prepareCached(db,
+        'SELECT * FROM messages WHERE session_id = ? AND invoked_at IS NOT NULL ORDER BY seq ASC'
+    ).all(sessionId) as DbMessageRow[]
+
+    return rows.map(toStoredMessage)
+}
+
 export function getMessagesAfterSeq(
     db: Database,
     sessionId: string,

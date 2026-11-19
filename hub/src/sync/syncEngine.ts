@@ -436,13 +436,17 @@ export class SyncEngine {
      * gap the reason prompt exists to close.
      */
     /** Confirmed prompt delivery cleared the agent's last self-report (#1717). */
-    clearSessionLastNotifyOnDelivery(sessionId: string, deliveredAt?: number): void {
+    clearSessionLastNotifyOnDelivery(
+        sessionId: string,
+        deliveredAt?: number,
+        deliveredSeq?: number | null
+    ): void {
         // The boundary is stamped with the DELIVERED REPLY's own timestamp, not
         // hub-now. Footers carry the runner's clock (Claude transcript output
         // preserves it), so a hub-now boundary on a runner that is 30s behind
         // rejected a genuinely newer footer. Both sides now come from the same
         // clock domain — the transcript's.
-        this.sessionCache.clearSessionLastNotify(sessionId, deliveredAt)
+        this.sessionCache.clearSessionLastNotify(sessionId, deliveredAt, deliveredSeq ?? null)
     }
 
     acknowledgeSessionBlocked(
@@ -541,7 +545,7 @@ export class SyncEngine {
     private findNotifySignalInTranscript(
         sessionId: string,
         scanDepth: number | null = NOTIFY_BACKFILL_MESSAGE_SCAN
-    ): { status: string; at: number; note: string | null } | null {
+    ): { status: string; at: number; note: string | null; seq?: number | null } | null {
         const now = Date.now()
         const scanned = scanDepth === null
             ? this.store.messages.getAllMessages(sessionId)
@@ -577,7 +581,7 @@ export class SyncEngine {
             if (isDeliveredOperatorReply(message)) break
             const signal = extractSessionNotifySignal(message.content, message.createdAt)
             if (!signal) continue
-            return signal
+            return { ...signal, seq: message.seq }
         }
         return null
     }
@@ -1012,7 +1016,12 @@ export class SyncEngine {
                     event.message.createdAt
                 )
                 if (notifySignal) {
-                    this.sessionCache.setSessionLastNotify(session.id, notifySignal)
+                    // seq, not the timestamp, decides whether this footer
+                    // predates the reply that answered it.
+                    this.sessionCache.setSessionLastNotify(session.id, {
+                        ...notifySignal,
+                        seq: event.message.seq
+                    })
                 }
 
                 try {

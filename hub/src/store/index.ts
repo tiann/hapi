@@ -174,7 +174,7 @@ export class Store {
         localIds: string[],
         invokedAt: number,
         namespace: string
-    ): { updatedAt: number; consumed: number } {
+    ): { updatedAt: number; consumed: number; deliveredSeq: number | null } {
         return this.db.transaction(() => {
             // Which of these rows are actually the operator's prompts? Agent
             // OUTPUT also carries local ids and emits `messages-consumed`
@@ -209,7 +209,17 @@ export class Store {
             // a delivery (#1717).
             // `consumed` counts only operator prompts: a replayed ack, unknown
             // local ids, and agent output all deliver nothing (#1717).
-            return { updatedAt: session.updatedAt, consumed: operatorPrompts }
+            // Max seq among the rows just invoked: the clock-free boundary for
+            // "this reply came after that footer".
+            const seqRow = localIds.length === 0 ? null : this.db.prepare(
+                `SELECT MAX(seq) AS maxSeq FROM messages
+                 WHERE session_id = ? AND local_id IN (${placeholders})`
+            ).get(sessionId, ...localIds) as { maxSeq: number | null } | null
+            return {
+                updatedAt: session.updatedAt,
+                consumed: operatorPrompts,
+                deliveredSeq: seqRow?.maxSeq ?? null
+            }
         })()
     }
 
@@ -540,6 +550,8 @@ export class Store {
                 last_notify_at INTEGER,
                 last_notify_note TEXT,
                 last_notify_cleared_at INTEGER,
+                last_notify_seq INTEGER,
+                last_notify_cleared_seq INTEGER,
                 last_notify_updated_at INTEGER,
                 blocked_ack_at INTEGER,
                 blocked_ack_reason TEXT,
@@ -1374,6 +1386,17 @@ export class Store {
         }
         if (!columns.has('last_notify_updated_at')) {
             this.db.exec('ALTER TABLE sessions ADD COLUMN last_notify_updated_at INTEGER')
+        }
+        // Ordering moved off wall-clock entirely. Footers carry the RUNNER's
+        // clock (the transcript preserves it) while replies are stamped by the
+        // hub, so no timestamp comparison between them is sound in either
+        // direction. `seq` is hub-assigned and monotonic for every message in a
+        // session, which makes it the one domain both sides share.
+        if (!columns.has('last_notify_seq')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN last_notify_seq INTEGER')
+        }
+        if (!columns.has('last_notify_cleared_seq')) {
+            this.db.exec('ALTER TABLE sessions ADD COLUMN last_notify_cleared_seq INTEGER')
         }
         if (!columns.has('blocked_ack_key')) {
             this.db.exec('ALTER TABLE sessions ADD COLUMN blocked_ack_key TEXT')

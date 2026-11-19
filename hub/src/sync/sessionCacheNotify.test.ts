@@ -122,6 +122,45 @@ describe('footer timestamp boundary on the live path (#1717)', () => {
     })
 })
 
+describe('notify revision is whatever SQLite says (#1717)', () => {
+    it('never broadcasts a revision the row does not hold', () => {
+        // The browser orders notify/ack payloads by `notifyUpdatedAt`, so the
+        // hub must have exactly one counter. SQLite versions a clear off the
+        // *boundary* timestamp — the answering message's clock, usually well in
+        // the past — while this path used to invent `Date.now()`. The patch
+        // then outran the row, and the next refresh looked older than a payload
+        // the browser had already applied, so it was dropped. In a merge that
+        // dropped payload is the one carrying the transferred dismissal, and a
+        // row the operator had marked unblocked went back to blocked.
+        const store = new Store(':memory:')
+        const emitted: SyncEvent[] = []
+        const cache = new SessionCache(store, { emit: (event: SyncEvent) => { emitted.push(event) } } as EventPublisher)
+        const id = seedBlocked(cache, 'notify-revision')
+
+        emitted.length = 0
+        // The two counters only diverge once the clock has moved since the
+        // footer was stored: SQLite then advances the row by one from its own
+        // value while a now-based bump jumps the whole elapsed interval ahead.
+        // Any real gap between an agent reporting blocked and the operator
+        // answering is enormously longer than this.
+        const until = Date.now() + 3
+        while (Date.now() < until) { /* advance the clock deterministically */ }
+
+        // A reply delivered an hour ago: the boundary SQLite versions the
+        // clear from is in the past, so the row cannot reach hub-now.
+        cache.clearSessionLastNotify(id, Date.now() - 3_600_000)
+
+        const row = store.sessions.getSessionByNamespace(id, 'default')
+        const patch = emitted
+            .filter((event) => event.type === 'session-updated')
+            .map((event) => (event as { data: { notifyUpdatedAt?: number } }).data)
+            .at(-1)
+        expect(row?.lastNotifyUpdatedAt).toBeGreaterThan(0)
+        expect(patch?.notifyUpdatedAt).toBe(row!.lastNotifyUpdatedAt!)
+        expect(cache.getSession(id)?.notifyUpdatedAt).toBe(row!.lastNotifyUpdatedAt!)
+    })
+})
+
 describe('blocked acknowledgement across a session merge (#1717)', () => {
     function makeSession(cache: SessionCache, tag: string): string {
         return cache.getOrCreateSession(
@@ -182,6 +221,41 @@ describe('blocked acknowledgement across a session merge (#1717)', () => {
         // Delivered, not merely queued: an uninvoked prompt has not reached
         // the agent and must not count as an answer.
         store.messages.markMessagesInvoked(target, ['reply-1'], now)
+
+        await cache.mergeSessionHistory(source, target, 'default')
+
+        expect(cache.getSession(target)?.lastNotify ?? null).toBeNull()
+    })
+
+    it('finds the answering reply even when it came from the source side', async () => {
+        // The reply that answered the source's footer is on the SOURCE, and
+        // `mergeSessionMessages` renumbers every destination row ABOVE every
+        // source row. A recency-bounded scan of the merged transcript therefore
+        // reads back nothing but destination chatter, however much of it there
+        // is, and concludes nothing answered the footer — so it carries a
+        // blocker onto the merged row that the combined transcript answers.
+        // Seq order is not time order after a merge, so the scan cannot be
+        // bounded by seq at all.
+        const { cache, store } = makeCache()
+        const source = makeSession(cache, 'merge-scan-source')
+        const target = makeSession(cache, 'merge-scan-target')
+        const now = Date.now()
+
+        cache.setSessionLastNotify(source, { status: 'blocked', at: now - 10_000, note: 'stale' })
+        store.messages.addMessage(source, {
+            role: 'user',
+            content: { type: 'text', text: 'here you go' },
+            meta: { sentFrom: 'webapp' }
+        }, 'source-reply', null, now - 5_000)
+        store.messages.markMessagesInvoked(source, ['source-reply'], now - 5_000)
+
+        // Enough destination traffic to fill any fixed window on its own.
+        for (let i = 0; i < 8; i++) {
+            store.messages.addMessage(target, {
+                role: 'agent',
+                content: { type: 'text', text: `working ${i}` }
+            }, `target-${i}`, null, now - 4_000 + i)
+        }
 
         await cache.mergeSessionHistory(source, target, 'default')
 

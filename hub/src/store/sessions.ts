@@ -290,6 +290,8 @@ type DbSessionRow = {
     blocked_ack_reason: string | null
     blocked_ack_key: string | null
     last_notify_cleared_at: number | null
+    last_notify_seq: number | null
+    last_notify_cleared_seq: number | null
     last_notify_updated_at: number | null
     active: number
     active_at: number | null
@@ -328,6 +330,8 @@ function toStoredSession(row: DbSessionRow): StoredSession {
         blockedAckReason: row.blocked_ack_reason,
         blockedAckKeys: parseAckKeys(row.blocked_ack_key),
         lastNotifyClearedAt: row.last_notify_cleared_at,
+        lastNotifySeq: row.last_notify_seq,
+        lastNotifyClearedSeq: row.last_notify_cleared_seq,
         lastNotifyUpdatedAt: row.last_notify_updated_at,
         active: row.active === 1,
         activeAt: row.active_at,
@@ -723,7 +727,7 @@ function hasNewAgentStateRequest(prior: unknown, next: unknown): boolean {
 export function setSessionLastNotify(
     db: Database,
     id: string,
-    signal: { status: string; at: number; note: string | null },
+    signal: { status: string; at: number; note: string | null; seq?: number | null },
     namespace: string
 ): boolean {
     try {
@@ -732,17 +736,24 @@ export function setSessionLastNotify(
             SET last_notify_status = @status,
                 last_notify_at = @at,
                 last_notify_note = @note,
+                last_notify_seq = @seq,
                 last_notify_updated_at = MAX(COALESCE(last_notify_updated_at, 0) + 1, @rev),
                 seq = seq + 1
             WHERE id = @id
               AND namespace = @namespace
-              AND (last_notify_at IS NULL OR last_notify_at <= @at)
-              AND (last_notify_cleared_at IS NULL OR last_notify_cleared_at <= @at)
+              -- Ordered by seq, not by clock, when the caller supplies one.
+              AND (@seq IS NULL OR last_notify_seq IS NULL OR last_notify_seq <= @seq)
+              AND (@seq IS NULL OR last_notify_cleared_seq IS NULL OR last_notify_cleared_seq < @seq)
+              -- Clock comparison retained only for callers without a seq
+              -- (older paths); it is never used to compare the two domains.
+              AND (@seq IS NOT NULL OR last_notify_at IS NULL OR last_notify_at <= @at)
+              AND (@seq IS NOT NULL OR last_notify_cleared_at IS NULL OR last_notify_cleared_at <= @at)
         `).run({
             id,
             status: signal.status,
             at: signal.at,
             note: signal.note,
+            seq: signal.seq ?? null,
             namespace, rev: Date.now() })
         return result.changes === 1
     } catch {
@@ -799,7 +810,8 @@ export function clearSessionLastNotify(
     db: Database,
     id: string,
     namespace: string,
-    clearedAt: number = Date.now()
+    clearedAt: number = Date.now(),
+    clearedSeq: number | null = null
 ): boolean {
     try {
         const result = db.prepare(`
@@ -808,6 +820,8 @@ export function clearSessionLastNotify(
                 last_notify_at = NULL,
                 last_notify_note = NULL,
                 last_notify_cleared_at = MAX(COALESCE(last_notify_cleared_at, 0), @clearedAt),
+                last_notify_cleared_seq = MAX(COALESCE(last_notify_cleared_seq, 0), COALESCE(@clearedSeq, 0)),
+                last_notify_seq = NULL,
                 last_notify_updated_at = MAX(COALESCE(last_notify_updated_at, 0) + 1, @clearedAt),
                 seq = seq + 1
             WHERE id = @id
@@ -818,8 +832,9 @@ export function clearSessionLastNotify(
               -- past it later. Still a no-op write when neither would move.
               AND (last_notify_status IS NOT NULL
                    OR last_notify_cleared_at IS NULL
-                   OR last_notify_cleared_at < @clearedAt)
-        `).run({ id, namespace, clearedAt })
+                   OR last_notify_cleared_at < @clearedAt
+                   OR COALESCE(last_notify_cleared_seq, 0) < COALESCE(@clearedSeq, 0))
+        `).run({ id, namespace, clearedAt, clearedSeq })
         return result.changes === 1
     } catch {
         return false
