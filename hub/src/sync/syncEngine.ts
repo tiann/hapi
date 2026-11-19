@@ -257,7 +257,7 @@ export class SyncEngine {
     /** Cold cache: no hibernation until the hub has been up this long. */
     static readonly HIBERNATE_STARTUP_GRACE_MS = 600_000
     private readonly hubStartedAt = Date.now()
-    private readonly workerActivityReports = new Map<string, { machineId: string; pid: number; startMarker: string; watching: boolean; uploading: boolean; piNativeId?: string; observedAt: number }>()
+    private readonly workerActivityReports = new Map<string, { machineId: string; pid: number; startMarker: string; watching: boolean; uploading: boolean; readyNativeId?: string; observedAt: number }>()
     // KillSession's beforeKill drain completes before the CLI's async cleanup
     // closes the session socket, so a runner prepare-stop that loses that race
     // can still be honored for the exact killed generation while its archive
@@ -870,7 +870,7 @@ export class SyncEngine {
     handleSessionAlive(payload: {
         hasPeerReplyWatch?: boolean
         hasActiveUpload?: boolean
-        piNativeReady?: { nativeId: string; pid: number; startMarker: string }
+        nativeResumeReady?: { nativeId: string; pid: number; startMarker: string }
         sid: string
         time: number
         thinking?: boolean
@@ -894,8 +894,8 @@ export class SyncEngine {
         if (current?.active && typeof payload.hasPeerReplyWatch === 'boolean' && typeof payload.hasActiveUpload === 'boolean' && metadata?.machineId
             && metadata.hostPid && metadata.hostStartMarker) {
             this.workerActivityReports.set(payload.sid, { machineId: metadata.machineId, pid: metadata.hostPid,
-                piNativeId: payload.piNativeReady?.pid === metadata.hostPid && payload.piNativeReady.startMarker === metadata.hostStartMarker
-                    ? payload.piNativeReady.nativeId : undefined,
+                readyNativeId: payload.nativeResumeReady?.pid === metadata.hostPid && payload.nativeResumeReady.startMarker === metadata.hostStartMarker
+                    ? payload.nativeResumeReady.nativeId : undefined,
                 startMarker: metadata.hostStartMarker, watching: payload.hasPeerReplyWatch, uploading: payload.hasActiveUpload, observedAt: Date.now() })
         } else this.workerActivityReports.delete(payload.sid)
         if (current?.active && metadata?.hibernation?.state === 'hibernated'
@@ -910,7 +910,7 @@ export class SyncEngine {
             void this.automaticTitleSuggestionService.onTurnCompleted(payload.sid)
         }
         if (current?.active && metadata?.hibernation?.wake
-            && (metadata.flavor !== 'pi' || this.workerActivityReports.get(current.id)?.piNativeId === metadata.hibernation.wake.nativeId)
+            && ((metadata.flavor !== 'pi' && metadata.flavor !== 'opencode') || this.workerActivityReports.get(current.id)?.readyNativeId === metadata.hibernation.wake.nativeId)
             && !this.resumeTails.has(current.id) && !this.reopenTails.has(current.id)
             && Date.now() >= (this.hibernateWakeBackoffUntil.get(current.id) ?? 0)) {
             void this.wakeHibernatedSession(current.id, current.namespace, Date.now())
@@ -1414,8 +1414,11 @@ export class SyncEngine {
             return 'skipped'
         }
         if (observation?.state === 'gone' || observation?.state === 'replaced') {
-            const status = await this.rpcGateway.stopRunnerSession(worker.machineId, session.id).catch(() => 'unknown')
-            if (!currentOwner() || (status !== 'already_gone' && status !== 'stopped')) return 'failed'
+            if (observation.stopState === 'new-owner') {
+                this.sessionCache.clearSessionHibernation(session.id, 'stopping')
+                return 'skipped'
+            }
+            if (observation.stopState !== 'clear') return 'failed'
             if (this.getSession(session.id)?.active) this.handleSessionEnd({ sid: session.id, time: Date.now() })
             if (this.sessionCache.markSessionHibernatedFromHub(session.id, marker.reason)) {
                 this.hibernateBackoffUntil.delete(session.id)
@@ -5908,9 +5911,9 @@ export class SyncEngine {
             const metadata = current?.metadata
             const marker = metadata?.hibernation
             if (!current?.active || !metadata || marker?.state !== 'hibernated' || marker.wake?.id !== wake.id) return false
-            if (wake.flavor === 'pi') {
+            if (wake.flavor === 'pi' || wake.flavor === 'opencode') {
                 const report = this.workerActivityReports.get(current.id)
-                if (report?.piNativeId !== wake.nativeId || report.pid !== pid || report.startMarker !== startMarker
+                if (report?.readyNativeId !== wake.nativeId || report.pid !== pid || report.startMarker !== startMarker
                     || report.machineId !== wake.machineId || this.piResumeQuarantinedIds.has(current.id)
                     || (metadata.piResumeAttempt && metadata.piResumeAttempt.state !== 'resuming')) return false
             }
@@ -5947,6 +5950,13 @@ export class SyncEngine {
         const fromHibernation = isHibernatedLifecycleState(initialSession.metadata?.lifecycleState)
             || initialSession.metadata?.hibernation?.state === 'hibernated'
         if (initialSession.active && fromHibernation) return this.recoverActiveWake(initialSession)
+        if (fromHibernation && initialSession.metadata?.piResumeAttempt) {
+            const childId = initialSession.metadata.piResumeAttempt.childSessionId
+            if ((childId && childId !== sessionId) || !await this.reconcilePersistedPiResumeAttempt(initialSession)) {
+                return { type: 'error', message: 'Previous Pi wake is still unconfirmed; retry.', code: 'resume_unavailable' }
+            }
+            initialSession = this.sessionCache.getSessionByNamespace(sessionId, namespace) ?? initialSession
+        }
         if (initialSession.metadata?.codexResumePending) {
             if (!await this.reconcileCodexResume(initialSession)) return { type: 'error', message: 'Codex resume startup is still unconfirmed', code: 'resume_failed', rollbackSafe: false }
             initialSession = this.sessionCache.getSessionByNamespace(sessionId, namespace) ?? initialSession
@@ -6159,6 +6169,8 @@ export class SyncEngine {
                 this.sessionReadyIds.delete(access.sessionId)
                 this.writeCodexResumePending(access.sessionId, namespace, { machineId: targetMachine.id, nativeSessionId: resumeToken })
             }
+            const openCodeWake = fromHibernation && flavor === 'opencode'
+            if (openCodeWake) this.sessionReadyIds.delete(sessionId)
             const previousWake = session.metadata?.hibernation?.wake
             const wakeAttemptId = fromHibernation && (flavor === 'claude' || flavor === 'opencode' || flavor === 'pi')
                 ? (previousWake && previousWake.machineId === targetMachine.id && previousWake.nativeId === resumeToken && previousWake.flavor === flavor ? previousWake.id : randomUUID())
@@ -6272,7 +6284,7 @@ export class SyncEngine {
                 return { type: 'error', message: 'Session failed to become active', code: 'resume_failed' }
             }
 
-            const needsReadyBeforeSuccess = resumedStartingMode === 'pty'
+            const needsReadyBeforeSuccess = openCodeWake || resumedStartingMode === 'pty'
                 || requiresPiNativeReady
                 || (
                     spawnResult.sessionId !== access.sessionId
@@ -6380,6 +6392,11 @@ export class SyncEngine {
                 }
             }
 
+            if (openCodeWake) {
+                const current = this.getSession(sessionId)
+                if (!current) return { type: 'error', message: 'OpenCode wake disappeared', code: 'resume_failed' }
+                return this.recoverActiveWake(current)
+            }
             this.sessionCache.markSessionActive(spawnResult.sessionId)
             this.sessionCache.recordAgentProgress(spawnResult.sessionId, Date.now())
             if (fromHibernation) {

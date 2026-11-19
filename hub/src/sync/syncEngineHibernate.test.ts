@@ -216,21 +216,33 @@ describe('SyncEngine hibernation', () => {
             engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
             registerMachine()
         }
+        let stopState: 'clear' | 'new-owner' | undefined
         let gone = false
         const probe = spyOn((engine as unknown as { rpcGateway: RpcGateway }).rpcGateway, 'inspectWorker')
-            .mockImplementation(async () => ({ state: gone ? 'replaced' : 'unknown', confirmedWake: false }))
+            .mockImplementation(async () => ({ state: gone ? 'replaced' : 'unknown', confirmedWake: false, stopState }))
         expect(await engine.reconcileInterruptedStop(id, NAMESPACE)).toBe(false)
         expect(engine.blocksSessionInput(id)).toBe(true)
         expect(cache().getSession(id)?.metadata?.hibernation?.state).toBe('stopping')
         gone = true
-        gateway().stopRunnerSession = async () => 'still_alive'
+        gateway().stopRunnerSession = async () => { throw new Error('recovery must never signal a replacement') }
         expect(await engine.reconcileInterruptedStop(id, NAMESPACE)).toBe(false)
         expect(engine.blocksSessionInput(id)).toBe(true)
-        gateway().stopRunnerSession = async () => 'already_gone'
+        stopState = 'clear'
         if (restart) expect(await engine.hibernateIdleSessions(later() + 600_000, WINDOW)).toEqual([id])
         else expect(await engine.reconcileInterruptedStop(id, NAMESPACE)).toBe(true)
         expect(probe).toHaveBeenLastCalledWith(MACHINE, { sessionId: id, pid, startMarker: `gen-${pid}` })
         expect(cache().getSession(id)?.metadata?.lifecycleState).toBe('hibernated')
+    })
+
+    it('retires the interrupted stop without signalling a replacement already bound on the runner', async () => {
+        const id = insertIdleSession('runner-owner-changed')
+        const row = cache().getSession(id)!
+        cache().markSessionHibernationStopping(id, row.metadataVersion, 'idle', Date.now())
+        gateway().inspectWorker = async () => ({ state: 'gone', confirmedWake: false, stopState: 'new-owner' })
+        expect(await engine.reconcileInterruptedStop(id, NAMESPACE)).toBe(true)
+        expect(stopCalls).toEqual([])
+        expect(cache().getSession(id)?.active).toBe(true)
+        expect(cache().getSession(id)?.metadata?.hibernation).toBeUndefined()
     })
 
     it('restores a still-live original worker after the backoff and an explicit heartbeat', async () => {
@@ -417,11 +429,11 @@ describe('SyncEngine hibernation', () => {
         expect(session.metadata?.hibernation?.state).toBe('stopping')
         gateway().inspectWorker = async () => ({ state: 'matching', confirmedWake: false })
         expect(await engine.reconcileInterruptedStop(id, NAMESPACE)).toBe(false)
-        gateway().inspectWorker = async () => ({ state: 'gone', confirmedWake: false })
+        gateway().inspectWorker = async () => ({ state: 'gone', confirmedWake: false, stopState: 'clear' })
         stopImpl = async () => 'already_gone'
         expect(await engine.reconcileInterruptedStop(id, NAMESPACE)).toBe(true)
         expect(cache().getSession(id)?.metadata?.lifecycleState).toBe('hibernated')
-        expect(stopCalls).toHaveLength(2)
+        expect(stopCalls).toHaveLength(1)
     })
 
     it('ignores the idle reconciler stamp so the window is not stretched', async () => {
@@ -520,10 +532,10 @@ describe('SyncEngine hibernation', () => {
         expect(stopCalls).toHaveLength(1)
 
         engine.handleSessionEnd({ sid: id, time: Date.now() })
-        gateway().inspectWorker = async () => ({ state: 'gone', confirmedWake: false })
+        gateway().inspectWorker = async () => ({ state: 'gone', confirmedWake: false, stopState: 'clear' })
         stopImpl = async () => 'already_gone'
         expect(await engine.hibernateIdleSessions(now + 10 * 60_000, WINDOW)).toEqual([id])
-        expect(stopCalls).toHaveLength(2)
+        expect(stopCalls).toHaveLength(1)
     })
 
     it('never hibernates without the runner capability, inside the window, or for ineligible flavors', async () => {

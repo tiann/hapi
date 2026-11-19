@@ -137,11 +137,31 @@ describe('SyncEngine resume of hibernated sessions', () => {
         expect(cache().getSession(id)?.metadata?.hibernation?.wake?.id).toBe(attempt as string)
         expect(backfill()).toEqual([])
         confirmedWake = true
+        if (flavor === 'opencode') {
+            expect((await engine.resumeSession(id, NAMESPACE)).type).toBe('error')
+            engine.handleSessionAlive({ sid: id, time: Date.now(), hasPeerReplyWatch: false, hasActiveUpload: false,
+                nativeResumeReady: { pid: 22222, startMarker: 'new-worker', nativeId: 'native-interrupted-wake' } })
+        }
         expect(await engine.resumeSession(id, NAMESPACE)).toEqual({ type: 'success', sessionId: id })
         expect(cache().getSession(id)?.metadata?.hibernation).toBeUndefined()
         const delivered = backfill()
         expect(delivered.map(message => message.localId)).toEqual(['due'])
         expect(backfill(delivered[0]!.seq!)).toEqual([])
+    })
+
+    it('reconciles an inactive interrupted Pi wake before trying another spawn', async () => {
+        const id = await hibernatedSession('inactive-pi', 'pi')
+        const row = engine.getSession(id)!
+        store.sessions.updateSessionMetadata(id, { ...row.metadata,
+            piResumeAttempt: { state: 'resuming', machineId: MACHINE, startedAt: Date.now() } }, row.metadataVersion, NAMESPACE)
+        cache().refreshSession(id)
+        gateway().stopRunnerSession = async () => 'unknown'
+        expect((await engine.resumeSession(id, NAMESPACE)).type).toBe('error')
+        expect(engine.getSession(id)?.metadata?.piResumeAttempt).toBeDefined()
+        gateway().stopRunnerSession = async () => 'already_gone'
+        spawnImpl = async sid => { bootCli(sid); engine.handleSessionReady({ sid, time: Date.now() }); return { type: 'success', sessionId: sid } }
+        expect((await engine.resumeSession(id, NAMESPACE)).type).toBe('success')
+        expect(engine.getSession(id)?.metadata?.hibernation).toBeUndefined()
     })
 
     it('recovers Pi after hub restart only when the replacement generation loaded the requested conversation', async () => {
@@ -170,13 +190,13 @@ describe('SyncEngine resume of hibernated sessions', () => {
             state: 'matching', confirmedWake: (request as { wakeAttemptId: string }).wakeAttemptId === attempt.id
         })
         const heartbeat = { sid: id, time: Date.now(), hasPeerReplyWatch: false, hasActiveUpload: false }
-        for (const piNativeReady of [undefined, { pid: 22222, startMarker: 'replacement', nativeId: 'other' },
+        for (const nativeResumeReady of [undefined, { pid: 22222, startMarker: 'replacement', nativeId: 'other' },
             { pid: 22222, startMarker: 'old', nativeId: attempt.nativeId }]) {
-            engine.handleSessionAlive({ ...heartbeat, piNativeReady })
+            engine.handleSessionAlive({ ...heartbeat, nativeResumeReady })
             expect((await engine.resumeSession(id, NAMESPACE)).type).toBe('error')
             expect(engine.blocksSessionInput(id)).toBe(true)
         }
-        engine.handleSessionAlive({ ...heartbeat, piNativeReady: { pid: 22222, startMarker: 'replacement', nativeId: attempt.nativeId } })
+        engine.handleSessionAlive({ ...heartbeat, nativeResumeReady: { pid: 22222, startMarker: 'replacement', nativeId: attempt.nativeId } })
         expect(await engine.resumeSession(id, NAMESPACE)).toEqual({ type: 'success', sessionId: id })
         expect(engine.getSession(id)?.metadata?.piResumeAttempt).toBeUndefined()
         expect(engine.blocksSessionInput(id)).toBe(false)
@@ -485,7 +505,7 @@ describe('SyncEngine resume of hibernated sessions', () => {
         expect(await unavailable.json()).toMatchObject({ code: 'stop_unconfirmed', retryable: true })
         expect(store.messages.getFirstMessages(id, 10)).toHaveLength(0)
         const probe = spyOn((engine as unknown as { rpcGateway: RpcGateway }).rpcGateway, 'inspectWorker')
-            .mockResolvedValue({ state: 'gone', confirmedWake: false })
+            .mockResolvedValue({ state: 'gone', confirmedWake: false, stopState: 'clear' })
         gateway().stopRunnerSession = async () => 'already_gone'
         expect((await post()).status).toBe(200)
         expect(probe).toHaveBeenCalledWith(MACHINE, { sessionId: id, pid, startMarker: `gen-${pid}` })

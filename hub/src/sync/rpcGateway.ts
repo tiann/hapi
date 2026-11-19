@@ -269,7 +269,8 @@ export class RpcGateway {
         const result = await this.machineRpc(machineId, RPC_METHODS.InspectWorker, request) as Partial<WorkerInspection> | null
         const state = result?.state
         if (state !== 'matching' && state !== 'replaced' && state !== 'gone') return { state: 'unknown', confirmedWake: false }
-        return { state, confirmedWake: state === 'matching' && result?.confirmedWake === true }
+        return { state, confirmedWake: state === 'matching' && result?.confirmedWake === true,
+            stopState: result?.stopState === 'clear' || result?.stopState === 'new-owner' ? result.stopState : undefined }
     }
 
     async stopRunnerSession(

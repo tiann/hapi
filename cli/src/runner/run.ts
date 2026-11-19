@@ -1928,6 +1928,22 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
         const confirmedWake = actual === 'matching' && !!wakeAttemptId && record?.wakeAttemptId === wakeAttemptId
           && record.requestedSessionId === sessionId && record.confirmedSessionId === sessionId
           && record.processStartMarker === startMarker;
+        if (!wakeAttemptId && (actual === 'gone' || actual === 'replaced')) {
+          for (const binding of persistedResumeProcesses.values()) {
+            if (binding.requestedSessionId !== sessionId && binding.confirmedSessionId !== sessionId) continue;
+            if (binding.pid === pid && binding.processStartMarker === startMarker) continue;
+            const owner = await inspectWorkerGeneration(binding.pid, binding.processStartMarker);
+            if (owner === 'matching' && binding.confirmedSessionId === sessionId) {
+              return { state: actual, confirmedWake, stopState: 'new-owner' };
+            }
+            if (owner === 'unknown' || owner === 'matching') return { state: actual, confirmedWake };
+          }
+          const targets = await findStopSessionOrphanTargets(sessionId, () => false);
+          if (targets !== 'scan_failed' && targets.length === 0 && hasVerifiedExit(sessionId)
+            && ![...pidToTrackedSession.values()].some(child => child.happySessionId === sessionId || child.requestedHappySessionId === sessionId)) {
+            return { state: actual, confirmedWake, stopState: 'clear' };
+          }
+        }
         return { state: actual, confirmedWake };
       },
       spawnSession,

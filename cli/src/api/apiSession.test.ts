@@ -2091,10 +2091,10 @@ describe('ApiSessionClient runtime heartbeat', () => {
         const socket = socketHarness.sockets.at(-1)!
         socket.triggerConnect()
         const lastAlive = () => socket.emitted.filter(entry => entry.event === 'session-alive').at(-1)?.args[0]
-        expect(lastAlive()).not.toHaveProperty('piNativeReady')
+        expect(lastAlive()).not.toHaveProperty('nativeResumeReady')
         client.emitSessionReady('native-id')
         socket.triggerConnect()
-        expect(lastAlive()).toMatchObject({ piNativeReady: { nativeId: 'native-id', pid: process.pid, startMarker: 'generation' } })
+        expect(lastAlive()).toMatchObject({ nativeResumeReady: { nativeId: 'native-id', pid: process.pid, startMarker: 'generation' } })
         client.close()
     })
 
