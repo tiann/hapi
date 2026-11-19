@@ -80,6 +80,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
         };
         let failConfig: ReturnType<typeof vi.spyOn> | undefined;
         const extraSpies: Array<{ mockRestore(): void }> = [];
+        let releaseLaunch = () => {};
         try {
             vi.mocked(bootstrapExistingSession).mockImplementation(async options => {
                 const previous = state.sessions.get(options.sessionId)!;
@@ -112,7 +113,22 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                 return originalRequest.call(this, method, params) as Promise<T>;
             });
             extraSpies.push(failSettings);
-            const child = await second.client.request<{ thread: { id: string } }>('thread/start', { cwd, model: 'gpt-6-astra', serviceTier: 'ultrafast' });
+            const { SharedCodexRoot } = await import('./root');
+            const originalConfirm = SharedCodexRoot.prototype.confirmUltrafastLaunch;
+            let entered!: (threadId: string) => void;
+            const confirming = new Promise<string>(resolve => { entered = resolve; });
+            const delayed = new Promise<void>(resolve => { releaseLaunch = resolve; });
+            const confirmation = vi.spyOn(SharedCodexRoot.prototype, 'confirmUltrafastLaunch').mockImplementationOnce(async function(this: InstanceType<typeof SharedCodexRoot>, ...args) {
+                entered(this.threadId); await delayed; return originalConfirm.apply(this, args);
+            });
+            extraSpies.push(confirmation);
+            const observer = new CodexAppServerClient({ endpoint: second.runtime.endpoint, token: second.runtime.token });
+            clients.push(observer); await initializeSharedClient(observer);
+            const creating = second.client.request<{ thread: { id: string } }>('thread/start', { cwd, model: 'gpt-6-astra', serviceTier: 'ultrafast' });
+            const confirmingThread = await confirming;
+            await expect(observer.request('thread/queue/start', { threadId: confirmingThread })).rejects.toThrow('tier confirmation');
+            releaseLaunch();
+            const child = await creating;
             const childSid = Object.entries(second.runtime.sessions).find(([, binding]) => binding.threadId === child.thread.id)![0];
             const childSession = state.sessions.get(childSid)!;
             expect(childSession.metadata.codexTierConfirmationPending).toBe(true);
@@ -120,7 +136,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             await expect(second.client.request('turn/start', { threadId: child.thread.id, input: [{ type: 'text', text: 'must not execute' }] })).rejects.toThrow('tier confirmation');
             await expect(second.client.request('thread/queue/start', { threadId: child.thread.id })).rejects.toThrow('tier confirmation');
             failSettings.mockRestore();
-            await second.client.request('thread/settings/update', { threadId: child.thread.id, serviceTier: null });
+            await observer.request('thread/settings/update', { threadId: child.thread.id, serviceTier: null });
             expect(childSession.metadata.codexTierConfirmationPending).toBe(false);
             expect((await second.client.request<{ serviceTier: string }>('thread/resume', { threadId: child.thread.id, excludeTurns: true })).serviceTier).toBe('default');
             const unsupported = await second.client.request<{ thread: { id: string }; serviceTier: string }>('thread/start', { cwd, model: 'gpt-6.1-sol', serviceTier: 'ultrafast' });

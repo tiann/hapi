@@ -76,6 +76,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     const roots = new Map<string, SharedCodexRoot>();
     const prepared = new Set<SharedCodexRoot>();
     const reservations = new Map<string, Reservation>();
+    const nativeTurns = new Map<string, { root: SharedCodexRoot; params: Record<string, unknown>; explicitTier: boolean; fallbackNotice?: string }>();
     const runtime: CodexRuntimeRecord = { id, pid: process.pid, marker: getProcessStartMarker(process.pid) ?? '',
         endpoint: '', command: command.command, args: command.args, codexHome: home, hub: configuration.apiUrl, authHash: runtimeAuthHash(), sessions: {} };
     if (!runtime.marker) throw new Error('Cannot verify the runtime process generation');
@@ -225,6 +226,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         // No fake user turn/name. Metadata write materializes an empty legacy rollout for native resume.
         await control.request('thread/metadata/update', { threadId, gitInfo: gitInfo(string(record(response.thread).cwd) ?? root.bootstrap.workingDirectory) });
         assertRunning();
+        if (requestedUltrafast) root.beginTierConfirmation();
         roots.set(threadId, root);
         await root.bind(threadId, response, subscribe);
         // A thread this runtime created (thread/start) starts from zero
@@ -288,8 +290,14 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         const queueMutation = ['thread/queue/add', 'thread/queue/update', 'thread/queue/delete', 'thread/queue/reorder', 'thread/queue/start'].includes(request.method ?? '');
         if (queueRoot?.needsTierConfirmation && (request.method === 'turn/start' || queueMutation)) throw new Error('Service tier confirmation is pending. Select a service tier in settings before sending input.');
         if (queueRoot?.needsTierConfirmation && request.method === 'thread/fork') throw new Error('Confirm the service tier in settings before forking this conversation.');
-        if (queueRoot && request.method === 'turn/start') return { ...request, params: await queueRoot.prepareNativeTurn(params) };
-        if (queueRoot && request.method === 'thread/settings/update' && (params.serviceTier !== undefined || params.model && queueRoot.hasUltrafastTier)) {
+        if (queueRoot && request.method === 'turn/start') {
+            if (params.serviceTier === undefined && !((params.model || record(record(params.collaborationMode).settings).model) && queueRoot.hasUltrafastTier)) return request;
+            if (request.id === undefined) throw new Error('Turn mutations require a JSON-RPC request ID');
+            const resolved = await queueRoot.prepareNativeTurn(params);
+            nativeTurns.set(key(connection, request), { root: queueRoot, ...resolved, explicitTier: params.serviceTier !== undefined });
+            return { ...request, params: resolved.params };
+        }
+        if (queueRoot && request.method === 'thread/settings/update' && (params.serviceTier !== undefined || (params.model || record(record(params.collaborationMode).settings).model) && queueRoot.hasUltrafastTier)) {
             if (request.id === undefined) throw new Error('Settings mutations require a JSON-RPC request ID');
             await queueRoot.applyNativeSettings(params);
             return { id: request.id, result: {} };
@@ -320,7 +328,9 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             }
             if (candidate !== threadId && !existing) throw new Error('Resume the parent HAPI session before attaching a child agent');
         }
-        const cwd = string(params.cwd) ?? existing?.bootstrap.workingDirectory ?? launch.cwd;
+        const savedThread = request.method === 'thread/resume' && threadId && !existing
+            ? record(record(await control.request('thread/read', { threadId, includeTurns: false })).thread) : undefined;
+        const cwd = string(params.cwd) ?? string(savedThread?.cwd) ?? existing?.bootstrap.workingDirectory ?? launch.cwd;
         // Loaded native resume rejoins a thread and ignores setting overrides.
         // Actual live changes go through thread/settings/update above.
         if (request.method === 'thread/resume' && existing) return { ...request, params: existing.config(params) };
@@ -336,7 +346,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             }
             const resolved = request.method === 'thread/resume'
                 ? await inheritedResumeTier(control, params, root.session.getMetadata()?.codexServiceTierExplicit, cwd, root.bootstrap.sessionInfo.serviceTier) : params;
-            const tier = await resolveUltrafastLaunch(control, request.method!, resolved, cwd, catalogProvider);
+            const tier = await resolveUltrafastLaunch(control, request.method!, resolved, cwd, catalogProvider, savedThread);
             reservations.set(key(connection, request), { root, resumeId: request.method === 'thread/resume' ? threadId : undefined,
                 serviceTierExplicit: params.serviceTier !== undefined ? true : request.method === 'thread/resume' ? undefined : false,
                 requestedUltrafast: tier.params.serviceTier === 'ultrafast', downgraded: tier.downgraded });
@@ -349,6 +359,8 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         }
     });
     const after = (request: Envelope, response: Envelope, connection: string): Promise<void | Envelope[]> => operation(async () => {
+        const turn = nativeTurns.get(key(connection, request)); nativeTurns.delete(key(connection, request));
+        if (turn && !response.error) await turn.root.confirmNativeTurn(turn.params, turn.explicitTier, turn.fallbackNotice);
         const reservation = reservations.get(key(connection, request)); reservations.delete(key(connection, request));
         if (reservation) {
             if (response.error) {
@@ -406,6 +418,11 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         assertRunning();
         gateway = await startCodexGateway({ upstream, upstreamToken, path: process.platform === 'win32' ? undefined : join(sockets, 'clients.sock'), token,
             hooks: { before, after, disconnected: connection => {
+                for (const [key, turn] of nativeTurns) {
+                    if (!key.startsWith(`${connection}:`)) continue;
+                    nativeTurns.delete(key);
+                    turn.root.session.sendSessionEvent({ type: 'message', message: 'Native turn settings are unconfirmed after transport loss. Inspect the conversation before retrying.' });
+                }
                 for (const [key, reservation] of reservations) {
                     if (!key.startsWith(`${connection}:`)) continue;
                     reservation.root.session.sendSessionEvent({ type: 'message', message: 'Native lifecycle outcome is unknown after transport loss. Do not retry blindly; inspect the shared runtime log.' });
@@ -437,11 +454,11 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             // row's hostPid/metadata. Hold the lock until the reservation is durable.
             root = await withThreadOwnership(home, threadId, id, async () => {
                 const existing = options.existingSessionId ?? await findColdBinding(home, threadId);
-                const root = await prepare(launch.cwd, existing);
+                const root = await prepare(string(launch.threadParams.cwd) ?? string(thread.cwd) ?? launch.cwd, existing);
                 await reserveRecord(root, threadId); return root;
             });
-            const resumeParams = await inheritedResumeTier(control, launch.threadParams, root.session.getMetadata()?.codexServiceTierExplicit, launch.cwd, root.bootstrap.sessionInfo.serviceTier);
-            const resolved = await resolveUltrafastLaunch(control, 'thread/resume', resumeParams, launch.cwd, catalogProvider, thread);
+            const resumeParams = await inheritedResumeTier(control, launch.threadParams, root.session.getMetadata()?.codexServiceTierExplicit, root.bootstrap.workingDirectory, root.bootstrap.sessionInfo.serviceTier);
+            const resolved = await resolveUltrafastLaunch(control, 'thread/resume', resumeParams, root.bootstrap.workingDirectory, catalogProvider, thread);
             const downgraded = resolved.downgraded;
             const params = root.config({ ...resolved.params, threadId, excludeTurns: true });
             let response: Record<string, unknown>;

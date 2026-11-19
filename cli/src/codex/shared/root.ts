@@ -88,7 +88,9 @@ export class SharedCodexRoot {
     private serviceTierExplicit = false;
     private tierConfirmationPending = false;
     get hasUltrafastTier(): boolean { return this.settings.serviceTier === 'ultrafast'; }
-    get needsTierConfirmation(): boolean { return this.tierConfirmationPending; }
+    private tierAdmissionPending = false;
+    beginTierConfirmation(): void { this.tierAdmissionPending = true; }
+    get needsTierConfirmation(): boolean { return this.tierAdmissionPending || this.tierConfirmationPending; }
     get hasConfirmedStandardTier(): boolean { return this.settingsNative.serviceTier === 'default'; }
     private settingsNotification?: Record<string, unknown>;
     private readonly settingsListeners = new Set<() => void>();
@@ -327,6 +329,7 @@ export class SharedCodexRoot {
         await this.refresh(); await this.refreshChildren(true);
     }
     async activate(options: SharedLaunchOptions = {}, serviceTierExplicit?: boolean, deferInput = false): Promise<void> {
+        this.tierAdmissionPending = false;
         this.tierConfirmationPending = deferInput || this.session.getMetadata()?.codexTierConfirmationPending === true;
         this.serviceTierExplicit = serviceTierExplicit ?? (options.serviceTier !== undefined || this.session.getMetadata()?.codexServiceTierExplicit === true);
         this.session.updateMetadata(metadata => ({ ...metadata, codexServiceTierExplicit: this.serviceTierExplicit, codexTierConfirmationPending: this.tierConfirmationPending }));
@@ -669,49 +672,66 @@ export class SharedCodexRoot {
         this.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: false }));
         if (paused) { this.alive(); this.ready(); this.session.emitSessionReady(); }
     }
+    /** Resolve native intent without committing settings before input is accepted. */
+    private async resolveNativeSettings(params: Record<string, unknown>): Promise<{ params: Record<string, unknown>; fallbackNotice?: string }> {
+        params = { ...params };
+        if (params.serviceTier === 'fast') params.serviceTier = 'priority';
+        const requestedModel = string(record(record(params.collaborationMode).settings).model) ?? string(params.model);
+        let fallbackNotice: string | undefined;
+        if (params.serviceTier === 'ultrafast' || requestedModel && params.serviceTier === undefined && this.hasUltrafastTier) {
+            const deadline = Date.now() + 10_000;
+            for (;;) {
+                const model = requestedModel ?? this.settings.model;
+                const provider = this.modelProvider;
+                const available = await isUltrafastAvailable(this.client, model, this.bootstrap.workingDirectory, deadline, provider, this.host.catalogProvider);
+                const enabled = available && await isUltrafastEnabled(this.client, this.threadId, deadline);
+                if ((!requestedModel && model !== this.settings.model) || provider !== this.modelProvider) continue;
+                params = { ...params, ...(typeof model === 'string' ? { model } : {}) };
+                if (!available || !enabled) {
+                    params.serviceTier = null;
+                    fallbackNotice = !available ? ULTRAFAST_FALLBACK_NOTICE : ULTRAFAST_DISABLED_NOTICE;
+                }
+                break;
+            }
+        }
+        return { params, fallbackNotice };
+    }
     /** Native frontends share the same confirmation and explicit-intent rules. */
     applyNativeSettings(params: Record<string, unknown>): Promise<void> {
         const operation = this.settingsWrites.catch(() => {}).then(async () => {
             const explicitTier = params.serviceTier !== undefined;
-            let fallbackNotice: string | undefined;
-            if (params.serviceTier === 'ultrafast' || params.model && params.serviceTier === undefined && this.hasUltrafastTier) {
-                const deadline = Date.now() + 10_000;
-                for (;;) {
-                    const model = string(params.model) ?? this.settings.model;
-                    const provider = this.modelProvider;
-                    const available = await isUltrafastAvailable(this.client, model, this.bootstrap.workingDirectory, deadline, provider, this.host.catalogProvider);
-                    const enabled = available && await isUltrafastEnabled(this.client, this.threadId, deadline);
-                    if ((!params.model && model !== this.settings.model) || provider !== this.modelProvider) continue;
-                    params = { ...params, ...(typeof model === 'string' ? { model } : {}) };
-                    if (!available || !enabled) {
-                        params.serviceTier = null;
-                        fallbackNotice = !available ? ULTRAFAST_FALLBACK_NOTICE : ULTRAFAST_DISABLED_NOTICE;
-                    }
-                    break;
-                }
-            }
-            // Other native fields may use public null-as-unchanged semantics.
-            // Only this request's tier is relevant to HAPI's inherited intent.
-            await this.writeNativeSettings(params, { ...(params.serviceTier !== undefined ? { serviceTier: params.serviceTier } : {}), ...(typeof params.model === 'string' ? { model: params.model } : {}) });
+            const resolved = await this.resolveNativeSettings(params);
+            const effectiveModel = string(record(record(resolved.params.collaborationMode).settings).model) ?? string(resolved.params.model);
+            await this.writeNativeSettings(resolved.params, {
+                ...(resolved.params.serviceTier !== undefined ? { serviceTier: resolved.params.serviceTier } : {}),
+                ...(effectiveModel ? { model: effectiveModel } : {})
+            });
             if (explicitTier) this.markTierExplicit();
-            if (params.serviceTier !== undefined) this.completeTierConfirmation();
+            if (resolved.params.serviceTier !== undefined) this.completeTierConfirmation();
             this.alive();
-            if (fallbackNotice) this.notice(fallbackNotice);
+            if (resolved.fallbackNotice) this.notice(resolved.fallbackNotice);
         });
         this.settingsWrites = operation;
         return operation;
     }
-    /** Confirm persistent turn overrides before forwarding input on its own client. */
-    async prepareNativeTurn(params: Record<string, unknown>): Promise<Record<string, unknown>> {
-        const tier = params.serviceTier;
-        const persistentTier = tier === null || tier === 'priority' || tier === 'default' || tier === 'ultrafast';
-        if (!persistentTier && !(params.model && tier === undefined && this.hasUltrafastTier)) return params;
-        await this.applyNativeSettings({ threadId: this.threadId,
-            ...(typeof params.model === 'string' ? { model: params.model } : {}),
-            ...(persistentTier ? { serviceTier: tier } : {}) });
-        return { ...params,
-            ...(typeof this.settingsNative.model === 'string' ? { model: this.settingsNative.model } : {}),
-            ...(persistentTier ? { serviceTier: this.settingsNative.serviceTier === 'default' ? null : this.settingsNative.serviceTier } : {}) };
+    async prepareNativeTurn(params: Record<string, unknown>): Promise<{ params: Record<string, unknown>; fallbackNotice?: string }> {
+        return this.resolveNativeSettings(params);
+    }
+    /** Called only after native turn acceptance; a rejected input leaves intent unchanged. */
+    async confirmNativeTurn(params: Record<string, unknown>, explicitTier: boolean, fallbackNotice?: string): Promise<void> {
+        try {
+            const snapshot = record(await this.client.request('thread/resume', { threadId: this.threadId, excludeTurns: true }));
+            this.acceptSettings(snapshot);
+            const model = string(record(record(params.collaborationMode).settings).model) ?? string(params.model);
+            const expected = { ...(model ? { model } : {}), ...(params.serviceTier !== undefined ? { serviceTier: params.serviceTier } : {}) };
+            if (!settingsMatch(this.settingsNative, expected)) throw new Error('Native turn settings are not confirmed');
+            if (explicitTier) this.markTierExplicit();
+            this.alive();
+            if (fallbackNotice) this.notice(fallbackNotice);
+        } catch {
+            // Input has already been accepted. Never return a send error inviting a duplicate.
+            this.notice('Codex accepted the turn, but its settings could not be confirmed. Reconnect before changing the service tier.');
+        }
     }
     private async writeNativeSettings(params: Record<string, unknown>, expected = params): Promise<void> {
         if (this.closed || this.stopping) throw new Error('Codex execution is stopping');

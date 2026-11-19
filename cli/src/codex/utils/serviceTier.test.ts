@@ -11,7 +11,7 @@ it.each(['thread/start', 'thread/fork', 'thread/resume'])('applies the same cata
     const original = { threadId: 'source', model: 'unsupported', serviceTier: 'ultrafast' };
     expect(await resolveUltrafastLaunch(client, method, original, '/project')).toEqual({ params: { ...original, serviceTier: null }, downgraded: true });
     expect(original.serviceTier).toBe('ultrafast');
-    expect(client.listModels).toHaveBeenCalledWith({ includeHidden: true, modelProvider: method === 'thread/start' ? 'configured-provider' : 'saved-provider' });
+    expect(client.listModels).toHaveBeenCalledWith({ includeHidden: true, modelProvider: method === 'thread/resume' ? 'saved-provider' : 'configured-provider' });
 });
 it('does not run lifecycle discovery for Standard or an omitted override', async () => {
     const client = { request: vi.fn(), readConfig: vi.fn(), listModels: vi.fn(), supportsProviderScopedModels: () => true, retainsResumeModelProvider: () => true };
@@ -160,4 +160,16 @@ it.each([['standard', null], ['fast', 'priority'], ['ultrafast', 'ultrafast']] a
     expect(await inheritedResumeTier({ readConfig }, {}, true, '/project', saved)).toEqual({ serviceTier: native });
     expect(await inheritedResumeTier({ readConfig }, { serviceTier: null }, true, '/project', saved)).toEqual({ serviceTier: null });
     expect(readConfig).not.toHaveBeenCalled();
+});
+
+it('checks a native fork against destination config rather than the parent model/provider', async () => {
+    const client = {
+        request: vi.fn().mockResolvedValue({ thread: { model: 'parent-only', modelProvider: 'parent-provider', cwd: '/parent-project' } }),
+        readConfig: vi.fn().mockResolvedValue({ config: { model: 'destination', model_provider: 'destination-provider' } }),
+        listModels: vi.fn().mockResolvedValue({ data: [{ id: 'destination', serviceTiers: [{ id: 'ultrafast' }] }] }),
+        supportsProviderScopedModels: () => true, retainsResumeModelProvider: () => true,
+    };
+    expect((await resolveUltrafastLaunch(client, 'thread/fork', { threadId: 'parent', serviceTier: 'ultrafast' }, '/runtime-project')).downgraded).toBe(false);
+    expect(client.readConfig).toHaveBeenCalledWith({ cwd: '/parent-project', includeLayers: false });
+    expect(client.listModels).toHaveBeenCalledWith({ includeHidden: true, modelProvider: 'destination-provider' });
 });

@@ -1645,15 +1645,45 @@ it.each([null, 'ultrafast'])('clears restored pending state after successful lau
     expect(f.sessionReady).not.toHaveBeenCalled();
     await f.root.activate(); expect(f.sessionReady).toHaveBeenCalledOnce();
 });
-it('confirms a native turn fallback before returning input for forwarding', async () => {
+it('resolves native turn fallback without changing settings or intent before acceptance', async () => {
     const f = await fixture(); await f.root.activate(); f.events.mockClear();
     const input = [{ type: 'text', text: 'native input' }];
+    const before = f.root.freshParams(); const metadata = f.metadata();
     const request = vi.spyOn(f.root.client, 'request');
-    expect(await f.root.prepareNativeTurn({ threadId: 'thread', input, model: 'standard-only', serviceTier: 'ultrafast' }))
-        .toEqual({ threadId: 'thread', input, model: 'standard-only', serviceTier: null });
-    expect(f.root.freshParams().serviceTier).toBe('default');
+    const resolved = await f.root.prepareNativeTurn({ threadId: 'thread', input, model: 'standard-only', serviceTier: 'ultrafast' });
+    expect(resolved.params).toEqual({ threadId: 'thread', input, model: 'standard-only', serviceTier: null });
+    expect(f.root.freshParams()).toEqual(before);
+    expect(f.metadata()).toEqual(metadata);
+    expect(f.events).not.toHaveBeenCalled();
+    expect(request.mock.calls.some(([method]) => ['turn/start', 'thread/settings/update'].includes(method))).toBe(false);
+    request.mockResolvedValueOnce({ model: 'standard-only', serviceTier: 'default' });
+    await f.root.confirmNativeTurn(resolved.params, true, resolved.fallbackNotice);
+    expect(f.metadata().codexServiceTierExplicit).toBe(true);
     expect(f.events).toHaveBeenCalledWith({ type: 'message', message: 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.' });
-    expect(request.mock.calls.some(([method]) => method === 'turn/start')).toBe(false);
+});
+it('checks the collaboration model before native settings and turn overrides', async () => {
+    const f = await fixture(); await f.root.activate();
+    const collaborationMode = { mode: 'plan', settings: { model: 'standard-only' } };
+    const resolved = await f.root.prepareNativeTurn({ model: 'mock', collaborationMode, serviceTier: 'ultrafast' });
+    expect(resolved.params).toMatchObject({ model: 'standard-only', serviceTier: null, collaborationMode });
+    const request = vi.spyOn(f.root.client, 'request');
+    await f.root.applyNativeSettings({ collaborationMode, serviceTier: 'ultrafast' });
+    expect(request).toHaveBeenCalledWith('thread/settings/update', expect.objectContaining({ model: 'standard-only', serviceTier: null }));
+});
+it('normalizes native Fast before settings confirmation and turn admission', async () => {
+    const f = await fixture(); await f.root.activate();
+    await f.root.applyNativeSettings({ serviceTier: 'fast' });
+    expect(f.root.freshParams().serviceTier).toBe('priority');
+    expect((await f.root.prepareNativeTurn({ serviceTier: 'fast' })).params.serviceTier).toBe('priority');
+    expect(f.metadata().codexServiceTierExplicit).toBe(true);
+});
+it('fences input throughout launch tier confirmation before activation', async () => {
+    const f = await fixture(); f.root.beginTierConfirmation();
+    expect(f.root.needsTierConfirmation).toBe(true);
+    await f.root.activate({}, false, true);
+    expect(f.root.needsTierConfirmation).toBe(true);
+    await f.root.applyNativeSettings({ serviceTier: null });
+    expect(f.root.needsTierConfirmation).toBe(false);
 });
 it('does not forward a native turn or write settings after tier discovery failure', async () => {
     const f = await fixture(); await f.root.activate();
