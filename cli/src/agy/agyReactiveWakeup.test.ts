@@ -809,6 +809,40 @@ describe('AgyAcpRemoteLauncher reactive wakeup integration', () => {
         }
     });
 
+    it('rechecks a partial SYSTEM_MESSAGE after the final watcher event is dropped', async () => {
+        vi.useFakeTimers();
+        const controller = new AbortController();
+        try {
+            const { session } = makeHarness();
+            const id = 'agy-burst';
+            const launcher = new AgyAcpRemoteLauncher(session, { brainDir: tempBrainDir, reactivePollMs: 350 });
+            launcher['acpSessionId'] = id;
+            launcher['backend'] = new WakeupTestBackend() as unknown as AcpSdkBackend;
+            const { compactPath } = writeTranscript(tempBrainDir, id, []);
+            const baseline = vi.getTimerCount();
+            const watcher = Object.assign(new EventEmitter(), { close: vi.fn() });
+            vi.mocked(watch).mockReturnValueOnce(watcher as unknown as FSWatcher);
+            const waiting = launcher['waitForNextBatchOrWakeup'](controller.signal);
+            const settled = vi.fn();
+            void waiting.then(settled);
+            const change = vi.mocked(watch).mock.calls.at(-1)![1] as (event: string) => void;
+            appendFileSync(compactPath, '{"step_index":1,');
+            change('change');
+            await vi.advanceTimersByTimeAsync(200);
+            appendFileSync(compactPath, '"source":"SYSTEM",');
+            change('change');
+            appendFileSync(compactPath, '"type":"SYSTEM_MESSAGE","status":"DONE"}\n');
+            await vi.advanceTimersByTimeAsync(349);
+            expect(settled).not.toHaveBeenCalled();
+            await vi.advanceTimersByTimeAsync(1);
+            expect(settled).toHaveBeenCalledWith({ kind: 'wakeup' });
+            expect(vi.getTimerCount()).toBe(baseline);
+        } finally {
+            controller.abort();
+            vi.useRealTimers();
+        }
+    });
+
     it('wakes up on completed background turn, emits background Bash result + text + summary, and advances cursor via resumeSession', async () => {
         const backend = new WakeupTestBackend();
         const { session, queue, client } = makeHarness('always-proceed');

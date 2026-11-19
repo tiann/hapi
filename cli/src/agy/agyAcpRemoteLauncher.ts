@@ -514,6 +514,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
         let timer: ReturnType<typeof setInterval> | undefined;
         let pollMs: number | undefined;
+        let activityRecheck: ReturnType<typeof setTimeout> | undefined;
         const stopPoll = () => {
             clearInterval(timer);
             timer = undefined;
@@ -540,6 +541,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                         closeWatcher();
                     }
                     checkWakeup();
+                    clearTimeout(activityRecheck);
+                    if (!waitController.signal.aborted && watchRef.current) {
+                        activityRecheck = setTimeout(checkWakeup, this.reactivePollMs);
+                        activityRecheck.unref?.();
+                    }
                 });
                 const lost = () => {
                     if (watchRef.current !== fsWatcher) return;
@@ -576,6 +582,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             return { kind: 'batch', batch: null };
         } finally {
             stopPoll();
+            clearTimeout(activityRecheck);
             closeWatcher();
             outerSignal.removeEventListener('abort', onOuterAbort);
         }
