@@ -1244,6 +1244,16 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                             // Continue attempt itself does not get the normal retry
                             // budget — give up rather than resending Continue N times.
                             this.surfacePromptFailure(CURSOR_POST_TOOL_INTERRUPT_GIVE_UP_MESSAGE);
+                            const continueFailure = settleFailure(
+                                this.pendingRetryableError ?? 'Cursor connection interrupted after tool activity'
+                            );
+                            this.pendingStderrFailure = null;
+                            this.pendingTextFailure = null;
+                            // attemptProducedToolActivity is per-attempt and this
+                            // (Continue) attempt made none, but the turn's earlier
+                            // attempt already ran tools — Bridge must not resend
+                            // lastUserMessage into them regardless.
+                            if (continueFailure) this.recordModelError(continueFailure, { bridgeable: false });
                             break;
                         }
                         if (retryAttempt < CURSOR_AUTO_RETRY_LIMIT) {

@@ -1953,6 +1953,7 @@ describe('cursorAcpRemoteLauncher', () => {
         const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
         const client = makeClient() as unknown as ApiSessionClient & {
             sendAgentMessage: ReturnType<typeof vi.fn>;
+            sendSessionEvent: ReturnType<typeof vi.fn>;
         };
         const session = new CursorSession({
             api: {} as never,
@@ -1993,20 +1994,26 @@ describe('cursorAcpRemoteLauncher', () => {
         )).toBe(false);
     });
 
-    it('does not auto-bridge a transient failure after tool side effects', async () => {
+    it('does not auto-bridge a transient failure after tool side effects, even once the one-shot Continue also fails', async () => {
         // Cold-review Major 2026-09-08: ordinary retry respects
         // attemptProducedToolActivity, but auto-Bridge only checked
         // bridgeability/transience/settings — re-sending lastUserMessage
         // would re-run completed shell/edit tools.
+        //
+        // The one-shot auto-Continue (#1724) now retries once with "Continue."
+        // instead of giving up immediately on tool-activity failures — spend
+        // that attempt too so this still reaches the give-up/bridgeable-false
+        // path the original regression guarded.
         setAutoBridgeTransientModelErrors(true);
-        harness.promptMessages = [{
+        harness.promptMessageBatches = [[{
             type: 'tool_call',
             id: 'tool-1',
             name: 'shell',
             input: { command: 'touch output.txt' },
             status: 'completed'
-        }];
+        }], []];
         harness.promptErrors = [
+            new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL'),
             new Error('Error: RetriableError: [canceled] http/2 stream closed with error code CANCEL')
         ];
         const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
@@ -2034,7 +2041,8 @@ describe('cursorAcpRemoteLauncher', () => {
 
         await cursorAcpRemoteLauncher(session);
 
-        expect(harness.promptCalls).toBe(1);
+        expect(harness.promptCalls).toBe(2);
+        expect(harness.prompts[1]).toEqual([{ type: 'text', text: 'Continue.' }]);
         expect(queue.queue.some(
             (item) => item.internal?.kind === 'model-error-bridge'
         )).toBe(false);
