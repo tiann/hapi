@@ -728,7 +728,10 @@ export class SharedCodexRoot {
         try {
             const snapshot = record(await this.client.request('thread/resume', { threadId: this.threadId, excludeTurns: true }));
             // A notification received during the lookup is newer than its captured snapshot.
-            if (this.settingsRevision !== revision) return;
+            if (this.settingsRevision !== revision) {
+                if (fallbackNotice && this.hasConfirmedStandardTier) this.notice(fallbackNotice);
+                return;
+            }
             this.acceptSettings(snapshot);
             const model = string(record(record(params.collaborationMode).settings).model) ?? string(params.model);
             const expected = { ...(model ? { model } : {}), ...(params.serviceTier !== undefined ? { serviceTier: params.serviceTier } : {}) };
@@ -746,8 +749,9 @@ export class SharedCodexRoot {
         // snapshot rather than waiting for an event that will never be emitted.
         const comparable = Object.fromEntries(Object.entries(params).filter(([key, value]) => value !== null || key === 'serviceTier'));
         if (settingsMatch(this.settingsNative, comparable)) {
+            const revision = this.settingsRevision;
             const snapshot = record(await this.client.request('thread/resume', { threadId: this.threadId, excludeTurns: true }));
-            this.acceptSettings(snapshot);
+            if (this.settingsRevision === revision) this.acceptSettings(snapshot);
             if (settingsMatch(this.settingsNative, comparable)) return;
         }
         const revision = this.settingsRevision;

@@ -1735,3 +1735,30 @@ it('does not overwrite a newer tier notification with a delayed native snapshot'
     expect(f.root.freshParams().serviceTier).toBe('default');
     expect(f.metadata().codexServiceTierExplicit).toBe(true);
 });
+
+it('writes the requested tier instead of confirming an obsolete idempotent snapshot', async () => {
+    const f = await fixture(); await f.root.activate();
+    f.root.acceptSettings({ model: 'mock', serviceTier: 'default' });
+    let release!: (value: unknown) => void;
+    const snapshot = new Promise(resolve => { release = resolve; });
+    const original = f.root.client.request.bind(f.root.client);
+    const request = vi.spyOn(f.root.client, 'request').mockImplementationOnce(() => snapshot as never);
+    const pending = f.root.applyNativeSettings({ serviceTier: null });
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith('thread/resume', expect.anything()));
+    f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: { model: 'mock', serviceTier: 'priority' } });
+    request.mockImplementation(original);
+    release({ model: 'mock', serviceTier: 'default' }); await pending;
+    expect(request).toHaveBeenCalledWith('thread/settings/update', expect.objectContaining({ serviceTier: null }));
+    expect(f.root.hasConfirmedStandardTier).toBe(true);
+});
+it('announces fallback confirmed by a newer notification during native reconciliation', async () => {
+    const f = await fixture(); await f.root.activate(); f.events.mockClear();
+    let release!: (value: unknown) => void;
+    const snapshot = new Promise(resolve => { release = resolve; });
+    vi.spyOn(f.root.client, 'request').mockImplementationOnce(() => snapshot as never);
+    const notice = 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.';
+    const pending = f.root.confirmNativeTurn({ serviceTier: null }, true, notice);
+    f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: { model: 'mock', serviceTier: 'default' } });
+    release({ model: 'mock', serviceTier: 'default' }); await pending;
+    expect(f.events).toHaveBeenCalledWith({ type: 'message', message: notice });
+});
