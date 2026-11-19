@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import zlib from 'node:zlib'
-import { createConfiguration } from '../configuration'
+import { createConfiguration, resetConfigurationForTests } from '../configuration'
 import { Store } from '../store'
 import type { EmbeddedWebAsset } from './embeddedAssets'
 import { createWebApp } from './server'
@@ -82,6 +82,7 @@ afterAll(() => {
         process.env.HAPI_HOME = previousHapiHome
     }
     if (homeDir) {
+        resetConfigurationForTests(homeDir)
         rmSync(homeDir, { recursive: true, force: true })
     }
     if (distDir) {
