@@ -1,6 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import * as oldTreeFence from '../oldTreeFence';
 
-const constructorCalls: Array<{ command: string; args?: string[]; env?: Record<string, string> }> = [];
+type BackendOptions = {
+    command: string;
+    args?: string[];
+    env?: Record<string, string>;
+    captureChildExitFence?: (pid: number) => unknown;
+};
+const constructorCalls: BackendOptions[] = [];
 const spawnCalls: Array<{ command: string; args?: string[]; options?: Record<string, unknown> }> = [];
 
 type FakeChild = {
@@ -58,7 +65,7 @@ function configureSpawn(stdoutText: string, opts?: { error?: Error }): void {
 vi.mock('@/agent/backends/acp', () => ({
     AcpSdkBackend: vi.fn().mockImplementation(function (
         this: unknown,
-        opts: { command: string; args?: string[]; env?: Record<string, string> }
+        opts: BackendOptions
     ) {
         constructorCalls.push(opts);
         return { __opts: opts };
@@ -142,6 +149,23 @@ describe('allocateFreePort', () => {
 describe('createOpencodeBackend', () => {
     beforeEach(() => {
         constructorCalls.length = 0;
+    });
+
+    it('wires the process capture callback only for a recovery-enabled v2 backend', () => {
+        const capture = vi.spyOn(oldTreeFence, 'captureServeProcesses').mockReturnValue([]);
+        try {
+            createOpencodeBackend({ cwd: '.', majorVersion: 'v2', recoverChildExit: true });
+            createOpencodeBackend({ cwd: '.', majorVersion: 'v2' });
+            createOpencodeBackend({ cwd: '.', majorVersion: 'v1', recoverChildExit: true });
+            const [enabled, disabled, v1] = constructorCalls;
+            expect(disabled?.captureChildExitFence).toBeUndefined();
+            expect(v1?.captureChildExitFence).toBeUndefined();
+            expect(enabled?.captureChildExitFence).toBeTypeOf('function');
+            enabled?.captureChildExitFence?.(42);
+            expect(capture).toHaveBeenCalledExactlyOnceWith(42);
+        } finally {
+            capture.mockRestore();
+        }
     });
 
     it('passes --port and --hostname args when provided', () => {

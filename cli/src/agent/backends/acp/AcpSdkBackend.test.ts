@@ -115,6 +115,30 @@ describe('AcpSdkBackend', () => {
         }
     });
 
+    it('captures process ownership only after the initialize response', async () => {
+        const reply = Promise.withResolvers<{ protocolVersion: number }>();
+        const capture = vi.fn();
+        const transport = {
+            sendRequest: vi.fn(() => reply.promise), captureChildExitFence: capture,
+            onNotification: vi.fn(), onStderrError: vi.fn(), registerRequestHandler: vi.fn()
+        };
+        const create = vi.spyOn(AcpStdioTransport, 'create').mockResolvedValueOnce(transport as unknown as AcpStdioTransport);
+        const captureChildExitFence = () => ({ refresh: vi.fn(), verify: vi.fn(async () => true) });
+        try {
+            const backend = new AcpSdkBackend({ command: 'opencode', captureChildExitFence });
+            const initializing = backend.initialize();
+            await vi.waitFor(() => expect(transport.sendRequest).toHaveBeenCalledOnce());
+            expect(create).toHaveBeenCalledWith(expect.objectContaining({ captureChildExitFence }));
+            expect(capture).not.toHaveBeenCalled();
+            reply.resolve({ protocolVersion: 1 });
+            await initializing;
+            await backend.initialize();
+            expect(capture).toHaveBeenCalledOnce();
+        } finally {
+            create.mockRestore();
+        }
+    });
+
     it('retries a transient initialize failure without shutdown', async () => {
         const transport = {
             onNotification: vi.fn(),

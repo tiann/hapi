@@ -1,3 +1,4 @@
+import { captureServeProcesses, createServeFence } from '../oldTreeFence';
 import { execFile, spawn } from 'node:child_process';
 import { readdir, readFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
@@ -109,6 +110,7 @@ export function createOpencodeBackend(opts: {
     port?: number;
     hostname?: string;
     majorVersion?: 'v1' | 'v2';
+    recoverChildExit?: boolean;
 }): AcpSdkBackend {
     const env = buildOpencodeEnv();
     if (opts.majorVersion === 'v2') {
@@ -118,6 +120,7 @@ export function createOpencodeBackend(opts: {
         return new AcpSdkBackend({
             command: getAgentLaunchCommand('opencode'),
             args: ['acp'],
+            captureChildExitFence: opts.recoverChildExit ? pid => createServeFence(() => captureServeProcesses(pid)) : undefined,
             env: filterEnv(env),
             spawnCwd: opts.cwd ?? getInvokedCwd(),
             acpModelSwitchViaConfigOption: true,

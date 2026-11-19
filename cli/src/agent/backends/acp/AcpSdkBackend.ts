@@ -1,7 +1,7 @@
 import type { AgentFlavor } from '@hapi/protocol';
 import type { AgentBackend, AgentMessage, AgentSessionConfig, FormElicitationRequest, FormElicitationResponse, PermissionRequest, PermissionResponse, PromptContent } from '@/agent/types';
 import { asString, isObject } from '@hapi/protocol';
-import { AcpStdioTransport, isAcpIndeterminateError, type AcpStderrError } from './AcpStdioTransport';
+import { AcpStdioTransport, isAcpIndeterminateError, type AcpStderrError, type ChildExitFence } from './AcpStdioTransport';
 import { AcpMessageHandler, type AcpTextChunkMode } from './AcpMessageHandler';
 import { ACP_SESSION_UPDATE_TYPES, OPENCODE_CHILD_SESSION_UPDATES, OPENCODE_CHILD_UPDATE_METHOD } from './constants';
 import { thinkingHintFromSessionUpdate } from './shouldBumpThinkingFromSessionUpdate';
@@ -234,6 +234,7 @@ export class AcpSdkBackend implements AgentBackend {
         env?: Record<string, string>;
         /** Working directory passed to the spawned process (v2 `opencode acp` ignores `--cwd`). */
         spawnCwd?: string;
+        captureChildExitFence?: (pid: number) => ChildExitFence;
         /** v2 model switching: use `session/set_config_option('model')` instead of `session/set_model` (removed in v2). */
         acpModelSwitchViaConfigOption?: boolean;
         /**
@@ -297,7 +298,8 @@ export class AcpSdkBackend implements AgentBackend {
             command: this.options.command,
             args: this.options.args,
             env: this.options.env,
-            cwd: this.options.spawnCwd
+            cwd: this.options.spawnCwd,
+            ...(this.options.captureChildExitFence ? { captureChildExitFence: this.options.captureChildExitFence } : {})
         });
         const transport = await this.transportOpening.catch(error => {
             this.transportCreationFailed = true;
@@ -366,6 +368,7 @@ export class AcpSdkBackend implements AgentBackend {
             throw new Error('Invalid initialize response from ACP agent');
         }
 
+        if (this.options.captureChildExitFence) transport.captureChildExitFence();
         this.captureAvailableCommands(null, response);
 
         this.initializeResult = {

@@ -169,24 +169,23 @@ describe('AcpStdioTransport agent CLI guard', () => {
         expect(loss).toHaveBeenCalledExactlyOnceWith(expect.any(Error), { childProcessExited: false });
     });
 
-    test('verifies a pidless spawn before its asynchronous error event', async () => {
-        spawnState.pid = undefined;
-        const transport = await AcpStdioTransport.create({ command: 'missing' });
-        await expect(transport.close({ recovery: true })).resolves.toBe(true);
-        expect(killProcessByChildProcess).not.toHaveBeenCalled();
-    });
-
-    test('does not report an unexpected exit when HAPI closes the transport', async () => {
-        const transport = await AcpStdioTransport.create({ command: 'opencode', args: ['acp'] });
-        const exits: Error[] = [];
-        transport.onUnexpectedExit((error) => exits.push(error));
-
-        await transport.close();
-        for (const handler of spawnState.closeHandlers) {
-            handler(null, 'SIGTERM');
-        }
-
-        expect(exits).toEqual([]);
+    test('refreshes the captured server before every prompt write and skips other requests', async () => {
+        const events: string[] = [];
+        const transport = await AcpStdioTransport.create({
+            command: 'opencode',
+            captureChildExitFence: () => ({ refresh: () => events.push('refresh'), verify: async () => true })
+        });
+        transport.captureChildExitFence();
+        spawnState.stdinWrite.mockImplementation(line => {
+            const { id, method } = JSON.parse(line);
+            events.push(method);
+            emitStdout(JSON.stringify({ jsonrpc: '2.0', id, result: {} }) + '\n');
+            return true;
+        });
+        await transport.sendRequest('session/load');
+        await transport.sendRequest('session/prompt');
+        await transport.sendRequest('session/prompt');
+        expect(events).toEqual(['session/load', 'refresh', 'session/prompt', 'refresh', 'session/prompt']);
     });
 
     test.each(['write accepted', 'early response', 'closed', 'write failure'] as const)(
@@ -228,6 +227,48 @@ describe('AcpStdioTransport agent CLI guard', () => {
             expect(events).toEqual(['start', 'sent']);
         }
     );
+
+    test('uses tree teardown for normal close and only the owned child handle for recovery', async () => {
+        const verify = vi.fn(async () => true);
+        const options = { command: 'opencode', captureChildExitFence: () => ({ verify, refresh: () => {} }) };
+        const normal = await AcpStdioTransport.create(options);
+        normal.captureChildExitFence();
+        vi.mocked(killProcessByChildProcess).mockResolvedValueOnce(true);
+        await expect(normal.close()).resolves.toBe(true);
+        expect(killProcessByChildProcess).toHaveBeenCalledOnce();
+        expect(verify).not.toHaveBeenCalled();
+
+        const lost = await AcpStdioTransport.create(options);
+        lost.captureChildExitFence();
+        spawnState.kill.mockImplementationOnce(() => {
+            spawnState.exitHandlers.forEach(handler => handler(null, 'SIGTERM'));
+            return true;
+        });
+        await expect(lost.close({ recovery: true })).resolves.toBe(true);
+        expect(spawnState.kill).toHaveBeenCalledExactlyOnceWith('SIGTERM');
+        expect(killProcessByChildProcess).toHaveBeenCalledOnce();
+        expect(verify).toHaveBeenCalledOnce();
+    });
+
+    test('verifies a pidless spawn before its asynchronous error event', async () => {
+        spawnState.pid = undefined;
+        const transport = await AcpStdioTransport.create({ command: 'missing' });
+        await expect(transport.close({ recovery: true })).resolves.toBe(true);
+        expect(killProcessByChildProcess).not.toHaveBeenCalled();
+    });
+
+    test('does not report an unexpected exit when HAPI closes the transport', async () => {
+        const transport = await AcpStdioTransport.create({ command: 'opencode', args: ['acp'] });
+        const exits: Error[] = [];
+        transport.onUnexpectedExit((error) => exits.push(error));
+
+        await transport.close();
+        for (const handler of spawnState.closeHandlers) {
+            handler(null, 'SIGTERM');
+        }
+
+        expect(exits).toEqual([]);
+    });
 
     test('registers cross-process guard only for Cursor agent command', async () => {
         const transport = await AcpStdioTransport.create({ command: 'agent', args: ['acp'] });

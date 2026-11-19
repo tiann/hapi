@@ -75,6 +75,8 @@ export function buildAcpStdioSpawnOptions(env?: Record<string, string>, cwd?: st
     };
 }
 
+export type ChildExitFence = { refresh(): void; verify(): Promise<boolean> };
+
 export class AcpStdioTransport {
     /** Only Cursor's `agent` CLI is single-process; other ACP backends must not block model probes. */
     private readonly shouldGuardAgentCli: boolean;
@@ -117,6 +119,7 @@ export class AcpStdioTransport {
         args?: string[];
         env?: Record<string, string>;
         cwd?: string;
+        captureChildExitFence?: (pid: number) => ChildExitFence;
     }): Promise<AcpStdioTransport> {
         const shouldGuardAgentCli = options.command === 'agent';
         if (shouldGuardAgentCli) {
@@ -129,7 +132,7 @@ export class AcpStdioTransport {
                         options.args ?? [],
                         buildAcpStdioSpawnOptions(options.env, options.cwd)
                     ) as ChildProcessWithoutNullStreams;
-                    return new AcpStdioTransport(process, true, options.command);
+                    return new AcpStdioTransport(process, true, options.command, options.captureChildExitFence);
                 } catch (error) {
                     unregisterActiveAcpTransport();
                     throw error;
@@ -144,10 +147,11 @@ export class AcpStdioTransport {
             options.args ?? [],
             buildAcpStdioSpawnOptions(options.env, options.cwd)
         ) as ChildProcessWithoutNullStreams;
-        return new AcpStdioTransport(process, false, options.command);
+        return new AcpStdioTransport(process, false, options.command, options.captureChildExitFence);
     }
 
-    private constructor(process: ChildProcessWithoutNullStreams, shouldGuardAgentCli: boolean, command: string) {
+    private constructor(process: ChildProcessWithoutNullStreams, shouldGuardAgentCli: boolean, command: string,
+        private readonly captureFence?: (pid: number) => ChildExitFence) {
         this.shouldGuardAgentCli = shouldGuardAgentCli;
         this.command = command;
         this.process = process;
@@ -330,6 +334,7 @@ export class AcpStdioTransport {
             return { dispatched: Promise.reject(error), completed: Promise.reject(error) };
         }
 
+        if (method === 'session/prompt') this.ownedServers?.refresh();
         const id = this.nextId++;
         const payload: JsonRpcRequest = {
             jsonrpc: '2.0',
@@ -455,13 +460,46 @@ export class AcpStdioTransport {
         this.writePayload(payload);
     }
 
+    private ownedServers?: ChildExitFence;
+
+    captureChildExitFence(): void {
+        if (this.captureFence && this.childPid && this.isAlive() && !this.ownedServers) {
+            this.ownedServers = this.captureFence(this.childPid);
+        }
+    }
+
+    private waitForOwnedChild(signal: NodeJS.Signals): Promise<boolean> {
+        if (this.exited || this.process.exitCode !== null || this.process.signalCode != null) return Promise.resolve(true);
+        return new Promise(resolve => {
+            const finish = (stopped: boolean) => {
+                clearTimeout(timer);
+                this.process.off('exit', onExit);
+                resolve(stopped);
+            };
+            const onExit = () => finish(true);
+            const timer = setTimeout(() => finish(false), 2_000);
+            this.process.once('exit', onExit);
+            // The ChildProcess handle loses its ability to signal once reaped.
+            this.process.kill(signal);
+        });
+    }
+
+    private async terminateForRecovery(): Promise<boolean> {
+        if (this.childPid === null) return true;
+        if (!this.captureFence) return killProcessByChildProcess(this.process);
+        const stopped = await this.waitForOwnedChild('SIGTERM') || await this.waitForOwnedChild('SIGKILL');
+        return stopped && (await this.ownedServers?.verify()) === true;
+    }
+
     /** Ends the agent process; resolves true once its whole process tree is confirmed gone. */
     async close(options?: { recovery?: boolean }): Promise<boolean> {
         this.closeRequested = true;
         this.process.stdin.end();
         // Node assigns the PID before spawn() returns. A failed spawn emits
         // its error later, but already has no child to terminate.
-        const treeGone = (options?.recovery && this.childPid === null) || await killProcessByChildProcess(this.process);
+        const treeGone = options?.recovery
+            ? await this.terminateForRecovery()
+            : await killProcessByChildProcess(this.process);
         this.releaseAgentCliGuard();
         this.markClosed(new Error('ACP transport closed'));
         return treeGone;
@@ -530,7 +568,12 @@ export class AcpStdioTransport {
             logger.debug('[ACP] Failed to parse JSON-RPC line', { line, error });
             this.markClosed(protocolError);
             this.process.stdin.end();
-            void killProcessByChildProcess(this.process);
+            if (this.captureFence) {
+                // Release only the owned handle. Normal disconnect verifies the server.
+                if (!this.exited) this.process.kill('SIGTERM');
+            } else {
+                void killProcessByChildProcess(this.process);
+            }
             return;
         }
 
