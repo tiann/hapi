@@ -925,6 +925,42 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         }
     );
 
+    linuxRecoveryTest.each(['model', 'effort'] as const)(
+        'preserves the queued %s selection when the backend dies during configuration', async setting => {
+            harness.detectedVersion = 'v2';
+            harness.sessionModelsMetadata = { currentModelId: 'provider/base', availableModels: [] };
+            harness.thoughtLevelOption = {
+                id: 'effort', currentValue: 'low', options: [{ value: 'low' }, { value: 'high' }]
+            };
+            const change = Promise.withResolvers<void>();
+            const apply = vi.fn(() => change.promise);
+            const { session } = createSessionStub([], { keepOpen: true });
+            session.sessionId = 'acp-session-1';
+            const restored = vi.spyOn(session.queue, 'unshiftBatch');
+            const launcher = opencodeRemoteLauncher(session as never, { recoveryBackoffsMs: [0] });
+            try {
+                await vi.waitFor(() => expect(harness.unexpectedExitHandler).toBeTruthy());
+                const mode = setting === 'model' ? createMode('provider/requested') : createModeWithEffort(undefined, 'high');
+                if (setting === 'model') harness.setModelImpl = apply;
+                else harness.setConfigOptionImpl = apply;
+                session.queue.push('selected', mode, 'selected');
+                await vi.waitFor(() => expect(apply).toHaveBeenCalledOnce());
+                harness.unexpectedExitHandler!(new Error('child exit'), { childProcessExited: true });
+                harness.setModelImpl = null;
+                harness.setConfigOptionImpl = null;
+                change.reject(new Error('ACP disconnected'));
+                await vi.waitFor(() => expect(restored).toHaveBeenCalledOnce());
+                const replay = restored.mock.calls[0][0].mode;
+                if (setting === 'model') expect(replay.model).toBe('provider/requested');
+                else expect(replay.modelReasoningEffort).toBe('high');
+                await vi.waitFor(() => expect(harness.promptCount).toBe(1));
+            } finally {
+                session.queue.close();
+                await launcher;
+            }
+        }
+    );
+
     it.each(['switch', 'clear'] as const)('uses ordinary v2 teardown for %s without transport loss', async action => {
         harness.detectedVersion = 'v2';
         harness.treeGone = false;

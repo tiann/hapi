@@ -1383,6 +1383,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                             // than a `null` placeholder.
                             batch.mode.model = requestedModel;
                         } catch (error) {
+                            if (this.recoveryAttempt.loss) throw error;
                             const message = error instanceof Error ? error.message : String(error);
                             const methodNotFound = /method not found/i.test(message);
                             if (methodNotFound && this.setModelSupported === undefined) {
@@ -1433,6 +1434,7 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                                     this.rollbackReasoningEffort(batch, resolvedEffort);
                                 }
                             } catch (error) {
+                                if (this.recoveryAttempt.loss) throw error;
                                 const message = error instanceof Error ? error.message : String(error);
                                 const methodNotFound = /method not found/i.test(message);
                                 if (methodNotFound && this.setEffortSupported === undefined) {
