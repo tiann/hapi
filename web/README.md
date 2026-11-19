@@ -30,6 +30,8 @@ React Mini App / PWA for monitoring and controlling hapi sessions.
   Aborted or incomplete authentication responses retain the current sign-in.
   If live updates remain connected, a failed sign-in refresh gets its own warning
   rather than reporting a hub outage.
+  Browser users can explicitly sign out of recovery before selecting another hub;
+  the old attempt and pairing-link credential are cleared before hub selection.
 - Session `@` suggestions require conversation content, including untitled conversations. Names and directory labels affect display/search, not eligibility; empty stubs stay excluded. See the [session list behavior guide](../docs/guide/session-list.md) for search and picker rules.
 
 ## Routes

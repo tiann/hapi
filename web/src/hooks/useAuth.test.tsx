@@ -653,3 +653,20 @@ it('ignores a rejected result from an authentication attempt canceled by Retry n
     expect(result.current.token).toBe('fresh')
     unmount()
 })
+
+it('aborts an abandoned recovery and ignores its late credential response', async () => {
+    vi.useFakeTimers()
+    let finish!: (value: { token: string; user: { id: string } }) => void
+    let signal: AbortSignal | undefined
+    h.setAuthenticateImpl((_count, value) => { signal = value; return new Promise(resolve => { finish = resolve }) })
+    const source = { type: 'accessToken' as const, token: 'fixture' }
+    const { result, rerender, unmount } = renderHook(({ enabled }) => useAuth(enabled ? source : null, 'https://hub.test'), { initialProps: { enabled: true } })
+    await flushMicrotasks()
+    act(() => { result.current.cancelRecovery(); rerender({ enabled: false }) })
+    expect(signal?.aborted).toBe(true)
+    await act(async () => { finish({ token: 'late', user: { id: 'u1' } }); await vi.advanceTimersByTimeAsync(30_000) })
+    expect(result.current.token).toBeNull()
+    expect(result.current.connectionError).toBeNull()
+    expect(h.getAuthCount()).toBe(1)
+    unmount()
+})

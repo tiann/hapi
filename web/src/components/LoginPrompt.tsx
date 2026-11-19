@@ -12,6 +12,7 @@ import type { ServerUrlResult } from '@/hooks/useServerUrl'
 type LoginPromptProps = {
     mode?: 'login' | 'bind' | 'reconnect'
     onReconnect?: () => void
+    onChooseHub?: () => void
     onLogin?: (token: string) => void
     onBind?: (token: string) => Promise<void>
     onPasskeyLogin?: (passkeySession: string) => void
@@ -168,6 +169,7 @@ export function LoginPrompt(props: LoginPromptProps) {
                     <div className="space-y-4">
                         <p role="status" className="text-sm text-[var(--app-hint)] text-center">{props.error}</p>
                         <Button type="button" className="w-full" onClick={props.onReconnect}>Retry now</Button>
+                        {props.onChooseHub ? <Button type="button" variant="secondary" className="w-full" onClick={props.onChooseHub}>Sign out and choose hub</Button> : null}
                     </div>
                 ) : <form onSubmit={handleSubmit} className="space-y-4">
                     <div>

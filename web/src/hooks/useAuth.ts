@@ -87,6 +87,7 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
     needsBinding: boolean
     connectionError: AuthConnectionFailure | null
     retryConnection: () => void
+    cancelRecovery: () => void
     bind: (accessToken: string) => Promise<void>
     handleSseClosed: () => void
 } {
@@ -477,5 +478,11 @@ export function useAuth(authSource: AuthSource | null, baseUrl: string): {
             void pending.then(retry, retry)
         } else retry()
     }, [refreshAuth])
-    return { token, user, api, isLoading, error, needsBinding, connectionError, retryConnection, bind, handleSseClosed }
+    const cancelRecovery = useCallback(() => {
+        authEpochRef.current += 1
+        authAbortRef.current?.abort()
+        authAbortRef.current = null
+        refreshPromiseRef.current = null
+    }, [])
+    return { token, user, api, isLoading, error, needsBinding, connectionError, retryConnection, cancelRecovery, bind, handleSseClosed }
 }

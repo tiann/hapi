@@ -74,8 +74,8 @@ export function App() {
 function AppInner() {
     const { t } = useTranslation()
     const { serverUrl, baseUrl, setServerUrl, clearServerUrl } = useServerUrl()
-    const { authSource, isLoading: isAuthSourceLoading, setAccessToken, setPasskeySession } = useAuthSource(baseUrl)
-    const { token, api, isLoading: isAuthLoading, error: authError, needsBinding, connectionError, retryConnection, bind, handleSseClosed } = useAuth(authSource, baseUrl)
+    const { authSource, isLoading: isAuthSourceLoading, setAccessToken, setPasskeySession, clearAuth } = useAuthSource(baseUrl)
+    const { token, api, isLoading: isAuthLoading, error: authError, needsBinding, connectionError, retryConnection, cancelRecovery, bind, handleSseClosed } = useAuth(authSource, baseUrl)
     const isOnline = useOnlineStatus()
     const connectionMessage = connectionError ? authConnectionMessage(connectionError, isOnline) : null
     const [titleSuggestionAvailable, setTitleSuggestionAvailable] = useState(false)
@@ -232,9 +232,7 @@ function AppInner() {
         queryClient.clear()
     }, [baseUrl, queryClient])
 
-    // Clean up URL params after successful auth (for direct access links)
-    useEffect(() => {
-        if (!token || !api) return
+    const clearSignInUrl = useCallback(() => {
         const { pathname, search, hash, state } = router.history.location
         const searchParams = new URLSearchParams(search)
         if (!searchParams.has('server') && !searchParams.has('hub') && !searchParams.has('token')) {
@@ -246,7 +244,15 @@ function AppInner() {
         const nextSearch = searchParams.toString()
         const nextHref = `${pathname}${nextSearch ? `?${nextSearch}` : ''}${hash}`
         router.history.replace(nextHref, state)
-    }, [token, api, router])
+    }, [router])
+    // Clean up direct access links after success or an explicit abandoned recovery.
+    useEffect(() => { if (token && api) clearSignInUrl() }, [token, api, clearSignInUrl])
+    const abandonRecovery = useCallback(() => {
+        if (authSource?.type === 'telegram' || isTelegramApp()) return
+        cancelRecovery()
+        clearSignInUrl()
+        clearAuth()
+    }, [authSource, cancelRecovery, clearSignInUrl, clearAuth])
 
     useEffect(() => {
         if (!api || !token) {
@@ -514,6 +520,7 @@ function AppInner() {
             <LoginPrompt
                 mode="reconnect"
                 onReconnect={retryConnection}
+                onChooseHub={authSource.type === 'telegram' || isTelegramApp() ? undefined : abandonRecovery}
                 error={connectionMessage}
                 baseUrl={baseUrl}
                 serverUrl={serverUrl}

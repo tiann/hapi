@@ -83,8 +83,16 @@ test.beforeEach(async ({ page }, testInfo) => {
 })
 
 for (const credential of ['pairing-link', 'passkey']) test(`${credential} recovery cannot forward its credential to another hub`, async ({ page }) => {
-    let otherAuth = 0
-    const other = createServer((req, res) => { if (req.url === '/api/auth') otherAuth++; res.writeHead(401); res.end() })
+    const otherCredentials: Array<Record<string, unknown>> = []
+    const other = createServer((req, res) => {
+        res.setHeader('Access-Control-Allow-Origin', req.headers.origin ?? '*')
+        res.setHeader('Access-Control-Allow-Credentials', 'true')
+        res.setHeader('Access-Control-Allow-Headers', req.headers['access-control-request-headers'] ?? '*')
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return }
+        let body = ''; req.setEncoding('utf8'); req.on('data', chunk => body += chunk)
+        req.on('end', () => { if (req.url === '/api/auth') otherCredentials.push(JSON.parse(body || '{}')); res.writeHead(401, { 'Content-Type': 'application/json' }); res.end('{"error":"fixture destination"}') })
+    })
     await new Promise<void>(resolve => other.listen(0, '127.0.0.1', resolve))
     const otherOrigin = 'http://127.0.0.1:' + (other.address() as { port: number }).port
     const requests: Array<{ origin: string; body: Record<string, unknown> }> = []
@@ -93,7 +101,7 @@ for (const credential of ['pairing-link', 'passkey']) test(`${credential} recove
     })
     try {
         mode = 'unavailable'
-        await page.goto('/sessions' + (credential === 'pairing-link' ? '?token=fixture-pairing' : ''))
+        await page.goto('/sessions' + (credential === 'pairing-link' ? '?hub=' + encodeURIComponent(origin) + '&token=fixture-pairing' : ''))
         await expect(page.getByText('Reconnecting to hub', { exact: true })).toBeVisible()
         if (credential === 'pairing-link') expect(new URL(page.url()).searchParams.get('token')).toBe('fixture-pairing')
         await expect(page.getByRole('button', { name: /^Hub / })).toHaveCount(0)
@@ -103,8 +111,22 @@ for (const credential of ['pairing-link', 'passkey']) test(`${credential} recove
         expect(requests.length).toBeGreaterThan(1)
         expect(requests.every(r => r.origin === origin && (credential === 'pairing-link'
             ? r.body.accessToken === 'fixture-pairing' : r.body.passkeySession === 'fixture-passkey'))).toBe(true)
-        expect(otherAuth).toBe(0)
+        expect(otherCredentials).toHaveLength(0)
         expect(await page.evaluate(server => localStorage.getItem('hapi_access_token::' + server), otherOrigin)).toBeNull()
+        await page.getByRole('button', { name: 'Sign out and choose hub' }).click()
+        await expect(page.locator('input[type=password]')).toBeVisible()
+        expect(new URL(page.url()).searchParams.has('token')).toBe(false)
+        expect(new URL(page.url()).searchParams.has('hub')).toBe(false)
+        expect(await page.evaluate(server => localStorage.getItem('hapi_access_token::' + server), origin)).toBeNull()
+        expect(await page.evaluate(server => localStorage.getItem('hapi_passkey_session::' + server), origin)).toBeNull()
+        await page.getByRole('button', { name: /^Hub / }).click()
+        await page.locator('input[type=url]').fill(otherOrigin)
+        await page.locator('input[type=url]').press('Enter')
+        await expect(page.locator('input[type=url]')).toHaveCount(0)
+        await page.locator('input[type=password]').fill('fixture-destination')
+        await page.getByRole('button', { name: 'Sign In', exact: true }).click()
+        await expect.poll(() => otherCredentials.length).toBe(1)
+        expect(otherCredentials[0]).toEqual({ accessToken: 'fixture-destination' })
     } finally { other.closeAllConnections(); await new Promise<void>(resolve => other.close(() => resolve())) }
 })
 
@@ -236,6 +258,7 @@ test('preserves the actionable Telegram-disabled diagnostic', async ({ page }) =
     await expect(page.getByRole('status')).toHaveText('Telegram authentication is disabled. Configure TELEGRAM_BOT_TOKEN.')
     await expect(page.getByText(/temporarily unavailable/)).toHaveCount(0)
     await expect(page.getByRole('button', { name: /^Hub / })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Sign out and choose hub' })).toHaveCount(0)
     await page.getByRole('button', { name: 'Retry now' }).click()
     await expect.poll(() => authAttempts).toBeGreaterThan(1)
     expect(authOrigins.length).toBeGreaterThan(1)
