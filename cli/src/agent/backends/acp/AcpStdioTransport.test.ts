@@ -681,7 +681,7 @@ describe('AcpStdioTransport inbound request lifetime', () => {
 
     const frame = (message: object) => emitStdout(JSON.stringify({ jsonrpc: '2.0', ...message }) + '\n');
 
-    test('withdraws only the matching inbound request without a response', async () => {
+    test('acknowledges withdrawal of only the matching inbound request once', async () => {
         const transport = await AcpStdioTransport.create({ command: 'opencode' });
         const signals = new Map<unknown, AbortSignal>();
         transport.registerRequestHandler('elicitation/create', async (_params, id, signal) => {
@@ -694,11 +694,14 @@ describe('AcpStdioTransport inbound request lifetime', () => {
         frame({ method: 'elicitation/create', id: '0' });
 
         frame({ method: '$/cancel_request', params: { requestId: 0 } });
+        frame({ method: '$/cancel_request', params: { requestId: 0 } });
 
         expect(signals.get(0)?.reason).toBe('agent-cancelled');
         expect(signals.get('0')?.aborted).toBe(false);
-        await Promise.resolve();
-        expect(spawnState.stdinWrite).not.toHaveBeenCalled();
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect(spawnState.stdinWrite.mock.calls.map(([line]) => JSON.parse(line))).toEqual([
+            { jsonrpc: '2.0', id: 0, error: { code: -32800, message: 'Request cancelled' } }
+        ]);
         spawnState.closeHandlers[0]!(0, null);
     });
 
@@ -714,6 +717,7 @@ describe('AcpStdioTransport inbound request lifetime', () => {
         frame({ method: 'elicitation/create', id: 2 });
 
         spawnState.closeHandlers[0]!(0, null);
+        frame({ method: '$/cancel_request', params: { requestId: 1 } });
 
         expect(signals.map(signal => signal.reason)).toEqual(['connection-closed', 'connection-closed']);
         await Promise.resolve();

@@ -510,7 +510,19 @@ export class AcpStdioTransport {
                 const params = message.params as { requestId?: unknown } | null | undefined;
                 const id = params?.requestId;
                 if (typeof id === 'number' || typeof id === 'string') {
-                    this.inboundRequests.get(id)?.abort(ACP_REQUEST_ABORT_REASON.agentCancelled);
+                    const request = this.inboundRequests.get(id);
+                    if (request && !request.signal.aborted) {
+                        request.abort(ACP_REQUEST_ABORT_REASON.agentCancelled);
+                        // ACP cancellation still requires a response to the original
+                        // request. The aborted handler cannot send a second reply.
+                        if (this.isAlive()) {
+                            this.writePayload({
+                                jsonrpc: '2.0',
+                                id,
+                                error: { code: -32800, message: 'Request cancelled' }
+                            } satisfies JsonRpcResponse);
+                        }
+                    }
                 }
             }
             this.notificationHandler?.(message.method, message.params ?? null);
