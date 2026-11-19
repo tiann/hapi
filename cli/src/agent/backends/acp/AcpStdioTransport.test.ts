@@ -21,7 +21,7 @@ const spawnState = vi.hoisted(() => ({
     stdoutDataHandlers: [] as Array<(chunk: string) => void>,
     stdinErrorHandlers: [] as Array<(error: Error) => void>,
     stdinEnd: vi.fn(),
-    stdinWrite: vi.fn<(chunk: string) => boolean>(() => true),
+    stdinWrite: vi.fn<(chunk: string, callback?: (error?: Error) => void) => boolean>(() => true),
     kill: vi.fn(),
     exitCode: null as number | null,
     pid: 424242 as number | undefined,
@@ -79,7 +79,7 @@ vi.mock('node:child_process', () => ({
                     if (event === 'error') spawnState.stdinErrorHandlers.push(handler);
                 }),
                 end: (...args: unknown[]) => spawnState.stdinEnd(...args),
-                write: (chunk: string) => spawnState.stdinWrite(chunk)
+                write: (chunk: string, callback?: (error?: Error) => void) => spawnState.stdinWrite(chunk, callback)
             },
             on: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
                 if (event === 'exit') {
@@ -132,6 +132,46 @@ describe('AcpStdioTransport agent CLI guard', () => {
         spawnState.closeHandlers = [];
         spawnState.stdoutDataHandlers = [];
     });
+
+    test.each(['write accepted', 'early response', 'closed', 'write failure'] as const)(
+        'reports dispatch at the stdin boundary for %s', async outcome => {
+            const transport = await AcpStdioTransport.create({ command: 'opencode' });
+            if (outcome === 'closed') spawnState.closeHandlers.forEach(handler => handler(1, null));
+            const events: string[] = [];
+            const request = transport.sendRequest('session/prompt', {}, {
+                onDispatchStart: () => events.push('start'),
+                onSent: () => {
+                    events.push('sent');
+                    if (outcome === 'write accepted') throw new Error('observer failed');
+                }
+            });
+            if (outcome === 'closed') {
+                await expect(request).rejects.toThrow();
+                expect(spawnState.stdinWrite).not.toHaveBeenCalled();
+                expect(events).toEqual([]);
+                return;
+            }
+            const [line, callback] = spawnState.stdinWrite.mock.calls[0]!;
+            expect(events).toEqual(['start']);
+            if (outcome === 'write failure') {
+                const failure = new Error('write EPIPE');
+                const rejected = expect(request).rejects.toBe(failure);
+                callback!(failure);
+                await rejected;
+                expect(events).toEqual(['start']);
+                return;
+            }
+            if (outcome === 'write accepted') {
+                callback!();
+                await Promise.resolve();
+                expect(events).toEqual(['start', 'sent']);
+            }
+            emitStdout(JSON.stringify({ jsonrpc: '2.0', id: JSON.parse(line).id, result: 'ok' }) + '\n');
+            await expect(request).resolves.toBe('ok');
+            if (outcome === 'early response') callback!();
+            expect(events).toEqual(['start', 'sent']);
+        }
+    );
 
     test('registers cross-process guard only for Cursor agent command', async () => {
         const transport = await AcpStdioTransport.create({ command: 'agent', args: ['acp'] });

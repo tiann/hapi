@@ -906,31 +906,28 @@ describe('AcpSdkBackend', () => {
         ]);
     });
 
-    it('reports when the prompt is sent and answered, apart from its own waits', async () => {
+    it('forwards prompt dispatch observers to the transport and reports the answer after the request', async () => {
         const backend = new AcpSdkBackend({ command: 'agent' });
         const events: string[] = [];
-        const backendInternal = backend as unknown as {
-            transport: { sendRequest: () => Promise<unknown>; close: () => Promise<void> } | null;
-            waitForSessionUpdateQuiet: (quietMs: number, timeoutMs: number) => Promise<void>;
-        };
-        backendInternal.waitForSessionUpdateQuiet = async () => { events.push('wait'); };
-        backendInternal.transport = {
-            sendRequest: async () => {
-                events.push('request');
-                return { stopReason: 'end_turn' };
-            },
-            close: async () => {}
-        };
-
-        await backend.prompt('session-1', [{ type: 'text', text: 'hello' }], () => {}, {
-            timing: {
-                onSent: () => events.push('sent'),
-                onAnswered: () => events.push('answered')
-            }
+        const sendRequest = vi.fn(async () => {
+            events.push('request');
+            return { stopReason: 'end_turn' };
         });
-        events.push('resolved');
-
-        expect(events).toEqual(['wait', 'request', 'sent', 'answered', 'wait', 'resolved']);
+        Object.assign(backend, {
+            transport: { sendRequest },
+            waitForSessionUpdateQuiet: async () => { events.push('wait'); },
+            drainLateBuffers: async () => {}
+        });
+        const timing = {
+            onDispatchStart: vi.fn(),
+            onSent: vi.fn(),
+            onAnswered: () => events.push('answered')
+        };
+        await backend.prompt('session-1', [], () => {}, { timing });
+        expect(sendRequest).toHaveBeenCalledExactlyOnceWith('session/prompt', { sessionId: 'session-1', prompt: [] }, {
+            timeoutMs: Infinity, onDispatchStart: timing.onDispatchStart, onSent: timing.onSent
+        });
+        expect(events).toEqual(['wait', 'request', 'answered', 'wait']);
     });
 
     it('seals a Cursor done footer before quiet drain so harness text stays separate (#2268)', async () => {

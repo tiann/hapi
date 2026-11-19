@@ -275,10 +275,31 @@ export class AcpStdioTransport {
     /** Default timeout for requests in milliseconds (2 minutes) */
     static readonly DEFAULT_TIMEOUT_MS = 120_000;
 
-    async sendRequest(method: string, params?: unknown, options?: { timeoutMs?: number; dispatchTimeoutMs?: number }): Promise<unknown> {
+    async sendRequest(method: string, params?: unknown, options?: {
+        timeoutMs?: number;
+        dispatchTimeoutMs?: number;
+        onDispatchStart?: () => void;
+        onSent?: () => void;
+    }): Promise<unknown> {
+        if (!this.isAlive()) {
+            throw this.closedRequestError();
+        }
+        options?.onDispatchStart?.();
         const request = this.sendRequestWithDispatch(method, params, options);
-        void request.dispatched.catch(() => {});
+        // A failed write rejects both promises in the same turn.
+        void request.completed.catch(() => {});
+        await request.dispatched;
+        try {
+            options?.onSent?.();
+        } catch (error) {
+            // The agent already has the request. Its response still owns completion.
+            logger.debug('[ACP] Prompt dispatch observer failed', error);
+        }
         return request.completed;
+    }
+
+    private closedRequestError(): Error {
+        return markAcpIndeterminate(this.closeError ?? this.exitError ?? new Error('ACP transport is closed'));
     }
 
     /**
@@ -292,7 +313,7 @@ export class AcpStdioTransport {
         options?: { timeoutMs?: number; dispatchTimeoutMs?: number }
     ): { dispatched: Promise<void>; completed: Promise<unknown> } {
         if (this.closed || this.exited) {
-            const error = markAcpIndeterminate(this.closeError ?? this.exitError ?? new Error('ACP transport is closed'));
+            const error = this.closedRequestError();
             return { dispatched: Promise.reject(error), completed: Promise.reject(error) };
         }
 

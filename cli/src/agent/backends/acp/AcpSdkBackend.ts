@@ -824,7 +824,7 @@ export class AcpSdkBackend implements AgentBackend {
             shouldSend?: () => boolean
             // prompt() waits for earlier output before it sends and for late output
             // after the answer; callers timing the agent itself need both moments.
-            timing?: { onSent?: () => void; onAnswered?: () => void }
+            timing?: { onDispatchStart?: () => void; onSent?: () => void; onAnswered?: () => void }
         }
     ): Promise<boolean> {
         if (!this.transport) {
@@ -870,12 +870,14 @@ export class AcpSdkBackend implements AgentBackend {
             this.promptRequestInFlight = true;
             let response: unknown;
             try {
-                const request = this.transport.sendRequest('session/prompt', {
+                response = await this.transport.sendRequest('session/prompt', {
                     sessionId,
                     prompt: content
-                }, { timeoutMs: Infinity });
-                options?.timing?.onSent?.();
-                response = await request;
+                }, {
+                    timeoutMs: Infinity,
+                    onDispatchStart: options?.timing?.onDispatchStart,
+                    onSent: options?.timing?.onSent
+                });
             } finally {
                 this.promptRequestInFlight = false;
                 options?.timing?.onAnswered?.();
