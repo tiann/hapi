@@ -477,13 +477,14 @@ function ToolCardInner(props: ToolCardProps) {
     const isCodexAgentCard = toolName === 'CodexAgent'
     const isTerminalTool = isTerminalToolBlock(props.block)
     const useCompactTerminalCard = shouldUseCompactTerminalToolCard(toolName, props.terminalToolDisplayMode, isTerminalTool)
-    const showInline = shouldShowInlineToolCardBody(toolName, presentation.minimal, props.terminalToolDisplayMode, isTerminalTool)
+    const permission = props.block.tool.permission
+    const isRequestUserInput = isRequestUserInputToolName(toolName)
+    const showInline = (isRequestUserInput && permission?.answerSubmitted === true)
+        || shouldShowInlineToolCardBody(toolName, presentation.minimal, props.terminalToolDisplayMode, isTerminalTool)
     const CompactToolView = showInline ? getToolViewComponent(toolName, props.block.tool) : null
     const compactViewOwnsInteractions = toolName === 'CodexDiff'
     const ResultToolView = getToolResultViewComponent(toolName, props.block)
-    const permission = props.block.tool.permission
     const isAskUserQuestion = isAskUserQuestionToolName(toolName)
-    const isRequestUserInput = isRequestUserInputToolName(toolName)
     const isQuestionTool = isAskUserQuestion || isRequestUserInput
     const showsPermissionFooter = permissionFooterContent(permission, toolName, props.block.tool.input) !== null
     const hasBody = showInline || taskSummary !== null || showsPermissionFooter

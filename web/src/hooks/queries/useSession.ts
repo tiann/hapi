@@ -37,7 +37,11 @@ export function useSession(api: ApiClient | null, sessionId: string | null): {
             }
             const response = await api.getSession(sessionId)
             const current = queryClient.getQueryData<{ session: Session }>(queryKeys.session(sessionId))?.session
-            return { ...response, session: { ...response.session,
+            // A GET can finish after SSE has already advanced the cached state.
+            const newerAgentState = current && current.agentStateVersion > response.session.agentStateVersion
+                ? { agentState: current.agentState, agentStateVersion: current.agentStateVersion }
+                : undefined
+            return { ...response, session: { ...response.session, ...newerAgentState,
                 contentRevision: Math.max(current?.contentRevision ?? 0, response.session.contentRevision ?? 0),
                 readState: mergeReadState(current?.readState, response.session.readState)
             } }
