@@ -3,13 +3,17 @@ import type { SessionListSort, SessionListView } from '@/hooks/useSessionListVie
 
 type OrderFields = Pick<SessionSummary, 'id' | 'active' | 'createdAt' | 'lastUserMessageAt'>
 
-// Sessions that stop together (a hub restart or upgrade) disconnect seconds
-// apart; within one minute they keep the chosen sort instead of keepalive order.
-const STOPPED_AT_BUCKET_MS = 60_000
+// Bulk transitions (a hub restart or upgrade) touch many sessions seconds
+// apart; within one minute they keep the chosen sort instead of write order.
+const LAST_ACTIVITY_BUCKET_MS = 60_000
 
-/** When a disconnected session was last connected, i.e. when it stopped, to the minute. */
-function stoppedAtBucket(session: Pick<SessionSummary, 'activeAt'>): number {
-    return Math.floor((session.activeAt ?? 0) / STOPPED_AT_BUCKET_MS)
+/**
+ * A stopped session's last activity, to the minute: `updatedAt`, the time its
+ * row shows. Archiving a session updates it, and it reaches the list on every
+ * session patch, so the order always matches what the rows say.
+ */
+function lastActivityBucket(session: Pick<SessionSummary, 'updatedAt'>): number {
+    return Math.floor((session.updatedAt ?? 0) / LAST_ACTIVITY_BUCKET_MS)
 }
 
 /**
@@ -29,12 +33,12 @@ export function createSessionComparator(view: Pick<SessionListView, 'sort' | 'ac
     return (a, b) => {
         if (view.activeFirst) {
             if (a.active !== b.active) return a.active ? -1 : 1
-            // Stopped and archived sessions: the one stopped most recently comes
-            // first, as its row's relative time shows. Stopping is not a user
-            // message, so the chosen sort alone would leave it where it was.
+            // Stopped and archived sessions follow the time their rows show, so
+            // one archived just now comes first. Archiving is not a user
+            // message, so the chosen sort alone would leave it mid-block.
             if (!a.active) {
-                const stopped = stoppedAtBucket(b) - stoppedAtBucket(a)
-                if (stopped !== 0) return stopped
+                const recent = lastActivityBucket(b) - lastActivityBucket(a)
+                if (recent !== 0) return recent
             }
         }
         return getSessionSortKey(b, view.sort) - getSessionSortKey(a, view.sort)
