@@ -11,8 +11,8 @@ import { isGoalToolName, parseGoalToolResult } from '@/components/ToolCard/goalT
 import { isAskUserQuestionToolName } from '@/components/ToolCard/askUserQuestion'
 import { isRequestUserInputToolName } from '@/components/ToolCard/requestUserInput'
 import { resolveToolNameAlias } from '@/components/ToolCard/toolNameAliases'
-import { extractPeerTargetSessionId, parsePeerToolName, parseWrapperToolInvocation } from '@/components/ToolCard/peerTools'
-import { LinkedNativeSessionChip, SessionLinkAnchor, useSessionByNativeAgentId } from '@/components/SessionLinkAnchor'
+import { extractPeerTargetSessionId, parsePeerToolName } from '@/components/ToolCard/peerTools'
+import { SessionLinkAnchor } from '@/components/SessionLinkAnchor'
 import { useTranslation } from '@/lib/use-translation'
 import { isTerminalToolBlock } from '@/chat/toolGroups'
 import { GoalView } from '@/components/ToolCard/views/GoalView'
@@ -1143,48 +1143,11 @@ const PeerToolResultView: ToolViewComponent = (props) => {
     )
 }
 
-const WrapperToolResultView: ToolViewComponent = (props) => {
-    const wrapper = parseWrapperToolInvocation(
-        props.block.tool.name,
-        props.block.tool.input,
-        props.block.tool.result,
-        props.block.tool.nativeKind
-    )
-    // On the inline surface, ToolCard hoists the linked session chip outside
-    // its role="button" preview so interactive anchors never nest inside it.
-    const matchedSession = useSessionByNativeAgentId(
-        props.surface !== 'inline' ? wrapper?.nativeSessionId : null
-    )
-    const BaseResultView = toolResultViewRegistry[props.block.tool.name]
-        ?? toolResultViewRegistry[resolveToolNameAlias(props.block.tool.name)]
-        ?? (isTerminalToolBlock(props.block) ? toolResultViewRegistry.Bash : undefined)
-        ?? GenericResultView
-
-    if (!wrapper?.nativeSessionId || !matchedSession) {
-        return <BaseResultView {...props} />
-    }
-
-    return (
-        <div className="flex flex-col gap-2">
-            <div className="flex items-center gap-2">
-                <LinkedNativeSessionChip
-                    nativeSessionId={wrapper.nativeSessionId}
-                    fallbackLabel={wrapper.label}
-                />
-            </div>
-            <BaseResultView {...props} />
-        </div>
-    )
-}
-
 // Skill, todowrite, patch and question deliberately stay unaliased: their
 // dedicated views read Claude-shaped input or result fields.
 export function getToolResultViewComponent(toolName: string, block?: ToolCallBlock): ToolViewComponent {
     if (isGoalToolName(toolName)) return GoalResultView
     if (parsePeerToolName(toolName)) return PeerToolResultView
-    if (block && parseWrapperToolInvocation(toolName, block.tool.input, block.tool.result, block.tool.nativeKind)) {
-        return WrapperToolResultView
-    }
     if (toolName.startsWith('mcp__')) {
         return GenericResultView
     }

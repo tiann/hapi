@@ -1850,14 +1850,10 @@ function SessionChatInner(props: SessionChatProps) {
         return block?.kind === 'tool-call' ? block : null
     }, [inspectedSubagentBlockId, reconciled.byId])
     const handleInspectSubagent = useCallback((subagent: SessionStatusSubagent) => {
-        const directSessionId = subagent.linkedSessionId
-            ?? (subagent.nativeSessionId
-                ? allSessions.find((s) => s.id !== props.session.id && s.metadata?.agentSessionId === subagent.nativeSessionId)?.id
-                : undefined)
-        if (directSessionId) {
+        if (subagent.linkedSessionId) {
             void navigate({
                 to: '/sessions/$sessionId',
-                params: { sessionId: directSessionId },
+                params: { sessionId: subagent.linkedSessionId },
                 ...PRESERVE_SESSION_SIDEBAR_SCROLL,
             })
             return
@@ -1865,7 +1861,7 @@ function SessionChatInner(props: SessionChatProps) {
         if (subagent.blockId) {
             setInspectedSubagentBlockId(subagent.blockId)
         }
-    }, [allSessions, navigate, props.session.id])
+    }, [navigate])
 
     useEffect(() => {
         blocksByIdRef.current = reconciled.byId

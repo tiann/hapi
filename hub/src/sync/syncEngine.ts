@@ -7,7 +7,7 @@
  * - No E2E encryption; data is stored as JSON in SQLite
  */
 
-import { AGENT_MESSAGE_PAYLOAD_TYPE, type SessionReadStateRequest, extractCodeagentWrapperSessionIds, extractExplicitParentSessionIdFromRemit, getNativeAgentSessionIds, isKnownFlavor, isObject, matchesClaudeSessionId, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, parseCodeagentWrapperCommand, resolveSessionParentLink, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
+import { type SessionReadStateRequest, extractExplicitParentSessionIdFromRemit, isKnownFlavor, matchesClaudeSessionId, isLiveLifecycleState, isSteeringSupportedForSession, MACHINE_CAPABILITIES, resolveSessionParentLink, type LocalResumeTarget, type ResumableSession, type SessionEndReason } from '@hapi/protocol'
 import {
     cliBinaryUpdatedOnDisk,
     isMachineCapabilitySkewed,
@@ -223,134 +223,6 @@ function extractClaudeUserMessageTextFromAgentOutput(content: unknown): string |
     return extractUserMessageText(message.content)
 }
 
-const WRAPPER_PARENT_CACHE_MAX = 512
-const WRAPPER_CALL_CACHE_MAX = 1024
-const WRAPPER_PARENT_TTL_MS = 24 * 60 * 60_000
-
-function flattenToolResultText(value: unknown, depth: number = 0): string {
-    if (depth > 4 || value === null || value === undefined) return ''
-    if (typeof value === 'string') return value
-    if (Array.isArray(value)) {
-        return value.map((item) => flattenToolResultText(item, depth + 1)).filter(Boolean).join('\n')
-    }
-    if (isObject(value)) {
-        for (const key of ['text', 'content', 'output', 'stdout'] as const) {
-            const nested = flattenToolResultText(value[key], depth + 1)
-            if (nested) return nested
-        }
-    }
-    return ''
-}
-
-function extractCommandFromToolInput(input: unknown): string | string[] | null {
-    if (!isObject(input)) return null
-    if (typeof input.command === 'string') return input.command
-    if (Array.isArray(input.command)) {
-        const parts = input.command.filter((part): part is string => typeof part === 'string')
-        if (parts.length > 0) return parts
-    }
-    if (typeof input.cmd === 'string') return input.cmd
-    if (typeof input.CommandLine === 'string') return input.CommandLine
-    return null
-}
-
-type WrapperScope = { flavor: string | null; machineId?: string }
-type ScopedNativeId = WrapperScope & { nativeId: string }
-
-function collectVerifiedWrapperCallIdsFromMessage(messageContent: unknown): { callId: string; flavor: string | null }[] {
-    const record = unwrapRoleWrappedRecordEnvelope(messageContent)
-    if (!record || (record.role !== 'agent' && record.role !== 'assistant')) return []
-    if (!isObject(record.content) || typeof record.content.type !== 'string') return []
-
-    const callIds: { callId: string; flavor: string | null }[] = []
-    const data = isObject(record.content.data) ? record.content.data : null
-    if (!data) return callIds
-
-    if (record.content.type === 'output' && data.type === 'assistant') {
-        const message = isObject(data.message) ? data.message : null
-        const blocks = message && Array.isArray(message.content) ? message.content : null
-        if (blocks) {
-            for (const block of blocks) {
-                if (!isObject(block) || block.type !== 'tool_use' || typeof block.id !== 'string') continue
-                const parsed = parseCodeagentWrapperCommand(extractCommandFromToolInput(block.input))
-                if (parsed) {
-                    callIds.push({ callId: block.id, flavor: parsed.flavor })
-                }
-            }
-        }
-    } else if (record.content.type === AGENT_MESSAGE_PAYLOAD_TYPE && data.type === 'tool-call') {
-        const callId = typeof data.callId === 'string'
-            ? data.callId
-            : typeof data.id === 'string'
-                ? data.id
-                : null
-        const parsed = callId && parseCodeagentWrapperCommand(extractCommandFromToolInput(data.input))
-        if (callId && parsed) {
-            callIds.push({ callId, flavor: parsed.flavor })
-        }
-    }
-
-    return callIds
-}
-
-function extractWrapperSessionIdsFromMessage(
-    messageContent: unknown,
-    machineId: string | undefined,
-    isVerifiedCallId: (callId: string) => WrapperScope | false
-): ScopedNativeId[] {
-    const record = unwrapRoleWrappedRecordEnvelope(messageContent)
-    if (!record || (record.role !== 'agent' && record.role !== 'assistant')) return []
-    if (!isObject(record.content) || typeof record.content.type !== 'string') return []
-
-    const chunks: { text: string; scope: WrapperScope }[] = []
-    if (record.content.type === 'output') {
-        const data = isObject(record.content.data) ? record.content.data : null
-        if (data?.type === 'agy_tool_action') {
-            const parsed = parseCodeagentWrapperCommand(extractCommandFromToolInput(data.input))
-            if (parsed) {
-                const text = flattenToolResultText(data.content)
-                if (text) chunks.push({ text, scope: { flavor: parsed.flavor, machineId } })
-            }
-        } else {
-            const message = data && data.type === 'user' && isObject(data.message) ? data.message : null
-            const blocks = message && Array.isArray(message.content) ? message.content : null
-            if (blocks) {
-                for (const block of blocks) {
-                    if (!isObject(block) || block.type !== 'tool_result') continue
-                    const scope = typeof block.tool_use_id === 'string' && isVerifiedCallId(block.tool_use_id)
-                    if (!scope) continue
-                    const text = flattenToolResultText(block.content)
-                    if (text) chunks.push({ text, scope })
-                }
-            }
-        }
-    } else if (record.content.type === AGENT_MESSAGE_PAYLOAD_TYPE) {
-        const data = isObject(record.content.data) ? record.content.data : null
-        if (
-            data?.type === 'tool-call-result'
-            && typeof data.callId === 'string'
-        ) {
-            const scope = isVerifiedCallId(data.callId)
-            if (!scope) return []
-            const text = flattenToolResultText(data.output)
-            if (text) chunks.push({ text, scope })
-        }
-    }
-
-    if (chunks.length === 0) return []
-    const ids: ScopedNativeId[] = []
-    const seen = new Set<string>()
-    for (const { text: chunk, scope } of chunks) {
-        for (const nativeId of extractCodeagentWrapperSessionIds(chunk)) {
-            const id = JSON.stringify([nativeId, scope.flavor, scope.machineId])
-            if (seen.has(id)) continue
-            seen.add(id)
-            ids.push({ ...scope, nativeId })
-        }
-    }
-    return ids
-}
-
 export class SyncEngine {
     private readonly archiveRequests = new Map<string, Promise<void>>()
     // KillSession's beforeKill drain completes before the CLI's async cleanup
@@ -454,8 +326,6 @@ export class SyncEngine {
      * Heartbeats retry persisted desired state until reconcile succeeds.
      */
     private readonly pendingAutoBridgeReconcile = new Set<string>()
-    private readonly wrapperParentByNativeId = new Map<string, ScopedNativeId & { namespace: string; parentSessionId: string; recordedAt: number }>()
-    private readonly verifiedWrapperCallIds = new Map<string, WrapperScope & { recordedAt: number }>()
 
     constructor(
         private readonly store: Store,
@@ -467,11 +337,8 @@ export class SyncEngine {
         this.sessionCache = new SessionCache(store, this.eventPublisher, {
             // mergeSessionData is the single choke point that deletes rows for
             // merges — resume-id rotation here and sessionCache's internal
-            // dedup alike — so enumeration and wrapper-parent cleanup ride on one hook.
-            onSessionMergedAway: (oldSessionId, newSessionId) => {
-                this.releaseSessionEnumerations(oldSessionId)
-                this.retargetCachedWrapperParent(oldSessionId, newSessionId)
-            }
+            // dedup alike — so enumeration cleanup rides on one hook.
+            onSessionMergedAway: (oldSessionId) => this.releaseSessionEnumerations(oldSessionId)
         })
         this.eventPublisher.subscribe((event) => {
             if (event.type === 'message-received') {
@@ -479,8 +346,6 @@ export class SyncEngine {
                     this.sessionCache.refreshLastUserMessageAt(event.sessionId)
                     this.recordPromptTitle(event.sessionId, event.message.content)
                     this.recordParentSessionFromRemit(event.sessionId, event.message.content)
-                } else {
-                    this.recordWrapperSpawnedChildren(event.sessionId, event.message.content)
                 }
                 if (!this.sessionCache.getSession(event.sessionId)?.hasConversationContent
                     && hasConversationMessageContent(event.message.content)) {
@@ -876,7 +741,6 @@ export class SyncEngine {
                 this.eventPublisher.emit(event)
                 const after = this.sessionCache.getSession(event.sessionId)
                 this.reconcileSteerDeliveryOwner(beforeMetadata, after)
-                this.reconcileWrapperParentForSession(event.sessionId)
                 this.reconcilePendingClaudeRewind(after)
                 if (after?.metadata && !this.hasSameAgentSessionIds(beforeMetadata, after.metadata)) {
                     if (!this.canRunCursorDedup(after)) {
@@ -895,7 +759,6 @@ export class SyncEngine {
             this.sessionCache.refreshSession(event.sessionId)
             const after = this.sessionCache.getSession(event.sessionId)
             this.reconcileSteerDeliveryOwner(beforeMetadata, after)
-            this.reconcileWrapperParentForSession(event.sessionId)
             this.reconcilePendingClaudeRewind(after)
             if (after?.metadata && !this.hasSameAgentSessionIds(beforeMetadata, after.metadata)) {
                 if (!this.canRunCursorDedup(after)) {
@@ -2115,7 +1978,7 @@ export class SyncEngine {
         modelReasoningEffort?: string,
         requestedId?: string
     ): Session {
-        const session = this.sessionCache.getOrCreateSession(
+        return this.sessionCache.getOrCreateSession(
             tag,
             metadata,
             agentState,
@@ -2125,8 +1988,6 @@ export class SyncEngine {
             modelReasoningEffort,
             requestedId
         )
-        this.reconcileWrapperParentForSession(session.id)
-        return this.getSession(session.id) ?? session
     }
 
     adoptPreallocatedSession(
@@ -2139,7 +2000,7 @@ export class SyncEngine {
         effort?: string,
         modelReasoningEffort?: string
     ): Session {
-        const session = this.sessionCache.adoptPreallocatedSession(
+        return this.sessionCache.adoptPreallocatedSession(
             id,
             tag,
             metadata,
@@ -2149,8 +2010,6 @@ export class SyncEngine {
             effort,
             modelReasoningEffort
         )
-        this.reconcileWrapperParentForSession(session.id)
-        return this.getSession(session.id) ?? session
     }
 
     getOrCreateMachine(id: string, metadata: unknown, runnerState: unknown, namespace: string): Machine {
@@ -6686,152 +6545,6 @@ export class SyncEngine {
             this.sessionCache.updateParentSessionId(sessionId, parentAccess.sessionId)
         } catch {
             // Best-effort lineage link must never interrupt message delivery.
-        }
-    }
-
-    private retargetCachedWrapperParent(oldParentId: string, newParentId: string): void {
-        for (const [key, entry] of this.wrapperParentByNativeId.entries()) {
-            if (entry.parentSessionId === oldParentId) {
-                this.wrapperParentByNativeId.set(key, {
-                    ...entry,
-                    parentSessionId: newParentId,
-                })
-            }
-        }
-    }
-
-    private wrapperCacheKey(namespace: string, nativeSessionId: ScopedNativeId): string {
-        const { nativeId, flavor, machineId } = nativeSessionId
-        return JSON.stringify([namespace, nativeId, flavor, machineId])
-    }
-
-    private rememberWrapperSpawnedNativeId(
-        namespace: string,
-        nativeSessionId: ScopedNativeId,
-        parentSessionId: string,
-        now: number
-    ): void {
-        const key = this.wrapperCacheKey(namespace, nativeSessionId)
-        if (this.wrapperParentByNativeId.has(key)) {
-            this.wrapperParentByNativeId.delete(key)
-        }
-        this.wrapperParentByNativeId.set(key, { ...nativeSessionId, namespace, parentSessionId, recordedAt: now })
-        while (this.wrapperParentByNativeId.size > WRAPPER_PARENT_CACHE_MAX) {
-            const oldestKey = this.wrapperParentByNativeId.keys().next().value
-            if (!oldestKey) break
-            this.wrapperParentByNativeId.delete(oldestKey)
-        }
-    }
-
-    private linkWrapperChildIfEligible(child: Session, parentId: string): void {
-        if (resolveSessionParentLink(child.metadata, child.id) !== null) return
-        const parentAccess = this.resolveSessionAccess(parentId, child.namespace, { followRedirects: true })
-        if (!parentAccess.ok || parentAccess.sessionId === child.id) return
-        try {
-            this.sessionCache.updateParentSessionId(child.id, parentAccess.sessionId)
-        } catch {
-            // Best-effort lineage link must never interrupt message delivery or sync.
-        }
-    }
-
-    private wrapperCallKey(sessionId: string, callId: string): string {
-        return `${sessionId}\0${callId}`
-    }
-
-    private rememberVerifiedWrapperCall(sessionId: string, callId: string, now: number, scope: WrapperScope): void {
-        const key = this.wrapperCallKey(sessionId, callId)
-        if (this.verifiedWrapperCallIds.has(key)) {
-            this.verifiedWrapperCallIds.delete(key)
-        }
-        this.verifiedWrapperCallIds.set(key, { ...scope, recordedAt: now })
-        while (this.verifiedWrapperCallIds.size > WRAPPER_CALL_CACHE_MAX) {
-            const oldestKey = this.verifiedWrapperCallIds.keys().next().value
-            if (!oldestKey) break
-            this.verifiedWrapperCallIds.delete(oldestKey)
-        }
-    }
-
-    private isVerifiedWrapperCall(sessionId: string, callId: string, now: number): WrapperScope | false {
-        const key = this.wrapperCallKey(sessionId, callId)
-        const call = this.verifiedWrapperCallIds.get(key)
-        if (!call) return false
-        const { recordedAt } = call
-        if (now - recordedAt > WRAPPER_PARENT_TTL_MS) {
-            this.verifiedWrapperCallIds.delete(key)
-            return false
-        }
-        return call
-    }
-
-    private recordWrapperSpawnedChildren(sessionId: string, content: unknown): void {
-        const parent = this.sessionCache.getSession(sessionId)
-        if (!parent) return
-
-        const now = Date.now()
-        for (const { callId, flavor } of collectVerifiedWrapperCallIdsFromMessage(content)) {
-            this.rememberVerifiedWrapperCall(sessionId, callId, now, { flavor, machineId: parent.metadata?.machineId })
-        }
-
-        const nativeIds = extractWrapperSessionIdsFromMessage(
-            content,
-            parent.metadata?.machineId,
-            (callId) => this.isVerifiedWrapperCall(sessionId, callId, now)
-        )
-        if (nativeIds.length === 0) return
-
-        for (const nativeId of nativeIds) {
-            this.rememberWrapperSpawnedNativeId(parent.namespace, nativeId, parent.id, now)
-            const child = this.findUniqueWrapperChild(parent, nativeId)
-            if (child) this.linkWrapperChildIfEligible(child, parent.id)
-        }
-    }
-
-    private findUniqueWrapperChild(parent: Session, worker: ScopedNativeId): Session | undefined {
-        let match: Session | undefined
-        const attached: Session[] = []
-        for (const candidate of this.sessionCache.getSessionsByNamespace(parent.namespace)) {
-            if (candidate.id === parent.id) continue
-            if (resolveSessionParentLink(candidate.metadata, candidate.id) !== null) continue
-            const meta = candidate.metadata
-            if (!meta || (worker.flavor && meta.flavor && meta.flavor !== worker.flavor)) continue
-            const flavor = worker.flavor ?? meta.flavor
-            if (meta.machineId !== worker.machineId
-                && (flavor === 'pi' || flavor === 'opencode' || (meta.machineId && worker.machineId))) continue
-            if (worker.flavor) {
-                const fields: Record<string, unknown> = meta
-                const id = fields[`${worker.flavor}SessionId`]
-                if (typeof id !== 'string' || id.trim() !== worker.nativeId) continue
-            } else if (!getNativeAgentSessionIds(meta).includes(worker.nativeId)) continue
-            if (flavor === 'codex' && meta.codexRuntime?.bindingId) {
-                attached.push(candidate)
-                continue
-            }
-            if (match) return undefined
-            match = candidate
-        }
-        if (!match && attached.length > 0) return attached.length === 1 ? attached[0] : undefined
-        if (!match && worker.flavor) return this.findUniqueWrapperChild(parent, { ...worker, flavor: null })
-        return match
-    }
-
-    private reconcileWrapperParentForSession(sessionId: string): void {
-        const session = this.sessionCache.getSession(sessionId)
-        if (!session?.metadata) return
-        if (resolveSessionParentLink(session.metadata, session.id) !== null) return
-        if (this.wrapperParentByNativeId.size === 0) return
-
-        const now = Date.now()
-        const nativeIds = getNativeAgentSessionIds(session.metadata)
-        for (const [key, entry] of this.wrapperParentByNativeId) {
-            if (entry.namespace !== session.namespace || !nativeIds.includes(entry.nativeId)) continue
-            if (now - entry.recordedAt > WRAPPER_PARENT_TTL_MS) {
-                this.wrapperParentByNativeId.delete(key)
-                continue
-            }
-            const parent = this.sessionCache.getSession(entry.parentSessionId)
-            if (!parent || this.findUniqueWrapperChild(parent, entry)?.id !== sessionId) continue
-            this.linkWrapperChildIfEligible(session, entry.parentSessionId)
-            return
         }
     }
 

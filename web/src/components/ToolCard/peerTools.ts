@@ -1,4 +1,4 @@
-import { extractCodeagentWrapperSessionIds, isObject, parseCodeagentWrapperCommand, type ParsedCodeagentWrapperCommand } from '@hapi/protocol'
+import { isObject } from '@hapi/protocol'
 import { extractSessionCitationIds, normalizeSessionIdPrefix } from '@hapi/protocol/sessionCitation'
 import { getInputStringAny } from '@/lib/toolInputUtils'
 
@@ -31,7 +31,7 @@ function flattenResultText(result: unknown, depth: number = 0): string {
     }
     if (isObject(result)) {
         if (typeof result.sessionId === 'string') return result.sessionId
-        for (const key of ['text', 'content', 'result', 'output', 'stdout', 'message', 'error'] as const) {
+        for (const key of ['text', 'content', 'result', 'output', 'message', 'error'] as const) {
             const nested = flattenResultText(result[key], depth + 1)
             if (nested) return nested
         }
@@ -75,65 +75,4 @@ export function extractPeerTargetSessionId(
     const normalized = normalizeSessionIdPrefix(rawTarget)
     if (!normalized) return null
     return UUID_RE.test(normalized) ? normalized : null
-}
-
-const SHELL_TOOL_NAMES = new Set([
-    'bash',
-    'codexbash',
-    'shell',
-    'shell_command',
-    'run_shell_command',
-    'run_terminal_cmd',
-    'exec_command',
-    'functions.exec_command',
-    'execute',
-    'terminal',
-])
-
-export type ParsedWrapperToolInvocation = ParsedCodeagentWrapperCommand & {
-    label: string
-    nativeSessionId: string | null
-    description: string | null
-}
-
-function getWrapperShellCommand(input: unknown): string | string[] | null {
-    const command = getInputStringAny(input, ['command', 'cmd'])
-    if (command) return command
-    if (!isObject(input) || !Array.isArray(input.command)) return null
-    const parts = input.command.filter((part): part is string => typeof part === 'string')
-    return parts.length > 0 ? parts : null
-}
-
-export function parseWrapperToolInvocation(
-    toolName: string,
-    input: unknown,
-    result?: unknown,
-    nativeKind?: string | null
-): ParsedWrapperToolInvocation | null {
-    const normalized = toolName.trim().toLowerCase()
-    if (normalized.startsWith('mcp__')) return null
-    const command = getWrapperShellCommand(input)
-    if (!command) return null
-
-    const isShellTool = SHELL_TOOL_NAMES.has(normalized)
-        || nativeKind === 'execute'
-        || (typeof command === 'string' && command === toolName.trim())
-        || normalized.startsWith('codeagent-wrapper')
-    if (!isShellTool) return null
-
-    const parsed = parseCodeagentWrapperCommand(command)
-    if (!parsed) return null
-
-    const spawnedIds = extractCodeagentWrapperSessionIds(flattenResultText(result))
-    const nativeSessionId = spawnedIds[0] ?? parsed.resumedSessionId ?? null
-    const label = parsed.backend
-        ? (parsed.role ? `${parsed.backend} · ${parsed.role}` : parsed.backend)
-        : 'codeagent-wrapper'
-
-    return {
-        ...parsed,
-        label,
-        nativeSessionId,
-        description: getInputStringAny(input, ['description']),
-    }
 }

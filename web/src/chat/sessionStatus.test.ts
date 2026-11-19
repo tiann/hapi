@@ -136,87 +136,6 @@ describe('buildSessionStatusData', () => {
         ])
     })
 
-    it('tracks active codeagent-wrapper Bash invocations under subagents without duplicating terminals', () => {
-        const blocks: ChatBlock[] = [
-            toolBlock({
-                id: 'block-wrapper-running',
-                name: 'Bash',
-                tool: {
-                    id: 'call-wrapper-1',
-                    state: 'running',
-                    input: {
-                        command: '~/.claude/bin/codeagent-wrapper --backend codex - "/work/app" <<\'EOF\'\nROLE_FILE: ~/.claude/.ccg/prompts/codex/reviewer.md\nReview diff\nEOF',
-                        description: 'Codex security review',
-                    },
-                    result: 'Command running in background with ID: bg-wrapper',
-                }
-            })
-        ]
-
-        const status = buildSessionStatusData({
-            goal: null,
-            tasks: [],
-            blocks,
-            backgroundTasks: [
-                { id: 'bg-wrapper', type: 'local_bash', description: 'Codex security review' },
-                { id: 'bg-shell', type: 'local_bash', description: 'Run dev server' },
-            ]
-        })
-
-        expect(status?.subagents).toEqual([
-            expect.objectContaining({
-                id: 'call-wrapper-1',
-                blockId: 'block-wrapper-running',
-                title: 'codex · reviewer',
-                detail: 'Codex security review',
-                state: 'running',
-            })
-        ])
-        expect(status?.terminals).toEqual([
-            { id: 'bg-shell', command: 'Run dev server', cwd: null, startedAt: null }
-        ])
-    })
-
-    it('keeps backgrounded codeagent-wrapper workers visible in subagents after Bash completes', () => {
-        const blocks: ChatBlock[] = [
-            toolBlock({
-                id: 'block-wrapper-bg',
-                name: 'Bash',
-                tool: {
-                    id: 'call-wrapper-bg',
-                    state: 'completed',
-                    input: {
-                        command: '~/.claude/bin/codeagent-wrapper --backend codex - "/work/app" <<\'EOF\'\nReview diff\nEOF',
-                        description: 'Run Codex review',
-                    },
-                    result: 'Command running in background with ID: bg-wrap-1',
-                    completedAt: 250,
-                }
-            })
-        ]
-
-        const status = buildSessionStatusData({
-            goal: null,
-            tasks: [],
-            blocks,
-            backgroundTasks: [
-                { id: 'bg-wrap-1', type: 'local_bash', description: 'Run Codex review' },
-            ]
-        })
-
-        expect(status?.subagents).toEqual([
-            expect.objectContaining({
-                id: 'call-wrapper-bg',
-                blockId: 'block-wrapper-bg',
-                title: 'codex',
-                detail: 'Run Codex review',
-                state: 'running',
-                endedAt: null,
-            })
-        ])
-        expect(status?.terminals).toEqual([])
-    })
-
     it('lists a linked child with only derived tool work as running', () => {
         const child = makeSummary({
             id: 'child',
@@ -325,32 +244,26 @@ describe('buildSessionStatusData', () => {
         ])
     })
 
-    it('reconciles deduplicated wrapper subagents with live waiting, background, and error child states', () => {
+    it('reconciles deduplicated peer subagents with live waiting, background, and error child states', () => {
         const blocks: ChatBlock[] = [
             toolBlock({
-                id: 'block-wait-wrap',
-                name: 'Bash',
+                id: 'block-wait-peer',
+                name: 'mcp__hapi__spawn_peer',
                 tool: {
-                    id: 'call-wait-wrap',
+                    id: 'call-wait-peer',
                     state: 'running',
-                    input: {
-                        command: '~/.claude/bin/codeagent-wrapper --backend codex resume codex-wait-1 - "/work/app"',
-                        description: 'Resume waiting worker',
-                    },
-                    result: '...\n---\nSESSION_ID: codex-wait-1',
+                    input: { directory: '/work/app', name: 'Waiting Peer' },
+                    result: 'Spawned child-wait (Waiting Peer)',
                 }
             }),
             toolBlock({
-                id: 'block-err-wrap',
-                name: 'Bash',
+                id: 'block-err-peer',
+                name: 'mcp__hapi__spawn_peer',
                 tool: {
-                    id: 'call-err-wrap',
+                    id: 'call-err-peer',
                     state: 'running',
-                    input: {
-                        command: '~/.claude/bin/codeagent-wrapper --backend claude resume claude-err-1 - "/work/app"',
-                        description: 'Resume failing worker',
-                    },
-                    result: '...\n---\nSESSION_ID: claude-err-1',
+                    input: { directory: '/work/app', name: 'Error Peer' },
+                    result: 'Spawned child-err (Error Peer)',
                 }
             }),
         ]
@@ -363,8 +276,7 @@ describe('buildSessionStatusData', () => {
                 pendingRequestsCount: 1,
                 metadata: {
                     path: '/work/app',
-                    name: 'Waiting Wrapper',
-                    agentSessionId: 'codex-wait-1',
+                    name: 'Waiting Peer',
                     parentLink: { parentSessionId: 'parent-2', kind: 'peer' },
                 },
             }),
@@ -374,8 +286,7 @@ describe('buildSessionStatusData', () => {
                 thinking: false,
                 metadata: {
                     path: '/work/app',
-                    name: 'Error Wrapper',
-                    agentSessionId: 'claude-err-1',
+                    name: 'Error Peer',
                     parentLink: { parentSessionId: 'parent-2', kind: 'peer' },
                     lastModelError: {
                         eventId: 'err-2',
@@ -412,12 +323,12 @@ describe('buildSessionStatusData', () => {
 
         expect(status?.subagents).toEqual([
             expect.objectContaining({
-                id: 'call-wait-wrap',
+                id: 'call-wait-peer',
                 linkedSessionId: 'child-wait',
                 state: 'waiting',
             }),
             expect.objectContaining({
-                id: 'call-err-wrap',
+                id: 'call-err-peer',
                 linkedSessionId: 'child-err',
                 state: 'error',
             }),

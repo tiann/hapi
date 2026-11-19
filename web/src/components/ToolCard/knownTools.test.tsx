@@ -844,21 +844,4 @@ describe('getToolPresentation — HAPI peer tools', () => {
         expect(ping.title).toBe('Ping peer')
         expect(ping.minimal).toBe(false)
     })
-
-    it('renders codeagent-wrapper shell invocations with backend and role title', () => {
-        const wrapper = getToolPresentation({
-            toolName: 'Bash',
-            input: {
-                command: '~/.claude/bin/codeagent-wrapper --progress --backend antigravity - "/work/repo" <<\'EOF\'\nROLE_FILE: ~/.claude/.ccg/prompts/antigravity/architect.md\nPlan UI\nEOF',
-                description: 'Frontend UI architecture',
-            },
-            result: null,
-            childrenCount: 0,
-            description: null,
-            metadata: null,
-        })
-        expect(wrapper.title).toBe('antigravity · architect')
-        expect(wrapper.subtitle).toBe('Frontend UI architecture')
-        expect(wrapper.minimal).toBe(true)
-    })
 })
