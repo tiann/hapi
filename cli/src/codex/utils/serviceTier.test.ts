@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { isUltrafastAvailable, resumeTierContext } from './serviceTier';
+import { isUltrafastAvailable, inheritedResumeTier, resumeTierContext } from './serviceTier';
 
 describe('Ultrafast model/account availability', () => {
     const models = [
@@ -92,4 +92,27 @@ it.each([
     [{ config: { model_reasoning_effort: undefined } }, { model: 'saved', modelProvider: 'custom' }],
 ])('resolves native resume model/provider precedence for %j', (params, expected) => {
     expect(resumeTierContext(params, { model: 'saved', modelProvider: 'custom' })).toEqual(expected);
+});
+
+it.each([{ model: 'selected' }, { config: { model_reasoning_effort: 'high' } }])('retains the saved provider on native 0.170 resume with %j', params => {
+    expect(resumeTierContext(params, { model: 'saved', modelProvider: 'provider-a' }, true).modelProvider).toBe('provider-a');
+});
+it('scopes each native 0.170 catalog page to the retained provider after account transitions', async () => {
+    const listModels = vi.fn().mockResolvedValueOnce({ data: [], nextCursor: 'next' }).mockResolvedValueOnce({ data: [{ id: 'same-model', serviceTiers: [{ id: 'ultrafast' }] }] });
+    const readConfig = vi.fn();
+    expect(await isUltrafastAvailable({ listModels, readConfig, supportsProviderScopedModels: () => true }, 'same-model', '/project', Date.now() + 10_000, 'provider-a', 'old-startup-provider')).toBe(true);
+    expect(listModels).toHaveBeenNthCalledWith(1, { includeHidden: true, modelProvider: 'provider-a' });
+    expect(listModels).toHaveBeenNthCalledWith(2, { includeHidden: true, modelProvider: 'provider-a', cursor: 'next' });
+    expect(readConfig).not.toHaveBeenCalled();
+});
+it.each([['priority', 'priority'], ['ultrafast', 'ultrafast'], ['default', null], [null, null]] as const)('overrides a saved native snapshot with the current inherited default %s', async (configured, native) => {
+    const readConfig = vi.fn().mockResolvedValue({ config: { service_tier: configured } });
+    expect(await inheritedResumeTier({ readConfig }, { model: 'saved' }, false, '/project')).toEqual({ model: 'saved', serviceTier: native });
+    expect(readConfig).toHaveBeenCalledWith({ cwd: '/project', includeLayers: false });
+});
+it('does not replace explicit or legacy native tier intent', async () => {
+    const readConfig = vi.fn();
+    expect(await inheritedResumeTier({ readConfig }, { serviceTier: 'ultrafast' }, true, '/project')).toEqual({ serviceTier: 'ultrafast' });
+    expect(await inheritedResumeTier({ readConfig }, {}, undefined, '/project')).toEqual({});
+    expect(readConfig).not.toHaveBeenCalled();
 });

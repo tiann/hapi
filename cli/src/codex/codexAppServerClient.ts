@@ -190,6 +190,8 @@ export class CodexAppServerClient extends JsonLineParser {
     private process: ChildProcessWithoutNullStreams | null = null;
     private connected = false;
     private initialized = false;
+    private serverUserAgent?: string;
+    private initializedClientName?: string;
 
     /** True while the app-server process is connected. */
     isConnected(): boolean {
@@ -351,9 +353,27 @@ export class CodexAppServerClient extends JsonLineParser {
 
     async initialize(params: InitializeParams): Promise<InitializeResponse> {
         const response = await this.sendRequest('initialize', params, { timeoutMs: 30_000 });
+        this.serverUserAgent = (response as InitializeResponse).userAgent;
+        this.initializedClientName = params.clientInfo.name;
         this.sendNotification('initialized');
         this.initialized = true;
         return response as InitializeResponse;
+    }
+
+    private catalogVersion(): number[] | undefined {
+        // Native userAgent uses clientInfo.name as its product, but the native
+        // binary version rather than the caller's clientInfo.version.
+        const version = this.serverUserAgent?.match(/^([^/\s]+)\/(\d+)\.(\d+)\.\d+/);
+        if (!version || !['codex_cli_rs', 'codex', this.initializedClientName].includes(version[1])) return undefined;
+        return [Number(version[2]), Number(version[3])];
+    }
+    supportsProviderScopedModels(): boolean {
+        const version = this.catalogVersion();
+        return Boolean(version && (version[0] > 0 || version[1] >= 170));
+    }
+    usesStartupModelCatalog(): boolean {
+        const version = this.catalogVersion();
+        return Boolean(version && version[0] === 0 && version[1] < 170);
     }
 
     async readConfig(params: ConfigReadParams): Promise<ConfigReadResponse> {

@@ -2538,7 +2538,7 @@ export class SyncEngine {
             }
             child = this.sessionCache.refreshSession(childId)!
             const updated = this.store.sessions.updateSessionMetadata(childId,
-                { ...child.metadata!, codexSessionId: attempt.nativeSessionId }, child.metadataVersion, namespace, { touchUpdatedAt: false })
+                { ...child.metadata!, codexSessionId: attempt.nativeSessionId, codexServiceTierExplicit: source.metadata?.codexServiceTierExplicit }, child.metadataVersion, namespace, { touchUpdatedAt: false })
             if (updated.result !== 'success') throw new Error('Failed to bind native fork to its child')
             this.sessionCache.refreshSession(childId)
             attempt = { ...attempt, spawnAttempted: true }

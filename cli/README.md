@@ -37,8 +37,19 @@ or catalog provenance; a negative catalog result is not an independent entitleme
 check. A detected thread/catalog provider mismatch is an error, not a downgrade.
 An untouched tier continues to inherit the native account default, including
 after cold resume. HAPI stores explicit tier intent separately from the effective
-tier displayed by Codex. Catalog provider identity is captured at runtime startup;
-an unavailable snapshot leaves Ultrafast eligibility unverified.
+tier displayed by Codex. Cold resume explicitly re-resolves an inherited tier from
+current configuration instead of keeping a native settings snapshot. Codex 0.170+
+uses provider-scoped model discovery and retains the saved provider independently
+of model/reasoning overrides; older versions use the startup catalog context.
+An unknown native version or catalog identity leaves eligibility unverified.
+If native launch configuration discards explicit Ultrafast, HAPI confirms Standard
+and reports that outcome as well.
+
+An optional persistence probe runs against an installed Codex 0.170 executable:
+`node scripts/dev/probe-codex-tier-resume.mjs /path/to/codex` (Node 24+).
+It uses an isolated CODEX_HOME and a local fixture backend, preserves the real
+profile, and checks native saved-provider/tier behavior plus HAPI's inherited-tier
+resolver without paid model requests.
 
 ### Session commands
 

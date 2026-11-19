@@ -4,17 +4,19 @@ import type { CodexAppServerClient } from '../codexAppServerClient';
 export const ULTRAFAST_FALLBACK_NOTICE = 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.';
 
 /** Match native has_model_resume_override before choosing a catalog context. */
-export function resumeTierContext(params: Record<string, unknown>, saved: Record<string, unknown>): { model: unknown; modelProvider?: string } {
+export function resumeTierContext(params: Record<string, unknown>, saved: Record<string, unknown>, providerRetained = false): { model: unknown; modelProvider?: string } {
     const config = params.config && typeof params.config === 'object' ? params.config as Record<string, unknown> : {};
     const overridden = params.model != null || params.modelProvider != null
-        || config.model !== undefined || config.model_reasoning_effort !== undefined;
-    const provider = overridden ? params.modelProvider ?? config.model_provider : saved.modelProvider;
+        || config.model !== undefined || (providerRetained && config.model_provider !== undefined) || config.model_reasoning_effort !== undefined;
+    const provider = providerRetained
+        ? params.modelProvider ?? config.model_provider ?? saved.modelProvider
+        : overridden ? params.modelProvider ?? config.model_provider : saved.modelProvider;
     return { model: overridden ? params.model ?? config.model : saved.model,
         modelProvider: typeof provider === 'string' ? provider : undefined };
 }
 
 export async function isUltrafastAvailable(
-    client: Pick<CodexAppServerClient, 'listModels' | 'readConfig'>,
+    client: Pick<CodexAppServerClient, 'listModels' | 'readConfig'> & Partial<Pick<CodexAppServerClient, 'supportsProviderScopedModels'>>,
     model: unknown,
     cwd?: string,
     deadline = Date.now() + 10_000,
@@ -31,18 +33,19 @@ export async function isUltrafastAvailable(
             })]);
         } finally { clearTimeout(timer); }
     };
-    if (!catalogProvider) throw new Error('Cannot verify the Codex catalog provider; settings were not changed');
+    const scoped = client.supportsProviderScopedModels?.() === true;
+    if (!scoped && !catalogProvider) throw new Error('Cannot verify the Codex catalog provider; settings were not changed');
     const explicitModel = typeof model === 'string' && model.trim() ? model : undefined;
     const configured = !explicitModel || !modelProvider
         ? (await bounded(() => client.readConfig({ cwd, includeLayers: false }))).config : undefined;
     const effectiveProvider = modelProvider ?? (typeof configured?.model_provider === 'string' ? configured.model_provider : 'openai');
-    if (catalogProvider !== effectiveProvider) throw new Error('Cannot verify Ultrafast for a different Codex model provider; settings were not changed');
+    if (!scoped && catalogProvider !== effectiveProvider) throw new Error('Cannot verify Ultrafast for a different Codex model provider; settings were not changed');
     const effectiveModel = explicitModel ?? (typeof configured?.model === 'string' && configured.model.trim() ? configured.model : undefined);
     const models = [];
     const seen = new Set<string>();
     let cursor: string | undefined;
     do {
-        const page = await bounded(() => client.listModels({ includeHidden: true, ...(cursor ? { cursor } : {}) }));
+        const page = await bounded(() => client.listModels({ includeHidden: true, ...(scoped ? { modelProvider: effectiveProvider } : {}), ...(cursor ? { cursor } : {}) }));
         models.push(...page.data ?? []);
         cursor = page.nextCursor ?? undefined;
         if (cursor && seen.has(cursor)) throw new Error('Codex model catalog pagination did not advance');
@@ -52,4 +55,11 @@ export async function isUltrafastAvailable(
         ? models.find(entry => entry.id === effectiveModel || entry.model === effectiveModel)
         : models.find(entry => entry.isDefault);
     return Boolean(selected?.serviceTiers?.some(tier => tier.id === 'ultrafast'));
+}
+
+/** Explicitly re-resolve inherited intent so a saved native snapshot cannot pin it. */
+export async function inheritedResumeTier(client: Pick<CodexAppServerClient, 'readConfig'>, params: Record<string, unknown>, explicit: boolean | undefined, cwd: string): Promise<Record<string, unknown>> {
+    if (params.serviceTier !== undefined || explicit !== false) return params;
+    const configured = (await client.readConfig({ cwd, includeLayers: false })).config.service_tier;
+    return { ...params, serviceTier: typeof configured === 'string' && configured !== 'default' ? configured : null };
 }

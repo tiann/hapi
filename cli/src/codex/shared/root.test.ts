@@ -33,6 +33,7 @@ vi.mock('../codexAppServerClient', () => ({
         async initialize() { this.initialized = true; }
         isInitialized() { return this.initialized; }
         async disconnect() { this.initialized = false; }
+        supportsProviderScopedModels() { return false; }
         async readConfig() { return { config: { model_provider: 'openai' } }; }
         async listModels() { return { data: [{ id: 'mock', isDefault: true, serviceTiers: [{ id: 'ultrafast' }] }, { id: 'standard-only' }] }; }
         async request(method: string, params: Record<string, unknown> = {}) {
@@ -1499,4 +1500,23 @@ it('provides Standard recovery before an attached Ultrafast model change with un
     expect(request.mock.calls.some(([method]) => method === 'thread/settings/update')).toBe(false);
     await f.root.applySettings({ serviceTier: 'standard' });
     expect((await f.root.applySettings({ model: 'standard-only' })).applied).toMatchObject({ model: 'standard-only', serviceTier: 'standard' });
+});
+
+it('announces native launch configuration discarding Ultrafast only after confirmed Standard', async () => {
+    const f = await fixture(); f.root.acceptSettings({ model: 'mock', serviceTier: null });
+    f.events.mockClear(); await f.root.confirmUltrafastLaunch();
+    expect(f.events).toHaveBeenCalledWith({ type: 'message', message: 'Codex did not apply Ultrafast; changed to Standard.' });
+    expect(f.root.freshParams().serviceTier).toBe('default');
+});
+it('keeps an actually applied Ultrafast launch without a fallback notice', async () => {
+    const f = await fixture(); f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' });
+    f.events.mockClear(); await f.root.confirmUltrafastLaunch(); expect(f.events).not.toHaveBeenCalled();
+});
+it('uses provider-scoped native discovery for an attached modern engine', async () => {
+    const f = await fixture({ attached: true });
+    vi.spyOn(f.root.client, 'supportsProviderScopedModels').mockReturnValue(true);
+    f.root.acceptSettings({ model: 'mock', modelProvider: 'provider-a', serviceTier: 'ultrafast' });
+    const catalog = vi.spyOn(f.root.client, 'listModels');
+    expect((await f.root.applySettings({ model: 'mock' })).applied.serviceTier).toBe('ultrafast');
+    expect(catalog).toHaveBeenCalledWith({ includeHidden: true, modelProvider: 'provider-a' });
 });

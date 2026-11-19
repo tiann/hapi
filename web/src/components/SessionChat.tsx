@@ -753,7 +753,7 @@ export function SessionChat(props: SessionChatProps) {
 function SessionChatInner(props: SessionChatProps) {
     const { haptic } = usePlatform()
     const { t } = useTranslation()
-    const [serviceTierError, setServiceTierError] = useState<string | null>(null)
+    const [codexSettingsError, setCodexSettingsError] = useState<string | null>(null)
     const { codexExplorationCollapsed } = useCodexExplorationCollapse()
     const navigate = useNavigate()
     const { toolCardDisplayMode } = useToolCardDisplayMode()
@@ -1960,6 +1960,7 @@ function SessionChatInner(props: SessionChatProps) {
 
     // Model mode change handler
     const handleModelChange = useCallback(async (model: SessionModelSelection) => {
+        setCodexSettingsError(null)
         const previousModelReasoningEffort = props.session.modelReasoningEffort
         const shouldClearReasoningEffort = shouldClearReasoningEffortForModelChange({
             agentFlavor,
@@ -1995,6 +1996,7 @@ function SessionChatInner(props: SessionChatProps) {
         } catch (e) {
             haptic.notification('error')
             console.error('Failed to set model:', e)
+            setCodexSettingsError(e instanceof Error ? e.message : 'Could not change the model. Try again.')
         }
     }, [
         agentFlavor,
@@ -2078,7 +2080,7 @@ function SessionChatInner(props: SessionChatProps) {
     }, [agentFlavor, agyCurrentModel, setModel, setEffort, props.onRefresh, haptic])
 
     const handleServiceTierChange = useCallback(async (serviceTier: string | null) => {
-        setServiceTierError(null)
+        setCodexSettingsError(null)
         try {
             await setServiceTier(serviceTier)
             haptic.notification('success')
@@ -2086,7 +2088,7 @@ function SessionChatInner(props: SessionChatProps) {
         } catch (e) {
             haptic.notification('error')
             console.error('Failed to set service tier:', e)
-            setServiceTierError(e instanceof Error ? e.message : 'Could not verify model availability. Try again.')
+            setCodexSettingsError(e instanceof Error ? e.message : 'Could not verify model availability. Try again.')
         }
     }, [setServiceTier, props.onRefresh, haptic])
 
@@ -2513,7 +2515,7 @@ function SessionChatInner(props: SessionChatProps) {
                     </div>
 
                     <div className={outlineOpen ? 'max-sm:hidden' : undefined}>
-                        {serviceTierError ? <div role="alert" className="px-3 py-2 text-sm text-red-600">Could not change service tier: {serviceTierError}</div> : null}
+                        {codexSettingsError ? <div role="alert" className="px-3 py-2 text-sm text-red-600">Could not change settings: {codexSettingsError}</div> : null}
                         {codexCollaborationModeSupported && codexModelsState.error ? (
                             <div className="px-3 pb-2">
                                 <div className="mx-auto w-full max-w-content rounded-md bg-[var(--app-subtle-bg)] p-3 text-sm text-red-600">
@@ -2776,7 +2778,7 @@ function SessionChatInner(props: SessionChatProps) {
                         }
                         serviceTier={effectiveCodexServiceTier}
                         fastAvailable={!codexModelsState.error && codexModelAdvertisesFastTier(props.session.model, codexModelsState.models)}
-                        ultrafastAvailable={props.session.metadata?.codexRuntime?.kind !== 'attached' && !codexModelsState.error && codexModelAdvertisesUltrafastTier(props.session.model, codexModelsState.models)}
+                        ultrafastAvailable={(props.session.metadata?.codexRuntime?.kind !== 'attached' || props.session.metadata.codexProviderScopedCatalog === true) && !codexModelsState.error && codexModelAdvertisesUltrafastTier(props.session.model, codexModelsState.models)}
                         onServiceTierChange={
                             agentFlavor === 'codex'
                                 && props.session.active

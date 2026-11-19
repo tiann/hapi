@@ -299,7 +299,7 @@ export class SharedCodexRoot {
         this.projection = new SharedCodexProjection(this.session, threadId, (id, content) => this.queue.committed(id, content),
             undefined, async () => record(await this.client.request('thread/read', { threadId, includeTurns: false })).thread,
             (threadId, item) => this.asyncQuestions.observeItem(threadId, item));
-        this.session.updateMetadata(metadata => ({ ...metadata, codexSessionId: threadId, capabilities: {
+        this.session.updateMetadata(metadata => ({ ...metadata, codexSessionId: threadId, codexProviderScopedCatalog: this.client.supportsProviderScopedModels(), capabilities: {
             ...metadata.capabilities, concurrentClients: true, terminal: !this.host.attached,
             // In-place rewind needs a native + hub commit barrier. Do not
             // advertise a destructive operation we cannot make atomic yet.
@@ -599,7 +599,7 @@ export class SharedCodexRoot {
             for (;;) {
                 const model = config.model ?? this.settings.model;
                 const provider = this.modelProvider;
-                if (!this.host.catalogProvider && config.model && config.serviceTier === undefined) {
+                if (!this.client.supportsProviderScopedModels() && !this.host.catalogProvider && config.model && config.serviceTier === undefined) {
                     throw new Error('Catalog provider could not be verified. Switch to Standard before changing models.');
                 }
                 const available = await isUltrafastAvailable(this.client, model, this.bootstrap.workingDirectory, discoveryDeadline, provider, this.host.catalogProvider);
@@ -660,6 +660,11 @@ export class SharedCodexRoot {
             this.alive(); return { applied: this.settings };
         } finally { clearTimeout(timer); this.settingsListeners.delete(changed); }
     }
+    async confirmUltrafastLaunch(): Promise<void> {
+        if (this.settings.serviceTier === 'ultrafast') return;
+        await this.applySettings({ serviceTier: 'standard' });
+        this.notice('Codex did not apply Ultrafast; changed to Standard.');
+    }
     async initialSettings(options: SharedLaunchOptions): Promise<void> {
         if (options.collaborationMode) await this.applySettings({ collaborationMode: options.collaborationMode });
     }
@@ -710,7 +715,7 @@ export class SharedCodexRoot {
         rpc.registerHandler(RPC_METHODS.ListCodexModels, async raw => {
             const models = []; let cursor: string | undefined;
             do {
-                const response = await this.client.listModels({ includeHidden: record(raw).includeHidden === true, cursor });
+                const response = await this.client.listModels({ includeHidden: record(raw).includeHidden === true, cursor, ...(this.client.supportsProviderScopedModels() && this.modelProvider ? { modelProvider: this.modelProvider } : {}) });
                 models.push(...(response.data ?? []).map(normalizeCodexModel).filter(model => model !== null)); cursor = response.nextCursor ?? undefined;
             } while (cursor);
             return { success: true, models };

@@ -27,16 +27,17 @@ if (typeof Element.prototype.scrollTo !== 'function') {
 
 
 vi.mock('@/components/AssistantChat/HappyComposer', () => ({ HappyComposer: (props: {
-    onServiceTierChange?: (tier: string) => Promise<void>; fastAvailable?: boolean; ultrafastAvailable?: boolean
-}) => <button disabled={!props.onServiceTierChange} onClick={() => void props.onServiceTierChange?.('standard')}>
+    onModelChange?: (model: string) => Promise<void>; onServiceTierChange?: (tier: string) => Promise<void>; fastAvailable?: boolean; ultrafastAvailable?: boolean
+}) => <><button onClick={() => void props.onModelChange?.('changed-model')}>Change model</button><button disabled={!props.onServiceTierChange} onClick={() => void props.onServiceTierChange?.('standard')}>
     Reset Standard / fast:{String(props.fastAvailable)} / ultra:{String(props.ultrafastAvailable)}
-</button> }))
+</button></> }))
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
     function shell(session: Session, catalog: ReturnType<typeof vi.fn>, setServiceTier: ReturnType<typeof vi.fn>): ReactNode {
         const api = {
             getMachineCodexModels: catalog,
             getSessionCodexModels: catalog,
             setServiceTier,
+            setModel: vi.fn(async () => { throw new Error('Catalog provider could not be verified. Switch to Standard before changing models.') }),
             fetchTranscriptionProviders: vi.fn(async () => [])
         } as unknown as ApiClient
         const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -97,4 +98,24 @@ it('hides unverified attached Ultrafast while retaining Standard recovery', asyn
     await waitFor(() => expect(catalog).toHaveBeenCalled());
     fireEvent.click(screen.getByRole('button', { name: 'Reset Standard / fast:false / ultra:false' }));
     await waitFor(() => expect(setServiceTier).toHaveBeenCalledWith('tier-session', 'standard'));
+});
+
+it('displays the Standard recovery instruction when a model change fails', async () => {
+    const catalog = vi.fn(async () => ({ success: true, models: [] }));
+    const session = { id: 'tier-session', active: true, model: 'mock', serviceTier: 'ultrafast', metadata: {
+        flavor: 'codex', machineId: 'machine', startingMode: 'remote', codexRuntime: { kind: 'attached', bindingId: 'attached' }, capabilities: { concurrentClients: true }
+    } } as unknown as Session;
+    render(shell(session, catalog, vi.fn()));
+    fireEvent.click(screen.getByRole('button', { name: 'Change model' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Switch to Standard before changing models.');
+});
+
+it('offers attached Ultrafast when native provider-scoped discovery is verified', async () => {
+    const catalog = vi.fn(async () => ({ success: true, models: [{ id: 'gpt-6.2-sol', model: 'gpt-6.2-sol', serviceTiers: ['ultrafast'] }] }));
+    const session = { id: 'tier-session', active: true, model: 'gpt-6.2-sol', serviceTier: 'ultrafast', metadata: {
+        flavor: 'codex', machineId: 'machine', startingMode: 'remote', codexProviderScopedCatalog: true,
+        codexRuntime: { kind: 'attached', bindingId: 'attached' }, capabilities: { concurrentClients: true }
+    } } as unknown as Session;
+    render(shell(session, catalog, vi.fn()));
+    expect(await screen.findByRole('button', { name: 'Reset Standard / fast:false / ultra:true' })).toBeTruthy();
 });

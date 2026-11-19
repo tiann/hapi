@@ -330,3 +330,26 @@ describe('CodexAppServerClient process cwd', () => {
         await client.disconnect();
     });
 });
+
+it.each([
+    ['codex_cli_rs/0.159.3', false, true],
+    ['codex_cli_rs/0.170.0 (Windows)', true, false],
+    ['hapi/0.170.0 (Windows)', true, false],
+    ['hapi/0.159.3 (Windows)', false, true],
+    ['codex_cli_rs/1.0.0', true, false],
+    ['unknown/0.170.0', false, false],
+    [undefined, false, false],
+])('derives catalog routing from native initialize identity %s', async (userAgent, scoped, startup) => {
+    const child = fakeChild(); spawnMock.mockReturnValue(child);
+    const client = new CodexAppServerClient(); await client.connect();
+    child.stdin.write = vi.fn((line: string) => {
+        const request = JSON.parse(line);
+        if (request.method === 'initialize') queueMicrotask(() => child.stdout.emit('data', JSON.stringify({ id: request.id, result: { userAgent } }) + '\n'));
+        return true;
+    });
+    try {
+        await client.initialize({ clientInfo: { name: 'hapi', version: '1' }, capabilities: { experimentalApi: true } });
+        expect(client.supportsProviderScopedModels()).toBe(scoped);
+        expect(client.usesStartupModelCatalog()).toBe(startup);
+    } finally { await client.disconnect(); }
+});
