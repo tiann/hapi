@@ -37,6 +37,8 @@ describe('shared launch configuration', () => {
     it('normalizes short flags, forwards configuration and resolves cwd exactly once', () => {
         const result = sharedLaunchConfig({ codexArgs: ['-C', 'project', '-mcustom', '-a', 'never', '--search', '--add-dir', '../extra', '-c', 'model_reasoning_effort="high"'] }, '/tmp');
         const expectedCwd = resolve('/tmp', 'project');
+        expect(result.cwdExplicit).toBe(true);
+        expect(sharedLaunchConfig({}, '/tmp').cwdExplicit).toBe(false);
         expect(result.cwd).toBe(expectedCwd); expect(result.tuiArgs).not.toContain('-C');
         expect(result.threadParams).toMatchObject({ model: 'custom', approvalPolicy: 'never', config: { web_search: 'live', 'sandbox_workspace_write.writable_roots': [resolve(expectedCwd, '../extra')] } });
         expect(result.serverArgs).toContain('model_reasoning_effort="high"');

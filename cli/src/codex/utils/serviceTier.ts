@@ -81,8 +81,16 @@ export async function isUltrafastAvailable(
     return Boolean(selected?.serviceTiers?.some(tier => tier.id === 'ultrafast'));
 }
 
+/** Native top-level tier overrides request config, which overrides inheritance. */
+export function nativeTierParams(params: Record<string, unknown>): Record<string, unknown> {
+    const config = params.config && typeof params.config === 'object' ? params.config as Record<string, unknown> : {};
+    return params.serviceTier === undefined && config.service_tier !== undefined
+        ? { ...params, serviceTier: config.service_tier === 'default' ? null : config.service_tier } : params;
+}
+
 /** Explicitly re-resolve inherited intent so a saved native snapshot cannot pin it. */
 export async function inheritedResumeTier(client: Pick<CodexAppServerClient, 'readConfig'>, params: Record<string, unknown>, explicit: boolean | undefined, cwd: string, savedTier?: unknown): Promise<Record<string, unknown>> {
+    params = nativeTierParams(params);
     if (params.serviceTier !== undefined) return params;
     if (explicit === true) {
         if (savedTier === 'standard') return { ...params, serviceTier: null };
@@ -100,6 +108,7 @@ export async function resolveUltrafastLaunch(
     method: string, params: Record<string, unknown>, cwd: string, catalogProvider?: string,
     savedThread?: Record<string, unknown>,
 ): Promise<{ params: Record<string, unknown>; downgraded: boolean }> {
+    params = nativeTierParams(params);
     if (params.serviceTier !== 'ultrafast') return { params, downgraded: false };
     const deadline = Date.now() + 10_000;
     const response = !savedThread && method !== 'thread/start'

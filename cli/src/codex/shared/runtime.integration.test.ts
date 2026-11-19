@@ -150,6 +150,25 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             state.sessions.get(unsupportedSid)!.metadata.codexServiceTierExplicit = true;
             const resumed = await third.client.request<{ serviceTier: string }>('thread/resume', { threadId: unsupported.thread.id, model: 'gpt-6.1-sol', excludeTurns: true });
             expect(resumed.serviceTier).toBe('default');
+            // Persisted recovery state must fence input before a cold bind completes.
+            state.sessions.get(childSid)!.metadata.codexTierConfirmationPending = true;
+            state.sessions.get(childSid)!.metadata.codexServiceTierExplicit = true;
+            state.sessions.get(childSid)!.serviceTier = 'fast';
+            const recoveryClient = new CodexAppServerClient({ endpoint: third.runtime.endpoint, token: third.runtime.token });
+            clients.push(recoveryClient); await initializeSharedClient(recoveryClient);
+            const originalBind = SharedCodexRoot.prototype.bind;
+            let binding!: () => void;
+            const enteredBind = new Promise<void>(resolve => { binding = resolve; });
+            const bindGate = new Promise<void>(resolve => { releaseLaunch = resolve; });
+            extraSpies.push(vi.spyOn(SharedCodexRoot.prototype, 'bind').mockImplementationOnce(async function(this: InstanceType<typeof SharedCodexRoot>, ...args) {
+                binding(); await bindGate; return originalBind.apply(this, args);
+            }));
+            const coldPending = third.client.request('thread/resume', { threadId: child.thread.id, excludeTurns: true });
+            await enteredBind;
+            await expect(recoveryClient.request('thread/queue/start', { threadId: child.thread.id })).rejects.toThrow('tier confirmation');
+            releaseLaunch(); await coldPending;
+            await recoveryClient.request('thread/settings/update', { threadId: child.thread.id, serviceTier: null });
+            expect(state.sessions.get(childSid)?.metadata.codexTierConfirmationPending).toBe(false);
         } finally {
             for (const spy of extraSpies.reverse()) spy.mockRestore();
             failConfig?.mockRestore(); vi.mocked(bootstrapExistingSession).mockReset();

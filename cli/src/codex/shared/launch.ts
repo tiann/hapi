@@ -45,7 +45,7 @@ export function resolveSharedCodex(): CodexCommand {
 }
 
 export function sharedLaunchConfig(options: SharedLaunchOptions, cwd: string): {
-    cwd: string; serverArgs: string[]; tuiArgs: string[]; threadParams: Record<string, unknown>;
+    cwd: string; cwdExplicit: boolean; serverArgs: string[]; tuiArgs: string[]; threadParams: Record<string, unknown>;
 } {
     const args = options.codexArgs ?? [];
     const serverArgs: string[] = [];
@@ -139,7 +139,7 @@ export function sharedLaunchConfig(options: SharedLaunchOptions, cwd: string): {
     for (const [key, value] of Object.entries(config)) serverArgs.push('-c', `${key}=${JSON.stringify(value)}`);
     serverArgs.push(...resolveModelCatalogArgs(serverArgs));
     return {
-        cwd: directory, serverArgs, tuiArgs,
+        cwd: directory, cwdExplicit: overrides.cwd !== undefined, serverArgs, tuiArgs,
         threadParams: {
             ...(model ? { model } : {}),
             ...(provider ? { modelProvider: provider } : {}),

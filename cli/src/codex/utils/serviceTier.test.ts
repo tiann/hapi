@@ -173,3 +173,16 @@ it('checks a native fork against destination config rather than the parent model
     expect(client.readConfig).toHaveBeenCalledWith({ cwd: '/parent-project', includeLayers: false });
     expect(client.listModels).toHaveBeenCalledWith({ includeHidden: true, modelProvider: 'destination-provider' });
 });
+
+it('preserves config tier precedence before inherited resume discovery', async () => {
+    const readConfig = vi.fn();
+    expect((await inheritedResumeTier({ readConfig }, { config: { service_tier: 'priority' } }, false, '/project')).serviceTier).toBe('priority');
+    expect((await inheritedResumeTier({ readConfig }, { serviceTier: null, config: { service_tier: 'priority' } }, false, '/project')).serviceTier).toBeNull();
+    expect(readConfig).not.toHaveBeenCalled();
+});
+it('validates Ultrafast supplied through native lifecycle config', async () => {
+    const client = { request: vi.fn(), readConfig: vi.fn().mockResolvedValue({ config: { model: 'standard-only', model_provider: 'openai' } }), listModels: vi.fn().mockResolvedValue({ data: [{ id: 'standard-only' }] }), supportsProviderScopedModels: () => true, retainsResumeModelProvider: () => true };
+    const result = await resolveUltrafastLaunch(client, 'thread/start', { config: { service_tier: 'ultrafast' } }, '/project');
+    expect(result.downgraded).toBe(true); expect(result.params.serviceTier).toBeNull();
+    expect(result.params.config).toEqual({ service_tier: 'ultrafast' });
+});

@@ -1,4 +1,4 @@
-import { inheritedResumeTier, resolveUltrafastLaunch, ULTRAFAST_FALLBACK_NOTICE } from '../utils/serviceTier';
+import { nativeTierParams, inheritedResumeTier, resolveUltrafastLaunch, ULTRAFAST_FALLBACK_NOTICE } from '../utils/serviceTier';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdir, mkdtemp, chmod, rm, realpath } from 'node:fs/promises';
@@ -226,7 +226,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         // No fake user turn/name. Metadata write materializes an empty legacy rollout for native resume.
         await control.request('thread/metadata/update', { threadId, gitInfo: gitInfo(string(record(response.thread).cwd) ?? root.bootstrap.workingDirectory) });
         assertRunning();
-        if (requestedUltrafast) root.beginTierConfirmation();
+        if (requestedUltrafast || root.session.getMetadata()?.codexTierConfirmationPending === true) root.beginTierConfirmation();
         roots.set(threadId, root);
         await root.bind(threadId, response, subscribe);
         // A thread this runtime created (thread/start) starts from zero
@@ -261,10 +261,14 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         await notifyRunnerSessionStarted(root.session.sessionId, { ...(root.session.getMetadata() ?? root.bootstrap.metadata), hostStartMarker: root.bootstrap.metadata.hostStartMarker });
     };
     const create = (method: 'thread/start' | 'thread/fork', params: Record<string, unknown>, parent?: SharedCodexRoot, initialOptions?: SharedLaunchOptions): Promise<SharedCodexRoot> => operation(async () => {
+        params = nativeTierParams(params);
         const serviceTierExplicit = params.serviceTier !== undefined;
-        const resolved = await resolveUltrafastLaunch(control, method, params, string(params.cwd) ?? launch.cwd, catalogProvider);
+        const source = method === 'thread/fork'
+            ? record(record(await control.request('thread/read', { threadId: params.threadId, includeTurns: false })).thread) : undefined;
+        const cwd = string(params.cwd) ?? string(source?.cwd) ?? launch.cwd;
+        const resolved = await resolveUltrafastLaunch(control, method, params, cwd, catalogProvider, source);
         const downgraded = resolved.downgraded; params = resolved.params;
-        const root = await prepare(string(params.cwd) ?? launch.cwd, undefined, parent);
+        const root = await prepare(cwd, undefined, parent);
         let nativeSucceeded = false;
         try {
             runtime.pendingCreations = [...runtime.pendingCreations ?? [], root.session.sessionId]; await persist();
@@ -285,7 +289,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     });
     const key = (connection: string, request: Envelope) => `${connection}:${typeof request.id}:${request.id}`;
     const before = (request: Envelope, connection: string): Promise<Envelope> => operation(async () => {
-        const params = record(request.params);
+        const params = ['thread/start', 'thread/resume', 'thread/fork'].includes(request.method ?? '') ? nativeTierParams(record(request.params)) : record(request.params);
         const queueRoot = roots.get(string(params.threadId) ?? '');
         const queueMutation = ['thread/queue/add', 'thread/queue/update', 'thread/queue/delete', 'thread/queue/reorder', 'thread/queue/start'].includes(request.method ?? '');
         if (queueRoot?.needsTierConfirmation && (request.method === 'turn/start' || queueMutation)) throw new Error('Service tier confirmation is pending. Select a service tier in settings before sending input.');
@@ -328,7 +332,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             }
             if (candidate !== threadId && !existing) throw new Error('Resume the parent HAPI session before attaching a child agent');
         }
-        const savedThread = request.method === 'thread/resume' && threadId && !existing
+        const savedThread = threadId && (request.method === 'thread/fork' || request.method === 'thread/resume' && !existing)
             ? record(record(await control.request('thread/read', { threadId, includeTurns: false })).thread) : undefined;
         const cwd = string(params.cwd) ?? string(savedThread?.cwd) ?? existing?.bootstrap.workingDirectory ?? launch.cwd;
         // Loaded native resume rejoins a thread and ignores setting overrides.
@@ -454,7 +458,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             // row's hostPid/metadata. Hold the lock until the reservation is durable.
             root = await withThreadOwnership(home, threadId, id, async () => {
                 const existing = options.existingSessionId ?? await findColdBinding(home, threadId);
-                const root = await prepare(string(launch.threadParams.cwd) ?? string(thread.cwd) ?? launch.cwd, existing);
+                const root = await prepare(launch.cwdExplicit ? launch.cwd : string(thread.cwd) ?? launch.cwd, existing);
                 await reserveRecord(root, threadId); return root;
             });
             const resumeParams = await inheritedResumeTier(control, launch.threadParams, root.session.getMetadata()?.codexServiceTierExplicit, root.bootstrap.workingDirectory, root.bootstrap.sessionInfo.serviceTier);
