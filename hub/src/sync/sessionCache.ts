@@ -1173,7 +1173,10 @@ export class SessionCache {
             if (now - session.activeAt <= timeoutMs) continue
             const wasThinking = session.thinking
             session.active = false
-            this.store.sessions.setSessionActive(session.id, false, now, session.namespace)
+            // Persist the last keepalive, the value the cache and the inactive
+            // patch carry, not the sweep time: a reloaded cache must keep the
+            // same stop time, or stopped rows reorder after a hub restart.
+            this.store.sessions.setSessionActive(session.id, false, session.activeAt, session.namespace)
             session.thinking = false
             // The keepalive died, not the tasks: reset the transient work
             // state like handleSessionEnd does, or a session that expired

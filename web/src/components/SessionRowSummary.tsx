@@ -7,6 +7,7 @@ import { getAttentionLabel, SessionAttentionIndicator, SessionRequestIcon } from
 import { classifySessionAttention, sessionIsUnread } from '@/lib/sessionAttention'
 import { getSessionLastSeenAt, getSessionManualUnreadAt } from '@/lib/sessionLastSeen'
 import { formatRelativeTime } from '@/lib/relativeTime'
+import { getStoppedSessionTime } from '@/lib/sessionListOrder'
 import { formatScheduledTooltipDetail } from '@/lib/scheduledTime'
 import { getCodexImportedAt, subscribeCodexImportedSessions } from '@/lib/codexImportedSessions'
 import { useMinuteTick } from '@/hooks/useMinuteTick'
@@ -75,7 +76,9 @@ function getSessionTimeLabel(
     if (importedAt !== null) {
         return formatCodexImportedRelativeTime(importedAt, t)
     }
-    return formatRelativeTime(session.updatedAt, t)
+    // A stopped row shows the time it is ordered by among stopped sessions:
+    // its stop time when that is later than its last update (keepalive expiry).
+    return formatRelativeTime(session.active ? session.updatedAt : getStoppedSessionTime(session), t)
 }
 
 const PRESENCE_BADGE_CLASS = {

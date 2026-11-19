@@ -8,12 +8,17 @@ type OrderFields = Pick<SessionSummary, 'id' | 'active' | 'createdAt' | 'lastUse
 const STOPPED_AT_BUCKET_MS = 60_000
 
 /**
- * When a disconnected session stopped, to the minute: `activeAt`, its last
- * time connected. The hub sends it with every stop (archive, session end,
- * keepalive expiry), so the list has it whichever way the session stopped.
+ * The time a disconnected session's row shows and is ordered by: when it
+ * stopped (`activeAt`, its last time connected, which the hub sends with every
+ * stop) or its last update after that, whichever is later. Ordering and the
+ * row's relative time use the same value, so they always agree.
  */
-function stoppedAtBucket(session: Pick<SessionSummary, 'activeAt'>): number {
-    return Math.floor((session.activeAt ?? 0) / STOPPED_AT_BUCKET_MS)
+export function getStoppedSessionTime(session: Pick<SessionSummary, 'activeAt' | 'updatedAt'>): number {
+    return Math.max(session.activeAt ?? 0, session.updatedAt ?? 0)
+}
+
+function stoppedAtBucket(session: Pick<SessionSummary, 'activeAt' | 'updatedAt'>): number {
+    return Math.floor(getStoppedSessionTime(session) / STOPPED_AT_BUCKET_MS)
 }
 
 /**
