@@ -186,6 +186,48 @@ function hasSameJsonValue(left: unknown, right: unknown): boolean {
     return JSON.stringify(left) === JSON.stringify(right)
 }
 
+function rebaseMaterializingRequestMap<T>(
+    initial: Record<string, T> | null | undefined,
+    local: Record<string, T> | null | undefined,
+    current: Record<string, T> | null | undefined
+): Record<string, T> | null | undefined {
+    if (hasSameJsonValue(initial, local)) return current
+    const rebased = { ...current }
+    for (const key of Object.keys(initial ?? {})) {
+        if ((!local || !Object.hasOwn(local, key)) && hasSameJsonValue(current?.[key], initial?.[key])) {
+            delete rebased[key]
+        }
+    }
+    for (const [key, value] of Object.entries(local ?? {})) {
+        if (!hasSameJsonValue(initial?.[key], value) && hasSameJsonValue(current?.[key], initial?.[key])) {
+            Object.defineProperty(rebased, key, { value, writable: true, enumerable: true, configurable: true })
+        }
+    }
+    return rebased
+}
+
+function rebaseMaterializingAgentState(initial: AgentState | null, local: AgentState, current: AgentState): AgentState {
+    const { requests: initialRequests, completedRequests: initialCompleted, ...initialFields } = initial ?? {}
+    const { requests, completedRequests, ...localFields } = local
+    const rebased = { ...current }
+    for (const key of Object.keys(initialFields) as Array<keyof typeof initialFields>) {
+        if (!Object.hasOwn(localFields, key)) delete rebased[key]
+    }
+    for (const [key, value] of Object.entries(localFields) as Array<[keyof typeof localFields, unknown]>) {
+        if (!hasSameJsonValue(initial?.[key], value)) Object.assign(rebased, { [key]: value })
+    }
+    const nextRequests = rebaseMaterializingRequestMap(initialRequests, requests, current.requests)
+    const nextCompleted = rebaseMaterializingRequestMap(initialCompleted, completedRequests, current.completedRequests)
+    // A request settled by the Hub during a retry must not be reopened by a
+    // local pending entry that was absent from the original snapshot.
+    for (const key of Object.keys(current.completedRequests ?? {})) {
+        if (nextRequests && nextRequests !== current.requests && !Object.hasOwn(current.requests ?? {}, key)) {
+            delete nextRequests[key]
+        }
+    }
+    return { ...rebased, requests: nextRequests, completedRequests: nextCompleted }
+}
+
 export class ApiSessionClient extends EventEmitter {
     private reconnectHandler: ((metadataRefreshed?: boolean) => void) | null = null
     onReconnect(handler: ((metadataRefreshed?: boolean) => void) | null): void { this.reconnectHandler = handler }
@@ -255,7 +297,6 @@ export class ApiSessionClient extends EventEmitter {
     private materializationDrainRequested = false
     private awaitingMaterializedConnection = false
     private metadataChangedDuringAttempt = false
-    private agentStateChangedDuringAttempt = false
     private readonly pendingOutboundEvents: PendingOutboundEvent[] = []
     private didWarnPendingQueueFull = false
 
@@ -569,10 +610,10 @@ if (isReconnect) {
     private async runMaterializationLoop(signal: AbortSignal): Promise<boolean> {
         let retryDelayMs = MATERIALIZATION_RETRY_MIN_MS
         let finalDrainAttemptStarted = false
+        const initialAgentState = this.agentState
 
         while (!signal.aborted && !this.isClosed()) {
             this.metadataChangedDuringAttempt = false
-            this.agentStateChangedDuringAttempt = false
             const snapshot: PendingSessionSnapshot = {
                 metadata: this.metadata,
                 agentState: this.agentState
@@ -588,8 +629,7 @@ if (isReconnect) {
                 const latestAgentState = this.agentState
                 const shouldSyncMetadata = this.metadataChangedDuringAttempt
                     || !hasSameJsonValue(materialized.metadata, latestMetadata)
-                const shouldSyncAgentState = this.agentStateChangedDuringAttempt
-                    || !hasSameJsonValue(materialized.agentState, latestAgentState)
+                const shouldSyncAgentState = !hasSameJsonValue(initialAgentState, latestAgentState)
 
                 this.metadata = materialized.metadata
                 this.reconcileCommittedRewindCursor(this.metadata)
@@ -603,7 +643,7 @@ if (isReconnect) {
                     this.updateMetadata(() => latestMetadata)
                 }
                 if (shouldSyncAgentState && latestAgentState) {
-                    this.updateAgentState(() => latestAgentState)
+                    this.updateAgentState(current => rebaseMaterializingAgentState(initialAgentState, latestAgentState, current))
                 }
 
                 const pendingEvents = this.pendingOutboundEvents.splice(0)
@@ -1558,9 +1598,6 @@ if (isReconnect) {
             if (this.state === 'closed') return
             const current = this.agentState ?? ({} as AgentState)
             this.agentState = handler(current)
-            if (this.state === 'materializing') {
-                this.agentStateChangedDuringAttempt = true
-            }
             return
         }
         this.agentStateLock.inLock(async () => {

@@ -263,6 +263,54 @@ describe('ApiSessionClient input buffered during initialization', () => {
 })
 
 describe('ApiSessionClient lazy materialization', () => {
+    it('rebases state changed during materialization without dropping a permission merged after a lost ACK', async () => {
+        vi.useFakeTimers()
+        socketHarness.sockets.length = 0
+        const pending = deferred<Session>()
+        const client = new ApiSessionClient('token', createSession(), { materialize: async () => await pending.promise })
+        const socket = socketHarness.sockets[0]!
+        const writes: Array<{ expectedVersion: number; agentState: AgentState }> = []
+        const mergedRequest = { tool: 'AskUserQuestion', arguments: {}, createdAt: 10 }
+        socket.emitWithAckImpl = async (event, payload) => {
+            if (event !== 'update-state') return {}
+            const req = payload as (typeof writes)[number]
+            writes.push(req)
+            if (writes.length === 1) return await new Promise<never>(() => {})
+            if (req.expectedVersion === 1) return { result: 'version-mismatch', version: 3, agentState: {
+                ...writes[0]!.agentState,
+                requests: { local: writes[0]!.agentState.requests!.local!, merged: mergedRequest },
+                completedRequests: {
+                    done: { ...mergedRequest, status: 'approved', completedAt: 20 },
+                    settled: { ...mergedRequest, status: 'denied', completedAt: 21 }
+                }
+            } }
+            return { result: 'success', version: req.expectedVersion + 1, agentState: req.agentState }
+        }
+        try {
+            client.notifyUserActivity()
+            client.updateAgentState(state => ({ ...state, steeringActive: true, requests: {
+                local: { tool: 'Read', arguments: {}, createdAt: 5 },
+                settled: mergedRequest
+            } }))
+            pending.resolve(createSession({ namespace: 'default', agentStateVersion: 1 }))
+            expect(await client.materialize()).toBe(true)
+            await vi.advanceTimersByTimeAsync(6_100)
+            expect(writes.map(write => write.expectedVersion)).toEqual([1, 1, 3])
+            expect(writes[2]!.agentState).toMatchObject({
+                steeringActive: true,
+                requests: { local: { tool: 'Read' }, merged: mergedRequest },
+                completedRequests: {
+                    done: { status: 'approved', completedAt: 20 },
+                    settled: { status: 'denied', completedAt: 21 }
+                }
+            })
+            expect(writes[2]!.agentState.requests).not.toHaveProperty('settled')
+        } finally {
+            client.close()
+            vi.useRealTimers()
+        }
+    })
+
     it('does not connect or materialize without a real user message', async () => {
         socketHarness.sockets.length = 0
         const materialize = vi.fn(async () => createSession())
