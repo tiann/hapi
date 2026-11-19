@@ -1,7 +1,8 @@
+import { once } from 'node:events'
 import crossSpawn from 'cross-spawn'
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { getProcessStartMarker, sweepProcessGroup } from './process'
+import { getProcessStartMarker, processGroupGone, sweepProcessGroup } from './process'
 
 const posix = process.platform !== 'win32'
 
@@ -40,6 +41,44 @@ describe.skipIf(!posix)('sweepProcessGroup (POSIX)', () => {
         return child.pid!
     }
 
+    it.skipIf(process.platform !== 'linux' || spawnSync('python3', ['--version']).status !== 0)('confirms a group containing an unreaped zombie without signalling it', async () => {
+        const parent = spawn('python3', ['-c', [
+            'import os, sys',
+            'pid = os.fork()',
+            'if pid == 0:',
+            '    os.setpgid(0, 0)',
+            '    os._exit(0)',
+            'os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)',
+            'print(pid, flush=True)',
+            'sys.stdin.read(1)',
+            'os.waitpid(pid, 0)',
+        ].join('\n')], { stdio: ['pipe', 'pipe', 'inherit'] })
+        const closed = once(parent, 'close')
+        try {
+            const [output] = await once(parent.stdout, 'data')
+            const pgid = Number(String(output).trim())
+            expect(groupAlive(pgid)).toBe(true)
+            expect(processGroupGone(pgid)).toBe(true)
+            expect(await sweepProcessGroup(pgid, { leaderExited: true })).toBe(true)
+        } finally {
+            parent.stdin.end()
+            await closed
+        }
+    })
+
+    it('keeps incomplete and mixed process group snapshots unconfirmed', () => {
+        const pgid = spawnGroup('sleep 30')
+        const ps = vi.spyOn(crossSpawn, 'sync')
+        try {
+            for (const stdout of [`${pgid} Z\nmalformed`, `${pgid} Z\n${pgid} S`, '1 S']) {
+                ps.mockReturnValue({ status: 0, stdout } as unknown as ReturnType<typeof crossSpawn.sync>)
+                expect(processGroupGone(pgid)).toBe(false)
+            }
+        } finally {
+            ps.mockRestore()
+        }
+    })
+
     it('returns true immediately for an empty group', async () => {
         const pgid = spawnGroup('exit 0')
         await waitFor(() => !groupAlive(pgid))
@@ -63,7 +102,7 @@ describe.skipIf(!posix)('sweepProcessGroup (POSIX)', () => {
         const started = Date.now()
         await expect(sweepProcessGroup(pgid, { graceMs: 200, expectedStartMarker: marker })).resolves.toBe(true)
         expect(Date.now() - started).toBeGreaterThanOrEqual(150)
-        expect(groupAlive(pgid)).toBe(false)
+        expect(processGroupGone(pgid)).toBe(true)
     })
 
     it('refuses to signal its own process', async () => {

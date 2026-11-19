@@ -2084,6 +2084,26 @@ describe('explicit title action metadata refresh', () => {
 })
 
 describe('ApiSessionClient runtime heartbeat', () => {
+    it('advertises overlapping peer reply watches through reconnect until the last one settles', async () => {
+        const client = new ApiSessionClient('token', createSession())
+        const socket = socketHarness.sockets.at(-1)!
+        socket.triggerConnect()
+        const lastAlive = () => socket.emitted.filter(entry => entry.event === 'session-alive').at(-1)?.args[0]
+        let finish!: () => void
+        let timeout!: (err: Error) => void
+        const first = client.trackPeerReplyWatch(() => new Promise<void>(resolve => { finish = resolve }))
+        const second = client.trackPeerReplyWatch(() => new Promise<void>((_, reject) => { timeout = reject }))
+        expect(lastAlive()).toMatchObject({ hasPeerReplyWatch: true })
+        finish()
+        await first
+        socket.triggerConnect()
+        expect(lastAlive()).toMatchObject({ hasPeerReplyWatch: true })
+        timeout(new Error('watch expired'))
+        await expect(second).rejects.toThrow('watch expired')
+        expect(lastAlive()).not.toHaveProperty('hasPeerReplyWatch')
+        client.close()
+    })
+
     it('replays the latest runtime when the socket connects (#2053)', () => {
         const client = new ApiSessionClient('token', createSession())
         const socket = socketHarness.sockets.at(-1)!

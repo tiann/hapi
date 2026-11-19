@@ -151,6 +151,15 @@ describe('SyncEngine hibernation', () => {
         expect(killCalls).toEqual([])
     })
 
+    it('keeps an idle caller alive until peer reply forwarding ends', async () => {
+        const id = insertIdleSession('forwarding-reply')
+        engine.handleSessionAlive({ sid: id, time: Date.now(), thinking: false, hasPeerReplyWatch: true })
+        expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([])
+        expect(stopCalls).toEqual([])
+        engine.handleSessionAlive({ sid: id, time: Date.now(), thinking: false })
+        expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([id])
+    })
+
     it('writes the stopping marker before the stop RPC and drops CLI archive fields afterwards', async () => {
         const id = insertIdleSession('idle-cli-archive')
         let markerDuringStop: unknown
@@ -617,7 +626,20 @@ describe('SyncEngine hibernation', () => {
         }
     })
 
-    it.each(['cli', 'hub', undefined])('preserves archived rows with stale settled markers at startup (%s)', archivedBy => {
+    it('recovers a CLI self-archive during an unconfirmed wake and retries its due message', () => {
+        const id = insertIdleSession('wake-crash', { lifecycleState: 'archived', archivedBy: 'cli',
+            hibernation: { state: 'hibernated', since: 10, reason: 'idle' } })
+        store.messages.addMessage(id, { role: 'user', content: { type: 'text', text: 'due' } }, 'scheduled', Date.now() - 100)
+        store.sessions.setSessionActive(id, false, Date.now(), NAMESPACE)
+        engine.stop()
+        engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
+        expect(cache().getSession(id)?.metadata?.lifecycleState).toBe('hibernated')
+        const resume = spyOn(engine, 'resumeSession').mockResolvedValue({ type: 'success', sessionId: id })
+        ;(engine as unknown as { wakeHibernatedForMatureScheduled(now: number): void }).wakeHibernatedForMatureScheduled(Date.now())
+        expect(resume).toHaveBeenCalledWith(id, NAMESPACE)
+    })
+
+    it.each(['hub', undefined])('preserves archived rows with stale settled markers at startup (%s)', archivedBy => {
         const id = insertIdleSession('archived-on-restart', { lifecycleState: 'archived', archivedBy,
             hibernation: { state: 'hibernated', since: 10, reason: 'idle' } })
         store.sessions.setSessionActive(id, false, Date.now(), NAMESPACE)

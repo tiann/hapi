@@ -608,10 +608,30 @@ export function captureGroupMembers(rootPid: number, startMarker: string): Group
 export function processGroupGone(pgid: number): boolean {
   try {
     process.kill(-pgid, 0);
-    return false;
   } catch (error) {
     return (error as NodeJS.ErrnoException)?.code === 'ESRCH';
   }
+  if (process.platform === 'linux') {
+    try {
+      const mounts = readFileSync('/proc/self/mountinfo', 'utf8');
+      const proc = mounts.split('\n').find(line => line.split(' ')[4] === '/proc' && line.includes(' - proc '));
+      if (!proc || /(?:^|[, ])hidepid=(?!0\b|off\b)/.test(proc)) return false;
+    } catch { return false; }
+  }
+  const snapshot = spawn.sync('ps', ['-A', '-o', 'pgid=,state='], {
+    encoding: 'utf8', timeout: SPAWN_SYNC_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024,
+  });
+  const output = snapshot.stdout?.toString().trim();
+  if (snapshot.error || snapshot.status !== 0 || snapshot.stderr?.toString().trim() || !output) return false;
+  let found = false;
+  for (const row of output.split('\n')) {
+    const match = /^(\d+)\s+([A-Za-z])[A-Za-z0-9+<\-]*$/.exec(row.trim());
+    if (!match) return false;
+    if (Number(match[1]) !== pgid) continue;
+    if (match[2] !== 'Z' && match[2] !== 'X') return false;
+    found = true;
+  }
+  return found;
 }
 
 export async function sweepProcessGroup(

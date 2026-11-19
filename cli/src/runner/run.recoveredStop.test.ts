@@ -61,8 +61,8 @@ describe('runner stop of recovered persisted sessions while the Hub is unavailab
     let stopSession: Parameters<typeof startRunnerControlServer>[0]['stopSession']
     let home: string
 
-    const startWith = async (records: unknown[]) => {
-        home = mkdtempSync(join(tmpdir(), 'hapi-stop-recovered-'))
+    const startWith = async (records: unknown[], previousHome?: string) => {
+        home = previousHome ?? mkdtempSync(join(tmpdir(), 'hapi-stop-recovered-'))
         const originalStateFile = configuration.runnerStateFile
         const captured = new Error('control handlers captured before runner networking')
         mocks.controlServer.mockImplementation(async handlers => {
@@ -98,6 +98,19 @@ describe('runner stop of recovered persisted sessions while the Hub is unavailab
     })
 
     afterEach(() => rmSync(home, { recursive: true, force: true }))
+
+    it('recovers a confirmed generation after runner restart and a lost stop acknowledgement', async () => {
+        await startWith([{ requestedSessionId: 'lost-ack', pid: 4242, processStartMarker: 'generation', flavor: 'claude' }])
+        const opts = { requireProcessGroupCleanup: true, expectedPid: 4242, processStartMarker: 'generation' }
+        expect(await stopSession('lost-ack', opts)).toBe('stopped')
+        await startWith([], home)
+        mocks.alive.mockReturnValue(false)
+        mocks.kill.mockClear()
+        expect(await stopSession('lost-ack', opts)).toBe('already_gone')
+        expect(await stopSession('lost-ack', { ...opts, processStartMarker: 'other' })).toBe('unknown')
+        expect(await stopSession('other-session', opts)).toBe('unknown')
+        expect(mocks.kill).not.toHaveBeenCalled()
+    })
 
     it.each([false, true])('requires a verified Windows tree stop for retries (tree confirmed: %s)', async confirmed => {
         await startWith([{ requestedSessionId: 'win', pid: 4242, processStartMarker: 'generation', flavor: 'claude' }])

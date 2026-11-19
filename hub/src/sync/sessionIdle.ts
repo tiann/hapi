@@ -43,6 +43,7 @@ export function resolveSessionIdleTimeoutMs(
  * keepalive-idle reconciler passes none; hibernation passes all of them.
  */
 export type LiveWorkSignals = {
+    peerReplyWatch?: boolean
     /** Queued-prompt thinking grace (`markMessageQueued`) still running. */
     pendingThinking?: boolean
     /** Attached session job currently running. */
@@ -67,7 +68,7 @@ export function hasLiveWork(session: Session, signals?: LiveWorkSignals): boolea
     const requests = session.agentState?.requests
     if (requests && Object.keys(requests).length > 0) return true
     if (!signals) return false
-    if (signals.pendingThinking) return true
+    if (signals.pendingThinking || signals.peerReplyWatch) return true
     if (signals.runningJob) return true
     if (signals.activeTeamWork) return true
     if ((signals.openTerminals ?? 0) > 0) return true

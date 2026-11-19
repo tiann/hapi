@@ -223,6 +223,7 @@ export class ApiSessionClient extends EventEmitter {
     private needsBackfill = false
     private hasConnectedOnce = false
     // Replayed on (re)connect: a volatile heartbeat sent while disconnected is dropped (#2053).
+    private peerReplyWatches = 0
     private latestKeepAlive: Omit<Parameters<ClientToServerEvents['session-alive']>[0], 'sid' | 'time'> | null = null
     readonly rpcHandlerManager: RpcHandlerManager
     private readonly terminalManager: TerminalManager
@@ -330,12 +331,7 @@ if (isReconnect) {
                 if (this.state === 'active' && this.allowReconnect) this.emit('connected')
             })
             this.hasConnectedOnce = true
-            this.socket.emit('session-alive', {
-                sid: this.sessionId,
-                time: Date.now(),
-                thinking: false,
-                ...this.latestKeepAlive
-            })
+            this.socket.emit('session-alive', this.alivePayload())
         })
 
         this.socket.on('rpc-request', async (data: { method: string; params: string }, callback: (response: string) => void) => {
@@ -1358,6 +1354,26 @@ if (isReconnect) {
         }, 30)
     }
 
+    private alivePayload(): Parameters<ClientToServerEvents['session-alive']>[0] {
+        return {
+            sid: this.sessionId, time: Date.now(), thinking: false, ...this.latestKeepAlive,
+            ...(this.peerReplyWatches > 0 ? { hasPeerReplyWatch: true } : {})
+        }
+    }
+
+    async trackPeerReplyWatch(watch: () => Promise<void>): Promise<void> {
+        const publish = () => {
+            if (this.state === 'active' && this.socket.connected) this.socket.emit('session-alive', this.alivePayload())
+        }
+        this.peerReplyWatches++
+        try {
+            if (this.peerReplyWatches === 1) publish()
+            await watch()
+        } finally {
+            if (--this.peerReplyWatches === 0) publish()
+        }
+    }
+
     keepAlive(
         thinking: boolean,
         mode: 'local' | 'remote' | undefined,
@@ -1375,11 +1391,7 @@ if (isReconnect) {
         if (this.state !== 'active' || !this.socket.connected) {
             return
         }
-        this.socket.volatile.emit('session-alive', {
-            sid: this.sessionId,
-            time: Date.now(),
-            ...this.latestKeepAlive
-        })
+        this.socket.volatile.emit('session-alive', this.alivePayload())
     }
 
     /** Hub waits for this before mergeSessions on Cursor ACP reopen (tiann/hapi#939). */

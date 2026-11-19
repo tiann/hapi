@@ -252,6 +252,7 @@ export class SyncEngine {
     static readonly HIBERNATE_STARTUP_GRACE_MS = 600_000
     private hubStartedAt: number = Date.now()
     /** Sessions that sent at least one session-alive since this hub started. */
+    private readonly peerReplyWatchSessions = new Set<string>()
     private readonly aliveSinceHubStartIds = new Set<string>()
     private static readonly HIBERNATE_STOP_TIMEOUT_MS = 90_000
     // KillSession's beforeKill drain completes before the CLI's async cleanup
@@ -337,6 +338,7 @@ export class SyncEngine {
      *  (deleted or archived). The keys are never queried again; without this
      *  the per-session entries would accumulate for the hub's lifetime. */
     private releaseSessionEnumerations(sessionId: string): void {
+        this.peerReplyWatchSessions.delete(sessionId)
         this.slashCommandsEnumeration.releaseSession(sessionId)
         this.skillsEnumeration.releaseSession(sessionId)
         this.modelListCache.releaseSession(sessionId)
@@ -863,6 +865,7 @@ export class SyncEngine {
     }
 
     handleSessionAlive(payload: {
+        hasPeerReplyWatch?: boolean
         sid: string
         time: number
         thinking?: boolean
@@ -886,6 +889,8 @@ export class SyncEngine {
         this.sessionCache.handleSessionAlive(payload)
         const current = this.sessionCache.getSession(payload.sid)
         if (current) this.aliveSinceHubStartIds.add(payload.sid)
+        if (current?.active && payload.hasPeerReplyWatch === true) this.peerReplyWatchSessions.add(payload.sid)
+        else this.peerReplyWatchSessions.delete(payload.sid)
         const metadata = current?.metadata
         if (current?.active && metadata?.hibernation?.state === 'hibernated'
             && metadata.lifecycleState === 'running' && metadata.startedBy === 'terminal'
@@ -1095,6 +1100,7 @@ export class SyncEngine {
             && before.metadata.cursorSessionProtocol === 'acp'
         const shouldRetryDedup = !ownsPiAttempt && !isPiAttemptChild && (!isCursorAcp || this.sessionReadyIds.has(payload.sid))
 
+        this.peerReplyWatchSessions.delete(payload.sid)
         this.sessionCache.handleSessionEnd(payload)
         this.restoreUnconfirmedWake(payload.sid)
         this.markSteerDispatchesUncertain(this.sessionCache.getSession(payload.sid))
@@ -1262,6 +1268,7 @@ export class SyncEngine {
     private collectHibernationSignals(session: Session, holdsHistoryLock: boolean): HibernationSignals {
         return {
             pendingThinking: this.sessionCache.hasPendingThinking(session.id),
+            peerReplyWatch: this.peerReplyWatchSessions.has(session.id),
             runningJob: this.store.sessionJobs.getPrimaryRunning(session.id) !== null,
             activeTeamWork: hasActiveTeamWork(session),
             openTerminals: this.terminalSessionCounter?.(session.id) ?? 0,
@@ -1431,7 +1438,9 @@ export class SyncEngine {
             const state = session.metadata?.hibernation?.state
             if (state === 'stopping' && session.metadata?.hibernation?.generation
                 && session.metadata.archivedBy !== 'hub' && !session.metadata.supersededBySessionId) continue
-            if (state && session.metadata?.lifecycleState === 'archived') {
+            const interruptedWake = state === 'hibernated' && session.metadata?.archivedBy === 'cli'
+                && !session.metadata.supersededBySessionId
+            if (state && session.metadata?.lifecycleState === 'archived' && !interruptedWake) {
                 this.sessionCache.clearSessionHibernation(session.id)
             } else if (state === 'stopping') this.sessionCache.recoverUnconfirmedHibernationStop(session.id)
             else if (state === 'hibernated') this.restoreUnconfirmedWake(session.id)
@@ -1450,7 +1459,7 @@ export class SyncEngine {
         if (!session || !metadata || marker?.state !== 'hibernated') return
         if (session.active || isHibernatedLifecycleState(metadata.lifecycleState)) return
         if (this.archiveRequests.has(sessionId)) return
-        if (metadata.lifecycleState === 'archived' && metadata.archivedBy === 'hub') return
+        if (metadata.lifecycleState === 'archived' && (metadata.archivedBy === 'hub' || metadata.supersededBySessionId)) return
         this.sessionCache.markSessionHibernatedFromHub(sessionId, marker.reason, marker.since)
     }
 
@@ -2188,6 +2197,7 @@ export class SyncEngine {
             .filter((s): s is NonNullable<typeof s> => s != null)
             .sort((a, b) => (b.activeAt - a.activeAt) || (b.updatedAt - a.updatedAt))
         for (const session of sorted) {
+            this.peerReplyWatchSessions.delete(session.id)
             this.restoreUnconfirmedWake(session.id)
             this.markSteerDispatchesUncertain(session)
             this.triggerDedupIfNeeded(session.id)

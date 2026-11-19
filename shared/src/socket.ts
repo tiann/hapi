@@ -258,6 +258,7 @@ export interface ClientToServerEvents {
     // messages.ts addMessage. Absent -> hub falls back to Date.now().
     message: (data: { sid: string; message: unknown; localId?: string; createdAt?: number }) => void
     'session-alive': (data: {
+        hasPeerReplyWatch?: boolean
         sid: string
         time: number
         thinking: boolean

@@ -314,7 +314,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
     // Setup state - key by PID
     const pidToTrackedSession = new Map<number, TrackedSession>();
-    const exitedProcessGroups = new ExitedProcessGroups();
+    const exitedProcessGroups = new ExitedProcessGroups(1024, { file: `${configuration.runnerStateFile}.cleanup-receipts.json`, machineId });
     // Retained until actual child exit even if webhook timeout removes normal
     // tracking, so confirmed exit can be attributed to the requested HAPI row.
     const pidToRequestedSessionId = new Map<number, string>();
@@ -1841,6 +1841,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           && (binding.requestedSessionId === sessionId || binding.confirmedSessionId === sessionId);
         const recorded = exited && exited.pgid === pid && exited.startMarker === marker;
         if (!marker || (!bound && !recorded)) return 'unknown';
+        if (recorded && exited.confirmed && !bound) return exitedProcessGroups.persist() ? 'already_gone' : 'unknown';
         target = `PID-${pid}`;
       }
       const intentional = markIntentionalStop(target);
@@ -1867,6 +1868,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           logger.debug(`[RUNNER RUN] Session ${sessionId} root is gone but its process group generation is unverified`);
           return 'unknown';
         }
+        if (requireCleanup && !exitedProcessGroups.persist()) return 'unknown';
         return status;
       } finally {
         for (const pid of intentional.marked) {
