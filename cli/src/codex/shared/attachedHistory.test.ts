@@ -44,13 +44,17 @@ describe('attached completed-history checkpoint', () => {
             .rejects.toBeInstanceOf(AttachedHistoryChangedError);
     });
 
-    it('accepts appends and changing in-progress items, sealing terminal content privately', async () => {
+    it('accepts appends and changing in-progress items, sealing terminal content', async () => {
         const file = await checkpoint();
         await validateAttachedHistory(file, { turns: [turn('a'), turn('b', 'partial', 'inProgress')] });
         await validateAttachedHistory(file, { turns: [turn('a'), turn('b', 'more', 'inProgress')] });
         expect(JSON.parse(await readFile(file, 'utf8'))).toEqual([expect.objectContaining({ id: 'a', hash: expect.any(String) }), { id: 'b', hash: null }]);
         await validateAttachedHistory(file, { turns: [turn('a'), turn('b'), turn('c', 'stopped', 'interrupted')] });
-        expect(JSON.parse(await readFile(file, 'utf8'))).toHaveLength(3);
+        expect(JSON.parse(await readFile(file, 'utf8'))).toEqual(['a', 'b', 'c'].map(id => ({ id, hash: expect.any(String) })));
+    });
+    it.skipIf(process.platform === 'win32')('creates the checkpoint with owner-only POSIX permissions', async () => {
+        const file = await checkpoint();
+        await validateAttachedHistory(file, { turns: [turn('a')] });
         expect((await stat(file)).mode & 0o777).toBe(0o600);
     });
     it('does not forget a turn observed before detaching midway through generation', async () => {
