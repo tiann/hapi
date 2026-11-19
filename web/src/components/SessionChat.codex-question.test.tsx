@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -142,6 +142,34 @@ describe('Codex question receipts in the session chat', () => {
         await waitFor(() => expect(onRefresh).toHaveBeenCalledOnce())
         expect(transcript().queryByRole('textbox')).not.toBeInTheDocument()
         expect(transcript().queryByRole('button', { name: 'Submit' })).not.toBeInTheDocument()
+    })
+
+    it('keeps the panel answer on both surfaces when the transcript submission receives a late 404', async () => {
+        const { transcript, submit, onRefresh } = setup()
+        const panelResponse = Promise.withResolvers<void>()
+        const transcriptResponse = Promise.withResolvers<void>()
+        shell.api.approvePermission
+            .mockReturnValueOnce(panelResponse.promise)
+            .mockReturnValueOnce(transcriptResponse.promise)
+
+        fireEvent.click(screen.getByRole('button', { name: 'Awaiting your reply 1' }))
+        const summary = screen.getByText('Which client?', { selector: 'summary' })
+        const panelRow = within(summary.parentElement!)
+        fireEvent.click(summary)
+        fireEvent.change(panelRow.getByRole('textbox'), { target: { value: 'Panel answer' } })
+        fireEvent.click(panelRow.getByRole('button', { name: 'Submit' }))
+        await submit()
+        expect(shell.api.approvePermission).toHaveBeenCalledTimes(2)
+
+        await act(async () => { panelResponse.resolve() })
+        expect(transcript().getByText('Panel answer')).toBeVisible()
+        expect(panelRow.getByText('Panel answer')).toBeVisible()
+
+        await act(async () => { transcriptResponse.reject(new ApiError('Request not found', 404)) })
+        expect(onRefresh).toHaveBeenCalledTimes(2)
+        expect(transcript().getByText('Answer sent. Waiting for the agent.')).toBeVisible()
+        expect(transcript().getByText('Panel answer')).toBeVisible()
+        expect(panelRow.getByText('Panel answer')).toBeVisible()
     })
 
     it('submits the displayed issuance and refreshes after the runner reports a replacement', async () => {

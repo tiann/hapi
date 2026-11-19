@@ -26,3 +26,16 @@ it('matches the issuance both before pruning and when pruning a replaced request
     rerender(state('replacement'))
     expect(getCodexQuestionSubmission(result.current.submissions, 'question', 'original')).toBeUndefined()
 })
+
+it('retains an accepted dismissal when the same issuance returns missing later', () => {
+    const { result } = renderHook(() => useCodexQuestionSubmission('session'), {
+        wrapper: CodexQuestionSubmissionProvider
+    })
+    act(() => {
+        result.current.record!('session', 'question', 'issuance', { status: 'dismissed' })
+        result.current.record!('session', 'question', 'issuance', { status: 'missing' })
+    })
+    expect(getCodexQuestionSubmission(result.current.submissions, 'question', 'issuance')).toEqual({
+        status: 'dismissed'
+    })
+})

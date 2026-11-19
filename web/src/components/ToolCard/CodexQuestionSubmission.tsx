@@ -27,7 +27,11 @@ export function CodexQuestionSubmissionProvider({ children }: { children: ReactN
     const record = useCallback((sessionId: string, id: string, instanceId: string, submission: CodexQuestionSubmission) => {
         const key = receiptKey(id, instanceId)
         setSessions(current => {
-            const next = new Map(current.get(sessionId)).set(key, { requestId: id, instanceId, submission })
+            const receipts = current.get(sessionId)
+            const previous = receipts?.get(key)?.submission
+            if (submission.status === 'missing' && previous && previous.status !== 'missing') return current
+
+            const next = new Map(receipts).set(key, { requestId: id, instanceId, submission })
             return new Map(current).set(sessionId, next)
         })
     }, [])
