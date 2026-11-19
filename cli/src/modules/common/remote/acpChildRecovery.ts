@@ -106,6 +106,7 @@ export class UnverifiedAcpWriter extends Error {
 interface RecoveryAdapter {
     readonly queueClosed: AbortSignal;
     readonly sessionExit: AbortSignal;
+    waitForHandoff?(signal: AbortSignal): Promise<void>;
     hasInput(): boolean;
     waitForInput(signal: AbortSignal): Promise<boolean>;
     create(hooks: AcpRecoveryHooks): {
@@ -286,6 +287,7 @@ export async function runWithAcpChildRecovery(options: AcpRecoveryOptions, adapt
             const delayMs = recoveryBackoffsMs[recoveryAttempt]!;
             const wait = AbortSignal.any([recoveryController.signal, queueClosed]);
             await waitForRecoveryDelay(delayMs, wait);
+            if (!wait.aborted && adapter.waitForHandoff) await adapter.waitForHandoff(wait);
             if (queueClosed.aborted) return 'exit';
             if (stopped || (demandRequired && !adapter.hasInput())) continue;
             break;

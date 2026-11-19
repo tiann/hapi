@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { hashObject } from '@/utils/deterministicJson';
 import { getProcessStartMarker } from '@/utils/process';
 import type { OpenCodeRewindOperation } from '@hapi/protocol/schemas';
+import { DEFAULT_RPC_TIMEOUT_MS, type OpenCodeClearAdmission } from '@hapi/protocol/rpcMethods';
 import { OpenCodeHandoffRefusedError } from '@/api/rpc/types';
 export { OpenCodeHandoffRefusedError };
 import type { OpenCodeRewindReport } from '@hapi/protocol/apiTypes';
@@ -53,20 +54,78 @@ export class OpenCodeRuntimeGate {
     /** One session/wrapper owner, shared by sequential local/remote launchers. */
     readonly workerId = randomUUID();
     private recovering = false;
+    private clearAdmission?: {
+        id: string;
+        phase: 'prepared' | 'committed' | 'revoked';
+        deadline: number;
+        released: AbortController;
+        timer: NodeJS.Timeout;
+    };
     private readonly exitRequest = new AbortController();
 
     get recoveryPending(): boolean { return this.recovering; }
     setRecoveryPending(pending: boolean): void {
         this.recovering = pending;
+        if (pending && this.clearAdmission?.phase === 'prepared') this.clearAdmission.phase = 'revoked';
     }
     get sessionExit(): AbortSignal { return this.exitRequest.signal; }
     requestSessionExit(): void { this.exitRequest.abort(); }
 
     assertHandoffAllowed(): void {
+        this.assertSessionOpen();
+        if (this.liveClearAdmission()) throw new OpenCodeHandoffRefusedError('OpenCode Clear is in progress.');
+    }
+
+    private assertSessionOpen(): void {
         if (this.sessionExit.aborted) throw new OpenCodeHandoffRefusedError('The OpenCode session is ending.');
         if (this.recovering) throw new OpenCodeHandoffRefusedError(OPENCODE_RECOVERY_HANDOFF_REFUSAL);
     }
 
+    private liveClearAdmission() {
+        if (this.clearAdmission && performance.now() >= this.clearAdmission.deadline) this.releaseClearAdmission();
+        return this.clearAdmission;
+    }
+
+    private releaseClearAdmission(): void {
+        const admission = this.clearAdmission;
+        if (!admission) return;
+        this.clearAdmission = undefined;
+        clearTimeout(admission.timer);
+        admission.released.abort();
+    }
+
+    handleClearAdmission({ action, reservationId }: OpenCodeClearAdmission): void {
+        if (typeof reservationId !== 'string' || !reservationId) throw new Error('Missing OpenCode Clear reservation ID');
+        const current = this.liveClearAdmission();
+        const matches = current?.id === reservationId;
+        if (action === 'cancel-clear' || action === 'finish-clear') {
+            if (matches) this.releaseClearAdmission();
+            return;
+        }
+        this.assertSessionOpen();
+        if (action === 'prepare-clear') {
+            if (matches && current.phase !== 'revoked') return;
+            if (current) throw new OpenCodeHandoffRefusedError('Another OpenCode Clear reservation is pending.');
+            // Hub starts its deadline before sending prepare. A lost settlement
+            // can hold recovery only for the duration of that RPC window.
+            const deadline = performance.now() + DEFAULT_RPC_TIMEOUT_MS;
+            const timer = setTimeout(() => this.releaseClearAdmission(), DEFAULT_RPC_TIMEOUT_MS);
+            timer.unref();
+            this.clearAdmission = { id: reservationId, phase: 'prepared', released: new AbortController(), deadline, timer };
+            return;
+        }
+        if (action !== 'commit-clear' || !matches || current.phase === 'revoked') {
+            throw new OpenCodeHandoffRefusedError('OpenCode Clear reservation is no longer valid.');
+        }
+        current.phase = 'committed';
+    }
+
+    async waitForHandoff(signal: AbortSignal): Promise<void> {
+        const current = this.liveClearAdmission();
+        if (!current || signal.aborted) return;
+        const end = AbortSignal.any([current.released.signal, signal]);
+        await new Promise<void>(resolve => end.addEventListener('abort', () => resolve(), { once: true }));
+    }
     private readonly unavailable = new AbortController();
     get nativeSessionUnavailable(): AbortSignal { return this.unavailable.signal; }
     disableNativeSession(): void {

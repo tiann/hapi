@@ -5,6 +5,7 @@ import { opencodeLoop } from './loop';
 import { MessageQueue2 } from '@/utils/MessageQueue2';
 import { hashObject } from '@/utils/deterministicJson';
 import { registerKillSessionHandler } from '@/claude/registerKillSessionHandler';
+import { RPC_METHODS, type OpenCodeClearAdmission } from '@hapi/protocol/rpcMethods';
 import type { AgentState } from '@/api/types';
 import type { OpencodeSession } from './session';
 import type { OpencodeMode, PermissionMode } from './types';
@@ -21,7 +22,7 @@ import { isRetryableConnectionError } from '@/utils/errorUtils';
 import { withRetry } from '@/utils/time';
 import { configuration } from '@/configuration';
 import { join } from 'node:path';
-import { OPENCODE_RECOVERY_HANDOFF_REFUSAL, OpenCodeRuntimeGate, readOpenCodeRewindIntent, sameOperation } from './rewind';
+import { OPENCODE_RECOVERY_HANDOFF_REFUSAL, OpenCodeHandoffRefusedError, OpenCodeRuntimeGate, readOpenCodeRewindIntent, sameOperation } from './rewind';
 
 export async function runOpencode(opts: {
     startedBy?: 'runner' | 'terminal';
@@ -62,15 +63,18 @@ export async function runOpencode(opts: {
     const initialModel = opts.model ?? null;
     const initialModelReasoningEffort = opts.modelReasoningEffort ?? null;
 
+    const metadataOverrides = { capabilities: { terminal: true, openCodeHandoffAdmission: true } };
     const bootstrap = opts.existingSessionId
         ? await bootstrapExistingSession({
             sessionId: opts.existingSessionId,
             flavor: 'opencode',
+            metadataOverrides,
             startedBy,
             workingDirectory
         })
         : await bootstrapSession({
             flavor: 'opencode',
+            metadataOverrides,
             startedBy,
             workingDirectory,
             agentState: initialState,
@@ -80,6 +84,12 @@ export async function runOpencode(opts: {
         });
     const { api, session } = bootstrap;
     const runtimeGate = new OpenCodeRuntimeGate(startingMode === 'remote');
+    session.rpcHandlerManager.registerHandler(RPC_METHODS.CheckOpenCodeHandoff, (request: Partial<OpenCodeClearAdmission> = {}) => {
+        if (request.action && request.reservationId) runtimeGate.handleClearAdmission({ action: request.action, reservationId: request.reservationId });
+        else if (!request.action && !request.reservationId) runtimeGate.assertHandoffAllowed();
+        else throw new Error('Invalid OpenCode Clear admission request');
+        return { allowed: true };
+    });
     const pendingRewind = session.getMetadata()?.opencodeRewind;
     if (startingMode !== 'remote' && pendingRewind && pendingRewind.phase !== 'rejected') runtimeGate.block();
     // A terminal rewind with no unconsumed journal is already settled: mark
@@ -496,6 +506,20 @@ export async function runOpencode(opts: {
         });
     });
 
+    const releaseHeldClearInput = () => {
+        queuedClearLocalId = null;
+        clearTransitionLatched = false;
+        for (const held of heldDuringClear) {
+            const formattedText = formatMessageWithAttachments(held.message.content.text, held.message.content.attachments);
+            messageQueue.push(formattedText, {
+                permissionMode: currentPermissionMode,
+                model: sessionModel,
+                modelReasoningEffort: sessionModelReasoningEffort
+            }, held.localId);
+        }
+        heldDuringClear.length = 0;
+    };
+
     let cancelNativeSteer: OpencodeSteerCancelHandler | null = null;
     session.onCancelQueuedMessage((localId) => {
         const nativeCancellation = cancelNativeSteer?.(localId);
@@ -503,17 +527,7 @@ export async function runOpencode(opts: {
         const removedFromQueue = messageQueue.cancelByLocalId(localId);
         if (removedFromQueue === true) {
             if (queuedClearLocalId === localId) {
-                queuedClearLocalId = null;
-                clearTransitionLatched = false;
-                for (const held of heldDuringClear) {
-                    const formattedText = formatMessageWithAttachments(held.message.content.text, held.message.content.attachments);
-                    messageQueue.push(formattedText, {
-                        permissionMode: currentPermissionMode,
-                        model: sessionModel,
-                        modelReasoningEffort: sessionModelReasoningEffort
-                    }, held.localId);
-                }
-                heldDuringClear.length = 0;
+                releaseHeldClearInput();
             }
             logger.debug(`[opencode] cancelByLocalId(${localId}): removed from queue`);
             return true;
@@ -625,10 +639,18 @@ export async function runOpencode(opts: {
                     compactTeardownInProgress = true;
                 }
             },
-            onClearRequested: async () => {
-                clearReplacementSessionId = await withRetry(() => api.reserveOpenCodeClearSession(session.sessionId), {
-                    minDelay: 500, maxDelay: 30_000, shouldRetry: isRetryableConnectionError
-                });
+            onClearRequested: async (): Promise<void | false> => {
+                try {
+                    clearReplacementSessionId = await withRetry(() => api.reserveOpenCodeClearSession(session.sessionId), {
+                        minDelay: 500, maxDelay: 30_000, shouldRetry: isRetryableConnectionError
+                    });
+                    return;
+                } catch (error) {
+                    if (!(error instanceof OpenCodeHandoffRefusedError)) throw error;
+                    releaseHeldClearInput();
+                    session.sendSessionEvent({ type: 'message', message: error.message });
+                    return false;
+                }
             },
             onClearCleanupComplete: async () => {
                 if (!clearReplacementSessionId) throw new Error('OpenCode clear cleanup completed without a reservation')

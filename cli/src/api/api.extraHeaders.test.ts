@@ -44,6 +44,9 @@ vi.mock('@/terminal/TerminalManager', () => ({
     }
 }))
 
+import { isRetryableConnectionError } from '@/utils/errorUtils'
+import { withRetry } from '@/utils/time'
+import { OpenCodeHandoffRefusedError } from './rpc/types'
 import { ApiClient } from './api'
 import { ApiSessionClient } from './apiSession'
 
@@ -68,6 +71,20 @@ describe('API extra headers integration', () => {
         const client = await ApiClient.create()
         await expect(client.handoffSessionToLocal('session')).rejects.toBe(generic)
         await expect(client.handoffSessionToLocal('session')).rejects.toThrow(reason)
+    })
+
+    it('retries Clear on 503 and stops on the owner’s definite 409 refusal', async () => {
+        const client = await ApiClient.create()
+        const pending = () => withRetry(() => client.reserveOpenCodeClearSession('session'), {
+            shouldRetry: isRetryableConnectionError, minDelay: 0, maxAttempts: 3
+        })
+        const httpError = (status: number, code: string) => Object.assign(new Error(String(status)), {
+            isAxiosError: true, response: { status, data: { code, error: 'Clear unavailable' } }
+        })
+        axiosPostMock.mockRejectedValueOnce(httpError(503, 'clear_admission_unavailable'))
+            .mockRejectedValueOnce(httpError(409, 'opencode_handoff_refused'))
+        await expect(pending()).rejects.toBeInstanceOf(OpenCodeHandoffRefusedError)
+        expect(axiosPostMock).toHaveBeenCalledTimes(2)
     })
 
     it('waits for confirmed shutdown preparation using CLI authentication and extra headers', async () => {

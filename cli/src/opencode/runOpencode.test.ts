@@ -2,10 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildCliArgs } from '@/runner/run';
 import { parseRemoteAgentCommandOptions } from '@/commands/agentCommandOptions';
 import { OPENCODE_PERMISSION_MODES } from '@hapi/protocol/modes';
-import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import { DEFAULT_RPC_TIMEOUT_MS, RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { createLocalHistoryPublisher, type LocalHistoryPublisher } from './localHistory';
 import type { Metadata } from '@/api/types';
 import type { MessageQueue2 } from '@/utils/MessageQueue2';
+import { OpenCodeHandoffRefusedError } from '@/api/rpc/types';
 import type { OpencodeMode } from './types';
 
 const mockOpencodeSession = vi.hoisted(() => ({
@@ -362,6 +363,7 @@ describe('runOpencode set-session-config handler', () => {
         expect(harness.bootstrapExistingArgs).toEqual([{
             sessionId: 'live-hub-row',
             flavor: 'opencode',
+            metadataOverrides: { capabilities: { terminal: true, openCodeHandoffAdmission: true } },
             startedBy: 'runner',
             workingDirectory: '/tmp/project'
         }]);
@@ -509,6 +511,36 @@ describe('runOpencode set-session-config handler', () => {
         gate.setRecoveryPending(false);
         expect(handler({})).toEqual({ ok: true });
         expect(() => gate.assertHandoffAllowed()).toThrow('session is ending');
+    });
+
+    it.each(['loss before commit', 'loss after commit', 'timeout'] as const)('holds Clear admission across %s', async order => {
+        await runOpencode({ startingMode: 'remote' });
+        vi.useFakeTimers();
+        try {
+            const gate = harness.opencodeLoopArgs[0]!.runtimeGate as import('./rewind').OpenCodeRuntimeGate;
+            const handler = harness.session.rpcHandlerManager.registerHandler.mock.calls.find(([name]) => name === RPC_METHODS.CheckOpenCodeHandoff)![1];
+            const send = (action: string, reservationId = 'one') => handler({ action, reservationId });
+            send('prepare-clear');
+            expect(() => send('prepare-clear', 'competing')).toThrow();
+            if (order === 'loss after commit') send('commit-clear');
+            gate.setRecoveryPending(true);
+            let resumed = false;
+            const waiting = gate.waitForHandoff(new AbortController().signal).then(() => { resumed = true; });
+            await Promise.resolve();
+            expect(resumed).toBe(false);
+            send('cancel-clear', 'stale');
+            if (order === 'timeout') {
+                await vi.advanceTimersByTimeAsync(DEFAULT_RPC_TIMEOUT_MS + 1);
+                expect(() => send('commit-clear')).toThrow();
+            } else if (order === 'loss before commit') {
+                expect(() => send('commit-clear')).toThrow('OpenCode is recovering');
+                send('cancel-clear');
+            } else {
+                send('finish-clear');
+            }
+            await waiting;
+            expect(resumed).toBe(true);
+        } finally { vi.useRealTimers(); }
     });
 
     it('refuses Clear before input demand can wake a parked session', async () => {
@@ -820,6 +852,24 @@ describe('runOpencode set-session-config handler', () => {
 
         expect(cancelHandler('local-compact')).toBe(false);
         expect(isLocalIdCancelled('local-compact')).toBe(true);
+    });
+
+    it.each([true, false])('returns held input to the source FIFO when the Hub refuses Clear (recovering=%s)', async recovering => {
+        await runOpencode({ startedBy: 'runner' });
+        const options = harness.opencodeLoopArgs[0]!;
+        const queue = options.messageQueue as MessageQueue2<OpencodeMode>;
+        const gate = options.runtimeGate as import('./rewind').OpenCodeRuntimeGate;
+        const submit = harness.session.onUserMessage.mock.calls[0]![0];
+        submit({ content: { text: '/clear' } }, 'clear');
+        submit({ content: { text: 'held' } }, 'held');
+        await vi.waitFor(() => expect(harness.listSlashCommands).toHaveBeenCalled());
+        await new Promise<void>(resolve => setImmediate(resolve));
+        expect(queue.queue.map(row => row.localId)).toEqual(['clear']);
+        gate.setRecoveryPending(recovering);
+        harness.reserveOpenCodeClearSession.mockRejectedValueOnce(new OpenCodeHandoffRefusedError('Clear admission refused'));
+        expect(await (options.onClearRequested as () => Promise<unknown>)()).toBe(false);
+        submit({ content: { text: 'later' } }, 'later');
+        await vi.waitFor(() => expect(queue.queue.map(row => row.localId)).toEqual(['clear', 'held', 'later']));
     });
 
     it('releases the clear transition latch when the queued /clear is cancelled', async () => {

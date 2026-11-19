@@ -67,7 +67,9 @@ function resolveMachineForNamespace(
     return { ok: false, status: 404, error: 'Machine not found' }
 }
 
-function clearErrorStatus(code: string): 403 | 404 | 409 | 500 {
+function clearErrorStatus(code: string): 403 | 404 | 409 | 500 | 503 {
+    if (code === 'clear_admission_unavailable') return 503
+    if (code === 'opencode_handoff_refused') return 409
     return code === 'access_denied' ? 403
         : code === 'session_not_found' ? 404
             : code === 'clear_unavailable' ? 409
@@ -334,12 +336,12 @@ app.post('/sessions/:id/prepare-local-resume', async (c) => {
         return c.json({ ok: true, sessionId: result.sessionId })
     })
 
-    app.post('/sessions/:id/clear-opencode/reserve', (c) => {
+    app.post('/sessions/:id/clear-opencode/reserve', async (c) => {
         const engine = getSyncEngine()
         if (!engine) return c.json({ error: 'Not ready' }, 503)
-        const result = engine.reserveOpenCodeClearSession(c.req.param('id'), c.get('namespace'))
+        const result = await engine.reserveOpenCodeClearSession(c.req.param('id'), c.get('namespace'))
         if (result.type === 'error') {
-            const status = result.code === 'access_denied' ? 403 : result.code === 'session_not_found' ? 404 : result.code === 'clear_unavailable' ? 409 : 500
+            const status = clearErrorStatus(result.code)
             return c.json({ error: result.message, code: result.code }, status)
         }
         return c.json({ ok: true, sessionId: result.sessionId })

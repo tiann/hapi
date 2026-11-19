@@ -91,7 +91,7 @@ type OpencodeRemoteLauncherOptions = AcpRecoveryOptions & Partial<AcpRecoveryHoo
     // Called only after /clear reaches its FIFO position *and* this
     // launcher has disconnected its OpenCode backend. The caller then performs
     // the source lifecycle cleanup before requesting the fresh process.
-    onClearRequested?: () => Promise<void>;
+    onClearRequested?: () => Promise<void | false>;
     onClearCleanupComplete?: () => Promise<void>;
     onClearCleanupFailed?: () => Promise<void>;
 };
@@ -564,7 +564,10 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 if (!batch) break;
                 if (batch.mode.operation === 'clear') {
                     try {
-                        await this.options.onClearRequested?.();
+                        if (await this.options.onClearRequested?.() === false) {
+                            session.queue.commitBatch(batch);
+                            continue;
+                        }
                     } catch (error) {
                         session.queue.releaseBatch(batch);
                         throw error;
@@ -1463,8 +1466,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 // through handleAbort(true): that method exists to interrupt an
                 // in-flight compact, while clear can only run after one finishes.
                 if (batch.mode.operation === 'clear') {
-                    await this.options.onClearRequested?.();
+                    const admitted = await this.options.onClearRequested?.();
                     delivery.commit();
+                    if (admitted === false) continue;
                     this.clearRequested = true;
                     await this.requestExit('exit', async () => {})
                     break;
@@ -3589,6 +3593,7 @@ export async function opencodeRemoteLauncher(
     return runWithAcpChildRecovery(options, {
         get queueClosed() { return session.queue.closeSignal; },
         sessionExit: gate.sessionExit,
+        waitForHandoff: signal => gate.waitForHandoff(signal),
         hasInput: () => session.queue.hasInputDemand(),
         waitForInput: signal => session.queue.waitForInputDemand(signal),
         create: hooks => {

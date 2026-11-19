@@ -394,7 +394,7 @@ export class ApiClient {
         const response = await axios.post<ClearOpencodeSessionResponse>(
             `${configuration.apiUrl}/cli/sessions/${encodeURIComponent(sessionId)}/clear-opencode/reserve`, {},
             { headers: this.authHeaders(), timeout: 60_000 }
-        )
+        ).catch(rethrowHandoffError)
         const parsed = ClearOpencodeSessionResponseSchema.safeParse(response.data)
         if (!parsed.success) throw apiValidationError('Invalid clear reservation response', response)
         return parsed.data.sessionId

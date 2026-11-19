@@ -1240,7 +1240,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         }
     });
 
-    linuxRecoveryTest('resumes the same v2 native conversation after writer verification', async () => {
+    linuxRecoveryTest('resumes the same v2 native conversation after writer verification and Clear reservation settlement', async () => {
         harness.detectedVersion = 'v2';
         const stopped = Promise.withResolvers<void>();
         const stop = vi.fn(async () => stopped.promise);
@@ -1250,20 +1250,27 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         const load = vi.fn(async () => 'acp-session-1');
         harness.loadSessionImpl = load;
         const gate = new OpenCodeRuntimeGate();
+        const handoff = vi.spyOn(gate, 'waitForHandoff');
+        const reservationId = 'clear-before-loss';
         const launcher = opencodeRemoteLauncher({ ...session, runtimeGate: gate } as never, { recoveryBackoffsMs: [0] });
         try {
             await vi.waitFor(() => expect(rpcHandlers.has(RPC_METHODS.Switch)).toBe(true));
+            gate.handleClearAdmission({ action: 'prepare-clear', reservationId });
             harness.unexpectedExitHandler!(new Error('child exit'), { childProcessExited: true });
             session.queue.push('next input', createMode(), 'second');
             await vi.waitFor(() => expect(stop).toHaveBeenCalledOnce());
             expect(harness.createBackendArgs).toHaveLength(1);
             stopped.resolve();
+            await vi.waitFor(() => expect(handoff).toHaveBeenCalledOnce());
+            expect(harness.createBackendArgs).toHaveLength(1);
+            gate.handleClearAdmission({ action: 'cancel-clear', reservationId });
             await vi.waitFor(() => expect(harness.promptCount).toBe(1));
             expect(load).toHaveBeenCalledTimes(2);
             expect(session.sessionId).toBe('acp-session-1');
             await rpcHandlers.get(RPC_METHODS.Switch)!({});
             await expect(launcher).resolves.toBe('switch');
         } finally {
+            gate.handleClearAdmission({ action: 'cancel-clear', reservationId });
             stopped.resolve();
             session.queue.close();
             await launcher;

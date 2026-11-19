@@ -33,6 +33,34 @@ function fixture(searchable = false, dbPath = ':memory:') {
 }
 
 describe('OpenCode durable Hub rewind commit', () => {
+    it('asks the OpenCode owner before writing a rewind reservation', async () => {
+        const f = fixture()
+        try {
+            const row = f.store.sessions.getSession(f.id)!
+            const metadata = f.engine.getSessionByNamespace(f.id, 'default')!.metadata!
+            f.store.sessions.updateSessionMetadata(f.id, { ...metadata,
+                capabilities: { ...metadata.capabilities, openCodeHandoffAdmission: true }
+            }, row.metadataVersion, 'default')
+            ;(f.engine as any).sessionCache.refreshSession(f.id)
+            ;(f.engine as any).rpcGateway.checkOpenCodeHandoff = async () => { throw new Error('OpenCode is recovering') }
+            const before = f.version()
+            expect(await f.engine.rewindConversation(f.id, 'default', 'two')).toEqual({ type: 'error', message: 'OpenCode is recovering' })
+            expect(f.version()).toBe(before)
+        } finally { f.engine.stop(); f.store.close() }
+    })
+
+    it('settles a reservation rejected by the owner before native dispatch', async () => {
+        const f = fixture()
+        try {
+            ;(f.engine as any).rpcGateway.rewindConversation = async () => ({
+                success: false, outcome: 'rejected', error: 'OpenCode is recovering'
+            })
+            expect(await f.engine.rewindConversation(f.id, 'default', 'two')).toEqual({ type: 'error', message: 'OpenCode is recovering' })
+            expect(f.engine.getSessionByNamespace(f.id, 'default')!.metadata?.opencodeRewind?.phase).toBe('rejected')
+            expect(f.store.messages.getAllMessages(f.id)).toHaveLength(4)
+        } finally { f.engine.stop(); f.store.close() }
+    })
+
     it('snapshots the worker process generation into the reservation and correlates it on reports', async () => {
         const f = fixture()
         const current = f.store.sessions.getSession(f.id)!

@@ -1,5 +1,5 @@
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, PermissionMode } from '@hapi/protocol/types'
-import { DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
+import { DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type OpenCodeClearAdmission, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
 import {
     UsageQueryResultSchema,
     UsageQuerySettingsResponseSchema,
@@ -792,6 +792,12 @@ export class RpcGateway {
             steered: boolean
             error?: string
         }
+    }
+
+    async checkOpenCodeHandoff(sessionId: string, admission?: OpenCodeClearAdmission): Promise<void> {
+        const reply = await this.sessionRpc(sessionId, RPC_METHODS.CheckOpenCodeHandoff, admission ?? {}) as { allowed?: boolean; error?: string; code?: string } | null
+        if (reply?.code === 'opencode_handoff_refused' && typeof reply.error === 'string') throw new OpenCodeHandoffRefusal(reply.error)
+        if (reply?.allowed !== true) throw new Error(reply?.error ?? 'OpenCode handoff admission was not confirmed')
     }
 
     async forkConversation(

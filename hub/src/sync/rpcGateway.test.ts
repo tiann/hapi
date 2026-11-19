@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import type { Server, Socket } from 'socket.io'
 import { getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS } from '@hapi/protocol/rpcMethods'
 import { RpcRegistry } from '../socket/rpcRegistry'
-import { PermissionRequestNotFoundError, RpcGateway, RpcTargetMissingError } from './rpcGateway'
+import { OpenCodeHandoffRefusal, PermissionRequestNotFoundError, RpcGateway, RpcTargetMissingError } from './rpcGateway'
 
 function createGateway() {
     const timeouts: number[] = []
@@ -225,6 +225,7 @@ describe('RpcGateway no-target diagnostics (tiann/hapi#916)', () => {
         await expect(gateway.switchSession('claude', 'local')).resolves.toBeUndefined()
         response = { error: 'OpenCode is recovering', code: 'opencode_handoff_refused' }
         await expect(gateway.handoffSessionToLocal('opencode')).rejects.toThrow('OpenCode is recovering')
+        await expect(gateway.checkOpenCodeHandoff('opencode')).rejects.toBeInstanceOf(OpenCodeHandoffRefusal)
     })
 
     it('rejects a KillSession error envelope instead of allowing runner force termination', async () => {
