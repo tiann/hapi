@@ -259,6 +259,7 @@ export interface ClientToServerEvents {
     message: (data: { sid: string; message: unknown; localId?: string; createdAt?: number }) => void
     'session-alive': (data: {
         hasPeerReplyWatch?: boolean
+        hasActiveUpload?: boolean
         sid: string
         time: number
         thinking: boolean

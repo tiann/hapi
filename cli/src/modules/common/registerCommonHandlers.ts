@@ -19,7 +19,7 @@ import { registerSlashCommandHandlers } from './handlers/slashCommands'
 import { registerSkillsHandlers } from './handlers/skills'
 import { registerUploadHandlers } from './handlers/uploads'
 
-export function registerCommonHandlers(rpcHandlerManager: RpcHandlerManager, workingDirectory: string, getSessionId?: () => string): void {
+export function registerCommonHandlers(rpcHandlerManager: RpcHandlerManager, workingDirectory: string, getSessionId?: () => string, onUploadStarted?: () => void): void {
     registerAgyModelHandlers(rpcHandlerManager)
     registerBashHandlers(rpcHandlerManager, workingDirectory)
     registerClaudeModelHandlers(rpcHandlerManager)
@@ -38,5 +38,5 @@ export function registerCommonHandlers(rpcHandlerManager: RpcHandlerManager, wor
     registerSlashCommandHandlers(rpcHandlerManager, workingDirectory)
     registerSkillsHandlers(rpcHandlerManager, workingDirectory)
     registerGitHandlers(rpcHandlerManager, workingDirectory)
-    registerUploadHandlers(rpcHandlerManager, { getSessionId })
+    registerUploadHandlers(rpcHandlerManager, { getSessionId, onUploadStarted })
 }

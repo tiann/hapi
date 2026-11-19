@@ -3,6 +3,9 @@ export const DEFAULT_RPC_TIMEOUT_MS = 30_000
 /** expiresAt uses the Runner/target machine's monotonic milliseconds, not wall time. */
 export type SessionStopPreparationLease = { id: string; expiresAt: number }
 
+export type WorkerInspection = { state: 'matching' | 'gone' | 'replaced' | 'unknown'; confirmedWake: boolean }
+export type InspectWorkerRequest = { sessionId: string; pid: number; startMarker: string; wakeAttemptId?: string }
+
 export const RPC_METHODS = {
     Permission: 'permission',
     Abort: 'abort',
@@ -12,6 +15,7 @@ export const RPC_METHODS = {
     HandoffLocal: 'handoff-local',
     SpawnHappySession: 'spawn-happy-session',
     StopSession: 'stop-session',
+    InspectWorker: 'inspect-worker',
     StopRunner: 'stop-runner',
     ListMachineDirectory: 'list-directory',
     PathExists: 'path-exists',

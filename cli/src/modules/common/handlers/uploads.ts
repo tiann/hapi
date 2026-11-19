@@ -89,6 +89,13 @@ function rpcUploadError(error: string, code: UploadErrorCode): { success: false;
     return { success: false, error, code }
 }
 
+export function hasActiveChunkedUpload(sessionId: string): boolean {
+    for (const upload of activeChunkedUploads.values()) {
+        if (upload.sessionKey === getSessionKey(sessionId)) return true
+    }
+    return false
+}
+
 function scheduleUploadExpiration(state: ActiveChunkedUpload, ttlMs: number): void {
     clearTimeout(state.timer)
     state.timer = setTimeout(() => {
@@ -305,7 +312,7 @@ function buildUniqueUploadFilename(filename: string, reserveSuffixBytes: number 
 
 export function registerUploadHandlers(
     rpcHandlerManager: RpcHandlerManager,
-    options?: { activeUploadTtlMs?: number; getSessionId?: () => string }
+    options?: { activeUploadTtlMs?: number; getSessionId?: () => string; onUploadStarted?: () => void }
 ): void {
     const activeUploadTtlMs = options?.activeUploadTtlMs ?? ACTIVE_UPLOAD_TTL_MS
     if (!cleanupRegistered) {
@@ -461,6 +468,7 @@ export function registerUploadHandlers(
             }
             state.timer.unref?.()
             activeChunkedUploads.set(uploadId, state)
+            options?.onUploadStarted?.()
 
             return {
                 success: true,

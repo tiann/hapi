@@ -28,6 +28,7 @@ function gateExternalRefs(metadata: unknown): unknown {
 
 type SessionAlivePayload = {
     hasPeerReplyWatch?: boolean
+    hasActiveUpload?: boolean
     sid: string
     time: number
     thinking?: boolean

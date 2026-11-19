@@ -46,6 +46,7 @@ import { buildMachineMetadata } from '@/agent/sessionFactory';
 import { resolveWorkspaceRoots } from '@/utils/workspaceRoot';
 import { hashRunnerCliApiToken, hashRunnerExtraHeaders } from './runnerIdentity';
 import { readRuntimes, runtimeMayBeAlive, runtimeAuthHash } from '@/codex/shared/registry';
+import { inspectWorkerGeneration } from './workerGeneration';
 import { readWindowsProcessTable } from '@/utils/windowsProcessStop';
 import { coalesceStopRequests } from './stopSessionRequests';
 import { scheduleCursorModelsPrewarm } from '@/modules/common/cursorModelsPrewarm';
@@ -373,6 +374,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
     type PersistedResumeProcess = {
       requestedSessionId: string;
       confirmedSessionId?: string;
+      wakeAttemptId?: string;
       pid: number;
       processStartMarker: string;
       bootId?: string;
@@ -394,6 +396,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           if (!requestedSessionId || typeof record.pid !== 'number' || typeof record.processStartMarker !== 'string') return [];
           return [[record.pid, {
             requestedSessionId,
+            wakeAttemptId: typeof record.wakeAttemptId === 'string' ? record.wakeAttemptId : undefined,
             confirmedSessionId: typeof record.confirmedSessionId === 'string' ? record.confirmedSessionId : undefined,
             pid: record.pid,
             processStartMarker: record.processStartMarker,
@@ -612,8 +615,11 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           pidToTrackedSession.set(pid, adopted);
           pidToConfirmedSessionId.set(pid, sessionId);
           if (processStartMarker) {
+            const previous = persistedResumeProcesses.get(pid);
             persistedResumeProcesses.set(pid, {
               requestedSessionId: sessionId,
+              wakeAttemptId: previous?.requestedSessionId === sessionId && previous.processStartMarker === processStartMarker
+                ? previous.wakeAttemptId : undefined,
               confirmedSessionId: sessionId,
               pid,
               processStartMarker,
@@ -995,6 +1001,7 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           if (processStartMarker) {
             persistedResumeProcesses.set(pid, {
               requestedSessionId: trackedSession.requestedHappySessionId,
+              wakeAttemptId: options.wakeAttemptId,
               pid,
               processStartMarker,
               bootId: getSystemBootId() ?? undefined,
@@ -1915,6 +1922,14 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
 
     // Set RPC handlers
     apiMachine.setRPCHandlers({
+      inspectWorker: async ({ sessionId, pid, startMarker, wakeAttemptId }) => {
+        const actual = await inspectWorkerGeneration(pid, startMarker);
+        const record = persistedResumeProcesses.get(pid);
+        const confirmedWake = actual === 'matching' && !!wakeAttemptId && record?.wakeAttemptId === wakeAttemptId
+          && record.requestedSessionId === sessionId && record.confirmedSessionId === sessionId
+          && record.processStartMarker === startMarker;
+        return { state: actual, confirmedWake };
+      },
       spawnSession,
       stopSession,
       requestShutdown: () => requestShutdown('hapi-app')

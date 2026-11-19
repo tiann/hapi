@@ -36,7 +36,7 @@ import type {
 import { AgentStateSchema, CliMessagesResponseSchema, MetadataSchema, UserMessageSchema } from './types'
 import { RpcHandlerManager } from './rpc/RpcHandlerManager'
 import { registerCommonHandlers } from '../modules/common/registerCommonHandlers'
-import { cleanupUploadDir, preserveUploadDirOnExit } from '../modules/common/handlers/uploads'
+import { cleanupUploadDir, hasActiveChunkedUpload, preserveUploadDirOnExit } from '../modules/common/handlers/uploads'
 import { TerminalManager } from '@/terminal/TerminalManager'
 import { applyVersionedAck } from './versionedUpdate'
 import { buildHubRequestHeaders, buildSocketIoExtraHeaderOptions } from './hubExtraHeaders'
@@ -276,7 +276,7 @@ export class ApiSessionClient extends EventEmitter {
         })
 
         if (this.metadata?.path) {
-            registerCommonHandlers(this.rpcHandlerManager, this.metadata.path, () => this.sessionId)
+            registerCommonHandlers(this.rpcHandlerManager, this.metadata.path, () => this.sessionId, () => this.publishWorkState())
         }
 
         this.socket = io(`${configuration.apiUrl}/cli`, {
@@ -1357,20 +1357,22 @@ if (isReconnect) {
     private alivePayload(): Parameters<ClientToServerEvents['session-alive']>[0] {
         return {
             sid: this.sessionId, time: Date.now(), thinking: false, ...this.latestKeepAlive,
-            hasPeerReplyWatch: this.peerReplyWatches > 0
+            hasPeerReplyWatch: this.peerReplyWatches > 0,
+            hasActiveUpload: hasActiveChunkedUpload(this.sessionId)
         }
     }
 
+    private publishWorkState(): void {
+        if (this.state === 'active' && this.socket.connected) this.socket.emit('session-alive', this.alivePayload())
+    }
+
     async trackPeerReplyWatch(watch: () => Promise<void>): Promise<void> {
-        const publish = () => {
-            if (this.state === 'active' && this.socket.connected) this.socket.emit('session-alive', this.alivePayload())
-        }
         this.peerReplyWatches++
         try {
-            if (this.peerReplyWatches === 1) publish()
+            if (this.peerReplyWatches === 1) this.publishWorkState()
             await watch()
         } finally {
-            if (--this.peerReplyWatches === 0) publish()
+            if (--this.peerReplyWatches === 0) this.publishWorkState()
         }
     }
 

@@ -208,7 +208,10 @@ export function createMessagesRoutes(getSyncEngine: () => SyncEngine | null): Ho
             }
             if (current.session.active && current.session.metadata?.hibernation?.state === 'hibernated'
                 && !(typeof payload.scheduledAt === 'number' && payload.scheduledAt > Date.now())) {
-                return c.json({ error: 'Worker wake is unconfirmed. Retry after readiness.', code: 'wake_unconfirmed', retryable: true }, 409)
+                requireUploadValidation = true
+                const wake = await engine.resumeSession(current.sessionId, namespace)
+                if (wake.type !== 'success') return c.json({ error: wake.message, code: 'wake_unconfirmed', retryable: true }, 409)
+                return wake.sessionId
             }
             const hibernated = !current.session.active && isHibernatedLifecycleState(current.session.metadata?.lifecycleState)
             if (!current.session.active && !hibernated) {

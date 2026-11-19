@@ -308,6 +308,7 @@ export const MetadataSchema = z.object({
         state: z.enum(['stopping', 'hibernated']),
         since: z.number(),
         reason: z.enum(['idle', 'binary-drift']),
+        wake: z.object({ id: z.string(), machineId: z.string(), nativeId: z.string(), flavor: z.string() }).optional(),
         worker: z.object({ machineId: z.string(), pid: z.number().int().positive(), startMarker: z.string() }).optional()
     }).optional(),
     archivedBy: z.string().optional(),

@@ -4,7 +4,7 @@ import type { Session } from '@hapi/protocol/types'
 import { Store } from '../store'
 import { RpcRegistry } from '../socket/rpcRegistry'
 import { HISTORY_ACTION_IN_PROGRESS_MESSAGE, SyncEngine } from './syncEngine'
-import { RpcTargetMissingError } from './rpcGateway'
+import { RpcGateway, RpcTargetMissingError } from './rpcGateway'
 import type { SessionCache } from './sessionCache'
 import type { WebAppEnv } from '../web/middleware/auth'
 import { createMessagesRoutes } from '../web/routes/messages'
@@ -41,10 +41,10 @@ describe('SyncEngine resume of hibernated sessions', () => {
             }, stored.metadataVersion, NAMESPACE, { touchUpdatedAt: false })
             cache().refreshSession(sid)
         }
-        engine.handleSessionAlive({ hasPeerReplyWatch: false, sid, time: Date.now() })
+        engine.handleSessionAlive({ hasActiveUpload: false, hasPeerReplyWatch: false, sid, time: Date.now() })
     }
 
-    async function hibernatedSession(tag: string, flavor: 'claude' | 'codex' | 'pi' = 'claude'): Promise<string> {
+    async function hibernatedSession(tag: string, flavor: 'claude' | 'codex' | 'pi' | 'opencode' = 'claude'): Promise<string> {
         const id = cache().getOrCreateSession(tag, {
             path: '/tmp/project',
             host: 'localhost',
@@ -57,7 +57,7 @@ describe('SyncEngine resume of hibernated sessions', () => {
             [`${flavor}SessionId`]: `native-${tag}`,
             lifecycleState: 'running',
         }, null, NAMESPACE).id
-        engine.handleSessionAlive({ hasPeerReplyWatch: false, sid: id, time: Date.now() })
+        engine.handleSessionAlive({ hasActiveUpload: false, hasPeerReplyWatch: false, sid: id, time: Date.now() })
         expect(await engine.hibernateSession(id, { now: Date.now() + 3 * HOUR, hibernateMs: WINDOW })).toBe('hibernated')
         stopCalls.length = 0
         return id
@@ -105,6 +105,37 @@ describe('SyncEngine resume of hibernated sessions', () => {
 
         expect(await engine.hibernateIdleSessions(Date.now() + WINDOW / 2, WINDOW)).toEqual([])
         expect(cache().getSession(id)!.active).toBe(true)
+    })
+
+    it.each(['claude', 'opencode'] as const)('recovers a %s wake after restart only for the runner-confirmed spawn', async flavor => {
+        const id = await hibernatedSession('interrupted-wake', flavor)
+        let attempt: unknown
+        gateway().spawnSession = async (...args: unknown[]) => {
+            attempt = args.at(-1)
+            const row = cache().getSession(id)!
+            store.sessions.updateSessionMetadata(id, { ...row.metadata, hostPid: 22222, hostStartMarker: 'new-worker' },
+                row.metadataVersion, NAMESPACE)
+            bootCli(id)
+            return { type: 'error', message: 'spawn acknowledgement lost' }
+        }
+        expect((await engine.resumeSession(id, NAMESPACE)).type).toBe('error')
+        expect(typeof attempt).toBe('string')
+        engine.stop()
+        engine = new SyncEngine(store, ioStub as never, new RpcRegistry(), { broadcast() {} } as never)
+        let confirmedWake = false
+        gateway().hasConnectedStopTarget = () => true
+        gateway().inspectWorker = async (machine: string, request: unknown) => {
+            expect(machine).toBe(MACHINE)
+            expect(request).toEqual({ sessionId: id, pid: 22222, startMarker: 'new-worker', wakeAttemptId: attempt })
+            return { state: 'matching', confirmedWake }
+        }
+        engine.handleMachineAlive({ machineId: MACHINE, time: Date.now() })
+        engine.handleSessionAlive({ sid: id, time: Date.now(), hasPeerReplyWatch: false, hasActiveUpload: false })
+        expect((await engine.resumeSession(id, NAMESPACE)).type).toBe('error')
+        expect(cache().getSession(id)?.metadata?.hibernation?.wake?.id).toBe(attempt as string)
+        confirmedWake = true
+        expect(await engine.resumeSession(id, NAMESPACE)).toEqual({ type: 'success', sessionId: id })
+        expect(cache().getSession(id)?.metadata?.hibernation).toBeUndefined()
     })
 
     it('keeps the session asleep when a selected runner lacks hibernation support', async () => {
@@ -157,7 +188,7 @@ describe('SyncEngine resume of hibernated sessions', () => {
         const id = await hibernatedSession('different-id', flavor)
         spawnImpl = async () => {
             const stray = cache().getOrCreateSession('stray', { path: '/tmp/project', host: 'localhost', flavor: 'claude', machineId: MACHINE }, null, NAMESPACE).id
-            engine.handleSessionAlive({ hasPeerReplyWatch: false, sid: stray, time: Date.now() })
+            engine.handleSessionAlive({ hasActiveUpload: false, hasPeerReplyWatch: false, sid: stray, time: Date.now() })
             return { type: 'success', sessionId: stray }
         }
         const result = await engine.resumeSession(id, NAMESPACE)
@@ -173,7 +204,7 @@ describe('SyncEngine resume of hibernated sessions', () => {
         'preserves a pre-existing mismatched row in namespace %s on machine %s', async (namespace, machineId) => {
             const id = await hibernatedSession('owned')
             const other = cache().getOrCreateSession('another', { path: '/tmp', host: 'h', machineId }, null, namespace)
-            engine.handleSessionAlive({ hasPeerReplyWatch: false, sid: other.id, time: Date.now() })
+            engine.handleSessionAlive({ hasActiveUpload: false, hasPeerReplyWatch: false, sid: other.id, time: Date.now() })
             const before = store.sessions.getSession(other.id)
             spawnImpl = async () => ({ type: 'success', sessionId: other.id })
             expect(await engine.resumeSession(id, NAMESPACE)).toMatchObject({ type: 'error', code: 'resume_failed' })
@@ -187,7 +218,7 @@ describe('SyncEngine resume of hibernated sessions', () => {
         let strayId = ''
         spawnImpl = async () => {
             strayId = cache().getOrCreateSession('stray-delete-child', { path: '/tmp/project', host: 'localhost', flavor: 'claude', machineId: MACHINE }, null, NAMESPACE).id
-            engine.handleSessionAlive({ hasPeerReplyWatch: false, sid: strayId, time: Date.now() })
+            engine.handleSessionAlive({ hasActiveUpload: false, hasPeerReplyWatch: false, sid: strayId, time: Date.now() })
             return { type: 'success', sessionId: strayId }
         }
         const result = await engine.resumeSession(id, NAMESPACE)
@@ -226,7 +257,7 @@ describe('SyncEngine resume of hibernated sessions', () => {
                 lifecycleState: 'running' }, stored.metadataVersion, NAMESPACE)
             cache().refreshSession(id)
             if (order === 'ready-first') engine.handleSessionReady({ sid: id, time: Date.now() })
-            engine.handleSessionAlive({ hasPeerReplyWatch: false, sid: id, time: Date.now() })
+            engine.handleSessionAlive({ hasActiveUpload: false, hasPeerReplyWatch: false, sid: id, time: Date.now() })
             if (order === 'alive-first') engine.handleSessionReady({ sid: id, time: Date.now() })
         }
         const replay = spyOn((engine as unknown as { messageService: { replayImmediateQueuedMessages(sid: string): number } }).messageService,
@@ -257,7 +288,7 @@ describe('SyncEngine resume of hibernated sessions', () => {
         }
         publish({ startedBy: 'terminal', startedFromRunner: false, hostPid: 4321,
             lifecycleState: 'running', lifecycleStateSince: Date.now() })
-        engine.handleSessionAlive({ hasPeerReplyWatch: false, sid: id, time: Date.now(), mode: 'local' })
+        engine.handleSessionAlive({ hasActiveUpload: false, hasPeerReplyWatch: false, sid: id, time: Date.now(), mode: 'local' })
         expect(cache().getSession(id)?.metadata?.hibernation).toBeUndefined()
         publish({ lifecycleState: 'archived', archivedBy: 'cli' })
         engine.handleSessionEnd({ sid: id, time: Date.now() })
@@ -288,7 +319,7 @@ describe('SyncEngine resume of hibernated sessions', () => {
             handlers.get('update-metadata')!({ sid: sessionId, expectedVersion: stored.metadataVersion, metadata: cliMetadata }, (r) => { ack = r })
             expect((ack as { result: string }).result).toBe('success')
             cache().refreshSession(sessionId)
-            engine.handleSessionAlive({ hasPeerReplyWatch: false, sid: sessionId, time: Date.now() })
+            engine.handleSessionAlive({ hasActiveUpload: false, hasPeerReplyWatch: false, sid: sessionId, time: Date.now() })
             return { type: 'error', message: 'startup handshake failed' }
         }
         const result = await engine.resumeSession(id, NAMESPACE)
@@ -407,17 +438,17 @@ describe('SyncEngine resume of hibernated sessions', () => {
         expect(unavailable.status).toBe(409)
         expect(await unavailable.json()).toMatchObject({ code: 'stop_unconfirmed', retryable: true })
         expect(store.messages.getFirstMessages(id, 10)).toHaveLength(0)
-        const probe = spyOn((engine as unknown as { rpcGateway: { stopRunnerSession(machine: string, target: string): Promise<string> } }).rpcGateway,
-            'stopRunnerSession').mockResolvedValue('already_gone')
+        const probe = spyOn((engine as unknown as { rpcGateway: RpcGateway }).rpcGateway, 'inspectWorker')
+            .mockResolvedValue({ state: 'gone', confirmedWake: false })
         expect((await post()).status).toBe(200)
-        expect(probe).toHaveBeenCalledWith(MACHINE, `PID-${pid}`)
+        expect(probe).toHaveBeenCalledWith(MACHINE, { sessionId: id, pid, startMarker: `gen-${pid}` })
         expect(store.messages.getFirstMessages(id, 10).map(row => row.localId)).toEqual(['after-stop'])
         expect(cache().getSession(id)?.metadata?.hibernation).toBeUndefined()
     })
 
     it('lets a connected older worker accept its upload when only its runner was upgraded', async () => {
         const session = cache().getOrCreateSession('old-worker', { path: '/tmp', host: 'localhost', machineId: MACHINE }, null, NAMESPACE)
-        engine.handleSessionAlive({ hasPeerReplyWatch: false, sid: session.id, time: Date.now() })
+        engine.handleSessionAlive({ hasActiveUpload: false, hasPeerReplyWatch: false, sid: session.id, time: Date.now() })
         await engine.sendMessage(session.id, {
             text: 'read this', localId: 'existing-worker-upload',
             attachments: [{ id: 'a', path: '/staged', filename: 'a', size: 4, mimeType: 'text/plain' }]

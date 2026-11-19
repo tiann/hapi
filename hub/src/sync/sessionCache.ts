@@ -1,7 +1,7 @@
 import { mergeClaudeSessionIdHistory, mergeReadState } from '@hapi/protocol'
 import { SESSION_LIFECYCLE_HIBERNATED, SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING, isHibernatedLifecycleState } from '@hapi/protocol'
 import { AgentStateSchema, ExternalRefsSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
-import type { BackgroundTask, CodexCollaborationMode, CopilotAgentMode, ExternalRef, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
+import type { BackgroundTask, CodexCollaborationMode, CopilotAgentMode, ExternalRef, Metadata, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
 import type { SessionTurnEndReason, SessionTurnTrigger, Store } from '../store'
 import type { TransferSessionJobsResult } from '../store/sessionJobs'
 import { clampAliveTime } from './aliveTime'
@@ -1413,6 +1413,16 @@ export class SessionCache {
         return result.result === 'success'
     }
 
+    recordHibernationWake(session: Session, wake: NonNullable<NonNullable<Metadata['hibernation']>['wake']>): boolean {
+        const current = this.sessions.get(session.id)
+        if (!current?.metadata || current.active || current.metadata.hibernation?.state !== 'hibernated') return false
+        const result = this.store.sessions.updateSessionMetadata(session.id,
+            { ...current.metadata, hibernation: { ...current.metadata.hibernation, wake } },
+            current.metadataVersion, session.namespace, { touchUpdatedAt: false })
+        this.refreshSession(session.id)
+        return result.result === 'success'
+    }
+
     /**
      * Drop a hibernation marker. `onlyState` restricts the clear to one state
      * (e.g. abandon a `stopping` marker without touching a settled one). When
@@ -1474,7 +1484,7 @@ export class SessionCache {
                 ...current,
                 lifecycleState: SESSION_LIFECYCLE_HIBERNATED,
                 lifecycleStateSince: since,
-                hibernation: { state: 'hibernated', since, reason }
+                hibernation: { state: 'hibernated', since, reason, worker: current.hibernation?.worker, wake: current.hibernation?.wake }
             }
             delete next.archivedBy
             delete next.archiveReason

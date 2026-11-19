@@ -83,7 +83,7 @@ describe('SyncEngine hibernation', () => {
             lifecycleState: 'running',
             ...metadata,
         }, null, NAMESPACE)
-        engine.handleSessionAlive({ hasPeerReplyWatch: false, sid: created.id, time: Date.now() })
+        engine.handleSessionAlive({ hasActiveUpload: false, hasPeerReplyWatch: false, sid: created.id, time: Date.now() })
         return created.id
     }
 
@@ -144,10 +144,11 @@ describe('SyncEngine hibernation', () => {
         const rpc = new RpcGateway({ of: () => ({ sockets }) } as never, registry)
         gateway().hasConnectedStopTarget = rpc.hasConnectedStopTarget.bind(rpc)
         const socket = { id: 'runner', connected: true, rooms: new Set([`machine:${MACHINE}`]), data: { namespace: NAMESPACE } }
-        for (const state of ['unregistered', 'stale-registration', 'connected']) {
+        for (const state of ['unregistered', 'stale-registration', 'stop-only', 'connected']) {
             if (state === 'stale-registration') registry.register(socket as never, `${MACHINE}:stop-session`)
-            if (state === 'connected') sockets.set(socket.id, socket)
-            engine.handleSessionAlive({ hasPeerReplyWatch: false, sid: id, time: Date.now() })
+            if (state === 'stop-only') sockets.set(socket.id, socket)
+            if (state === 'connected') registry.register(socket as never, `${MACHINE}:inspect-worker`)
+            engine.handleSessionAlive({ hasActiveUpload: false, hasPeerReplyWatch: false, sid: id, time: Date.now() })
             const connected = state === 'connected'
             expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual(connected ? [id] : [])
             expect(killCalls).toEqual(connected ? [id] : [])
@@ -159,12 +160,34 @@ describe('SyncEngine hibernation', () => {
         }
     })
 
+    it('excludes a chunked upload during initialization and between chunks', async () => {
+        const id = insertIdleSession('upload')
+        let initialized!: () => void
+        gateway().initChunkedUpload = () => new Promise(resolve => {
+            initialized = () => {
+                engine.handleSessionAlive({ sid: id, time: Date.now(), hasActiveUpload: true, hasPeerReplyWatch: false })
+                resolve({ success: true, uploadId: 'part' })
+            }
+        })
+        const init = engine.initChunkedUpload(id, { filename: 'file', size: 2, mimeType: 'text/plain' })
+        expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([])
+        initialized()
+        await init
+        gateway().uploadFileChunk = async () => ({ success: true })
+        await engine.uploadFileChunk(id, 'part', 0, 'YQ==')
+        expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([])
+        expect((await engine.uploadFileChunk(id, 'part', 1, 'YQ==')).success).toBe(true)
+        engine.handleSessionAlive({ sid: id, time: Date.now(), hasActiveUpload: false, hasPeerReplyWatch: false })
+        expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([id])
+        expect((await engine.initChunkedUpload(id, { filename: 'late', size: 1, mimeType: 'text/plain' })).success).toBe(false)
+    })
+
     it('requires explicit watch reporting from the worker even with an upgraded runner', async () => {
         const id = insertIdleSession('mixed-versions')
         engine.handleSessionAlive({ sid: id, time: Date.now() })
         expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([])
         expect(killCalls).toEqual([])
-        engine.handleSessionAlive({ sid: id, time: Date.now(), hasPeerReplyWatch: false })
+        engine.handleSessionAlive({ sid: id, time: Date.now(), hasActiveUpload: false, hasPeerReplyWatch: false })
         expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([id])
     })
 
@@ -181,15 +204,15 @@ describe('SyncEngine hibernation', () => {
             registerMachine()
         }
         let gone = false
-        const probe = spyOn((engine as unknown as { rpcGateway: { stopRunnerSession(machine: string, target: string): Promise<string> } }).rpcGateway,
-            'stopRunnerSession').mockImplementation(async () => gone ? 'already_gone' : 'unknown')
+        const probe = spyOn((engine as unknown as { rpcGateway: RpcGateway }).rpcGateway, 'inspectWorker')
+            .mockImplementation(async () => ({ state: gone ? 'replaced' : 'unknown', confirmedWake: false }))
         expect(await engine.reconcileInterruptedStop(id, NAMESPACE)).toBe(false)
         expect(engine.blocksSessionInput(id)).toBe(true)
         expect(cache().getSession(id)?.metadata?.hibernation?.state).toBe('stopping')
         gone = true
         if (restart) expect(await engine.hibernateIdleSessions(later() + 600_000, WINDOW)).toEqual([id])
         else expect(await engine.reconcileInterruptedStop(id, NAMESPACE)).toBe(true)
-        expect(probe).toHaveBeenLastCalledWith(MACHINE, `PID-${pid}`)
+        expect(probe).toHaveBeenLastCalledWith(MACHINE, { sessionId: id, pid, startMarker: `gen-${pid}` })
         expect(cache().getSession(id)?.metadata?.lifecycleState).toBe('hibernated')
     })
 
@@ -197,10 +220,10 @@ describe('SyncEngine hibernation', () => {
         const id = insertIdleSession('interrupted-before-exit')
         const row = cache().getSession(id)!
         expect(cache().markSessionHibernationStopping(id, row.metadataVersion, 'idle', Date.now() - 600_001)).toBe(true)
-        engine.handleSessionAlive({ sid: id, time: Date.now(), hasPeerReplyWatch: false })
-        stopImpl = async () => 'unknown'
+        engine.handleSessionAlive({ sid: id, time: Date.now(), hasActiveUpload: false, hasPeerReplyWatch: false })
+        gateway().inspectWorker = async () => ({ state: 'matching', confirmedWake: false })
         expect(await engine.reconcileInterruptedStop(id, NAMESPACE)).toBe(true)
-        expect(stopCalls).toEqual([{ machineId: MACHINE, sessionId: `PID-${row.metadata!.hostPid}` }])
+        expect(stopCalls).toEqual([])
         expect(killCalls).toEqual([])
         expect(cache().getSession(id)?.metadata?.hibernation).toBeUndefined()
         expect(cache().getSession(id)?.active).toBe(true)
@@ -237,10 +260,10 @@ describe('SyncEngine hibernation', () => {
 
     it('keeps an idle caller alive until peer reply forwarding ends', async () => {
         const id = insertIdleSession('forwarding-reply')
-        engine.handleSessionAlive({ sid: id, time: Date.now(), thinking: false, hasPeerReplyWatch: true })
+        engine.handleSessionAlive({ sid: id, time: Date.now(), thinking: false, hasActiveUpload: false, hasPeerReplyWatch: true })
         expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([])
         expect(stopCalls).toEqual([])
-        engine.handleSessionAlive({ hasPeerReplyWatch: false, sid: id, time: Date.now(), thinking: false })
+        engine.handleSessionAlive({ hasActiveUpload: false, hasPeerReplyWatch: false, sid: id, time: Date.now(), thinking: false })
         expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([id])
     })
 
@@ -374,15 +397,12 @@ describe('SyncEngine hibernation', () => {
         expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([])
         const session = cache().getSession(id)!
         expect(session.active).toBe(false)
-        expect(session.metadata?.lifecycleState).toBe('running')
-        expect(session.metadata?.archivedBy).toBeUndefined()
-        expect(session.metadata?.archiveReason).toBeUndefined()
-        expect(session.metadata?.hibernation).toBeUndefined()
-        gateway().spawnSession = async () => {
-            engine.handleSessionAlive({ hasPeerReplyWatch: false, sid: id, time: Date.now() })
-            return { type: 'success', sessionId: id }
-        }
-        expect(await engine.resumeSession(id, NAMESPACE)).toEqual({ type: 'success', sessionId: id })
+        expect(session.metadata?.hibernation?.state).toBe('stopping')
+        gateway().inspectWorker = async () => ({ state: 'matching', confirmedWake: false })
+        expect(await engine.reconcileInterruptedStop(id, NAMESPACE)).toBe(false)
+        gateway().inspectWorker = async () => ({ state: 'gone', confirmedWake: false })
+        expect(await engine.reconcileInterruptedStop(id, NAMESPACE)).toBe(true)
+        expect(cache().getSession(id)?.metadata?.lifecycleState).toBe('hibernated')
         expect(stopCalls).toHaveLength(1)
     })
 
@@ -466,7 +486,7 @@ describe('SyncEngine hibernation', () => {
         expect(await stopping).toBe('failed')
     })
 
-    it('backs off 10 minutes after an unconfirmed stop and clears the marker', async () => {
+    it('backs off 10 minutes after an unconfirmed stop and recovers after the worker finishes shutting down', async () => {
         const id = insertIdleSession('idle-still-alive')
         stopImpl = endingStop('still_alive')
         const now = later()
@@ -475,15 +495,16 @@ describe('SyncEngine hibernation', () => {
         const session = cache().getSession(id)!
         expect(session.active).toBe(true)
         expect(session.metadata?.lifecycleState).toBe('running')
-        expect(session.metadata?.hibernation).toBeUndefined()
+        expect(session.metadata?.hibernation?.state).toBe('stopping')
         expect(stopCalls).toHaveLength(1)
 
         expect(await engine.hibernateIdleSessions(now + 9 * 60_000, WINDOW)).toEqual([])
         expect(stopCalls).toHaveLength(1)
 
-        stopImpl = endingStop('stopped')
+        engine.handleSessionEnd({ sid: id, time: Date.now() })
+        gateway().inspectWorker = async () => ({ state: 'gone', confirmedWake: false })
         expect(await engine.hibernateIdleSessions(now + 10 * 60_000, WINDOW)).toEqual([id])
-        expect(stopCalls).toHaveLength(2)
+        expect(stopCalls).toHaveLength(1)
     })
 
     it('never hibernates without the runner capability, inside the window, or for ineligible flavors', async () => {
@@ -539,7 +560,7 @@ describe('SyncEngine hibernation', () => {
             }
             const confirmed = outcome === 'stopped' || outcome === 'already_gone'
             expect(await engine.hibernateSession(id, { now: later(), hibernateMs: WINDOW })).toBe(confirmed ? 'hibernated' : 'failed')
-            expect(cache().getSession(id)?.metadata?.hibernation?.state).toBe(confirmed ? 'hibernated' : outcome === 'throw' || outcome === 'timeout' ? 'stopping' : undefined)
+            expect(cache().getSession(id)?.metadata?.hibernation?.state).toBe(confirmed ? 'hibernated' : 'stopping')
             expect(cache().getSession(id)?.active).toBe(!confirmed)
         }
     )
@@ -579,7 +600,7 @@ describe('SyncEngine hibernation', () => {
                 store.sessions.updateSessionMetadata(sid, { ...(stored.metadata as object), lifecycleState: 'running', lifecycleStateSince: Date.now() },
                     stored.metadataVersion, NAMESPACE, { touchUpdatedAt: false, allowUnarchive: true })
                 cache().refreshSession(sid)
-                engine.handleSessionAlive({ hasPeerReplyWatch: false, sid, time: Date.now() })
+                engine.handleSessionAlive({ hasActiveUpload: false, hasPeerReplyWatch: false, sid, time: Date.now() })
                 return { type: 'success', sessionId: sid }
             } finally { leave() }
         }
@@ -628,7 +649,7 @@ describe('SyncEngine hibernation', () => {
         store.sessions.updateSessionMetadata(id, { ...row.metadata, hostPid: 9000, hostStartMarker: 'replacement',
             startedBy: 'terminal', startedFromRunner: false, lifecycleState: 'running' }, row.metadataVersion, NAMESPACE)
         cache().refreshSession(id)
-        engine.handleSessionAlive({ hasPeerReplyWatch: false, sid: id, time: Date.now() })
+        engine.handleSessionAlive({ hasActiveUpload: false, hasPeerReplyWatch: false, sid: id, time: Date.now() })
         acknowledge('stopped')
         expect(await stop).toBe('failed')
         expect(await local).toMatchObject({ type: 'error', code: 'session_active' })
@@ -782,7 +803,7 @@ describe('SyncEngine hibernation', () => {
             expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([])
             expect(stopCalls).toEqual([])
 
-            engine.handleSessionAlive({ hasPeerReplyWatch: false, sid: id, time: Date.now() })
+            engine.handleSessionAlive({ hasActiveUpload: false, hasPeerReplyWatch: false, sid: id, time: Date.now() })
             expect(await engine.hibernateIdleSessions(later(), WINDOW)).toEqual([id])
         })
     })
