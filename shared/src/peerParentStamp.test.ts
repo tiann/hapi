@@ -78,6 +78,31 @@ describe('ensureParentStamp', () => {
         expect(extractExplicitParentSessionIdFromRemit(result.message)).toBe(PARENT_ID)
     })
 
+    it.each([
+        ['\n', true],
+        ['\uFEFF', true],
+        ['\uFEFF\r\n \t\n', true],
+        ['```\n', false],
+        ['    ', false],
+        ['> ', false],
+        ['Previous remit:\n', false],
+    ] as const)('checks the stamp prefix %j', (prefix, accepted) => {
+        const identity = { sessionId: PARENT_ID, name: 'Main' }
+        const body = prefix + formatParentStampBlock(identity)
+        expect(extractExplicitParentSessionIdFromRemit(body)).toBe(accepted ? PARENT_ID : null)
+        expect(ensureParentStamp(body, identity).alreadyPresent).toBe(accepted)
+    })
+
+    it('prepends a leading stamp when the original remit quotes one', () => {
+        const identity = { sessionId: PARENT_ID, name: 'Main' }
+        const stamp = formatParentStampBlock(identity)
+        const body = ['Previous remit:', '```', stamp, '```'].join('\n')
+        expect(extractExplicitParentSessionIdFromRemit(body)).toBeNull()
+        const result = ensureParentStamp(body, identity)
+        expect(result.message).toBe(`${stamp}\n\n${body}`)
+        expect(extractExplicitParentSessionIdFromRemit(result.message)).toBe(PARENT_ID)
+    })
+
     it('stays idempotent when the parent title contains brackets (escaped in the chip label)', () => {
         const identity = { sessionId: PARENT_ID, name: 'Team [Infra]' }
         const first = ensureParentStamp('Do the work.', identity)

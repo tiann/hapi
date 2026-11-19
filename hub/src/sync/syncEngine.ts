@@ -345,7 +345,7 @@ export class SyncEngine {
                 if (isUserInputMessage(event.message.content)) {
                     this.sessionCache.refreshLastUserMessageAt(event.sessionId)
                     this.recordPromptTitle(event.sessionId, event.message.content)
-                    this.recordParentSessionFromRemit(event.sessionId, event.message.content)
+                    this.recordParentSessionFromRemit(event.sessionId, event.message)
                 }
                 if (!this.sessionCache.getSession(event.sessionId)?.hasConversationContent
                     && hasConversationMessageContent(event.message.content)) {
@@ -6530,15 +6530,16 @@ export class SyncEngine {
         }
     }
 
-    private recordParentSessionFromRemit(sessionId: string, content: unknown): void {
+    private recordParentSessionFromRemit(sessionId: string, message: DecryptedMessage): void {
         const session = this.sessionCache.getSession(sessionId)
         if (!session?.metadata || resolveSessionParentLink(session.metadata, sessionId) !== null) return
-        const record = unwrapRoleWrappedRecordEnvelope(content)
+        const record = unwrapRoleWrappedRecordEnvelope(message.content)
         if (record?.role !== 'user') return
         const text = extractUserText(record.content)
         if (!text) return
         const candidateId = extractExplicitParentSessionIdFromRemit(text)
         if (!candidateId || candidateId === sessionId) return
+        if (!this.store.messages.isFirstUserInputMessage(sessionId, message.id)) return
         const parentAccess = this.resolveSessionAccess(candidateId, session.namespace, { followRedirects: true })
         if (!parentAccess.ok || parentAccess.sessionId === sessionId) return
         try {

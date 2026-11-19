@@ -288,6 +288,8 @@ export async function bootstrapSession(options: SessionBootstrapOptions): Promis
     const agentState = options.agentState === undefined ? {} : options.agentState
     const reservedHubId = resolveReservedHubSessionId(options.reservedSessionId)
     const inheritedParentId = options.metadataOverrides?.parentSessionId === undefined
+        && !options.metadataOverrides?.forkedFrom?.trim()
+        && !options.metadataOverrides?.conversationBranch?.sourceSessionId.trim()
         ? resolveInheritedParentSessionId({ startedBy, reservedSessionId: reservedHubId })
         : undefined
     const metadataOverrides = inheritedParentId
@@ -359,6 +361,8 @@ export async function bootstrapLazySession(options: SessionBootstrapOptions): Pr
     const requestedId = randomUUID()
     const sessionTag = options.tag ?? randomUUID()
     const inheritedParentId = options.metadataOverrides?.parentSessionId === undefined
+        && !options.metadataOverrides?.forkedFrom?.trim()
+        && !options.metadataOverrides?.conversationBranch?.sourceSessionId.trim()
         ? resolveInheritedParentSessionId({ startedBy, ownSessionId: requestedId })
         : undefined
     const metadataOverrides = inheritedParentId

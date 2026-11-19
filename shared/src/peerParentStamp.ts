@@ -138,7 +138,7 @@ export function extractParentSessionIdFromRemit(message: string): string | null 
  * creating false parent-child session links.
  */
 export function extractExplicitParentSessionIdFromRemit(message: string): string | null {
-    const stamp = /^## Parent[ \t]*\r?\n- Orchestrator chip \(mandatory\): \[(?:\\.|[^\\\]\r\n])*\]\((\/sessions\/[^/?#)\s]+)\)[ \t]*\r?$/m.exec(message)
+    const stamp = /^\uFEFF?(?:[ \t]*\r?\n)*## Parent[ \t]*\r?\n- Orchestrator chip \(mandatory\): \[(?:\\.|[^\\\]\r\n])*\]\((\/sessions\/[^/?#)\s]+)\)[ \t]*(?=\r?\n|$)/.exec(message)
     return stamp ? extractSessionCitationIds(stamp[1]!)[0] ?? null : null
 }
 

@@ -55,6 +55,45 @@ describe('session parent link recording and persistence', () => {
         }
     })
 
+    it.each([false, true])('checks the first user input after a long agent prelude (earlier user: %s)', (earlierUser) => {
+        const { store, engine } = setup()
+        try {
+            const metadata = { path: '/tmp/repo', host: 'mac' }
+            const parent = engine.getOrCreateSession('parent', metadata, null, 'default')
+            const child = engine.getOrCreateSession('child', metadata, null, 'default')
+            for (let i = 0; i < 60; i++) {
+                store.messages.addMessage(child.id, { role: 'agent', content: 'startup'.repeat(64) })
+            }
+            store.messages.addMessage(child.id, { ...userText('echo'), meta: { isTranscriptEcho: true } })
+            if (earlierUser) store.messages.addMessage(child.id, userText('earlier input'.repeat(64)))
+            const stamp = `## Parent\n- Orchestrator chip (mandatory): [Lead](/sessions/${parent.id})`
+            const message = store.messages.addMessage(child.id, userText(stamp))
+            engine.handleRealtimeEvent({ type: 'message-received', sessionId: child.id, message: { ...message, seq: null } })
+            expect(engine.getSession(child.id)?.metadata?.parentSessionId).toBe(earlierUser ? undefined : parent.id)
+        } finally {
+            engine.stop()
+            store.close()
+        }
+    })
+
+    it('ignores quoted and leading parent stamps in later user messages', () => {
+        const { store, engine, receive } = setup()
+        try {
+            const metadata = { path: '/tmp/repo', host: 'mac' }
+            const parent = engine.getOrCreateSession('parent', metadata, null, 'default')
+            const child = engine.getOrCreateSession('child', metadata, null, 'default')
+            const stamp = `## Parent\n- Orchestrator chip (mandatory): [Lead](/sessions/${parent.id})`
+            receive(child.id, userText('Start an unrelated task'))
+            receive(child.id, userText(['A previous remit:', '```', stamp, '```'].join('\n')))
+            expect(engine.getSession(child.id)?.metadata?.parentSessionId).toBeUndefined()
+            receive(child.id, userText(stamp))
+            expect(engine.getSession(child.id)?.metadata?.parentSessionId).toBeUndefined()
+        } finally {
+            engine.stop()
+            store.close()
+        }
+    })
+
     it('ignores same-namespace citations without a canonical parent stamp', () => {
         const { store, engine, receive } = setup()
         try {
