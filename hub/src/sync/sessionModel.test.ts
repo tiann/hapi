@@ -497,6 +497,82 @@ describe('session model', () => {
         expect(refs).toEqual(lateRef)
     })
 
+    // Regression (bot review, hapi#238, follow-up): the fix above makes a
+    // late-arriving ref visible to the final merge pass — but if combining
+    // it with the target's refs pushes the total over MAX_EXTERNAL_REFS,
+    // the old (pre-follow-up) code re-threw ExternalRefsMergeCapExceededError
+    // there even though messages/scratchlist/job redirects had already
+    // moved to the target by that point — a thrown "merge failed" while the
+    // surviving rows already had split history. The merge must complete
+    // (and the old row still get deleted) rather than throw after those
+    // irreversible side effects.
+    it('completes a deleting merge instead of throwing when a mid-flight link pushes combined refs over the cap', async () => {
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const targetRefs = Array.from({ length: 32 }, (_, i) => ({
+            kind: 'github_pr' as const,
+            repo: 'tiann/hapi',
+            number: i + 1,
+            url: `https://github.com/tiann/hapi/pull/${i + 1}`,
+            role: 'secondary' as const,
+            source: 'user' as const,
+            linkedAt: 1
+        }))
+        const lateRef = [{
+            kind: 'github_pr' as const,
+            repo: 'tiann/hapi',
+            number: 999,
+            url: 'https://github.com/tiann/hapi/pull/999',
+            role: 'secondary' as const,
+            source: 'user' as const,
+            linkedAt: 1
+        }]
+
+        const oldSession = cache.getOrCreateSession(
+            'session-merge-overcap-old',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+        const newSession = cache.getOrCreateSession(
+            'session-merge-overcap-new',
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex', externalRefs: targetRefs },
+            null,
+            'default'
+        )
+        store.messages.addMessage(oldSession.id, { role: 'user', content: { type: 'text', text: 'pre-merge message' } })
+
+        const originalTransfer = store.scratchlist.transfer.bind(store.scratchlist)
+        store.scratchlist.transfer = (fromSessionId, toSessionId) => {
+            const result = originalTransfer(fromSessionId, toSessionId)
+            const row = store.sessions.getSessionByNamespace(fromSessionId, 'default')
+            if (row) {
+                store.sessions.updateSessionMetadata(
+                    fromSessionId,
+                    { ...(row.metadata as Record<string, unknown>), externalRefs: lateRef },
+                    row.metadataVersion,
+                    'default',
+                    { touchUpdatedAt: false }
+                )
+            }
+            return result
+        }
+
+        await expect(cache.mergeSessions(oldSession.id, newSession.id, 'default')).resolves.toBeUndefined()
+
+        // Merge completed: old row deleted, its message carried over, and
+        // the target's own 32 refs are intact (the one that would have
+        // pushed it over the cap was skipped this round, not lost mid-way
+        // through a half-applied merge).
+        expect(store.sessions.getSessionByNamespace(oldSession.id, 'default')).toBeNull()
+        expect(store.messages.getMessages(newSession.id).length).toBe(1)
+        const merged = store.sessions.getSessionByNamespace(newSession.id, 'default')
+        const refs = (merged?.metadata as { externalRefs?: unknown[] })?.externalRefs
+        expect(refs?.length).toBe(32)
+    })
+
     it('retains source session when metadata merge exhausts version retries', async () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []

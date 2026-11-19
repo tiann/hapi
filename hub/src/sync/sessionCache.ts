@@ -2287,13 +2287,18 @@ export class SessionCache {
                 mergedMetadata = this.mergeSessionMetadata(freshOld?.metadata ?? oldStored.metadata, latest.metadata)
             } catch (error) {
                 if (!(error instanceof ExternalRefsMergeCapExceededError)) throw error
-                // mergeSessions deletes oldSessionId right after this —
-                // dropping its unique refs here would be unrecoverable, so
-                // that caller must still see this throw. mergeSessionHistory
-                // keeps the old row alive, so nothing is lost; just skip this
-                // round's consolidation (mirrors mergeSessionMetadataForTransfer's
-                // own carve-out above).
-                if (options.deleteOldSession) throw error
+                // Unlike mergeSessionMetadataForTransfer's own carve-out
+                // above (which runs before any of this function's other
+                // side effects), re-throwing here would NOT actually abort
+                // anything recoverable (review finding, hapi#238, follow-up):
+                // messages, scratchlist rows, and job redirects have already
+                // moved to newSessionId by this point in the function. The
+                // caller would see a thrown "merge failed" while the
+                // surviving rows already have split history — strictly
+                // worse than just skipping this round's ref consolidation,
+                // which only risks losing the one freshly-arrived ref that
+                // pushed the combined total over the cap (rare: already
+                // near 32 AND a link landed during this exact I/O window).
                 break
             }
             if (mergedMetadata === null || mergedMetadata === latest.metadata) break
