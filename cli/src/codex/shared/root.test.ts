@@ -1764,8 +1764,13 @@ it('announces fallback confirmed by a newer notification during native reconcili
     expect(f.events).toHaveBeenCalledWith({ type: 'message', message: notice });
 });
 
-it.each(['web', 'native', 'turn'])('confirms the loaded effective tier after %s settings selection', async origin => {
+it.each(['web', 'native', 'turn', 'web-model', 'native-model', 'turn-model'])('confirms the loaded effective tier after %s settings selection', async origin => {
     const f = await fixture(); await f.root.activate();
+    const modelOnly = origin.endsWith('-model');
+    if (modelOnly) {
+        f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' });
+        f.native.settings = { ...f.native.settings, serviceTier: 'ultrafast' };
+    }
     const original = f.root.client.request.bind(f.root.client);
     vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
         // Reloaded config advertises enabled while this loaded thread still
@@ -1775,15 +1780,15 @@ it.each(['web', 'native', 'turn'])('confirms the loaded effective tier after %s 
         }
         return original(method, params);
     });
-    if (origin === 'web') expect((await f.root.applySettings({ serviceTier: 'ultrafast' })).applied.serviceTier).toBe('standard');
-    else if (origin === 'native') await f.root.applyNativeSettings({ serviceTier: 'ultrafast' });
+    if (origin.startsWith('web')) expect((await f.root.applySettings(modelOnly ? { model: 'mock' } : { serviceTier: 'ultrafast' })).applied.serviceTier).toBe('standard');
+    else if (origin.startsWith('native')) await f.root.applyNativeSettings(modelOnly ? { model: 'mock' } : { serviceTier: 'ultrafast' });
     else {
         f.native.settings = { ...f.native.settings, serviceTier: 'ultrafast' };
-        await f.root.confirmNativeTurn({ serviceTier: 'ultrafast' }, true);
+        await f.root.confirmNativeTurn(modelOnly ? { model: 'mock' } : { serviceTier: 'ultrafast' }, !modelOnly);
     }
     expect(f.root.hasConfirmedStandardTier).toBe(true);
-    expect(f.root.freshParams().serviceTier).toBe('default');
-    expect(f.metadata().codexServiceTierExplicit).toBe(true);
+    expect(f.root.freshParams().serviceTier).toBe(modelOnly ? undefined : 'default');
+    expect(f.metadata().codexServiceTierExplicit).toBe(!modelOnly);
     expect(f.events).toHaveBeenCalledWith({ type: 'message', message: 'Codex did not apply Ultrafast; changed to Standard.' });
 });
 
@@ -1835,5 +1840,22 @@ it('bounds discovery, acknowledgement and effective confirmation by one deadline
         await vi.advanceTimersByTimeAsync(1);
         expect(f.metadata().codexTierConfirmationPending).toBe(false);
         await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+    } finally { vi.useRealTimers(); }
+});
+
+it('does not introduce a tier-recovery fence for an unrelated model-write timeout', async () => {
+    const f = await fixture(); await f.root.activate();
+    const original = f.root.client.request.bind(f.root.client);
+    vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/settings/update') return await new Promise<never>(() => {});
+        return original(method, params);
+    });
+    vi.useFakeTimers();
+    try {
+        const pending = f.root.applySettings({ model: 'changed' }).then(() => 'success', error => (error as Error).message);
+        await vi.advanceTimersByTimeAsync(25_000);
+        expect(await pending).toContain('confirmation is pending');
+        expect(f.root.needsTierConfirmation).toBe(false);
+        expect(f.metadata().codexTierConfirmationPending).not.toBe(true);
     } finally { vi.useRealTimers(); }
 });
