@@ -190,11 +190,28 @@ describe.each(['embeddedAssetMap', 'distDir'] as const)('web static asset servin
         for (const method of ['GET', 'HEAD'] as const) {
             const missingAsset = await app.request('/assets/stale-chunk.js', { method })
             expect(missingAsset.status).toBe(404)
+            expect(missingAsset.headers.get('Cache-Control')).toBe('no-store')
 
             const spaRoute = await app.request('/sessions/abc', { method })
             expect(spaRoute.status).toBe(200)
             expect(spaRoute.headers.get('Content-Type')).toContain('text/html')
             expect(spaRoute.headers.get('Cache-Control')).toBe('no-cache')
         }
+    })
+
+    it('exposes app version and deterministic webBuildId on /health with no-store caching', async () => {
+        const app = buildApp(mode)
+        const res = await app.request('/health')
+        expect(res.status).toBe(200)
+        expect(res.headers.get('Cache-Control')).toBe('no-store')
+        const body = await res.json() as {
+            status: string
+            version?: string
+            webBuildId?: string
+        }
+        expect(body.status).toBe('ok')
+        expect(typeof body.version).toBe('string')
+        expect(body.version?.length).toBeGreaterThan(0)
+        expect(body.webBuildId).toMatch(/^[0-9a-f]{12}$/)
     })
 })

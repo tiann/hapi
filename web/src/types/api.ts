@@ -148,6 +148,8 @@ export type SessionMetadataSummary = {
 
 export type HubHealthResponse = {
     status: string
+    version?: string
+    webBuildId?: string | null
     protocolVersion: number
     capabilities?: {
         workGraph?: boolean

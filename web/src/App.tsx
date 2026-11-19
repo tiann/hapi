@@ -39,7 +39,8 @@ import { VoiceErrorBanner } from '@/components/VoiceErrorBanner'
 import { RunnerVersionSkewBanner } from '@/components/RunnerVersionSkewBanner'
 import { LoadingState } from '@/components/LoadingState'
 import { ToastContainer } from '@/components/ToastContainer'
-import { PwaUpdateProvider } from '@/lib/pwa-update-context'
+import { PwaUpdateProvider, usePwaUpdateContext } from '@/lib/pwa-update-context'
+import { shouldCheckSwUpdateForHubHealth } from '@/lib/swStaticCache'
 import { ToastProvider, useAddToast } from '@/lib/toast-context'
 import { getNotificationClickHref, NOTIFICATION_CLICK_ACK_TYPE } from '@/lib/notificationClick'
 import type { SyncEvent } from '@/types/api'
@@ -80,6 +81,7 @@ function AppInner() {
     const matchRoute = useMatchRoute()
     const router = useRouter()
     const addToast = useAddToast()
+    const { checkForUpdates } = usePwaUpdateContext()
 
     useEffect(() => {
         let cancelled = false
@@ -90,6 +92,16 @@ function AppInner() {
             .then((health) => {
                 if (!cancelled) {
                     setTitleSuggestionAvailable(health.capabilities?.titleSuggestion === true)
+                    const appVersion = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0'
+                    if (shouldCheckSwUpdateForHubHealth({
+                        baseUrl,
+                        windowOrigin: window.location.origin,
+                        appVersion,
+                        health,
+                        storage: window.localStorage,
+                    })) {
+                        checkForUpdates()
+                    }
                 }
             })
             .catch(() => {
@@ -99,7 +111,7 @@ function AppInner() {
         return () => {
             cancelled = true
         }
-    }, [api])
+    }, [api, baseUrl, checkForUpdates])
 
     useEffect(() => {
         const tg = getTelegramWebApp()

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { registerSW } from 'virtual:pwa-register'
+import { cleanupClientStaticCachesOnVersionChange } from '@/lib/swStaticCache'
 
 export const PWA_UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000
 export const PWA_UPDATE_RELOAD_FALLBACK_MS = 2000
@@ -81,9 +82,20 @@ export function setupRegistrationUpdateChecks(
 export function usePwaUpdate() {
     const [needRefresh, setNeedRefresh] = useState(false)
     const updateSWRef = useRef<((reloadPage?: boolean) => Promise<void>) | null>(null)
+    const registrationRef = useRef<ServiceWorkerRegistration | null>(null)
+    const pendingUpdateCheckRef = useRef(false)
     const cleanupRef = useRef<(() => void) | null>(null)
 
     useEffect(() => {
+        if (typeof window !== 'undefined') {
+            const appVersion = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0'
+            void cleanupClientStaticCachesOnVersionChange({
+                appVersion,
+                storage: window.localStorage,
+                cacheStorage: window.caches,
+            })
+        }
+
         const updateSW = registerSW({
             onNeedRefresh() {
                 setNeedRefresh(true)
@@ -94,9 +106,15 @@ export function usePwaUpdate() {
             onRegistered(registration) {
                 cleanupRef.current?.()
                 cleanupRef.current = null
+                registrationRef.current = registration ?? null
 
                 if (!registration) {
                     return
+                }
+
+                if (pendingUpdateCheckRef.current) {
+                    pendingUpdateCheckRef.current = false
+                    void registration.update().catch(() => {})
                 }
 
                 cleanupRef.current = setupRegistrationUpdateChecks(registration)
@@ -111,6 +129,8 @@ export function usePwaUpdate() {
         return () => {
             cleanupRef.current?.()
             cleanupRef.current = null
+            registrationRef.current = null
+            pendingUpdateCheckRef.current = false
             updateSWRef.current = null
         }
     }, [])
@@ -119,5 +139,27 @@ export function usePwaUpdate() {
         void requestPwaUpdateReload(updateSWRef.current)
     }, [])
 
-    return { needRefresh, reload }
+    const checkForUpdates = useCallback(() => {
+        const registration = registrationRef.current
+        if (registration) {
+            pendingUpdateCheckRef.current = false
+            void registration.update().catch(() => {})
+            return
+        }
+
+        pendingUpdateCheckRef.current = true
+        if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator && typeof navigator.serviceWorker.getRegistration === 'function') {
+            void navigator.serviceWorker.getRegistration()
+                .then((existing) => {
+                    if (existing) {
+                        pendingUpdateCheckRef.current = false
+                        return existing.update()
+                    }
+                    return undefined
+                })
+                .catch(() => {})
+        }
+    }, [])
+
+    return { needRefresh, reload, checkForUpdates }
 }

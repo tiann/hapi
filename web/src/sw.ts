@@ -1,5 +1,5 @@
 /// <reference lib="webworker" />
-import { precacheAndRoute } from 'workbox-precaching'
+import { cleanupOutdatedCaches, precacheAndRoute } from 'workbox-precaching'
 import { registerRoute } from 'workbox-routing'
 import { CacheFirst, NetworkFirst } from 'workbox-strategies'
 import { ExpirationPlugin } from 'workbox-expiration'
@@ -10,13 +10,23 @@ import {
 } from './lib/shareTransfer'
 import { shareTargetPathname } from './lib/sharePath'
 import { cacheOkResponsesOnly, cacheJavaScriptOnly } from './lib/swCachePolicy'
+import {
+    cleanupOutdatedStaticCaches,
+    computeStaticCacheVersion,
+    getSyntaxGrammarsCacheName,
+} from './lib/swStaticCache'
 import { focusOrOpenNotificationClient, resolveNotificationTarget } from './lib/notificationClick'
 
 const sharePath = shareTargetPathname()
 
 declare const self: ServiceWorkerGlobalScope & {
-    __WB_MANIFEST: Array<string | { url: string; revision?: string }>
+    __WB_MANIFEST: Array<string | { url: string; revision?: string | null }>
 }
+
+const precacheManifest = self.__WB_MANIFEST
+const APP_VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : '0.0.0'
+const STATIC_CACHE_VERSION = computeStaticCacheVersion(APP_VERSION, precacheManifest)
+const SYNTAX_GRAMMARS_CACHE_NAME = getSyntaxGrammarsCacheName(STATIC_CACHE_VERSION)
 
 type PushPayload = {
     title: string
@@ -31,12 +41,13 @@ type PushPayload = {
     }
 }
 
-precacheAndRoute(self.__WB_MANIFEST)
+cleanupOutdatedCaches()
+precacheAndRoute(precacheManifest)
 
 registerRoute(
     ({ url }) => url.origin === self.location.origin && /\/assets\/shiki-[^/]+\.js$/.test(url.pathname),
     new CacheFirst({
-        cacheName: 'syntax-grammars',
+        cacheName: SYNTAX_GRAMMARS_CACHE_NAME,
         plugins: [
             cacheJavaScriptOnly,
             new ExpirationPlugin({ maxEntries: 64, maxAgeSeconds: 60 * 60 * 24 * 30 }),
@@ -122,7 +133,17 @@ self.addEventListener('message', (event) => {
 })
 
 self.addEventListener('activate', (event) => {
-    event.waitUntil(self.clients.claim())
+    event.waitUntil(
+        Promise.all([
+            self.clients.claim(),
+            cleanupOutdatedStaticCaches(self.caches, STATIC_CACHE_VERSION).catch((error) => {
+                console.warn('static-cache cleanup failed', error)
+            }),
+            cleanupExpiredShareTransfers().catch((error) => {
+                console.warn('share-transfer cleanup failed', error)
+            }),
+        ])
+    )
 })
 
 self.addEventListener('push', (event) => {
@@ -183,13 +204,3 @@ async function handleShareTarget(request: Request): Promise<Response> {
         return Response.redirect(new URL(`${sharePath}?error=ingest`, origin).toString(), 303)
     }
 }
-
-// Best-effort GC for stale share transfers (TTL-only — never blocks
-// anything else). 1h TTL is set in shareTransfer.ts.
-self.addEventListener('activate', (event) => {
-    event.waitUntil(
-        cleanupExpiredShareTransfers().catch((error) => {
-            console.warn('share-transfer cleanup failed', error)
-        })
-    )
-})
