@@ -41,16 +41,11 @@ impl Config {
             .or_else(|| field("serverUrl"))
             .unwrap_or_else(|| "http://localhost:3006".into());
         let cli_api_token = var("CLI_API_TOKEN").filter(|s| !s.is_empty()).or_else(|| field("cliApiToken")).ok_or_else(|| io::Error::other("CLI_API_TOKEN is required. Set it via environment variable or run `hapi auth login`."))?;
-        let headers = match var("HAPI_EXTRA_HEADERS_JSON") {
-            Some(raw) => serde_json::from_str(&raw).unwrap_or_default(),
-            None => settings["extraHeaders"].clone(),
-        };
-        let extra_headers = headers
-            .as_object()
-            .into_iter()
-            .flatten()
-            .filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_owned())))
-            .collect();
+        let extra_headers = extra_headers(
+            var("HAPI_EXTRA_HEADERS_JSON").as_deref(),
+            settings.get("extraHeaders"),
+            |msg| eprintln!("{msg}"),
+        );
         Ok(Self {
             home,
             api_url,
@@ -61,11 +56,76 @@ impl Config {
     }
 }
 
+fn extra_headers(
+    raw: Option<&str>,
+    setting: Option<&Value>,
+    mut warn: impl FnMut(&str),
+) -> Vec<(String, String)> {
+    let parsed;
+    let (value, source) = match (raw, setting) {
+        (Some(""), _) | (None, None) => return Vec::new(),
+        (Some(raw), _) => {
+            let Ok(value) = serde_json::from_str::<Value>(raw) else {
+                warn("[WARN] Failed to parse HAPI_EXTRA_HEADERS_JSON. Ignoring value.");
+                return Vec::new();
+            };
+            parsed = value;
+            (&parsed, "HAPI_EXTRA_HEADERS_JSON")
+        }
+        (None, Some(value)) => (value, "settings.json extraHeaders"),
+    };
+    let Some(object) = value.as_object() else {
+        warn(&format!(
+            "[WARN] {source} must be a JSON object. Ignoring value."
+        ));
+        return Vec::new();
+    };
+    let headers: Vec<_> = object
+        .iter()
+        .filter_map(|(key, v)| Some((key.clone(), v.as_str()?.to_owned())))
+        .collect();
+    if headers.len() != object.len() {
+        warn(&format!(
+            "[WARN] {source} only supports string header values. Ignoring non-string entries."
+        ));
+    }
+    headers
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use tempfile::tempdir;
+    #[test]
+    fn header_warnings_identify_the_source_and_omit_values() {
+        let settings = serde_json::json!({"good":"secret", "bad":["secret"]});
+        for (raw, expected) in [
+            (
+                Some("secret"),
+                Some("Failed to parse HAPI_EXTRA_HEADERS_JSON"),
+            ),
+            (
+                Some(r#""secret""#),
+                Some("HAPI_EXTRA_HEADERS_JSON must be a JSON object"),
+            ),
+            (
+                None,
+                Some("settings.json extraHeaders only supports string header values"),
+            ),
+            (Some(""), None),
+        ] {
+            let mut warnings = vec![];
+            let headers = extra_headers(raw, Some(&settings), |w| warnings.push(w.to_owned()));
+            assert_eq!(warnings.len(), usize::from(expected.is_some()));
+            if let Some(message) = expected {
+                assert!(warnings[0].contains(message));
+                assert!(!warnings[0].contains("secret"));
+            }
+            assert_eq!(headers.len(), usize::from(raw.is_none()));
+        }
+    }
+
     #[tokio::test]
     async fn precedence_and_headers() {
         let dir = tempdir().unwrap();

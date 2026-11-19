@@ -36,6 +36,7 @@ struct Outgoing {
 
 #[derive(Default)]
 struct State {
+    namespace_open: bool,
     connected: bool,
     writable: bool,
     stopped: bool,
@@ -58,6 +59,7 @@ impl State {
     fn disconnect(&mut self) {
         self.generation += 1;
         self.replies.clear();
+        self.namespace_open = false;
         self.connected = false;
         self.writable = false;
         self.queue
@@ -149,12 +151,12 @@ impl Client {
             let terminal_event = tokio::select! {
                 biased;
                 _ = stopping.changed() => {
-                    let connected = {
+                    let namespace_open = {
                         let mut state = worker.lock();
                         state.stopped = true;
-                        state.connected
+                        state.namespace_open
                     };
-                    if connected {
+                    if namespace_open {
                         worker.stopping.notify_one();
                         let remaining = stopping.borrow().map_or(Duration::from_millis(500), |(started, budget)| budget.saturating_sub(started.elapsed()));
                         tokio::time::timeout(remaining, running).await.unwrap_or_else(|_|
@@ -167,6 +169,7 @@ impl Client {
             };
             {
                 let mut state = worker.lock();
+                state.namespace_open = false;
                 state.connected = false;
                 state.writable = false;
                 state.stopped = true;
@@ -185,7 +188,7 @@ impl Client {
             return;
         }
         state.stopped = true;
-        if !state.connected {
+        if !state.namespace_open {
             state.queue.clear();
         }
         state.pending.clear();
@@ -195,7 +198,7 @@ impl Client {
     pub fn disable_reconnect(&self) {
         let mut state = self.shared.lock();
         state.reconnect_disabled = true;
-        if !state.connected {
+        if !state.namespace_open {
             drop(state);
             self.stop(Duration::ZERO);
         }
@@ -300,17 +303,10 @@ async fn run(
 ) -> Option<Event> {
     let mut backoff = super::backoff::Backoff::default();
     loop {
-        let dial = handshake(url, headers, auth, &mut backoff);
-        let result = tokio::time::timeout(connect_timeout, dial)
-            .await
-            .unwrap_or_else(|_| {
-                Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "connection timeout",
-                ))
-            });
+        let result = handshake(url, headers, auth, &mut backoff, connect_timeout).await;
         match result {
             Ok(Ok(mut transport)) => {
+                shared.lock().namespace_open = true;
                 let result = serve(&mut transport, shared, events).await;
                 let mut state = shared.lock();
                 let local = state.stopped;
@@ -318,19 +314,16 @@ async fn run(
                 state.disconnect();
                 let retry = !local && !state.reconnect_disabled && result.is_err();
                 let event = match (connected, local, result) {
-                    (true, true, Err(error)) => Some(Event::Disconnected(format!(
+                    (_, true, Err(error)) => Some(Event::Disconnected(format!(
                         "io client disconnect: drain failed: {error}"
                     ))),
-                    (true, true, Ok(())) => {
-                        Some(Event::Disconnected("io client disconnect".into()))
-                    }
+                    (_, true, Ok(())) => Some(Event::Disconnected("io client disconnect".into())),
                     (_, false, Ok(())) => Some(Event::Disconnected("io server disconnect".into())),
                     (true, false, Err(error)) => Some(Event::Disconnected(error.to_string())),
                     (false, false, Err(error)) => Some(Event::ConnectError {
                         message: error.to_string(),
                         fatal: false,
                     }),
-                    _ => None,
                 };
                 if !retry {
                     return event;
@@ -361,8 +354,11 @@ async fn handshake(
     headers: &[(String, String)],
     auth: &Value,
     backoff: &mut super::backoff::Backoff,
+    connect_timeout: Duration,
 ) -> io::Result<Result<Transport, String>> {
-    let mut transport = Transport::connect(url, headers).await?;
+    let mut transport = tokio::time::timeout(connect_timeout, Transport::connect(url, headers))
+        .await
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "connection timeout"))??;
     backoff.reset();
     transport
         .write_packet(&cli(Payload::Connect(Some(auth.clone()))))
@@ -537,7 +533,7 @@ mod tests {
         let url = format!("http://{}", listener.local_addr().unwrap());
         let (client, mut events) = Client::start(url, vec![], "token".into(), "s".into());
         let _socket = open(&listener).await;
-        tokio::time::advance(Duration::from_secs(19)).await;
+        tokio::time::advance(Duration::from_secs(89)).await;
         tokio::task::yield_now().await;
         assert!(matches!(
             events.try_recv(),
@@ -548,10 +544,42 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            matches!(error,Some(Event::ConnectError {message,fatal:false}) if message=="connection timeout")
+            matches!(error,Some(Event::ConnectError {message,fatal:false}) if message=="ping timeout")
         );
         client.stop(Duration::from_secs(1));
         assert!(events.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn namespace_reply_can_arrive_after_dial_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let (client, mut events) = Client::start(url, vec![], "token".into(), "s".into());
+        let mut ws = accept_async(listener.accept().await.unwrap().0)
+            .await
+            .unwrap();
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(19)).await;
+        tokio::time::resume();
+        ws.send(Message::text(
+            r#"0{"sid":"engine","pingInterval":60000,"pingTimeout":30000}"#,
+        ))
+        .await
+        .unwrap();
+        assert!(ws
+            .next()
+            .await
+            .unwrap()
+            .unwrap()
+            .into_text()
+            .unwrap()
+            .starts_with("40/cli,"));
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(2)).await;
+        tokio::time::resume();
+        accept_namespace(&mut ws).await;
+        assert!(matches!(events.recv().await, Some(Event::Connected)));
+        client.stop(Duration::ZERO);
     }
 
     #[tokio::test]
@@ -569,7 +597,10 @@ mod tests {
                 .unwrap();
         };
         let auth = json!({"token":"rejected"});
-        let (_, result) = tokio::join!(reject, handshake(&url, &[], &auth, &mut backoff));
+        let (_, result) = tokio::join!(
+            reject,
+            handshake(&url, &[], &auth, &mut backoff, Duration::from_secs(20))
+        );
         assert!(matches!(result,Ok(Err(message)) if message=="denied"));
         assert!(backoff.next() <= Duration::from_millis(1500));
     }
@@ -773,13 +804,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stop_during_initial_flush_never_announces_connection() {
+    async fn stop_during_initial_flush_drains_the_accepted_namespace() {
         let (client, mut events, mut ws) = slow_peer().await;
         queue_backlog(&client);
         accept_namespace(&mut ws).await;
         read_first(&mut ws).await;
         assert!(!client.is_connected());
-        client.stop(Duration::from_secs(2));
+        assert!(client.emit("session-end", vec![]));
+        client.stop(Duration::from_secs(10));
+        for _ in 0..128 {
+            let text = ws.next().await.unwrap().unwrap().into_text().unwrap();
+            assert!(text.starts_with(r#"42/cli,["block","#));
+        }
+        assert_eq!(
+            ws.next().await.unwrap().unwrap(),
+            Message::text(r#"42/cli,["session-end"]"#)
+        );
+        assert_eq!(ws.next().await.unwrap().unwrap(), Message::text("41/cli,"));
+        assert!(matches!(ws.next().await, Some(Ok(Message::Close(_)))));
+        ws.flush().await.unwrap();
+        assert!(
+            matches!(events.recv().await, Some(Event::Disconnected(reason)) if reason == "io client disconnect")
+        );
         assert!(events.recv().await.is_none());
     }
 
