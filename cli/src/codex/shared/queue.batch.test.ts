@@ -600,6 +600,34 @@ it('mirrors accepted native edits before the consumed ACK when the event precede
     expect(queue.state('original-B')).toBe('canceled');
 });
 
+it('restores a consumed edit mirror after its first publication was interrupted by disconnect', async () => {
+    const f = await fixture();
+    await f.queue.enqueue('original-A', text('A'), false, 'same');
+    await f.queue.enqueue('original-B', text('B'), false, 'same');
+    const batch = f.native[0];
+    const edited = text('EDITED');
+    const socket = new AbortController();
+    f.overrides.set('thread/queue/update', async params => {
+        batch.input = params.input as QueueInput;
+        const recording = f.queue.committed(batch.clientUserMessageId, params.input, socket.signal);
+        socket.abort();
+        await recording;
+        throw lost('edit acknowledgement lost');
+    });
+    await expect(f.queue.nativeMutation('thread/queue/update', {
+        threadId: 'thread', queuedSubmissionId: batch.id, input: edited
+    })).rejects.toThrow('edit acknowledgement lost');
+    expect(f.mirror).not.toHaveBeenCalled();
+    expect(f.consumed).not.toHaveBeenCalled();
+
+    const restarted = new SharedCodexQueue(f.client, 'thread', join(f.directory, 'ledger.json'), f.consumed, f.uncertain, f.mirror);
+    await restarted.load();
+    await restarted.committed(batch.clientUserMessageId, edited);
+    expect(f.mirror).toHaveBeenCalledWith('original-A', edited);
+    expect(f.consumed).toHaveBeenCalledWith(['original-A']);
+    expect(f.mirror.mock.invocationCallOrder[0]).toBeLessThan(f.consumed.mock.invocationCallOrder[0]);
+});
+
 it('rejects native mutations outside the serialized queue surface', async () => {
     const { queue } = await fixture();
     await expect(queue.nativeMutation('thread/archive', { threadId: 'thread' })).rejects.toThrow('Unsupported native queue mutation');

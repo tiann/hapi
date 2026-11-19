@@ -10,7 +10,7 @@ export const SubmissionSchema = z.object({ id: z.string(), input: InputSchema, c
 const StateSchema = z.enum(['unknown', 'queued', 'consumed', 'canceled', 'rejected', 'released']);
 const EntrySchema = z.object({
     input: InputSchema, state: StateSchema, nativeId: z.string().optional(), batchId: z.string().optional(),
-    detachedSteer: z.boolean().optional()
+    detachedSteer: z.boolean().optional(), consumedMirrorPending: z.boolean().optional()
 });
 const MemberSchema = z.object({ id: z.string(), input: InputSchema });
 const RemovalSchema = z.object({
@@ -167,7 +167,7 @@ export class SharedCodexQueue {
         const batch = this.batches[id];
         return batch ? this.matchAccepted(batch, normalizeContent(actualContent))?.members[0]?.id : id;
     }
-    private withdrawRemovals(batch: Batch, version: Version): void {
+    private withdrawRemovals(batch: Batch, version: Version, mirror = this.mirror): void {
         for (const removal of version.removed ?? []) {
             const entry = this.entries[removal.id];
             // Delayed proof for an old group cannot change a restored/new submission.
@@ -175,7 +175,7 @@ export class SharedCodexQueue {
             if (removal.intent === 'steer') {
                 entry.detachedSteer = true;
             } else if (entry.state !== 'consumed' && entry.state !== 'canceled') {
-                entry.state = 'canceled'; this.mirror?.(removal.id, null);
+                entry.state = 'canceled'; mirror?.(removal.id, null);
             }
         }
     }
@@ -203,13 +203,15 @@ export class SharedCodexQueue {
      * redelivery. For a batch synthetic client ID, only an exact accepted
      * content match may acknowledge that version's original members. */
     async committed(id: string): Promise<void>;
-    async committed(id: string, actualContent: unknown): Promise<Array<{ id: string; input: QueueInput }> | undefined>;
-    async committed(id: string, actualContent?: unknown): Promise<Array<{ id: string; input: QueueInput }> | undefined | void> {
+    async committed(id: string, actualContent: unknown, signal?: AbortSignal): Promise<Array<{ id: string; input: QueueInput }> | undefined>;
+    async committed(id: string, actualContent?: unknown, signal?: AbortSignal): Promise<Array<{ id: string; input: QueueInput }> | undefined | void> {
+        if (signal?.aborted) return;
         const batch = this.batches[id];
         if (!batch) {
             const entry = this.entries[id] ??= { state: 'consumed', input: [] };
             entry.state = 'consumed';
-            await this.save(); this.consumed([id]);
+            await this.save();
+            if (!signal?.aborted) this.consumed([id]);
             return undefined;
         }
         const version = this.matchAccepted(batch, normalizeContent(actualContent));
@@ -228,15 +230,25 @@ export class SharedCodexQueue {
                 // The Hub only edits pending rows. Mirror accepted content before
                 // the consumed ACK, including an event that precedes an edit RPC ACK.
                 if (normalizeContent(entry.input) !== normalizeContent(member.input)) {
-                    entry.input = member.input; this.mirror?.(member.id, member.input);
+                    entry.input = member.input; entry.consumedMirrorPending = true;
                 }
                 entry.state = 'consumed';
             }
         }
-        this.withdrawRemovals(batch, version);
+        const removed: string[] = [];
+        this.withdrawRemovals(batch, version, id => removed.push(id));
         version.status = 'consumed';
         if (batch.versions[batch.current] === version && batch.state !== 'canceled') batch.state = 'consumed';
         await this.save();
+        if (signal?.aborted) return;
+        for (const id of removed) this.mirror?.(id, null);
+        for (const member of version.members) {
+            const entry = this.entries[member.id];
+            if (entry?.consumedMirrorPending) {
+                this.mirror?.(member.id, entry.input);
+                delete entry.consumedMirrorPending;
+            }
+        }
         const ids = version.members.map(member => member.id);
         if (ids.length) this.consumed(ids);
         return version.members.map(member => ({ id: member.id, input: member.input }));

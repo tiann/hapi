@@ -63,7 +63,7 @@ export class SharedCodexProjection {
     private readonly compactionSummaries: CodexCompactionSummaryLookup;
     private summaryThread: unknown;
     constructor(private readonly session: ApiSessionClient, readonly threadId: string,
-        private readonly committed: (id: string, content?: unknown) => Promise<void | Array<{ id: string; input: unknown }>>,
+        private readonly committed: (id: string, content?: unknown, signal?: AbortSignal) => Promise<void | Array<{ id: string; input: unknown }>>,
         private readonly parentThreadId?: string, private readonly readSummaryThread?: () => Promise<unknown>,
         private readonly observeItem?: (threadId: string, item: unknown) => void) {
         this.compactionSummaries = new CodexCompactionSummaryLookup(threadId);
@@ -148,7 +148,8 @@ export class SharedCodexProjection {
         });
     }
 
-    async notification(method: string, params: unknown, modelAtReceipt?: string, receivedAt = Date.now()): Promise<void> {
+    async notification(method: string, params: unknown, modelAtReceipt?: string, receivedAt = Date.now(), signal?: AbortSignal): Promise<void> {
+        if (signal?.aborted) return;
         const p = record(params);
         const item = record(p.item);
         if (!this.parentThreadId && p.threadId === this.threadId && string(item.id)) {
@@ -167,7 +168,8 @@ export class SharedCodexProjection {
                 }
             }
         }
-        await this.project(method, params, modelAtReceipt, false, receivedAt);
+        await this.project(method, params, modelAtReceipt, false, receivedAt, signal);
+        if (signal?.aborted) return;
         if (p.threadId === this.threadId && !this.parentThreadId) {
             const turn = record(p.turn);
             const turnId = string(turn.id);
@@ -216,7 +218,7 @@ export class SharedCodexProjection {
         if (!this.parentThreadId && (method === 'item/started' || method === 'item/completed') && item.type === 'userMessage') {
             const id = string(item.clientId ?? item.clientUserMessageId) ?? (itemId ? `codex:${this.threadId}:user:${itemId}` : undefined);
             if (id) {
-                const aliases = await this.committed(id, item.content);
+                const aliases = await this.committed(id, item.content, signal);
                 let historyChanged = false;
                 for (const member of aliases ?? [{ id, input: item.content }]) {
                     if (signal?.aborted) break;

@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import type { SessionBootstrapResult } from '@/agent/sessionFactory';
 import type { ApiSessionClient } from '@/api/apiSession';
@@ -75,11 +76,12 @@ export class SharedCodexRoot {
     private steeringActive: boolean | undefined;
     private turnRevision = 0;
     private settingsRevision = 0;
-    private refreshing?: { signal: AbortSignal; connection: AbortSignal; promise: Promise<void> };
+    private refreshing?: { signal: AbortSignal; connection: AbortSignal; cancelOnDisconnect: boolean; promise: Promise<void> };
     private hubResync?: { signal: AbortSignal; promise: Promise<void> };
     private hubResyncRequired = false;
     private replayedConnection?: AbortSignal;
     private readyConnection?: AbortSignal;
+    private replayProgress = Promise.withResolvers<void>();
     private historyReplayAbort = new AbortController();
     private readonly attachedHistoryReads = new Map<string, { signal: AbortSignal; promise: Promise<unknown> }>();
     private archiveAttempt?: Promise<void>;
@@ -158,6 +160,7 @@ export class SharedCodexRoot {
             this.work = this.work.catch(() => {}).then(async () => {
                 await this.bound;
                 if (this.closed || this.stopping) return;
+                if (!await this.waitForReplayedConnection()) return;
                 if (this.host.attached && !await this.validateHistoryForDelivery()) return;
                 if (this.closed || this.stopping) return;
                 const id = localId ?? randomUUID();
@@ -214,17 +217,23 @@ export class SharedCodexRoot {
                 this.steeringActive = undefined;
                 this.publishedPlanId = undefined;
                 this.publishedCompactionIds = undefined;
-                await this.refresh(connection);
+                await this.refresh(connection, true);
                 if (!isCurrent()) return;
                 await this.refreshChildren(false, signal, connection);
                 if (!isCurrent()) return;
                 await this.queue.replay();
                 if (!isCurrent()) return;
                 this.hubResyncRequired = false;
-                this.replayedConnection = connection;
-                this.emitReadyWhenReplayed();
+                this.finishHistoryReplay(connection);
             })
-            .catch(error => { if (isCurrent()) { logger.debug('[Codex shared] hub resync', error); this.failAttached(); } })
+            .catch(async error => {
+                if (!isCurrent()) return;
+                logger.debug('[Codex shared] hub resync', error);
+                if (this.host.attached) { this.failAttached(); return; }
+                try { await delay(1_000, undefined, { signal: AbortSignal.any([signal, connection]), ref: false }); }
+                catch { return; }
+                if (isCurrent()) this.resyncHub();
+            })
             .finally(() => { if (this.hubResync?.promise === promise) this.hubResync = undefined; });
         this.hubResync = { signal, promise };
     }
@@ -280,9 +289,10 @@ export class SharedCodexRoot {
         try { await pending; } finally { this.projectingHistory.delete(pending); }
     }
 
-    private async backfillAttachedChild(threadId: string, projection: SharedCodexProjection, signal: AbortSignal): Promise<void> {
+    private async backfillAttachedChild(threadId: string, projection: SharedCodexProjection, signal: AbortSignal,
+        connection = this.session.getSocketConnectionSignal()): Promise<void> {
         if (signal.aborted) return;
-        const emission = AbortSignal.any([signal, this.session.getSocketConnectionSignal()]);
+        const emission = AbortSignal.any([signal, connection]);
         const backfill = { threadId, projection, signal };
         this.attachedChildBackfills.add(backfill);
         try {
@@ -351,7 +361,7 @@ export class SharedCodexRoot {
             ids => this.session.setSteerDeliveryState(ids, 'queued'));
         await this.queue.load();
         if (!await this.waitForArchiveRecovery()) throw new Error('Codex execution is stopping');
-        this.projection = new SharedCodexProjection(this.session, threadId, (id, content) => this.queue.committed(id, content),
+        this.projection = new SharedCodexProjection(this.session, threadId, (id, content, signal) => this.queue.committed(id, content, signal),
             undefined, async () => record(await this.client.request('thread/read', { threadId, includeTurns: false })).thread,
             (threadId, item) => this.asyncQuestions.observeItem(threadId, item));
         this.session.updateMetadata(metadata => ({ ...metadata, codexSessionId: threadId, capabilities: {
@@ -378,7 +388,7 @@ export class SharedCodexRoot {
             if (signal.aborted) continue;
             await this.refreshChildren(true, signal, connection);
             if (signal.aborted) continue;
-            if (!connection.aborted) this.replayedConnection = connection;
+            if (!connection.aborted) this.finishHistoryReplay(connection);
             else if (this.hubResyncRequired && !this.hubResync) this.resyncHub();
             return;
         }
@@ -398,6 +408,31 @@ export class SharedCodexRoot {
             || this.readyConnection === connection || !this.client.isInitialized()) return;
         this.readyConnection = connection;
         this.session.emitSessionReady();
+    }
+    private finishHistoryReplay(connection: AbortSignal): void {
+        this.replayedConnection = connection;
+        this.replayProgress.resolve();
+        this.replayProgress = Promise.withResolvers<void>();
+        this.emitReadyWhenReplayed();
+    }
+    private async waitForReplayedConnection(): Promise<AbortSignal | undefined> {
+        while (!this.closed && !this.stopping) {
+            const connection = this.session.getSocketConnectionSignal();
+            if (!connection.aborted && this.replayedConnection === connection) return connection;
+            // Keep live deliveries ordered while this socket restores history.
+            await this.replayProgress.promise;
+        }
+        return undefined;
+    }
+    private async publishLiveNotification(projection: SharedCodexProjection, method: string,
+        params: unknown, modelAtReceipt?: string, receivedAt?: number): Promise<void> {
+        for (;;) {
+            const connection = await this.waitForReplayedConnection();
+            if (!connection) return;
+            if (connection.aborted) continue;
+            await projection.notification(method, params, modelAtReceipt, receivedAt, connection);
+            if (!connection.aborted) return;
+        }
     }
     private publishSteering(): void {
         this.publishCompaction();
@@ -472,11 +507,13 @@ export class SharedCodexRoot {
             }
             if (this.host.attached && ['turn/started', 'turn/completed'].includes(method)) {
                 if (!await this.waitForArchiveRecovery()) return;
+                const connection = await this.waitForReplayedConnection();
+                if (!connection) return;
                 const signal = this.historyReplayAbort.signal;
-                await this.backfillAttachedChild(eventThread, projection, signal);
+                await this.backfillAttachedChild(eventThread, projection, signal, connection);
                 if (signal.aborted && !await this.waitForArchiveRecovery()) return;
             }
-            await projection.notification(method, params); return;
+            await this.publishLiveNotification(projection, method, params); return;
         }
         if (method === 'turn/completed') this.session.sendSessionEvent({ type: 'ready' });
         if (method === 'thread/name/updated' && (typeof p.threadName === 'string' || p.threadName === null)) {
@@ -504,8 +541,12 @@ export class SharedCodexRoot {
         if (method === 'thread/queue/changed') {
             for (const id of await this.queue.reconcile()) this.dequeuedInputs.add(id);
         }
-        if (this.host.attached && method === 'turn/started' && !this.stopping) await this.refresh();
-        await this.projection.notification(method, params, modelAtReceipt, receivedAt);
+        if (this.host.attached && method === 'turn/started' && !this.stopping) {
+            const connection = await this.waitForReplayedConnection();
+            if (!connection) return;
+            await this.refresh(connection);
+        }
+        await this.publishLiveNotification(this.projection, method, params, modelAtReceipt, receivedAt);
         if (this.host.attached && method === 'turn/completed' && !this.stopping) await this.refresh();
         this.publishCompaction(); this.alive();
     }
@@ -536,6 +577,7 @@ export class SharedCodexRoot {
                 const page = record(await this.client.request('thread/turns/list', {
                     threadId, sortDirection: 'desc', itemsView: 'full', limit: 1
                 }));
+                if (signal?.aborted) return {};
                 if (!Array.isArray(page.data)) throw new Error('Invalid Codex history');
                 thread.turns = [...page.data].reverse();
                 return thread;
@@ -551,32 +593,36 @@ export class SharedCodexRoot {
         } else thread = record(record(await this.client.request('thread/read', { threadId, includeTurns: true })).thread);
         return thread;
     }
-    private async readValidatedHistory(threadId: string, signal: AbortSignal): Promise<Record<string, unknown>> {
+    private async readValidatedHistory(threadId: string, signal: AbortSignal, epoch = signal): Promise<Record<string, unknown>> {
         if (!this.host.validateHistory) return this.readThread(threadId, false, signal);
         const previous = this.attachedHistoryReads.get(threadId);
         // Validate the snapshot in the same order as its native read, so an
         // older in-progress turn cannot be checked against a newer sealed one.
-        const promise = (previous?.signal === signal ? previous.promise.catch(() => {}) : Promise.resolve())
+        const promise = (previous?.signal === epoch ? previous.promise.catch(() => {}) : Promise.resolve())
             .then(async () => {
                 if (signal.aborted) return {};
                 const thread = await this.readThread(threadId, false, signal);
                 if (!signal.aborted) await this.host.validateHistory?.(threadId, thread);
                 return thread;
             });
-        this.attachedHistoryReads.set(threadId, { signal, promise });
+        this.attachedHistoryReads.set(threadId, { signal: epoch, promise });
         try { return await promise; }
         finally {
             if (this.attachedHistoryReads.get(threadId)?.promise === promise) this.attachedHistoryReads.delete(threadId);
         }
     }
-    refresh(connection = this.session.getSocketConnectionSignal()): Promise<void> {
+    refresh(connection = this.session.getSocketConnectionSignal(), cancelOnDisconnect = false): Promise<void> {
         const signal = this.historyReplayAbort.signal;
-        if (this.refreshing?.signal === signal && this.refreshing.connection === connection) return this.refreshing.promise;
-        const promise = this.refreshNow(signal, AbortSignal.any([signal, connection])).catch(error => {
-            if (!signal.aborted) { this.failAttached(); throw error; }
+        const previous = this.refreshing?.signal === signal ? this.refreshing : undefined;
+        if (previous?.connection === connection && (cancelOnDisconnect || !previous.cancelOnDisconnect)) return previous.promise;
+        const emission = AbortSignal.any([signal, connection]);
+        const readSignal = cancelOnDisconnect ? emission : signal;
+        const refresh = () => this.refreshNow(signal, emission, readSignal);
+        const promise = (previous ? previous.promise.catch(() => {}).then(refresh) : refresh()).catch(error => {
+            if (!readSignal.aborted) { this.failAttached(); throw error; }
         })
             .finally(() => { if (this.refreshing?.promise === promise) this.refreshing = undefined; });
-        this.refreshing = { signal, connection, promise };
+        this.refreshing = { signal, connection, cancelOnDisconnect, promise };
         return promise;
     }
     private async refreshValidatedHistory(): Promise<void> {
@@ -597,11 +643,11 @@ export class SharedCodexRoot {
         }
         return undefined;
     }
-    private async refreshNow(signal: AbortSignal, emission: AbortSignal): Promise<void> {
-        if (!this.threadId || signal.aborted || !this.client.isInitialized()) return;
+    private async refreshNow(signal: AbortSignal, emission: AbortSignal, readSignal: AbortSignal): Promise<void> {
+        if (!this.threadId || readSignal.aborted || !this.client.isInitialized()) return;
         const revision = this.turnRevision;
-        const thread = await this.readValidatedHistory(this.threadId, signal);
-        if (signal.aborted) return;
+        const thread = await this.readValidatedHistory(this.threadId, readSignal, signal);
+        if (readSignal.aborted) return;
         const turns = Array.isArray(thread.turns) ? thread.turns.map(record) : [];
         if (revision === this.turnRevision) {
             this.currentTurn = string(turns.find(turn => turn.status === 'inProgress')?.id);
@@ -622,20 +668,21 @@ export class SharedCodexRoot {
             }));
         }
         await this.projectHistory(this.projection, thread, emission);
-        if (signal.aborted) return;
+        if (readSignal.aborted) return;
         await this.queue.reconcile(); this.alive();
     }
     private async refreshChildren(subscribe: boolean, signal = this.historyReplayAbort.signal,
         connection = this.session.getSocketConnectionSignal()): Promise<void> {
         if (signal.aborted) return;
         const emission = AbortSignal.any([signal, connection]);
+        const readSignal = subscribe ? signal : emission;
         // 历史回放可省略，子代理发现与实时订阅仍需在重连后恢复。
         const replayHistory = !this.lazyHistory();
         let cursor: string | undefined;
         do {
             const page = record(await this.client.request('thread/list', { ancestorThreadId: this.threadId, cursor,
                 sourceKinds: ['subAgent', 'subAgentReview', 'subAgentCompact', 'subAgentThreadSpawn', 'subAgentOther'] }));
-            if (signal.aborted) return;
+            if (readSignal.aborted) return;
             for (const value of Array.isArray(page.data) ? page.data : []) {
                 const thread = record(value); const id = string(thread.id);
                 if (id && id !== this.threadId) this.ancestry.set(id, string(thread.parentThreadId) ?? null);
@@ -649,12 +696,12 @@ export class SharedCodexRoot {
         const loaded = new Set<string>(); cursor = undefined;
         if (subscribe && this.children.size) do {
             const page = record(await this.client.request('thread/loaded/list', { cursor }));
-            if (signal.aborted) return;
+            if (readSignal.aborted) return;
             for (const id of Array.isArray(page.data) ? page.data : []) if (typeof id === 'string') loaded.add(id);
             cursor = string(page.nextCursor);
         } while (cursor);
         for (const [id, projection] of this.children) {
-            if (signal.aborted) return;
+            if (readSignal.aborted) return;
             // Replaying a completed/unloaded child must not start its engine.
             try {
                 if (subscribe && loaded.has(id)) {
@@ -663,7 +710,7 @@ export class SharedCodexRoot {
                     await this.client.request('thread/resume', { threadId: id, excludeTurns: true });
                 }
                 if (replayHistory && (!emission.aborted || this.host.attached)) {
-                    const history = await this.readValidatedHistory(id, signal);
+                    const history = await this.readValidatedHistory(id, readSignal, signal);
                     if (emission.aborted) continue;
                     projection.reset(); await this.projectHistory(projection, history, emission);
                 }
@@ -1055,6 +1102,7 @@ export class SharedCodexRoot {
     }
     stopAccepting(): void {
         this.stopping = true; this.ready();
+        this.replayProgress.resolve();
         this.publishSteering();
         this.publishPlan();
         this.session.onReconnect(null); this.client.setTransportAbandonedHandler(null);

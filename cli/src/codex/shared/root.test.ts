@@ -709,6 +709,10 @@ describe('native readiness after Hub reconnect', () => {
         }] }));
         const delivered = new Set<string>();
         let newestSocket = false;
+        const liveId = 'live-completion';
+        f.send.mockImplementation(body => {
+            if (newestSocket && body.type === 'message' && body.message === liveId) delivered.add(liveId);
+        });
         vi.spyOn(f.session, 'sendUserMessage').mockImplementation((_, __, id) => {
             if (newestSocket && id) delivered.add(id);
         }).mockImplementationOnce(() => {
@@ -717,6 +721,8 @@ describe('native readiness after Hub reconnect', () => {
                 newestSocket = true;
                 if (pendingMetadata) f.replaceSocket();
                 else f.reconnect();
+                f.native.notify('item/completed', { threadId: 'thread', turnId: 'live-turn',
+                    item: { id: liveId, type: 'agentMessage', text: liveId } });
             });
         });
         let readyMessages: string[] = [];
@@ -731,6 +737,73 @@ describe('native readiness after Hub reconnect', () => {
         }
         await vi.waitFor(() => expect(ready).toHaveBeenCalledTimes(2));
         expect(readyMessages).toEqual(ids);
+        await f.drain();
+        expect([...delivered]).toEqual([...ids, liveId]);
+    });
+
+    it('keeps a pending Hub row behind an older missing turn when the replay socket drops during a ledger write', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        const queue = (f.root as unknown as { queue: SharedCodexQueue }).queue;
+        await queue.enqueue('pending', [{ type: 'text', text: 'pending' }]);
+        expect(f.native.queue[0]?.clientUserMessageId).toBe('pending');
+        f.native.thread.turns = ['older', 'pending'].map(id => ({ id: `turn-${id}`, status: 'completed', items: [{
+            id: `item-${id}`, type: 'userMessage', clientId: id, content: [{ type: 'text', text: id }]
+        }] }));
+        f.native.queue = [];
+
+        const ledger = queue as unknown as { save(): Promise<void> };
+        const originalSave = ledger.save.bind(queue);
+        const writing = Promise.withResolvers<void>();
+        const release = Promise.withResolvers<void>();
+        let writes = 0;
+        vi.spyOn(ledger, 'save').mockImplementation(async () => {
+            const write = originalSave();
+            if (++writes === 3) { writing.resolve(); await release.promise; }
+            await write;
+        });
+        let replacement = false;
+        const invoked = new Set<string>();
+        const accept = (id: string) => { if (replacement) invoked.add(id); };
+        f.consumed.mockImplementation((ids: string[]) => { for (const id of ids) accept(id); });
+        vi.spyOn(f.session, 'sendUserMessage').mockImplementation((_, __, id) => { if (id) accept(id); });
+        f.reconnect();
+        try {
+            await writing.promise;
+            replacement = true;
+            f.reconnect();
+        } finally {
+            release.resolve();
+        }
+        await vi.waitFor(() => expect(f.sessionReady).toHaveBeenCalledTimes(2));
+        expect([...invoked]).toEqual(['older', 'pending']);
+    });
+
+    it('stops fetching remaining native pages for a superseded Hub replay', async () => {
+        const f = await fixture();
+        await f.root.activate();
+        const entered = Promise.withResolvers<void>();
+        const firstPage = Promise.withResolvers<{ data: unknown[]; nextCursor: string }>();
+        const original = f.root.client.request.bind(f.root.client);
+        let pageCount = 0;
+        const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (method === 'thread/read') return { thread: { id: 'thread', historyMode: 'paginated' } };
+            if (method === 'thread/turns/list') {
+                if (++pageCount === 1) { entered.resolve(); return firstPage.promise; }
+                return { data: [] };
+            }
+            return original(method, params);
+        });
+        f.reconnect();
+        try {
+            await entered.promise;
+            f.reconnect();
+        } finally {
+            firstPage.resolve({ data: [], nextCursor: 'superseded' });
+        }
+        await vi.waitFor(() => expect(f.sessionReady).toHaveBeenCalledTimes(2));
+        expect(pageCount).toBe(2);
+        expect(request).not.toHaveBeenCalledWith('thread/turns/list', expect.objectContaining({ cursor: 'superseded' }));
     });
 
     it('waits for replacement-socket replay before emitting initial readiness', async () => {
