@@ -2176,6 +2176,55 @@ describe('cursorAcpRemoteLauncher', () => {
         }));
     });
 
+    it('trims leading assistant prose from a settled failure before surfacing it', async () => {
+        // Minor (2026-11-19): Cursor can append `Error: T: […]` after real
+        // assistant prose in the same message; .raw is the whole message, so
+        // the chat error / blocked summary must not just echo it back.
+        harness.promptMessages = [{
+            type: 'text',
+            text: 'All done, wrapping up the task.\nError: RetriableError: [resource_exhausted] quota hit'
+        }];
+        const queue = new MessageQueue2<EnhancedMode>(() => 'mode');
+        const client = makeClient() as unknown as ApiSessionClient & {
+            sendAgentMessage: ReturnType<typeof vi.fn>;
+        };
+        const session = new CursorSession({
+            api: {} as never,
+            client,
+            path: '/tmp/project',
+            logPath: '/tmp/log',
+            sessionId: null,
+            messageQueue: queue,
+            onModeChange: vi.fn(),
+            mode: 'remote',
+            startedBy: 'runner',
+            startingMode: 'remote',
+            permissionMode: 'default'
+        });
+        session.onSessionFoundWithProtocol = vi.fn();
+        queue.push('finish the task', { permissionMode: 'default' });
+        queue.close();
+
+        await cursorAcpRemoteLauncher(session);
+
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: 'Error: RetriableError: [resource_exhausted] quota hit'
+        }));
+        expect(client.sendAgentMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'error',
+            message: expect.stringContaining('wrapping up the task')
+        }));
+        expect(client.sendAgentMessage).toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY \{.*"status":"blocked".*\}/)
+        }));
+        expect(client.sendAgentMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+            type: 'message',
+            message: expect.stringMatching(/AGENT_NOTIFY_SUMMARY.*wrapping up the task/)
+        }));
+    });
+
     it('does not auto-bridge a settled text classification on the Continue attempt after tool side effects', async () => {
         // Audit (orchestrator-requested, 2026-11-19): the settled branch's
         // postToolAutoContinueUsed gate was only exercised via the thrown-error

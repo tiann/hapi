@@ -1199,7 +1199,12 @@ class CursorAcpRemoteLauncher extends RemoteLauncherBase {
                                 // whatever that callback last wrote, not null.
                                 const settled = (this.pendingStderrFailure ?? this.pendingTextFailure) as CursorAgentStreamFailure | null;
                                 if (settled && !this.turnHasModelError) {
-                                    const settledMessage: string = settled.raw;
+                                    // .raw can be a whole assistant response with the
+                                    // error marker buried in it (Cursor appends
+                                    // `Error: T: […]` after real prose) — use the
+                                    // trimmed snippet so the chat error / blocked
+                                    // summary carries the failure, not the response.
+                                    const settledMessage: string = rawSnippetForFailure(settled);
                                     // This path ends the turn (break below) without
                                     // retrying, same as the catch give-up branches —
                                     // it must surface and stamp Blocked the same way,
