@@ -1,5 +1,5 @@
 use hapi_wrapper_core::sio::{
-    client::{Client, Event},
+    client::{Client, Connection, Event},
     packet::{Packet, Payload},
 };
 use serde_json::json;
@@ -153,6 +153,85 @@ async fn real_server() {
     })
     .await
     .expect("Socket.IO interop timed out");
+    child.kill().await.unwrap();
+}
+
+async fn link(client: &Client, expected: Connection) {
+    client
+        .connection()
+        .wait_for(|state| *state == expected)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn session_hooks() {
+    let (archived, mut idle) = Client::start_session(
+        "http://127.0.0.1:9".into(),
+        vec![],
+        "fixture-token".into(),
+        "s".into(),
+        true,
+    );
+    assert_eq!(*archived.connection().borrow(), Connection::Stopped);
+    assert!(idle.recv().await.is_none());
+    assert!(!archived.is_connected());
+    assert!(!archived.emit("late", vec![]));
+    archived.request_connect();
+    assert_eq!(*archived.connection().borrow(), Connection::Stopped);
+    let Some(mut child) = spawn(server().stdout(Stdio::piped())) else {
+        return;
+    };
+    timeout(Duration::from_secs(12), async {
+        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        let port = lines.next_line().await.unwrap().unwrap();
+        let url = format!("http://127.0.0.1:{port}");
+        let headers = vec![("x-fixture".to_string(), "upgrade".to_string())];
+        let (denied, mut rejected) =
+            Client::start_session(url.clone(), headers.clone(), "rejected".into(), "s".into(), false);
+        for _ in 0..2 {
+            assert!(matches!(rejected.recv().await, Some(Event::ConnectError {message,fatal:true}) if message=="Invalid token"));
+            assert_eq!(*denied.connection().borrow(), Connection::Offline);
+            denied.request_connect();
+        }
+        assert!(matches!(rejected.recv().await, Some(Event::ConnectError {fatal:true,..})));
+        denied.disable_reconnect();
+        assert_eq!(*denied.connection().borrow(), Connection::Stopped);
+        assert!(rejected.recv().await.is_none());
+
+        let (client, mut events) =
+            Client::start_session(url.clone(), headers.clone(), "fixture-token".into(), "s".into(), false);
+        let mut watcher = client.connection();
+        assert_eq!(*watcher.borrow_and_update(), Connection::Offline);
+        connected(&mut events, 1).await;
+        link(&client, Connection::Online(0)).await;
+        client.request_connect();
+        assert!(client.emit("end", vec![]));
+        assert!(matches!(events.recv().await, Some(Event::Disconnected(reason)) if reason=="io server disconnect"));
+        assert_eq!(*client.connection().borrow(), Connection::Offline);
+        assert!(!client.is_connected());
+        assert!(client.emit("record", vec![json!("queued")]));
+        assert!(timeout(Duration::from_millis(300), events.recv()).await.is_err());
+        assert_eq!(*client.connection().borrow(), Connection::Offline);
+        client.request_connect();
+        connected(&mut events, 2).await;
+        link(&client, Connection::Online(1)).await;
+        let snapshot = client.emit_with_ack("snapshot", vec![], None).await.unwrap();
+        assert_eq!(snapshot, vec![json!({"received":["queued"],"connections":2})]);
+        assert!(client.emit("drop", vec![]));
+        assert!(matches!(events.recv().await, Some(Event::Disconnected(_))));
+        client.request_connect();
+        connected(&mut events, 3).await;
+        link(&client, Connection::Online(2)).await;
+        client.stop(Duration::from_secs(1));
+        assert_eq!(*client.connection().borrow(), Connection::Stopped);
+        assert!(matches!(events.recv().await, Some(Event::Disconnected(reason)) if reason=="io client disconnect"));
+        assert!(events.recv().await.is_none());
+        client.request_connect();
+        assert_eq!(*client.connection().borrow(), Connection::Stopped);
+    })
+    .await
+    .expect("Socket.IO session hooks timed out");
     child.kill().await.unwrap();
 }
 
