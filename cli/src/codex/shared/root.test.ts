@@ -499,6 +499,46 @@ it('resumes native child subscriptions when archive interrupts child discovery a
 });
 
 describe('externally attached root', () => {
+    it('restores an interrupted child backfill after Web archive fails without reconnecting', async () => {
+        const end = vi.fn(async () => {});
+        const f = await fixture({ attached: true, end });
+        await f.root.activate();
+        const child = { id: 'child', parentThreadId: 'thread', turns: [{
+            id: 'child-turn', status: 'completed', items: [
+                { id: 'child-answer', type: 'agentMessage', text: 'recovered child trace' }
+            ]
+        }] };
+        const oldRead = Promise.withResolvers<{ thread: typeof child }>();
+        const entered = Promise.withResolvers<void>();
+        const original = f.root.client.request.bind(f.root.client);
+        let reads = 0;
+        vi.spyOn(f.root.client, 'request').mockImplementation((method, args) => {
+            const params = args as Record<string, unknown>;
+            if (method === 'thread/read' && params.threadId === 'child') {
+                if (params.includeTurns && ++reads === 1) { entered.resolve(); return oldRead.promise; }
+                return Promise.resolve({ thread: child });
+            }
+            return original(method, args);
+        });
+        f.native.notify('thread/started', { thread: child });
+        f.native.notify('turn/completed', { threadId: 'child', turn: child.turns[0] });
+        try {
+            await entered.promise;
+            const confirmed = holdForkMappings(f.root);
+            vi.spyOn(f.session, 'waitForMetadataConfirmation').mockResolvedValueOnce(false);
+            await expect(f.rpc.get(RPC_METHODS.KillSession)!({})).rejects.toThrow('Could not confirm Codex history metadata');
+            confirmed();
+            await vi.waitFor(() => expect(f.send).toHaveBeenCalledWith(expect.objectContaining({
+                type: 'agent-run-trace', agentId: 'child',
+                message: expect.objectContaining({ message: 'recovered child trace' })
+            }), expect.any(String)));
+            expect(end).not.toHaveBeenCalled();
+        } finally {
+            oldRead.resolve({ thread: child });
+            await f.drain();
+        }
+    });
+
     it.each(['pending', 'resolved', 'archived'] as const)('handles a %s native question during a Web archive', async state => {
         const end = vi.fn(async () => {});
         const f = await fixture({ attached: true, end });

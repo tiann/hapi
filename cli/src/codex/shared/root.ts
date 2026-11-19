@@ -428,7 +428,13 @@ export class SharedCodexRoot {
                 this.children.set(eventThread, projection);
             }
             if (this.host.attached && ['turn/started', 'turn/completed'].includes(method)) {
-                await this.projectHistory(projection, await this.readThread(eventThread));
+                const signal = this.historyReplayAbort.signal;
+                try {
+                    await this.projectHistory(projection, await this.readThread(eventThread, false, signal), signal);
+                } catch (error) {
+                    if (!signal.aborted) throw error;
+                }
+                if (signal.aborted && !await this.waitForArchiveRecovery()) return;
             }
             await projection.notification(method, params); return;
         }
@@ -1038,7 +1044,10 @@ export class SharedCodexRoot {
                 void projected
                     .then(async () => {
                         if (retrySignal.aborted) return;
-                        if (!this.hubResyncRequired) await this.refresh();
+                        if (!this.hubResyncRequired) {
+                            await this.refresh();
+                            if (this.host.attached && this.children.size) await this.refreshChildren(false, retrySignal);
+                        }
                         else if (this.hubResync?.signal !== retrySignal) this.resyncHub();
                     })
                     .catch(error => logger.debug('[Codex shared] history refresh after archive failure', error));
