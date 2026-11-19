@@ -228,18 +228,22 @@ export abstract class BasePermissionHandler<TResponse extends { id: string }, TR
     ): void {
         this.pendingRequests.set(id, { ...handlers, toolName, input });
         this.onRequestRegistered(id, toolName, input);
-        this.client.updateAgentState((currentState) => ({
-            ...currentState,
-            requests: {
-                ...currentState.requests,
-                [id]: {
-                    tool: toolName,
-                    ...(toolCallId ? { toolCallId } : {}),
-                    arguments: input,
-                    createdAt: Date.now()
+        const createdAt = Date.now();
+        this.client.updateAgentState((currentState) => {
+            if (currentState.requests && Object.hasOwn(currentState.requests, id)) return currentState;
+            return {
+                ...currentState,
+                requests: {
+                    ...currentState.requests,
+                    [id]: {
+                        tool: toolName,
+                        ...(toolCallId ? { toolCallId } : {}),
+                        arguments: input,
+                        createdAt
+                    }
                 }
-            }
-        }));
+            };
+        });
     }
 
     protected finalizeRequest(id: string, completion: PermissionCompletion): void {

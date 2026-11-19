@@ -259,6 +259,20 @@ class GatedPermissionHandler extends BasePermissionHandler<TestResponse, { ok: t
 // tiann/hapi#2415: orphan cleanup must not cancel a request whose first answer
 // is still awaiting handlePermissionResponse.
 describe('BasePermissionHandler overlapping answers', () => {
+    it('keeps the original pending request when an ACK retry rebases onto a newer state', () => {
+        let update: ((current: AgentState) => AgentState) | undefined
+        const handler = new GatedPermissionHandler({
+            rpcHandlerManager: { registerHandler: () => {} },
+            updateAgentState: (fn) => { update = fn }
+        })
+        handler.register('req-1', 'AskUserQuestion', { questions: [] })
+        const written = update!({ requests: {} })
+        // The Hub committed at N+1, then another writer advanced to N+2.
+        const newer = { ...written, steeringActive: true }
+        expect(update!(newer)).toBe(newer)
+        expect(update!({ requests: {} }).requests?.['req-1']?.createdAt).toBe(written.requests?.['req-1']?.createdAt)
+    })
+
     it('preserves the first answer completion when a second answer arrives mid-flight', async () => {
         let agentState: AgentState = { requests: {}, completedRequests: {} } as AgentState
         let rpcHandler: ((response: TestResponse) => Promise<void>) | undefined

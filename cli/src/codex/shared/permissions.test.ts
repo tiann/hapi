@@ -6,18 +6,26 @@ import { SharedCodexPermissions } from './permissions';
 
 function fixture() {
     let state: AgentState = {};
+    let update: ((state: AgentState) => AgentState) | undefined;
     const handlers = new Map<string, (raw: unknown) => Promise<unknown>>();
     const send = vi.fn();
     const session = { getMetadata: () => ({ codexSessionId: 'thread' }), sendAgentMessage: send,
-        updateAgentState: (fn: (state: AgentState) => AgentState) => { state = fn(state); },
+        updateAgentState: (fn: (state: AgentState) => AgentState) => { update = fn; state = fn(state); },
         rpcHandlerManager: { registerHandler: (key: string, fn: (raw: unknown) => Promise<unknown>) => handlers.set(key, fn) } } as unknown as ApiSessionClient;
     const respond = vi.fn();
     const permissions = new SharedCodexPermissions(session, { respond } as unknown as CodexAppServerClient, 'generation');
     const request = { id: 1, method: 'item/tool/requestUserInput', params: { threadId: 'thread', turnId: 'turn', itemId: 'call',
         questions: [{ id: 'choice', header: 'Choose', question: 'Which?', options: [{ label: 'A', description: 'A' }, { label: 'B', description: 'B' }] }] } };
-    return { permissions, request, respond, handlers, send, state: () => state };
+    return { permissions, request, respond, handlers, send, state: () => state, reapply: (newer: AgentState) => update!(newer) };
 }
 describe('shared request arbitration', () => {
+    it('preserves a previously committed question when a later Hub version is used for retry', () => {
+        const f = fixture();
+        f.permissions.receive(f.request);
+        const newer = { ...f.state(), steeringActive: true };
+        expect(f.reapply(newer)).toBe(newer);
+    });
+
     it.each([{ notes: [] }, { notes: ['user_note: custom answer'] }])('preserves isOther and canonical other answers (%j) without claiming a winner', async ({ notes }) => {
         const f = fixture();
         const request = { ...f.request, params: { ...f.request.params, isBlocking: true,

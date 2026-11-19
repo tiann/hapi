@@ -72,9 +72,13 @@ export class SharedCodexPermissions {
             // requestUserInput is a server request, not a native transcript item.
             // Persist its lifecycle so resolution cannot erase the question card.
             if (pending.userInput) this.questionEvent(pending);
-            this.session.updateAgentState(state => ({ ...state, requests: { ...state.requests,
-                [key]: { tool, toolCallId: pending.toolCallId, arguments: input, createdAt: Date.now() }
-            } }));
+            const createdAt = Date.now();
+            this.session.updateAgentState(state => {
+                if (state.requests && Object.hasOwn(state.requests, key)) return state;
+                return { ...state, requests: { ...state.requests,
+                    [key]: { tool, toolCallId: pending.toolCallId, arguments: input, createdAt }
+                } };
+            });
         });
         registerAppServerPermissionHandlers({
             client: { registerRequestHandler: (method, handler) => { handlers.set(method, handler); } },
