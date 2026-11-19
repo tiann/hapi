@@ -2,6 +2,7 @@
 **/node_modules/
 
 # Build output
+/target/
 **/dist/
 **/.vitepress/cache/
 **/dist-exe/

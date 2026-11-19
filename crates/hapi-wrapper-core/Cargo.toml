@@ -1,0 +1,21 @@
+[package]
+name = "hapi-wrapper-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.54", features = ["rt", "macros", "net", "time", "sync", "fs"] }
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"], default-features = false }
+rustls = { version = "0.23", features = ["ring", "std", "tls12"], default-features = false }
+rustls-native-certs = "0.8"
+hyper = "1.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+futures-util = { version = "0.3", features = ["sink", "std"], default-features = false }
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tokio = { version = "1.54", features = ["test-util", "process", "io-util"] }
+tokio-rustls = { version = "0.26", features = ["ring"], default-features = false }
+proptest = "1.12"
+tempfile = "3"
