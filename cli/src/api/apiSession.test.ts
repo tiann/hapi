@@ -2435,6 +2435,43 @@ describe('ApiSessionClient metadata cancellation and reconnect ordering', () => 
         }
     })
 
+    it('confirms fork mappings even when a later title ACK is still pending', async () => {
+        socketHarness.sockets.length = 0
+        const client = new ApiSessionClient('token', createSession({
+            namespace: 'default',
+            metadata: { path: '/tmp', host: 'h', flavor: 'codex' }
+        }))
+        const socket = socketHarness.sockets[0]!
+        const historyAck = deferred<void>()
+        const titleStarted = deferred<void>()
+        const titleAck = deferred<void>()
+        socket.emitWithAckImpl = async (event, payload) => {
+            if (event !== 'update-metadata') return {}
+            const req = payload as { expectedVersion: number; metadata: Metadata }
+            if (req.metadata.name) {
+                titleStarted.resolve()
+                await titleAck.promise
+            } else {
+                await historyAck.promise
+            }
+            return { result: 'success', version: req.expectedVersion + 1, metadata: req.metadata }
+        }
+        try {
+            client.updateMetadata(current => ({ ...current, conversationHistoryPoints: { message: true } }))
+            client.updateMetadata(current => ({ ...current, name: 'title' }))
+            const confirmed = client.waitForMetadataConfirmation(
+                () => client.getMetadata()?.conversationHistoryPoints?.message === true, 1_000)
+            historyAck.resolve()
+            await titleStarted.promise
+            expect(await confirmed).toBe(true)
+            expect(client.getMetadata()?.name).toBeUndefined()
+        } finally {
+            historyAck.resolve()
+            titleAck.resolve()
+            client.close()
+        }
+    })
+
     it('skips an unchanged Codex history write queued while the first ACK is pending', async () => {
         socketHarness.sockets.length = 0
         const client = new ApiSessionClient('token', createSession({

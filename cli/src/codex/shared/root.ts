@@ -1020,7 +1020,7 @@ export class SharedCodexRoot {
                     // once there is no unconfirmed fork metadata to preserve.
                     return remaining > 0 && (this.session.hubArchived
                         || !this.projection?.hasUnpublishedHistory()
-                        || (await this.session.flushMetadata(remaining) && !this.projection?.hasUnpublishedHistory()));
+                        || await this.session.waitForMetadataConfirmation(() => !this.projection?.hasUnpublishedHistory(), remaining));
                 }),
                 new Promise<boolean>(resolve => {
                     timer = setTimeout(() => resolve(false), ARCHIVE_HISTORY_BUDGET_MS);

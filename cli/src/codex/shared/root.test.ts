@@ -103,7 +103,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         rpcHandlerManager: { registerHandler: (name: string, handler: (raw: unknown) => Promise<unknown>) => rpc.set(name, handler) },
         sendSessionEvent: events, sendAgentMessage: send, emitSessionReady: sessionReady,
         sendUserMessage() {}, emitMessagesConsumed: consumed, emitSteerIndeterminate: uncertain, syncNativeQueuedMessage() {},
-        sendSessionDeath() {}, async flush() {}, async flushMetadata() { return true; }, close() {}
+        sendSessionDeath() {}, async flush() {}, async waitForMetadataConfirmation() { return true; }, close() {}
     } as unknown as ApiSessionClient;
     const end = opts?.end ?? (async () => { throw new Error('Unexpected root archive'); });
     const root = new SharedCodexRoot({ session, sessionInfo: { agentState: state }, workingDirectory: directory } as SessionBootstrapResult, {
@@ -186,7 +186,7 @@ it('persists replayed fork points before acknowledging Web archive without a Run
     }));
     const ack = Promise.withResolvers<boolean>();
     const confirmForkMappings = holdForkMappings(f.root);
-    const flush = vi.spyOn(f.session, 'flushMetadata').mockReturnValueOnce(ack.promise);
+    const flush = vi.spyOn(f.session, 'waitForMetadataConfirmation').mockReturnValueOnce(ack.promise);
     let archive: Promise<unknown> | undefined;
     const send = vi.spyOn(f.session, 'sendUserMessage').mockImplementationOnce(() => {
         archive = f.rpc.get(RPC_METHODS.KillSession)!({});
@@ -208,7 +208,7 @@ it('keeps Web archive retryable if the history metadata is not confirmed', async
     const f = await fixture({ end });
     await f.root.activate();
     const confirmForkMappings = holdForkMappings(f.root);
-    const flush = vi.spyOn(f.session, 'flushMetadata').mockResolvedValueOnce(false);
+    const flush = vi.spyOn(f.session, 'waitForMetadataConfirmation').mockResolvedValueOnce(false);
     const archive = f.rpc.get(RPC_METHODS.KillSession)!;
 
     await expect(archive({})).rejects.toThrow('Could not confirm Codex history metadata');
@@ -223,7 +223,7 @@ it('archives through Web without draining unrelated writes when fork metadata is
     const end = vi.fn(async () => {});
     const f = await fixture({ end });
     await f.root.activate();
-    const flush = vi.spyOn(f.session, 'flushMetadata').mockResolvedValue(false);
+    const flush = vi.spyOn(f.session, 'waitForMetadataConfirmation').mockResolvedValue(false);
     await expect(f.rpc.get(RPC_METHODS.KillSession)!({})).resolves.toEqual({ success: true });
     expect(flush).not.toHaveBeenCalled();
     expect(end).toHaveBeenCalledOnce();
@@ -296,7 +296,7 @@ it('rejects attached controls and drops a deferred send when archive succeeds', 
     const read = Promise.withResolvers<{ thread: typeof f.native.thread }>();
     const ack = Promise.withResolvers<boolean>();
     const confirmForkMappings = holdForkMappings(f.root);
-    const flush = vi.spyOn(f.session, 'flushMetadata').mockReturnValueOnce(ack.promise);
+    const flush = vi.spyOn(f.session, 'waitForMetadataConfirmation').mockReturnValueOnce(ack.promise);
     const request = vi.spyOn(f.root.client, 'request').mockReturnValueOnce(read.promise);
     const refresh = vi.spyOn(f.root, 'refresh');
     const settings = f.rpc.get(RPC_METHODS.SetSessionConfig)!({ model: 'must-not-apply' });
@@ -328,7 +328,7 @@ it('delivers an attached Web prompt once under its original ID after archive fai
     const ack = Promise.withResolvers<boolean>();
     const request = vi.spyOn(f.root.client, 'request').mockReturnValueOnce(read.promise);
     holdForkMappings(f.root);
-    const flush = vi.spyOn(f.session, 'flushMetadata').mockReturnValueOnce(ack.promise);
+    const flush = vi.spyOn(f.session, 'waitForMetadataConfirmation').mockReturnValueOnce(ack.promise);
     f.submit('keep this prompt', 'web-message-id');
     await vi.waitFor(() => expect(request).toHaveBeenCalledWith('thread/read', expect.anything()));
     const archive = expect(f.rpc.get(RPC_METHODS.KillSession)!({})).rejects.toThrow('Could not confirm Codex history metadata');
@@ -366,7 +366,7 @@ it('keeps an offline Runner archive unconfirmed while fork metadata is pending',
     const send = vi.spyOn(f.session, 'sendUserMessage');
     await f.root.refresh();
     expect(send).toHaveBeenCalledWith('prompt', undefined, 'message');
-    const flush = vi.spyOn(f.session, 'flushMetadata').mockResolvedValue(false);
+    const flush = vi.spyOn(f.session, 'waitForMetadataConfirmation').mockResolvedValue(false);
     await expect(f.root.archiveFromRunner()).rejects.toThrow('Could not confirm Codex history metadata');
     expect(flush).toHaveBeenCalledOnce();
     expect(end).not.toHaveBeenCalled();
@@ -424,7 +424,7 @@ it('retries initial child discovery before activation when the Runner cannot arc
     try {
         await discovery.promise;
         const confirm = holdForkMappings(f.root);
-        vi.spyOn(f.session, 'flushMetadata').mockResolvedValueOnce(false);
+        vi.spyOn(f.session, 'waitForMetadataConfirmation').mockResolvedValueOnce(false);
         await expect(f.root.archiveFromRunner()).rejects.toThrow('Could not confirm Codex history metadata');
         confirm();
     } finally {
@@ -446,7 +446,7 @@ it('restarts the complete Hub reconnect on the same connection after archive fai
     const olderRead = Promise.withResolvers<{ thread: typeof f.native.thread }>();
     const request = vi.spyOn(f.root.client, 'request').mockReturnValueOnce(olderRead.promise);
     holdForkMappings(f.root);
-    vi.spyOn(f.session, 'flushMetadata').mockResolvedValueOnce(false);
+    vi.spyOn(f.session, 'waitForMetadataConfirmation').mockResolvedValueOnce(false);
     try {
         f.reconnect();
         expect(request).toHaveBeenCalledWith('thread/read', expect.anything());
@@ -483,7 +483,7 @@ it('resumes native child subscriptions when archive interrupts child discovery a
     });
     const initialize = vi.spyOn(f.root.client, 'initialize');
     holdForkMappings(f.root);
-    vi.spyOn(f.session, 'flushMetadata').mockResolvedValueOnce(false);
+    vi.spyOn(f.session, 'waitForMetadataConfirmation').mockResolvedValueOnce(false);
     try {
         f.native.initialized = false;
         f.native.abandoned();
@@ -505,7 +505,7 @@ describe('externally attached root', () => {
         await f.root.activate();
         const ack = Promise.withResolvers<boolean>();
         const confirmForkMappings = holdForkMappings(f.root);
-        const flush = vi.spyOn(f.session, 'flushMetadata').mockReturnValueOnce(ack.promise);
+        const flush = vi.spyOn(f.session, 'waitForMetadataConfirmation').mockReturnValueOnce(ack.promise);
         const archive = f.rpc.get(RPC_METHODS.KillSession)!({});
         const settled = state === 'archived'
             ? expect(archive).resolves.toEqual({ success: true })

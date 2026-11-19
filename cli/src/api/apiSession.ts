@@ -915,6 +915,7 @@ if (isReconnect) {
         this.metadata = parsed.data
         this.reconcileCommittedRewindCursor(this.metadata)
         this.metadataVersion = version
+        this.emit('metadata-confirmed')
         // #1910: hub may archive via metadata when KillSession cannot reach
         // this CLI. Stop reconnect immortality and let runners exit instead
         // of sitting as PPID=1 orphans.
@@ -1536,6 +1537,7 @@ if (isReconnect) {
                         },
                         applyVersion: (version) => {
                             this.metadataVersion = version
+                            this.emit('metadata-confirmed')
                         },
                         logInvalidValue: (context, version) => {
                             const suffix = context === 'success' ? 'ack' : 'version-mismatch ack'
@@ -1709,6 +1711,24 @@ if (isReconnect) {
         return await this.drainLock(this.metadataLock, timeoutMs)
     }
 
+    waitForMetadataConfirmation(matches: () => boolean, timeoutMs: number): Promise<boolean> {
+        if (this.state !== 'active' || timeoutMs <= 0) return Promise.resolve(false)
+        if (matches()) return Promise.resolve(true)
+        return new Promise(resolve => {
+            const finish = (confirmed: boolean) => {
+                clearTimeout(timer)
+                this.off('metadata-confirmed', onMetadata)
+                this.off('session-client-closed', onClose)
+                resolve(confirmed)
+            }
+            const onMetadata = () => { if (matches()) finish(true) }
+            const onClose = () => finish(false)
+            const timer = setTimeout(onClose, timeoutMs)
+            this.on('metadata-confirmed', onMetadata)
+            this.on('session-client-closed', onClose)
+        })
+    }
+
     async flush(options?: { timeoutMs?: number }): Promise<boolean> {
         const deadlineMs = Date.now() + (options?.timeoutMs ?? 5_000)
         const remainingMs = () => Math.max(0, deadlineMs - Date.now())
@@ -1763,6 +1783,7 @@ if (isReconnect) {
             return
         }
         this.state = 'closed'
+        this.emit('session-client-closed')
         this.materializationAbortController?.abort()
         this.materializationAbortController = null
         this.materializationRetryAbortController?.abort()
