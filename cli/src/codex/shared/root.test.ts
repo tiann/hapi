@@ -101,8 +101,15 @@ it.each([false, true])('observes effective attached desktop Ultrafast without ov
     if (superseded) f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: { model: 'mock', serviceTier: 'priority' } });
     release(); await f.drain();
     await vi.waitFor(() => expect((f.root as unknown as { attachedTierObservation?: Promise<void> }).attachedTierObservation).toBeUndefined());
-    (f.root as unknown as { alive(): void }).alive();
     expect(keepAlive.mock.lastCall?.[2]?.serviceTier).toBe(superseded ? 'fast' : 'ultrafast');
+});
+
+it('keeps a reconnect snapshot authoritative over the stale control tier', async () => {
+    const f = await fixture({ settingsFor: () => ({ model: 'mock', serviceTier: 'priority', collaborationMode: { mode: 'plan' } }) });
+    await f.root.activate();
+    f.native.settings.serviceTier = 'ultrafast';
+    await (f.root as unknown as { reconnect(): Promise<void> }).reconnect();
+    expect(f.root.hasUltrafastTier).toBe(true);
 });
 
 it('keeps a fresh resume tier authoritative over cached selected settings', async () => {

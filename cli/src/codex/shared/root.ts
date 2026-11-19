@@ -442,7 +442,10 @@ export class SharedCodexRoot {
                 const revision = this.settingsRevision;
                 try {
                     const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, Date.now() + 10_000));
-                    if (!this.closed && !this.stopping && this.settingsRevision === revision) this.acceptSettings(snapshot, true);
+                    if (!this.closed && !this.stopping && this.settingsRevision === revision) {
+                        this.acceptSettings(snapshot, true);
+                        this.alive();
+                    }
                 } catch (error) { logger.debug('[Codex attached] effective tier snapshot unavailable', error); }
             }
         })().finally(() => { this.attachedTierObservation = undefined; });
@@ -640,8 +643,8 @@ export class SharedCodexRoot {
                     const settingsRevision = this.settingsRevision;
                     const response = record(await this.client.request('thread/resume', { threadId: this.threadId, excludeTurns: true }));
                     const observedSettings = this.settingsRevision !== settingsRevision;
-                    this.acceptSettings(response, true);
                     if (!observedSettings) this.acceptSettings(this.host.settingsFor(this.threadId) ?? {}, false);
+                    this.acceptSettings(response, true);
                     this.projection.reset(); await this.refresh(); this.queue.replay(); await this.refreshChildren(true);
                     return;
                 } catch (error) {

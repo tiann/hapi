@@ -369,11 +369,13 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             if (request.method === 'thread/resume' && threadId && (tier.params.serviceTier === 'ultrafast' || root.session.getMetadata()?.codexTierConfirmationPending === true)) pendingAdmission.add(threadId);
             return { ...request, params: root.config({ ...tier.params, ...(request.method === 'thread/fork' ? { deferGoalContinuation: true } : {}) }) };
         } catch (error) {
-            if (request.method === 'thread/resume' && threadId) resumingThreads.delete(threadId);
+            await root.close(request.method !== 'thread/resume');
             const binding = runtime.sessions[root.session.sessionId];
             if (binding) binding.active = false;
             runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== root.session.sessionId);
-            await persist(); prepared.delete(root); await root.close(request.method !== 'thread/resume'); throw error;
+            await persist(); prepared.delete(root);
+            if (request.method === 'thread/resume' && threadId) resumingThreads.delete(threadId);
+            throw error;
         }
     });
     const after = (request: Envelope, response: Envelope, connection: string): Promise<void | Envelope[]> => operation(async () => {
@@ -386,11 +388,13 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         const reservation = reservations.get(key(connection, request)); reservations.delete(key(connection, request));
         if (reservation) {
             if (response.error) {
-                if (reservation.resumeId) resumingThreads.delete(reservation.resumeId);
+                await reservation.root.close(!reservation.resumeId);
                 if (reservation.resumeId) pendingAdmission.delete(reservation.resumeId);
                 const binding = runtime.sessions[reservation.root.session.sessionId]; if (binding) binding.active = false;
                 runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== reservation.root.session.sessionId);
-                await persist(); prepared.delete(reservation.root); await reservation.root.close(!reservation.resumeId); return;
+                await persist(); prepared.delete(reservation.root);
+                if (reservation.resumeId) resumingThreads.delete(reservation.resumeId);
+                return;
             }
             await bind(reservation.root, record(response.result), true, undefined, request.method === 'thread/start', reservation.serviceTierExplicit, reservation.requestedUltrafast);
             if (reservation.resumeId) resumingThreads.delete(reservation.resumeId);

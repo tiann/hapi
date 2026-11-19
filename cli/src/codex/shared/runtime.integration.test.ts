@@ -101,6 +101,15 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             original.abort.abort(); await original.done;
             await configure('default');
             const second = await start();
+            const { SharedCodexRoot } = await import('./root');
+            const originalClose = SharedCodexRoot.prototype.close;
+            let enteredClose!: () => void, releaseClose!: () => void;
+            const closingEntered = new Promise<void>(resolve => { enteredClose = resolve; });
+            const closingGate = new Promise<void>(resolve => { releaseClose = resolve; });
+            const closing = vi.spyOn(SharedCodexRoot.prototype, 'close').mockImplementationOnce(async function(this: InstanceType<typeof SharedCodexRoot>, archived) {
+                enteredClose(); await closingGate; return originalClose.call(this, archived);
+            });
+            extraSpies.push(closing); releaseLaunch = releaseClose;
             const concurrent = new CodexAppServerClient({ endpoint: second.runtime.endpoint, token: second.runtime.token });
             clients.push(concurrent); await initializeSharedClient(concurrent);
             let enteredConfig!: () => void, releaseConfig!: () => void;
@@ -114,7 +123,13 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             await enteredRead;
             try { await expect(concurrent.request('thread/resume', { threadId, excludeTurns: true })).rejects.toThrow('already being attached'); }
             finally { releaseConfig(); }
+            await closingEntered;
+            try {
+                expect(second.runtime.sessions[original.sessionId].active).toBe(true);
+                await expect(concurrent.request('thread/resume', { threadId, excludeTurns: true })).rejects.toThrow('already being attached');
+            } finally { releaseClose(); }
             await expect(firstResume).rejects.toThrow('fixture concurrent config unavailable');
+            closing.mockRestore();
             failConfig.mockRestore(); failConfig = undefined;
             failConfig = vi.spyOn(CodexAppServerClient.prototype, 'readConfig').mockRejectedValueOnce(new Error('fixture config unavailable'));
             await expect(second.client.request('thread/resume', { threadId, excludeTurns: true })).rejects.toThrow('fixture config unavailable');
@@ -135,7 +150,6 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                 return originalRequest.call(this, method, params) as Promise<T>;
             });
             extraSpies.push(failSettings);
-            const { SharedCodexRoot } = await import('./root');
             const originalConfirm = SharedCodexRoot.prototype.confirmUltrafastLaunch;
             let entered!: (threadId: string) => void;
             const confirming = new Promise<string>(resolve => { entered = resolve; });
