@@ -175,3 +175,44 @@ describe('future-scheduled messages leave the blocker alone (#1717)', () => {
         expect(cache.getSession(session.id)?.lastNotify).toBeNull()
     })
 })
+
+describe('startup notify backfill (#1717)', () => {
+    it('does not treat a future-scheduled reply as an answer', async () => {
+        // `MessageService.sendMessage` withholds a future-scheduled message
+        // from the agent, so it has answered nothing. Stopping the scan on it
+        // buries an unanswered footer on restart — the same blind spot the
+        // live path had at `markMessageQueued`.
+        const { SyncEngine } = await import('./syncEngine')
+        const { RpcRegistry } = await import('../socket/rpcRegistry')
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const session = engine.getOrCreateSession(
+            'backfill-scheduled',
+            { path: '/tmp/project', host: 'localhost' },
+            null,
+            'default'
+        )
+        const now = Date.now()
+        const footer = 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs a key' })
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'assistant', message: { content: [{ type: 'text', text: footer }] } }
+            }
+        }, undefined, null, now - 1_000)
+        // Queued for an hour from now: the agent has not seen it.
+        store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'here is the key' },
+            meta: { sentFrom: 'webapp' }
+        }, 'later-1', now + 3_600_000, now)
+
+        const stamped = engine.backfillRecentNotifySignals({ now })
+
+        expect(stamped).toBe(1)
+        expect(engine.getSession(session.id)?.lastNotify?.status).toBe('blocked')
+    })
+})

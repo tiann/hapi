@@ -492,6 +492,7 @@ export class SyncEngine {
      * Returns true when a footer was found and stamped.
      */
     private restoreNotifySignalFromTranscript(sessionId: string): boolean {
+        const now = Date.now()
         const scanned = this.store.messages.getMessages(sessionId, NOTIFY_BACKFILL_MESSAGE_SCAN)
         // Re-order by message time before scanning. `getMessages` sorts by
         // insertion `seq`, but replayed transcripts keep their original
@@ -510,7 +511,12 @@ export class SyncEngine {
             // Stop at the newest operator prompt. Anything older was already
             // answered, and clear-on-new-turn deliberately erased it — a
             // restart must not resurrect a blocker the operator dealt with.
-            if (isOperatorReplyMessage(message.content)) break
+            // A future-scheduled reply is withheld from the agent by
+            // `MessageService.sendMessage`, so it has answered nothing. Stopping
+            // on it would bury an unanswered footer on restart — the same blind
+            // spot the live path has at `markMessageQueued`.
+            const futureScheduled = message.scheduledAt != null && message.scheduledAt > now
+            if (!futureScheduled && isOperatorReplyMessage(message.content)) break
             const signal = extractSessionNotifySignal(message.content, message.createdAt)
             if (!signal) continue
             this.sessionCache.setSessionLastNotify(sessionId, signal)
@@ -3889,6 +3895,11 @@ export class SyncEngine {
             if (invalidated) {
                 const todos = this.store.messages.getAllMessages(sessionId).map(m => extractTodoWriteTodosFromMessageContent(m.content)).filter(Boolean).at(-1) ?? null
                 this.store.sessions.replaceSessionTodos(sessionId, todos, namespace)
+                // OpenCode rewinds here rather than through
+                // `truncateHubTranscriptFrom`, so it needs the same notify
+                // reconcile: a rollback starts no new turn, and the refresh
+                // below would otherwise restore the deleted footer's signal.
+                this.reconcileNotifySignalAfterTruncate(sessionId)
             }
             return next
         })
