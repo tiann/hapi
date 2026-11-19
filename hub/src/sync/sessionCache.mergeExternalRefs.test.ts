@@ -56,7 +56,12 @@ describe('mergeSessionMetadataForSessionMerge externalRefs', () => {
         expect(merged.externalRefs).toEqual(replacement)
     })
 
-    it('lets an explicit empty externalRefs array clear the old refs', () => {
+    // Review finding (hapi#2147, follow-up): an explicit `externalRefs: []`
+    // on the surviving row only records that row unlinking its *own* prior
+    // ref — it says nothing about a different, about-to-be-deleted session's
+    // independent links. Treating it as "nothing to preserve" used to drop
+    // the old row's refs for good the instant mergeSessions deletes it.
+    it('unions in the old row\'s refs even when the new row explicitly cleared its own', () => {
         const oldMetadata = {
             path: '/old',
             host: 'old-host',
@@ -67,6 +72,44 @@ describe('mergeSessionMetadataForSessionMerge externalRefs', () => {
             host: 'new-host',
             externalRefs: []
         }
+
+        const merged = mergeSessionMetadataForSessionMerge(oldMetadata, newMetadata) as Record<string, unknown>
+
+        expect(merged.externalRefs).toEqual([prRef])
+    })
+
+    it('preserves the old row\'s issue link when the target just removed its only PR', () => {
+        const issueRef = {
+            kind: 'github_issue' as const,
+            repo: 'tiann/hapi',
+            number: 42,
+            url: 'https://github.com/tiann/hapi/issues/42',
+            linkedAt: 1
+        }
+        // The surviving row had a primary PR and just unlinked it via the
+        // dedicated remove-primary mutation, persisting `externalRefs: []`.
+        const newMetadata = {
+            path: '/new',
+            host: 'new-host',
+            externalRefs: []
+        }
+        // A later deleting merge brings in an unrelated old session that
+        // independently linked its own issue — that link must survive even
+        // though the target's own array is empty.
+        const oldMetadata = {
+            path: '/old',
+            host: 'old-host',
+            externalRefs: [issueRef]
+        }
+
+        const merged = mergeSessionMetadataForSessionMerge(oldMetadata, newMetadata) as Record<string, unknown>
+
+        expect(merged.externalRefs).toEqual([issueRef])
+    })
+
+    it('still keeps both sides empty when neither has anything to preserve', () => {
+        const oldMetadata = { path: '/old', host: 'old-host', externalRefs: [] }
+        const newMetadata = { path: '/new', host: 'new-host', externalRefs: [] }
 
         const merged = mergeSessionMetadataForSessionMerge(oldMetadata, newMetadata) as Record<string, unknown>
 

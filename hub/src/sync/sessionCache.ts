@@ -27,7 +27,11 @@ type RuntimeConfigKey = 'permissionMode' | 'model' | 'modelReasoningEffort' | 'e
 /**
  * Metadata merge used when consolidating an old session row into a replacement
  * (resume/reopen). Carry forward display/contribution fields the new row omitted.
- * Explicit keys on `newMetadata` always win — including empty `externalRefs: []`.
+ * Explicit keys on `newMetadata` always win, except `externalRefs`: oldMetadata's
+ * row is deleted right after this merge, so its own links are unioned in by
+ * identity even when newMetadata's array is an explicit `[]` (review finding,
+ * hapi#238, follow-up) — that only clears the surviving row's own prior entry,
+ * not the about-to-be-deleted row's independent ones.
  * tiann/hapi#1160 / PR #1161.
  */
 export function mergeSessionMetadataForSessionMerge(
@@ -110,10 +114,6 @@ export function mergeSessionMetadataForSessionMerge(
             merged.externalRefs = oldRefs
             changed = true
         }
-    } else if (Array.isArray(newObj.externalRefs) && newObj.externalRefs.length === 0) {
-        // An explicit, genuinely empty `externalRefs: []` on the surviving
-        // row is a deliberate clear, not "this row never linked anything
-        // yet" — do not resurrect the old row's refs over it.
     } else {
         // The old row is deleted after this merge (`mergeSessions`) — a
         // link that exists only on old would otherwise be lost for good.
@@ -126,6 +126,14 @@ export function mergeSessionMetadataForSessionMerge(
         // github_pr, so if combining would produce two, the new row's own
         // primary wins and old's is dropped rather than left to fail
         // downstream schema validation.
+        //
+        // This runs even when newObj.externalRefs is an explicit `[]`
+        // (review finding, hapi#238, follow-up): that only records the
+        // surviving row unlinking *its own* prior ref, not "neither side
+        // has anything worth keeping" — old's own independent links are
+        // still real and about to be deleted for good. reconcileExternalRefs
+        // naturally degenerates to "just old's refs" when newRefs is empty,
+        // so no separate branch is needed for this case.
         const oldRefs = toValidExternalRefs(oldObj.externalRefs)
         const newRefs = toValidExternalRefs(newObj.externalRefs)
         if (oldRefs.length > 0) {
