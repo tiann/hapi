@@ -298,7 +298,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         const tierPending = pendingAdmission.has(string(params.threadId) ?? '') || queueRoot?.needsTierConfirmation;
         if (tierPending && (request.method === 'turn/start' || request.method === 'turn/steer' || queueMutation)) throw new Error('Service tier confirmation is pending. Select a service tier in settings before sending input.');
         if (tierPending && request.method === 'thread/fork') throw new Error('Confirm the service tier in settings before forking this conversation.');
-        if (tierPending && !queueRoot && request.method === 'thread/settings/update') throw new Error('Codex thread initialization is pending. Retry settings when the thread is ready.');
+        if (pendingAdmission.has(string(params.threadId) ?? '') && request.method === 'thread/settings/update') throw new Error('Codex thread initialization is pending. Retry settings when the thread is ready.');
         if (queueRoot && request.method === 'turn/start') {
             if (params.serviceTier === undefined && !((params.model || record(record(params.collaborationMode).settings).model) && queueRoot.hasUltrafastTier)) return request;
             if (request.id === undefined) throw new Error('Turn mutations require a JSON-RPC request ID');

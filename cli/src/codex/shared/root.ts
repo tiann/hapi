@@ -87,6 +87,7 @@ export class SharedCodexRoot {
     private modelProvider?: string;
     private serviceTierExplicit = false;
     private tierConfirmationPending = false;
+    private tierConfirmationResolved = false;
     get hasUltrafastTier(): boolean { return this.settingsNative.serviceTier === 'ultrafast'; }
     private tierAdmissionPending = false;
     beginTierConfirmation(): void { this.tierAdmissionPending = true; this.publishSteering(); }
@@ -106,6 +107,7 @@ export class SharedCodexRoot {
 
     constructor(readonly bootstrap: SessionBootstrapResult, private readonly host: RootHost) {
         this.session = bootstrap.session;
+        this.tierConfirmationPending = this.session.getMetadata()?.codexTierConfirmationPending === true;
         this.client = new CodexAppServerClient({ endpoint: host.endpoint, token: host.token, cwd: bootstrap.workingDirectory });
         this.client.setNotificationHandler((method, params) => {
             if (this.host.attached && ['thread/reverted', 'thread/rolledBack'].includes(method)
@@ -340,15 +342,19 @@ export class SharedCodexRoot {
         }
         this.modelProvider = string(response.modelProvider) ?? string(record(response.thread).modelProvider);
         this.acceptSettings(response, true); this.acceptSettings(this.host.settingsFor(threadId) ?? {}, false);
-        if (this.hasConfirmedStandardTier && this.session.getMetadata()?.codexTierConfirmationPending) {
-            this.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: false }));
+        if (this.hasConfirmedStandardTier) {
+            this.tierConfirmationPending = false;
+            this.tierConfirmationResolved = true;
+            if (this.session.getMetadata()?.codexTierConfirmationPending) this.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: false }));
         }
         if (!this.host.attached) await this.projectHistory(this.projection, response.thread);
         await this.refresh(); await this.refreshChildren(true);
     }
     async activate(options: SharedLaunchOptions = {}, serviceTierExplicit?: boolean, deferInput = false): Promise<void> {
         this.tierAdmissionPending = false;
-        this.tierConfirmationPending = deferInput || this.session.getMetadata()?.codexTierConfirmationPending === true;
+        this.tierConfirmationPending = deferInput || this.tierConfirmationPending
+            || !this.tierConfirmationResolved && this.session.getMetadata()?.codexTierConfirmationPending === true;
+        if (deferInput) this.tierConfirmationResolved = false;
         this.serviceTierExplicit = serviceTierExplicit ?? (options.serviceTier !== undefined || this.session.getMetadata()?.codexServiceTierExplicit === true);
         this.session.updateMetadata(metadata => ({ ...metadata, codexServiceTierExplicit: this.serviceTierExplicit, codexTierConfirmationPending: this.tierConfirmationPending }));
         // Restored input cannot run before the cold-resume settings are applied.
@@ -426,6 +432,14 @@ export class SharedCodexRoot {
         // ledger, before a projection exists. bind's full read reconciles them.
         if (!this.threadId || !this.projection || this.closed || this.host.attached && this.stopping) return;
         const p = record(params);
+        if (this.host.attached && p.threadId === this.threadId && method === 'thread/settings/updated'
+            && this.hasUltrafastTier && this.client.supportsEffectiveUltrafastLaunch()) {
+            const revision = this.settingsRevision;
+            try {
+                const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, Date.now() + 10_000));
+                if (!this.closed && !this.stopping && this.settingsRevision === revision) this.acceptSettings(snapshot, true);
+            } catch (error) { logger.debug('[Codex attached] effective tier snapshot unavailable', error); }
+        }
         if (method === 'thread/started') {
             const thread = record(p.thread); const id = string(thread.id);
             if (id) this.ancestry.set(id, string(thread.parentThreadId) ?? null);
@@ -702,6 +716,7 @@ export class SharedCodexRoot {
         this.session.updateMetadata(metadata => ({ ...metadata, codexServiceTierExplicit: true }));
     }
     private completeTierConfirmation(): void {
+        this.tierConfirmationResolved = true;
         // Completion observes native state after dispatch, independently of
         // when this request entered the local settings queue.
         const operationId = ++this.tierOperationCounter;
@@ -813,6 +828,7 @@ export class SharedCodexRoot {
     }
     private pauseTierConfirmation(operationId: number): void {
         if (operationId < this.confirmedTierOperation) return;
+        this.tierConfirmationResolved = false;
         this.pendingTierOperation = Math.max(this.pendingTierOperation, operationId);
         if (!this.tierConfirmationPending) {
             this.tierConfirmationPending = true;

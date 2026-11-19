@@ -116,7 +116,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             ] } as never));
             const originalRequest = CodexAppServerClient.prototype.request;
             const failSettings = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
-                if (method === 'thread/settings/update') return Promise.reject(new Error('fixture Standard confirmation unavailable'));
+                if (method === 'thread/settings/update' && !clients.includes(this)) return Promise.reject(new Error('fixture Standard confirmation unavailable'));
                 return originalRequest.call(this, method, params) as Promise<T>;
             });
             extraSpies.push(failSettings);
@@ -134,6 +134,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             const creating = second.client.request<{ thread: { id: string } }>('thread/start', { cwd, model: 'gpt-6-astra', serviceTier: 'ultrafast' });
             const confirmingThread = await confirming;
             await expect(observer.request('thread/queue/start', { threadId: confirmingThread })).rejects.toThrow('tier confirmation');
+            await expect(observer.request('thread/settings/update', { threadId: confirmingThread, serviceTier: 'priority' })).rejects.toThrow('initialization is pending');
             releaseLaunch();
             const child = await creating;
             const childSid = Object.entries(second.runtime.sessions).find(([, binding]) => binding.threadId === child.thread.id)![0];

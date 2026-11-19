@@ -74,6 +74,36 @@ afterEach(async () => {
     finally { vi.useRealTimers(); }
 });
 
+it('does not re-pause confirmed Standard while the Hub acknowledgment still contains the old pending flag', async () => {
+    const f = await fixture({ initialTierPending: true, holdTierMetadata: true, bindTier: 'default' });
+    expect(f.metadata().codexTierConfirmationPending).toBe(true);
+    await f.root.activate();
+    expect(f.root.needsTierConfirmation).toBe(false);
+    expect(f.sessionReady).toHaveBeenCalled();
+    f.submit('confirmed resume input', 'confirmed-resume');
+    await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+});
+
+it.each([false, true])('observes effective attached desktop Ultrafast without overwriting a newer selection (%s)', async superseded => {
+    const f = await fixture({ attached: true }); await f.root.activate();
+    f.root.acceptSettings({ model: 'mock', serviceTier: 'default' }, true);
+    const original = f.root.client.request.bind(f.root.client);
+    let entered!: () => void, release!: () => void;
+    const reading = new Promise<void>(resolve => { entered = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/resume') { entered(); await held; return { model: 'mock', serviceTier: 'ultrafast' } as never; }
+        return original(method, params);
+    });
+    const keepAlive = vi.spyOn(f.session, 'keepAlive');
+    f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: { model: 'mock', serviceTier: 'ultrafast' } });
+    await reading;
+    if (superseded) f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: { model: 'mock', serviceTier: 'priority' } });
+    release(); await f.drain();
+    (f.root as unknown as { alive(): void }).alive();
+    expect(keepAlive.mock.lastCall?.[2]?.serviceTier).toBe(superseded ? 'fast' : 'ultrafast');
+});
+
 it('registers recovery controls when initial Plan confirmation times out after a confirmed Ultrafast launch', async () => {
     const f = await fixture();
     f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' }, true);
@@ -160,10 +190,11 @@ it.each(['current', 'latest', 'clear'])('passes Plan into activation and returns
 });
 
 async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; create?: RootHost['create'];
+    initialTierPending?: boolean; holdTierMetadata?: boolean; bindTier?: string;
     attached?: boolean; beforeSubscribe?: RootHost['beforeSubscribe']; validateHistory?: RootHost['validateHistory']; initialState?: AgentState }) {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-shared-root-'));
     let state: AgentState = opts?.initialState ?? { steeringActive: true };
-    let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex' };
+    let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex', ...(opts?.initialTierPending ? { codexTierConfirmationPending: true } : {}) };
     if (opts?.attached) metadata.codexRuntime = { kind: 'attached', bindingId: '11111111-1111-4111-8111-111111111111', state: 'attached' };
     let reconnect: (() => void) | null = null;
     let userMessage: Parameters<ApiSessionClient['onUserMessage']>[0] | undefined;
@@ -179,7 +210,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     const session = {
         sessionId: 'sid', getMetadata: () => metadata,
         hubArchived: opts?.hubArchived ?? false,
-        updateMetadata: (fn: (value: Metadata) => Metadata) => { metadata = fn(metadata); },
+        updateMetadata: (fn: (value: Metadata) => Metadata) => { const next = fn(metadata); metadata = opts?.holdTierMetadata ? { ...next, codexTierConfirmationPending: metadata.codexTierConfirmationPending } : next; },
         updateAgentState: updateState, keepAlive() {},
         onUserMessage: (callback: Parameters<ApiSessionClient['onUserMessage']>[0]) => { userMessage = callback; },
         onCancelQueuedMessage() {},
@@ -202,7 +233,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     } satisfies RootHost);
     cleanups.push(async () => { await root.close(false); await rm(directory, { recursive: true, force: true }); });
     await root.prepare();
-    await root.bind('thread', { model: 'mock', thread: { turns: [] } }, opts?.attached ?? false);
+    await root.bind('thread', { model: 'mock', ...(opts?.bindTier ? { serviceTier: opts.bindTier } : {}), thread: { turns: [] } }, opts?.attached ?? false);
     const native = root.client as unknown as {
         initialized: boolean;
         thread: { id: string; turns: NativeTurn[] };
