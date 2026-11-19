@@ -11,6 +11,7 @@ import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
 import { asyncQuestionsForItem } from './asyncQuestions';
 import { CodexAppServerClient } from '../codexAppServerClient';
 import { buildHapiMcpBridge } from '../utils/buildHapiMcpBridge';
+import { sharedLaunchConfig } from './launch';
 
 type NativeTurn = { id: string; status: string; items: unknown[] };
 type NativeRequest = { id: string | number; method: string; params: unknown };
@@ -33,13 +34,15 @@ vi.mock('../codexAppServerClient', () => ({
         async initialize() { this.initialized = true; }
         isInitialized() { return this.initialized; }
         async disconnect() { this.initialized = false; }
+        async readConfig() { return { config: { model_provider: 'openai' } }; }
         async listModels() { return { data: [{ id: 'mock', isDefault: true, serviceTiers: [{ id: 'ultrafast' }] }, { id: 'standard-only' }] }; }
         async request(method: string, params: Record<string, unknown> = {}) {
             if (method === 'thread/read' || method === 'thread/resume') return { ...this.settings, thread: structuredClone(this.thread) };
             if (method === 'thread/list') return { data: [] };
             if (method === 'thread/queue/list') return { data: this.queue };
             if (method === 'thread/settings/update') {
-                this.settings = { ...this.settings, ...params };
+                this.settings = { ...this.settings, ...params,
+                    ...('serviceTier' in params && params.serviceTier === null ? { serviceTier: 'default' } : {}) };
                 this.notify?.('thread/settings/updated', { threadId: 'thread', threadSettings: this.settings });
                 return {};
             }
@@ -1402,9 +1405,9 @@ describe('Ultrafast native settings', () => {
         expect(f.root.client).toMatchObject({ settings: { serviceTier: 'ultrafast' } });
         f.events.mockClear();
         expect((await f.root.applySettings({ model: 'standard-only' })).applied.serviceTier).toBe('standard');
-        expect(f.events).toHaveBeenCalledWith({ type: 'message', message: 'Ultrafast is not supported by this model or subscription; changed to Standard.' });
+        expect(f.events).toHaveBeenCalledWith({ type: 'message', message: 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.' });
         expect((await f.root.applySettings({ model: 'standard-only', serviceTier: 'standard' })).applied.serviceTier).toBe('standard');
-        expect(f.root.client).toMatchObject({ settings: { serviceTier: null } });
+        expect(f.root.client).toMatchObject({ settings: { serviceTier: 'default' } });
     });
 
     it('does not announce fallback until the native settings notification confirms it', async () => {
@@ -1442,7 +1445,7 @@ describe('Ultrafast native settings', () => {
         f.events.mockClear();
         await (f.root as unknown as { command(text: string): Promise<string | null> }).command('/ultrafast on');
         expect(f.events).toHaveBeenCalledOnce();
-        expect(f.events).toHaveBeenCalledWith({ type: 'message', message: 'Ultrafast is not supported by this model or subscription; changed to Standard.' });
+        expect(f.events).toHaveBeenCalledWith({ type: 'message', message: 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.' });
     });
 
     it('rechecks the latest model after another client changes it during catalog discovery', async () => {
@@ -1457,4 +1460,23 @@ describe('Ultrafast native settings', () => {
         expect(catalog).toHaveBeenCalledTimes(2);
         catalog.mockRestore();
     });
+});
+
+it.each([[null, null, undefined], ['default', 'standard', null]] as const)('preserves native tier %s through heartbeat and cold-resume launch', async (nativeTier, hapiTier, resumedTier) => {
+    const f = await fixture();
+    const heartbeat = vi.spyOn(f.session, 'keepAlive');
+    f.root.acceptSettings({ model: 'mock', serviceTier: nativeTier });
+    await f.root.activate();
+    const settings = heartbeat.mock.calls.at(-1)?.[2];
+    expect(settings?.serviceTier).toBe(hapiTier);
+    const launch = sharedLaunchConfig({ model: 'mock', ...(typeof settings?.serviceTier === 'string' ? { serviceTier: settings.serviceTier } : {}) }, f.root.bootstrap.workingDirectory);
+    expect(launch.threadParams.serviceTier).toBe(resumedTier);
+});
+
+it('preserves settings when an active thread provider differs from the startup catalog', async () => {
+    const f = await fixture();
+    f.root.acceptSettings({ model: 'mock', modelProvider: 'other-provider' });
+    const request = vi.spyOn(f.root.client, 'request');
+    await expect(f.root.applySettings({ serviceTier: 'ultrafast' })).rejects.toThrow('different Codex model provider');
+    expect(request.mock.calls.some(([method]) => method === 'thread/settings/update')).toBe(false);
 });

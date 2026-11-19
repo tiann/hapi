@@ -64,3 +64,11 @@ describe('Ultrafast model/account availability', () => {
         expect(listModels).not.toHaveBeenCalled();
     });
 });
+
+it('does not use one provider catalog to authorize another provider with the same model ID', async () => {
+    const listModels = vi.fn().mockResolvedValue({ data: [{ id: 'shared-model', serviceTiers: [{ id: 'ultrafast' }] }] });
+    const readConfig = vi.fn().mockResolvedValue({ config: { model_provider: 'startup-provider' } });
+    await expect(isUltrafastAvailable({ readConfig, listModels }, 'shared-model', '/project', Date.now() + 10_000, 'thread-provider')).rejects.toThrow('different Codex model provider');
+    expect(listModels).not.toHaveBeenCalled();
+    await expect(isUltrafastAvailable({ readConfig, listModels }, 'shared-model', '/project', Date.now() + 10_000, 'startup-provider')).resolves.toBe(true);
+});

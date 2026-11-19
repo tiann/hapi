@@ -82,6 +82,7 @@ export class SharedCodexRoot {
     private reconnecting = false;
     private settings: RuntimeSettings = {};
     private settingsNative: Record<string, unknown> = {};
+    private modelProvider?: string;
     private settingsNotification?: Record<string, unknown>;
     private readonly settingsListeners = new Set<() => void>();
     private ready!: () => void;
@@ -310,6 +311,7 @@ export class SharedCodexRoot {
             await this.host.beforeSubscribe?.(threadId);
             response = record(await this.client.request('thread/resume', { threadId }));
         }
+        this.modelProvider = string(response.modelProvider) ?? string(record(response.thread).modelProvider);
         this.acceptSettings(response); this.acceptSettings(this.host.settingsFor(threadId) ?? {});
         if (!this.host.attached) await this.projectHistory(this.projection, response.thread);
         await this.refresh(); await this.refreshChildren(true);
@@ -360,6 +362,7 @@ export class SharedCodexRoot {
         this.settingsRevision++;
         if ('collaborationMode' in value && 'sandboxPolicy' in value) this.settingsNotification = value;
         this.settingsNative = { ...this.settingsNative, ...value };
+        this.modelProvider = string(value.modelProvider) ?? this.modelProvider;
         const sandbox = record(value.sandboxPolicy ?? value.sandbox).type;
         this.settings = { ...this.settings, model: value.model,
             modelReasoningEffort: string(value.effort ?? value.reasoningEffort) ?? null,
@@ -475,6 +478,7 @@ export class SharedCodexRoot {
         if (!this.threadId || this.closed || !this.client.isInitialized()) return;
         const revision = this.turnRevision;
         const thread = await this.readThread();
+        this.modelProvider = string(thread.modelProvider) ?? this.modelProvider;
         const turns = Array.isArray(thread.turns) ? thread.turns.map(record) : [];
         if (revision === this.turnRevision) {
             this.currentTurn = string(turns.find(turn => turn.status === 'inProgress')?.id);
@@ -587,8 +591,9 @@ export class SharedCodexRoot {
             const discoveryDeadline = Math.min(deadline - 15_000, Date.now() + 10_000);
             for (;;) {
                 const model = config.model ?? this.settings.model;
-                const available = await isUltrafastAvailable(this.client, model, this.bootstrap.workingDirectory, discoveryDeadline);
-                if (!config.model && model !== this.settings.model) continue;
+                const provider = this.modelProvider;
+                const available = await isUltrafastAvailable(this.client, model, this.bootstrap.workingDirectory, discoveryDeadline, provider);
+                if ((!config.model && model !== this.settings.model) || provider !== this.modelProvider) continue;
                 // Include the validated model in the write and its native confirmation.
                 if (typeof model === 'string') config.model = model;
                 if (!available) { config.serviceTier = 'standard'; downgraded = true; }

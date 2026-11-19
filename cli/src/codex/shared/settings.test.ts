@@ -7,6 +7,7 @@ describe('native shared settings', () => {
         expect(settingsMatch({ model: 'b', effort: 'high' }, { threadId: 't', model: 'b' })).toBe(true);
         expect(settingsMatch({ serviceTier: 'priority' }, { serviceTier: null })).toBe(false);
         expect(settingsMatch({ serviceTier: 'default' }, { serviceTier: null })).toBe(true);
+        expect(settingsMatch({ serviceTier: null }, { serviceTier: null })).toBe(false);
         expect(settingsMatch({ serviceTier: 'ultrafast' }, { serviceTier: null })).toBe(false);
     });
     it('matches collaboration settings including model and effort, but accepts expanded built-in instructions', () => {

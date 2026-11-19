@@ -1,13 +1,14 @@
 import type { CodexAppServerClient } from '../codexAppServerClient';
 
 /** Validate against the same native account/provider that will execute the thread. */
-export const ULTRAFAST_FALLBACK_NOTICE = 'Ultrafast is not supported by this model or subscription; changed to Standard.';
+export const ULTRAFAST_FALLBACK_NOTICE = 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.';
 
 export async function isUltrafastAvailable(
     client: Pick<CodexAppServerClient, 'listModels' | 'readConfig'>,
     model: unknown,
     cwd?: string,
     deadline = Date.now() + 10_000,
+    modelProvider?: string,
 ): Promise<boolean> {
     const bounded = async <T>(operation: () => Promise<T>): Promise<T> => {
         const remaining = deadline - Date.now();
@@ -19,6 +20,11 @@ export async function isUltrafastAvailable(
             })]);
         } finally { clearTimeout(timer); }
     };
+    if (modelProvider) {
+        const startup = (await bounded(() => client.readConfig({ includeLayers: false }))).config;
+        const catalogProvider = typeof startup.model_provider === 'string' ? startup.model_provider : 'openai';
+        if (catalogProvider !== modelProvider) throw new Error('Cannot verify Ultrafast for a different Codex model provider; settings were not changed');
+    }
     const explicitModel = typeof model === 'string' && model.trim() ? model : undefined;
     const configured = explicitModel ? undefined : (await bounded(() => client.readConfig({ cwd, includeLayers: false }))).config.model;
     const effectiveModel = explicitModel ?? (typeof configured === 'string' && configured.trim() ? configured : undefined);

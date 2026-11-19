@@ -6,9 +6,10 @@ export function toCodexServiceTier(tier: string | null | undefined): string | nu
     return undefined
 }
 
-export function fromCodexServiceTier(tier: unknown): 'standard' | 'fast' | 'ultrafast' {
+export function fromCodexServiceTier(tier: unknown): 'standard' | 'fast' | 'ultrafast' | null {
     if (tier === 'ultrafast') return 'ultrafast'
-    return tier === 'priority' || tier === 'fast' ? 'fast' : 'standard'
+    if (tier === 'default') return 'standard'
+    return tier === 'priority' || tier === 'fast' ? 'fast' : null
 }
 
 /** Availability belongs to the current account's model catalog, not model-name heuristics. */

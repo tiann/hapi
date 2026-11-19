@@ -572,6 +572,7 @@ export function NewSession(props: {
         }
         if (serviceTier === 'fast' && !showCodexFastMode) {
             setServiceTier('standard')
+            setServiceTierExplicit(false)
         }
     }, [agent, codexModelsState.isLoading, showCodexFastMode, showCodexUltrafastMode, codexModelsState.error, serviceTier])
     const cursorModelsState = useCursorModelsForMachine({

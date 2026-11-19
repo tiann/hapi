@@ -29,9 +29,12 @@ Codex sessions offer Standard, Fast (`priority`), and Ultrafast (`ultrafast`).
 Ultrafast appears only when the selected model advertises it in the current
 account catalog; model name or subscription alone is not proof of availability.
 Use `/ultrafast [on|off|status]` in chat or `--service-tier ultrafast` on launch.
-Unsupported model/account combinations switch to Standard with a HAPI system
-notice after the native change is confirmed. Catalog failures leave settings
-unchanged and surface an error; they are not treated as missing entitlement.
+When the returned catalog does not advertise Ultrafast, HAPI switches to
+Standard and emits a system notice after native confirmation. Reported catalog
+RPC failures leave settings unchanged and surface the error. Codex can return
+a bundled fallback after a backend refresh failure without exposing that failure
+or catalog provenance; a negative catalog result is not an independent entitlement
+check. A detected thread/catalog provider mismatch is an error, not a downgrade.
 An untouched tier continues to inherit the native account default.
 
 ### Session commands

@@ -6,7 +6,7 @@ export function settingsMatch(actual: Record<string, unknown>, expected: Record<
     return Object.entries(expected).every(([key, value]) => {
         if (key === 'threadId') return true;
         // Codex acknowledges an explicit null Standard request as `default`.
-        if (key === 'serviceTier' && value === null && actual[key] === 'default') return true;
+        if (key === 'serviceTier' && value === null) return actual[key] === 'default';
         // null developer instructions select the native built-in instructions;
         // the effective snapshot is allowed to contain their expanded text.
         if (key === 'developer_instructions' && value === null) return true;

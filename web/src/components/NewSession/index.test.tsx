@@ -654,7 +654,22 @@ describe('NewSession launch preferences', () => {
         await waitFor(() => expect(screen.queryByRole('combobox', { name: 'newSession.fastMode' })).toBeNull())
         mocks.nextModelValue = 'gpt-5.6-sol'
         fireEvent.click(screen.getByTestId('model'))
-        await waitFor(() => expect(screen.getByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue('standard'))
+        await waitFor(() => expect(screen.getByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue('default'))
+    })
+
+    it('omits an automatically cleared Fast override on submission', async () => {
+        savePreferredAgent('codex')
+        savePreferredLaunchSettings('machine-1', 'codex', { model: 'gpt-5.6-sol', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'default', serviceTier: 'fast' })
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'inherited-after-switch' })
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        await waitFor(() => expect(screen.getByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue('fast'))
+        fireEvent.click(screen.getByTestId('model'))
+        await waitFor(() => expect(screen.queryByRole('combobox', { name: 'newSession.fastMode' })).toBeNull())
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalled())
+        expect(mocks.spawnSession.mock.calls[0][0].serviceTier).toBeUndefined()
+        expect(loadPreferredLaunchSettings('machine-1', 'codex')?.serviceTier).toBeUndefined()
     })
 
     it('preserves a remembered fast choice while the model catalog loads', async () => {

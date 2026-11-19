@@ -247,7 +247,10 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         await notifyRunnerSessionStarted(root.session.sessionId, { ...(root.session.getMetadata() ?? root.bootstrap.metadata), hostStartMarker: root.bootstrap.metadata.hostStartMarker });
     };
     const create = (method: 'thread/start' | 'thread/fork', params: Record<string, unknown>, parent?: SharedCodexRoot, initialOptions?: SharedLaunchOptions): Promise<SharedCodexRoot> => operation(async () => {
-        const downgraded = params.serviceTier === 'ultrafast' && !await isUltrafastAvailable(control, params.model, string(params.cwd) ?? launch.cwd);
+        const source = params.serviceTier === 'ultrafast' && method === 'thread/fork'
+            ? record(record(await control.request('thread/read', { threadId: params.threadId, includeTurns: false })).thread) : {};
+        const downgraded = params.serviceTier === 'ultrafast' && !await isUltrafastAvailable(control, params.model ?? source.model,
+            string(params.cwd) ?? launch.cwd, Date.now() + 10_000, string(params.modelProvider ?? source.modelProvider));
         if (downgraded) params = { ...params, serviceTier: null };
         const root = await prepare(string(params.cwd) ?? launch.cwd, undefined, parent);
         let nativeSucceeded = false;
@@ -402,7 +405,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 await reserveRecord(root, threadId); return root;
             });
             const downgraded = launch.threadParams.serviceTier === 'ultrafast'
-                && !await isUltrafastAvailable(control, launch.threadParams.model ?? thread.model, launch.cwd);
+                && !await isUltrafastAvailable(control, launch.threadParams.model ?? thread.model, launch.cwd, Date.now() + 10_000, string(launch.threadParams.modelProvider ?? thread.modelProvider));
             const params = root.config({ ...launch.threadParams, ...(downgraded ? { serviceTier: null } : {}), threadId, excludeTurns: true });
             let response: Record<string, unknown>;
             try {
