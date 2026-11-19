@@ -222,7 +222,7 @@ export class ApiSessionClient extends EventEmitter {
     private backfillInFlight: Promise<void> | null = null
     private needsBackfill = false
     private hasConnectedOnce = false
-    private socketConnectionGeneration = 0
+    private socketConnection = new AbortController()
     // Replayed on (re)connect: a volatile heartbeat sent while disconnected is dropped (#2053).
     private latestKeepAlive: Omit<Parameters<ClientToServerEvents['session-alive']>[0], 'sid' | 'time'> | null = null
     readonly rpcHandlerManager: RpcHandlerManager
@@ -305,7 +305,11 @@ export class ApiSessionClient extends EventEmitter {
         })
 
         this.socket.on('connect', () => {
-            const generation = ++this.socketConnectionGeneration
+            if (this.hasConnectedOnce || this.socketConnection.signal.aborted) {
+                this.socketConnection.abort()
+                this.socketConnection = new AbortController()
+            }
+            const connection = this.socketConnection.signal
             logger.debug('Socket connected successfully')
             this.emit('connection-start')
             this.awaitingMaterializedConnection = false
@@ -322,7 +326,7 @@ export class ApiSessionClient extends EventEmitter {
                 ? this.refreshMetadata().then((refreshed) => { metadataRefreshed = refreshed })
                 : Promise.resolve()
             void afterMeta.finally(() => {
-                if (this.getSocketConnectionGeneration() !== generation) return
+                if (connection.aborted) return
                 if (isReconnect && this.observedClaudeRewindId !== undefined) {
                     this.armRewindBackfill(`claude:${this.observedClaudeRewindId}`)
                 }
@@ -346,6 +350,7 @@ export class ApiSessionClient extends EventEmitter {
         })
 
         this.socket.on('disconnect', (reason) => {
+            this.socketConnection.abort()
             logger.debug('[API] Socket disconnected:', reason)
             this.rpcHandlerManager.onSocketDisconnect()
             this.terminalManager.closeAll()
@@ -1396,8 +1401,8 @@ export class ApiSessionClient extends EventEmitter {
         }, 'droppable')
     }
 
-    getSocketConnectionGeneration(): number | undefined {
-        return this.socket.connected ? this.socketConnectionGeneration : undefined
+    getSocketConnectionSignal(): AbortSignal {
+        return this.socketConnection.signal
     }
 
     emitMessagesConsumed(localIds: string[], options?: { clearQueuedThinkingGrace?: boolean; steered?: boolean }): void {
@@ -1791,6 +1796,7 @@ export class ApiSessionClient extends EventEmitter {
         }
         this.state = 'closed'
         this.emit('session-client-closed')
+        this.socketConnection.abort()
         this.materializationAbortController?.abort()
         this.materializationAbortController = null
         this.materializationRetryAbortController?.abort()

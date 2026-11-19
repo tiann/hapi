@@ -184,21 +184,22 @@ export class SharedCodexProjection {
         }
     }
 
-    private async project(method: string, params: unknown, modelAtReceipt?: string, fromHistory = false, receivedAt = Date.now()): Promise<void> {
-        if (method.startsWith('codex/event/')) return;
+    private async project(method: string, params: unknown, modelAtReceipt?: string, fromHistory = false,
+        receivedAt = Date.now(), signal?: AbortSignal): Promise<void> {
+        if (signal?.aborted || method.startsWith('codex/event/')) return;
         const p = record(params);
         const item = record(p.item);
         const turnId = string(p.turnId) ?? string(record(p.turn).id);
-        const send = (body: Record<string, unknown>, key: string) => this.send({
-            ...body, ...(turnId ? { turn_id: turnId } : {})
-        }, key);
+        const send = (body: Record<string, unknown>, key: string) => {
+            if (!signal?.aborted) this.send({ ...body, ...(turnId ? { turn_id: turnId } : {}) }, key);
+        };
         const asyncQuestions = asyncQuestionsForItem(this.threadId, item);
         if (asyncQuestions.length) {
             if (method === 'item/completed') {
                 for (const question of asyncQuestions) {
                     send({ type: 'tool-call', name: 'request_user_input', callId: question.id, input: question.input }, question.id);
                 }
-                this.observeItem?.(this.threadId, item);
+                if (!signal?.aborted) this.observeItem?.(this.threadId, item);
             }
             return;
         }
@@ -218,6 +219,7 @@ export class SharedCodexProjection {
                 const aliases = await this.committed(id, item.content);
                 let historyChanged = false;
                 for (const member of aliases ?? [{ id, input: item.content }]) {
+                    if (signal?.aborted) break;
                     if (turnId) {
                         if (!this.firstUserByTurn.has(turnId)) {
                             this.firstUserByTurn.set(turnId, member.id);
@@ -237,6 +239,7 @@ export class SharedCodexProjection {
                     if (displayText) this.session.sendUserMessage(displayText, undefined, member.id);
                 }
                 if (historyChanged && !fromHistory) this.publishHistoryMetadata();
+                if (signal?.aborted) return;
             }
         }
         if (this.parentThreadId && (method === 'turn/started' || method === 'turn/completed')) {
@@ -249,6 +252,7 @@ export class SharedCodexProjection {
         // replays re-project old items, and child threads summarize nowhere.
         const liveRound = !fromHistory && !this.parentThreadId;
         for (const event of events) {
+            if (signal?.aborted) return;
             if (liveRound) this.observeGenerationEvent(event, receivedAt);
             const callId = string(event.call_id);
             const key = `${turnId ?? 'thread'}:${itemId ?? callId ?? createHash('sha256').update(JSON.stringify(event)).digest('hex')}:${event.type}`;
@@ -411,7 +415,7 @@ export class SharedCodexProjection {
                     if (!this.parentThreadId && string(record(item).id) && pendingTitle && !this.completedTitles.has(titleKey)) {
                         this.pendingTitles.set(titleKey, pendingTitle);
                     }
-                    await this.project('item/started', params, undefined, true);
+                    await this.project('item/started', params, undefined, true, undefined, signal);
                     if (signal?.aborted) return;
                     // Active snapshots can contain partial assistant text. Do not
                     // settle it under the final stable id and suppress completion.
@@ -425,7 +429,7 @@ export class SharedCodexProjection {
                             }
                             this.pendingTitles.delete(titleKey);
                         }
-                        await this.project('item/completed', params, undefined, true);
+                        await this.project('item/completed', params, undefined, true, undefined, signal);
                     }
                     // Give timers and incoming socket events a turn during large replays.
                     if (++projectedItems % 100 === 0) await new Promise<void>(resolve => setImmediate(resolve));
@@ -437,7 +441,7 @@ export class SharedCodexProjection {
         // Repair sessions created while remote title projection was missing.
         // Recheck inside the metadata lock: live updates may still be queued,
         // and a replay must never replace an existing or newer display title.
-        if (latestTitle && titleRevision === this.titleRevision && !metadataHasDisplayTitle(this.session.getMetadata())) {
+        if (!signal?.aborted && latestTitle && titleRevision === this.titleRevision && !metadataHasDisplayTitle(this.session.getMetadata())) {
             const title = latestTitle;
             this.session.updateMetadata(metadata => {
                 if (titleRevision !== this.titleRevision || metadataHasDisplayTitle(metadata)) {

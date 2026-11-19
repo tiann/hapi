@@ -10,6 +10,23 @@ import { extractNotifySummary } from '@hapi/protocol/messages';
 import { asyncQuestionsForItem } from './asyncQuestions';
 
 describe('shared history projection', () => {
+    it('does not publish a replay item whose alias lookup finishes after the socket was lost', async () => {
+        const lookup = Promise.withResolvers<void>();
+        const sendUserMessage = vi.fn();
+        const projection = new SharedCodexProjection({
+            sendUserMessage, getMetadata: () => ({}), updateMetadata: vi.fn()
+        } as unknown as ApiSessionClient, 'thread', async () => { await lookup.promise; });
+        const socket = new AbortController();
+        const replay = projection.history({ turns: [{ id: 'turn', status: 'completed', items: [{
+            type: 'userMessage', clientId: 'late', content: [{ type: 'text', text: 'late prompt' }]
+        }] }] }, socket.signal);
+        socket.abort();
+        lookup.resolve();
+        await replay;
+        expect(sendUserMessage).not.toHaveBeenCalled();
+        expect(projection.turnFor('late')).toBeUndefined();
+    });
+
     it('batches large history metadata and skips unchanged replays across reconnects', async () => {
         let metadata: Metadata = { path: '/tmp', host: 'localhost', conversationHistoryTurns: { 'user-0': 'turn-0' } };
         const writes: Array<(current: Metadata) => Metadata> = [];

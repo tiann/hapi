@@ -7,7 +7,7 @@ import type { AgentState, Metadata } from '@/api/types';
 import type { SessionBootstrapResult } from '@/agent/sessionFactory';
 import { SharedCodexRoot, latestCompletedForkCutoff, type RootHost } from './root';
 import { codexPlanProposalId } from './plan';
-import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import { RPC_METHODS, SESSION_ARCHIVE_TIMEOUT_CODE } from '@hapi/protocol/rpcMethods';
 import { asyncQuestionsForItem } from './asyncQuestions';
 import { CodexAppServerClient } from '../codexAppServerClient';
 import { buildHapiMcpBridge } from '../utils/buildHapiMcpBridge';
@@ -17,6 +17,7 @@ import { validateAttachedHistory } from './attachedHistory';
 
 type NativeTurn = { id: string; status: string; items: unknown[] };
 type NativeRequest = { id: string | number; method: string; params: unknown };
+const archiveTimeout = { success: false, code: SESSION_ARCHIVE_TIMEOUT_CODE };
 
 vi.mock('../codexAppServerClient', () => ({
     CodexAppServerClient: class {
@@ -79,7 +80,11 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex' };
     if (opts?.attached) metadata.codexRuntime = { kind: 'attached', bindingId: '11111111-1111-4111-8111-111111111111', state: 'attached' };
     let reconnect: (() => void) | null = null;
-    let socketGeneration = 1;
+    let socketConnection = new AbortController();
+    const replaceSocket = () => {
+        socketConnection.abort();
+        socketConnection = new AbortController();
+    };
     let userMessage: Parameters<ApiSessionClient['onUserMessage']>[0] | undefined;
     let retryMessage: Parameters<ApiSessionClient['onRetryQueuedMessage']>[0] | undefined;
     const updateState = vi.fn((fn: (value: AgentState) => AgentState) => { state = fn(state); });
@@ -99,7 +104,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         onCancelQueuedMessage() {},
         onRetryQueuedMessage: (callback: Parameters<ApiSessionClient['onRetryQueuedMessage']>[0]) => { retryMessage = callback; },
         onReconnect: (fn: (() => void) | null) => { reconnect = fn; },
-        getSocketConnectionGeneration: () => socketGeneration,
+        getSocketConnectionSignal: () => socketConnection.signal,
         on(event: string, listener: () => void) {
             if (event === 'hub-archived') hubArchivedListeners.push(listener);
         },
@@ -134,8 +139,8 @@ session, root, native, rpc, send, events, consumed, uncertain, sessionReady,
         submit: (text: string, id: string) => userMessage?.({ role: 'user', content: { type: 'text', text } }, id), metadata: () => metadata, state: () => state, updateState,
         drain: () => (root as unknown as { notifications: Promise<void> }).notifications,
         drainWork: () => (root as unknown as { work: Promise<unknown> }).work,
-        reconnect: () => { socketGeneration++; reconnect?.(); },
-        replaceSocket: () => { socketGeneration++; },
+        reconnect: () => { replaceSocket(); reconnect?.(); },
+        replaceSocket,
         finishReconnect: () => reconnect?.(),
         emitHubArchived: () => { for (const listener of hubArchivedListeners) listener(); },
         hubArchivedListenerCount: () => hubArchivedListeners.length,
@@ -216,7 +221,7 @@ it('keeps Web archive retryable if the history metadata is not confirmed', async
     const flush = vi.spyOn(f.session, 'waitForMetadataConfirmation').mockResolvedValueOnce(false);
     const archive = f.rpc.get(RPC_METHODS.KillSession)!;
 
-    await expect(archive({})).rejects.toThrow('Could not confirm Codex history metadata');
+    await expect(archive({})).resolves.toMatchObject(archiveTimeout);
     expect(end).not.toHaveBeenCalled();
     confirmForkMappings();
     await expect(archive({})).resolves.toEqual({ success: true });
@@ -281,7 +286,7 @@ it('does not archive after waiting too long for active history projection', asyn
     const refreshing = f.root.refresh();
     await entered.promise;
     try {
-        const archive = expect(f.rpc.get(RPC_METHODS.KillSession)!({})).rejects.toThrow('Could not confirm Codex history metadata');
+        const archive = expect(f.rpc.get(RPC_METHODS.KillSession)!({})).resolves.toMatchObject(archiveTimeout);
         await vi.advanceTimersByTimeAsync(5_000);
         await archive;
     } finally {
@@ -450,7 +455,7 @@ it('restarts the complete Hub reconnect on the same connection after archive fai
     try {
         f.reconnect();
         await vi.waitFor(() => expect(request).toHaveBeenCalledWith('thread/read', expect.anything()));
-        await expect(f.rpc.get(RPC_METHODS.KillSession)!({})).rejects.toThrow('Could not confirm Codex history metadata');
+        await expect(f.rpc.get(RPC_METHODS.KillSession)!({})).resolves.toMatchObject(archiveTimeout);
         expect(end).not.toHaveBeenCalled();
         await vi.waitFor(() => expect(f.sessionReady).toHaveBeenCalledTimes(2));
         expect(request).toHaveBeenCalledWith('thread/list', expect.objectContaining({ ancestorThreadId: 'thread' }));
@@ -488,7 +493,7 @@ it('resumes native child subscriptions when archive interrupts child discovery a
         f.native.initialized = false;
         f.native.abandoned();
         await requested.promise;
-        await expect(f.rpc.get(RPC_METHODS.KillSession)!({})).rejects.toThrow('Could not confirm Codex history metadata');
+        await expect(f.rpc.get(RPC_METHODS.KillSession)!({})).resolves.toMatchObject(archiveTimeout);
         oldPage.resolve({ data: [child] });
         await vi.waitFor(() => expect(request).toHaveBeenCalledWith('thread/resume', { threadId: 'child', excludeTurns: true }));
         expect(initialize).toHaveBeenCalledOnce();
@@ -699,9 +704,9 @@ describe('native readiness after Hub reconnect', () => {
         const f = await fixture();
         await f.root.activate();
         const ids = Array.from({ length: 101 }, (_, index) => `message-${index}`);
-        f.native.thread.turns = [{ id: 'turn', status: 'completed', items: ids.map(id => ({
+        f.native.thread.turns = ids.map(id => ({ id: `turn-${id}`, status: 'completed', items: [{
             type: 'userMessage', id: `item-${id}`, clientId: id, content: [{ type: 'text', text: id }]
-        })) }];
+        }] }));
         const delivered = new Set<string>();
         let newestSocket = false;
         vi.spyOn(f.session, 'sendUserMessage').mockImplementation((_, __, id) => {
@@ -725,7 +730,36 @@ describe('native readiness after Hub reconnect', () => {
             f.finishReconnect();
         }
         await vi.waitFor(() => expect(ready).toHaveBeenCalledTimes(2));
-        expect(readyMessages.sort()).toEqual([...ids].sort());
+        expect(readyMessages).toEqual(ids);
+    });
+
+    it('waits for replacement-socket replay before emitting initial readiness', async () => {
+        const f = await fixture({ bind: false });
+        const entered = Promise.withResolvers<void>();
+        const released = Promise.withResolvers<void>();
+        const original = f.root.client.request.bind(f.root.client);
+        let fullReads = 0;
+        let discoverInitial = true;
+        vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+            if (method === 'thread/read' && (params as { includeTurns?: boolean }).includeTurns && ++fullReads === 2) {
+                entered.resolve();
+                await released.promise;
+            }
+            if (method === 'thread/list' && discoverInitial) {
+                discoverInitial = false;
+                f.reconnect();
+            }
+            return original(method, params);
+        });
+        try {
+            await f.root.bind('thread', { thread: f.native.thread }, false);
+            await f.root.activate();
+            await entered.promise;
+            expect(f.sessionReady).not.toHaveBeenCalled();
+        } finally {
+            released.resolve();
+        }
+        await vi.waitFor(() => expect(f.sessionReady).toHaveBeenCalledOnce());
     });
 
     it('replays readiness only after an activated root revalidates native history', async () => {
@@ -734,7 +768,7 @@ describe('native readiness after Hub reconnect', () => {
         await vi.waitFor(() => expect(f.state().steeringActive).toBe(false))
         expect(f.sessionReady).not.toHaveBeenCalled()
         await f.root.activate()
-        expect(f.sessionReady).toHaveBeenCalledTimes(1)
+        await vi.waitFor(() => expect(f.sessionReady).toHaveBeenCalledTimes(1))
         f.reconnect()
         await vi.waitFor(() => expect(f.sessionReady).toHaveBeenCalledTimes(2))
     })

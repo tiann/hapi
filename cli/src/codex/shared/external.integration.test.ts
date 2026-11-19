@@ -32,6 +32,8 @@ class BridgeSession extends EventEmitter {
     updateAgentState(fn: (value: AgentState) => AgentState) { this.state = fn(this.state); }
     onUserMessage(fn: BridgeSession['user']) { this.user = fn; }
     onCancelQueuedMessage() {} onRetryQueuedMessage() {} onReconnect() {}
+    private readonly socketConnection = new AbortController();
+    getSocketConnectionSignal() { return this.socketConnection.signal; }
     sendAgentMessage(body: unknown, id?: string) { if (!id || !this.seen.has(id)) this.messages.push(body); if (id) this.seen.add(id); }
     sendUserMessage(text: string) { this.messages.push({ user: text }); }
     sendSessionEvent() {} emitMessagesConsumed() {} emitSteerIndeterminate() {} syncNativeQueuedMessage() {}

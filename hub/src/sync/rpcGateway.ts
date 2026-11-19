@@ -1,5 +1,6 @@
 import type { AgentFlavor, CodexCollaborationMode, CopilotAgentMode, PermissionMode } from '@hapi/protocol/types'
-import { DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
+import { DEFAULT_RPC_TIMEOUT_MS, getSessionStopPreparationMethod, PERMISSION_REQUEST_NOT_FOUND_MESSAGE, RPC_METHODS, SESSION_ARCHIVE_TIMEOUT_CODE, type SessionStopPreparationLease } from '@hapi/protocol/rpcMethods'
+import { ArchiveCleanupError } from './archiveCleanupError'
 import {
     UsageQueryResultSchema,
     UsageQuerySettingsResponseSchema,
@@ -241,6 +242,11 @@ export class RpcGateway {
             method = getSessionStopPreparationMethod(options.expectedMachineId, options.expectedPid)
         }
         const result = await this.sessionRpc(sessionId, method, options)
+        if (result && typeof result === 'object' && 'success' in result && result.success === false
+            && 'code' in result && result.code === SESSION_ARCHIVE_TIMEOUT_CODE) {
+            const detail = 'error' in result && typeof result.error === 'string' ? new Error(result.error) : undefined
+            throw new ArchiveCleanupError('timeout', detail)
+        }
         if (result && typeof result === 'object' && ('error' in result || ('success' in result && result.success === false))) {
             throw new Error(typeof (result as { error?: unknown }).error === 'string'
                 ? (result as { error: string }).error : 'Session shutdown was not confirmed')

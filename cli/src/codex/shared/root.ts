@@ -8,7 +8,7 @@ import { logger } from '@/ui/logger';
 import { listSlashCommands } from '@/modules/common/slashCommands';
 import { normalizeCodexModel } from '@/modules/common/codexModels';
 import { formatMessageWithAttachments } from '@/utils/attachmentFormatter';
-import { RPC_METHODS } from '@hapi/protocol/rpcMethods';
+import { RPC_METHODS, SESSION_ARCHIVE_TIMEOUT_CODE } from '@hapi/protocol/rpcMethods';
 import { ImplementCodexPlanRequestSchema, type ImplementCodexPlanResult } from '@hapi/protocol/apiTypes';
 import { CodexAppServerClient, isIndeterminateError } from '../codexAppServerClient';
 import { buildHapiMcpBridge, type HapiMcpBridge } from '../utils/buildHapiMcpBridge';
@@ -28,6 +28,9 @@ import { planImplementationMessageId, planProposalForItem, planProposalForTurn }
 
 type RuntimeSettings = NonNullable<Parameters<ApiSessionClient['keepAlive']>[2]>;
 const ARCHIVE_HISTORY_BUDGET_MS = 5_000;
+class HistoryArchiveTimeoutError extends Error {
+    constructor() { super('Could not confirm Codex history metadata before archiving'); }
+}
 export type RootHost = {
     directory: string; generation: string; endpoint: string; token?: string;
     attached?: boolean;
@@ -72,9 +75,11 @@ export class SharedCodexRoot {
     private steeringActive: boolean | undefined;
     private turnRevision = 0;
     private settingsRevision = 0;
-    private refreshing?: { signal: AbortSignal; promise: Promise<void> };
+    private refreshing?: { signal: AbortSignal; connection: AbortSignal; promise: Promise<void> };
     private hubResync?: { signal: AbortSignal; promise: Promise<void> };
     private hubResyncRequired = false;
+    private replayedConnection?: AbortSignal;
+    private readyConnection?: AbortSignal;
     private historyReplayAbort = new AbortController();
     private readonly attachedHistoryReads = new Map<string, { signal: AbortSignal; promise: Promise<unknown> }>();
     private archiveAttempt?: Promise<void>;
@@ -192,12 +197,12 @@ export class SharedCodexRoot {
 
     private resyncHub(): void {
         const signal = this.historyReplayAbort.signal;
-        const connection = this.session.getSocketConnectionGeneration();
-        if (connection === undefined || !this.projection || this.closed || this.stopping || signal.aborted) return;
-        const wasActivated = Boolean(this.heartbeat);
+        const connection = this.session.getSocketConnectionSignal();
+        if (connection.aborted || !this.projection || this.closed || this.stopping || signal.aborted
+            || this.reconnecting || !this.client.isInitialized()) return;
         const previous = this.hubResync?.signal === signal ? this.hubResync.promise : undefined;
-        const isCurrent = () => !signal.aborted && !this.stopping && this.hubResync?.promise === promise
-            && this.session.getSocketConnectionGeneration() === connection;
+        const isCurrent = () => !signal.aborted && !connection.aborted && !this.stopping
+            && !this.reconnecting && this.client.isInitialized() && this.hubResync?.promise === promise;
         const promise = Promise.resolve()
             .then(async () => {
                 await previous;
@@ -209,15 +214,15 @@ export class SharedCodexRoot {
                 this.steeringActive = undefined;
                 this.publishedPlanId = undefined;
                 this.publishedCompactionIds = undefined;
-                await this.refresh();
+                await this.refresh(connection);
                 if (!isCurrent()) return;
-                await this.refreshChildren(false, signal);
+                await this.refreshChildren(false, signal, connection);
                 if (!isCurrent()) return;
                 await this.queue.replay();
                 if (!isCurrent()) return;
                 this.hubResyncRequired = false;
-                // Restore the Hub's readiness fence after native revalidation.
-                if (wasActivated && this.heartbeat && !this.closed && this.client.isInitialized()) this.session.emitSessionReady();
+                this.replayedConnection = connection;
+                this.emitReadyWhenReplayed();
             })
             .catch(error => { if (isCurrent()) { logger.debug('[Codex shared] hub resync', error); this.failAttached(); } })
             .finally(() => { if (this.hubResync?.promise === promise) this.hubResync = undefined; });
@@ -277,10 +282,11 @@ export class SharedCodexRoot {
 
     private async backfillAttachedChild(threadId: string, projection: SharedCodexProjection, signal: AbortSignal): Promise<void> {
         if (signal.aborted) return;
+        const emission = AbortSignal.any([signal, this.session.getSocketConnectionSignal()]);
         const backfill = { threadId, projection, signal };
         this.attachedChildBackfills.add(backfill);
         try {
-            await this.projectHistory(projection, await this.readValidatedHistory(threadId, signal), signal);
+            await this.projectHistory(projection, await this.readValidatedHistory(threadId, signal), emission);
         } catch (error) {
             if (!signal.aborted) throw error;
         } finally {
@@ -333,6 +339,7 @@ export class SharedCodexRoot {
     }
     async bind(threadId: string, response: Record<string, unknown>, subscribe: boolean): Promise<void> {
         if (this.threadId && this.threadId !== threadId) throw new Error('Cannot retarget a shared HAPI session');
+        const connection = this.session.getSocketConnectionSignal();
         this.threadId = threadId;
         this.queue = new SharedCodexQueue(this.client, threadId, join(this.host.directory, `${this.session.sessionId}.queue.json`),
             (ids, steered) => {
@@ -363,13 +370,17 @@ export class SharedCodexRoot {
             response = record(await this.client.request('thread/resume', { threadId }));
         }
         this.acceptSettings(response); this.acceptSettings(this.host.settingsFor(threadId) ?? {});
-        if (!this.host.attached) await this.projectHistory(this.projection, response.thread);
+        if (!this.host.attached) await this.projectHistory(this.projection, response.thread,
+            AbortSignal.any([this.historyReplayAbort.signal, connection]));
         while (await this.waitForArchiveRecovery()) {
             const signal = this.historyReplayAbort.signal;
-            await this.refresh();
+            await this.refresh(connection);
             if (signal.aborted) continue;
-            await this.refreshChildren(true, signal);
-            if (!signal.aborted) return;
+            await this.refreshChildren(true, signal, connection);
+            if (signal.aborted) continue;
+            if (!connection.aborted) this.replayedConnection = connection;
+            else if (this.hubResyncRequired && !this.hubResync) this.resyncHub();
+            return;
         }
         throw new Error('Codex execution is stopping');
     }
@@ -379,7 +390,14 @@ export class SharedCodexRoot {
         if (!this.host.attached) await this.initialSettings(options);
         if (!await this.waitForArchiveRecovery()) throw new Error('Codex execution is stopping');
         this.registerControls(); this.ready();
-        this.heartbeat = setInterval(() => this.alive(), SESSION_KEEP_ALIVE_INTERVAL_MS); this.alive(); this.session.emitSessionReady();
+        this.heartbeat = setInterval(() => this.alive(), SESSION_KEEP_ALIVE_INTERVAL_MS); this.alive(); this.emitReadyWhenReplayed();
+    }
+    private emitReadyWhenReplayed(): void {
+        const connection = this.session.getSocketConnectionSignal();
+        if (!this.heartbeat || this.stopping || connection.aborted || this.replayedConnection !== connection
+            || this.readyConnection === connection || !this.client.isInitialized()) return;
+        this.readyConnection = connection;
+        this.session.emitSessionReady();
     }
     private publishSteering(): void {
         this.publishCompaction();
@@ -551,14 +569,14 @@ export class SharedCodexRoot {
             if (this.attachedHistoryReads.get(threadId)?.promise === promise) this.attachedHistoryReads.delete(threadId);
         }
     }
-    refresh(): Promise<void> {
+    refresh(connection = this.session.getSocketConnectionSignal()): Promise<void> {
         const signal = this.historyReplayAbort.signal;
-        if (this.refreshing?.signal === signal) return this.refreshing.promise;
-        const promise = this.refreshNow(signal).catch(error => {
+        if (this.refreshing?.signal === signal && this.refreshing.connection === connection) return this.refreshing.promise;
+        const promise = this.refreshNow(signal, AbortSignal.any([signal, connection])).catch(error => {
             if (!signal.aborted) { this.failAttached(); throw error; }
         })
             .finally(() => { if (this.refreshing?.promise === promise) this.refreshing = undefined; });
-        this.refreshing = { signal, promise };
+        this.refreshing = { signal, connection, promise };
         return promise;
     }
     private async refreshValidatedHistory(): Promise<void> {
@@ -579,7 +597,7 @@ export class SharedCodexRoot {
         }
         return undefined;
     }
-    private async refreshNow(signal: AbortSignal): Promise<void> {
+    private async refreshNow(signal: AbortSignal, emission: AbortSignal): Promise<void> {
         if (!this.threadId || signal.aborted || !this.client.isInitialized()) return;
         const revision = this.turnRevision;
         const thread = await this.readValidatedHistory(this.threadId, signal);
@@ -603,12 +621,14 @@ export class SharedCodexRoot {
                     conversationHistory: { ...metadata.capabilities?.conversationHistory, forkLatestCompleted: canForkLatest } }
             }));
         }
-        await this.projectHistory(this.projection, thread, signal);
+        await this.projectHistory(this.projection, thread, emission);
         if (signal.aborted) return;
         await this.queue.reconcile(); this.alive();
     }
-    private async refreshChildren(subscribe: boolean, signal = this.historyReplayAbort.signal): Promise<void> {
+    private async refreshChildren(subscribe: boolean, signal = this.historyReplayAbort.signal,
+        connection = this.session.getSocketConnectionSignal()): Promise<void> {
         if (signal.aborted) return;
+        const emission = AbortSignal.any([signal, connection]);
         // 历史回放可省略，子代理发现与实时订阅仍需在重连后恢复。
         const replayHistory = !this.lazyHistory();
         let cursor: string | undefined;
@@ -642,8 +662,10 @@ export class SharedCodexRoot {
                     if (signal.aborted) return;
                     await this.client.request('thread/resume', { threadId: id, excludeTurns: true });
                 }
-                if (replayHistory) {
-                    projection.reset(); await this.projectHistory(projection, await this.readValidatedHistory(id, signal), signal);
+                if (replayHistory && (!emission.aborted || this.host.attached)) {
+                    const history = await this.readValidatedHistory(id, signal);
+                    if (emission.aborted) continue;
+                    projection.reset(); await this.projectHistory(projection, history, emission);
                 }
             } catch (error) {
                 if (this.host.attached) throw error;
@@ -700,7 +722,10 @@ export class SharedCodexRoot {
                     logger.debug('[Codex shared] reconnect', error); await new Promise(resolve => setTimeout(resolve, 1_000));
                 }
             }
-        } finally { this.reconnecting = false; this.publishSteering(); this.publishPlan(); }
+        } finally {
+            this.reconnecting = false; this.publishSteering(); this.publishPlan();
+            if (this.hubResyncRequired) this.resyncHub();
+        }
     }
     async applySettings(raw: unknown): Promise<{ applied: RuntimeSettings }> {
         const config = SettingsSchema.parse(raw);
@@ -809,7 +834,13 @@ export class SharedCodexRoot {
             if (turnId) await this.client.request('turn/interrupt', { threadId: this.threadId, turnId });
         });
         rpc.registerHandler(RPC_METHODS.KillSession, async () => {
-            await this.archiveFromHub();
+            try { await this.archiveFromHub(); }
+            catch (error) {
+                if (error instanceof HistoryArchiveTimeoutError) {
+                    return { success: false, code: SESSION_ARCHIVE_TIMEOUT_CODE, error: error.message };
+                }
+                throw error;
+            }
             return { success: true };
         });
         // #1911 C2 / AC6: Codex owns KillSession here and never calls
@@ -1076,7 +1107,7 @@ export class SharedCodexRoot {
                 })
             ]);
             if (!confirmed || performance.now() >= deadline) {
-                throw new Error('Could not confirm Codex history metadata before archiving');
+                throw new HistoryArchiveTimeoutError();
             }
             await this.host.end(this);
         } catch (error) {

@@ -2062,13 +2062,16 @@ describe('strict OpenCode rewind metadata and socket entry', () => {
         const response = { data: { session: { metadata, metadataVersion: 1 } } };
         const reconnected = vi.fn();
         client.onReconnect(reconnected);
-        const first = client.getSocketConnectionGeneration()!;
+        const first = client.getSocketConnectionSignal();
         try {
             axiosHarness.get.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
             socket.triggerConnect();
-            expect(client.getSocketConnectionGeneration()).toBe(first + 1);
+            expect(first.aborted).toBe(true);
+            const second = client.getSocketConnectionSignal();
+            expect(second.aborted).toBe(false);
             socket.triggerConnect();
-            expect(client.getSocketConnectionGeneration()).toBe(first + 2);
+            expect(second.aborted).toBe(true);
+            expect(client.getSocketConnectionSignal().aborted).toBe(false);
             older.resolve(response);
             await new Promise<void>(resolve => setImmediate(resolve));
             expect(reconnected).not.toHaveBeenCalled();

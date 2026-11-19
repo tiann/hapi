@@ -5,7 +5,7 @@ export class ArchiveCleanupError extends Error {
 
     constructor(reason: 'unconfirmed' | 'unavailable' | 'timeout', cause?: unknown) {
         super(reason === 'timeout'
-            ? 'Timed out waiting for Runner to confirm session cleanup. Cleanup may still be running; retry to verify its result.'
+            ? 'Timed out waiting for session cleanup to be confirmed. Cleanup may still be running; retry to verify its result.'
             : reason === 'unavailable'
                 ? 'Runner did not confirm session cleanup. Reconnect the Runner and retry to verify its result.'
                 : 'Session cleanup is not yet confirmed. Retry after the remaining processes have stopped.', { cause })

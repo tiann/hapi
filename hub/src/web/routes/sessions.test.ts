@@ -1,10 +1,11 @@
 import { describe, expect, it } from 'bun:test'
 import { Hono } from 'hono'
+import { SESSION_ARCHIVE_TIMEOUT_CODE } from '@hapi/protocol/rpcMethods'
 import type { Session, SyncEngine } from '../../sync/syncEngine'
 import type { WebAppEnv } from '../middleware/auth'
 import { createSessionsRoutes } from './sessions'
 import { ArchiveCleanupError } from '../../sync/archiveCleanupError'
-import { RpcTargetMissingError } from '../../sync/rpcGateway'
+import { RpcGateway, RpcTargetMissingError } from '../../sync/rpcGateway'
 
 function createSession(overrides?: Partial<Session>): Session {
     const baseMetadata = {
@@ -1861,6 +1862,32 @@ describe('sessions routes', () => {
             const response = await app.request('/api/sessions/session-1/archive', { method: 'POST' })
             expect(response.status).toBe(error.status)
             expect(await response.json()).toEqual({ error: error.message, code: error.code })
+        })
+
+        it('reports an unconfirmed Codex history write as a retryable archive timeout', async () => {
+            let confirmed = false
+            const session = createSession({ active: true })
+            const io = { of: () => ({ sockets: { get: () => ({ timeout: () => ({
+                emitWithAck: async () => JSON.stringify(confirmed ? { success: true } : {
+                    success: false, code: SESSION_ARCHIVE_TIMEOUT_CODE, error: 'History metadata confirmation timed out'
+                })
+            }) }) } }) }
+            const gateway = new RpcGateway(io as never, { getSocketIdForMethod: () => 'codex-socket' } as never)
+            const { app } = createApp(session, {
+                archiveSession: async id => {
+                    await gateway.killSession(id)
+                    session.active = false
+                }
+            })
+            const archive = () => app.request('/api/sessions/session-1/archive', { method: 'POST' })
+            const response = await archive()
+            expect(response.status).toBe(503)
+            expect(await response.json()).toMatchObject({ code: SESSION_ARCHIVE_TIMEOUT_CODE })
+            expect(session.active).toBe(true)
+
+            confirmed = true
+            expect((await archive()).status).toBe(200)
+            expect(session.active).toBe(false)
         })
 
         it('rechecks Runner cleanup for an already inactive archived row on retry', async () => {
