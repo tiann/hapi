@@ -2446,8 +2446,9 @@ export function SessionList(props: {
         return bucketRunningSessions(machineFilteredSessions, effectivePinInProgressMode, byRelevanceOrRecent)
     }, [machineFilteredSessions, effectivePinInProgressMode, searchScoreIndex, hasTextQuery, listComparator])
     // Stopped rows show their stop time only where the list orders them by it:
-    // Active first, and not while a text search orders rows by relevance.
-    const stoppedTimeShown = listView.activeFirst && !(searchScoreIndex && hasTextQuery)
+    // Active first, and no text query (which orders rows by relevance or, for
+    // project rows in either search mode, by the legacy comparator).
+    const stoppedTimeShown = listView.activeFirst && !hasTextQuery
     const runningSessionTotal = runningSessions.jobs.length
         + runningSessions.working.length
         + runningSessions.pending.length

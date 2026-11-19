@@ -21,12 +21,12 @@ function setup(id: string) {
     const events: SyncEvent[] = []
     const publisher = { emit: (event: SyncEvent) => { events.push(event) } } as unknown as EventPublisher
     const cache = new SessionCache(store, publisher)
-    // The last keepalive lands at baseTime (the hub stamps it with its own clock).
-    const sessionId = withClock(baseTime, () => {
-        const session = cache.getOrCreateSession(id, { path: '/tmp/project', host: 'localhost', flavor: 'claude' }, null, 'default')
-        cache.handleSessionAlive({ sid: session.id, time: baseTime, thinking: false })
-        return session.id
-    })
+    // Created a minute earlier; the last keepalive lands at baseTime. The hub
+    // stamps keepalives with its own clock and keeps them in the cache only.
+    const sessionId = withClock(baseTime - 60_000, () =>
+        cache.getOrCreateSession(id, { path: '/tmp/project', host: 'localhost', flavor: 'claude' }, null, 'default').id
+    )
+    withClock(baseTime, () => cache.handleSessionAlive({ sid: sessionId, time: baseTime, thinking: false }))
     events.length = 0
     const inactivePatch = () => events
         .filter((event): event is Extract<SyncEvent, { type: 'session-updated' }> => event.type === 'session-updated')
@@ -46,6 +46,16 @@ describe('stop time on session stop transitions', () => {
         expect(cache.getSession(sessionId)?.activeAt).toBe(baseTime + 10_000)
         expect(inactivePatch()?.activeAt).toBe(baseTime + 10_000)
         expect(reloadedActiveAt()).toBe(baseTime + 10_000)
+    })
+
+    it('keeps the later keepalive when the end time from a trailing CLI clock is earlier', () => {
+        const { cache, sessionId, inactivePatch, reloadedActiveAt } = setup('session-stop-end-skew')
+
+        withClock(baseTime + 10_000, () => cache.handleSessionEnd({ sid: sessionId, time: baseTime - 2_000 }))
+
+        expect(cache.getSession(sessionId)?.activeAt).toBe(baseTime)
+        expect(inactivePatch()?.activeAt).toBe(baseTime)
+        expect(reloadedActiveAt()).toBe(baseTime)
     })
 
     it('sends and persists the last keepalive, not the sweep time, when a session expires', () => {

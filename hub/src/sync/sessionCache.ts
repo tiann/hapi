@@ -1129,10 +1129,11 @@ export class SessionCache {
 
         const wasThinking = session.thinking
         session.active = false
-        this.store.sessions.setSessionActive(session.id, false, t, session.namespace)
-        // Mirror the stored active_at (which keeps the later time) so cached
-        // summaries and the patch carry when the session stopped.
+        // The end time comes from the CLI host's clock, keepalives from the
+        // hub's; persist, cache and publish the later of the two, so a reloaded
+        // cache keeps the stop time clients ordered by.
         session.activeAt = Math.max(session.activeAt, t)
+        this.store.sessions.setSessionActive(session.id, false, session.activeAt, session.namespace)
         session.thinking = false
         session.thinkingAt = t
         session.activeTurnStartedAt = null
