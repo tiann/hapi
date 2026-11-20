@@ -1169,17 +1169,32 @@ describe('the acknowledgement broadcast stays inside its own schema (#1717)', ()
         const store = new Store(':memory:')
         const cache = new SessionCache(store, { emit: (_event: SyncEvent) => {} } as EventPublisher)
         const total = ACK_KEYS_RETENTION_LIMIT + 500
-        const requests: Record<string, { tool: string; arguments: Record<string, never> }> = {}
-        for (let i = 0; i < total; i++) requests[`r${i}`] = { tool: 'Bash', arguments: {} }
         const session = cache.getOrCreateSession(
             'ack-bound-beyond-any-cap',
             { path: '/tmp/project', host: 'localhost' },
-            { requests, completedRequests: {} },
+            { requests: {}, completedRequests: {} },
             'default'
         )
+        // `SessionCache.setSessionBlockedAck` rebuilds its live-key set from
+        // every entry in `agentState.requests` on each call (cold-review
+        // round 21), so dismissing this many keys one at a time through it
+        // would cost O(total^2) — an unrelated, pre-existing expense this
+        // test doesn't need to pay to prove `serialiseAckKeys`'s eviction
+        // bound. Building the key sets in plain JS and calling the store
+        // directly exercises the exact function this fix changed, at the
+        // same scale, in O(total).
+        const dismissedKeys: string[] = []
+        const livePendingKeys = new Set<string>()
         for (let i = 0; i < total; i++) {
-            cache.setSessionBlockedAck(session.id, 'handled', Date.now() + i, `request:r${i}`)
+            const key = `request:r${i}`
+            dismissedKeys.push(key)
+            livePendingKeys.add(key)
         }
+        store.sessions.setSessionBlockedAck(
+            session.id,
+            { at: Date.now(), reason: 'handled', keys: dismissedKeys, livePendingKeys },
+            'default'
+        )
 
         const row = store.sessions.getSessionByNamespace(session.id, 'default')
         const keys = row?.blockedAckKeys ?? []
