@@ -2148,16 +2148,15 @@ body:
     // Still returns 200 with an empty template list — that part of the
     // outcome doesn't change. blankAllowed fails closed here even though
     // the target's own isBlankIssuesEnabled is true (review finding,
-    // tiann/hapi#2147, round 11): NOT_FOUND on `.github` means "can't
-    // read it," not "it doesn't exist" — a hub credential that can write
-    // issues to the destination but lacks read access to the owner's
-    // `.github` repo gets the exact same NotFoundError as one where
-    // `.github` genuinely doesn't exist. Scoring that unreadable state as
-    // "no .github repo, therefore the policy is unopposed" used to score
-    // an indistinguishable absence as a permission — applicability is
-    // unresolved either way, so the policy half of the answer fails
-    // closed regardless of what the viewer-eligibility half says.
-    it('fails closed on blankAllowed even though the target\'s own isBlankIssuesEnabled is true, when the .github lookup rejects with NOT_FOUND (gh exits nonzero)', async () => {
+    // tiann/hapi#2147, round 11, narrowed to Organization owners in round
+    // 13 — see the User-owner sibling below for the opposite outcome):
+    // NOT_FOUND on `.github` means "can't read it," not "it doesn't
+    // exist," for an ORGANIZATION owner specifically, because an eligible
+    // internal `.github` repo could be hidden from this credential (round
+    // 10's EMU reasoning) — this hub can't rule that out, so applicability
+    // stays unresolved and the policy half of the answer fails closed
+    // regardless of what the viewer-eligibility half says.
+    it('fails closed on blankAllowed even though the target\'s own isBlankIssuesEnabled is true, when the .github lookup rejects with NOT_FOUND for an Organization owner', async () => {
         const calls: string[] = []
         const app = await createApp(
             () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
@@ -2166,7 +2165,12 @@ body:
                 if (target.repo === '.github') {
                     throw new GhGraphqlNotFoundError("gh api graphql failed: GraphQL: Could not resolve to a Repository with the name '.github'. (repository)")
                 }
-                return { data: { repository: { isBlankIssuesEnabled: true, issueTemplateDir: null } } }
+                return {
+                    data: {
+                        repositoryOwner: { __typename: 'Organization' },
+                        repository: { isBlankIssuesEnabled: true, issueTemplateDir: null }
+                    }
+                }
             }
         )
         const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/no-local-templates`)
@@ -2174,6 +2178,41 @@ body:
         const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
         expect(body.templates).toEqual([])
         expect(body.blankAllowed).toBe(false)
+        expect(calls).toEqual(['no-local-templates', '.github'])
+    })
+
+    // The User-owner opposite of the test above (review finding,
+    // tiann/hapi#2147, round 13, confirmed against tiann/eadb:
+    // isBlankIssuesEnabled: true at viewerPermission: READ — no elevated
+    // access, so that true is genuinely policy-derived). A personal
+    // account's eligible defaults can only ever come from a PUBLIC
+    // `.github` repo — never PRIVATE, and INTERNAL isn't even a
+    // visibility a personal account's repo can have — and a public repo
+    // is visible to any authenticated credential, so this hub's own
+    // authenticated NOT_FOUND already proves none exists. That's a
+    // determinate absence, not an unresolved one: blankAllowed survives.
+    it('does not fail closed on blankAllowed when the .github lookup rejects with NOT_FOUND for a personal (User) owner', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            (target: { repo: string }) => {
+                calls.push(target.repo)
+                if (target.repo === '.github') {
+                    throw new GhGraphqlNotFoundError("gh api graphql failed: GraphQL: Could not resolve to a Repository with the name '.github'. (repository)")
+                }
+                return {
+                    data: {
+                        repositoryOwner: { __typename: 'User' },
+                        repository: { isBlankIssuesEnabled: true, issueTemplateDir: null }
+                    }
+                }
+            }
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/no-local-templates`)
+        expect(response.status).toBe(200)
+        const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
+        expect(body.templates).toEqual([])
+        expect(body.blankAllowed).toBe(true)
         expect(calls).toEqual(['no-local-templates', '.github'])
     })
 

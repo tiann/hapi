@@ -670,6 +670,9 @@ function toBoardItemComments(response: GhItemCommentsResponse): BoardItemComment
 // query already does instead of introducing a second gh invocation style.
 const ISSUE_TEMPLATE_DIR_QUERY = `
 query($owner: String!, $repo: String!) {
+  repositoryOwner(login: $owner) {
+    __typename
+  }
   repository(owner: $owner, name: $repo) {
     visibility
     isBlankIssuesEnabled
@@ -688,6 +691,10 @@ type GhRepositoryVisibility = 'PUBLIC' | 'PRIVATE' | 'INTERNAL'
 
 type GhIssueTemplateDirResponse = {
     data?: {
+        // Whether the OWNER (not the repo) is a personal account or an
+        // organization — see resolveIssueTemplatesForRepo's use of this
+        // to interpret a NOT_FOUND on the `.github` fetch.
+        repositoryOwner?: { __typename?: string | null } | null
         repository?: {
             visibility?: GhRepositoryVisibility | null
             // GitHub's own, already-inheritance-resolved answer to "can the
@@ -1465,6 +1472,21 @@ export function createBoardRoutes(
         // catches "this viewer specifically may not file blank issues"
         // even when the policy below would otherwise allow it.
         const viewerEligible = response.data?.repository?.isBlankIssuesEnabled ?? false
+        // A personal (User) account's eligible defaults can only ever come
+        // from a PUBLIC `.github` repo (isEligibleIssueTemplateFallback —
+        // INTERNAL isn't even a visibility a personal account's repo can
+        // have, and PRIVATE is never eligible for anyone). A public repo
+        // is visible to any authenticated credential, so this hub's own
+        // authenticated NOT_FOUND on `.github` already proves no public
+        // one exists FOR A USER OWNER specifically — determinate absence,
+        // not an unresolved one (review finding, tiann/hapi#2147, round
+        // 13, confirmed against tiann/eadb: isBlankIssuesEnabled: true at
+        // viewerPermission: READ — no elevated access, so that true is
+        // genuinely policy-derived, not the round-11 maintainer exception).
+        // An Organization owner can still have eligible INTERNAL defaults
+        // this credential's NOT_FOUND can't rule out (round 10's EMU
+        // reasoning) — NOT_FOUND stays indeterminate there.
+        const ownerIsPersonalUser = response.data?.repositoryOwner?.__typename === 'User'
         // The other half: the repo's actual policy, read from whichever
         // config.yml is APPLICABLE — the target's own if it has one, else
         // the owner's `.github` repo's, but only when `.github` is
@@ -1473,19 +1495,20 @@ export function createBoardRoutes(
         // true (GitHub's own default when no config exists anywhere).
         //
         // Ineligible isn't the same as unknown (review finding, round 10,
-        // restored under the conjunction in round 11): a PRIVATE `.github`
-        // repo's policy is never read by GitHub for ANY repo it owns —
-        // GitHub's own docs require the `.github` repo itself to be
-        // public — so that's a determinate "doesn't apply," not an
-        // unresolved one; ignore it and keep the true default, same as
-        // "no .github repo at all." INTERNAL without the operator's
-        // opt-in, and NOT_FOUND on `.github` (this hub can't tell "the
-        // repo doesn't exist" from "this credential can't read it"), are
-        // the two cases HAPI genuinely can't resolve either way — fail
-        // closed on those, same treatment "nothing usable and blank
-        // disabled" already gets. `response` is left as the target's own
-        // in both fail-closed cases, which is why the final read below
-        // doesn't get to supply a true default once this flag is false.
+        // restored under the conjunction in round 12): determinate-absent
+        // permits, indeterminate denies. A PRIVATE `.github` repo's policy
+        // is never read by GitHub for ANY repo it owns — GitHub's own
+        // docs require the `.github` repo itself to be public — so that's
+        // a determinate "doesn't apply," not an unresolved one; ignore it
+        // and keep the true default, same as "no .github repo at all."
+        // INTERNAL without the operator's opt-in, and NOT_FOUND on
+        // `.github` (this hub can't tell "the repo doesn't exist" from
+        // "this credential can't read it"), are indeterminate — there may
+        // be a policy we simply cannot see — so those fail closed, same
+        // treatment "nothing usable and blank disabled" already gets.
+        // `response` is left as the target's own in both fail-closed
+        // cases, which is why the final read below doesn't get to supply
+        // a true default once this flag is false.
         let policyAllowsBlank = true
         if (!repoHasLocalIssueTemplateCoverage(response) && repo.toLowerCase() !== '.github') {
             try {
@@ -1505,7 +1528,12 @@ export function createBoardRoutes(
                 if (!(error instanceof GhGraphqlNotFoundError)) {
                     throw error
                 }
-                policyAllowsBlank = false
+                if (!ownerIsPersonalUser) {
+                    policyAllowsBlank = false
+                }
+                // else: a User owner's only possible eligible source is a
+                // public .github repo, and this NOT_FOUND already proves
+                // none exists — keep the true default.
             }
         }
         const { templates, blankIssuesEnabled: applicablePolicy } = parseIssueTemplateDirResponse(response)
