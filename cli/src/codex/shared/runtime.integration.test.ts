@@ -10,6 +10,7 @@ import type { ApiSessionClient } from '@/api/apiSession';
 import { CodexAppServerClient } from '../codexAppServerClient';
 import { initializeSharedClient } from './launch';
 import { record } from './gateway';
+import { saveRuntime, withThreadOwnership } from './registry';
 import { isProcessAlive } from '@/utils/process';
 import { notifyRunnerSessionStarted } from '@/runner/controlClient';
 import { bootstrapExistingSession } from '@/agent/sessionFactory';
@@ -149,6 +150,19 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             metadataFailure.mockRestore();
             expect(second.runtime.sessions[original.sessionId].active).toBe(true);
             await expect(concurrent.request('thread/queue/start', { threadId })).rejects.toThrow('tier confirmation');
+            const refresh = SharedCodexRoot.prototype.refresh;
+            let rejectRefresh = true;
+            const historyFailure = vi.spyOn(SharedCodexRoot.prototype, 'refresh').mockImplementation(function(this: InstanceType<typeof SharedCodexRoot>) {
+                if (rejectRefresh && this.threadId === threadId) {
+                    rejectRefresh = false;
+                    return Promise.reject(new Error('fixture history refresh unavailable'));
+                }
+                return refresh.call(this);
+            });
+            extraSpies.push(historyFailure);
+            await expect(second.client.request('thread/resume', { threadId, excludeTurns: true })).rejects.toThrow('fixture history refresh unavailable');
+            historyFailure.mockRestore();
+            expect(second.runtime.sessions[original.sessionId].active).toBe(true);
             let rejectSubscription = true;
             const subscriptionFailure = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
                 if (rejectSubscription && method === 'thread/resume' && !clients.includes(this) && record(params).threadId === threadId && record(params).excludeTurns === true) {
@@ -175,6 +189,13 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             expect(activate).toHaveBeenCalledTimes(1);
             activate.mockRestore();
             const third = await start();
+            await saveRuntime({ ...third.runtime, pendingCreations: ['unrelated-creation'] });
+            try {
+                await expect(withThreadOwnership(second.runtime.codexHome, threadId, second.runtime.id, async () => {})).rejects.toThrow('unconfirmed creation');
+                await expect(concurrent.request('thread/resume', { threadId, excludeTurns: true })).resolves.toMatchObject({ serviceTier: 'priority' });
+            } finally {
+                await saveRuntime(third.runtime);
+            }
             expect(state.sessions.get(original.sessionId)).toBe(retainedSession);
             expect(state.sessions.get(original.sessionId)?.metadata.codexServiceTierExplicit).toBe(true);
             extraSpies.push(vi.spyOn(CodexAppServerClient.prototype, 'listModels').mockResolvedValue({ data: [

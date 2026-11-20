@@ -227,9 +227,9 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         assertRunning();
         const threadId = string(record(response.thread).id);
         if (!threadId) throw new Error('Codex lifecycle response has no thread ID');
-        if (resume || requestedUltrafast || downgraded || root.session.getMetadata()?.codexTierConfirmationPending === true) pendingAdmission.add(threadId);
         const reserved = runtime.sessions[root.session.sessionId];
         if (reserved && reserved.threadId !== threadId) throw new Error('Codex retargeted a reserved thread');
+        if (resume || requestedUltrafast || downgraded || root.session.getMetadata()?.codexTierConfirmationPending === true) pendingAdmission.add(threadId);
         if (!reserved) await reserve(root, threadId);
         if (!resume?.rootBound) {
             // Metadata write materializes an empty legacy rollout for native resume.
@@ -341,6 +341,11 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         if (request.id === undefined) throw new Error('Lifecycle operations require a JSON-RPC request ID');
         if (params.history || params.path) throw new Error('Use a native thread ID to resume through HAPI');
         const threadId = string(params.threadId);
+        const localRoot = threadId ? roots.get(threadId) : undefined;
+        if (request.method === 'thread/resume' && threadId && localRoot?.isActivated && !ending.has(localRoot)
+            && !resumingThreads.has(threadId) && !retryableBindings.has(threadId)) {
+            return { ...request, params: localRoot.config(params) };
+        }
         if (request.method === 'thread/resume' && threadId && resumingThreads.has(threadId)) {
             throw new Error('Thread is already being attached in this runtime; retry after it is ready');
         }
@@ -370,7 +375,10 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 if (resumingThreads.has(threadId)) throw new Error('Thread is already being attached in this runtime; retry after it is ready');
                 const accepted = retryableBindings.get(threadId);
                 const live = roots.get(threadId) ?? (existing && roots.get(existing.threadId) === existing ? existing : undefined);
-                if (live && !accepted) return { root: live, rejoin: true };
+                if (live && !accepted) {
+                    if (!live.isActivated || ending.has(live)) throw new Error('Thread is already being attached in this runtime; retry after it is ready');
+                    return { root: live, rejoin: true };
+                }
                 resumingThreads.add(threadId);
                 try {
                     if (accepted) return { root: accepted.root, accepted };
@@ -434,15 +442,18 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             try {
                 await bind(reservation.root, record(response.result), true, undefined, request.method === 'thread/start', reservation.serviceTierExplicit, reservation.requestedUltrafast, reservation.downgraded, reservation.resumeId ? reservation : undefined);
             } catch (error) {
-                // Resume before root.bind or after it completed, never during
-                // a partial root bind or after activation has begun.
-                if (!reservation.resumeId || ending.has(reservation.root) || reservation.controlSubscribed || reservation.root.threadId && !reservation.rootBound) {
-                    if (reservation.resumeId) retryableBindings.delete(reservation.resumeId);
+                // The original queue, projection and native writer survive
+                // a partial bind. Retry until activation has begun.
+                if (!reservation.resumeId || ending.has(reservation.root) || reservation.controlSubscribed
+                    || string(record(record(response.result).thread).id) !== reservation.resumeId) {
+                    if (reservation.resumeId) {
+                        retryableBindings.delete(reservation.resumeId);
+                        if (reservation.root.isActivated) resumingThreads.delete(reservation.resumeId);
+                    }
                     throw error;
                 }
                 retryableBindings.set(reservation.resumeId, reservation);
                 pendingAdmission.add(reservation.resumeId);
-                await persist();
                 resumingThreads.delete(reservation.resumeId);
                 throw error;
             }

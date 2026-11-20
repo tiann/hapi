@@ -309,9 +309,7 @@ export class SharedCodexRoot {
             'shell_environment_policy.set.HAPI_SESSION_ID': this.session.sessionId
         } };
     }
-    async bind(threadId: string, response: Record<string, unknown>, subscribe: boolean): Promise<void> {
-        if (this.threadId && this.threadId !== threadId) throw new Error('Cannot retarget a shared HAPI session');
-        this.threadId = threadId;
+    private async initializeBinding(threadId: string): Promise<void> {
         this.queue = new SharedCodexQueue({ request: <T = unknown>(method: string, params?: unknown): Promise<T> => {
             if (['turn/steer', 'thread/queue/start'].includes(method) && (this.closed || this.stopping || this.needsTierConfirmation)) {
                 return Promise.reject(new Error('Service tier confirmation is pending or execution is stopping; input was not steered.'));
@@ -341,7 +339,14 @@ export class SharedCodexRoot {
             completedRequests: { ...state.completedRequests, ...Object.fromEntries(Object.entries(state.requests ?? {}).map(([id, request]) =>
                 [id, { ...request, completedAt: Date.now(), status: 'canceled' as const }])) }
         }));
-        // 空会话的首次订阅保留完整响应，以兼容原生历史源文件的初始化。
+    }
+    get isActivated(): boolean { return this.activated; }
+    async bind(threadId: string, response: Record<string, unknown>, subscribe: boolean): Promise<void> {
+        if (this.threadId && this.threadId !== threadId) throw new Error('Cannot retarget a shared HAPI session');
+        this.threadId = threadId;
+        // Keep the queue and projection when retrying a failed native read.
+        if (!this.projection) await this.initializeBinding(threadId);
+        // The first subscription uses the complete response to initialize history.
         if (subscribe) {
             await this.host.beforeSubscribe?.(threadId);
             response = record(await this.client.request('thread/resume', { threadId }));
