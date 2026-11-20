@@ -1829,6 +1829,17 @@ it.each(['snapshot', 'notification'])('releases a lost-turn pause after newer na
     await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
 });
 
+it('preserves explicit native Fast intent when a Web effort update observes the tier first', async () => {
+    const f = await fixture({ bindTier: 'ultrafast' });
+    await f.root.activate();
+    const turn = await f.root.prepareNativeTurn({ serviceTier: 'priority' });
+    f.native.settings.serviceTier = 'priority';
+    await f.root.applySettings({ modelReasoningEffort: 'high' });
+    expect(f.metadata().codexServiceTierExplicit).toBe(false);
+    await f.root.confirmNativeTurn(turn.params, true, undefined, turn.generation);
+    expect(f.metadata().codexServiceTierExplicit).toBe(true);
+});
+
 it('confirms an identical tier from a fresh snapshot without requiring a duplicate event', async () => {
     const f = await fixture(); await f.root.activate();
     await f.root.applySettings({ serviceTier: 'ultrafast' });

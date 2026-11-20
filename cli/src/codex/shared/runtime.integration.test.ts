@@ -273,6 +273,28 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             await expect(observer.request('turn/steer', { threadId: child.thread.id, expectedTurnId: 'not-running', input: [{ type: 'text', text: 'must not steer' }] })).rejects.toThrow('tier confirmation');
             expect(record((await observer.request<{ thread: unknown }>('thread/read', { threadId: child.thread.id, includeTurns: true })).thread).turns).toEqual([]);
             pause.mockRestore(); prepare.mockRestore();
+            const knownThreads = new Set(Object.values(second.runtime.sessions).map(binding => binding.threadId));
+            let acceptedThread: string | undefined;
+            const failNewSubscription = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
+                const candidate = record(params).threadId;
+                if (!acceptedThread && !clients.includes(this) && method === 'thread/resume' && record(params).excludeTurns === true
+                    && typeof candidate === 'string' && !knownThreads.has(candidate)) {
+                    acceptedThread = candidate;
+                    return Promise.reject(new Error('fixture accepted start subscription unavailable'));
+                }
+                return originalRequest.call(this, method, params) as Promise<T>;
+            });
+            extraSpies.push(failNewSubscription);
+            await expect(second.client.request('thread/start', { cwd, model: 'gpt-6-astra', serviceTier: 'ultrafast' })).rejects.toThrow('fixture accepted start subscription unavailable');
+            failNewSubscription.mockRestore();
+            const createdBindings = Object.entries(second.runtime.sessions).filter(([, binding]) => !knownThreads.has(binding.threadId));
+            expect(createdBindings).toHaveLength(1);
+            const [acceptedSid, acceptedBinding] = createdBindings[0];
+            expect(acceptedBinding).toMatchObject({ threadId: acceptedThread, active: true });
+            await expect(observer.request('thread/queue/start', { threadId: acceptedThread })).rejects.toThrow('tier confirmation');
+            await expect(observer.request('thread/resume', { threadId: acceptedThread, excludeTurns: true })).resolves.toMatchObject({ thread: { id: acceptedThread } });
+            expect(state.sessions.get(acceptedSid)?.metadata.codexServiceTierExplicit).toBe(true);
+            expect(Object.entries(second.runtime.sessions).filter(([, binding]) => !knownThreads.has(binding.threadId))).toHaveLength(1);
             const originalStandard = SharedCodexRoot.prototype.confirmStandardLaunch;
             const standardRace = vi.spyOn(SharedCodexRoot.prototype, 'confirmStandardLaunch').mockImplementationOnce(async function(this: InstanceType<typeof SharedCodexRoot>, explicit) {
                 await this.client.request('thread/settings/update', { threadId: this.threadId, serviceTier: 'priority' });

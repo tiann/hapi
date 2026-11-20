@@ -18,7 +18,7 @@ import { SharedCodexRoot } from './root';
 import { buildForkSessionSummary } from '@hapi/protocol';
 
 export type RuntimeReady = { sessionId: string; runtime: CodexRuntimeRecord };
-type Reservation = { root: SharedCodexRoot; resumeId?: string; serviceTierExplicit?: boolean; requestedUltrafast?: boolean; downgraded?: boolean; rootBound?: boolean; controlSubscribed?: boolean };
+type Reservation = { root: SharedCodexRoot; resumeId?: string; freshThread?: boolean; serviceTierExplicit?: boolean; requestedUltrafast?: boolean; downgraded?: boolean; rootBound?: boolean; controlSubscribed?: boolean };
 
 function gitInfo(cwd: string): { sha: string | null; branch: string | null; originUrl: string | null } {
     const git = (...args: string[]) => {
@@ -239,15 +239,11 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             if (requestedUltrafast || downgraded || root.session.getMetadata()?.codexTierConfirmationPending === true) root.beginTierConfirmation();
             roots.set(threadId, root);
             await root.bind(threadId, response, subscribe);
+            // A new thread starts with zero cumulative usage. Seed once before
+            // activation, including when the first bind had to be retried.
+            if (freshThread) root.seedFreshUsage();
             if (resume) resume.rootBound = true;
         }
-        // A thread this runtime created (thread/start) starts from zero
-        // cumulative usage: seed before activate() opens the input gates, or
-        // a prompt released at session-ready starts the first turn with a
-        // null baseline that later seeding cannot repair. Forks are
-        // excluded: their totals arrive through the app-server's attach-time
-        // usage replay.
-        if (freshThread) root.seedFreshUsage();
         assertRunning();
         // If this fails after binding, retry only the subscription. Rebinding
         // would replace the queue and replay state on an already attached root.
@@ -407,6 +403,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 : params;
             const tier = await resolveUltrafastLaunch(control, request.method!, resolved, cwd, catalogProvider, savedThread, startupCatalogConfig);
             reservations.set(key(connection, request), { root, resumeId: request.method === 'thread/resume' ? threadId : undefined,
+                freshThread: request.method === 'thread/start',
                 serviceTierExplicit: params.serviceTier !== undefined || request.method === 'thread/resume' && metadata?.codexPendingServiceTier !== undefined
                     ? true : request.method === 'thread/resume' ? undefined : false,
                 requestedUltrafast: tier.params.serviceTier === 'ultrafast', downgraded: tier.downgraded });
@@ -442,13 +439,21 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 if (reservation.resumeId) resumingThreads.delete(reservation.resumeId);
                 return;
             }
+            const result = record(response.result);
+            const nativeThreadId = string(record(result.thread).id);
+            // Accepted start/fork requests can now be recovered by native ID
+            // through resume; never send the creation request again.
+            if (!reservation.resumeId && nativeThreadId) {
+                reservation.resumeId = nativeThreadId;
+                resumingThreads.add(nativeThreadId);
+            }
             try {
-                await bind(reservation.root, record(response.result), true, undefined, request.method === 'thread/start', reservation.serviceTierExplicit, reservation.requestedUltrafast, reservation.downgraded, reservation.resumeId ? reservation : undefined);
+                await bind(reservation.root, result, true, undefined, reservation.freshThread, reservation.serviceTierExplicit, reservation.requestedUltrafast, reservation.downgraded, reservation.resumeId ? reservation : undefined);
             } catch (error) {
                 // The original queue, projection and native writer survive
                 // a partial bind. Retry until activation has begun.
                 if (!reservation.resumeId || ending.has(reservation.root) || reservation.controlSubscribed
-                    || string(record(record(response.result).thread).id) !== reservation.resumeId) {
+                    || nativeThreadId !== reservation.resumeId) {
                     if (reservation.resumeId) {
                         retryableBindings.delete(reservation.resumeId);
                         if (reservation.root.isActivated) resumingThreads.delete(reservation.resumeId);

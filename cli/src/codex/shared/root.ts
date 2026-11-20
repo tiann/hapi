@@ -864,9 +864,10 @@ export class SharedCodexRoot {
     async confirmNativeTurn(params: Record<string, unknown>, explicitTier: boolean, fallbackNotice?: string, operationId = ++this.tierOperationCounter): Promise<void> {
         const verifyUltrafast = params.serviceTier === 'ultrafast' || params.serviceTier === undefined && this.hasUltrafastTier;
         const current = () => operationId >= this.confirmedTierOperation && operationId >= this.pendingTierOperation;
-        if (!current()) return;
-        // Native acceptance establishes intent even when a later client changes the model.
+        // A settings lookup can confirm the effective value before the native
+        // reply arrives. Only the accepted turn establishes explicit intent.
         if (explicitTier) this.markTierExplicit();
+        if (!current()) return;
         const revision = this.settingsRevision;
         const deadline = Date.now() + 25_000;
         const model = string(record(record(params.collaborationMode).settings).model) ?? string(params.model);
