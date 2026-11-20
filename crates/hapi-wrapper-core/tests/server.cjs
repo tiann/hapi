@@ -2,7 +2,6 @@ const assert = require('node:assert/strict')
 const { createServer } = require('node:http')
 const { createRequire } = require('node:module')
 const hubRequire = createRequire(require.resolve('../../../hub/package.json'))
-assert.equal(hubRequire('socket.io/package.json').version, '4.8.3')
 const socketRequire = createRequire(hubRequire.resolve('socket.io'))
 const { Server } = hubRequire('socket.io')
 

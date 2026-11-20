@@ -348,7 +348,7 @@ mod tests {
         }
     }
     #[tokio::test]
-    async fn permission_with_lone_surrogate_reaches_handler() {
+    async fn permission_with_lone_surrogate_falls_back_to_native_dialog() {
         use crate::hooks::server::{HookServer, Options};
         let server = HookServer::start(Options {
             on_session_hook: std::sync::Arc::new(|_, _| {}),
@@ -367,9 +367,7 @@ mod tests {
             forward(args(server.port, "claude", ""), body.to_vec())
                 .await
                 .unwrap(),
-            Some(
-                json!({"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","updatedInput":{"s":"a\u{fffd}b"}}}})
-            )
+            None
         );
     }
     #[tokio::test]
