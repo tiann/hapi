@@ -779,7 +779,12 @@ export class SessionCache {
      * they did not ask for. One implementation rather than two, because an
      * ack-merge rule duplicated is an ack-merge rule that drifts.
      */
-    transferBlockedAck(fromSessionId: string, toSessionId: string, namespace: string): void {
+    transferBlockedAck(
+        fromSessionId: string,
+        toSessionId: string,
+        namespace: string,
+        notifyKeyRemap?: ReadonlyMap<string, string>
+    ): void {
         const source = this.store.sessions.getSessionByNamespace(fromSessionId, namespace)
         const sourceAckAt = source?.blockedAckAt ?? null
         if (!source || sourceAckAt === null) return
@@ -791,9 +796,20 @@ export class SessionCache {
         // dismissed a DIFFERENT request made the source's request block again
         // on the merged row — the merge unions the requests, so it has to
         // union what dismissed them.
+        //
+        // A source footer key is remapped to the SURVIVING occurrence's own
+        // key first (#1717 cold-review round 25): an untimestamped Codex
+        // footer can carry a different `createdAt` in two projections of the
+        // same thread, so when the merge deduplicates it against an existing
+        // canonical row, the raw source key no longer matches anything live
+        // and the dismissal silently stops applying — the message-matching
+        // caller (this function has no visibility into which row matched
+        // which) is the only place that knows the remap.
+        const remappedSourceKeys = (source.blockedAckKeys ?? [])
+            .map((key) => notifyKeyRemap?.get(key) ?? key)
         const mergedKeys = Array.from(new Set([
             ...(target.blockedAckKeys ?? []),
-            ...(source.blockedAckKeys ?? [])
+            ...remappedSourceKeys
         ]))
         // Keyless acknowledgements (written before identities existed) still
         // carry across on the old watermark rule, so an upgrade does not

@@ -3552,6 +3552,20 @@ export function SessionList(props: {
             return
         }
 
+        // A globally-pinned blocker keyboard-unpinned here moves into Blocked
+        // (#1717 cold-review round 25) — a destination this effect did not
+        // know about, so it fell through to the generic fallback below,
+        // which treats the move as a removal: focus landed on some other
+        // control and the row stayed hidden behind a collapsed panel.
+        if (blockedSectionSessions.some((session) => session.id === target.sessionId)) {
+            if (blockedSectionCollapsed && !isFiltering) {
+                setBlockedSectionCollapsed(false)
+                return
+            }
+            if (!target.pending) quickUnpinFocusRef.current = null
+            return
+        }
+
         const targetGroup = groups.find((group) =>
             group.sessions.some((session) => session.id === target.sessionId)
         )
@@ -3602,6 +3616,7 @@ export function SessionList(props: {
         quickUnpinFocusRef.current = null
     }, [
         globalPinnedSessions, runningSessions, groups, runningSectionCollapsed,
+        blockedSectionSessions, blockedSectionCollapsed,
         collapseOverrides, filterCollapseOverrides, sessionVisibleCounts,
         isFiltering, selectedSessionId, keepUnreadSessionsVisible,
         isSessionUnread, sessionPreviewLimit, previewIsUnread,

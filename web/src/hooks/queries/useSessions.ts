@@ -1,8 +1,9 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { compareSessionSummaries, mergeReadState } from '@hapi/protocol'
+import { compareSessionSummaries } from '@hapi/protocol'
 import type { ApiClient } from '@/api/client'
 import type { SessionsResponse, SessionSummary } from '@/types/api'
 import { queryKeys } from '@/lib/query-keys'
+import { reconcileDelayedListSession } from '@/lib/sessionPatch'
 import { reconcileAttachedJobsFromCache } from './reconcileAttachedJobs'
 
 export type UseSessionsOptions = {
@@ -29,49 +30,9 @@ export function useSessions(api: ApiClient | null, options: UseSessionsOptions =
             const cached = new Map(current?.sessions.map(s => [s.id, s]))
             const withClocks: SessionsResponse = {
                 ...response,
-                sessions: response.sessions.map(session => {
-                    const prior = cached.get(session.id)
-                    // A list GET can be captured BEFORE a clear and land after
-                    // SSE applied it, which would re-blocked the row from a
-                    // stale body. The blocker fields carry their own revision
-                    // for exactly this; keep the newer side, as the SSE path
-                    // and attachedJob reconciliation already do.
-                    const priorNotifyAt = prior?.notifyUpdatedAt ?? 0
-                    const keepPriorNotify = prior !== undefined
-                        && priorNotifyAt > (session.notifyUpdatedAt ?? 0)
-                    // Pending requests move on `agentStateVersion`, which
-                    // advances when a prompt is ANSWERED even though the notify
-                    // revision may not. Governing them by the notify revision
-                    // let a stale snapshot restore an answered prompt.
-                    const keepPriorPending = prior !== undefined
-                        && (prior.agentStateVersion ?? 0) > (session.agentStateVersion ?? 0)
-                    return { ...session,
-                        // The pending-request fields are part of the same
-                        // blocker picture: keeping the newer footer while
-                        // taking older pending data brought an answered prompt
-                        // back into Blocked and re-fired the arrival alert.
-                        ...(keepPriorNotify && prior !== undefined
-                            ? {
-                                lastNotify: prior.lastNotify ?? null,
-                                blockedAck: prior.blockedAck ?? null,
-                                notifyUpdatedAt: priorNotifyAt
-                            }
-                            : {}),
-                        ...(keepPriorPending && prior !== undefined
-                            ? {
-                                pendingRequestsCount: prior.pendingRequestsCount,
-                                pendingRequestKinds: prior.pendingRequestKinds,
-                                pendingRequests: prior.pendingRequests,
-                                pendingRequestsNewestAt: prior.pendingRequestsNewestAt,
-                                pendingRequestRefs: prior.pendingRequestRefs,
-                                agentStateVersion: prior.agentStateVersion
-                            }
-                            : {}),
-                        lastUserMessageAt: Math.max(prior?.lastUserMessageAt ?? 0, session.lastUserMessageAt ?? 0) || undefined,
-                        contentRevision: Math.max(prior?.contentRevision ?? 0, session.contentRevision ?? 0),
-                        readState: mergeReadState(prior?.readState, session.readState)
-                    }
-                }).sort(compareSessionSummaries)
+                sessions: response.sessions
+                    .map(session => reconcileDelayedListSession(cached.get(session.id), session))
+                    .sort(compareSessionSummaries)
             }
             return reconcileAttachedJobsFromCache(withClocks, current)
         },

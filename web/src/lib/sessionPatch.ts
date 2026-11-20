@@ -1,5 +1,5 @@
 import { mergeReadState } from '@hapi/protocol'
-import type { Session, SessionPatch } from '@/types/api'
+import type { Session, SessionPatch, SessionSummary } from '@/types/api'
 
 // Pure session-patch application logic, extracted from useSSE.ts so the rules
 // are importable without React (unit tests, fixture generation, native-client
@@ -114,4 +114,73 @@ export function applySessionDetailPatch(session: Session, patch: SessionPatch): 
         changed = true
     }
     return changed ? nextSession : null
+}
+
+/**
+ * Reconcile a (possibly delayed) REST list session against the cached list
+ * summary for the same row, preferring whichever side's blocker-relevant
+ * fields are actually newer (#1717). Extracted from `useSessions.ts`'s
+ * `queryFn` so the rule is unit-testable without rendering the hook.
+ *
+ * A list GET can be captured BEFORE an SSE-applied clear/dismissal and still
+ * land AFTER it (slow network, tab backgrounded, etc.) — the blocker fields
+ * each carry their own revision for exactly this, so the newer side wins
+ * per field rather than letting whichever response happens to arrive last
+ * overwrite a cache the other channel already brought up to date.
+ */
+export function reconcileDelayedListSession(
+    prior: SessionSummary | undefined,
+    incoming: SessionSummary
+): SessionSummary {
+    // A list GET can be captured BEFORE a clear and land after SSE applied
+    // it, which would re-block the row from a stale body.
+    const priorNotifyAt = prior?.notifyUpdatedAt ?? 0
+    const keepPriorNotify = prior !== undefined
+        && priorNotifyAt > (incoming.notifyUpdatedAt ?? 0)
+    // Pending requests move on `agentStateVersion`, which advances when a
+    // prompt is ANSWERED even though the notify revision may not. Governing
+    // them by the notify revision let a stale snapshot restore an answered
+    // prompt.
+    const keepPriorPending = prior !== undefined
+        && (prior.agentStateVersion ?? 0) > (incoming.agentStateVersion ?? 0)
+    // `pendingRequestRefs` ALSO depends on the dismissal set
+    // `computePendingRequestRefs` was given, not only on `agentStateVersion`
+    // (#1717 cold-review round 25): a delayed list response captured before
+    // a dismissal can omit an overflow request the SSE-applied dismissal
+    // correctly kept, even though the underlying requests (and so
+    // `agentStateVersion`) never changed — only which of them are dismissed
+    // did. `keepPriorNotify` is exactly "the incoming dismissal is stale",
+    // the other half of the same picture `agentStateVersion` cannot see, so
+    // refs are preserved whenever EITHER signal is stale, even when the rest
+    // of the agentState-derived bundle below is still fine to take from the
+    // incoming response.
+    const keepPriorRefs = prior !== undefined && (keepPriorPending || keepPriorNotify)
+    return {
+        ...incoming,
+        // The pending-request fields are part of the same blocker picture:
+        // keeping the newer footer while taking older pending data brought an
+        // answered prompt back into Blocked and re-fired the arrival alert.
+        ...(keepPriorNotify && prior !== undefined
+            ? {
+                lastNotify: prior.lastNotify ?? null,
+                blockedAck: prior.blockedAck ?? null,
+                notifyUpdatedAt: priorNotifyAt
+            }
+            : {}),
+        ...(keepPriorPending && prior !== undefined
+            ? {
+                pendingRequestsCount: prior.pendingRequestsCount,
+                pendingRequestKinds: prior.pendingRequestKinds,
+                pendingRequests: prior.pendingRequests,
+                pendingRequestsNewestAt: prior.pendingRequestsNewestAt,
+                agentStateVersion: prior.agentStateVersion
+            }
+            : {}),
+        ...(keepPriorRefs && prior !== undefined
+            ? { pendingRequestRefs: prior.pendingRequestRefs }
+            : {}),
+        lastUserMessageAt: Math.max(prior?.lastUserMessageAt ?? 0, incoming.lastUserMessageAt ?? 0) || undefined,
+        contentRevision: Math.max(prior?.contentRevision ?? 0, incoming.contentRevision ?? 0),
+        readState: mergeReadState(prior?.readState, incoming.readState)
+    }
 }

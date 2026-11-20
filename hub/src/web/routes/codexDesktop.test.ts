@@ -1821,6 +1821,201 @@ describe('Codex Desktop import routes', () => {
         }
     })
 
+    it('carries a previously-reconciled reply\'s recovered timing through a SECOND merge\'s UPGRADE path, not just its copy path (cold-review round 25)', async () => {
+        // Round 24 fixed `copyMessageToSession` dropping `reconciledInvokedAt`
+        // when the row has NO match in the new survivor. This covers the
+        // other branch: the new survivor already has a matching occurrence
+        // for the reply (so it goes through the UPGRADE path), while the
+        // duplicate's reply is STILL `imported: true` (a prior merge only
+        // ever sets its `reconciledInvokedAt`, never flips `imported`) —
+        // `!isImported(message)` alone excluded it from upgrade eligibility,
+        // discarding the already-recovered real time and leaving the
+        // survivor's synthetic stamp in place. The SAME merge also copies
+        // the duplicate's footer (the survivor has none), exercising both
+        // branches at once as the finding asks.
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        const store = new Store(':memory:')
+        const alreadyReconciled = store.sessions.getOrCreateSession(
+            'dup-reconciled-upgrade-path', { codexSessionId: 'codex-thread-25' }, {}, 'default'
+        )
+        const newSurvivor = store.sessions.getOrCreateSession(
+            'canon-survivor-with-match', { codexSessionId: 'codex-thread-25' }, {}, 'default'
+        )
+        const base = Date.now() - 600_000
+        const footerText = 'Stuck.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs creds' })
+
+        // Duplicate: a genuinely live footer (its own real receivedAt, same
+        // as any live row) plus a reply a PRIOR merge already reconciled —
+        // `imported: true`, but `reconciledInvokedAt` already carries the
+        // real recovered time from that earlier merge.
+        store.messages.addMessage(alreadyReconciled.id, {
+            role: 'agent',
+            content: { type: 'output', data: { type: 'assistant', message: { content: [{ type: 'text', text: footerText }] } } }
+        }, undefined, null, base + 100, base + 100)
+        const alreadyReconciledReply = store.messages.addImportedMessage(
+            alreadyReconciled.id,
+            { role: 'user', content: { type: 'text', text: 'Continue' }, meta: { sentFrom: 'webapp' } },
+            'already-reconciled-upgrade-reply',
+            base + 5_500
+        )
+        const db = (store as unknown as { db: Database }).db
+        db.query('UPDATE messages SET reconciled_invoked_at = ? WHERE id = ?')
+            .run(base + 200, alreadyReconciledReply.message.id)
+
+        // Survivor: wins canonical selection by being longer, and already
+        // has its OWN (synthetic, unrecovered) copy of the same reply — no
+        // footer of its own at all.
+        for (let i = 0; i < 6; i++) {
+            store.messages.addImportedMessage(newSurvivor.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: { type: 'assistant', message: { content: [{ type: 'text', text: `unrelated ${i}` }] } }
+                }
+            }, `survivor-match-pad-${i}`, base)
+        }
+        store.messages.addImportedMessage(
+            newSurvivor.id,
+            { role: 'user', content: { type: 'text', text: 'Continue' }, meta: { sentFrom: 'webapp' } },
+            'survivor-own-reply',
+            base + 6_000
+        )
+
+        const engine = {
+            getSessionsByNamespace: () => [],
+            transferBlockedAck: () => {},
+            transferAttachedJobs: () => {},
+            deleteSession: async (sessionId: string) => {
+                store.sessions.deleteSession(sessionId, 'default')
+            },
+            handleRealtimeEvent: () => {},
+            reconcileNotifySignalAfterImport: () => {},
+            recordSessionActivity: () => {}
+        } as unknown as SyncEngine
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
+
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-25'] })
+            })
+            expect(response.status).toBe(200)
+            const body = await response.json() as { merged: Array<{ canonicalSessionId?: string }> }
+            expect(body.merged[0]?.canonicalSessionId).toBe(newSurvivor.id)
+
+            const rows = store.messages.getAllMessages(newSurvivor.id)
+            const footers = rows.filter((row) => JSON.stringify(row.content).includes('AGENT_NOTIFY_SUMMARY'))
+            const replies = rows.filter((row) => JSON.stringify(row.content).includes('Continue'))
+            // One of each: the reply deduplicated (upgrade path), the footer
+            // copied (no match, copy path) — both branches in one merge.
+            expect(footers).toHaveLength(1)
+            expect(replies).toHaveLength(1)
+            // The footer's real time carried through its copy, unaffected by
+            // this round's fix (round 21/23 behaviour, confirmed still intact).
+            expect(footers[0]!.receivedAt).toBe(base + 100)
+            // The reply's ALREADY-recovered time survives the upgrade path,
+            // not discarded because the row happens to be `imported: true`.
+            expect(replies[0]!.reconciledInvokedAt).toBe(base + 200)
+            // And the invariant that actually matters: the footer still
+            // reconciles as before the reply that answers it.
+            expect(footers[0]!.receivedAt ?? footers[0]!.createdAt)
+                .toBeLessThan(replies[0]!.reconciledInvokedAt!)
+        } finally {
+            store.close()
+        }
+    })
+
+    it('remaps a dismissed source footer\'s key to the surviving occurrence\'s own timestamp (cold-review round 25)', async () => {
+        // An untimestamped Codex footer can carry a DIFFERENT `createdAt` in
+        // two projections of the same thread. When the merge deduplicates
+        // that footer — the survivor already has a matching occurrence, so
+        // the duplicate's copy is dropped, not appended — the survivor KEEPS
+        // its own `createdAt`. `transferBlockedAck` used to copy the
+        // source's `notify:<its own createdAt>` key unchanged, which no
+        // longer matches the surviving row at all: the operator's dismissal
+        // silently stopped applying and the acknowledged blocker reappeared.
+        const { SyncEngine } = await import('../../sync/syncEngine')
+        const { RpcRegistry } = await import('../../socket/rpcRegistry')
+        const { notifyBlockerKey } = await import('@hapi/protocol')
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const canonical = store.sessions.getOrCreateSession(
+            'canon-footer-remap', { codexSessionId: 'codex-thread-25b', path: '/tmp', host: 'h' }, {}, 'default'
+        )
+        const duplicate = store.sessions.getOrCreateSession(
+            'dup-footer-remap', { codexSessionId: 'codex-thread-25b', path: '/tmp', host: 'h' }, {}, 'default'
+        )
+        const base = Date.now() - 600_000
+        const footerText = 'Stuck.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs creds' })
+
+        // Survivor: padding so it wins canonical selection, then its OWN
+        // projection of the footer — a different `createdAt` than the
+        // duplicate's copy of the same event.
+        for (let i = 0; i < 6; i++) {
+            store.messages.addImportedMessage(canonical.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: { type: 'assistant', message: { content: [{ type: 'text', text: `pad ${i}` }] } }
+                }
+            }, `remap-pad-${i}`, base)
+        }
+        store.messages.addImportedMessage(canonical.id, {
+            role: 'agent',
+            content: { type: 'output', data: { type: 'assistant', message: { content: [{ type: 'text', text: footerText }] } } }
+        }, 'remap-canonical-footer', base + 5_000)
+
+        // Duplicate: its OWN projection of the SAME footer, a different
+        // `createdAt` — and the operator already dismissed THIS occurrence.
+        store.messages.addImportedMessage(duplicate.id, {
+            role: 'agent',
+            content: { type: 'output', data: { type: 'assistant', message: { content: [{ type: 'text', text: footerText }] } } }
+        }, 'remap-duplicate-footer', base + 1_000)
+        store.sessions.setSessionBlockedAck(duplicate.id, {
+            at: base + 1_000,
+            reason: 'handled',
+            keys: [notifyBlockerKey(base + 1_000)]
+        }, 'default')
+
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-25b'] })
+            })
+            expect(response.status).toBe(200)
+
+            const footers = store.messages.getAllMessages(canonical.id)
+                .filter((row) => JSON.stringify(row.content).includes('AGENT_NOTIFY_SUMMARY'))
+            // One footer — the duplicate's copy was deduplicated, not
+            // appended — and it kept the SURVIVOR's own createdAt.
+            expect(footers).toHaveLength(1)
+            expect(footers[0]!.createdAt).toBe(base + 5_000)
+
+            const merged = store.sessions.getSessionByNamespace(canonical.id, 'default')
+            // The transferred dismissal is keyed to the row that actually
+            // survives, not the raw key the duplicate carried.
+            expect(merged?.blockedAckKeys).toContain(notifyBlockerKey(base + 5_000))
+            expect(merged?.blockedAckKeys).not.toContain(notifyBlockerKey(base + 1_000))
+        } finally {
+            store.close()
+        }
+    })
+
     it('does not duplicate an initiating prompt across a THREE-session merge', async () => {
         // Survivor holds a blocked footer. One duplicate supplies the live
         // prompt that preceded it; another supplies the Desktop import of that

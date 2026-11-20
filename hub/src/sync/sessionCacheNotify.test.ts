@@ -1155,6 +1155,44 @@ describe('the acknowledgement broadcast stays inside its own schema (#1717)', ()
         }
         expect(() => SessionBlockedAckSchema.parse({ at: Date.now(), reason: 'handled', keys })).not.toThrow()
     })
+
+    it('never exceeds the cap no matter how far past it live dismissals go (cold-review round 25)', () => {
+        // Round 22 picked 65, round 23 picked 201, round 24 picked 2000 —
+        // each derived (or re-derived) from one specific repro instead of
+        // from the actual invariant. `AgentState.requests` has no enforced
+        // limit, so any fixed number eventually meets a real case one key
+        // over it — picking a bigger number just relocates the N+1 failure.
+        // The fix is structural: once every resolved key is already gone,
+        // `serialiseAckKeys` now evicts the oldest LIVE ones too instead of
+        // growing past the bound. Proven here at a scale (limit + 500) well
+        // beyond anything a "round up" patch would plausibly guess next.
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, { emit: (_event: SyncEvent) => {} } as EventPublisher)
+        const total = ACK_KEYS_RETENTION_LIMIT + 500
+        const requests: Record<string, { tool: string; arguments: Record<string, never> }> = {}
+        for (let i = 0; i < total; i++) requests[`r${i}`] = { tool: 'Bash', arguments: {} }
+        const session = cache.getOrCreateSession(
+            'ack-bound-beyond-any-cap',
+            { path: '/tmp/project', host: 'localhost' },
+            { requests, completedRequests: {} },
+            'default'
+        )
+        for (let i = 0; i < total; i++) {
+            cache.setSessionBlockedAck(session.id, 'handled', Date.now() + i, `request:r${i}`)
+        }
+
+        const row = store.sessions.getSessionByNamespace(session.id, 'default')
+        const keys = row?.blockedAckKeys ?? []
+
+        // The structural guarantee: never more than the limit, regardless of
+        // how far past it live dismissals go.
+        expect(keys.length).toBeLessThanOrEqual(ACK_KEYS_RETENTION_LIMIT)
+        expect(() => SessionBlockedAckSchema.parse({ at: Date.now(), reason: 'handled', keys })).not.toThrow()
+        // The newest live dismissals survive; the oldest are what gets
+        // evicted once there is nothing resolved left to make room with.
+        expect(keys).toContain(`request:r${total - 1}`)
+        expect(keys).not.toContain('request:r0')
+    })
 })
 
 describe('blocked acknowledgement across a session merge (#1717)', () => {

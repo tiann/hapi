@@ -2,9 +2,9 @@ import { appendFileSync, existsSync, mkdirSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
-import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
+import { AGENT_MESSAGE_PAYLOAD_TYPE, notifyBlockerKey } from '@hapi/protocol'
 import type { Store, StoredMessage } from '../../store'
-import { isDeliveredOperatorReply, isOperatorReplyMessage, operatorReplyDeliveredAt } from '../../sync/workGraphNotifyIngest'
+import { extractSessionNotifySignal, isDeliveredOperatorReply, isOperatorReplyMessage, operatorReplyDeliveredAt } from '../../sync/workGraphNotifyIngest'
 import { truncateOversizedMessageContent } from '../../store/contentCodec'
 import type { SyncEngine } from '../../sync/syncEngine'
 import { collectImportCandidates, type ImportCandidate } from './localSessions/matchContentPrefix'
@@ -903,6 +903,17 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
         if (message.receivedAt === null) return true
         return message.receivedAt === message.createdAt
     }
+    // `!isImported(message)` alone excluded a row a PRIOR merge already
+    // reconciled: it is genuinely `imported: true`, but its own
+    // `reconciledInvokedAt` from that earlier merge is just as much real
+    // delivery evidence as a live row's raw `invokedAt` — gating on
+    // provenance instead of on whether evidence exists discarded it, so a
+    // second merge whose new survivor already held a matching occurrence
+    // (the UPGRADE path, not the copy path round 24 fixed) reverted
+    // reconciliation to the stale synthetic stamp (#1717 cold-review
+    // round 25).
+    const hasDeliveryEvidence = (message: StoredMessage): boolean =>
+        !isImported(message) || message.reconciledInvokedAt != null
     const contentKeyOf = (message: StoredMessage): string =>
         getComparableStoredMessageKey(message)
     const timedKeyOf = (message: StoredMessage): string =>
@@ -918,6 +929,15 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
     // row a content-only alignment can upgrade in place rather than append
     // beside (#1717 cold-review round 21, see `upgradeMessageDeliveryStamp`).
     const canonicalContentOccurrences = new Map<string, string[]>()
+    const canonicalMessagesById = new Map(canonical.storedMessages.map((message) => [message.id, message]))
+    // A footer's dismissal key is `notify:<its own createdAt>` (#1717
+    // cold-review round 25): an untimestamped Codex footer can carry a
+    // DIFFERENT `createdAt` in two projections of the same thread, so when
+    // one gets deduplicated against the other, its dismissal key no longer
+    // matches the row that actually survives. Recorded here, where the
+    // match decision is made, and applied to `transferBlockedAck` below —
+    // that call has no visibility into which message matched which.
+    const notifyKeyRemap = new Map<string, string>()
     for (const message of canonical.storedMessages) {
         const content = contentKeyOf(message)
         canonicalContentCounts.set(content, (canonicalContentCounts.get(content) ?? 0) + 1)
@@ -995,7 +1015,7 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
                 // footer and the reply that answers it must upgrade together
                 // — upgrading only the reply left the footer at its original
                 // synthetic stamp and could invert their order.
-                if (alignOnContent && syntheticContents.has(content) && !isImported(message)) {
+                if (alignOnContent && syntheticContents.has(content) && hasDeliveryEvidence(message)) {
                     const canonicalId = canonicalContentOccurrences.get(content)?.[ordinal - 1]
                     if (canonicalId) {
                         options.store.messages.upgradeMessageDeliveryStamp(canonicalId, {
@@ -1007,10 +1027,29 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
                             // real time cannot move the row's conversation
                             // position (#1717 cold-review round 23); `null`
                             // COALESCEs to the canonical row's existing value.
-                            reconciledInvokedAt: isDeliveredOperatorReply(message) ? message.invokedAt : null,
+                            // Prefers the dropped row's OWN `reconciledInvokedAt`
+                            // when it already has one — a previously-reconciled
+                            // imported row's recovered time is the real
+                            // evidence here, not its raw (still-synthetic)
+                            // `invokedAt` (#1717 cold-review round 25).
+                            reconciledInvokedAt: isDeliveredOperatorReply(message)
+                                ? (message.reconciledInvokedAt ?? message.invokedAt)
+                                : null,
                             receivedAt: message.receivedAt,
                             agentDelivered: message.agentDelivered
                         })
+                    }
+                }
+                // A dismissed notify footer being dropped here must have its
+                // key remapped to whatever `createdAt` the SURVIVING
+                // occurrence actually carries, independent of whether this
+                // drop also triggered a timing upgrade above (#1717
+                // cold-review round 25).
+                if (alignOnContent && extractSessionNotifySignal(message.content, message.createdAt)) {
+                    const canonicalId = canonicalContentOccurrences.get(content)?.[ordinal - 1]
+                    const survivor = canonicalId ? canonicalMessagesById.get(canonicalId) : undefined
+                    if (survivor && survivor.id !== message.id) {
+                        notifyKeyRemap.set(notifyBlockerKey(message.createdAt), notifyBlockerKey(survivor.createdAt))
                     }
                 }
                 continue
@@ -1063,7 +1102,7 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
         // acknowledgement it shows up in Blocked again, undoing a decision
         // they made, through a merge they never asked for.
         if (engine) {
-            engine.transferBlockedAck(source.sessionId, canonical.sessionId, options.namespace)
+            engine.transferBlockedAck(source.sessionId, canonical.sessionId, options.namespace, notifyKeyRemap)
         }
 
         // Transfer outliving jobs before CASCADE delete (store refuses running jobs).

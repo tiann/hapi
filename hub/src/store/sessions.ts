@@ -1353,7 +1353,21 @@ function serialiseAckKeys(keys: string[] | null | undefined, livePendingKeys?: R
     }
     const resolvedBudget = ACK_KEYS_RETENTION_LIMIT - live.length
     const keptResolved = resolvedBudget > 0 ? resolved.slice(-resolvedBudget) : []
-    const kept = new Set([...keptResolved, ...live])
+    // Resolved keys alone cannot always make room: `AgentState.requests` has
+    // no enforced count, so `live` itself can exceed the bound (#1717
+    // cold-review round 25) — picking ever-larger numbers for
+    // `ACK_KEYS_RETENTION_LIMIT` (64 → 201 → 2000) just moved the N+1 failure
+    // rather than removing it, because no number derived from an unbounded
+    // source was ever going to hold. Oldest-first eviction among LIVE keys
+    // only starts once every resolved key is ALREADY gone — a dismissal
+    // whose request is still open can still be evicted here, but only when
+    // there is truly nothing else left to make room with. That is a
+    // documented, bounded trade (this hub tracks at most
+    // `ACK_KEYS_RETENTION_LIMIT` live dismissals at once) rather than an
+    // unbounded wire payload the schema keeps rejecting at whatever the
+    // current guess happens to be.
+    const keptLive = resolvedBudget >= 0 ? live : live.slice(-ACK_KEYS_RETENTION_LIMIT)
+    const kept = new Set([...keptResolved, ...keptLive])
     // Original relative order, not live-then-resolved — nothing downstream
     // should have to know this function reordered anything.
     return JSON.stringify(keys.filter((key) => kept.has(key)))

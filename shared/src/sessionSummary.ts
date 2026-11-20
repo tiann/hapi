@@ -64,15 +64,20 @@ export const PENDING_REQUEST_SUMMARY_CAP = 5
 export const PENDING_REQUEST_REFS_CAP = 200
 
 /**
- * The practical ceiling on live, simultaneously-dismissible keys
- * (#1717 cold-review round 23, corrected round 24). `SessionBlockedAck.keys`
- * must never evict a key whose request is still pending (round 21), but the
- * TRUE source of how many such requests can exist — `AgentState.requests` —
- * has no enforced limit, so no fixed number here is a real ceiling, only a
- * practical one. Sized generously beyond any realistic concurrent-request
- * count (previously derived from `PENDING_REQUEST_REFS_CAP`, an unrelated
- * preview cap, which is how this broke at 202 real live dismissals — one
- * key over the old 201).
+ * How many dismissal keys `SessionBlockedAck.keys` carries at once, full
+ * stop — not derived from, or chasing, any other number (#1717 cold-review
+ * rounds 22-25). `AgentState.requests` has no enforced limit, so earlier
+ * attempts to derive this from "the true number of concurrent requests"
+ * (64, then `PENDING_REQUEST_REFS_CAP + 1` = 201) just relocated the N+1
+ * failure every time a bigger real case showed up — most recently at 202,
+ * then again at 2001 before this constant stopped being advisory.
+ * `serialiseAckKeys` now enforces this as a HARD bound: once every
+ * resolved/superseded key is already evicted, it evicts the oldest LIVE
+ * ones too rather than growing past it, so the wire schema (bounded by the
+ * SAME constant) can never reject a snapshot this hub produced. A dismissal
+ * on a request that is still pending can, in the pathological case of more
+ * than this many simultaneous live dismissals, eventually be evicted — a
+ * documented, bounded trade, not a silent one.
  */
 export const SUPPORTED_LIVE_DISMISSAL_CAP = 2_000
 

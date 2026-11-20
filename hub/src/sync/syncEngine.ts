@@ -1747,8 +1747,13 @@ export class SyncEngine {
     }
 
     /** Carry a dismissal across a merge that copies messages itself (#1717). */
-    transferBlockedAck(fromSessionId: string, toSessionId: string, namespace: string): void {
-        this.sessionCache.transferBlockedAck(fromSessionId, toSessionId, namespace)
+    transferBlockedAck(
+        fromSessionId: string,
+        toSessionId: string,
+        namespace: string,
+        notifyKeyRemap?: ReadonlyMap<string, string>
+    ): void {
+        this.sessionCache.transferBlockedAck(fromSessionId, toSessionId, namespace, notifyKeyRemap)
     }
 
     /** Shared REST/SSE watermark allocator for attachedJob patches. */
