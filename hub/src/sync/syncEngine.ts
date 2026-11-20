@@ -1691,6 +1691,11 @@ export class SyncEngine {
         this.sessionCache.transferAttachedJobs(fromSessionId, toSessionId, namespace)
     }
 
+    /** The next turn is maintenance, so it must not clear the footer (#1717). */
+    markMaintenanceTurn(sessionId: string): void {
+        this.sessionCache.markMaintenanceTurn(sessionId)
+    }
+
     /** Carry a dismissal across a merge that copies messages itself (#1717). */
     transferBlockedAck(fromSessionId: string, toSessionId: string, namespace: string): void {
         this.sessionCache.transferBlockedAck(fromSessionId, toSessionId, namespace)

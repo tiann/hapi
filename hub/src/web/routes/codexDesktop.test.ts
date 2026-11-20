@@ -1113,6 +1113,84 @@ describe('Codex Desktop import routes', () => {
         }
     })
 
+    it('aligns a live prompt with its LATER Desktop import, under real reconciliation', async () => {
+        // My previous test gave both copies the same delivery timestamp and
+        // stubbed reconciliation, which is the easy version of this. In
+        // reality the live projection carries a real hub acknowledgement time
+        // while the untimestamped Desktop import synthesizes its own, so the
+        // two never matched: the prompt was appended again and its later
+        // timestamp let reconciliation read an initiating prompt as a reply
+        // and hide the blocker. Real engine, real reconciliation here.
+        const { SyncEngine } = await import('../../sync/syncEngine')
+        const { RpcRegistry } = await import('../../socket/rpcRegistry')
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const canonical = engine.getOrCreateSession(
+            'canon-real', { codexSessionId: 'codex-thread-13', path: '/tmp', host: 'h' }, null, 'default'
+        )
+        const duplicate = engine.getOrCreateSession(
+            'dup-real', { codexSessionId: 'codex-thread-13', path: '/tmp', host: 'h' }, null, 'default'
+        )
+        const base = Date.now() - 600_000
+        const footer = 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs a key' })
+
+        // Survivor: the live projection's prompt (real hub ack time), then an
+        // unanswered blocked footer AFTER it.
+        for (let i = 0; i < 4; i++) {
+            store.messages.addImportedMessage(canonical.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: { type: 'assistant', message: { content: [{ type: 'text', text: `pad ${i}` }] } }
+                }
+            }, `pad-${i}`, base)
+        }
+        store.messages.addMessage(canonical.id, {
+            role: 'user', content: { type: 'text', text: 'Continue' }, meta: { sentFrom: 'webapp' }
+        }, 'live-id', null, base + 1_000, base + 1_000)
+        store.messages.markMessagesInvoked(canonical.id, ['live-id'], base + 2_000)
+        store.messages.addMessage(canonical.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'assistant', message: { content: [{ type: 'text', text: footer }] } }
+            }
+        }, undefined, null, base + 3_000, base + 3_000)
+        engine.reconcileNotifySignalAfterImport(canonical.id)
+        expect(engine.getSession(canonical.id)?.lastNotify?.status).toBe('blocked')
+
+        // The duplicate holds the SAME prompt as an untimestamped import, so
+        // its delivery stamp is synthetic and LATER than the footer.
+        store.messages.addImportedMessage(duplicate.id, {
+            role: 'user', content: { type: 'text', text: 'Continue' }, meta: { sentFrom: 'webapp' }
+        }, 'import-id', base + 9_000)
+
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-13'] })
+            })
+            expect(response.status).toBe(200)
+
+            const prompts = store.messages.getAllMessages(canonical.id)
+                .filter((row) => JSON.stringify(row.content).includes('Continue'))
+            expect(prompts).toHaveLength(1)
+            // And the blocker is still there, because nothing answered it.
+            expect(engine.getSession(canonical.id)?.lastNotify?.status).toBe('blocked')
+        } finally {
+            store.close()
+        }
+    })
+
     it('keeps two identical prompts from ONE import timestamp as separate rows', async () => {
         // An untimestamped Codex Desktop import gives every row in the batch
         // the same timestamp, so keying a delivered prompt on text plus

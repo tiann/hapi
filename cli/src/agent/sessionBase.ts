@@ -77,10 +77,11 @@ export class AgentSessionBase<Mode> {
 
         this.queue.onBatchConsumed = opts.acknowledgeMessagesOnDequeue === false
             ? null
-            : (localIds, options) => this.client.emitMessagesConsumed(
-                localIds,
-                options?.maintenance ? { maintenance: true } : undefined
-            );
+            // Same reason as `commitBatch`: an ordinary acknowledgement keeps
+            // its one-argument shape (#1717).
+            : (localIds, options) => (options?.maintenance
+                ? this.client.emitMessagesConsumed(localIds, { maintenance: true })
+                : this.client.emitMessagesConsumed(localIds));
 
         this.client.keepAlive(this.thinking, this.mode, this.getKeepAliveRuntime());
         this.keepAliveInterval = setInterval(() => {

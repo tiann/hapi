@@ -859,16 +859,32 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
     // mirrored copy (one event, two ids, one delivery time) apart from a
     // genuinely later delivery of the same text. Counting is what the native
     // transcript id was wrongly standing in for.
-    const mergeKeyOf = (message: StoredMessage): string => {
-        const base = getComparableStoredMessageKey(message)
-        return isDeliveredOperatorReply(message)
-            ? `${base}\u0000delivered:${operatorReplyDeliveredAt(message)}`
-            : base
-    }
-    const canonicalCounts = new Map<string, number>()
+    // A delivery stamp is only usable for alignment when BOTH sides have a
+    // real one. An imported row's `invoked_at` is the transcript time the
+    // importer synthesized — equal to its `created_at` — while the live Codex
+    // projection of the same prompt carries a genuine hub acknowledgement
+    // time. Comparing those made one event look like two, so the prompt was
+    // appended again, and its later timestamp let reconciliation read an
+    // initiating prompt as a reply and hide the blocker.
+    const isSyntheticDelivery = (message: StoredMessage): boolean =>
+        message.invokedAt !== null && message.invokedAt === message.createdAt
+    const contentKeyOf = (message: StoredMessage): string =>
+        getComparableStoredMessageKey(message)
+    const timedKeyOf = (message: StoredMessage): string =>
+        `${contentKeyOf(message)}\u0000delivered:${operatorReplyDeliveredAt(message)}`
+
+    // Two tallies: by content alone, and by content plus delivery time. Which
+    // one a source row is measured against depends on whether either side's
+    // stamp is synthetic — if so, only content can align them.
+    const canonicalContentCounts = new Map<string, number>()
+    const canonicalTimedCounts = new Map<string, number>()
+    const syntheticContents = new Set<string>()
     for (const message of canonical.storedMessages) {
-        const key = mergeKeyOf(message)
-        canonicalCounts.set(key, (canonicalCounts.get(key) ?? 0) + 1)
+        const content = contentKeyOf(message)
+        canonicalContentCounts.set(content, (canonicalContentCounts.get(content) ?? 0) + 1)
+        if (!isDeliveredOperatorReply(message)) continue
+        canonicalTimedCounts.set(timedKeyOf(message), (canonicalTimedCounts.get(timedKeyOf(message)) ?? 0) + 1)
+        if (isSyntheticDelivery(message)) syntheticContents.add(content)
     }
     const removedSessionIds: string[] = []
     const appendedMessages: StoredMessage[] = []
@@ -889,11 +905,20 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
         latestActivity = Math.max(latestActivity, source.updatedAt)
         const sourceSeen = new Map<string, number>()
         for (const message of source.storedMessages) {
-            const comparableKey = mergeKeyOf(message)
+            const content = contentKeyOf(message)
+            // Fall back to content-only alignment when a delivery stamp on
+            // either side is synthesized, since the two cannot be compared.
+            const alignOnContent = !isDeliveredOperatorReply(message)
+                || isSyntheticDelivery(message)
+                || syntheticContents.has(content)
+            const comparableKey = alignOnContent ? content : timedKeyOf(message)
+            const have = alignOnContent
+                ? (canonicalContentCounts.get(comparableKey) ?? 0)
+                : (canonicalTimedCounts.get(comparableKey) ?? 0)
             const ordinal = (sourceSeen.get(comparableKey) ?? 0) + 1
             sourceSeen.set(comparableKey, ordinal)
             // Already represented by the matching occurrence on the survivor.
-            if (ordinal <= (canonicalCounts.get(comparableKey) ?? 0)) {
+            if (ordinal <= have) {
                 continue
             }
 
@@ -909,7 +934,8 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
                 receivedAt: message.receivedAt,
                 agentDelivered: message.agentDelivered
             })
-            canonicalCounts.set(comparableKey, ordinal)
+            if (alignOnContent) canonicalContentCounts.set(comparableKey, ordinal)
+            else canonicalTimedCounts.set(comparableKey, ordinal)
             appendedMessages.push(copied)
             latestActivity = Math.max(latestActivity, copied.invokedAt ?? copied.createdAt)
         }

@@ -195,6 +195,7 @@ export class SessionCache {
      * the agent reports thinking before the hub sees it idle or a new prompt
      * arrives; see `recordTurn`.
      */
+    private readonly maintenanceTurnSessionIds = new Set<string>()
     private readonly interruptedTurnSessionIds: Set<string> = new Set()
     private readonly sessionIdleTimeoutMs: number = resolveSessionIdleTimeoutMs()
 
@@ -960,7 +961,18 @@ export class SessionCache {
         // #1717: last, because clearing re-seats the cached Session object and
         // would strand the in-place mutations above.
         if (!wasThinking && session.thinking) {
-            this.clearSessionLastNotify(session.id)
+            // …unless this turn is maintenance. OpenCode can reach an idle
+            // session with a scheduled /compact and then send thinking=true
+            // before compaction starts: the maintenance acknowledgement
+            // correctly preserved the footer, and this keepalive deleted it
+            // anyway — so when compaction ended without a new status summary
+            // the session stayed out of Blocked with nothing having answered
+            // it. A turn the operator did not prompt does not invalidate the
+            // agent's last self-report. Consumed once, so the NEXT genuine
+            // prompt turn clears normally (#1717).
+            if (!this.maintenanceTurnSessionIds.delete(session.id)) {
+                this.clearSessionLastNotify(session.id)
+            }
         }
 
         return true
@@ -1103,8 +1115,25 @@ export class SessionCache {
         // `clearSessionLastNotify` re-seats the cached Session object, which
         // would strand the in-place mutations above.
         if (!wasThinking && session.thinking) {
-            this.clearSessionLastNotify(session.id)
+            // Same maintenance exemption as `applySessionPatch`: whichever
+            // rising edge arrives first consumes the mark, so one maintenance
+            // turn is protected and the next genuine prompt clears (#1717).
+            if (!this.maintenanceTurnSessionIds.delete(session.id)) {
+                this.clearSessionLastNotify(session.id)
+            }
         }
+    }
+
+    /**
+     * The next turn on this session is maintenance, not an answer (#1717).
+     *
+     * Set when the CLI acknowledges consuming a command rather than
+     * delivering a prompt — OpenCode's /compact does this at dequeue time.
+     * Consumed by the next thinking rising edge, so it protects exactly that
+     * one turn and a genuine prompt afterwards still clears the footer.
+     */
+    markMaintenanceTurn(sessionId: string): void {
+        this.maintenanceTurnSessionIds.add(sessionId)
     }
 
     /**

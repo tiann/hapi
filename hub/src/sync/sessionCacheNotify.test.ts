@@ -813,6 +813,28 @@ describe('merges share one rule for when a reply reached the agent (#1717)', () 
     })
 })
 
+describe('a maintenance turn does not invalidate the footer (#1717)', () => {
+    it('keeps the blocker when thinking starts for maintenance, and clears on the next real turn', () => {
+        // A scheduled /compact can reach an IDLE OpenCode session, and the
+        // launcher sends thinking=true before compaction starts. The
+        // maintenance acknowledgement preserved the footer, and then this
+        // keepalive deleted it anyway — so when compaction ended without a new
+        // status summary the session stayed out of Blocked with nothing having
+        // answered it.
+        const { cache } = makeCache()
+        const id = seedBlocked(cache, 'maintenance-turn')
+
+        cache.markMaintenanceTurn(id)
+        cache.handleSessionAlive({ sid: id, time: Date.now(), thinking: true })
+        expect(cache.getSession(id)?.lastNotify?.status).toBe('blocked')
+
+        // The mark is consumed, so a genuine prompt turn still clears.
+        cache.handleSessionAlive({ sid: id, time: Date.now(), thinking: false })
+        cache.handleSessionAlive({ sid: id, time: Date.now(), thinking: true })
+        expect(cache.getSession(id)?.lastNotify ?? null).toBeNull()
+    })
+})
+
 describe('notify revision is whatever SQLite says (#1717)', () => {
     it('never broadcasts a revision the row does not hold', () => {
         // The browser orders notify/ack payloads by `notifyUpdatedAt`, so the

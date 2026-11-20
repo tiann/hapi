@@ -55,6 +55,7 @@ export type CliHandlersDeps = {
     onSweepImmediateQueued?: (sessionId: string, now: number) => void
     onMessagesConsumed?: (sessionId: string) => void
     onPromptDelivered?: (sessionId: string, deliveredAt: number) => void
+    onMaintenanceTurn?: (sessionId: string) => void
 }
 
 // resolveSessionAccess runs on EVERY cli socket event (message stream deltas,

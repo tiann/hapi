@@ -739,9 +739,13 @@ export class MessageQueue2<T> {
         options?: { maintenance?: boolean }
     ): void {
         const consumedLocalIds = this.clearInFlightBatch(batch);
-        if (consumedLocalIds.length > 0) {
-            this.onBatchConsumed?.(consumedLocalIds, options);
-        }
+        if (consumedLocalIds.length === 0) return;
+        // One argument for an ordinary commit. Passing an explicit `undefined`
+        // changed the observed call shape and broke exact-call assertions
+        // across Copilot, Cursor and Grok — the disposition is only ever
+        // supplied for a maintenance acknowledgement (#1717).
+        if (options) this.onBatchConsumed?.(consumedLocalIds, options);
+        else this.onBatchConsumed?.(consumedLocalIds);
     }
 
     /** Clear in-flight marks for a deferred batch that is dropped without ACK. */

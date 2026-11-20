@@ -132,10 +132,12 @@ export type SessionHandlersDeps = {
     onMessagesConsumed?: (sessionId: string) => void
     /** Fired on CONFIRMED prompt consumption (#1717). */
     onPromptDelivered?: (sessionId: string, deliveredAt: number) => void
+    /** #1717: the next turn is maintenance, so it must not clear the footer. */
+    onMaintenanceTurn?: (sessionId: string) => void
 }
 
 export function registerSessionHandlers(socket: CliSocketWithData, deps: SessionHandlersDeps): void {
-    const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionReady, onSessionEnd, onWebappEvent, onBackgroundTasks, onSessionActivity, onAgentProgress, onSweepImmediateQueued, onMessagesConsumed, onPromptDelivered } = deps
+    const { store, resolveSessionAccess, emitAccessError, onSessionAlive, onSessionReady, onSessionEnd, onWebappEvent, onBackgroundTasks, onSessionActivity, onAgentProgress, onSweepImmediateQueued, onMessagesConsumed, onPromptDelivered, onMaintenanceTurn } = deps
 
     socket.on('native-queue-message', data => {
         const parsed = z.object({ sid: z.string(), localId: z.string().min(1), text: z.string().nullable() }).safeParse(data)
@@ -550,6 +552,17 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         // /compact must KEEP that grace for the prompts queued behind it — so
         // without its own flag the hub cleared an unanswered blocker, and a
         // cancellation during setup consumed no rows, leaving it gone.
+        if (data.maintenance === true) {
+            // The thinking start that follows must not delete the footer:
+            // OpenCode sends thinking=true before compaction begins, and that
+            // keepalive was erasing a blocker nothing had answered (#1717).
+            try {
+                onMaintenanceTurn?.(data.sid)
+            } catch (err) {
+                console.error('onMaintenanceTurn failed', err)
+            }
+        }
+
         if (newlyDelivered
             && data.clearQueuedThinkingGrace !== true
             && data.maintenance !== true) {

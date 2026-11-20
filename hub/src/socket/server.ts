@@ -50,6 +50,7 @@ export type SocketServerDeps = {
     onSweepImmediateQueued?: (sessionId: string, now: number) => void
     onMessagesConsumed?: (sessionId: string) => void
     onPromptDelivered?: (sessionId: string, deliveredAt: number) => void
+    onMaintenanceTurn?: (sessionId: string) => void
 }
 
 export function createSocketServer(deps: SocketServerDeps): {
