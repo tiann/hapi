@@ -1971,6 +1971,40 @@ it.each(['priority', 'default'])('reconciles a lost native turn reply from an in
     expect(request.mock.calls.map(([method]) => method)).toEqual(['thread/resume']);
 });
 
+it.each(['web', 'native'])('keeps a newer lost-turn pause after an older %s Standard write is acknowledged', async origin => {
+    const f = await fixture({ bindTier: 'priority' });
+    await f.root.activate();
+    const original = f.root.client.request.bind(f.root.client);
+    let entered!: () => void;
+    let release!: () => void;
+    const dispatched = new Promise<void>(resolve => { entered = resolve; });
+    const acknowledge = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        const result = await original(method, params);
+        if (method === 'thread/settings/update') {
+            entered();
+            await acknowledge;
+        }
+        return result;
+    });
+    const write = origin === 'web'
+        ? f.root.applySettings({ serviceTier: 'standard' })
+        : f.root.applyNativeSettings({ threadId: 'thread', serviceTier: null });
+    await dispatched;
+    const later = await f.root.prepareNativeTurn({ serviceTier: 'priority' });
+    await f.root.recoverLostNativeTurn(later.params, true, later.previousTier, later.generation);
+    expect(f.root.needsTierConfirmation).toBe(true);
+    release();
+    await write;
+    expect(f.root.needsTierConfirmation).toBe(true);
+    expect(f.metadata().codexTierConfirmationPending).toBe(true);
+    expect(f.sessionReady).toHaveBeenCalledTimes(1);
+    await expect(f.root.nativeQueueMutation('thread/queue/start', { threadId: 'thread' })).rejects.toThrow('tier confirmation');
+    await f.root.applySettings({ serviceTier: 'fast' });
+    expect(f.root.needsTierConfirmation).toBe(false);
+    expect(f.sessionReady).toHaveBeenCalledTimes(2);
+});
+
 it.each(['default', 'priority'])('keeps newer Standard unless a delayed lost reply snapshot reports %s', async serviceTier => {
     const f = await fixture({ bindTier: 'default' });
     await f.root.activate();

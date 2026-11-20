@@ -791,19 +791,23 @@ export class SharedCodexRoot {
             } } } : {})
         };
         const confirmsTier = config.serviceTier !== undefined || this.hasUltrafastTier;
-        await this.writeNativeSettings(params, params, deadline, operationId);
+        const confirmed = await this.writeNativeSettings(params, params, deadline, operationId);
         if (config.collaborationMode) this.pendingLaunchCollaborationMode = undefined;
+        this.confirmSettingsWrite(confirmed, explicitTier, confirmsTier, fallbackNotice);
+        this.alive(); return { applied: this.settings };
+    }
+    private confirmSettingsWrite(operationId: number | undefined, explicitTier: boolean, confirmsTier: boolean, fallbackNotice?: string): void {
+        if (operationId === undefined || !this.isCurrentTierOperation(operationId)) return;
         if (explicitTier) this.markTierExplicit();
         if (fallbackNotice) this.notice(fallbackNotice);
-        if (confirmsTier) this.completeTierConfirmation();
-        this.alive(); return { applied: this.settings };
+        if (confirmsTier) this.completeTierConfirmation(operationId);
     }
     private markTierExplicit(): void {
         this.serviceTierExplicit = true;
         this.session.updateMetadata(metadata => ({ ...metadata, codexServiceTierExplicit: true, codexPendingServiceTier: undefined }));
     }
     private completeTierConfirmation(operationId = ++this.tierOperationCounter): void {
-        if (operationId < this.pendingTierOperation || operationId < this.confirmedTierOperation) return;
+        if (!this.isCurrentTierOperation(operationId)) return;
         this.confirmedTierOperation = operationId;
         this.confirmedTierValue = this.settingsNative.serviceTier;
         this.tierConfirmationResolved = true;
@@ -863,16 +867,14 @@ export class SharedCodexRoot {
             const resolved = await this.resolveNativeSettings(params, deadline);
             const effectiveModel = string(record(record(resolved.params.collaborationMode).settings).model) ?? string(resolved.params.model);
             const confirmsTier = resolved.params.serviceTier !== undefined || this.hasUltrafastTier;
-            await this.writeNativeSettings(resolved.params, {
+            const confirmed = await this.writeNativeSettings(resolved.params, {
                 ...(resolved.params.serviceTier !== undefined ? { serviceTier: resolved.params.serviceTier } : {}),
                 ...(resolved.params.collaborationMode ? { collaborationMode: resolved.params.collaborationMode } : {}),
                 ...(effectiveModel ? { model: effectiveModel } : {})
             }, deadline, operationId);
             if (resolved.params.collaborationMode) this.pendingLaunchCollaborationMode = undefined;
-            if (explicitTier) this.markTierExplicit();
-            if (confirmsTier) this.completeTierConfirmation();
+            this.confirmSettingsWrite(confirmed, explicitTier, confirmsTier, resolved.fallbackNotice);
             this.alive();
-            if (resolved.fallbackNotice) this.notice(resolved.fallbackNotice);
         });
         this.settingsWrites = operation;
         return operation;
@@ -907,7 +909,7 @@ export class SharedCodexRoot {
         // An unchanged value cannot establish that the request was accepted.
         if (previousTier === undefined || settingsMatch({ serviceTier: previousTier }, expected)) return;
         const current = () => !this.closed && !this.stopping && this.settingsRevision === revision
-            && operationId >= this.confirmedTierOperation && operationId >= this.pendingTierOperation;
+            && this.isCurrentTierOperation(operationId);
         try {
             const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline));
             if (!current() || !settingsMatch(snapshot, expected)) return;
@@ -1007,10 +1009,10 @@ export class SharedCodexRoot {
         } finally { clearTimeout(timer); }
     }
     private async writeNativeSettings(params: Record<string, unknown>, expected = params, deadline = Date.now() + 25_000,
-        operationId = ++this.tierOperationCounter, canWrite?: () => boolean): Promise<boolean> {
+        operationId = ++this.tierOperationCounter, canWrite?: () => boolean): Promise<number | undefined> {
         if (this.closed || this.stopping) throw new Error('Codex execution is stopping');
         if (Date.now() >= deadline) throw new Error('Settings update timed out before execution; settings were not changed');
-        if (canWrite && !canWrite()) return false;
+        if (canWrite && !canWrite()) return;
         const requestedUltrafast = expected.serviceTier === 'ultrafast';
         const verifyUltrafast = requestedUltrafast || expected.serviceTier === undefined && this.hasUltrafastTier;
         const changesTier = expected.serviceTier !== undefined || verifyUltrafast;
@@ -1020,13 +1022,13 @@ export class SharedCodexRoot {
         if (settingsMatch(this.settingsNative, comparable)) {
             const revision = this.settingsRevision;
             const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline));
-            if (canWrite && !canWrite()) return false;
+            if (canWrite && !canWrite()) return;
             if (this.settingsRevision === revision) this.acceptSettings(snapshot, true);
-            else if (canWrite) return false;
-            if (canWrite && !canWrite()) return false;
+            else if (canWrite) return;
+            if (canWrite && !canWrite()) return;
             if (settingsMatch(this.settingsNative, comparable)) {
                 if (verifyUltrafast) await this.confirmEffectiveUltrafast(deadline, operationId, requestedUltrafast);
-                return true;
+                return operationId;
             }
         }
         const revision = this.settingsRevision;
@@ -1042,7 +1044,7 @@ export class SharedCodexRoot {
             // A fallback belongs to its original confirmation, even after
             // an asynchronous settings read. Only fresh writes get a new ID.
             if (canWrite) {
-                if (!canWrite()) return false;
+                if (!canWrite()) return;
             } else operationId = ++this.tierOperationCounter;
             await this.settingsRequest('thread/settings/update', params, deadline, true, () => changesTier && operationId >= this.confirmedTierOperation, operationId);
             // The RPC only acknowledges queueing the settings operation. The
@@ -1050,15 +1052,15 @@ export class SharedCodexRoot {
             await accepted;
         } finally { clearTimeout(timer); this.settingsListeners.delete(changed); }
         if (verifyUltrafast) await this.confirmEffectiveUltrafast(deadline, operationId, requestedUltrafast);
-        return true;
+        return operationId;
     }
     private isCurrentTierOperation(operationId: number): boolean {
         return operationId >= Math.max(this.confirmedTierOperation, this.pendingTierOperation, this.acceptedNativeTierOperation);
     }
     private async fallbackToStandard(deadline: number, operationId: number): Promise<boolean> {
         const canWrite = () => this.isCurrentTierOperation(operationId) && !this.hasUltrafastTier && !this.hasOtherEffectiveTier;
-        if (!await this.writeNativeSettings({ threadId: this.threadId, serviceTier: null }, { serviceTier: null }, deadline, operationId, canWrite)
-            || !canWrite()) return false;
+        const confirmed = await this.writeNativeSettings({ threadId: this.threadId, serviceTier: null }, { serviceTier: null }, deadline, operationId, canWrite);
+        if (confirmed === undefined || !canWrite()) return false;
         this.notice('Codex did not apply Ultrafast; changed to Standard.');
         return true;
     }
