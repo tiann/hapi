@@ -67,6 +67,12 @@ function isCommandResult(message: SDKMessage, uuid: string, command: 'compact' |
             && (message.local_command === command || (message.local_command == null && legacyMatch))));
 }
 
+function unidentifiedCommandResult(command: 'compact' | 'clear'): string {
+    return command === 'compact'
+        ? '📦 Claude did not identify the /compact result'
+        : 'Claude did not identify the /clear result';
+}
+
 // acceptEdits/bypassPermissions are emulated in canCallTool so they can change
 // mid-session. Launching Claude natively in them skips canCallTool, so a later
 // downgrade (e.g. Yolo -> Default) would never take effect.
@@ -755,9 +761,7 @@ export async function claudeRemote(opts: {
                         bindClearSession(rotatedId, clear?.init);
                         await opts.onReady('Context was reset', undefined, 0);
                     } else {
-                        await opts.onReady(clear
-                            ? 'Claude did not identify the /clear result'
-                            : '📦 Claude did not identify the /compact result');
+                        await opts.onReady(unidentifiedCommandResult(clear ? 'clear' : 'compact'));
                     }
                     scheduleNextMessage();
                     continue;
@@ -906,7 +910,10 @@ export async function claudeRemote(opts: {
             // we do not recognise cannot invent a failure.
             if (message.type === 'system' && message.subtype === 'status' && compact) {
                 const systemStatus = message as SDKSystemMessage;
-                if (systemStatus.status === 'compacting') compact.sawCompactingStatus = true;
+                if (systemStatus.status === 'compacting') {
+                    compact.sawCompactingStatus = true;
+                    cancelCommandResultTimeout();
+                }
                 if (systemStatus.compact_result !== undefined || (compact.initial && systemStatus.status === 'compacting')) {
                     compact.sawCompactSignal = true;
                 }
@@ -1051,6 +1058,17 @@ export async function claudeRemote(opts: {
                 }
             }
         }
+        const clear = clearState.active;
+        const compact = compactState.active;
+        const pending = clear ?? (compact?.initial === false ? compact : null);
+        if (pending && !opts.signal?.aborted && !(clear && getClearRotation(clear))) {
+            const command = clear ? 'clear' : 'compact';
+            const acknowledged = !pushedUuids.has(pending.uuid) || commandResultTimeout !== null
+                || compact?.sawCompactingStatus || compact?.sawCompactSignal;
+            if (!acknowledged) throw new Error(`Claude exited before acknowledging /${command}`);
+            opts.onResultAccepted?.();
+            opts.onCompletionEvent?.(unidentifiedCommandResult(command));
+        }
         logger.debug(`${debugPrefix} response stream exhausted`);
     } catch (e) {
         responseClosed = true;
@@ -1066,10 +1084,11 @@ export async function claudeRemote(opts: {
     } finally {
         closeSteering();
         cancelCommandResultTimeout();
-        const clearInit = clearState.active?.init;
-        if (clearInit?.session_id) {
+        const clear = clearState.active;
+        const rotatedId = clear ? getClearRotation(clear) : undefined;
+        if (rotatedId) {
             opts.onResultAccepted?.();
-            bindClearSession(clearInit.session_id, clearInit);
+            bindClearSession(rotatedId, clear?.init);
             opts.onCompletionEvent?.('Context was reset');
         }
         if (compactCompletion) {
