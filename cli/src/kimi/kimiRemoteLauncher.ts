@@ -4,7 +4,8 @@ import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from '@/agent/
 import { logger } from '@/ui/logger';
 import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
 import { convertAgentMessage } from '@/agent/messageConverter';
-import type { AgentMessage, McpServerStdio, PromptContent } from '@/agent/types';
+import { toAcpMcpServers } from '@/agent/toAcpMcpServers';
+import type { AgentMessage, PromptContent } from '@/agent/types';
 import { RemoteLauncherBase, type RemoteLauncherDisplayContext, type RemoteLauncherExitReason } from '@/modules/common/remote/RemoteLauncherBase';
 import { KimiDisplay } from '@/ui/ink/KimiDisplay';
 import type { KimiSession } from './session';
@@ -519,15 +520,6 @@ class KimiRemoteLauncher extends RemoteLauncherBase {
         this.session.queue.reset();
         this.abortController.abort();
     }
-}
-
-function toAcpMcpServers(config: Record<string, { command: string; args: string[] }>): McpServerStdio[] {
-    return Object.entries(config).map(([name, entry]) => ({
-        name,
-        command: entry.command,
-        args: entry.args,
-        env: []
-    }));
 }
 
 export async function kimiRemoteLauncher(

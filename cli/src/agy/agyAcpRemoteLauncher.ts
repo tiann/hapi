@@ -8,6 +8,8 @@ import { logger } from '@/ui/logger';
 import { RemoteModeDisplay } from '@/ui/ink/RemoteModeDisplay';
 import { convertAgentMessage } from '@/agent/messageConverter';
 import { GenerationClock } from '@/agent/generationClock';
+import { buildHapiMcpBridge } from '@/codex/utils/buildHapiMcpBridge';
+import { toAcpMcpServers } from '@/agent/toAcpMcpServers';
 import { createAcpSessionTitleSync, registerAcpSessionTitleSync } from '@/agent/acpSessionTitle';
 import type { AgentMessage, FormElicitationRequest, FormElicitationResponse, PermissionRequest, PromptContent } from '@/agent/types';
 import type { AcpAvailableCommand, AcpSdkBackend } from '@/agent/backends/acp';
@@ -243,6 +245,9 @@ type AgyTurn = {
  */
 export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly session: AgySession;
+    private readonly titleSync: ReturnType<typeof createAcpSessionTitleSync>;
+    private happyServer: { url: string; stop: () => void } | null = null;
+    private acpMcpServers: ReturnType<typeof toAcpMcpServers> = [];
     private readonly createBackend: () => AcpSdkBackend;
     private readonly steerCancelGraceMs: number;
     private readonly cancelHardStopMs: number;
@@ -320,6 +325,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     } = {}) {
         super(process.env.DEBUG ? session.logPath : undefined);
         this.session = session;
+        this.titleSync = createAcpSessionTitleSync(session.client);
         this.createBackend = opts.createBackend ?? createAgyAcpBackend;
         this.steerCancelGraceMs = opts.steerCancelGraceMs ?? STEER_CANCEL_GRACE_MS;
         this.cancelHardStopMs = opts.cancelHardStopMs ?? CANCEL_HARD_STOP_MS;
@@ -366,6 +372,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             async () => await this.handleListSlashCommands()
         );
         try {
+            const bridge = await buildHapiMcpBridge(session.client, {
+                onChangeTitle: () => this.titleSync.markManualTitle(),
+                skillLookup: { workingDirectory: session.path, flavor: 'agy' }
+            });
+            this.happyServer = bridge.server;
+            this.acpMcpServers = toAcpMcpServers(bridge.mcpServers);
+            if (this.shouldExit) return;
             await this.startBackend(session.sessionId);
         } catch (error) {
             // A kill during start-up is not a start failure.
@@ -593,7 +606,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             await backend.resumeSession({
                 sessionId: acpSessionId,
                 cwd: this.session.path,
-                mcpServers: []
+                mcpServers: this.acpMcpServers
             });
             const reported = backend.getSessionModelsMetadata(acpSessionId)?.currentModelId ?? null;
             if (reported) this.currentModelId = reported;
@@ -833,8 +846,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         this.backend = backend;
         this.backendLost = false;
         try {
-            const titleSync = createAcpSessionTitleSync(session.client);
-            registerAcpSessionTitleSync(backend, session.client, titleSync);
+            registerAcpSessionTitleSync(backend, session.client, this.titleSync);
             backend.setAvailableCommandsUpdateListener?.((_sessionId, commands) => {
                 this.recordAvailableCommands(commands);
             });
@@ -856,7 +868,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     acpSessionId = await backend.resumeSession({
                         sessionId: resumeSessionId,
                         cwd: session.path,
-                        mcpServers: []
+                        mcpServers: this.acpMcpServers
                     });
                 } catch (error) {
                     logger.warn('[agy-acp] resume failed, starting a new conversation', error);
@@ -867,7 +879,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 }
             }
             if (!acpSessionId) {
-                acpSessionId = await backend.newSession({ cwd: session.path, mcpServers: [] });
+                acpSessionId = await backend.newSession({ cwd: session.path, mcpServers: this.acpMcpServers });
                 this.backgroundCommands.length = 0;
                 this.retainedAmbiguousCompletions.length = 0;
                 this.nativeToolNames.clear();
@@ -902,9 +914,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 backend,
                 () => this.turnPermissionMode ?? (session.getPermissionMode() as PermissionMode | undefined),
                 {
-                    // agy titles run_command requests with the command line and
-                    // gets no HAPI MCP tools, so the tool-name hints could only
-                    // match command text.
+                    // agy titles run_command requests with the command line,
+                    // so tool-name hints could match command text.
                     autoApprovalRules: { alwaysToolNameHints: [], alwaysToolIdHints: [] },
                     autoApproveOnce: true,
                     requiresUser: isAgyQuestionRequest,
@@ -2004,7 +2015,21 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         this.permissionHandler = null;
         const backend = this.backend;
         this.backend = null;
-        await backend?.disconnect();
+        try {
+            await backend?.disconnect();
+        } finally {
+            const server = this.happyServer;
+            this.happyServer = null;
+            if (server) {
+                try {
+                    server.stop();
+                } finally {
+                    this.session.client.updateMetadata((metadata) => metadata.hapiMcpUrl === server.url
+                        ? { ...metadata, hapiMcpUrl: undefined }
+                        : metadata);
+                }
+            }
+        }
         logger.debug('[agy-acp] cleanup done');
     }
 }
