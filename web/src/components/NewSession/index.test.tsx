@@ -2869,6 +2869,29 @@ it.each(['ultrafast', 'standard'] as const)('keeps the imported tier separately 
     expect(loadPreferredLaunchSettings('machine-1', 'codex')?.serviceTier).toBe(preferredTier);
 });
 
+it('keeps the native tier on import when the selected model loses Fast availability', async () => {
+    savePreferredAgent('codex')
+    savePreferredLaunchSettings('machine-1', 'codex', { model: 'gpt-6.2-sol', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'high' })
+    const syncCodexSession = vi.fn(async () => ({ success: true, hapiSessionIds: ['imported-session'] }))
+    const importApi = {
+        ...api, syncCodexSession, resumeSession: vi.fn(async () => 'imported-session'),
+        getCodexSessions: vi.fn(async () => ({ sessions: [{ id: 'native-import', title: 'Native import', cwd: 'C:\\repo' }], machineId: 'machine-1' })),
+    } as unknown as ApiClient
+    renderWithQuery(<NewSession api={importApi} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: 'codexSync.newSessionInline.choose' }))
+    await waitFor(() => expect(screen.getByTestId('select-codex-history')).toBeEnabled())
+    fireEvent.click(screen.getByTestId('select-codex-history'))
+    const tier = await screen.findByRole('combobox', { name: 'newSession.fastMode' })
+    fireEvent.change(tier, { target: { value: 'fast' } })
+    expect(tier).toHaveValue('fast')
+    mocks.nextModelValue = 'gpt-5.6-terra'
+    fireEvent.click(screen.getByTestId('model'))
+    expect(tier).toHaveValue('default')
+    await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+    fireEvent.click(screen.getByTestId('create'))
+    await waitFor(() => expect(syncCodexSession).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-5.6-terra', serviceTier: undefined })))
+})
+
 it('offers Standard for a native import even when the untouched model has no fast tier and catalog lookup fails', async () => {
     savePreferredAgent('codex');
     savePreferredLaunchSettings('machine-1', 'codex', { model: 'gpt-5.6-terra', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'high' });

@@ -563,6 +563,13 @@ export function NewSession(props: {
     const showCodexFastMode = agent === 'codex'
         && !codexModelsState.error
         && codexModelAdvertisesFastTier(model === 'auto' ? null : model, codexModelsState.models)
+    const resolvedCodexImportTier = codexImportTier === 'fast' && agent === 'codex'
+        && !codexModelsState.isLoading && !codexModelsState.error && !showCodexFastMode
+        ? 'default' : codexImportTier
+
+    useEffect(() => {
+        if (resolvedCodexImportTier !== codexImportTier) setCodexImportTier(resolvedCodexImportTier)
+    }, [codexImportTier, resolvedCodexImportTier])
 
     useEffect(() => {
         // Wait for the Codex model catalog to settle before clearing Fast;
@@ -2075,7 +2082,7 @@ export function NewSession(props: {
                     machineId: codexImportMachineId ?? machineId,
                     model: resolvedModel ?? null,
                     modelReasoningEffort: resolvedModelReasoningEffort ?? null,
-                    serviceTier: codexImportTier === 'default' ? undefined : codexImportTier,
+                    serviceTier: resolvedCodexImportTier === 'default' ? undefined : resolvedCodexImportTier,
                     collaborationMode: resolvedCollaborationMode ?? 'default',
                     yolo: nativePermissionMode === 'yolo'
                 })
@@ -2282,7 +2289,7 @@ export function NewSession(props: {
             && piModelsState.isLoading)
     const hasExplicitCatalogModel = model !== 'auto' && codexModelsState.models.some(candidate => candidate.id === model)
     const importingCodex = agent === 'codex' && Boolean(selectedCodexImportSessionId)
-    const selectedTier = importingCodex ? codexImportTier : serviceTierExplicit ? serviceTier : 'default'
+    const selectedTier = importingCodex ? resolvedCodexImportTier : serviceTierExplicit ? serviceTier : 'default'
     const fastModeSelectionPending = agent === 'codex'
         && selectedTier !== 'standard' && selectedTier !== 'default'
         && (codexModelsState.isLoading || (selectedTier === 'ultrafast' && (Boolean(codexModelsState.error) || importingCodex || !hasExplicitCatalogModel)))

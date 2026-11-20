@@ -418,7 +418,8 @@ public enum NewSessionLogic {
             active = models.first { $0.isDefault }
         }
         return active?.serviceTiers?.contains {
-            $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().contains("fast")
+            let tier = $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            return tier == "fast" || tier == "priority"
         } == true
     }
 

@@ -278,10 +278,14 @@ struct NewSessionLogicTests {
                 isDefault: false,
                 serviceTiers: ["standard"]
             ),
+            CodexModelSummary(id: "ultrafast-only", displayName: "Ultrafast only", isDefault: false, serviceTiers: ["ultrafast"]),
+            CodexModelSummary(id: "priority-only", displayName: "Priority only", isDefault: false, serviceTiers: [" PRIORITY "]),
         ]
         #expect(NewSessionLogic.codexModelAdvertisesFastTier(model: "auto", models: models))
         #expect(NewSessionLogic.codexModelAdvertisesFastTier(model: "gpt-5.2-codex", models: models))
         #expect(!NewSessionLogic.codexModelAdvertisesFastTier(model: "gpt-5.2-mini", models: models))
+        #expect(!NewSessionLogic.codexModelAdvertisesFastTier(model: "ultrafast-only", models: models))
+        #expect(NewSessionLogic.codexModelAdvertisesFastTier(model: "priority-only", models: models))
         #expect(!NewSessionLogic.codexModelAdvertisesFastTier(model: "auto", models: []))
     }
 
