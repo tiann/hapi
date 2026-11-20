@@ -545,6 +545,11 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 // typecheck with "Property 'isolate' does not exist on type
                 // 'never'" (verified against `bun run typecheck`).
                 let inFlightMessage: InFlightMessage | null = null as InFlightMessage | null;
+                const restoreInFlightMessage = () => {
+                    if (!inFlightMessage) return;
+                    session.queue.unshiftBatch(inFlightMessage);
+                    inFlightMessage = null;
+                };
                 // A resume-at respawn (rewind restart or crash re-arm) starts
                 // query() before any prompt exists, so the first-mode
                 // overwrite inside claudeRemote() never runs and bootstrapMode
@@ -646,7 +651,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             const localId = inFlightMessage?.items.find((item) => item.localId)?.localId;
                             recordHistoryPoint(localId, nativePromptUuid);
                         },
-                        nextMessage: async (correlatesResults) => {
+                        onInputNotSent: restoreInFlightMessage,
+                        nextMessage: async (correlatesResults, streamSignal) => {
                             // Flush any pending outgoing messages before consuming the next user
                             // turn. Without this, scheduleProcessing()'s setTimeout(fn,0) fires
                             // after the microtask that sends messages-consumed, causing the hub
@@ -657,6 +663,10 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             // Drain it before ready so live clients receive the round metadata before
                             // they close out the running turn.
                             await messageQueue.flush();
+                            const dequeueSignal = streamSignal
+                                ? AbortSignal.any([controller.signal, streamSignal])
+                                : controller.signal;
+                            if (dequeueSignal.aborted) return null;
 
                             if (pending) {
                                 let p = pending;
@@ -686,9 +696,13 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                 return { ...p, message: deliveredText };
                             }
 
-                            let msg = await session.queue.waitForMessagesAndGetAsString(controller.signal);
+                            const msg = await session.queue.waitForMessagesAndGetAsString(dequeueSignal);
 
                             if (msg) {
+                                if (dequeueSignal.aborted) {
+                                    session.queue.unshiftBatch(msg);
+                                    return null;
+                                }
                                 const command = msg.isolate ? parseSpecialCommand(msg.message).type : null;
                                 const canRunIsolatedInProcess = deliveredMessageThisAttempt
                                     && correlatesResults
@@ -897,31 +911,6 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     }
                 } catch (e) {
                     logger.debug('[remote]: launch error', e);
-
-                    // Restores a message batch that was already
-                    // dequeued+acked from the queue (see
-                    // MessageQueue2.collectBatch: the ack fires at dequeue
-                    // time, before the SDK ever sees the message) but never
-                    // got a chance to be processed, so it is retried instead
-                    // of lost. Each original item is unshifted individually,
-                    // in reverse order, so per-item localId is preserved
-                    // (reconnecting the retried prompt to its hub row instead
-                    // of a localId-less orphan) and the original relative
-                    // order is restored -- collectBatch() joins same-mode
-                    // items into a single `message` string for the SDK, but
-                    // still returns the pre-join `items` breakdown for this.
-                    const restoreInFlightMessage = () => {
-                        if (!inFlightMessage) return;
-                        const { items, mode, isolate } = inFlightMessage;
-                        for (const item of [...items].reverse()) {
-                            if (isolate) {
-                                session.queue.unshiftIsolated(item.message, mode, item.localId);
-                            } else {
-                                session.queue.unshift(item.message, mode, item.localId);
-                            }
-                        }
-                        inFlightMessage = null;
-                    };
 
                     if (!this.exitReason) {
                         const detail = e instanceof Error ? e.message : String(e);

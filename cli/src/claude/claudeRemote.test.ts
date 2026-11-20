@@ -474,7 +474,7 @@ describe('claudeRemote in-process /clear', () => {
     it.each([
         'success', 'failure', 'untagged-failure', 'eof', 'no-result',
         'autonomous-eof', 'acknowledged', 'hook', 'late-result', 'late-init',
-        'late-stale-result', 'late-hook', 'tagged-timeout', 'silent-timeout'
+        'late-stale-result', 'late-hook', 'tagged-timeout', 'silent-timeout', 'result-eof'
     ] as const)('settles an in-process clear on %s', async (outcome) => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
@@ -483,13 +483,16 @@ describe('claudeRemote in-process /clear', () => {
         const priorId = 'previous-native-session';
         const lateRotation = outcome === 'late-result' || outcome === 'late-init' || outcome === 'late-stale-result' || outcome === 'late-hook';
         const timesOut = lateRotation || outcome === 'untagged-failure' || outcome === 'tagged-timeout' || outcome === 'silent-timeout';
-        const success = outcome === 'success' || outcome === 'eof' || outcome === 'hook';
+        const success = outcome === 'success' || outcome === 'eof' || outcome === 'hook' || outcome === 'result-eof';
         const resultId = success || lateRotation ? 'fresh-native-session' : priorId;
         const timeoutNotice = 'Claude did not identify the /clear result. Waiting for Claude to exit so background tasks can finish.';
         const completion = success ? 'Context was reset'
             : timesOut ? timeoutNotice : 'Could not reset context';
         let hookSessionId: string | undefined;
         let awaitingLateClearHook = false;
+        const dequeuedFollowUp = deferred<void>();
+        const finishFollowUp = deferred<void>();
+        const clearContextTokens: Array<number | undefined> = [];
         const result: SDKMessage = {
             type: 'result', subtype: 'success', is_error: false, session_id: priorId, user_message_uuid: 'first-input'
         };
@@ -536,6 +539,10 @@ describe('claudeRemote in-process /clear', () => {
                     await vi.advanceTimersByTimeAsync(31_000);
                     expect(order).toContain(timeoutNotice);
                 }
+                if (outcome === 'result-eof') {
+                    await dequeuedFollowUp.promise;
+                    return;
+                }
                 const followUp = await input.next();
                 if (timesOut) {
                     expect(followUp.done).toBe(true);
@@ -571,13 +578,22 @@ describe('claudeRemote in-process /clear', () => {
                 allowedTools: [],
                 hookSettingsPath: '/tmp/hook.json',
                 canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
-                nextMessage: async (correlatesResults) => {
+                nextMessage: async (correlatesResults, signal) => {
                     const message = inputs.shift();
                     if (message === '/clear') expect(correlatesResults).toBe(true);
                     if (message === '/clear' || message === 'follow-up') order.push(message);
+                    if (message === 'follow-up' && outcome === 'result-eof') {
+                        signal?.addEventListener('abort', () => finishFollowUp.resolve(undefined), { once: true });
+                        dequeuedFollowUp.resolve(undefined);
+                        await finishFollowUp.promise;
+                    }
                     return message ? { message, mode: { permissionMode: 'default' } } : null;
                 },
-                onReady: (event) => { order.push(event ?? 'ready'); },
+                onInputNotSent: () => { inputs.unshift('follow-up'); },
+                onReady: (event, _summary, contextTokens) => {
+                    if (event === 'Context was reset') clearContextTokens.push(contextTokens);
+                    order.push(event ?? 'ready');
+                },
                 onResultAccepted: (keepClearHookPending) => {
                     awaitingLateClearHook = keepClearHookPending === true;
                     order.push('accepted');
@@ -596,7 +612,7 @@ describe('claudeRemote in-process /clear', () => {
             }
             await execution;
             if (outcome === 'eof') {
-                expect(order).toEqual([`session:${priorId}`, 'ready', '/clear', 'accepted', 'reset', `session:${resultId}`]);
+                expect(order).toEqual([`session:${priorId}`, 'ready', '/clear', 'accepted', 'reset', `session:${resultId}`, 'Context was reset']);
             } else if (outcome === 'acknowledged') {
                 expect(order).toEqual([`session:${priorId}`, 'ready', '/clear', 'accepted', 'Claude did not identify the /clear result']);
             } else if (lateRotation) {
@@ -613,11 +629,14 @@ describe('claudeRemote in-process /clear', () => {
                     ? [`session:${priorId}`, 'ready', '/clear', 'accepted', 'reset', `session:${resultId}`, 'Context was reset', 'follow-up']
                     : [`session:${priorId}`, 'ready', '/clear', 'accepted', completion, 'follow-up']);
             }
+            expect(clearContextTokens).toEqual(success || lateRotation ? [0] : []);
+            if (outcome === 'result-eof') expect(inputs).toEqual(['follow-up']);
             const forwardedResults = forwarded.filter((message) => message.type === 'result');
             expect(forwardedResults).toEqual(timesOut && outcome !== 'silent-timeout'
                 ? [result, result, unmatchedResult]
                 : [result, result]);
         } finally {
+            finishFollowUp.resolve(undefined);
             if (timesOut) vi.useRealTimers();
             queryMock.mockReset();
             querySpy.mockRestore();
@@ -849,7 +868,7 @@ describe('claudeRemote /compact result reporting', () => {
         }
     });
 
-    it.each(['none', 'before-progress', 'after-boundary'])('settles a live compact only on its result with autonomous output %s', async (autonomous) => {
+    it.each(['none', 'before-progress', 'after-boundary', 'auto-compaction'])('settles a live compact only on its result with autonomous output %s', async (autonomous) => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
         const events: string[] = [];
@@ -871,7 +890,12 @@ describe('claudeRemote /compact result reporting', () => {
                     await vi.advanceTimersByTimeAsync(1);
                     expect(events).toEqual(['ready']);
                 }
-                yield { ...resultMessage, user_message_uuid: compact.value?.uuid };
+                if (autonomous === 'auto-compaction') {
+                    yield { type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'auto' } };
+                    yield { ...resultMessage, user_message_uuid: compact.value?.uuid, result: 'Not enough messages to compact.' };
+                } else {
+                    yield { ...resultMessage, user_message_uuid: compact.value?.uuid };
+                }
             }
         }));
         const inputs = ['first', '/compact'];
@@ -892,7 +916,9 @@ describe('claudeRemote /compact result reporting', () => {
                 onSessionFound: () => {},
                 onMessage: () => {}
             });
-            expect(events).toEqual(['ready', '📦 Compacted']);
+            expect(events).toEqual(['ready', autonomous === 'auto-compaction'
+                ? '📦 Compaction failed: Not enough messages to compact.'
+                : '📦 Compacted']);
         } finally {
             if (autonomous !== 'none') vi.useRealTimers();
             queryMock.mockReset();

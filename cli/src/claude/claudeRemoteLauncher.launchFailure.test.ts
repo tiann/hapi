@@ -288,6 +288,42 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
         }
     });
 
+    it('starts the next stream with a follow-up collected just before clean exit', async () => {
+        const queue = new MessageQueue2<EnhancedMode>(claudeBatchModeHash);
+        const client = makeClient();
+        const session = makeSession(queue, client);
+        const mode: EnhancedMode = { permissionMode: 'default' };
+        queue.push('first', mode, 'first-id');
+
+        claudeRemoteMock.mockImplementationOnce(async (opts) => {
+            expect((await opts.nextMessage())?.message).toBe('first');
+            await opts.onReady();
+            queue.pushIsolateAndClear('/clear', mode, 'clear-id');
+            queue.push('follow-up', mode, 'follow-up-id');
+            expect((await opts.nextMessage(true))?.message).toBe('/clear');
+            opts.onSessionReset('new-session');
+            opts.onSessionFound('new-session');
+            await opts.onReady('Context was reset', undefined, 0);
+            expect((await opts.nextMessage(true))?.message).toBe('follow-up');
+            opts.onInputNotSent();
+        }).mockImplementationOnce(async (opts) => {
+            const localIds = queue.queue.map(({ localId }) => localId);
+            const next = queue.size() > 0 ? await opts.nextMessage() : null;
+            triggerSwitch(client);
+            expect(localIds).toEqual(['follow-up-id']);
+            expect(opts.sessionId).toBe('new-session');
+            expect(next?.message).toBe('follow-up');
+        });
+
+        try {
+            const { claudeRemoteLauncher } = await import('./claudeRemoteLauncher');
+            await claudeRemoteLauncher(session);
+            expect(claudeRemoteMock).toHaveBeenCalledTimes(2);
+        } finally {
+            session.stopKeepAlive();
+        }
+    });
+
     it('sends the result carrier before compact completion and ready', async () => {
         const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
         queue.push('/compact', { permissionMode: 'default' });

@@ -106,7 +106,7 @@ export async function claudeRemote(opts: {
     bootstrapMode?: EnhancedMode,
 
     // Dynamic parameters
-    nextMessage: (correlatesResults?: boolean) => Promise<{ message: string, mode: EnhancedMode } | null>,
+    nextMessage: (correlatesResults?: boolean, signal?: AbortSignal) => Promise<{ message: string, mode: EnhancedMode } | null>,
     onReady: (completionEvent?: string, compactSummary?: CompactSummaryPayload, compactContextTokens?: number) => void | Promise<void>,
     isAborted: (toolCallId: string) => boolean,
 
@@ -122,6 +122,7 @@ export async function claudeRemote(opts: {
      * still deferred (compact summary lookup, or a steer follow-up turn).
      */
     onResultAccepted?: (keepClearHookPending?: boolean) => void,
+    onInputNotSent?: () => void,
     /** The native prompt uuid of a just-submitted user message (queue batches only). */
     onInputSubmitted?: (nativePromptUuid: string) => void,
     onCompletionEvent?: (message: string) => void,
@@ -563,7 +564,8 @@ export async function claudeRemote(opts: {
         }
     });
 
-    let nextMessageFetchInFlight = false;
+    const nextMessageAbort = new AbortController();
+    let nextMessageFetch: Promise<void> | null = null;
     let nextMessageFetchSeq = 0;
     let streamMessageSeq = 0;
     let resultSeq = 0;
@@ -601,22 +603,24 @@ export async function claudeRemote(opts: {
     if (opts.signal?.aborted) compactCompletionAbort.abort();
 
     const scheduleNextMessage = () => {
-        if (nextMessageFetchInFlight || inputEnded || responseClosed) {
+        if (nextMessageFetch || inputEnded || responseClosed) {
             logger.debug(
                 `${debugPrefix} scheduleNextMessage skipped ` +
-                `(inFlight=${nextMessageFetchInFlight}, inputEnded=${inputEnded}, responseClosed=${responseClosed})`
+                `(inFlight=${nextMessageFetch !== null}, inputEnded=${inputEnded}, responseClosed=${responseClosed})`
             );
             return;
         }
 
         const fetchId = ++nextMessageFetchSeq;
         const startedAt = Date.now();
-        nextMessageFetchInFlight = true;
         logger.debug(`${debugPrefix} scheduleNextMessage start fetchId=${fetchId}`);
-        void (async () => {
+        nextMessageFetch = (async () => {
             try {
-                const next = await opts.nextMessage(correlatesResults === true);
-                if (responseClosed) return;
+                const next = await opts.nextMessage(correlatesResults === true, nextMessageAbort.signal);
+                if (responseClosed) {
+                    if (next) opts.onInputNotSent?.();
+                    return;
+                }
                 if (!next) {
                     inputEnded = true;
                     messages.end();
@@ -658,7 +662,7 @@ export async function claudeRemote(opts: {
                 messages.setError(e instanceof Error ? e : new Error(String(e)));
                 logger.debug(`${debugPrefix} nextMessage error fetchId=${fetchId}`, e);
             } finally {
-                nextMessageFetchInFlight = false;
+                nextMessageFetch = null;
                 logger.debug(`${debugPrefix} scheduleNextMessage done fetchId=${fetchId}`);
             }
         })();
@@ -685,6 +689,7 @@ export async function claudeRemote(opts: {
                 pendingResponseNext = responseIterator.next().then(
                     (result) => {
                         pendingResponseDone = result.done === true;
+                        if (pendingResponseDone) responseClosed = true;
                         return result;
                     },
                     (error) => {
@@ -938,6 +943,7 @@ export async function claudeRemote(opts: {
 
             // Capture the compaction token delta from the boundary metadata
             // (pre_tokens/post_tokens are the context sizes on each side).
+            if (compact && compactMetadata?.trigger === 'auto') compact.sawCompactingStatus = false;
             if (compact && isManualCompactBoundaryMessage(message)) {
                 compact.sawCompactSignal = true;
                 if (!compact.initial) startCommandResultTimeout();
@@ -996,7 +1002,7 @@ export async function claudeRemote(opts: {
                 setSteerable(false);
                 logger.debug(
                     `${debugPrefix} result #${resultSeq} received; scheduling next user message ` +
-                    `(nextInFlight=${nextMessageFetchInFlight}, inputEnded=${inputEnded})`
+                    `(nextInFlight=${nextMessageFetch !== null}, inputEnded=${inputEnded})`
                 );
 
                 if (compact) {
@@ -1095,13 +1101,16 @@ export async function claudeRemote(opts: {
         }
     } finally {
         closeSteering();
+        nextMessageAbort.abort();
+        if (nextMessageFetch) await nextMessageFetch;
+        messages.end();
         cancelCommandResultTimeout();
         const clear = clearState.active;
         const rotatedId = clear ? getClearRotation(clear) : undefined;
         if (rotatedId) {
             opts.onResultAccepted?.();
             bindClearSession(rotatedId, clear?.init);
-            opts.onCompletionEvent?.('Context was reset');
+            await opts.onReady('Context was reset', undefined, 0);
         }
         if (compactCompletion) {
             compactCompletionAbort.abort();
