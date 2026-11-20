@@ -26,6 +26,25 @@ it('leaves the requested tier untouched when the same provider changes catalog e
     expect(requested.serviceTier).toBe('ultrafast');
 });
 
+it.each([
+    { params: {}, next: { model: 'other', model_provider: 'original-provider' }, changed: true },
+    { params: { model: 'eligible' }, next: { model: 'eligible', model_provider: 'other-provider' }, changed: true },
+    { params: { model: 'eligible', modelProvider: 'original-provider' }, next: { model: 'other', model_provider: 'other-provider' }, changed: false },
+])('rechecks the effective launch target after reading the catalog ($params)', async ({ params, next, changed }) => {
+    const original = { config: { model: 'eligible', model_provider: 'original-provider' }, layers: [] };
+    const client = {
+        readConfig: vi.fn().mockResolvedValueOnce(original).mockResolvedValueOnce({ config: next, layers: [] }),
+        listModels: vi.fn().mockResolvedValue({ data: [{ id: 'eligible', serviceTiers: [{ id: 'ultrafast' }] }] }),
+        request: vi.fn(), retainsResumeModelProvider: () => true, supportsProviderScopedModels: () => true,
+    };
+    const requested = { ...params, serviceTier: 'ultrafast' };
+    const launch = resolveUltrafastLaunch(client, 'thread/start', requested, '/project', undefined, undefined, catalogConfiguration(original));
+    if (changed) await expect(launch).rejects.toThrow('effective Codex model or provider changed');
+    else await expect(launch).resolves.toEqual({ params: requested, downgraded: false });
+    expect(client.listModels).toHaveBeenCalledExactlyOnceWith({ includeHidden: true, modelProvider: 'original-provider' });
+    expect(client.readConfig).toHaveBeenCalledTimes(2);
+});
+
 it.each(['thread/start', 'thread/fork', 'thread/resume'])('applies the same catalog fallback before native %s', async method => {
     const client = {
         request: vi.fn().mockResolvedValue({ thread: { model: 'unsupported', modelProvider: 'saved-provider' } }),

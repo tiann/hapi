@@ -75,6 +75,7 @@ function indeterminate(error: unknown): boolean {
 export class SharedCodexQueue {
     private entries: Record<string, Entry> = {};
     private batches: Record<string, Batch> = {};
+    private readonly deferredStarts = new Set<string>();
     private operations: Promise<unknown> = Promise.resolve();
     private writes = Promise.resolve();
     constructor(private readonly client: Pick<CodexAppServerClient, 'request'>, readonly threadId: string,
@@ -538,6 +539,32 @@ export class SharedCodexQueue {
             }
         });
     }
+    private async startAfterEnqueue(id: string): Promise<void> {
+        try {
+            this.assertInputAdmission();
+            // Native start checks that no turn is active.
+            await this.client.request('thread/queue/start', { threadId: this.threadId });
+            this.deferredStarts.clear();
+        } catch (error) {
+            if (error instanceof QueueAdmissionPaused) this.deferredStarts.add(id);
+        }
+    }
+    resumeDeferredStart(canResume: () => boolean): Promise<void> {
+        return this.serial(async () => {
+            if (this.deferredStarts.size === 0 || !canResume()) return;
+            const nativeIds = new Set<string>();
+            for (const id of this.deferredStarts) {
+                const entry = this.entries[id];
+                if (!entry || entry.state !== 'queued' && entry.state !== 'unknown') continue;
+                const nativeId = this.nativeIdFor(entry);
+                if (nativeId) nativeIds.add(nativeId);
+            }
+            const queued = nativeIds.size > 0 && (await this.list()).some(item => nativeIds.has(item.id));
+            if (!canResume()) return;
+            this.deferredStarts.clear();
+            if (queued) await this.client.request('thread/queue/start', { threadId: this.threadId });
+        });
+    }
     private async enqueueLegacy(id: string, input: QueueInput, resumeInterrupted: boolean): Promise<void> {
         const existing = this.entries[id];
         if (existing && !['rejected', 'canceled', 'released'].includes(existing.state)) {
@@ -556,10 +583,7 @@ export class SharedCodexQueue {
             }));
             if (entry.state !== 'consumed') { entry.state = 'queued'; entry.nativeId = response.queuedSubmission.id; }
             await this.save();
-            if (resumeInterrupted) {
-                // Atomic idle precondition upstream: a competing terminal cannot turn this into steer.
-                await this.client.request('thread/queue/start', { threadId: this.threadId }).catch(() => {});
-            }
+            if (resumeInterrupted) await this.startAfterEnqueue(id);
         } catch (error) {
             if (error instanceof QueueAdmissionPaused) throw error;
             if (entry.state !== 'consumed') {
@@ -610,7 +634,7 @@ export class SharedCodexQueue {
             if (entry.state !== 'consumed') { entry.state = 'queued'; entry.nativeId = batch.nativeId; }
             if (batch.state !== 'consumed' && batch.state !== 'canceled') batch.state = 'queued';
             await this.save();
-            if (resumeInterrupted) await this.client.request('thread/queue/start', { threadId: this.threadId }).catch(() => {});
+            if (resumeInterrupted) await this.startAfterEnqueue(id);
         } catch (error) {
             if (error instanceof QueueAdmissionPaused) {
                 batch.versions.pop();
@@ -653,7 +677,7 @@ export class SharedCodexQueue {
             batch.nativeId = response.queuedSubmission.id;
             if (entry.state !== 'consumed') { entry.state = 'queued'; entry.nativeId = response.queuedSubmission.id; batch.state = 'queued'; }
             await this.save();
-            if (resumeInterrupted) await this.client.request('thread/queue/start', { threadId: this.threadId }).catch(() => {});
+            if (resumeInterrupted) await this.startAfterEnqueue(id);
         } catch (error) {
             if (error instanceof QueueAdmissionPaused) {
                 delete this.batches[clientId];

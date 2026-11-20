@@ -100,10 +100,12 @@ export async function isUltrafastAvailable(
         }
     };
     if (verifyConfig) assertCatalogConfiguration(current);
-    const configured = current?.config;
-    const effectiveProvider = modelProvider ?? (typeof configured?.model_provider === 'string' ? configured.model_provider : 'openai');
+    const target = (configured: typeof current) => ({
+        effectiveProvider: modelProvider ?? (typeof configured?.config.model_provider === 'string' ? configured.config.model_provider : 'openai'),
+        effectiveModel: explicitModel ?? (typeof configured?.config.model === 'string' && configured.config.model.trim() ? configured.config.model : undefined)
+    });
+    const { effectiveModel, effectiveProvider } = target(current);
     if (!scoped && catalogProvider !== effectiveProvider) throw new Error('Cannot verify Ultrafast for a different Codex model provider; settings were not changed');
-    const effectiveModel = explicitModel ?? (typeof configured?.model === 'string' && configured.model.trim() ? configured.model : undefined);
     const models = [];
     const seen = new Set<string>();
     let cursor: string | undefined;
@@ -114,7 +116,14 @@ export async function isUltrafastAvailable(
         if (cursor && seen.has(cursor)) throw new Error('Codex model catalog pagination did not advance');
         if (cursor) seen.add(cursor);
     } while (cursor);
-    if (verifyConfig) assertCatalogConfiguration(await bounded(() => client.readConfig({ cwd, includeLayers: true })));
+    if (verifyConfig) {
+        const finalConfig = await bounded(() => client.readConfig({ cwd, includeLayers: true }));
+        assertCatalogConfiguration(finalConfig);
+        const finalTarget = target(finalConfig);
+        if (finalTarget.effectiveModel !== effectiveModel || finalTarget.effectiveProvider !== effectiveProvider) {
+            throw new Error('The effective Codex model or provider changed during tier discovery; settings were not changed. Retry with the current configuration.');
+        }
+    }
     const selected = effectiveModel
         ? models.find(entry => entry.id === effectiveModel || entry.model === effectiveModel)
         : models.find(entry => entry.isDefault);

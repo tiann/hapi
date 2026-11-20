@@ -798,7 +798,12 @@ export class SharedCodexRoot {
         this.pendingLaunchCollaborationMode = undefined;
         this.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: false }));
         this.publishSteering();
-        if (paused && this.activated) { this.alive(); this.inputReady(); this.session.emitSessionReady(); }
+        if (paused && this.activated) {
+            this.alive(); this.inputReady(); this.session.emitSessionReady();
+            void this.queue.resumeDeferredStart(() => this.interrupted && !this.currentTurn && !this.closed
+                && !this.stopping && !this.needsTierConfirmation && this.client.isInitialized())
+                .catch(error => logger.debug('[Codex shared] deferred queue start', error));
+        }
     }
     /** Resolve native intent without committing settings before input is accepted. */
     private async resolveNativeSettings(params: Record<string, unknown>, operationDeadline = Date.now() + 25_000): Promise<{ params: Record<string, unknown>; fallbackNotice?: string }> {

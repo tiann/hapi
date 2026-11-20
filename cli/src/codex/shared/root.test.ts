@@ -302,6 +302,32 @@ it.each([false, true])('holds input paused during queue preflight and submits it
     expect(request.mock.calls.some(([method]) => method === (batch ? 'thread/queue/update' : 'thread/queue/add'))).toBe(true);
 });
 
+it('starts an interrupted native queue after tier recovery without submitting the accepted input again', async () => {
+    const f = await fixture();
+    f.native.thread.turns = [{ id: 'interrupted', status: 'interrupted', items: [] }];
+    await f.root.refresh();
+    await f.root.activate();
+    const original = f.root.client.request.bind(f.root.client);
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/queue/start') return {};
+        const response = await original(method, params);
+        if (method === 'thread/queue/add') {
+            const root = f.root as unknown as { pauseTierConfirmation: (operationId: number) => void; tierOperationCounter: number };
+            root.pauseTierConfirmation(++root.tierOperationCounter);
+        }
+        return response;
+    });
+    f.submit('resume accepted input', 'accepted');
+    await vi.waitFor(async () => {
+        expect(f.root.needsTierConfirmation).toBe(true);
+        expect((await f.ledger()).entries.accepted.state).toBe('queued');
+    });
+    expect(request.mock.calls.some(([method]) => method === 'thread/queue/start')).toBe(false);
+    await f.root.applySettings({ serviceTier: 'standard' });
+    await vi.waitFor(() => expect(request.mock.calls.filter(([method]) => method === 'thread/queue/start')).toHaveLength(1));
+    expect(request.mock.calls.filter(([method]) => method === 'thread/queue/add')).toHaveLength(1);
+});
+
 it.each(['current', 'latest', 'clear'])('passes Plan into activation and returns the recoverable %s child without a second settings write', async kind => {
     const initialSettings = vi.fn(async () => { throw new Error('second settings write would archive or orphan the recoverable child'); });
     const end = vi.fn(async () => {});
