@@ -50,6 +50,7 @@ interface ActiveCompact {
     baseline: number | null;
     failure: string | null;
     sawCompactSignal: boolean;
+    sawCompactingStatus: boolean;
     tokensBefore?: number;
     tokensAfter?: number;
 }
@@ -278,7 +279,8 @@ export async function claudeRemote(opts: {
             initial,
             baseline: getTranscriptBytes(),
             failure: null,
-            sawCompactSignal: false
+            sawCompactSignal: false,
+            sawCompactingStatus: false
         };
         if (opts.onCompletionEvent) {
             opts.onCompletionEvent('📦 Compaction started');
@@ -564,6 +566,12 @@ export async function claudeRemote(opts: {
     const timedOutCompactUuids = new Set<string>();
     let compactResultTimeout: Promise<null> | null = null;
     let compactResultTimer: ReturnType<typeof setTimeout> | undefined;
+    const startCompactResultTimeout = () => {
+        if (compactResultTimeout !== null) return;
+        compactResultTimeout = new Promise((resolve) => {
+            compactResultTimer = setTimeout(resolve, UNIDENTIFIED_COMPACT_RESULT_TIMEOUT_MS, null);
+        });
+    };
     const cancelCompactResultTimeout = () => {
         clearTimeout(compactResultTimer);
         compactResultTimer = undefined;
@@ -754,8 +762,9 @@ export async function claudeRemote(opts: {
 
             if (message.type === 'result') {
                 let resultUuid = message.user_message_uuid;
-                if (resultUuid == null && message.local_command === 'compact' && !compactState.active) {
+                if (resultUuid == null && message.local_command === 'compact') {
                     resultUuid = timedOutCompactUuids.values().next().value;
+                    if (typeof resultUuid === 'string' && compactState.active) startCompactResultTimeout();
                 }
                 if (typeof resultUuid === 'string' && timedOutCompactUuids.delete(resultUuid)) continue;
             }
@@ -800,7 +809,7 @@ export async function claudeRemote(opts: {
             // tok/s fields for it while autonomous round results stay unmarked.
             const compact = compactState.active;
             const isCompactTurnResult = compact !== null
-                && isCommandResult(message, compact.uuid, 'compact', compact.sawCompactSignal);
+                && isCommandResult(message, compact.uuid, 'compact', compact.sawCompactSignal && timedOutCompactUuids.size === 0);
             if (!isClearResult && !isManualCompactBoundaryMessage(message) && !isCompactEchoMessage(message)) {
                 opts.onMessage(isCompactTurnResult ? { ...message, hapi_compact_turn: true } : message);
             }
@@ -885,6 +894,7 @@ export async function claudeRemote(opts: {
             // we do not recognise cannot invent a failure.
             if (message.type === 'system' && message.subtype === 'status' && compact) {
                 const systemStatus = message as SDKSystemMessage;
+                if (systemStatus.status === 'compacting') compact.sawCompactingStatus = true;
                 if (systemStatus.compact_result !== undefined || (compact.initial && systemStatus.status === 'compacting')) {
                     compact.sawCompactSignal = true;
                 }
@@ -928,11 +938,8 @@ export async function claudeRemote(opts: {
                     continue;
                 }
                 if (compact && !isCompactTurnResult) {
-                    if (!compact.initial && message.user_message_uuid == null && message.local_command == null
-                        && compactResultTimeout === null) {
-                        compactResultTimeout = new Promise((resolve) => {
-                            compactResultTimer = setTimeout(resolve, UNIDENTIFIED_COMPACT_RESULT_TIMEOUT_MS, null);
-                        });
+                    if (!compact.initial && message.user_message_uuid == null && message.local_command == null) {
+                        startCompactResultTimeout();
                     }
                     continue;
                 }
@@ -961,7 +968,8 @@ export async function claudeRemote(opts: {
                     cancelCompactResultTimeout();
                     const sessionId = currentSessionId;
                     const baseline = compact.baseline;
-                    const failed = !compact.sawCompactSignal || message.is_error === true || message.subtype !== 'success';
+                    const failed = (!compact.sawCompactSignal && !compact.sawCompactingStatus)
+                        || message.is_error === true || message.subtype !== 'success';
                     const resultText = typeof message.result === 'string' ? message.result.trim() : '';
                     const failure = compact.failure ?? (failed ? resultText : null);
                     const tokenCount = (value: number | undefined): number | undefined =>
