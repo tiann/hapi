@@ -71,7 +71,7 @@ function isCommandResult(message: SDKMessage, uuid: string, command: 'compact' |
 // mid-session. Launching Claude natively in them skips canCallTool, so a later
 // downgrade (e.g. Yolo -> Default) would never take effect.
 const EFFORT_APPLY_TIMEOUT_MS = 5_000;
-const UNIDENTIFIED_COMPACT_RESULT_TIMEOUT_MS = 30_000;
+const UNIDENTIFIED_COMMAND_RESULT_TIMEOUT_MS = 30_000;
 
 function nativePermissionMode(mode: PermissionMode): PermissionMode {
     return mode === 'acceptEdits' || mode === 'bypassPermissions' ? 'default' : mode;
@@ -560,22 +560,26 @@ export async function claudeRemote(opts: {
     let nextMessageFetchSeq = 0;
     let streamMessageSeq = 0;
     let resultSeq = 0;
-    let correlatesResults = false;
+    let correlatesResults: boolean | null = null;
     const compactCompletionAbort = new AbortController();
     let compactCompletion: Promise<CompactCompletion> | null = null;
-    const timedOutCompactUuids = new Set<string>();
-    let compactResultTimeout: Promise<null> | null = null;
-    let compactResultTimer: ReturnType<typeof setTimeout> | undefined;
-    const startCompactResultTimeout = () => {
-        if (compactResultTimeout !== null) return;
-        compactResultTimeout = new Promise((resolve) => {
-            compactResultTimer = setTimeout(resolve, UNIDENTIFIED_COMPACT_RESULT_TIMEOUT_MS, null);
+    let timedOutCommand: { uuid: string; command: 'compact' | 'clear' } | null = null;
+    let commandResultTimeout: Promise<null> | null = null;
+    let commandResultTimer: ReturnType<typeof setTimeout> | undefined;
+    const waitForCommandResult = (message: SDKMessage) => {
+        if (commandResultTimeout !== null || message.user_message_uuid != null || message.local_command != null) return;
+        commandResultTimeout = new Promise((resolve) => {
+            commandResultTimer = setTimeout(resolve, UNIDENTIFIED_COMMAND_RESULT_TIMEOUT_MS, null);
         });
     };
-    const cancelCompactResultTimeout = () => {
-        clearTimeout(compactResultTimer);
-        compactResultTimer = undefined;
-        compactResultTimeout = null;
+    const cancelCommandResultTimeout = () => {
+        clearTimeout(commandResultTimer);
+        commandResultTimer = undefined;
+        commandResultTimeout = null;
+    };
+    const getClearRotation = (clear: ActiveClear) => {
+        const id = clear.init?.session_id ?? opts.getClearHookSessionId?.();
+        return id && id !== clear.previousSessionId ? id : undefined;
     };
     const bindClearSession = (id: string, init?: SDKSystemMessage) => {
         opts.onSessionReset?.(id);
@@ -602,7 +606,7 @@ export async function claudeRemote(opts: {
         logger.debug(`${debugPrefix} scheduleNextMessage start fetchId=${fetchId}`);
         void (async () => {
             try {
-                const next = await opts.nextMessage(correlatesResults);
+                const next = await opts.nextMessage(correlatesResults === true);
                 if (responseClosed) return;
                 if (!next) {
                     inputEnded = true;
@@ -730,19 +734,31 @@ export async function claudeRemote(opts: {
                 }
                 message = winner.result.value;
             } else {
-                const next = await (compactResultTimeout
-                    ? Promise.race([pendingResponseNext, compactResultTimeout])
+                const next = await (commandResultTimeout
+                    ? Promise.race([pendingResponseNext, commandResultTimeout])
                     : pendingResponseNext);
                 if (next === null) {
-                    cancelCompactResultTimeout();
-                    if (compactState.active) {
-                        timedOutCompactUuids.add(compactState.active.uuid);
-                        pushedUuids.delete(compactState.active.uuid);
+                    cancelCommandResultTimeout();
+                    const clear = clearState.active;
+                    const pending = clear ?? compactState.active;
+                    if (pending) {
+                        timedOutCommand = { uuid: pending.uuid, command: clear ? 'clear' : 'compact' };
+                        pushedUuids.delete(pending.uuid);
                     }
+                    const rotatedId = clear ? getClearRotation(clear) : undefined;
+                    clearState.active = null;
                     compactState.active = null;
+                    correlatesResults = false;
                     opts.onResultAccepted?.();
                     updateThinking(false);
-                    await opts.onReady('📦 Claude did not identify the /compact result');
+                    if (rotatedId) {
+                        bindClearSession(rotatedId, clear?.init);
+                        await opts.onReady('Context was reset', undefined, 0);
+                    } else {
+                        await opts.onReady(clear
+                            ? 'Claude did not identify the /clear result'
+                            : '📦 Claude did not identify the /compact result');
+                    }
                     scheduleNextMessage();
                     continue;
                 }
@@ -760,13 +776,9 @@ export async function claudeRemote(opts: {
             );
             logger.debugLargeJson(`[claudeRemote] Message ${message.type}`, message);
 
-            if (message.type === 'result') {
-                let resultUuid = message.user_message_uuid;
-                if (resultUuid == null && message.local_command === 'compact') {
-                    resultUuid = timedOutCompactUuids.values().next().value;
-                    if (typeof resultUuid === 'string' && compactState.active) startCompactResultTimeout();
-                }
-                if (typeof resultUuid === 'string' && timedOutCompactUuids.delete(resultUuid)) continue;
+            if (timedOutCommand && isCommandResult(message, timedOutCommand.uuid, timedOutCommand.command, false)) {
+                timedOutCommand = null;
+                continue;
             }
 
             // Autonomous rounds (background tasks, scheduled follow-ups) stream
@@ -796,9 +808,9 @@ export async function claudeRemote(opts: {
                 clear.init = message as SDKSystemMessage;
                 continue;
             }
-            const clearSessionId = clear ? clear.init?.session_id ?? opts.getClearHookSessionId?.() : undefined;
+            const clearSessionId = clear ? getClearRotation(clear) : undefined;
             const isClearResult = clear !== null && isCommandResult(message, clear.uuid, 'clear',
-                clearSessionId !== undefined && clearSessionId !== clear.previousSessionId && message.session_id === clearSessionId);
+                clearSessionId !== undefined && message.session_id === clearSessionId);
 
             const compactMetadata =
                 message.type === 'system' && message.subtype === 'compact_boundary'
@@ -809,7 +821,7 @@ export async function claudeRemote(opts: {
             // tok/s fields for it while autonomous round results stay unmarked.
             const compact = compactState.active;
             const isCompactTurnResult = compact !== null
-                && isCommandResult(message, compact.uuid, 'compact', compact.sawCompactSignal && timedOutCompactUuids.size === 0);
+                && isCommandResult(message, compact.uuid, 'compact', compact.sawCompactSignal);
             if (!isClearResult && !isManualCompactBoundaryMessage(message) && !isCompactEchoMessage(message)) {
                 opts.onMessage(isCompactTurnResult ? { ...message, hapi_compact_turn: true } : message);
             }
@@ -919,9 +931,15 @@ export async function claudeRemote(opts: {
             // Handle result messages
             if (message.type === 'result') {
                 resultSeq += 1;
-                correlatesResults ||= typeof message.user_message_uuid === 'string' || typeof message.local_command === 'string';
+                if (correlatesResults === null && (typeof message.user_message_uuid === 'string' || typeof message.local_command === 'string')) {
+                    correlatesResults = true;
+                }
                 if (clear) {
-                    if (!isClearResult) continue;
+                    if (!isClearResult) {
+                        waitForCommandResult(message);
+                        continue;
+                    }
+                    cancelCommandResultTimeout();
                     clearState.active = null;
                     pushedUuids.delete(clear.uuid);
                     opts.onResultAccepted?.();
@@ -938,9 +956,7 @@ export async function claudeRemote(opts: {
                     continue;
                 }
                 if (compact && !isCompactTurnResult) {
-                    if (!compact.initial && message.user_message_uuid == null && message.local_command == null) {
-                        startCompactResultTimeout();
-                    }
+                    if (!compact.initial) waitForCommandResult(message);
                     continue;
                 }
                 if (resultSeq === 1 && specialCommand.type === null && initial) {
@@ -965,7 +981,7 @@ export async function claudeRemote(opts: {
                 );
 
                 if (compact) {
-                    cancelCompactResultTimeout();
+                    cancelCommandResultTimeout();
                     const sessionId = currentSessionId;
                     const baseline = compact.baseline;
                     const failed = (!compact.sawCompactSignal && !compact.sawCompactingStatus)
@@ -1049,7 +1065,7 @@ export async function claudeRemote(opts: {
         }
     } finally {
         closeSteering();
-        cancelCompactResultTimeout();
+        cancelCommandResultTimeout();
         const clearInit = clearState.active?.init;
         if (clearInit?.session_id) {
             opts.onResultAccepted?.();
