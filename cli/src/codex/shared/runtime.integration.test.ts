@@ -149,6 +149,18 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             metadataFailure.mockRestore();
             expect(second.runtime.sessions[original.sessionId].active).toBe(true);
             await expect(concurrent.request('thread/queue/start', { threadId })).rejects.toThrow('tier confirmation');
+            let rejectSubscription = true;
+            const subscriptionFailure = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
+                if (rejectSubscription && method === 'thread/resume' && !clients.includes(this) && record(params).threadId === threadId && record(params).excludeTurns === true) {
+                    rejectSubscription = false;
+                    return Promise.reject(new Error('fixture control subscription unavailable'));
+                }
+                return originalNativeRequest.call(this, method, params) as Promise<T>;
+            });
+            extraSpies.push(subscriptionFailure);
+            await expect(second.client.request('thread/resume', { threadId, excludeTurns: true })).rejects.toThrow('fixture control subscription unavailable');
+            subscriptionFailure.mockRestore();
+            await expect(concurrent.request('thread/settings/update', { threadId, serviceTier: null })).rejects.toThrow('initialization is pending');
             const response = await second.client.request<{ serviceTier: string }>('thread/resume', { threadId, excludeTurns: true });
             const third = await start();
             expect(response.serviceTier).toBe('priority');
@@ -243,10 +255,11 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             expect((await third.client.request<{ serviceTier: string }>('thread/resume', { threadId, excludeTurns: true })).serviceTier).toBe('priority');
             expect(state.sessions.get(original.sessionId)?.metadata.codexServiceTierExplicit).toBe(true);
             // Re-import selected Ultrafast in HAPI while the native snapshot still stores Fast.
-            state.sessions.get(unsupportedSid)!.serviceTier = 'ultrafast';
-            state.sessions.get(unsupportedSid)!.metadata.codexServiceTierExplicit = true;
+            state.sessions.get(unsupportedSid)!.serviceTier = 'fast';
+            state.sessions.get(unsupportedSid)!.metadata.codexPendingServiceTier = 'ultrafast';
             const resumed = await third.client.request<{ serviceTier: string }>('thread/resume', { threadId: unsupported.thread.id, model: 'gpt-6.1-sol', excludeTurns: true });
             expect(resumed.serviceTier).toBe('default');
+            expect(state.sessions.get(unsupportedSid)?.metadata.codexPendingServiceTier).toBeUndefined();
             // Persisted recovery state must fence input before a cold bind completes.
             state.sessions.get(childSid)!.metadata.codexTierConfirmationPending = true;
             state.sessions.get(childSid)!.metadata.codexServiceTierExplicit = true;

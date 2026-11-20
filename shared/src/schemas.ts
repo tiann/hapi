@@ -227,6 +227,7 @@ export const MetadataSchema = z.object({
     codexSessionId: z.string().optional(),
     // Distinguish a HAPI tier override from the effective native configuration.
     codexServiceTierExplicit: z.boolean().optional(),
+    codexPendingServiceTier: z.enum(['standard', 'fast', 'ultrafast']).optional(),
     codexTierConfirmationPending: z.boolean().optional(),
     codexProviderScopedCatalog: z.boolean().optional(),
     // A bridge to an externally owned app-server, never an owned cold-resume target.

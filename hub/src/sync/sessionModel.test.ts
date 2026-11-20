@@ -5543,10 +5543,14 @@ it.each(['ultrafast', 'standard'])('retains explicit %s on re-import of an inher
         }, null, 'default')
         engine.getOrCreateMachine('machine-1', { host: 'localhost', platform: 'linux', happyCliVersion: '0.36.5' }, null, 'default')
         engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
-        engine.handleSessionAlive({ sid: session.id, time: Date.now(), serviceTier: selected })
+        engine.handleSessionAlive({ sid: session.id, time: Date.now(), serviceTier: 'fast' })
         engine.handleSessionEnd({ sid: session.id, time: Date.now() })
         await engine.applySessionConfig(session.id, { serviceTier: selected })
-        expect(store.sessions.getSession(session.id)?.metadata).toMatchObject({ codexServiceTierExplicit: true })
+        expect(store.sessions.getSession(session.id)).toMatchObject({
+            serviceTier: 'fast',
+            metadata: { codexServiceTierExplicit: false, codexPendingServiceTier: selected },
+        })
+        expect(engine.getSession(session.id)).toMatchObject({ serviceTier: 'fast' })
         let tier: unknown
         ;(engine as any).rpcGateway.spawnSession = async (...args: unknown[]) => { tier = args[11]; return { type: 'success', sessionId: session.id } }
         ;(engine as any).waitForSessionActive = async () => true

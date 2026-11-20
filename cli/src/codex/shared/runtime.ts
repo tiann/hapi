@@ -18,7 +18,7 @@ import { SharedCodexRoot } from './root';
 import { buildForkSessionSummary } from '@hapi/protocol';
 
 export type RuntimeReady = { sessionId: string; runtime: CodexRuntimeRecord };
-type Reservation = { root: SharedCodexRoot; resumeId?: string; serviceTierExplicit?: boolean; requestedUltrafast?: boolean; downgraded?: boolean };
+type Reservation = { root: SharedCodexRoot; resumeId?: string; serviceTierExplicit?: boolean; requestedUltrafast?: boolean; downgraded?: boolean; rootBound?: boolean; controlSubscribed?: boolean };
 
 function gitInfo(cwd: string): { sha: string | null; branch: string | null; originUrl: string | null } {
     const git = (...args: string[]) => {
@@ -78,7 +78,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     const reservations = new Map<string, Reservation>();
     const pendingAdmission = new Set<string>();
     const resumingThreads = new Set<string>();
-    const retryableBindings = new Map<string, Pick<Reservation, 'root' | 'serviceTierExplicit' | 'requestedUltrafast' | 'downgraded'>>();
+    const retryableBindings = new Map<string, Reservation>();
     const nativeTurns = new Map<string, { root: SharedCodexRoot; params: Record<string, unknown>; explicitTier: boolean; fallbackNotice?: string }>();
     const runtime: CodexRuntimeRecord = { id, pid: process.pid, marker: getProcessStartMarker(process.pid) ?? '',
         endpoint: '', command: command.command, args: command.args, codexHome: home, hub: configuration.apiUrl, authHash: runtimeAuthHash(), sessions: {} };
@@ -164,6 +164,9 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         ending.add(root);
         try { if (nativeArchive) await root.client.request('thread/archive', { threadId: root.threadId }); } catch (error) { ending.delete(root); throw error; }
         roots.delete(root.threadId);
+        retryableBindings.delete(root.threadId);
+        resumingThreads.delete(root.threadId);
+        pendingAdmission.delete(root.threadId);
         nativeSettings.delete(root.threadId);
         runtime.sessions[root.session.sessionId].active = false; await persist();
         // Let the RPC acknowledgement leave both gateway and hub sockets before detach.
@@ -220,20 +223,23 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== root.session.sessionId); await persist();
     };
     const reserve = async (root: SharedCodexRoot, threadId: string) => withThreadOwnership(home, threadId, id, () => reserveRecord(root, threadId));
-    const bind = async (root: SharedCodexRoot, response: Record<string, unknown>, subscribe: boolean, initialOptions?: SharedLaunchOptions, freshThread = false, serviceTierExplicit?: boolean, requestedUltrafast = false, downgraded = false) => {
+    const bind = async (root: SharedCodexRoot, response: Record<string, unknown>, subscribe: boolean, initialOptions?: SharedLaunchOptions, freshThread = false, serviceTierExplicit?: boolean, requestedUltrafast = false, downgraded = false, resume?: Reservation) => {
         assertRunning();
         const threadId = string(record(response.thread).id);
         if (!threadId) throw new Error('Codex lifecycle response has no thread ID');
-        if (requestedUltrafast || downgraded || root.session.getMetadata()?.codexTierConfirmationPending === true) pendingAdmission.add(threadId);
+        if (resume || requestedUltrafast || downgraded || root.session.getMetadata()?.codexTierConfirmationPending === true) pendingAdmission.add(threadId);
         const reserved = runtime.sessions[root.session.sessionId];
         if (reserved && reserved.threadId !== threadId) throw new Error('Codex retargeted a reserved thread');
         if (!reserved) await reserve(root, threadId);
-        // No fake user turn/name. Metadata write materializes an empty legacy rollout for native resume.
-        await control.request('thread/metadata/update', { threadId, gitInfo: gitInfo(string(record(response.thread).cwd) ?? root.bootstrap.workingDirectory) });
-        assertRunning();
-        if (requestedUltrafast || downgraded || root.session.getMetadata()?.codexTierConfirmationPending === true) root.beginTierConfirmation();
-        roots.set(threadId, root);
-        await root.bind(threadId, response, subscribe);
+        if (!resume?.rootBound) {
+            // Metadata write materializes an empty legacy rollout for native resume.
+            await control.request('thread/metadata/update', { threadId, gitInfo: gitInfo(string(record(response.thread).cwd) ?? root.bootstrap.workingDirectory) });
+            assertRunning();
+            if (requestedUltrafast || downgraded || root.session.getMetadata()?.codexTierConfirmationPending === true) root.beginTierConfirmation();
+            roots.set(threadId, root);
+            await root.bind(threadId, response, subscribe);
+            if (resume) resume.rootBound = true;
+        }
         // A thread this runtime created (thread/start) starts from zero
         // cumulative usage: seed before activate() opens the input gates, or
         // a prompt released at session-ready starts the first turn with a
@@ -242,9 +248,11 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         // usage replay.
         if (freshThread) root.seedFreshUsage();
         assertRunning();
-        // Cold-resumed threads predate the control connection's automatic
-        // new-thread subscription. Subscribe once without changing settings.
+        // If this fails after binding, retry only the subscription. Rebinding
+        // would replace the queue and replay state on an already attached root.
         await control.request('thread/resume', { threadId, excludeTurns: true });
+        if (resume) resume.controlSubscribed = true;
+        if (ending.has(root)) throw new Error('Codex thread was archived during binding');
         let tierConfirmationPending = false;
         let standardConfirmed = false;
         if (requestedUltrafast || downgraded) {
@@ -331,6 +339,9 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         if (request.id === undefined) throw new Error('Lifecycle operations require a JSON-RPC request ID');
         if (params.history || params.path) throw new Error('Use a native thread ID to resume through HAPI');
         const threadId = string(params.threadId);
+        if (request.method === 'thread/resume' && threadId && resumingThreads.has(threadId)) {
+            throw new Error('Thread is already being attached in this runtime; retry after it is ready');
+        }
         let existing = threadId ? roots.get(threadId) : undefined;
         if (threadId && !existing) {
             let candidate = threadId; const visited = new Set<string>();
@@ -351,34 +362,36 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         const cwd = string(params.cwd) ?? string(savedThread?.cwd) ?? existing?.bootstrap.workingDirectory ?? launch.cwd;
         // Loaded native resume rejoins a thread and ignores setting overrides.
         // Actual live changes go through thread/settings/update above.
-        if (request.method === 'thread/resume' && existing) return { ...request, params: existing.config(params) };
+        const accepted = request.method === 'thread/resume' && threadId ? retryableBindings.get(threadId) : undefined;
+        if (request.method === 'thread/resume' && existing && !accepted) return { ...request, params: existing.config(params) };
         if (threadId) await withThreadOwnership(home, threadId, id, async () => {});
         const root = request.method === 'thread/resume' && threadId
             ? await withThreadOwnership(home, threadId, id, async () => {
-                if (resumingThreads.has(threadId) || roots.has(threadId)) throw new Error('Thread is already being attached in this runtime; retry after it is ready');
+                if (resumingThreads.has(threadId) || roots.has(threadId) && !accepted) throw new Error('Thread is already being attached in this runtime; retry after it is ready');
                 resumingThreads.add(threadId);
                 try {
-                    const root = retryableBindings.get(threadId)?.root ?? await prepare(cwd, await findColdBinding(home, threadId));
+                    if (accepted) return accepted.root;
+                    const root = await prepare(cwd, await findColdBinding(home, threadId));
                     await reserveRecord(root, threadId); return root;
                 } catch (error) { resumingThreads.delete(threadId); throw error; }
             }) : await prepare(cwd, undefined, request.method === 'thread/fork' ? existing : undefined);
         try {
-            const accepted = request.method === 'thread/resume' && threadId ? retryableBindings.get(threadId) : undefined;
             if (accepted) {
                 // Rejoin the already accepted native resume, retaining its MCP
                 // bridge and explicit intent. Loaded native threads ignore new
                 // resume overrides; subsequent edits use settings/update.
-                reservations.set(key(connection, request), { ...accepted, root, resumeId: threadId });
+                reservations.set(key(connection, request), accepted);
                 return { ...request, params: root.config(params) };
             }
             if (request.method !== 'thread/resume') {
                 runtime.pendingCreations = [...runtime.pendingCreations ?? [], root.session.sessionId]; await persist();
             }
             const resolved = request.method === 'thread/resume'
-                ? await inheritedResumeTier(control, params, root.session.getMetadata()?.codexServiceTierExplicit, cwd, root.bootstrap.sessionInfo.serviceTier) : params;
+                ? await inheritedResumeTier(control, params, root.session.getMetadata()?.codexServiceTierExplicit, cwd, root.bootstrap.sessionInfo.serviceTier, root.session.getMetadata()?.codexPendingServiceTier) : params;
             const tier = await resolveUltrafastLaunch(control, request.method!, resolved, cwd, catalogProvider, savedThread);
             reservations.set(key(connection, request), { root, resumeId: request.method === 'thread/resume' ? threadId : undefined,
-                serviceTierExplicit: params.serviceTier !== undefined ? true : request.method === 'thread/resume' ? undefined : false,
+                serviceTierExplicit: params.serviceTier !== undefined || request.method === 'thread/resume' && root.session.getMetadata()?.codexPendingServiceTier !== undefined
+                    ? true : request.method === 'thread/resume' ? undefined : false,
                 requestedUltrafast: tier.params.serviceTier === 'ultrafast', downgraded: tier.downgraded });
             if (request.method === 'thread/resume' && threadId && (tier.downgraded || tier.params.serviceTier === 'ultrafast' || root.session.getMetadata()?.codexTierConfirmationPending === true)) pendingAdmission.add(threadId);
             return { ...request, params: root.config({ ...tier.params, ...(request.method === 'thread/fork' ? { deferGoalContinuation: true } : {}) }) };
@@ -413,15 +426,15 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 return;
             }
             try {
-                await bind(reservation.root, record(response.result), true, undefined, request.method === 'thread/start', reservation.serviceTierExplicit, reservation.requestedUltrafast, reservation.downgraded);
+                await bind(reservation.root, record(response.result), true, undefined, request.method === 'thread/start', reservation.serviceTierExplicit, reservation.requestedUltrafast, reservation.downgraded, reservation.resumeId ? reservation : undefined);
             } catch (error) {
-                // Before root.bind, all resources can be retained unchanged for
-                // retry, including the MCP bridge the native thread accepted.
-                // Later partial/unknown outcomes keep their existing quarantine.
-                if (!reservation.resumeId || reservation.root.threadId) throw error;
-                retryableBindings.set(reservation.resumeId, { root: reservation.root,
-                    serviceTierExplicit: reservation.serviceTierExplicit,
-                    requestedUltrafast: reservation.requestedUltrafast, downgraded: reservation.downgraded });
+                // Resume before root.bind or after it completed, never during
+                // a partial root bind or after activation has begun.
+                if (!reservation.resumeId || ending.has(reservation.root) || reservation.controlSubscribed || reservation.root.threadId && !reservation.rootBound) {
+                    if (reservation.resumeId) retryableBindings.delete(reservation.resumeId);
+                    throw error;
+                }
+                retryableBindings.set(reservation.resumeId, reservation);
                 pendingAdmission.add(reservation.resumeId);
                 await persist();
                 resumingThreads.delete(reservation.resumeId);
@@ -518,7 +531,8 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 const root = await prepare(coldResumeDirectory(options, launch, string(thread.cwd)), existing);
                 await reserveRecord(root, threadId); return root;
             });
-            const resumeParams = await inheritedResumeTier(control, launch.threadParams, root.session.getMetadata()?.codexServiceTierExplicit, root.bootstrap.workingDirectory, root.bootstrap.sessionInfo.serviceTier);
+            const metadata = root.session.getMetadata();
+            const resumeParams = await inheritedResumeTier(control, launch.threadParams, metadata?.codexServiceTierExplicit, root.bootstrap.workingDirectory, root.bootstrap.sessionInfo.serviceTier, metadata?.codexPendingServiceTier);
             const resolved = await resolveUltrafastLaunch(control, 'thread/resume', { ...resumeParams, cwd: root.bootstrap.workingDirectory }, root.bootstrap.workingDirectory, catalogProvider, thread);
             const downgraded = resolved.downgraded;
             const params = root.config({ ...resolved.params, threadId, excludeTurns: true });
@@ -535,7 +549,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 await root.client.request('thread/unarchive', { threadId });
                 response = record(await root.client.request('thread/resume', params));
             }
-            await bind(root, response, false, options, false, launch.threadParams.serviceTier !== undefined ? true : undefined, resolved.params.serviceTier === 'ultrafast', downgraded);
+            await bind(root, response, false, options, false, launch.threadParams.serviceTier !== undefined || metadata?.codexPendingServiceTier !== undefined ? true : undefined, resolved.params.serviceTier === 'ultrafast', downgraded);
         } else root = await create('thread/start', { ...launch.threadParams, cwd: launch.cwd }, undefined, options);
         assertRunning();
         onReady?.({ sessionId: root.session.sessionId, runtime });

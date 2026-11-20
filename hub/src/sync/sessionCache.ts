@@ -1209,7 +1209,7 @@ export class SessionCache {
             collaborationMode?: CodexCollaborationMode
             copilotAgentMode?: CopilotAgentMode
         },
-        options?: { explicitCodexTier?: boolean }
+        options?: { deferCodexTier?: boolean }
     ): void {
         const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
         if (!session) {
@@ -1271,24 +1271,26 @@ export class SessionCache {
             this.markRuntimeConfigUpdated(sessionId, 'effort', appliedAt)
         }
         if (config.serviceTier !== undefined) {
-            const explicitCodexTier = options?.explicitCodexTier === true && session.metadata?.flavor === 'codex'
-            if (config.serviceTier !== session.serviceTier || explicitCodexTier) {
+            const pendingCodexTier = options?.deferCodexTier === true && session.metadata?.flavor === 'codex'
+            if (config.serviceTier !== session.serviceTier || pendingCodexTier) {
                 const updated = this.store.sessions.setSessionServiceTier(sessionId, config.serviceTier, session.namespace, {
-                    touchUpdatedAt: false, explicitCodexTier
+                    touchUpdatedAt: false, pendingCodexTier
                 })
                 if (!updated) {
                     throw new Error('Failed to update session service tier')
                 }
-                if (explicitCodexTier) {
+                if (pendingCodexTier) {
                     const stored = this.store.sessions.getSession(sessionId)
                     const parsed = MetadataSchema.safeParse(stored?.metadata)
-                    if (!stored || !parsed.success) throw new Error('Failed to load explicit Codex tier intent')
+                    if (!stored || !parsed.success) throw new Error('Failed to load pending Codex tier')
                     session.metadata = parsed.data
                     session.metadataVersion = stored.metadataVersion
                 }
             }
-            session.serviceTier = config.serviceTier
-            this.markRuntimeConfigUpdated(sessionId, 'serviceTier', appliedAt)
+            if (!pendingCodexTier) {
+                session.serviceTier = config.serviceTier
+                this.markRuntimeConfigUpdated(sessionId, 'serviceTier', appliedAt)
+            }
         }
         if (config.collaborationMode !== undefined) {
             session.collaborationMode = config.collaborationMode

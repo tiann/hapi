@@ -362,7 +362,12 @@ export class SharedCodexRoot {
             || !this.tierConfirmationResolved && this.session.getMetadata()?.codexTierConfirmationPending === true;
         if (deferInput) this.tierConfirmationResolved = false;
         this.serviceTierExplicit = serviceTierExplicit ?? (options.serviceTier !== undefined || this.session.getMetadata()?.codexServiceTierExplicit === true);
-        this.session.updateMetadata(metadata => ({ ...metadata, codexServiceTierExplicit: this.serviceTierExplicit, codexTierConfirmationPending: this.tierConfirmationPending }));
+        this.session.updateMetadata(metadata => ({
+            ...metadata,
+            codexServiceTierExplicit: this.serviceTierExplicit,
+            codexTierConfirmationPending: this.tierConfirmationPending,
+            codexPendingServiceTier: this.tierConfirmationPending ? metadata.codexPendingServiceTier : undefined
+        }));
         // Restored input cannot run before the cold-resume settings are applied.
         if (!this.host.attached && this.tierConfirmationPending) this.pendingLaunchCollaborationMode = options.collaborationMode;
         else if (!this.host.attached) {
@@ -733,7 +738,7 @@ export class SharedCodexRoot {
     }
     private markTierExplicit(): void {
         this.serviceTierExplicit = true;
-        this.session.updateMetadata(metadata => ({ ...metadata, codexServiceTierExplicit: true }));
+        this.session.updateMetadata(metadata => ({ ...metadata, codexServiceTierExplicit: true, codexPendingServiceTier: undefined }));
     }
     private completeTierConfirmation(): void {
         this.tierConfirmationResolved = true;

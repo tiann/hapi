@@ -125,7 +125,7 @@ export class SessionStore {
         return setSessionEffort(this.db, id, effort, namespace, options)
     }
 
-    setSessionServiceTier(id: string, serviceTier: string | null, namespace: string, options?: { touchUpdatedAt?: boolean; explicitCodexTier?: boolean }): boolean {
+    setSessionServiceTier(id: string, serviceTier: string | null, namespace: string, options?: { touchUpdatedAt?: boolean; pendingCodexTier?: boolean }): boolean {
         return setSessionServiceTier(this.db, id, serviceTier, namespace, options)
     }
 

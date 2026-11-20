@@ -4295,7 +4295,7 @@ export class SyncEngine {
             // For inactive sessions, update the in-memory cache directly without
             // an RPC call — the CLI is not running yet. The updated value will be
             // passed to the spawned process when the session is resumed.
-            this.sessionCache.applySessionConfig(sessionId, config, { explicitCodexTier: config.serviceTier !== undefined })
+            this.sessionCache.applySessionConfig(sessionId, config, { deferCodexTier: true })
             return
         }
 
@@ -5629,7 +5629,9 @@ export class SyncEngine {
                 resumeToken,
                 session.effort ?? undefined,
                 preferredPermissionMode,
-                flavor === 'codex' && session.metadata?.codexServiceTierExplicit === false ? undefined : session.serviceTier ?? undefined,
+                flavor === 'codex'
+                    ? session.metadata?.codexPendingServiceTier ?? (session.metadata?.codexServiceTierExplicit === false ? undefined : session.serviceTier ?? undefined)
+                    : session.serviceTier ?? undefined,
                 access.sessionId,
                 session.collaborationMode ?? undefined,
                 session.copilotAgentMode ?? undefined,
