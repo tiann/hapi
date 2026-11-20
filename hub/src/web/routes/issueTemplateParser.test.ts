@@ -317,6 +317,15 @@ describe('parseIssueTemplateConfig', () => {
         expect(parseIssueTemplateConfig('contact_links: []').blankIssuesEnabled).toBe(true)
         expect(parseIssueTemplateConfig(': : not yaml {{{').blankIssuesEnabled).toBe(true)
     })
+
+    // valid distinguishes "parsed, nothing relevant in it" from "did not
+    // parse at all" (review finding, tiann/hapi#2147, follow-up) — the
+    // fail-open blankIssuesEnabled default is right either way, but only
+    // the former is a real local override for inheritance-eligibility purposes.
+    it('reports valid: false only for a genuine parse failure, not an absent key', () => {
+        expect(parseIssueTemplateConfig('contact_links: []').valid).toBe(true)
+        expect(parseIssueTemplateConfig(': : not yaml {{{').valid).toBe(false)
+    })
 })
 
 // Regression (bot review, hapi#238, follow-up): templateId alone only

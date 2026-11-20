@@ -295,13 +295,20 @@ export function parseLegacyIssueTemplate(id: string, raw: string): IssueTemplate
  * `.github/ISSUE_TEMPLATE/config.yml`'s `blank_issues_enabled` flag.
  * Defaults to allowed on any parse failure — a malformed config.yml should
  * never be the reason creation is blocked entirely.
+ *
+ * `valid` added (review finding, tiann/hapi#2147, follow-up): that same
+ * fail-open default is right for "should this repo's own blank-issue
+ * check pass," but wrong for "does this count as the repo's own local
+ * override of the owner's .github inheritance policy" — an unparseable
+ * file provides no actual configuration to override anything with, so
+ * `repoHasLocalIssueTemplateCoverage` needs to tell the two apart.
  */
-export function parseIssueTemplateConfig(raw: string): { blankIssuesEnabled: boolean } {
+export function parseIssueTemplateConfig(raw: string): { blankIssuesEnabled: boolean; valid: boolean } {
     try {
         const doc = parseYaml(raw)
         const obj = asRecord(doc)
-        return { blankIssuesEnabled: obj.blank_issues_enabled !== false }
+        return { blankIssuesEnabled: obj.blank_issues_enabled !== false, valid: true }
     } catch {
-        return { blankIssuesEnabled: true }
+        return { blankIssuesEnabled: true, valid: false }
     }
 }
