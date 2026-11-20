@@ -2617,9 +2617,7 @@ export function NewSession(props: {
                 onChange={setCopilotAgentMode}
             />
             <FastModeSelector
-                visible={showCodexFastMode || showCodexUltrafastMode || importingCodex || (agent === 'codex' && (
-                    Boolean(codexModelsState.error) || selectedTier === 'ultrafast' || selectedTier !== 'default' && !codexModelsState.isLoading
-                ))}
+                visible={agent === 'codex'}
                 fastAvailable={showCodexFastMode}
                 ultrafastAvailable={showCodexUltrafastMode}
                 keepExistingTier={importingCodex}

@@ -32,6 +32,12 @@ function gitInfo(cwd: string): { sha: string | null; branch: string | null; orig
     }
     return { sha: git('rev-parse', 'HEAD'), branch: git('symbolic-ref', '--short', 'HEAD'), originUrl };
 }
+
+function rejoinThreadParams(params: Record<string, unknown>): Record<string, unknown> {
+    // Codex can rebuild an idle thread when an override differs and all
+    // subscribers have disconnected. Rejoin the already accepted settings.
+    return { threadId: params.threadId, excludeTurns: params.excludeTurns };
+}
 async function freePort(): Promise<number> {
     const server = createServer();
     await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
@@ -393,7 +399,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         const localRoot = threadId ? roots.get(threadId) : undefined;
         if (request.method === 'thread/resume' && threadId && localRoot?.isActivated && !ending.has(localRoot)
             && !resumingThreads.has(threadId) && !retryableBindings.has(threadId)) {
-            return { ...request, params: localRoot.config(params) };
+            return { ...request, params: rejoinThreadParams(params) };
         }
         if (request.method === 'thread/resume' && threadId && resumingThreads.has(threadId)) {
             throw new Error('Thread is already being attached in this runtime; retry after it is ready');
@@ -416,7 +422,6 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         const savedThread = threadId && (request.method === 'thread/fork' || request.method === 'thread/resume' && !existing)
             ? record(record(await control.request('thread/read', { threadId, includeTurns: false })).thread) : undefined;
         const cwd = string(params.cwd) ?? string(savedThread?.cwd) ?? existing?.bootstrap.workingDirectory ?? launch.cwd;
-        // Loaded native resume rejoins a thread and ignores setting overrides.
         // Actual live changes go through thread/settings/update above.
         if (threadId && request.method !== 'thread/resume') await withThreadOwnership(home, threadId, id, async () => {});
         const claim = request.method === 'thread/resume' && threadId
@@ -437,14 +442,12 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 } catch (error) { resumingThreads.delete(threadId); throw error; }
             }) : { root: await prepare(cwd, undefined, request.method === 'thread/fork' ? existing : undefined) };
         const { root, accepted } = claim;
-        if (claim.rejoin) return { ...request, params: root.config(params) };
+        if (claim.rejoin) return { ...request, params: rejoinThreadParams(params) };
         try {
             if (accepted) {
-                // Rejoin the already accepted native resume, retaining its MCP
-                // bridge and explicit intent. Loaded native threads ignore new
-                // resume overrides; subsequent edits use settings/update.
+                // Keep the tier intent already checked for this reservation.
                 reservations.set(key(connection, request), accepted);
-                return { ...request, params: root.config(params) };
+                return { ...request, params: rejoinThreadParams(params) };
             }
             if (request.method !== 'thread/resume') {
                 runtime.pendingCreations = [...runtime.pendingCreations ?? [], root.session.sessionId]; await persist();

@@ -197,7 +197,10 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                 }
                 return originalNativeRequest.call(this, method, params) as Promise<T>;
             }); extraSpies.push(metadataFailure);
-            await expect(second.client.request('thread/resume', { threadId, excludeTurns: true, serviceTier: 'priority' })).rejects.toThrow('fixture metadata update unavailable');
+            const interruptedFrontend = new CodexAppServerClient({ endpoint: second.runtime.endpoint, token: second.runtime.token });
+            clients.push(interruptedFrontend); await initializeSharedClient(interruptedFrontend);
+            await expect(interruptedFrontend.request('thread/resume', { threadId, excludeTurns: true, serviceTier: 'priority' })).rejects.toThrow('fixture metadata update unavailable');
+            await interruptedFrontend.disconnect();
             const retainedSession = state.sessions.get(original.sessionId);
             metadataFailure.mockRestore();
             expect(second.runtime.sessions[original.sessionId].active).toBe(true);
@@ -216,7 +219,11 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                 return refresh.call(this);
             });
             extraSpies.push(historyFailure);
-            await expect(second.client.request('thread/resume', { threadId, excludeTurns: true })).rejects.toThrow('fixture history refresh unavailable');
+            const retryFrontend = new CodexAppServerClient({ endpoint: second.runtime.endpoint, token: second.runtime.token });
+            clients.push(retryFrontend); await initializeSharedClient(retryFrontend);
+            await expect(retryFrontend.request('thread/resume', {
+                threadId, excludeTurns: true, serviceTier: 'ultrafast', model: 'gpt-6.1-sol', config: { service_tier: 'ultrafast' }
+            })).rejects.toThrow('fixture history refresh unavailable');
             historyFailure.mockRestore();
             expect(second.runtime.sessions[original.sessionId].active).toBe(true);
             let rejectSubscription = true;
@@ -238,6 +245,9 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                 client.request<{ serviceTier: string }>('thread/resume', { threadId, excludeTurns: true })));
             const response = attempts.find(result => result.status === 'fulfilled');
             expect(response).toMatchObject({ status: 'fulfilled', value: { serviceTier: 'priority' } });
+            expect(await retryFrontend.request('thread/resume', { threadId, excludeTurns: true })).toMatchObject({
+                model: 'gpt-6-astra', serviceTier: 'priority'
+            });
             for (const attempt of attempts) {
                 if (attempt.status === 'rejected') expect(attempt.reason).toMatchObject({ message: expect.stringContaining('already being attached') });
             }
