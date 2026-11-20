@@ -161,4 +161,39 @@ describe('mergeSessions - externalRefs preservation', () => {
         expect(cache.getSession(oldSession.id)?.metadata?.externalRefs).toHaveLength(17)
         expect(cache.getSession(newSession.id)?.metadata?.externalRefs).toHaveLength(17)
     })
+
+    // Review finding (tiann/hapi#2147, follow-up): the over-limit union
+    // used to abort the WHOLE metadata merge for this round, not just
+    // externalRefs — a genuinely mergeable field (here, `name`) was
+    // silently skipped too, even though nothing about it had anything to
+    // do with the ref cap.
+    it('still carries over other metadata fields when only the ref union exceeds the cap', async () => {
+        const { cache } = setup()
+        const oldSession = cache.getOrCreateSession(
+            'agent-merge-old-' + Math.random().toString(36).slice(2, 8),
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex', name: 'Old session name' },
+            null,
+            'default'
+        )
+        const newSession = cache.getOrCreateSession(
+            'agent-merge-new-' + Math.random().toString(36).slice(2, 8),
+            { path: '/tmp/project', host: 'localhost', flavor: 'codex' },
+            null,
+            'default'
+        )
+
+        for (let i = 1; i <= 17; i += 1) {
+            await cache.linkIssue(oldSession.id, {
+                kind: 'github_issue', url: `https://github.com/acme/old/issues/${i}`, repo: 'acme/old', number: i, linkedAt: i
+            })
+            await cache.linkIssue(newSession.id, {
+                kind: 'github_issue', url: `https://github.com/acme/new/issues/${i}`, repo: 'acme/new', number: i, linkedAt: i
+            })
+        }
+
+        await cache.mergeSessionHistory(oldSession.id, newSession.id, 'default')
+
+        expect(cache.getSession(newSession.id)?.metadata?.externalRefs).toHaveLength(17)
+        expect(cache.getSession(newSession.id)?.metadata?.name).toBe('Old session name')
+    })
 })

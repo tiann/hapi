@@ -41,7 +41,14 @@ export function mergeSessionMetadataForSessionMerge(
     // (review finding, tiann/hapi#2147, follow-up) — the default 'throw'
     // stays for every other caller, since aborting before anything else
     // has happened loses nothing at all, which trimming never beats.
-    options: { onExternalRefsCapExceeded?: 'throw' | 'trim' } = {}
+    // 'skip' is for mergeSessionMetadataForTransfer's mergeSessionHistory
+    // variant (review finding, tiann/hapi#2147, follow-up): the old row
+    // survives there, so its own refs are never actually lost either way —
+    // but the old throw-based abort also discarded every OTHER field this
+    // function would have merged (summary, worktree, ...), not just
+    // externalRefs. 'skip' leaves externalRefs untouched and lets
+    // everything else merge normally.
+    options: { onExternalRefsCapExceeded?: 'throw' | 'trim' | 'skip' } = {}
 ): unknown | null {
     if (!oldMetadata || typeof oldMetadata !== 'object') {
         return newMetadata
@@ -185,6 +192,16 @@ export function mergeSessionMetadataForSessionMerge(
                     // entries means that one survives; the stalest entry
                     // among everything else is what gets dropped instead.
                     combined = trimExternalRefsToCap(combined, MAX_EXTERNAL_REFS)
+                } else if (options.onExternalRefsCapExceeded === 'skip') {
+                    // The old row survives this merge variant (mergeSessionHistory),
+                    // so its refs are never actually lost either way — but
+                    // throwing here used to abandon every OTHER field this
+                    // function would have merged too (summary, worktree,
+                    // ...), not just externalRefs (review finding,
+                    // tiann/hapi#2147, follow-up). Leaving combined as
+                    // newRefs is a no-op for this one field below, while
+                    // everything else still merges normally.
+                    combined = newRefs
                 } else {
                     throw new ExternalRefsMergeCapExceededError()
                 }
@@ -2909,7 +2926,7 @@ export class SessionCache {
     private mergeSessionMetadata(
         oldMetadata: unknown | null,
         newMetadata: unknown | null,
-        options?: { onExternalRefsCapExceeded?: 'throw' | 'trim' }
+        options?: { onExternalRefsCapExceeded?: 'throw' | 'trim' | 'skip' }
     ): unknown | null {
         return mergeSessionMetadataForSessionMerge(oldMetadata, newMetadata, options)
     }
@@ -2936,29 +2953,32 @@ export class SessionCache {
                 }
                 let merged: unknown | null
                 try {
-                    merged = this.mergeSessionMetadata(oldMetadata, latest.metadata)
+                    // 'skip' for mergeSessionHistory (deleteOldSession:
+                    // false) — review finding, tiann/hapi#2147, follow-up:
+                    // the old row survives there, so its own refs are never
+                    // actually lost either way, but the previous throw-based
+                    // abort also discarded every OTHER field this merge
+                    // would have carried forward (summary, worktree, ...),
+                    // not just externalRefs. mergeSessions (deleteOldSession:
+                    // true) keeps the default 'throw' below — this is the
+                    // EARLY pass, before any of mergeSessionData's other
+                    // side effects, so aborting the whole merge here is
+                    // still free and loses nothing.
+                    merged = this.mergeSessionMetadata(
+                        oldMetadata,
+                        latest.metadata,
+                        options.deleteOldSession ? undefined : { onExternalRefsCapExceeded: 'skip' }
+                    )
                 } catch (error) {
-                    if (error instanceof ExternalRefsMergeCapExceededError) {
-                        if (options.deleteOldSession) {
-                            // The old row is about to be deleted — dropping
-                            // its unique links to stay under the cap would be
-                            // unrecoverable the moment that happens. Abort
-                            // the whole merge instead: both sessions and all
-                            // their links stay intact (recoverable; the
-                            // caller can retry or leave the duplicate).
-                            throw error
-                        }
-                        // mergeSessionHistory: the old row stays alive, so
-                        // its own links are never actually lost — just not
-                        // consolidated into the target this time around. The
-                        // throw also abandons this attempt's other
-                        // carry-forward fields (name, summary, worktree,
-                        // ...) along with externalRefs; acceptable here
-                        // since nothing is destroyed, only a consolidation
-                        // opportunity skipped in this rare (34+ refs) case.
-                        metadataMerged = true
-                        break
-                    }
+                    if (!(error instanceof ExternalRefsMergeCapExceededError)) throw error
+                    // 'skip' above means mergeSessionHistory's own call
+                    // never reaches here — deleteOldSession: true is the
+                    // only case left. The old row is about to be deleted,
+                    // so dropping its unique links to stay under the cap
+                    // would be unrecoverable. Abort the whole merge
+                    // instead: both sessions and all their links stay
+                    // intact (recoverable; the caller can retry or leave
+                    // the duplicate).
                     throw error
                 }
                 if ((merged === null || merged === latest.metadata) && !options.inheritTitleLockFrom) {
