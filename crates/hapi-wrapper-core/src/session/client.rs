@@ -5,7 +5,7 @@ use super::{
 use crate::{
     config::Config,
     rest::Rest,
-    sio::client::{Client as Socket, Connection, Event, ServerAck},
+    sio::client::{Client as Socket, Connection, Event, ServerAck, SessionEvents},
 };
 use futures_util::{future::BoxFuture, FutureExt};
 use serde_json::{json, Value};
@@ -64,7 +64,7 @@ pub struct SessionClient {
     heartbeat_enabled: watch::Sender<bool>,
     closed: watch::Sender<bool>,
     pub(super) filter: Mutex<super::incoming_filter::IncomingFilter>,
-    pub(super) backfill_lock: tokio::sync::Mutex<()>,
+    pub(super) backfill_lock: Arc<tokio::sync::Mutex<()>>,
     pub echoes: Mutex<super::echo::Echoes>,
     pub(super) latest: Mutex<Value>,
     incoming: Mutex<Incoming>,
@@ -97,7 +97,7 @@ impl SessionClient {
             }
         }
         let initially_archived = super::metadata::hub_archived(&session["metadata"]);
-        let (socket, mut rx) = Socket::start_session(
+        let (socket, mut session_events) = SessionEvents::start(
             config.api_url.clone(),
             config.extra_headers.clone(),
             config.cli_api_token.clone(),
@@ -129,7 +129,7 @@ impl SessionClient {
                     version: session[version].as_u64().unwrap_or(0),
                 },
                 id.clone(),
-                socket.clone(),
+                &session_events,
                 latch.clone(),
                 archived.clone(),
             )
@@ -146,7 +146,7 @@ impl SessionClient {
             heartbeat_enabled,
             closed,
             filter: Mutex::default(),
-            backfill_lock: tokio::sync::Mutex::default(),
+            backfill_lock: Arc::default(),
             echoes: Mutex::default(),
             latest: Mutex::new(json!({"thinking":false})),
             incoming: Mutex::default(),
@@ -180,7 +180,7 @@ impl SessionClient {
                     biased;
                     _=closing.changed()=>break,
                     _=heartbeat_control.changed(),if heartbeat.is_some()=>{heartbeat=None;continue},
-                    e=rx.recv()=>match e{Some(e)=>e,None=>break},
+                    e=session_events.recv()=>match e{Some(e)=>e,None=>break},
                     _=async{if let Some(timer)=&mut heartbeat{timer.tick().await;}},if heartbeat.is_some()=>{if let Some(c)=weak.upgrade(){c.alive(true);}else{break} continue}
                 };
                 let Some(client) = weak.upgrade() else { break };
@@ -377,10 +377,10 @@ impl SessionClient {
         let mut attempted = Some(attempted);
         let mut delay = Duration::from_millis(500);
         loop {
+            let result = tokio::select! {biased; _=link.wait_for(|v|v!=current)=>return,_=closed.wait_for(|v|*v)=>return,_=archived.wait_for(|v|*v)=>return,result=Self::backfill(&weak, start_cursor)=>result};
             let Some(client) = weak.upgrade() else {
                 return;
             };
-            let result = tokio::select! {biased; _=link.wait_for(|v|v!=current)=>return,_=closed.wait_for(|v|*v)=>return,_=archived.wait_for(|v|*v)=>return,result=client.backfill(start_cursor)=>result};
             if result.is_ok() && link.get() == current {
                 client.filter.lock().unwrap().finish_backfill();
             }
