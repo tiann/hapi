@@ -139,6 +139,14 @@ describe('startHappyServer skill_lookup', () => {
         ])
     })
 
+    it('keeps the peer tools/list entries byte-identical to the shared definitions', async () => {
+        const mcp = await connect(false)
+        const { tools } = await mcp.listTools()
+        const peerTools = tools.filter((tool) => ['list_peers', 'ping_peer', 'inspect_peer', 'spawn_peer'].includes(tool.name))
+        expect(peerTools).toHaveLength(4)
+        await expect(JSON.stringify(peerTools, null, 2) + '\n').toMatchFileSnapshot('./__snapshots__/peerTools.tools-list.json')
+    })
+
     it('invokes onChangeTitle when change_title succeeds', async () => {
         sendAgentMessage = vi.fn()
         const sessionClient = {

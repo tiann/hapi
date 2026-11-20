@@ -17,6 +17,8 @@ The agent does this through four MCP tools that HAPI adds to the session. The sa
 | `ping_peer` | `hapi ping-peer <id> <message>` | Send a message to another session. |
 | `spawn_peer` | `hapi spawn-peer --dir PATH --name TITLE <message>` | Create a new session and deliver its first message (the remit). |
 
+Scripts and non-Node hosts can also call the MCP tools directly with `hapi peer-tool <tool>`: JSON arguments on stdin, the MCP tool result as JSON on stdout. See [CLI reference](./cli-reference.md#peer-sessions).
+
 Sessions are addressed by id or a unique id prefix (8 characters is usually enough; the full UUID is best). Titles are only labels — the tools and the agent's instructions treat the UUID as the identity, so renaming a session never breaks a reference.
 
 Inside a session, prefer the MCP tools. The shell commands use the CLI's own hub URL and token (`HAPI_API_URL` / `CLI_API_TOKEN`, or `~/.hapi/settings.json` from `hapi auth login`); on a runner that talks to a hub on another host, `list_peers` already works with the session's credentials while `hapi ping-peer --list` needs that configuration. See [Installation → Split hub + remote runner](./installation.md#split-hub-remote-runner-peer-discovery).
@@ -64,7 +66,7 @@ Pass `waitForReply: true` to `ping_peer` or `spawn_peer` and the calling agent c
 - If the task is canceled before it runs, or the peer stops without replying, the caller is told so.
 - HAPI stops waiting after 6 hours and tells the caller to check the peer with `inspect_peer`.
 
-Reply forwarding is MCP-only (no shell flag) and runs inside the calling session's HAPI process: if that process exits first, the reply stays only in the peer session. Pi peers do not report the end of a turn, so the tool returns immediately and asks the caller to check with `inspect_peer` instead.
+Reply forwarding has no `hapi ping-peer` / `hapi spawn-peer` flag. Through MCP it runs inside the calling session's HAPI process: if that process exits first, the reply stays only in the peer session. `hapi peer-tool` hands it to a detached background process and returns at once. Pi peers do not report the end of a turn, so the tool returns immediately and asks the caller to check with `inspect_peer` instead.
 
 ## Spawning peers
 
