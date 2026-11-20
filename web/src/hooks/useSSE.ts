@@ -66,7 +66,11 @@ type VisibilityState = 'visible' | 'hidden'
 
 type ToastEvent = Extract<SyncEvent, { type: 'toast' }>
 
-const HEARTBEAT_STALE_MS = 90_000
+// 60s = two missed heartbeats against the hub's 30s contract, with 2x
+// margin remaining before a healthy-but-quiet connection false-positives.
+// (Previously 90s; shortened to cut worst-case dead air after a FIN-less
+// transport death by a third.)
+const HEARTBEAT_STALE_MS = 60_000
 // The hub sends a heartbeat every 30s. When a suspended mobile tab returns to
 // the foreground, the connection may have been silently killed (no FIN/RST
 // ever reaches the browser), so a single missed heartbeat interval is already
@@ -389,6 +393,17 @@ export function useSSE(options: {
                 return
             }
             reconnectRequested = true
+            // A connect-timeout means the hub was merely slow to accept the
+            // handshake (proxied entry points can exceed 10s under load).
+            // Escalating the backoff ladder for a hub that never reached
+            // OPEN converts "slow" into "effectively down" — the retry
+            // counter is reserved for connections that actually established
+            // and then dropped, where repeated failure genuinely signals
+            // degradation. Reset the counter so the next attempt starts
+            // fresh with immediate retry.
+            if (reason === 'connect-timeout') {
+                reconnectAttemptRef.current = 0
+            }
             notifyDisconnect(reason)
             eventSource.close()
             if (eventSourceRef.current === eventSource) {
@@ -737,6 +752,18 @@ export function useSSE(options: {
                 if (event.type === 'message-cancelled') {
                     removeOptimisticMessage(event.sessionId, event.messageId)
                 }
+                // Failover ingestion: the global `all` subscription receives
+                // message-received for every session. When this event targets
+                // the session this hook is scoped to (the one the user has
+                // open), the session-scoped connection normally drives the
+                // live window. But if that connection is dark (reconnect gap,
+                // independent failure), ingest here too — mergeIntoWindow's
+                // position-cursor dedup makes double delivery from both
+                // connections a no-op, so this only fills the gap, never
+                // duplicates.
+                if (event.type === 'message-received' && subscription?.sessionId === event.sessionId) {
+                    ingestIncomingMessages(event.sessionId, [event.message])
+                }
                 onEventRef.current(event)
                 return
             }
@@ -940,6 +967,17 @@ export function useSSE(options: {
             }
             if (eventSourceRef.current !== eventSource) return
             if (Date.now() - lastActivityAtRef.current >= VISIBILITY_RESUME_STALE_MS) {
+                // Belt-and-suspenders freshness floor: the SSE reconnect takes
+                // a full TLS handshake + subscription round-trip. In parallel,
+                // invalidate the active queries so React Query refetches from
+                // REST immediately — the UI converges via whichever path
+                // delivers first.
+                try {
+                    void queryClient.invalidateQueries({ queryKey: queryKeys.sessions })
+                } catch { /* mock/test environments */ }
+                try {
+                    void queryClient.invalidateQueries({ queryKey: queryKeys.machines })
+                } catch { /* mock/test environments */ }
                 requestReconnect('visibility-recovery')
             }
         }
