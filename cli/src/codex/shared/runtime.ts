@@ -174,7 +174,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             void root.close(true).then(async () => {
                 prepared.delete(root);
                 await notifyRunnerSessionStarted(root.session.sessionId, { ...root.bootstrap.metadata, lifecycleState: 'archived' });
-                if (roots.size === 0 && reservations.size === 0) await shutdown();
+                if (roots.size === 0 && reservations.size === 0 && retryableBindings.size === 0) await shutdown();
             }).catch(error => logger.debug('[Codex shared] root cleanup', error));
         }, 100);
     };
@@ -311,16 +311,19 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         const source = method === 'thread/fork'
             ? record(record(await control.request('thread/read', { threadId: params.threadId, includeTurns: false })).thread) : undefined;
         const cwd = string(params.cwd) ?? string(source?.cwd) ?? launch.cwd;
-        const resolved = await resolveUltrafastLaunch(control, method, params, cwd, undefined, source, startupCatalogConfig);
-        const downgraded = resolved.downgraded; params = resolved.params;
         const root = await prepare(cwd, undefined, parent);
+        let nativeDispatched = false;
         let nativeSucceeded = false;
         try {
             runtime.pendingCreations = [...runtime.pendingCreations ?? [], root.session.sessionId]; await persist();
-            const response = record(await root.client.request(method, root.config({ ...params, ...(method === 'thread/fork' ? { deferGoalContinuation: true } : {}) })));
+            const resolved = await resolveUltrafastLaunch(control, method, params, cwd, undefined, source, startupCatalogConfig);
+            assertRunning();
+            const request = root.config({ ...resolved.params, ...(method === 'thread/fork' ? { deferGoalContinuation: true } : {}) });
+            nativeDispatched = true;
+            const response = record(await root.client.request(method, request));
             nativeSucceeded = true;
             const reservation: Reservation = { root, initialOptions, freshThread: method === 'thread/start',
-                serviceTierExplicit, requestedUltrafast: params.serviceTier === 'ultrafast', downgraded };
+                serviceTierExplicit, requestedUltrafast: resolved.params.serviceTier === 'ultrafast', downgraded: resolved.downgraded };
             try {
                 await bindAccepted(reservation, response);
             } catch (error) {
@@ -334,7 +337,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             return root;
         } catch (error) {
             // A timed-out native mutation may have succeeded. Never replay it or kill unrelated roots.
-            if (!nativeSucceeded && !isIndeterminateError(error)) {
+            if (!nativeSucceeded && (!nativeDispatched || !isIndeterminateError(error))) {
                 runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== root.session.sessionId); await persist();
                 prepared.delete(root); await root.close(true);
             }

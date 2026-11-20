@@ -53,7 +53,10 @@ it.each(['thread/start', 'thread/fork', 'thread/resume'])('applies the same cata
         supportsProviderScopedModels: () => true, retainsResumeModelProvider: () => true,
     };
     const original = { threadId: 'source', model: 'unsupported', serviceTier: 'ultrafast' };
-    expect(await resolveUltrafastLaunch(client, method, original, '/project')).toEqual({ params: { ...original, serviceTier: null }, downgraded: true });
+    expect(await resolveUltrafastLaunch(client, method, original, '/project')).toEqual({
+        params: { ...original, ...(method === 'thread/start' ? { modelProvider: 'configured-provider' } : {}), serviceTier: null },
+        downgraded: true
+    });
     expect(original.serviceTier).toBe('ultrafast');
     expect(client.listModels).toHaveBeenCalledWith({ includeHidden: true, modelProvider: method === 'thread/resume' ? 'saved-provider' : 'configured-provider' });
 });

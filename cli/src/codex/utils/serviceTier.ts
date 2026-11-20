@@ -65,7 +65,7 @@ export function resumeTierContext(params: Record<string, unknown>, saved: Record
         modelProvider: typeof provider === 'string' ? provider : undefined };
 }
 
-export async function isUltrafastAvailable(
+async function discoverUltrafastTarget(
     client: Pick<CodexAppServerClient, 'listModels' | 'readConfig'> & Partial<Pick<CodexAppServerClient, 'supportsProviderScopedModels' | 'supportsEffectiveUltrafastLaunch'>>,
     model: unknown,
     cwd?: string,
@@ -73,7 +73,7 @@ export async function isUltrafastAvailable(
     modelProvider?: string,
     catalogProvider?: string,
     startupCatalogConfig?: unknown,
-): Promise<boolean> {
+): Promise<{ available: boolean; model: string | undefined; provider: string }> {
     if (client.supportsEffectiveUltrafastLaunch?.() === false) {
         throw new Error('Ultrafast requires Codex 0.170 or newer to verify execution; settings were not changed');
     }
@@ -127,7 +127,15 @@ export async function isUltrafastAvailable(
     const selected = effectiveModel
         ? models.find(entry => entry.id === effectiveModel || entry.model === effectiveModel)
         : models.find(entry => entry.isDefault);
-    return Boolean(selected?.serviceTiers?.some(tier => tier.id === 'ultrafast'));
+    return {
+        available: Boolean(selected?.serviceTiers?.some(tier => tier.id === 'ultrafast')),
+        model: effectiveModel ?? selected?.model ?? selected?.id,
+        provider: effectiveProvider
+    };
+}
+
+export async function isUltrafastAvailable(...parameters: Parameters<typeof discoverUltrafastTarget>): Promise<boolean> {
+    return (await discoverUltrafastTarget(...parameters)).available;
 }
 
 /** Native top-level tier overrides request config, which overrides inheritance. */
@@ -177,6 +185,15 @@ export async function resolveUltrafastLaunch(
     const context = method === 'thread/resume'
         ? resumeTierContext(params, saved, client.retainsResumeModelProvider())
         : { model: params.model ?? config.model, modelProvider: typeof provider === 'string' ? provider : undefined };
-    const available = await isUltrafastAvailable(client, context.model, typeof params.cwd === 'string' ? params.cwd : typeof saved.cwd === 'string' ? saved.cwd : cwd, deadline, context.modelProvider, catalogProvider, startupCatalogConfig);
+    const { available, model, provider: effectiveProvider } = await discoverUltrafastTarget(client, context.model, typeof params.cwd === 'string' ? params.cwd : typeof saved.cwd === 'string' ? saved.cwd : cwd, deadline, context.modelProvider, catalogProvider, startupCatalogConfig);
+    if (method === 'thread/start') {
+        // A fresh thread accepts explicit model/provider overrides. Fix the
+        // validated target before dispatch, including a Standard fallback.
+        params = {
+            ...params,
+            ...(context.model == null && model ? { model } : {}),
+            ...(context.modelProvider === undefined ? { modelProvider: effectiveProvider } : {})
+        };
+    }
     return { params: available ? params : { ...params, serviceTier: null }, downgraded: !available };
 }

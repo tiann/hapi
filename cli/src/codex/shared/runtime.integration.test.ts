@@ -124,6 +124,32 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                 expect(legacyReadConfig).not.toHaveBeenCalled();
                 standard.abort.abort(); await standard.done;
             } finally { legacyCatalog.mockRestore(); legacyLaunch.mockRestore(); legacyReadConfig.mockRestore(); }
+            let provider = 'provider-before-bootstrap';
+            const providerRead = vi.spyOn(CodexAppServerClient.prototype, 'readConfig').mockImplementation(async function(this: CodexAppServerClient, params) {
+                const snapshot = await readConfig.call(this, params);
+                return { ...snapshot, config: { ...snapshot.config, model_provider: provider } };
+            });
+            const providerCatalog = vi.spyOn(CodexAppServerClient.prototype, 'listModels').mockImplementation(async params => ({
+                data: [{ id: 'gpt-6-astra', serviceTiers: params?.modelProvider === 'mock' ? [] : [{ id: 'ultrafast' }] }]
+            } as never));
+            extraSpies.push(providerRead, providerCatalog);
+            let enteredBootstrap!: () => void;
+            const bootstrapEntered = new Promise<void>(resolve => { enteredBootstrap = resolve; });
+            let resumeBootstrap!: () => void;
+            const bootstrapPaused = new Promise<void>(resolve => { resumeBootstrap = resolve; });
+            state.beforeBootstrap = async () => { enteredBootstrap(); await bootstrapPaused; };
+            try {
+                const creating = start({ model: 'gpt-6-astra', serviceTier: 'ultrafast' });
+                await Promise.race([bootstrapEntered, creating]);
+                provider = 'mock';
+                resumeBootstrap();
+                const verified = await creating;
+                expect(providerCatalog).toHaveBeenCalledExactlyOnceWith({ includeHidden: true, modelProvider: 'mock' });
+                expect(state.sessions.get(verified.sessionId)?.messages).toContainEqual({
+                    type: 'message', message: 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.'
+                });
+                verified.abort.abort(); await verified.done;
+            } finally { resumeBootstrap(); state.beforeBootstrap = undefined; providerRead.mockRestore(); providerCatalog.mockRestore(); }
             const original = await start(); const threadId = original.runtime.sessions[original.sessionId].threadId;
             original.abort.abort(); await original.done;
             await configure('default');
@@ -176,6 +202,10 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             metadataFailure.mockRestore();
             expect(second.runtime.sessions[original.sessionId].active).toBe(true);
             await expect(concurrent.request('thread/queue/start', { threadId })).rejects.toThrow('tier confirmation');
+            const lastBound = second.runtime.sessions[second.sessionId].threadId;
+            await second.client.request('thread/archive', { threadId: lastBound });
+            await vi.waitFor(() => expect(state.sessions.get(second.sessionId)?.dead).toBe(true));
+            expect(second.runtime.sessions[second.sessionId].active).toBe(false);
             const refresh = SharedCodexRoot.prototype.refresh;
             let rejectRefresh = true;
             const historyFailure = vi.spyOn(SharedCodexRoot.prototype, 'refresh').mockImplementation(function(this: InstanceType<typeof SharedCodexRoot>) {
@@ -265,7 +295,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             const childSid = Object.entries(second.runtime.sessions).find(([, binding]) => binding.threadId === child.thread.id)![0];
             const childSession = state.sessions.get(childSid)!;
             expect(childSession.metadata.codexTierConfirmationPending).toBe(true);
-            expect(second.runtime.sessions[second.sessionId].active).toBe(true);
+            expect(second.runtime.sessions[original.sessionId].active).toBe(true);
             await expect(second.client.request('turn/start', { threadId: child.thread.id, input: [{ type: 'text', text: 'must not execute' }] })).rejects.toThrow('tier confirmation');
             await expect(second.client.request('thread/queue/start', { threadId: child.thread.id })).rejects.toThrow('tier confirmation');
             const plan = await start({ collaborationMode: 'plan', serviceTier: 'ultrafast', model: 'gpt-6-astra' });
