@@ -108,11 +108,26 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
     // Same "fail loudly" principle as an unsupported body-element type
     // above: the whole template is excluded rather than rendered with
     // one of its declared properties silently dropped (review finding).
+    //
+    // Recorded rather than returned immediately (bot review,
+    // tiann/hapi#2147, follow-up) — the rest of the body still needs full
+    // validation below. An early return here (or on a field-level `upload`
+    // type further down) skipped validating whatever came after it, so a
+    // template with, say, a `projects:` key followed by a genuinely
+    // malformed field used to come back `githubValid: true` on the
+    // strength of the recognized-but-unsupported feature alone, never
+    // reaching the field that actually makes it something GitHub's own
+    // chooser would reject. That wrongly counts as local `.github`-
+    // inheritance coverage, letting a viewer eligible for blank issues
+    // file one despite the owner's inherited policy disallowing it. Only
+    // the first one found is kept — later ones don't change the verdict,
+    // they just confirm it.
+    let unsupportedReason: string | undefined
     if (asString(obj.type)) {
-        return { id, name, kind: 'unsupported', reason: 'Uses a form feature not supported yet (type)', githubValid: true }
+        unsupportedReason = 'Uses a form feature not supported yet (type)'
     }
-    if (asStringArray(obj.projects).length > 0) {
-        return { id, name, kind: 'unsupported', reason: 'Uses a form feature not supported yet (projects)', githubValid: true }
+    if (!unsupportedReason && asStringArray(obj.projects).length > 0) {
+        unsupportedReason = 'Uses a form feature not supported yet (projects)'
     }
 
     // Seeded with every EXPLICIT id in the form up front — a field whose id
@@ -160,7 +175,11 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
             if (!asString(attrs.label)) {
                 return { id, name, kind: 'unsupported', reason: 'A "upload" field is missing a label', githubValid: false }
             }
-            return { id, name, kind: 'unsupported', reason: 'Uses a form feature not supported yet (type: upload)', githubValid: true }
+            // Recorded, not returned — see the top-level type:/projects:
+            // comment above for why: a later field in this same body can
+            // still be genuinely malformed, which must win over this.
+            if (!unsupportedReason) unsupportedReason = 'Uses a form feature not supported yet (type: upload)'
+            continue
         }
         if (typeof type !== 'string' || !SUPPORTED_FIELD_TYPES.has(type)) {
             return {
@@ -238,6 +257,13 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
             }
             fields.push({ kind: 'checkboxes', id: fieldId, label, description, options, required })
         }
+    }
+
+    // Only reached once the ENTIRE body has validated clean — see the
+    // top-level type:/projects: comment above. Nothing past this point
+    // overrides a genuine malformation already returned earlier.
+    if (unsupportedReason) {
+        return { id, name, kind: 'unsupported', reason: unsupportedReason, githubValid: true }
     }
 
     return {

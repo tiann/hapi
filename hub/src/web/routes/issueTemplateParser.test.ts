@@ -320,6 +320,44 @@ body:
         expect(template.kind).toBe('unsupported')
         expect(template.kind === 'unsupported' && template.githubValid).toBe(false)
     })
+
+    // Regression (bot review, tiann/hapi#2147, follow-up): the upload
+    // field used to return githubValid: true immediately, before the
+    // parser ever reached a later field in the same body — so a
+    // genuinely malformed field AFTER a well-formed upload field was
+    // never caught, and the template wrongly counted as local .github
+    // inheritance coverage despite being something GitHub's own chooser
+    // would reject outright.
+    it('is genuinely invalid, not githubValid, when a well-formed upload field is followed by a malformed one', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: upload\n    id: screenshots\n    attributes:\n      label: Screenshots\n  - type: input\n    id: contact\n    attributes: {}'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('label')
+    })
+
+    // Same bug, top-level variant (bot review, tiann/hapi#2147,
+    // follow-up): the top-level type:/projects: branches had the same
+    // early-return shape as the field-level upload case above.
+    it('is genuinely invalid, not githubValid, when a top-level type: is followed by a malformed field', () => {
+        const yaml = `
+name: Bug report
+description: File a bug report
+type: Bug
+body:
+  - type: input
+    id: contact
+    attributes: {}
+`
+        const template = parseIssueFormYaml('typed-then-broken.yml', yaml)
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('label')
+    })
 })
 
 describe('parseLegacyIssueTemplate', () => {
