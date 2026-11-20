@@ -597,6 +597,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     session.consumeOneTimeFlags();
                     session.onConversationReset?.();
                 };
+                let clearHookSessionId: string | undefined;
                 session.handleRemoteClearHook = (sessionId) => {
                     if (!inFlightMessage?.isolate || parseSpecialCommand(inFlightMessage.deliveredText).type !== 'clear') {
                         return false;
@@ -604,6 +605,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     if (sessionId !== session.sessionId) {
                         resetSession();
                         session.onSessionFound(sessionId);
+                        clearHookSessionId = sessionId;
                         inFlightMessage = null;
                     }
                     return true;
@@ -779,11 +781,13 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             // must not replay it.
                             reachedReadyThisAttempt = true;
                             inFlightMessage = null;
+                            clearHookSessionId = undefined;
                         },
                         onCompletionEvent: (message: string) => {
                             logger.debug(`[remote]: Completion event: ${message}`);
                             session.client.sendSessionEvent({ type: 'message', message });
                         },
+                        getClearHookSessionId: () => clearHookSessionId,
                         onSessionReset: (sessionId) => {
                             if (sessionId === undefined || sessionId !== session.sessionId) {
                                 resetSession();

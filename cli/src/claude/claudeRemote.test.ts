@@ -471,7 +471,7 @@ describe('claudeRemote async message handling', () => {
 });
 
 describe('claudeRemote in-process /clear', () => {
-    it.each(['success', 'failure', 'eof'] as const)('settles an in-process clear on %s', async (outcome) => {
+    it.each(['success', 'failure', 'eof', 'hook'] as const)('settles an in-process clear on %s', async (outcome) => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
         const order: string[] = [];
@@ -479,6 +479,7 @@ describe('claudeRemote in-process /clear', () => {
         const priorId = 'previous-native-session';
         const success = outcome !== 'failure';
         const resultId = success ? 'fresh-native-session' : priorId;
+        let hookSessionId: string | undefined;
         const result: SDKMessage = {
             type: 'result', subtype: 'success', is_error: false, session_id: priorId, user_message_uuid: 'first-input'
         };
@@ -492,16 +493,20 @@ describe('claudeRemote in-process /clear', () => {
                 const clear = await input.next();
                 expect(clear.value?.message.content).toBe('/clear');
                 yield result;
-                if (success) yield { type: 'system', subtype: 'init', session_id: resultId };
+                if (outcome === 'hook') {
+                    hookSessionId = resultId;
+                } else if (success) {
+                    yield { type: 'system', subtype: 'init', session_id: resultId };
+                }
                 await Promise.resolve();
                 expect(order).toEqual([`session:${priorId}`, 'ready', '/clear']);
                 if (outcome === 'eof') return;
                 yield {
                     ...result,
                     is_error: !success,
-                    ...(success ? { local_command: 'clear' } : {}),
+                    ...(outcome === 'success' ? { local_command: 'clear' } : {}),
                     session_id: resultId,
-                    user_message_uuid: clear.value?.uuid
+                    user_message_uuid: outcome === 'hook' ? undefined : clear.value?.uuid
                 };
                 expect(order).toContain(success ? 'Context was reset' : 'Could not reset context');
                 expect((await input.next()).value?.message.content).toBe('follow-up');
@@ -527,6 +532,7 @@ describe('claudeRemote in-process /clear', () => {
                 isAborted: () => false,
                 onSessionFound: (id) => { order.push(`session:${id}`); },
                 onMessage: (message) => { forwarded.push(message); },
+                getClearHookSessionId: () => hookSessionId,
                 onSessionReset: () => order.push('reset')
             });
             if (outcome === 'eof') {
@@ -699,7 +705,7 @@ describe('claudeRemote /compact result reporting', () => {
         expect(compactResult).toHaveProperty('hapi_compact_turn', true);
     });
 
-    it('bounds the wait for a status-only compact result after a tagged turn', async () => {
+    it.each(['uuid', 'name'] as const)('bounds the wait and drops a late compact result identified by %s', async (identity) => {
         vi.useFakeTimers();
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
@@ -718,7 +724,11 @@ describe('claudeRemote /compact result reporting', () => {
                 expect(events).toEqual(['ready', '📦 Claude did not identify the /compact result']);
                 const followUp = await input.next();
                 expect(followUp.value?.message.content).toBe('follow-up');
-                yield { ...resultMessage, local_command: 'compact', user_message_uuid: compact.value?.uuid };
+                yield {
+                    ...resultMessage,
+                    local_command: 'compact',
+                    user_message_uuid: identity === 'uuid' ? compact.value?.uuid : undefined
+                };
                 expect(events).toEqual(['ready', '📦 Claude did not identify the /compact result']);
                 yield { ...resultMessage, user_message_uuid: followUp.value?.uuid };
                 expect(events).toEqual(['ready', '📦 Claude did not identify the /compact result', 'ready']);

@@ -254,6 +254,7 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
         queue.push('first', mode, 'first');
         const delivered: Array<string | undefined> = [];
         let restartId: string | null = null;
+        let confirmedHookId: string | undefined;
 
         claudeRemoteMock.mockImplementationOnce(async (opts) => {
             delivered.push((await opts.nextMessage())?.message);
@@ -262,6 +263,7 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
             queue.push('follow-up', mode, 'follow-up');
             delivered.push((await opts.nextMessage(true))?.message);
             session.handleRemoteClearHook?.('native-after-clear');
+            confirmedHookId = opts.getClearHookSessionId?.();
             throw new Error('stream ended after native clear');
         }).mockImplementationOnce(async (opts) => {
             restartId = opts.sessionId;
@@ -273,6 +275,7 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
             const { claudeRemoteLauncher } = await import('./claudeRemoteLauncher');
             await claudeRemoteLauncher(session);
             expect(restartId).toBe('native-after-clear');
+            expect(confirmedHookId).toBe('native-after-clear');
             expect(delivered).toEqual(['first', '/clear', 'follow-up']);
             expect(session.claudeArgs).toBeUndefined();
             expect(session.onConversationReset).toHaveBeenCalledTimes(1);

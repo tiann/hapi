@@ -117,6 +117,7 @@ export async function claudeRemote(opts: {
     /** The native prompt uuid of a just-submitted user message (queue batches only). */
     onInputSubmitted?: (nativePromptUuid: string) => void,
     onCompletionEvent?: (message: string) => void,
+    getClearHookSessionId?: () => string | undefined,
     onSessionReset?: (sessionId?: string) => void,
     /** Open while a plain (non-command) turn runs; null otherwise. */
     onSteerTargetChange?: (target: ClaudeSteerTarget | null) => void
@@ -751,9 +752,12 @@ export async function claudeRemote(opts: {
             );
             logger.debugLargeJson(`[claudeRemote] Message ${message.type}`, message);
 
-            if (message.type === 'result' && typeof message.user_message_uuid === 'string'
-                && timedOutCompactUuids.delete(message.user_message_uuid)) {
-                continue;
+            if (message.type === 'result') {
+                let resultUuid = message.user_message_uuid;
+                if (resultUuid == null && message.local_command === 'compact' && !compactState.active) {
+                    resultUuid = timedOutCompactUuids.values().next().value;
+                }
+                if (typeof resultUuid === 'string' && timedOutCompactUuids.delete(resultUuid)) continue;
             }
 
             // Autonomous rounds (background tasks, scheduled follow-ups) stream
@@ -783,8 +787,9 @@ export async function claudeRemote(opts: {
                 clear.init = message as SDKSystemMessage;
                 continue;
             }
+            const clearSessionId = clear ? clear.init?.session_id ?? opts.getClearHookSessionId?.() : undefined;
             const isClearResult = clear !== null && isCommandResult(message, clear.uuid, 'clear',
-                clear.init?.session_id !== undefined && message.session_id === clear.init.session_id);
+                clearSessionId !== undefined && clearSessionId !== clear.previousSessionId && message.session_id === clearSessionId);
 
             const compactMetadata =
                 message.type === 'system' && message.subtype === 'compact_boundary'
