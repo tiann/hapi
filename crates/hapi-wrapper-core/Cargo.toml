@@ -4,11 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1.54", features = ["rt", "macros", "net", "time", "sync", "fs"] }
+tokio = { version = "1.54", features = ["rt", "macros", "net", "time", "sync", "fs", "io-util"] }
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"], default-features = false }
 rustls = { version = "0.23", features = ["ring", "std", "tls12"], default-features = false }
 rustls-native-certs = "0.8"
-hyper = "1.12"
+hyper = { version = "1.12", features = ["http1", "client", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "client-legacy", "http1", "server"] }
+http-body-util = "0.1"
+bytes = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 futures-util = { version = "0.3", features = ["sink", "std"], default-features = false }
@@ -19,3 +22,4 @@ tokio = { version = "1.54", features = ["test-util", "process", "io-util"] }
 tokio-rustls = { version = "0.26", features = ["ring"], default-features = false }
 proptest = "1.12"
 tempfile = "3"
+nix = { version = "0.32", default-features = false }
