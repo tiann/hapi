@@ -81,9 +81,23 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
     if (!name) {
         return { id, name: id, kind: 'unsupported', reason: 'Template is missing the required "name" field', githubValid: false }
     }
+    // `description` is required alongside `name` per GitHub's own top-level
+    // syntax table (review finding, tiann/hapi#2147, follow-up on the name
+    // check above) — a form missing it isn't one GitHub's own template
+    // editor would even save, let alone offer in the chooser.
+    if (!asString(obj.description)) {
+        return { id, name, kind: 'unsupported', reason: 'Template is missing the required "description" field', githubValid: false }
+    }
     const bodyRaw = obj.body
     if (!Array.isArray(bodyRaw) || bodyRaw.length === 0) {
         return { id, name, kind: 'unsupported', reason: 'Template has no body elements', githubValid: false }
+    }
+    // GitHub explicitly documents this as a validation error ("Body must
+    // contain at least one non-markdown field") — markdown elements are
+    // static text, never submitted, so a body made of only markdown
+    // collects no input at all (review finding, tiann/hapi#2147, follow-up).
+    if (bodyRaw.every(element => (element as Record<string, unknown> | null)?.type === 'markdown')) {
+        return { id, name, kind: 'unsupported', reason: 'Template body must contain at least one non-markdown field', githubValid: false }
     }
 
     // GitHub issue forms can also declare a top-level `type:` (issue type)

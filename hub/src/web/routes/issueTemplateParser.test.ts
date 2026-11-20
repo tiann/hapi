@@ -81,12 +81,16 @@ body:
     it('supports a comma-delimited string form of labels/assignees too', () => {
         const yaml = `
 name: Bug report
+description: File a bug report
 labels: bug, needs-triage
 assignees: octocat
 body:
   - type: markdown
     attributes:
       value: Thanks!
+  - type: input
+    attributes:
+      label: Contact Details
 `
         const template = parseIssueFormYaml('bug_report.yml', yaml)
         expect(template.kind).toBe('form')
@@ -98,6 +102,7 @@ body:
     it('marks the whole template unsupported for an unrecognized body-element type, not just drops that field', () => {
         const yaml = `
 name: Weird form
+description: A form with an unsupported field
 body:
   - type: input
     id: known
@@ -117,6 +122,7 @@ body:
     it('marks the whole template unsupported for a top-level type declaration, not silently dropped', () => {
         const yaml = `
 name: Bug report
+description: File a bug report
 type: Bug
 body:
   - type: input
@@ -133,6 +139,7 @@ body:
     it('marks the whole template unsupported for a top-level projects declaration, not silently dropped', () => {
         const yaml = `
 name: Bug report
+description: File a bug report
 projects: ["acme/2"]
 body:
   - type: input
@@ -152,12 +159,12 @@ body:
     })
 
     it('is unsupported when body is missing or empty', () => {
-        expect(parseIssueFormYaml('no-body.yml', 'name: No Body').kind).toBe('unsupported')
-        expect(parseIssueFormYaml('empty-body.yml', 'name: Empty\nbody: []').kind).toBe('unsupported')
+        expect(parseIssueFormYaml('no-body.yml', 'name: No Body\ndescription: No Body').kind).toBe('unsupported')
+        expect(parseIssueFormYaml('empty-body.yml', 'name: Empty\ndescription: Empty\nbody: []').kind).toBe('unsupported')
     })
 
     it('is unsupported when a non-markdown field is missing a label', () => {
-        const missingLabel = parseIssueFormYaml('x.yml', 'name: Bug\nbody:\n  - type: input\n    id: field\n    attributes: {}')
+        const missingLabel = parseIssueFormYaml('x.yml', 'name: Bug\ndescription: Bug\nbody:\n  - type: input\n    id: field\n    attributes: {}')
         expect(missingLabel.kind).toBe('unsupported')
     })
 
@@ -166,7 +173,7 @@ body:
     // is still a valid, GitHub-accepted form, so it gets a generated id
     // rather than rejecting the whole template (review finding).
     it('generates a stable slug id for a field missing one, instead of rejecting the template', () => {
-        const template = parseIssueFormYaml('x.yml', 'name: Bug\nbody:\n  - type: input\n    attributes:\n      label: Contact Details')
+        const template = parseIssueFormYaml('x.yml', 'name: Bug\ndescription: Bug\nbody:\n  - type: input\n    attributes:\n      label: Contact Details')
         expect(template.kind).toBe('form')
         if (template.kind !== 'form') return
         expect(template.fields).toEqual([{
@@ -178,6 +185,7 @@ body:
     it('resolves a generated-id collision against another field\'s explicit or generated id', () => {
         const yaml = `
 name: Bug
+description: Bug
 body:
   - type: input
     attributes:
@@ -201,6 +209,7 @@ body:
     it('parses validations.min_length for input/textarea fields', () => {
         const yaml = `
 name: Bug
+description: Bug
 body:
   - type: textarea
     id: repro
@@ -218,9 +227,9 @@ body:
     })
 
     it('is unsupported when a dropdown or checkboxes field has no options', () => {
-        const dropdown = parseIssueFormYaml('x.yml', 'name: Bug\nbody:\n  - type: dropdown\n    id: d\n    attributes:\n      label: D\n      options: []')
+        const dropdown = parseIssueFormYaml('x.yml', 'name: Bug\ndescription: Bug\nbody:\n  - type: dropdown\n    id: d\n    attributes:\n      label: D\n      options: []')
         expect(dropdown.kind).toBe('unsupported')
-        const checkboxes = parseIssueFormYaml('x.yml', 'name: Bug\nbody:\n  - type: checkboxes\n    id: c\n    attributes:\n      label: C\n      options: []')
+        const checkboxes = parseIssueFormYaml('x.yml', 'name: Bug\ndescription: Bug\nbody:\n  - type: checkboxes\n    id: c\n    attributes:\n      label: C\n      options: []')
         expect(checkboxes.kind).toBe('unsupported')
     })
 
@@ -230,6 +239,25 @@ body:
     // have offered it, letting it wrongly suppress .github inheritance.
     it('is unsupported when name is missing, rather than falling back to the filename', () => {
         const template = parseIssueFormYaml('x.yml', 'body:\n  - type: markdown\n    attributes:\n      value: Hi')
+        expect(template.kind).toBe('unsupported')
+        expect(template.kind === 'unsupported' && template.githubValid).toBe(false)
+    })
+
+    // Review finding (tiann/hapi#2147): `description` is required alongside
+    // `name` per GitHub's own top-level syntax table — a form missing it
+    // used to be accepted as usable anyway.
+    it('is unsupported when description is missing', () => {
+        const template = parseIssueFormYaml('x.yml', 'name: Bug\nbody:\n  - type: input\n    attributes:\n      label: Contact')
+        expect(template.kind).toBe('unsupported')
+        expect(template.kind === 'unsupported' && template.githubValid).toBe(false)
+    })
+
+    // Review finding (tiann/hapi#2147): GitHub's own docs document "Body
+    // must contain at least one non-markdown field" as a validation error —
+    // markdown elements are static text, never submitted, so a body made
+    // of only markdown collects no input at all.
+    it('is unsupported when the body contains only markdown elements', () => {
+        const template = parseIssueFormYaml('x.yml', 'name: Bug\ndescription: Bug\nbody:\n  - type: markdown\n    attributes:\n      value: Hi\n  - type: markdown\n    attributes:\n      value: There')
         expect(template.kind).toBe('unsupported')
         expect(template.kind === 'unsupported' && template.githubValid).toBe(false)
     })
@@ -353,8 +381,8 @@ describe('parseIssueTemplateConfig', () => {
 // proves a template still exists, not that its content hasn't changed.
 describe('template revision', () => {
     it('stays stable for identical content and changes when the form content changes', () => {
-        const yaml = 'name: Bug\nbody:\n  - type: markdown\n    attributes:\n      value: Hi\n'
-        const editedYaml = 'name: Bug\nbody:\n  - type: markdown\n    attributes:\n      value: Hi (edited)\n'
+        const yaml = 'name: Bug\ndescription: Bug\nbody:\n  - type: input\n    attributes:\n      label: Hi\n'
+        const editedYaml = 'name: Bug\ndescription: Bug\nbody:\n  - type: input\n    attributes:\n      label: Hi (edited)\n'
         const first = parseIssueFormYaml('bug.yml', yaml)
         const same = parseIssueFormYaml('bug.yml', yaml)
         const edited = parseIssueFormYaml('bug.yml', editedYaml)

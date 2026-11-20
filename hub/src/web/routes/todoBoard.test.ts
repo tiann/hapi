@@ -1713,6 +1713,7 @@ describe('GET /api/todo-boards/:id/issue-templates', () => {
 
     const BUG_REPORT_YAML = `
 name: Bug report
+description: File a bug report
 body:
   - type: input
     id: contact
