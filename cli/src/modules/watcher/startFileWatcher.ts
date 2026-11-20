@@ -1,33 +1,62 @@
-import { logger } from "@/ui/logger";
-import { delay } from "@/utils/time";
-import { watch } from "fs/promises";
+import { statSync, watch, type FSWatcher } from 'node:fs';
+import { logger } from '@/ui/logger';
 
-export function startFileWatcher(file: string, onFileChange: (file: string) => void) {
-    const abortController = new AbortController();
+export function startFileWatcher(file: string, onFileChange: (file: string) => void, onHealth?: (healthy: boolean) => void) {
+    let watcher: FSWatcher | null = null;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let backoffMs = 1_000;
+    let identity: { dev: bigint; ino: bigint } | undefined;
+    let stopped = false;
 
-    void (async () => {
-        while (true) {
-            try {
-                logger.debug(`[FILE_WATCHER] Starting watcher for ${file}`);
-                const watcher = watch(file, { persistent: true, signal: abortController.signal });
-                for await (const event of watcher) {
-                    if (abortController.signal.aborted) {
-                        return;
-                    }
-                    logger.debug(`[FILE_WATCHER] File changed: ${file}`);
-                    onFileChange(file);
-                }
-            } catch (e: any) {
-                if (abortController.signal.aborted) {
-                    return;
-                }
-                logger.debug(`[FILE_WATCHER] Watch error: ${e.message}, restarting watcher in a second`);
-                await delay(1000);
-            }
-        }
-    })();
-
-    return () => {
-        abortController.abort();
+    const restart = () => {
+        const previous = watcher;
+        watcher = null;
+        previous?.close();
+        if (stopped || retry) return;
+        onHealth?.(false);
+        retry = setTimeout(() => {
+            retry = undefined;
+            attach();
+        }, backoffMs);
+        backoffMs = Math.min(30_000, backoffMs * 2);
     };
+
+    const verifyIdentity = () => {
+        if (!watcher || !identity) return;
+        try {
+            const current = statSync(file, { bigint: true });
+            if (current.dev === identity.dev && current.ino === identity.ino) return;
+        } catch {
+        }
+        restart();
+    };
+
+    const attach = () => {
+        try {
+            identity = statSync(file, { bigint: true });
+            const current = watch(file, (event) => {
+                if (watcher !== current) return;
+                if (event === 'rename') restart();
+                else verifyIdentity();
+                onFileChange(file);
+            });
+            watcher = current;
+            backoffMs = 1_000;
+            current.once('error', () => { if (watcher === current) restart(); });
+            current.once('close', () => { if (watcher === current) restart(); });
+            onHealth?.(true);
+        } catch (error) {
+            logger.debug(`[FILE_WATCHER] Could not watch ${file}, retrying in ${backoffMs} ms: ${error}`);
+            restart();
+        }
+    };
+
+    attach();
+    return Object.assign(() => {
+        stopped = true;
+        clearTimeout(retry);
+        const current = watcher;
+        watcher = null;
+        current?.close();
+    }, { verifyIdentity });
 }
