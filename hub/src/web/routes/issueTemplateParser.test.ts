@@ -305,6 +305,21 @@ body:
         expect(template.kind).toBe('unsupported')
         expect(template.kind === 'unsupported' && template.githubValid).toBe(true)
     })
+
+    // Regression (bot review, tiann/hapi#2147, follow-up): an upload field
+    // still has to satisfy the same "every non-markdown field needs a
+    // label" baseline every other field type is held to — a label-less
+    // one is genuinely malformed, not a form GitHub's own chooser would
+    // ever offer, so it must not get the upload type's githubValid: true
+    // treatment.
+    it('is genuinely invalid (githubValid: false), not merely unsupported, when an upload field has no label', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: upload\n    id: screenshots\n    attributes: {}'
+        )
+        expect(template.kind).toBe('unsupported')
+        expect(template.kind === 'unsupported' && template.githubValid).toBe(false)
+    })
 })
 
 describe('parseLegacyIssueTemplate', () => {

@@ -134,6 +134,13 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
         }
         const elObj = element as Record<string, unknown>
         const type = elObj.type
+        const attrs = asRecord(elObj.attributes)
+
+        if (type === 'markdown') {
+            fields.push({ kind: 'markdown', value: asString(attrs.value) ?? '' })
+            continue
+        }
+
         // `upload` is a real, GitHub-recognized field type (review finding,
         // tiann/hapi#2147, follow-up) — HAPI doesn't render a file picker,
         // so it's still `unsupported` for Boards' own filing path, but it's
@@ -143,8 +150,16 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
         // githubValid: false would wrongly count an upload-only template
         // as having NO local coverage, letting the owner's `.github`
         // inheritance override a form the repo's own maintainer set up on
-        // purpose, GitHub's own chooser would still offer.
+        // purpose, GitHub's own chooser would still offer. But that's only
+        // true of a genuinely well-formed upload field — one still has to
+        // satisfy the same "every non-markdown field needs a label"
+        // baseline GitHub enforces on every other type (cold-review
+        // follow-up): a label-less upload field is malformed, not merely
+        // unsupported, and GitHub's own chooser would never offer it.
         if (type === 'upload') {
+            if (!asString(attrs.label)) {
+                return { id, name, kind: 'unsupported', reason: 'A "upload" field is missing a label', githubValid: false }
+            }
             return { id, name, kind: 'unsupported', reason: 'Uses a form feature not supported yet (type: upload)', githubValid: true }
         }
         if (typeof type !== 'string' || !SUPPORTED_FIELD_TYPES.has(type)) {
@@ -158,13 +173,6 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
                 // outside it isn't a type GitHub itself recognizes either.
                 githubValid: false
             }
-        }
-
-        const attrs = asRecord(elObj.attributes)
-
-        if (type === 'markdown') {
-            fields.push({ kind: 'markdown', value: asString(attrs.value) ?? '' })
-            continue
         }
 
         const label = asString(attrs.label)
