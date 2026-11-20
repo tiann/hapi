@@ -851,9 +851,19 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
     // skipped. Keeping the occurrence as its own row removes all three.
     const mergeKeyOf = (message: StoredMessage): string => {
         const base = getComparableStoredMessageKey(message)
-        return isDeliveredOperatorReply(message)
+        if (!isDeliveredOperatorReply(message)) return base
+        // Native transcript id first. An untimestamped Codex Desktop import
+        // gives every row in the batch ONE timestamp, so keying a delivered
+        // prompt on text plus delivery time collided for two identical
+        // prompts in the same import — the second was skipped, the source was
+        // deleted, and reconciliation then saw only the prompt BEFORE the
+        // footer and flagged an answered blocker. The importer assigns each
+        // row the transcript's own id as its `localId`, which distinguishes
+        // occurrences the timestamps cannot and stays stable across a
+        // re-merge of the same history.
+        return message.localId == null
             ? `${base}\u0000delivered:${operatorReplyDeliveredAt(message)}`
-            : base
+            : `${base}\u0000native:${message.localId}`
     }
     const knownKeys = new Set(canonical.storedMessages.map(mergeKeyOf))
     const removedSessionIds: string[] = []

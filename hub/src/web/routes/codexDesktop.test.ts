@@ -1037,6 +1037,96 @@ describe('Codex Desktop import routes', () => {
         }
     })
 
+    it('keeps two identical prompts from ONE import timestamp as separate rows', async () => {
+        // An untimestamped Codex Desktop import gives every row in the batch
+        // the same timestamp, so keying a delivered prompt on text plus
+        // delivery time collided for two identical prompts in one import: the
+        // second was skipped, the source was deleted, and reconciliation then
+        // saw only the prompt BEFORE the footer and flagged an answered
+        // blocker. The importer assigns each row the transcript's own id,
+        // which distinguishes what the timestamps cannot.
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        const store = new Store(':memory:')
+        const canonical = store.sessions.getOrCreateSession(
+            'canon-ts', { codexSessionId: 'codex-thread-11' }, {}, 'default'
+        )
+        const duplicate = store.sessions.getOrCreateSession(
+            'dup-ts', { codexSessionId: 'codex-thread-11' }, {}, 'default'
+        )
+        const importedAt = Date.now() - 600_000
+        const footer = 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs a key' })
+
+        // Canonical is chosen by message count, so give it MORE rows — the
+        // dedupe path only runs on the sessions being merged IN, and a first
+        // attempt at this test let the import win canonical selection, which
+        // exercised nothing: it passed with the bug present.
+        for (let i = 0; i < 5; i++) {
+            store.messages.addImportedMessage(canonical.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: { type: 'assistant', message: { content: [{ type: 'text', text: `filler ${i}` }] } }
+                }
+            }, `canon-${i}`, importedAt)
+        }
+
+        // One import, one timestamp: Continue, blocked footer, Continue.
+        store.messages.addImportedMessage(duplicate.id, {
+            role: 'user', content: { type: 'text', text: 'Continue' }, meta: { sentFrom: 'webapp' }
+        }, 'native-1', importedAt)
+        store.messages.addImportedMessage(duplicate.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'assistant', message: { content: [{ type: 'text', text: footer }] } }
+            }
+        }, 'native-2', importedAt)
+        store.messages.addImportedMessage(duplicate.id, {
+            role: 'user', content: { type: 'text', text: 'Continue' }, meta: { sentFrom: 'webapp' }
+        }, 'native-3', importedAt)
+
+        const engine = {
+            getSessionsByNamespace: () => [],
+            transferBlockedAck: () => {},
+            transferAttachedJobs: () => {},
+            deleteSession: async (sessionId: string) => {
+                store.sessions.deleteSession(sessionId, 'default')
+            },
+            handleRealtimeEvent: () => {},
+            reconcileNotifySignalAfterImport: () => {},
+            recordSessionActivity: () => {}
+        } as unknown as SyncEngine
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
+
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-11'] })
+            })
+            expect(response.status).toBe(200)
+            const body = await response.json() as {
+                merged: Array<{ canonicalSessionId?: string }>
+            }
+            // Canonical is chosen by message count, so read it back rather
+            // than assuming which of the two survived.
+            const survivorId = body.merged[0]?.canonicalSessionId
+            expect(survivorId).toBeTruthy()
+
+            // BOTH prompts survive, so the one AFTER the footer still answers it.
+            const prompts = store.messages.getAllMessages(survivorId!)
+                .filter((row) => JSON.stringify(row.content).includes('Continue'))
+            expect(prompts).toHaveLength(2)
+        } finally {
+            store.close()
+        }
+    })
+
     it('keeps a duplicate\'s answering prompt as its own row, and reconciles the merge', async () => {
         // Three Majors came from one earlier attempt at this: deduping
         // DELIVERED prompts by text alone dropped a later "Continue" that

@@ -75,6 +75,29 @@ function renderList(sessions: SessionSummary[]) {
     return render(wrapList(sessions, wrap))
 }
 
+function renderListWithApi(sessions: SessionSummary[], api: unknown) {
+    const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false }, mutations: { retry: false } }
+    })
+    return render(
+        <QueryClientProvider client={queryClient}>
+            <ToastProvider>
+                <I18nProvider>
+                    <SessionList
+                        sessions={sessions}
+                        selectedSessionId={null}
+                        onSelect={vi.fn()}
+                        onNewSession={vi.fn()}
+                        onRefresh={vi.fn()}
+                        isLoading={false}
+                        api={api as never}
+                    />
+                </I18nProvider>
+            </ToastProvider>
+        </QueryClientProvider>
+    )
+}
+
 let lastWrap: ((children: ReactNode) => ReactNode) | null = null
 
 function wrapList(
@@ -296,6 +319,65 @@ describe('SessionList blocked chrome (#1717)', () => {
         } finally {
             vi.useRealTimers()
         }
+    })
+
+    it('does not let a late dismissal success close the dialog opened after it', async () => {
+        // Submit on a slow connection, dismiss with Escape, open Mark
+        // unblocked on another row. The first request's handler still held the
+        // shared close callback after its host unmounted, so when it finally
+        // resolved it cleared the NEW target and discarded a second
+        // half-written reason.
+        // A controllable api, so the first dismissal can actually be held in
+        // flight. With `api: null` the mutation rejects immediately and the
+        // scenario never occurs — a first attempt at this test passed with the
+        // bug present for exactly that reason.
+        let releaseFirst: (() => void) | undefined
+        let calls = 0
+        const api = {
+            acknowledgeSessionBlocked: () => {
+                calls += 1
+                return calls === 1
+                    ? new Promise<void>((resolve) => { releaseFirst = resolve })
+                    : Promise.resolve()
+            }
+        }
+        renderListWithApi([blocked('stuck-one'), blocked('stuck-two')], api)
+
+        const openFor = async (id: string) => {
+            const row = document.querySelector(`[data-session-id="${id}"]`) as HTMLElement
+            fireEvent.contextMenu(row)
+            fireEvent.click(await screen.findByTestId('session-action-mark-unblocked'))
+        }
+
+        await openFor('stuck-one')
+        // The shortcut handler lives on the TEXTAREA, not the dialog box — an
+        // earlier attempt fired on the dialog, so no submit happened at all
+        // and the test passed with the bug present.
+        const firstBox = screen.getByRole('textbox')
+        fireEvent.change(firstBox, { target: { value: 'first reason' } })
+        await act(async () => {
+            fireEvent.keyDown(firstBox, { key: 'Enter', ctrlKey: true })
+            await new Promise((resolve) => setTimeout(resolve, 0))
+        })
+        // The request is genuinely in flight; without this the rest of the
+        // test proves nothing.
+        expect(calls).toBe(1)
+
+        // Operator gives up waiting and dismisses, then starts another.
+        fireEvent.keyDown(screen.getByTestId('unblock-reason-dialog'), { key: 'Escape' })
+        expect(screen.queryByTestId('unblock-reason-dialog')).toBeNull()
+
+        await openFor('stuck-two')
+        fireEvent.change(screen.getByRole('textbox'), { target: { value: 'second reason' } })
+
+        // The first request lands now. It must not touch this dialog.
+        await act(async () => {
+            releaseFirst?.()
+            await new Promise((resolve) => setTimeout(resolve, 0))
+        })
+
+        expect(screen.getByTestId('unblock-reason-dialog')).toBeTruthy()
+        expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('second reason')
     })
 
     it('does not offer Mark unblocked on an unblocked row', async () => {

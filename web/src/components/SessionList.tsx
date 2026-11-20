@@ -672,7 +672,7 @@ function UnblockDialogHost(props: {
     target: UnblockDialogTarget
     api: ApiClient | null
     scrollContainer: React.RefObject<HTMLDivElement | null>
-    onClose: () => void
+    onClose: (token: UnblockDialogTarget) => void
 }) {
     const { target } = props
     const { acknowledgeBlocked, isPending } = useSessionActions(props.api, target.sessionId)
@@ -698,7 +698,7 @@ function UnblockDialogHost(props: {
                 )
                 ?? document.querySelector<HTMLElement>('[data-testid="blocked-jump-pill"]')
                 ?? document.querySelector<HTMLElement>('[data-testid="session-list-header-row"]')}
-            onClose={props.onClose}
+            onClose={() => props.onClose(props.target)}
             onConfirm={async (reason) => {
                 await acknowledgeBlocked({
                     reason,
@@ -2476,7 +2476,15 @@ export function SessionList(props: {
         setUnblockTarget(target)
         setBlockedDialogSessionId(target.sessionId)
     }, [])
-    const closeUnblockDialog = useCallback(() => {
+    // Compared by identity so a LATE success from a dialog the operator has
+    // already dismissed cannot close the one they opened next (#1717). The
+    // first request's handler still holds this callback after its host
+    // unmounted, and without the token it cleared the new target and
+    // discarded a second half-written reason.
+    const unblockTargetRef = useRef<UnblockDialogTarget | null>(null)
+    unblockTargetRef.current = unblockTarget
+    const closeUnblockDialog = useCallback((token?: UnblockDialogTarget) => {
+        if (token !== undefined && unblockTargetRef.current !== token) return
         setUnblockTarget(null)
         setBlockedDialogSessionId(null)
     }, [])
@@ -3867,10 +3875,19 @@ export function SessionList(props: {
             )) {
                 const id = row.getAttribute('data-session-id')
                 if (!id) continue
-                const rect = row.getBoundingClientRect()
+                // A row inside a collapsed panel has no usable rect, but the
+                // arrow was drawn from its SECTION HEADER — so skipping it
+                // here made the two disagree: an up arrow from a collapsed
+                // Pinned section with the click falling back to a newer row
+                // already on screen. Position it where the arrow positioned
+                // it, which is also where activating the pill lands.
                 const panel = row.closest('.collapsible-panel')
-                if (panel !== null && !panel.hasAttribute('data-open')) continue
-                if (rect.height <= 0) continue
+                const collapsed = panel !== null && !panel.hasAttribute('data-open')
+                const section = collapsed
+                    ? row.closest('[data-testid="blocked-section"], [data-testid="pinned-section"]')
+                    : null
+                const rect = (section ?? row).getBoundingClientRect()
+                if (!collapsed && rect.height <= 0) continue
                 if (rect.bottom <= bounds.top) above.push(id)
                 else if (rect.top >= bounds.bottom) below.push(id)
             }
