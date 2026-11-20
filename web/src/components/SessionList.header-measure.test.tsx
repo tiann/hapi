@@ -244,7 +244,7 @@ describe('SessionList header measurement optimization', () => {
         expect(getSearchStyleReads()).toBeGreaterThan(initialReads)
     })
 
-    it('re-measures search chrome and sets minWidth floor when collapsing search with a non-empty query', () => {
+    it('re-measures search chrome and sets minWidth floor when collapsing search with a non-empty query', async () => {
         const ICON_WIDTH = 28
         const CLEAR_BUTTON_WIDTH = 36
         const offsetWidthSpy = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (this: HTMLElement) {
@@ -281,8 +281,13 @@ describe('SessionList header measurement optimization', () => {
             fireEvent.blur(searchInput, { relatedTarget: document.body })
         })
 
-        // On collapse with a non-empty query, search chrome must be re-measured synchronously
-        expect(getSearchStyleReads()).toBeGreaterThan(readsBeforeBlur)
+        // Flush microtasks for MutationObserver
+        await act(async () => {
+            await Promise.resolve()
+        })
+
+        // On collapse with a non-empty query, search chrome must be re-measured exactly once synchronously
+        expect(getSearchStyleReads()).toBe(readsBeforeBlur + 1)
 
         // And the search element should have the exact combined floor (icon + clear button + padding)
         const searchElement = document.querySelector<HTMLElement>('[data-testid="session-list-search"]')

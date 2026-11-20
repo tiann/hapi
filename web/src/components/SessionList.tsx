@@ -2123,28 +2123,19 @@ export function SessionList(props: {
             }
         }
         if (typeof MutationObserver !== 'undefined' && !searchMutationObserverRef.current) {
-            const mo = new MutationObserver((mutations) => {
+            const mo = new MutationObserver(() => {
                 if (search.dataset.expanded === 'true') {
                     return
                 }
-                const affectsChrome = mutations.some((m) => {
-                    if (m.type === 'attributes' && m.attributeName === 'data-expanded') return true
-                    if (m.type === 'childList') {
-                        for (const node of m.addedNodes) {
-                            if (node instanceof HTMLElement && (node.hasAttribute('data-toolbar-chrome') || node.querySelector('[data-toolbar-chrome]'))) return true
-                        }
-                        for (const node of m.removedNodes) {
-                            if (node instanceof HTMLElement && (node.hasAttribute('data-toolbar-chrome') || node.querySelector('[data-toolbar-chrome]'))) return true
-                        }
-                    }
-                    return false
-                })
-                if (!affectsChrome) return
+                const currentParts = new Set(search.querySelectorAll<HTMLElement>('[data-toolbar-chrome]'))
+                const partsChanged = currentParts.size !== observedChromePartsRef.current.size
+                    || [...currentParts].some((el) => !observedChromePartsRef.current.has(el))
+                if (!partsChanged) return
                 syncSearchChromeObservers(search)
                 searchChromeDirtyRef.current = true
                 bumpSearchChromeTick((v) => v + 1)
             })
-            mo.observe(search, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-expanded'] })
+            mo.observe(search, { childList: true, subtree: true })
             searchMutationObserverRef.current = mo
         }
     }, [])
@@ -3148,6 +3139,8 @@ export function SessionList(props: {
             prevSearchExpandedRef.current = searchExpanded
             prevHasQueryRef.current = hasQuery
             searchChromeDirtyRef.current = true
+            const searchNode = headerRowRef.current?.querySelector<HTMLElement>('[data-testid="session-list-search"]') ?? null
+            syncSearchChromeObservers(searchNode)
         }
         const search = headerRowRef.current?.querySelector<HTMLElement>('[data-testid="session-list-search"]')
         if (searchChromeDirtyRef.current || typeof ResizeObserver === 'undefined') {
