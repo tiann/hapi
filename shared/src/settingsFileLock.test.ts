@@ -90,7 +90,10 @@ describe('withSettingsFileLock', () => {
         await expect(withSettingsFileLock(settingsFile, async () => 'ok')).resolves.toBe('ok')
         expect(existsSync(fresh)).toBe(true)
         // Owner-only from creation (matches hub settings writer); resists umask 0002.
-        expect(statSync(fresh).mode & 0o777).toBe(0o700)
+        // Bun ignores mkdir mode on Windows, so only assert POSIX modes off win32.
+        if (process.platform !== 'win32') {
+            expect(statSync(fresh).mode & 0o777).toBe(0o700)
+        }
         rmSync(fresh, { recursive: true, force: true })
     })
 })
