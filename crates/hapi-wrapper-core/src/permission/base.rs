@@ -198,6 +198,7 @@ impl<T: Send + 'static> BasePermissionHandler<T> {
             Box::pin(async move {
                 let id = response["id"].as_str().unwrap_or("").to_owned();
                 let pending = {
+                    let _order = this.transitions.lock().unwrap();
                     let mut req = this.requests.lock().unwrap();
                     let p = req.pending.remove(&id);
                     if p.is_some() {
@@ -224,9 +225,11 @@ impl<T: Send + 'static> BasePermissionHandler<T> {
         }
     }
     pub fn take_pending(&self, id: &str) -> Option<Pending<T>> {
+        let _order = self.transitions.lock().unwrap();
         self.requests.lock().unwrap().pending.remove(id)
     }
     pub fn drain_pending(&self) -> Vec<(String, Pending<T>)> {
+        let _order = self.transitions.lock().unwrap();
         self.requests.lock().unwrap().pending.drain().collect()
     }
     pub fn finalize(&self, id: String, completion: Completion) {
@@ -530,6 +533,63 @@ mod tests {
         let s = state.lock().unwrap();
         assert!(s["requests"]["r"].is_null());
         assert_eq!(s["completedRequests"]["r"]["status"], "canceled");
+    }
+    #[test]
+    fn abort_and_steer_during_registration_leave_no_live_prompt() {
+        for steer in [false, true] {
+            let state = Arc::new(Mutex::new(json!({})));
+            let sink = state.clone();
+            let (entered_tx, entered) = std::sync::mpsc::channel();
+            let (resume, resume_rx) = std::sync::mpsc::channel::<()>();
+            let resume_rx = Mutex::new(resume_rx);
+            let h = Arc::new(BasePermissionHandler::<()>::new(
+                Arc::new(move |f| {
+                    let mut v = sink.lock().unwrap();
+                    *v = f(&v);
+                }),
+                PermissionHooks {
+                    on_registered: Some(Box::new(move |_, _, _| {
+                        entered_tx.send(()).unwrap();
+                        resume_rx.lock().unwrap().recv().unwrap();
+                    })),
+                    on_response: None,
+                },
+            ));
+            let adder = h.clone();
+            let add =
+                std::thread::spawn(move || adder.add("r".into(), "tool".into(), Value::Null, None));
+            entered.recv().unwrap();
+            let settler = h.clone();
+            let settle = std::thread::spawn(move || {
+                let taken = if steer {
+                    settler.drain_pending()
+                } else {
+                    settler
+                        .take_pending("r")
+                        .map(|p| ("r".to_owned(), p))
+                        .into_iter()
+                        .collect()
+                };
+                for (id, p) in taken {
+                    p.reply.send(Err("aborted".into())).unwrap();
+                    settler.finalize(
+                        id,
+                        Completion {
+                            status: "canceled".into(),
+                            ..Default::default()
+                        },
+                    );
+                }
+            });
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            resume.send(()).unwrap();
+            let rx = add.join().unwrap();
+            settle.join().unwrap();
+            assert_eq!(rx.blocking_recv().unwrap(), Err("aborted".into()));
+            let s = state.lock().unwrap();
+            assert!(s["requests"]["r"].is_null());
+            assert_eq!(s["completedRequests"]["r"]["status"], "canceled");
+        }
     }
     #[test]
     fn link_pr_requires_trusted_transport_and_never_read_only() {
