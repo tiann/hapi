@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type LazyExoticComponent, type ComponentType } from 'react'
 import { NativeAppPromoButton, NativeAppPromoSheet } from '@/components/NativeAppPromo'
 import { useQueryClient } from '@tanstack/react-query'
 import {
@@ -22,11 +22,12 @@ import {
     shouldShowSessionSidebar,
 } from '@/lib/sessionNavigation'
 import { App } from '@/App'
-import { SessionChat } from '@/components/SessionChat'
+import { SessionChat } from '@/components/SessionChat'import { useSessionListView } from '@/hooks/useSessionListView'
+import { isSseDownFor, useSseConnected } from '@/lib/sseHealth'
+import { useEagerSessionPrefetch } from '@/hooks/queries/useEagerSessionPrefetch'
+
 import { SessionList } from '@/components/SessionList'
 import { SidebarShowButton } from '@/components/SidebarToggle'
-import { NewSession } from '@/components/NewSession'
-import { WorkspaceBrowser } from '@/components/WorkspaceBrowser'
 import { LoadingState } from '@/components/LoadingState'
 import { useAppContext } from '@/lib/app-context'
 import { useAppGoBack } from '@/hooks/useAppGoBack'
@@ -66,24 +67,53 @@ import { migrateSuppressedSendError } from '@/lib/suppressed-send-error'
 import { useConsumedMessageTarget } from '@/lib/useConsumedMessageTarget'
 import { normalizeMessageSearchTarget } from '@/lib/messageSearchTarget'
 import { buildFileMentionSearchQuery } from '@/lib/file-search-query'
-import FilesPage from '@/routes/sessions/files'
-import FilePage from '@/routes/sessions/file'
-import TerminalPage from '@/routes/sessions/terminal'
-import SettingsLayout from '@/routes/settings/layout'
-import SettingsHubPage from '@/routes/settings'
-import SettingsGeneralPage from '@/routes/settings/general'
-import SettingsDisplayPage from '@/routes/settings/display'
-import SettingsChatPage from '@/routes/settings/chat'
-import SettingsVoicePage from '@/routes/settings/voice'
-import SettingsVoiceVoicesPage from '@/routes/settings/voice-voices'
-import SettingsVoiceAdvancedPage from '@/routes/settings/voice-advanced'
-import SettingsMachinesPage from '@/routes/settings/machines'
-import SettingsAboutPage from '@/routes/settings/about'
-import SettingsStoragePage from '@/routes/settings/storage'
-import SettingsUsagePage from '@/routes/settings/usage'
-import SharePage from '@/routes/share'
 import { retargetSharePendingTransfer, setSharePendingTransfer } from '@/lib/sharePendingState'
 import { deleteShareTransfer, parseShareSearch } from '@/lib/shareTransfer'
+
+// ---------------------------------------------------------------------------
+// Route-level code splitting: every non-list page loads as its own chunk so
+// the sessions-list first paint only pays for the list surface. The chat
+// surface (SessionChat + assistant-ui vendor) is the heaviest chunk and the
+// most likely next navigation, so it is warmed during idle time right after
+// the list renders (see SessionsPage's prefetch effect).
+// ---------------------------------------------------------------------------
+const SessionChat = lazy(() => import('@/components/SessionChat').then((m) => ({ default: m.SessionChat })))
+const NewSession = lazy(() => import('@/components/NewSession').then((m) => ({ default: m.NewSession })))
+const WorkspaceBrowser = lazy(() => import('@/components/WorkspaceBrowser').then((m) => ({ default: m.WorkspaceBrowser })))
+const FilesPage = lazy(() => import('@/routes/sessions/files'))
+const FilePage = lazy(() => import('@/routes/sessions/file'))
+const TerminalPage = lazy(() => import('@/routes/sessions/terminal'))
+const SettingsLayout = lazy(() => import('@/routes/settings/layout'))
+const SettingsHubPage = lazy(() => import('@/routes/settings'))
+const SettingsGeneralPage = lazy(() => import('@/routes/settings/general'))
+const SettingsDisplayPage = lazy(() => import('@/routes/settings/display'))
+const SettingsChatPage = lazy(() => import('@/routes/settings/chat'))
+const SettingsVoicePage = lazy(() => import('@/routes/settings/voice'))
+const SettingsVoiceVoicesPage = lazy(() => import('@/routes/settings/voice-voices'))
+const SettingsVoiceAdvancedPage = lazy(() => import('@/routes/settings/voice-advanced'))
+const SettingsMachinesPage = lazy(() => import('@/routes/settings/machines'))
+const SettingsAboutPage = lazy(() => import('@/routes/settings/about'))
+const SettingsStoragePage = lazy(() => import('@/routes/settings/storage'))
+const SettingsUsagePage = lazy(() => import('@/routes/settings/usage'))
+const SharePage = lazy(() => import('@/routes/share'))
+
+function RouteFallback() {
+    return (
+        <div className="flex-1 flex items-center justify-center p-4" role="status">
+            <LoadingState label="Loading…" className="text-sm" />
+        </div>
+    )
+}
+
+function lazyRoute(Component: LazyExoticComponent<ComponentType>) {
+    return function LazyRoute() {
+        return (
+            <Suspense fallback={<RouteFallback />}>
+                <Component />
+            </Suspense>
+        )
+    }
+}
 
 
 function BackIcon(props: { className?: string }) {
@@ -191,6 +221,22 @@ function SessionsPage() {
         [selectedSessionId, sessions]
     )
     const readStateScope = api?.getReadStateScope()
+    // Warm the chat + new-session chunks once the list has painted: clicking
+    // into a session is the primary navigation and must not pay a cold chunk
+    // round-trip on the first click. Route-level splitting keeps these out of
+    // the entry bundle; this idle prefetch keeps them instant to open.
+    useEffect(() => {
+        const warm = () => {
+            void import('@/components/SessionChat')
+            void import('@/components/NewSession')
+        }
+        if (typeof window.requestIdleCallback === 'function') {
+            const handle = window.requestIdleCallback(warm, { timeout: 3000 })
+            return () => window.cancelIdleCallback(handle)
+        }
+        const timer = window.setTimeout(warm, 300)
+        return () => window.clearTimeout(timer)
+    }, [])
     useEffect(() => {
         const scope = readStateScope
         if (!api || !scope) return
@@ -954,6 +1000,7 @@ function SessionPage() {
     }
 
     return (
+        <Suspense fallback={<RouteFallback />}>
         <SessionChat
             readThroughRevision={readThroughRevision}
             api={api}
@@ -1019,6 +1066,7 @@ function SessionPage() {
                 }))
             }}
         />
+        </Suspense>
     )
 }
 
@@ -1178,16 +1226,18 @@ function NewSessionPage() {
                     </div>
                 ) : null}
 
-                <NewSession
-                    api={api}
-                    machines={machines}
-                    isLoading={machinesLoading}
-                    onCancel={handleCancel}
-                    onSuccess={handleSuccess}
-                    onChooseFolder={handleChooseFolder}
-                    initialDirectory={initialDirectory}
-                    initialMachineId={initialMachineId}
-                />
+                <Suspense fallback={<RouteFallback />}>
+                    <NewSession
+                        api={api}
+                        machines={machines}
+                        isLoading={machinesLoading}
+                        onCancel={handleCancel}
+                        onSuccess={handleSuccess}
+                        onChooseFolder={handleChooseFolder}
+                        initialDirectory={initialDirectory}
+                        initialMachineId={initialMachineId}
+                    />
+                </Suspense>
             </div>
         </div>
     )
@@ -1226,13 +1276,15 @@ function BrowsePage() {
             </div>
 
             <div className="flex-1 min-h-0">
-                <WorkspaceBrowser
-                    api={api}
-                    machines={machines}
-                    machinesLoading={machinesLoading}
-                    onStartSession={handleStartSession}
-                    initialMachineId={initialMachineId}
-                />
+                <Suspense fallback={<RouteFallback />}>
+                    <WorkspaceBrowser
+                        api={api}
+                        machines={machines}
+                        machinesLoading={machinesLoading}
+                        onStartSession={handleStartSession}
+                        initialMachineId={initialMachineId}
+                    />
+                </Suspense>
             </div>
         </div>
     )
@@ -1299,13 +1351,13 @@ const sessionFilesRoute = createRoute({
             ...(query ? { query } : {}),
         }
     },
-    component: FilesPage,
+    component: lazyRoute(FilesPage),
 })
 
 const sessionTerminalRoute = createRoute({
     getParentRoute: () => sessionDetailRoute,
     path: 'terminal',
-    component: TerminalPage,
+    component: lazyRoute(TerminalPage),
 })
 
 type SessionFileSearch = {
@@ -1353,7 +1405,7 @@ const sessionFileRoute = createRoute({
         }
         return result
     },
-    component: FilePage,
+    component: lazyRoute(FilePage),
 })
 
 type NewSessionSearch = {
@@ -1400,73 +1452,73 @@ const browseRoute = createRoute({
 const settingsRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/settings',
-    component: SettingsLayout,
+    component: lazyRoute(SettingsLayout),
 })
 
 const settingsIndexRoute = createRoute({
     getParentRoute: () => settingsRoute,
     path: '/',
-    component: SettingsHubPage,
+    component: lazyRoute(SettingsHubPage),
 })
 
 const settingsGeneralRoute = createRoute({
     getParentRoute: () => settingsRoute,
     path: 'general',
-    component: SettingsGeneralPage,
+    component: lazyRoute(SettingsGeneralPage),
 })
 
 const settingsDisplayRoute = createRoute({
     getParentRoute: () => settingsRoute,
     path: 'display',
-    component: SettingsDisplayPage,
+    component: lazyRoute(SettingsDisplayPage),
 })
 
 const settingsChatRoute = createRoute({
     getParentRoute: () => settingsRoute,
     path: 'chat',
-    component: SettingsChatPage,
+    component: lazyRoute(SettingsChatPage),
 })
 
 const settingsVoiceRoute = createRoute({
     getParentRoute: () => settingsRoute,
     path: 'voice',
-    component: SettingsVoicePage,
+    component: lazyRoute(SettingsVoicePage),
 })
 
 const settingsVoiceVoicesRoute = createRoute({
     getParentRoute: () => settingsRoute,
     path: 'voice/voices',
-    component: SettingsVoiceVoicesPage,
+    component: lazyRoute(SettingsVoiceVoicesPage),
 })
 
 const settingsVoiceAdvancedRoute = createRoute({
     getParentRoute: () => settingsRoute,
     path: 'voice/advanced',
-    component: SettingsVoiceAdvancedPage,
+    component: lazyRoute(SettingsVoiceAdvancedPage),
 })
 
 const settingsMachinesRoute = createRoute({
     getParentRoute: () => settingsRoute,
     path: 'machines',
-    component: SettingsMachinesPage,
+    component: lazyRoute(SettingsMachinesPage),
 })
 
 const settingsAboutRoute = createRoute({
     getParentRoute: () => settingsRoute,
     path: 'about',
-    component: SettingsAboutPage,
+    component: lazyRoute(SettingsAboutPage),
 })
 
 const settingsStorageRoute = createRoute({
     getParentRoute: () => settingsRoute,
     path: 'storage',
-    component: SettingsStoragePage,
+    component: lazyRoute(SettingsStoragePage),
 })
 
 const settingsUsageRoute = createRoute({
     getParentRoute: () => settingsRoute,
     path: 'usage',
-    component: SettingsUsagePage,
+    component: lazyRoute(SettingsUsagePage),
 })
 
 // Web Share Target landing route. Service worker (`web/src/sw.ts`)
@@ -1478,7 +1530,7 @@ const shareRoute = createRoute({
     getParentRoute: () => rootRoute,
     path: '/share',
     validateSearch: (search: Record<string, unknown>) => parseShareSearch(search),
-    component: SharePage,
+    component: lazyRoute(SharePage),
 })
 
 export const routeTree = rootRoute.addChildren([

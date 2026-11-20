@@ -47,17 +47,44 @@ function getVendorChunkName(id: string): string | undefined {
     const grammar = id.match(/\/node_modules\/@shikijs\/(?:langs|themes)\/dist\/([^/]+)\.mjs$/)
     if (grammar) return `shiki-${grammar[1]}`
 
+    // Keep the React runtime in its own eager chunk: any manual chunk rule
+    // that claims a package react also depends on (assistant-ui did) makes
+    // rollup merge react INTO that feature chunk, which then becomes part of
+    // the entry preload closure. A dedicated react chunk keeps the eager set
+    // to exactly {entry, vendor-react, vendor-ui}.
+    if (
+        id.includes('/node_modules/react/')
+        || id.includes('/node_modules/react-dom/')
+        || id.includes('/node_modules/scheduler/')
+    ) {
+        return 'vendor-react'
+    }
+
+    // Shared UI primitives (radix, qrcode, cva/clsx/tailwind-merge) are used
+    // by both the entry (SessionList dialogs/buttons, promo QR) and the lazy
+    // assistant-ui chunk; without their own group rollup merges them into
+    // vendor-assistant, dragging that whole chunk into the entry preload.
+    if (
+        id.includes('/node_modules/@radix-ui/')
+        || id.includes('/node_modules/qrcode/')
+        || id.includes('/node_modules/class-variance-authority/')
+        || id.includes('/node_modules/clsx/')
+        || id.includes('/node_modules/tailwind-merge/')
+    ) {
+        return 'vendor-ui'
+    }
+
     if (id.includes('/node_modules/@xterm/')) {
         return 'vendor-terminal'
     }
 
-    if (
-        id.includes('/node_modules/@assistant-ui/')
-        || id.includes('/node_modules/remark-gfm/')
-        || id.includes('/node_modules/hast-util-to-jsx-runtime/')
-    ) {
-        return 'vendor-assistant'
-    }
+    // NOTE: @assistant-ui used to be pinned to a manual 'vendor-assistant'
+    // chunk. With route-level splitting that pin backfired twice: rollup
+    // merges every module shared with a manual chunk INTO that chunk (react
+    // and radix included), and the chunk-level CJS interop helper its remark
+    // modules host made the entry statically depend on the whole markdown
+    // stack. Left unclaimed, assistant-ui/markdown land in the lazy shared
+    // chunks rollup auto-creates for the chat surface (MarkdownRenderer-*).
 
     if (id.includes('/node_modules/@elevenlabs/react/')) {
         return 'vendor-voice'

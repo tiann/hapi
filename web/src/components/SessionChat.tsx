@@ -1,5 +1,5 @@
 import { BranchConversationDialog } from '@/components/BranchConversationDialog'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { Link, useNavigate } from '@tanstack/react-router'
 import { useQueryClient } from '@tanstack/react-query'
@@ -138,12 +138,23 @@ import { usePiModels } from '@/hooks/queries/usePiModels'
 import { useOpencodeReasoningEffortOptions } from '@/hooks/queries/useOpencodeReasoningEffortOptions'
 import { queryKeys } from '@/lib/query-keys'
 import { useVoiceOptional } from '@/lib/voice-context'
-import { AgentTerminalView } from '@/components/AgentTerminal/AgentTerminalView'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { ForkPreviewDialog } from '@/components/AssistantChat/ForkPreviewDialog'
 import { useForkFlow } from '@/hooks/useForkFlow'
-import { VoiceBackendSession, registerSessionStore, registerVoiceHooksStore, voiceHooks } from '@/realtime'
+import { registerSessionStore } from '@/realtime/realtimeClientTools'
+import { registerVoiceHooksStore, voiceHooks } from '@/realtime/hooks/voiceHooks'
 import { isRemoteTerminalSupported } from '@/utils/terminalSupport'
+
+// Code splitting: the agent terminal (xterm vendor ~417KB raw) and the voice
+// backend chain (ElevenLabs/Gemini/Qwen SDKs) only load when actually used.
+// Both render nothing until activated, so a null Suspense fallback keeps the
+// chat layout untouched while the chunk streams in.
+const AgentTerminalView = lazy(() =>
+    import('@/components/AgentTerminal/AgentTerminalView').then((m) => ({ default: m.AgentTerminalView }))
+)
+const VoiceBackendSession = lazy(() =>
+    import('@/realtime/VoiceBackendSession').then((m) => ({ default: m.VoiceBackendSession }))
+)
 
 type SessionModelSelection = { provider: string; modelId: string } | string | null
 
@@ -826,6 +837,13 @@ function SessionChatInner(props: SessionChatProps) {
     })
     const [outlineOpen, setOutlineOpen] = useState(props.initialOutlineOpen ?? false)
     const [terminalVisible, setTerminalVisible] = useState(false)
+    // The terminal chunk + xterm instance only mount on first open; afterwards
+    // the view stays mounted (hidden) so toggling keeps scrollback and the
+    // PTY subscription, matching the pre-splitting behavior.
+    const [terminalMounted, setTerminalMounted] = useState(false)
+    useEffect(() => {
+        if (terminalVisible) setTerminalMounted(true)
+    }, [terminalVisible])
     const pendingRequestSequenceRef = useRef(0)
     const [pendingRequestNavigation, setPendingRequestNavigation] = useState<PendingRequestNavigation | null>(() =>
         props.initialPendingRequestId
@@ -2415,13 +2433,15 @@ function SessionChatInner(props: SessionChatProps) {
                 <AbortRestoreConsumer messages={normalizedMessages} onAbortRestore={props.onAbortRestore ?? (() => {})} />
                 <DragDropZone disabled={(!props.session.active && !inactiveCanResume) || props.isSending || pendingSchedule != null || isScratchlistParking}>
                     <div className="relative flex min-h-0 flex-1 flex-col">
-                        {canViewAgentTerminal && (
+                        {canViewAgentTerminal && terminalMounted && (
                             // SessionChatInner is keyed by session.id, so switching sessions remounts this subtree.
-                            <AgentTerminalView
-                                sessionId={props.session.id}
-                                visible={terminalVisible}
-                                className={terminalVisible ? 'flex-1 min-h-0' : 'hidden'}
-                            />
+                            <Suspense fallback={null}>
+                                <AgentTerminalView
+                                    sessionId={props.session.id}
+                                    visible={terminalVisible}
+                                    className={terminalVisible ? 'flex-1 min-h-0' : 'hidden'}
+                                />
+                            </Suspense>
                         )}
                         <div className={(terminalVisible && canViewAgentTerminal) ? 'hidden' : 'flex min-h-0 flex-1 flex-col'}>
 
@@ -2808,12 +2828,14 @@ function SessionChatInner(props: SessionChatProps) {
 
             {/* Voice session component - renders nothing but initializes voice backend */}
             {voice && (
-                <VoiceBackendSession
-                    api={props.api}
-                    micMuted={voice.micMuted}
-                    onStatusChange={voice.setStatus}
-                    onReadyChange={setVoiceBackendReady}
-                />
+                <Suspense fallback={null}>
+                    <VoiceBackendSession
+                        api={props.api}
+                        micMuted={voice.micMuted}
+                        onStatusChange={voice.setStatus}
+                        onReadyChange={setVoiceBackendReady}
+                    />
+                </Suspense>
             )}
 
             <ConfirmDialog

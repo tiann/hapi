@@ -1,6 +1,11 @@
 import { createContext, useCallback, useContext, useState, type ReactNode } from 'react'
 import type { ConversationStatus, StatusCallback } from '@/realtime/types'
-import { startRealtimeSession, stopRealtimeSession, voiceHooks } from '@/realtime'
+// Deep imports instead of the '@/realtime' barrel: the barrel re-exports the
+// voice backend components, which drag the ElevenLabs SDK vendor chunk into
+// the eager graph (App renders VoiceProvider unconditionally).
+import { getVoiceSession, startRealtimeSession, stopRealtimeSession } from '@/realtime/RealtimeSession'
+import { voiceHooks } from '@/realtime/hooks/voiceHooks'
+import { VOICE_BACKEND_MOUNT_REQUEST_EVENT, VOICE_BACKEND_READY_EVENT } from '@/realtime/voiceBackendEvents'
 import { storeVoiceContextNotice } from '@/lib/voiceContextStream'
 import { getElevenLabsCodeFromPreference } from '@/lib/languages'
 import { readStoredVoiceSelection } from '@/lib/voicePickerPreferences'
@@ -18,6 +23,31 @@ interface VoiceContextValue {
 }
 
 const VoiceContext = createContext<VoiceContextValue | null>(null)
+
+/**
+ * Ask the mounted VoiceBackendSession to load + register the selected backend
+ * chunk and wait until it is registered. Resolves early when a session is
+ * already registered, and gives up after `timeoutMs` so a missing/slow
+ * backend degrades to the old "No voice session registered" warning instead
+ * of hanging the mic button forever.
+ */
+async function ensureVoiceBackendMounted(timeoutMs = 5_000): Promise<void> {
+    if (getVoiceSession() !== null) return
+    window.dispatchEvent(new Event(VOICE_BACKEND_MOUNT_REQUEST_EVENT))
+    if (getVoiceSession() !== null) return
+    await new Promise<void>((resolve) => {
+        let settled = false
+        const finish = () => {
+            if (settled) return
+            settled = true
+            window.clearTimeout(timer)
+            window.removeEventListener(VOICE_BACKEND_READY_EVENT, finish)
+            resolve()
+        }
+        const timer = window.setTimeout(finish, timeoutMs)
+        window.addEventListener(VOICE_BACKEND_READY_EVENT, finish)
+    })
+}
 
 export function VoiceProvider({ children }: { children: ReactNode }) {
     const [status, setStatusInternal] = useState<ConversationStatus>('disconnected')
@@ -40,6 +70,9 @@ export function VoiceProvider({ children }: { children: ReactNode }) {
 
     const startVoice = useCallback(async (sessionId: string) => {
         setCurrentSessionId(sessionId)
+        // The backend component mounts lazily (chunk split); make sure it has
+        // registered its session before asking it to start.
+        await ensureVoiceBackendMounted()
         const contextPlan = voiceHooks.prepareVoiceSession(sessionId)
         storeVoiceContextNotice(contextPlan.notice)
 
