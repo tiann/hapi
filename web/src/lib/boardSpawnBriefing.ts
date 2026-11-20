@@ -11,6 +11,19 @@ export type BoardSpawnBriefing = {
     title: string
 }
 
+type StoredBoardSpawnBriefing = BoardSpawnBriefing & {
+    /** `ApiClient.getReadStateScope()` at stash time — review finding,
+     *  tiann/hapi#2147, follow-up: sessionStorage survives an in-tab
+     *  re-authentication into a different namespace, but a board card's
+     *  title/issue URL is private to whichever identity opened it. If the
+     *  owner's auth is rejected mid-spawn and the same tab re-authenticates
+     *  as a different namespace before the briefing is read, that new
+     *  identity must not see it. `peekBoardSpawnBriefing` refuses to return
+     *  a briefing whose stashed scope doesn't match the caller's current one.
+     */
+    scope: string | null
+}
+
 /**
  * The board item's briefing — the instruction message delivered to the
  * spawned session (buildBoardItemSpawnMessage) plus the issue URL to
@@ -28,11 +41,12 @@ export type BoardSpawnBriefing = {
  * Call `clearBoardSpawnBriefing` once the flow actually completes or is
  * cancelled, so the stash doesn't accumulate across spawns.
  */
-export function stashBoardSpawnBriefing(briefing: BoardSpawnBriefing): string {
+export function stashBoardSpawnBriefing(briefing: BoardSpawnBriefing, scope: string | null): string {
     const id = randomId()
     if (typeof window !== 'undefined') {
         try {
-            sessionStorage.setItem(STORAGE_PREFIX + id, JSON.stringify(briefing))
+            const stored: StoredBoardSpawnBriefing = { ...briefing, scope }
+            sessionStorage.setItem(STORAGE_PREFIX + id, JSON.stringify(stored))
         } catch {
             // sessionStorage unavailable (private mode, quota) — the id is
             // still returned so the flow degrades to "spawn with no briefing"
@@ -51,15 +65,24 @@ export function stashBoardSpawnBriefing(briefing: BoardSpawnBriefing): string {
 // — over a missing rename, which is a strictly worse failure than just
 // skipping the rename (operator-reported, hapi#247: spawned with no
 // instruction or issue link at all).
-export function peekBoardSpawnBriefing(id: string): (Omit<BoardSpawnBriefing, 'title'> & { title?: string }) | null {
+export function peekBoardSpawnBriefing(
+    id: string, currentScope: string | null
+): (Omit<BoardSpawnBriefing, 'title'> & { title?: string }) | null {
     if (typeof window === 'undefined') return null
     try {
         const raw = sessionStorage.getItem(STORAGE_PREFIX + id)
         if (!raw) return null
         const parsed = JSON.parse(raw) as unknown
         if (!parsed || typeof parsed !== 'object') return null
-        const { message, linkIssueUrl, title } = parsed as Record<string, unknown>
+        const { message, linkIssueUrl, title, scope } = parsed as Record<string, unknown>
         if (typeof message !== 'string') return null
+        // Fail closed on anything but an exact match — including a stash
+        // from before this field existed (`scope` missing entirely), which
+        // must not be treated as "no identity to check." A rare dropped
+        // briefing across a deploy boundary is an acceptable cost; leaking
+        // a private card's title/issue URL into a different identity's new
+        // session is not.
+        if (scope !== currentScope) return null
         return {
             message,
             title: typeof title === 'string' ? title : undefined,

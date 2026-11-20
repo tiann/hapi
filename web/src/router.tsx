@@ -570,7 +570,7 @@ function SessionsPage() {
             message: buildBoardItemSpawnMessage(item),
             linkIssueUrl,
             title: item.title
-        })
+        }, api?.getReadStateScope() ?? null)
         // `/sessions/new` is a sibling route under the same `/sessions`
         // parent, so SessionsPage never remounts — without switching back to
         // Sessions mode, `hasRightPaneContent` would keep gating on
@@ -590,7 +590,7 @@ function SessionsPage() {
             },
             ...PRESERVE_SESSION_SIDEBAR_SCROLL,
         })
-    }, [navigate, sessions, onlineMachineIds, setSessionsMode])
+    }, [navigate, sessions, onlineMachineIds, setSessionsMode, api])
     const handleSelectSession = useCallback((
         sessionId: string,
         targetMessageId?: string,
@@ -1621,7 +1621,10 @@ function NewSessionPage() {
     // Peek, not take — `handleChooseFolder` can round-trip through /browse
     // and back to this same route with the same briefingId before the
     // session is created, remounting this component each time.
-    const briefing = useMemo(() => briefingId ? peekBoardSpawnBriefing(briefingId) : null, [briefingId])
+    const briefing = useMemo(
+        () => briefingId ? peekBoardSpawnBriefing(briefingId, api?.getReadStateScope() ?? null) : null,
+        [briefingId, api]
+    )
 
     // Set synchronously (before the success navigate) so the generic
     // abandonment cleanup below skips the success path — `handleSuccess`

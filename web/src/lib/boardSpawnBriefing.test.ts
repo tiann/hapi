@@ -1,35 +1,54 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { clearBoardSpawnBriefing, peekBoardSpawnBriefing, stashBoardSpawnBriefing } from './boardSpawnBriefing'
 
+const SCOPE = '["https://hapi.example.com","default"]'
+
 afterEach(() => {
     sessionStorage.clear()
 })
 
 describe('boardSpawnBriefing', () => {
-    it('round-trips a stashed briefing by its opaque id', () => {
-        const id = stashBoardSpawnBriefing({ message: 'Fix the thing', linkIssueUrl: 'https://github.com/heavygee/hapi/issues/235', title: 'Fix the thing' })
-        expect(peekBoardSpawnBriefing(id)).toEqual({ message: 'Fix the thing', linkIssueUrl: 'https://github.com/heavygee/hapi/issues/235', title: 'Fix the thing' })
+    it('round-trips a stashed briefing by its opaque id, for the same scope', () => {
+        const id = stashBoardSpawnBriefing({ message: 'Fix the thing', linkIssueUrl: 'https://github.com/heavygee/hapi/issues/235', title: 'Fix the thing' }, SCOPE)
+        expect(peekBoardSpawnBriefing(id, SCOPE)).toEqual({ message: 'Fix the thing', linkIssueUrl: 'https://github.com/heavygee/hapi/issues/235', title: 'Fix the thing' })
     })
 
     it('does not delete on peek — the same id can be read again (survives a /browse round trip)', () => {
-        const id = stashBoardSpawnBriefing({ message: 'Fix the thing', title: 'Fix the thing' })
-        peekBoardSpawnBriefing(id)
-        expect(peekBoardSpawnBriefing(id)).toEqual({ message: 'Fix the thing', title: 'Fix the thing', linkIssueUrl: undefined })
+        const id = stashBoardSpawnBriefing({ message: 'Fix the thing', title: 'Fix the thing' }, SCOPE)
+        peekBoardSpawnBriefing(id, SCOPE)
+        expect(peekBoardSpawnBriefing(id, SCOPE)).toEqual({ message: 'Fix the thing', title: 'Fix the thing', linkIssueUrl: undefined })
     })
 
     it('clears the entry so it is no longer readable afterward', () => {
-        const id = stashBoardSpawnBriefing({ message: 'Fix the thing', title: 'Fix the thing' })
+        const id = stashBoardSpawnBriefing({ message: 'Fix the thing', title: 'Fix the thing' }, SCOPE)
         clearBoardSpawnBriefing(id)
-        expect(peekBoardSpawnBriefing(id)).toBeNull()
+        expect(peekBoardSpawnBriefing(id, SCOPE)).toBeNull()
     })
 
     it('returns null for an unknown id', () => {
-        expect(peekBoardSpawnBriefing('not-a-real-id')).toBeNull()
+        expect(peekBoardSpawnBriefing('not-a-real-id', SCOPE)).toBeNull()
     })
 
     it('still delivers the message/issue-link for a stash missing a title (stale pre-rename-fix entry) — only the rename is skipped', () => {
         const id = 'stale-id'
-        sessionStorage.setItem('hapi:board-spawn-briefing:' + id, JSON.stringify({ message: 'Fix the thing', linkIssueUrl: 'https://github.com/heavygee/hapi/issues/235' }))
-        expect(peekBoardSpawnBriefing(id)).toEqual({ message: 'Fix the thing', linkIssueUrl: 'https://github.com/heavygee/hapi/issues/235', title: undefined })
+        sessionStorage.setItem('hapi:board-spawn-briefing:' + id, JSON.stringify({ message: 'Fix the thing', linkIssueUrl: 'https://github.com/heavygee/hapi/issues/235', scope: SCOPE }))
+        expect(peekBoardSpawnBriefing(id, SCOPE)).toEqual({ message: 'Fix the thing', linkIssueUrl: 'https://github.com/heavygee/hapi/issues/235', title: undefined })
+    })
+
+    // Review finding (tiann/hapi#2147, follow-up): a stash written while
+    // signed in under one identity (owner, or a given namespace) must not
+    // be deliverable after the same tab re-authenticates as a different
+    // one — the board card's title and issue URL are private to whichever
+    // identity opened it. Covers both an actual mismatch and a stash that
+    // predates this field entirely (fails closed, not open).
+    it('refuses to return a briefing stashed under a different scope', () => {
+        const id = stashBoardSpawnBriefing({ message: 'Fix the thing', title: 'Fix the thing' }, SCOPE)
+        expect(peekBoardSpawnBriefing(id, '["https://hapi.example.com","other-namespace"]')).toBeNull()
+    })
+
+    it('refuses to return a briefing stashed before the scope field existed', () => {
+        const id = 'pre-scope-id'
+        sessionStorage.setItem('hapi:board-spawn-briefing:' + id, JSON.stringify({ message: 'Fix the thing', title: 'Fix the thing' }))
+        expect(peekBoardSpawnBriefing(id, SCOPE)).toBeNull()
     })
 })
