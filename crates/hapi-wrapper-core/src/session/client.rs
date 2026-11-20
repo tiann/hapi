@@ -45,7 +45,7 @@ pub type CancelHandler =
 pub type RetryHandler = Arc<dyn Fn(String) -> BoxFuture<'static, io::Result<bool>> + Send + Sync>;
 pub type UserHandler = Arc<dyn Fn(Value, Option<String>) + Send + Sync>;
 pub trait SessionExtension: Send + Sync + 'static {
-    fn register(&self, _rpc: &crate::rpc::manager::RpcHandlerManager) {}
+    fn register(&self, _session_id: &str, _rpc: &crate::rpc::manager::RpcHandlerManager) {}
     fn connected(&self, _socket: &Socket, _generation: u64) {}
     fn disconnected(&self) {}
     fn socket_event(&self, _name: &str, _args: &[Value], _metadata: &Value) -> bool {
@@ -85,6 +85,7 @@ pub struct SessionClient {
     pub(super) latest: Mutex<Value>,
     incoming: Mutex<Incoming>,
     extensions: Vec<Arc<dyn SessionExtension>>,
+    extensions_closed: Mutex<bool>,
 }
 impl SessionClient {
     pub fn start(
@@ -133,6 +134,10 @@ impl SessionClient {
                 return Err(io::Error::other(format!("Invalid session {key}")));
             }
         }
+        let rpc = crate::rpc::manager::RpcHandlerManager::new(&id);
+        for extension in &extensions {
+            extension.register(&id, &rpc);
+        }
         let initially_archived = super::metadata::hub_archived(&session["metadata"]);
         let (socket, mut rx) = Socket::start_session(
             config.api_url.clone(),
@@ -172,7 +177,7 @@ impl SessionClient {
             )
         };
         let this = Arc::new(Self {
-            rpc: crate::rpc::manager::RpcHandlerManager::new(&id),
+            rpc,
             metadata: doc(Kind::Metadata, "metadata", "metadataVersion"),
             agent_state: doc(Kind::AgentState, "agentState", "agentStateVersion"),
             id,
@@ -188,10 +193,8 @@ impl SessionClient {
             latest: Mutex::new(json!({"thinking":false})),
             incoming: Mutex::default(),
             extensions,
+            extensions_closed: Mutex::new(false),
         });
-        for extension in &this.extensions {
-            extension.register(&this.rpc);
-        }
         if initially_archived {
             latch();
         }
@@ -238,9 +241,10 @@ impl SessionClient {
                             continue;
                         }
                         let _ = client.events.send(SessionEvent::ConnectionStart);
-                        for extension in &client.extensions {
-                            extension.connected(&client.socket, generation);
-                        }
+                        client.dispatch(|e| {
+                            e.connected(&client.socket, generation);
+                            false
+                        });
                         client.rpc.on_connect(&client.socket);
                         client.alive(false);
                         if connections > 1 {
@@ -272,9 +276,10 @@ impl SessionClient {
                     Event::Disconnected(_) => {
                         client.filter.lock().unwrap().start_backfill();
                         client.rpc.on_disconnect();
-                        for extension in &client.extensions {
-                            extension.disconnected();
-                        }
+                        client.dispatch(|e| {
+                            e.disconnected();
+                            false
+                        });
                         let _ = client.events.send(SessionEvent::Disconnected);
                     }
                     Event::Message { name, args, ack } if name == "rpc-request" => {
@@ -296,11 +301,7 @@ impl SessionClient {
                     Event::Message { name, args, ack } => {
                         if !client.extensions.is_empty() {
                             let metadata = client.metadata.get().value;
-                            if client
-                                .extensions
-                                .iter()
-                                .any(|e| e.socket_event(&name, &args, &metadata))
-                            {
+                            if client.dispatch(|e| e.socket_event(&name, &args, &metadata)) {
                                 continue;
                             }
                         }
@@ -515,8 +516,12 @@ impl SessionClient {
             return;
         }
         self.rpc.on_disconnect();
-        for extension in &self.extensions {
-            extension.disconnected();
+        {
+            let mut closed = self.extensions_closed.lock().unwrap();
+            *closed = true;
+            for extension in &self.extensions {
+                extension.disconnected();
+            }
         }
         self.metadata.close();
         self.agent_state.close();
@@ -525,6 +530,13 @@ impl SessionClient {
         *self.latest.lock().unwrap() = Value::Null;
         self.stop_keep_alive();
         self.socket.stop(Duration::from_millis(500));
+    }
+    fn dispatch(&self, f: impl FnMut(&Arc<dyn SessionExtension>) -> bool) -> bool {
+        if self.extensions.is_empty() {
+            return false;
+        }
+        let closed = self.extensions_closed.lock().unwrap();
+        !*closed && self.extensions.iter().any(f)
     }
     pub fn shutdown_extensions(&self) -> BoxFuture<'static, ()> {
         let all: Vec<_> = self.extensions.iter().map(|e| e.shutdown()).collect();

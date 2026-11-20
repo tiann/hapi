@@ -1441,6 +1441,7 @@ async fn dropping_last_handle_stops_failing_backfill() {
 #[derive(Default)]
 struct Probe {
     log: std::sync::Mutex<Vec<String>>,
+    session: std::sync::OnceLock<String>,
     stopped: tokio::sync::watch::Sender<bool>,
 }
 impl Probe {
@@ -1449,8 +1450,9 @@ impl Probe {
     }
 }
 impl SessionExtension for Probe {
-    fn register(&self, rpc: &hapi_wrapper_core::rpc::manager::RpcHandlerManager) {
+    fn register(&self, id: &str, rpc: &hapi_wrapper_core::rpc::manager::RpcHandlerManager) {
         self.log.lock().unwrap().push("register".into());
+        self.session.set(id.into()).unwrap();
         rpc.register("probe", |v| async move { Ok(Some(v)) });
     }
     fn connected(&self, socket: &hapi_wrapper_core::sio::client::Client, generation: u64) {
@@ -1519,9 +1521,12 @@ async fn extension_registers_handlers_before_first_connect() {
         return;
     }
     let mut h = Hub::new().await;
+    h.command("forceId", "hub-assigned".into()).await;
     let probe = Arc::new(Probe::default());
     let mut started = bootstrap_with(&h, vec![probe.clone()]).await;
     assert_eq!(probe.log().first().map(String::as_str), Some("register"));
+    assert_eq!(started.client.id, "hub-assigned");
+    assert_eq!(probe.session.get().unwrap(), "hub-assigned");
     wait(&mut started.events, |e| {
         matches!(e, SessionEvent::Connected)
     })
@@ -1614,4 +1619,39 @@ async fn shutdown_extensions_waits_for_every_extension_until_close() {
         Some("disconnected")
     );
     h.command("snapshot", Value::Null).await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn close_waits_for_an_in_flight_extension_callback() {
+    if ran_in_child("close_waits_for_an_in_flight_extension_callback").await {
+        return;
+    }
+    struct Gate {
+        entered: mpsc::UnboundedSender<()>,
+        release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+    impl SessionExtension for Gate {
+        fn connected(&self, _: &hapi_wrapper_core::sio::client::Client, _: u64) {
+            self.entered.send(()).unwrap();
+            self.release.lock().unwrap().recv_timeout(LIMIT).unwrap();
+        }
+    }
+    let h = Hub::new().await;
+    let (entered, mut seen) = mpsc::unbounded_channel();
+    let (release, blocked) = std::sync::mpsc::channel();
+    let gate = Arc::new(Gate {
+        entered,
+        release: std::sync::Mutex::new(blocked),
+    });
+    let probe = Arc::new(Probe::default());
+    let started = bootstrap_with(&h, vec![gate, probe.clone()]).await;
+    timeout(LIMIT, seen.recv()).await.unwrap().unwrap();
+    let client = started.client.clone();
+    let mut closing = tokio::task::spawn_blocking(move || client.close());
+    assert!(timeout(Duration::from_millis(200), &mut closing)
+        .await
+        .is_err());
+    assert_eq!(probe.log(), ["register"]);
+    release.send(()).unwrap();
+    timeout(LIMIT, closing).await.unwrap().unwrap();
+    assert_eq!(probe.log(), ["register", "connected:0", "disconnected"]);
 }

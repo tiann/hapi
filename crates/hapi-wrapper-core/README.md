@@ -30,10 +30,12 @@ On top of the socket it provides the session layer of `cli/src/api/apiSession.ts
   `update` handling, the hub-archived latch, the stoppable 10 s keepalive,
   incoming dedup with backfill after reconnect, the emit API, prompt-echo
   bookkeeping, and flush and close. A caller can pass `SessionExtension`s
-  through `bootstrap::Options.extensions`: each registers its RPC handlers before
-  the first connect, is told about every connect (with its socket generation),
+  through `bootstrap::Options.extensions`: each registers its RPC handlers (given the
+  resolved session id) before the socket starts, is told about every connect (with its socket generation),
   disconnect and close, may consume socket events that the client does not
-  handle itself, and is awaited by `shutdown_extensions()`.
+  handle itself, and is awaited by `shutdown_extensions()`. The final
+  `disconnected()` from `close()` waits for a callback already in progress, and no
+  callback starts after it.
 - `schemas`: the session metadata checks of `shared/src/schemas.ts`, including
   the full OpenCode rewind record.
 
