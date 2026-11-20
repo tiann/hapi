@@ -598,7 +598,7 @@ describe('NewSession launch preferences', () => {
         mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'verify-saved-tier' })
         renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
         expect(await screen.findByRole('option', { name: 'misc.fastModeUltrafast' })).toBeDisabled()
-        expect(await screen.findByText(/Codex will verify it when starting the session/)).toBeInTheDocument()
+        expect(await screen.findByText('newSession.verifySavedUltrafastOnLaunch')).toBeInTheDocument()
         await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
         fireEvent.click(screen.getByTestId('create'))
         await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-6.2-sol', serviceTier: 'ultrafast' })))
@@ -679,7 +679,7 @@ describe('NewSession launch preferences', () => {
         mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'saved-fast' })
         renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
         expect(await screen.findByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue('fast')
-        expect(screen.getByText(/Service tier availability could not be verified/)).toBeInTheDocument()
+        expect(screen.getByText('newSession.tierAvailabilityUnverified')).toBeInTheDocument()
         await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
         fireEvent.click(screen.getByTestId('create'))
         await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ serviceTier: 'fast' })))
@@ -2895,6 +2895,7 @@ describe('NewSession launch preferences', () => {
         view.rerender(form())
         await act(async () => finishDirectoryCheck?.({ exists: { 'C:\\repo': true } }))
         expect(screen.getByRole('option', { name: 'misc.fastModeFast' })).toBeDisabled()
+        expect(screen.getByText('newSession.importTierAvailabilityUnverified')).toBeInTheDocument()
         expect(tier).toHaveValue('fast')
         expect(create).toBeDisabled()
         fireEvent.click(create)
@@ -2918,14 +2919,14 @@ describe('NewSession launch preferences', () => {
         } as unknown as ApiClient;
         renderWithQuery(<NewSession api={importApi} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />);
         expect(await screen.findByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue(preferredTier);
-        expect(screen.getByRole('option', { name: 'Account default' })).toBeInTheDocument();
+        expect(screen.getByRole('option', { name: 'newSession.accountDefaultTier' })).toBeInTheDocument();
         fireEvent.click(screen.getByRole('button', { name: 'codexSync.newSessionInline.choose' }));
         await waitFor(() => expect(screen.getByTestId('select-codex-history')).toBeEnabled());
         fireEvent.click(screen.getByTestId('select-codex-history'));
-        expect(await screen.findByRole('option', { name: 'Keep existing tier' })).toBeInTheDocument();
+        expect(await screen.findByRole('option', { name: 'newSession.keepExistingTier' })).toBeInTheDocument();
         expect(screen.getByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue('default');
         expect(screen.queryByRole('option', { name: 'misc.fastModeUltrafast' })).not.toBeInTheDocument();
-        expect(screen.queryByRole('option', { name: 'Account default' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('option', { name: 'newSession.accountDefaultTier' })).not.toBeInTheDocument();
         await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled());
         fireEvent.click(screen.getByTestId('create'));
         await waitFor(() => expect(syncCodexSession).toHaveBeenCalledWith(expect.objectContaining({ serviceTier: undefined })));
@@ -2970,7 +2971,7 @@ describe('NewSession launch preferences', () => {
         await waitFor(() => expect(screen.getByTestId('select-codex-history')).toBeEnabled());
         fireEvent.click(screen.getByTestId('select-codex-history'));
         const tier = await screen.findByRole('combobox', { name: 'newSession.fastMode' });
-        expect(screen.getByRole('option', { name: 'Keep existing tier' })).toBeInTheDocument();
+        expect(screen.getByRole('option', { name: 'newSession.keepExistingTier' })).toBeInTheDocument();
         fireEvent.change(tier, { target: { value: 'standard' } });
         await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled());
         fireEvent.click(screen.getByTestId('create'));

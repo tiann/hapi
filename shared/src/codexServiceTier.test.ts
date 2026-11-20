@@ -22,6 +22,12 @@ describe('Codex service tiers', () => {
         expect(codexModelHasUltrafastTier({ serviceTiers: ['Ultrafast'] })).toBe(false)
         expect(codexModelHasUltrafastTier({ serviceTiers: [' ultrafast '] })).toBe(false)
     })
+
+    it('retains a native-only tier for display without making it selectable', () => {
+        expect(fromCodexServiceTier('flex')).toBe('flex')
+        expect(toCodexServiceTier('flex')).toBeUndefined()
+        expect(fromCodexServiceTier(undefined)).toBeNull()
+    })
 })
 
 

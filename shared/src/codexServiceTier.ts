@@ -6,10 +6,12 @@ export function toCodexServiceTier(tier: string | null | undefined): string | nu
     return undefined
 }
 
-export function fromCodexServiceTier(tier: unknown): 'standard' | 'fast' | 'ultrafast' | null {
-    if (tier === 'ultrafast') return 'ultrafast'
+export function fromCodexServiceTier(tier: unknown): string | null {
     if (tier === 'default') return 'standard'
-    return tier === 'priority' || tier === 'fast' ? 'fast' : null
+    if (tier === 'priority') return 'fast'
+    // A reported native-only tier (such as Flex) is distinct from an absent
+    // runtime tier, which consumers may resolve from the model catalog.
+    return typeof tier === 'string' && tier.trim() ? tier : null
 }
 
 /** Availability belongs to the current account's model catalog, not model-name heuristics. */

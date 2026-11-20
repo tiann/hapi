@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { fromCodexServiceTier } from '@hapi/protocol'
 import {
     codexModelAdvertisesFastTier,
     getEffectiveCodexServiceTier,
@@ -70,6 +71,12 @@ describe('getEffectiveCodexServiceTier', () => {
 
         expect(getEffectiveCodexServiceTier(null, null, modelsWithDefault)).toBe('priority')
         expect(getEffectiveCodexServiceTier('standard', null, modelsWithDefault)).toBe('standard')
+    })
+    it('keeps a confirmed native Flex tier when the model catalog defaults to Fast', () => {
+        const catalog = [{ id: 'gpt-5.5', isDefault: true, defaultServiceTier: 'priority' }]
+        const effectiveTier = getEffectiveCodexServiceTier(fromCodexServiceTier('flex'), 'gpt-5.5', catalog)
+        expect(effectiveTier).toBe('flex')
+        expect(isFastServiceTier(effectiveTier)).toBe(false)
     })
 })
 

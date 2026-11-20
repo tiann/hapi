@@ -35,17 +35,15 @@ export function FastModeSelector(props: {
                 disabled={props.isDisabled}
                 className="py-2 pl-3 text-sm rounded-lg border border-[var(--app-divider)] bg-[var(--app-bg)] text-[var(--app-text)] focus:outline-none focus:ring-2 focus:ring-[var(--app-link)] disabled:opacity-50"
             >
-                <option value="default">{props.keepExistingTier ? 'Keep existing tier' : 'Account default'}</option>
+                <option value="default">{t(props.keepExistingTier ? 'newSession.keepExistingTier' : 'newSession.accountDefaultTier')}</option>
                 <option value="standard">{t('misc.fastModeStandard')}</option>
                 {(props.fastAvailable !== false || props.value === 'fast') && <option value="fast" disabled={props.fastAvailable === false}>{t('misc.fastModeFast')}</option>}
                 {(props.ultrafastAvailable || props.value === 'ultrafast') && <option value="ultrafast" disabled={!props.ultrafastAvailable}>{t('misc.fastModeUltrafast')}</option>}
             </SelectControl>
             {props.ultrafastNeedsModel ? <p role="status" className="text-xs text-[var(--app-hint)]">{t('newSession.ultrafastNeedsModel')}</p> : null}
-            {props.verifySavedUltrafastOnLaunch ? <p role="status" className="text-xs text-[var(--app-hint)]">The current catalog does not list Ultrafast for this model. Codex will verify it when starting the session.</p> : null}
+            {props.verifySavedUltrafastOnLaunch ? <p role="status" className="text-xs text-[var(--app-hint)]">{t('newSession.verifySavedUltrafastOnLaunch')}</p> : null}
             {props.availabilityUnverified ? <p role="status" className="text-xs text-[var(--app-hint)]">
-                {props.keepExistingTier
-                    ? 'Service tier availability could not be verified. Choose Keep existing tier or Standard.'
-                    : 'Service tier availability could not be verified. You can choose Standard or Account default.'}
+                {t(props.keepExistingTier ? 'newSession.importTierAvailabilityUnverified' : 'newSession.tierAvailabilityUnverified')}
             </p> : null}
         </div>
     )
