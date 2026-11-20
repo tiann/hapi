@@ -47,6 +47,7 @@ export const SETTINGS_STORAGE_KEYS: readonly string[] = [
     'hapi-session-list-active-first',
     'hapi-session-list-unread-only',
     'hapi-show-active-sessions-only', // legacy fallback for hapi-session-list-status
+    'hapi-blocked-alert-mode',
     'hapi-session-preview-limit',
     'hapi-machine-labels',
     'hapi-directory-sort',

@@ -2,13 +2,17 @@ import { mergeClaudeSessionIdHistory, mergeReadState } from '@hapi/protocol'
 import { SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING } from '@hapi/protocol'
 import { AgentStateSchema, ExternalRefsSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
 import type { BackgroundTask, CodexCollaborationMode, CopilotAgentMode, ExternalRef, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
-import type { SessionTurnEndReason, SessionTurnTrigger, Store } from '../store'
+import type { SessionTurnEndReason, SessionTurnTrigger, Store, StoredMessage, StoredSession } from '../store'
 import type { TransferSessionJobsResult } from '../store/sessionJobs'
 import { clampAliveTime } from './aliveTime'
 import { EventPublisher } from './eventPublisher'
 import { extractTodoWriteTodosFromMessageContent, TodosSchema } from './todos'
 import { InvalidExternalRefsError } from './externalRefErrors'
 import { resolveSessionIdleTimeoutMs, shouldClearKeepaliveIdle, shouldMarkKeepaliveIdle } from './sessionIdle'
+import { isDeliveredOperatorReply, messageReceivedAt, operatorReplyDeliveredAt } from './workGraphNotifyIngest'
+
+/** Transcript window scanned for a newer operator reply when merging a
+ *  notify signal (#1717). Matches the startup backfill's scan depth. */
 
 export { InvalidExternalRefsError } from './externalRefErrors'
 
@@ -457,6 +461,24 @@ export class SessionCache {
             teamState,
             todosUpdatedAt: stored.todosUpdatedAt ?? 0,
             teamStateUpdatedAt: stored.teamStateUpdatedAt ?? 0,
+            blockedAck: stored.blockedAckAt !== null
+                ? {
+                    at: stored.blockedAckAt,
+                    reason: stored.blockedAckReason ?? '',
+                    // Dropping this made a restart or merge fall back to
+                    // timestamp-cutoff semantics, which is exactly what the
+                    // identity exists to replace.
+                    keys: stored.blockedAckKeys
+                }
+                : null,
+            notifyUpdatedAt: stored.lastNotifyUpdatedAt ?? 0,
+            lastNotify: stored.lastNotifyStatus !== null && stored.lastNotifyAt !== null
+                ? {
+                    status: stored.lastNotifyStatus,
+                    at: stored.lastNotifyAt,
+                    note: stored.lastNotifyNote
+                }
+                : null,
             model: stored.model,
             modelReasoningEffort: stored.modelReasoningEffort,
             effort: stored.effort,
@@ -496,6 +518,330 @@ export class SessionCache {
         if (!session) throw new Error('Session not found')
         this.store.sessions.setSessionPinMode(sessionId, mode, session.namespace)
         this.refreshSession(sessionId)
+    }
+
+    /**
+     * Record the agent's latest `AGENT_NOTIFY_SUMMARY` footer (#1717).
+     * Refreshes so SSE carries the new `lastNotify` to session lists.
+     */
+    setSessionLastNotify(
+        sessionId: string,
+        signal: { status: string; at: number; note: string | null; receivedAt?: number | null }
+    ): void {
+        const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+        if (!session) return
+        // `clearSessionLastNotify` nulls `last_notify_at`, so the store's
+        // timestamp-monotonic check has nothing left to compare against — and
+        // Claude replays keep their original transcript timestamps. Without a
+        // boundary, a delayed footer from before the operator's reply walks
+        // straight back in and the row reappears as blocked.
+        //
+        // The boundary is persisted (`last_notify_cleared_at`) rather than read
+        // from `activeTurnStartedAt`: that field resets when the agent goes
+        // idle, so a footer arriving after the reply turn *ended* found both it
+        // and `last_notify_at` null and was accepted. The persisted watermark
+        // also survives a restart. The store enforces the same rules in SQL;
+        // this is the in-memory fast path, and the two must agree.
+        //
+        // Each comparison stays inside ONE clock: the footer's hub arrival
+        // against the delivery boundary (both hub), and the footer's author
+        // time against the author time of the footer that delivery superseded
+        // (both this runner).
+        const stored = this.store.sessions.getSessionByNamespace(sessionId, session.namespace)
+        const clearedAt = stored?.lastNotifyClearedAt ?? null
+        if (signal.receivedAt != null && clearedAt !== null && signal.receivedAt < clearedAt) {
+            return
+        }
+        if (signal.receivedAt == null && clearedAt !== null && signal.at < clearedAt) {
+            return
+        }
+        const clearedAuthorAt = stored?.lastNotifyClearedAuthorAt ?? null
+        if (clearedAuthorAt !== null && signal.at <= clearedAuthorAt) {
+            return
+        }
+        // Unchanged status for the same turn: skip the write + SSE fan-out.
+        // The list only renders status/note, so a repeated footer is a no-op.
+        if (session.lastNotify
+            && session.lastNotify.status === signal.status
+            && session.lastNotify.note === signal.note
+            && session.lastNotify.at >= signal.at
+        ) {
+            return
+        }
+        if (this.store.sessions.setSessionLastNotify(sessionId, signal, session.namespace)) {
+            this.applyLastNotifyToCache(session, signal)
+        }
+    }
+
+    /**
+     * Record the operator's manual unblock (#1717). Returns the stored ack so
+     * the caller can put the same values in the ledger event.
+     */
+    setSessionBlockedAck(
+        sessionId: string,
+        reason: string,
+        at: number = Date.now(),
+        key?: string
+    ): {
+        at: number
+        reason: string
+        keys?: string[] | null
+    } | null {
+        const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+        if (!session) return null
+        // Merge, never replace: dismissing a second prompt must not un-dismiss
+        // the first. Deduped and bounded by the store.
+        const existingKeys = this.store.sessions.getSessionByNamespace(sessionId, session.namespace)
+            ?.blockedAckKeys ?? []
+        const keys = key
+            ? Array.from(new Set([...existingKeys, key]))
+            : (existingKeys.length > 0 ? existingKeys : null)
+        if (!this.store.sessions.setSessionBlockedAck(
+            sessionId,
+            { at, reason, keys },
+            session.namespace
+        )) {
+            return null
+        }
+        // Read the WHOLE acknowledgement back from the row, not just its
+        // revision. SQLite bounds the key set; a long-lived session keeps
+        // dismissal keys after their prompts resolve, so the 65th distinct
+        // dismissal was trimmed to 64 in storage while the broadcast carried
+        // all 65 — and the web rejected that session wholesale against the
+        // 64-key schema limit, so other tabs silently missed the dismissal.
+        // Publishing what was persisted keeps the wire inside its own schema
+        // and keeps every tab agreeing with the row.
+        const stored = this.store.sessions.getSessionByNamespace(sessionId, session.namespace)
+        const ack = stored?.blockedAckAt !== null && stored?.blockedAckAt !== undefined
+            ? {
+                at: stored.blockedAckAt,
+                reason: stored.blockedAckReason ?? reason,
+                keys: stored.blockedAckKeys ?? null
+            }
+            : { at, reason, keys }
+        // In place + full-session emit, for the same reason as the notify
+        // writes: refreshSession would discard in-memory runtime state.
+        session.blockedAck = ack
+        // Read the revision BACK from the row rather than inventing one from
+        // hub-now. SQLite versions the write using the blocker's observed
+        // timestamp; broadcasting a now-based revision made a later refresh
+        // look older than the SSE patch, and the browser rejected a dismissal
+        // a merge had legitimately transferred.
+        session.notifyUpdatedAt = this.readNotifyRevision(session)
+        this.publisher.emit({ type: 'session-updated', sessionId: session.id, data: session })
+        return ack
+    }
+
+    /**
+     * Forget the stored footer — a new turn started, so the agent's last
+     * self-report no longer describes the present.
+     */
+    /**
+     * Replace the notify signal and its clear boundary in one write.
+     *
+     * Only for post-truncation reconciliation: after a rewind the retained
+     * transcript is the truth, so this bypasses the monotonic and boundary
+     * guards that protect the live path from out-of-order arrivals.
+     */
+    /**
+     * True when the destination holds a blocker older than `ackAt` that its own
+     * acknowledgement does not already cover — i.e. one a transferred watermark
+     * would silence without the operator ever having seen it.
+     */
+    private hasUnacknowledgedBlockerBefore(
+        stored: StoredSession,
+        ackAt: number,
+        namespace: string
+    ): boolean {
+        const ownAckAt = stored.blockedAckAt ?? null
+        const covered = (at: number): boolean => ownAckAt !== null && at <= ownAckAt
+        const notifyAt = stored.lastNotifyAt
+        if (stored.lastNotifyStatus !== null && notifyAt !== null
+            && notifyAt < ackAt && !covered(notifyAt)) {
+            return true
+        }
+        const session = this.sessions.get(stored.id)
+        const requests = session?.agentState?.requests
+        if (!requests) return false
+        for (const request of Object.values(requests)) {
+            const since = typeof request.createdAt === 'number' ? request.createdAt : null
+            if (since !== null && since < ackAt && !covered(since)) return true
+        }
+        return false
+    }
+
+    replaceNotifyAfterTruncate(
+        sessionId: string,
+        signal: { status: string; at: number; note: string | null; receivedAt?: number | null } | null,
+        boundaryAt: number = Date.now(),
+        boundaryAuthorAt: number | null = null
+    ): void {
+        const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
+        if (!session) return
+        if (this.store.sessions.replaceNotifyAfterTruncate(
+            sessionId,
+            session.namespace,
+            signal,
+            boundaryAt,
+            boundaryAuthorAt
+        )) {
+            this.applyLastNotifyToCache(session, signal)
+        }
+    }
+
+    clearSessionLastNotify(sessionId: string, boundaryAt: number = Date.now()): void {
+        const session = this.sessions.get(sessionId)
+        if (!session) return
+        // The boundary advances even when no footer is cached. A turn that
+        // starts BEFORE the previous footer reaches the hub would otherwise
+        // skip the write entirely, and that delayed pre-reply footer could
+        // then arrive after the reply turn ended and be accepted — reviving a
+        // blocker the operator had already answered.
+        const cleared = this.store.sessions.clearSessionLastNotify(
+            sessionId,
+            session.namespace,
+            boundaryAt
+        )
+        if (session.lastNotify && cleared) {
+            this.applyLastNotifyToCache(session, null)
+        } else if (cleared) {
+            session.notifyUpdatedAt = this.readNotifyRevision(session)
+        }
+    }
+
+    /**
+     * Update `lastNotify` in place and broadcast the whole Session.
+     *
+     * Deliberately NOT `refreshSession`: that rebuilds from SQLite and would
+     * discard in-memory runtime state, most damagingly the `updatedAt` bump
+     * `markMessageQueued` / `applySessionPatch` just made in memory — the clear
+     * runs on exactly those paths, so refreshing there broadcast a stale clock
+     * and moved the session back down the list.
+     *
+     * A full Session rather than a SessionPatch because `SessionPatch` has no
+     * `lastNotify` field; the web's full-session branch rebuilds the summary
+     * via `toSessionSummary`, which does carry it.
+     */
+    private applyLastNotifyToCache(
+        session: Session,
+        signal: { status: string; at: number; note: string | null } | null
+    ): void {
+        session.lastNotify = signal
+        // Bumped on every write INCLUDING a clear: without an ordering key a
+        // delayed snapshot on the other SSE stream re-applies the pre-clear
+        // state and the row flips back to blocked.
+        //
+        // Read BACK from the row, for the same reason the acknowledgement path
+        // does. SQLite versions a clear off the *boundary* timestamp — which is
+        // the answering message's clock, usually well in the past — so a
+        // now-based revision invented here outruns the row. A merge clears the
+        // footer, then transfers the dismissal, then re-emits from a refresh:
+        // with a now-based revision that final, correct payload looked OLDER
+        // than this patch and the browser rejected it, keeping the pre-merge
+        // acknowledgement and re-blocking a row the operator had dismissed.
+        session.notifyUpdatedAt = this.readNotifyRevision(session)
+        this.publisher.emit({ type: 'session-updated', sessionId: session.id, data: session })
+    }
+
+    /**
+     * Carry a dismissal from one session onto another (#1717).
+     *
+     * Public because more than one path merges sessions: the resume-id rotation
+     * in `mergeSessionData`, and the Codex Desktop duplicate reconciliation,
+     * which copies messages across and then deletes the source. That one did
+     * not transfer the acknowledgement, so a dismissed footer copied into the
+     * canonical session became its latest signal and showed up in Blocked
+     * again — a dismissal the operator had already made, undone by a merge
+     * they did not ask for. One implementation rather than two, because an
+     * ack-merge rule duplicated is an ack-merge rule that drifts.
+     */
+    transferBlockedAck(fromSessionId: string, toSessionId: string, namespace: string): void {
+        const source = this.store.sessions.getSessionByNamespace(fromSessionId, namespace)
+        const sourceAckAt = source?.blockedAckAt ?? null
+        if (!source || sourceAckAt === null) return
+        const target = this.store.sessions.getSessionByNamespace(toSessionId, namespace)
+        if (!target) return
+        const targetAckAt = target.blockedAckAt ?? null
+        // UNION the dismissal sets. Skipping the source entirely whenever the
+        // destination had its own keyed acknowledgement meant each row having
+        // dismissed a DIFFERENT request made the source's request block again
+        // on the merged row — the merge unions the requests, so it has to
+        // union what dismissed them.
+        const mergedKeys = Array.from(new Set([
+            ...(target.blockedAckKeys ?? []),
+            ...(source.blockedAckKeys ?? [])
+        ]))
+        // Keyless acknowledgements (written before identities existed) still
+        // carry across on the old watermark rule, so an upgrade does not
+        // resurrect work the operator already dismissed.
+        const transferKeyless = mergedKeys.length === 0
+            && (targetAckAt === null || sourceAckAt > targetAckAt)
+        if (mergedKeys.length === 0 && !transferKeyless) return
+        this.store.sessions.setSessionBlockedAck(
+            toSessionId,
+            {
+                at: Math.max(sourceAckAt, targetAckAt ?? 0),
+                reason: (targetAckAt !== null && targetAckAt >= sourceAckAt)
+                    ? (target.blockedAckReason ?? '')
+                    : (source.blockedAckReason ?? ''),
+                keys: mergedKeys.length > 0 ? mergedKeys : null
+            },
+            namespace
+        )
+    }
+
+    /**
+     * Did this delivered reply arrive after the footer it might answer (#1717)?
+     *
+     * Both sides are hub stamps: the reply's delivery time against the footer's
+     * hub ARRIVAL. The footer's own timestamp is the runner's clock, and mixing
+     * the two meant a runner running 30 seconds behind could have a merge or
+     * rewind treat a turn's own initiating prompt as the answer to the footer
+     * that turn ended on, removing a blocker still plainly visible in the
+     * transcript. A position cannot serve either — see `messageReceivedAt`.
+     */
+    private replyAnswersFooter(reply: StoredMessage, footerReceivedAt: number): boolean {
+        return operatorReplyDeliveredAt(reply) > footerReceivedAt
+    }
+
+    /**
+     * The most recently delivered operator reply on a session, or null (#1717).
+     *
+     * Ordered by delivery time, which is the same key `replyAnswersFooter`
+     * then compares against. Selecting on anything else let the two disagree:
+     * a merge renumbers the destination's positions, so the highest `seq` is
+     * not the latest reply, and the one picked as "latest" could be the one
+     * that answers least. Scans every delivered row rather than a recency
+     * window, because after a merge a bounded window can hold only destination
+     * rows and miss the source reply that answered the blocker.
+     */
+    private latestDeliveredOperatorReply(sessionId: string): StoredMessage | null {
+        let newest: StoredMessage | null = null
+        for (const message of this.store.messages.getInvokedMessages(sessionId)) {
+            if (!isDeliveredOperatorReply(message)) continue
+            // Selected by the same key `replyAnswersFooter` then compares, and
+            // by the same rule the transcript derivation uses — the two having
+            // their own copies is how the merge path kept comparing a LOCAL
+            // reply's runner clock against a footer's hub arrival (#1717).
+            if (newest === null
+                || operatorReplyDeliveredAt(message) > operatorReplyDeliveredAt(newest)) {
+                newest = message
+            }
+        }
+        return newest
+    }
+
+    /**
+     * The notify revision as SQLite computed it — the single source of truth.
+     *
+     * Every in-memory broadcast must carry the row's value, or two independent
+     * counters drift and the browser's ordering guard starts rejecting good
+     * payloads. Falls back to a local bump only if the row vanished mid-merge.
+     */
+    private readNotifyRevision(session: Session): number {
+        return this.store.sessions
+            .getSessionByNamespace(session.id, session.namespace)?.lastNotifyUpdatedAt
+            ?? ((session.notifyUpdatedAt ?? 0) + 1)
     }
 
     markSessionActive(sessionId: string, time: number = Date.now()): void {
@@ -610,6 +956,12 @@ export class SessionCache {
         }
         if (patch.thinking === false) this.forgetInterruptedTurn(session.id)
         this.recordTurn(session, wasThinking, Date.now(), 'patch', 'idle')
+
+        // #1717: last, because clearing re-seats the cached Session object and
+        // would strand the in-place mutations above.
+        if (!wasThinking && session.thinking) {
+            this.clearSessionLastNotify(session.id)
+        }
 
         return true
     }
@@ -745,6 +1097,14 @@ export class SessionCache {
                 } satisfies SessionPatch
             })
         }
+
+        // #1717: a new turn invalidates the agent's last self-report — whatever
+        // it said it was blocked on, it is now working. Done last because
+        // `clearSessionLastNotify` re-seats the cached Session object, which
+        // would strand the in-place mutations above.
+        if (!wasThinking && session.thinking) {
+            this.clearSessionLastNotify(session.id)
+        }
     }
 
     /**
@@ -796,6 +1156,19 @@ export class SessionCache {
                 } satisfies SessionPatch
             })
         }
+
+        // #1717: the clear lives on CONFIRMED delivery
+        // (`clearSessionLastNotifyOnDelivery`), not here. Queueing is
+        // optimistic: an idempotent retry of an already-consumed message
+        // reuses its row and starts no turn, and a prompt can be cancelled
+        // before the agent ever sees it — both erased a live blocker from
+        // here. The boundary still advances so a delayed footer cannot slip
+        // in behind the reply.
+        // The boundary is NOT advanced here any more. Queueing is optimistic:
+        // a reply cancelled before delivery would otherwise leave a boundary
+        // that rejects a footer the agent generated before the send, and the
+        // unanswered blocker never reappears. Both the clear and the boundary
+        // now move together on confirmed delivery.
     }
 
     /**
@@ -2313,6 +2686,76 @@ export class SessionCache {
                 )
                 if (result.result !== 'version-mismatch') break
                 // version-mismatch: retry with fresh snapshot
+            }
+        }
+
+        // #1717: the acknowledgement has to follow the requests it silences.
+        // The merge above moves the source's pending requests onto the target
+        // with their original `createdAt`, so without the watermark a prompt
+        // the operator already dismissed reads as newer-than-nothing and goes
+        // straight back to blocking. Keep the later of the two acks, so a
+        // genuinely newer request on either side still blocks.
+        // The acknowledgement now carries the identity of the blocker it
+        // covered, so a merge can transfer it without it swallowing anything
+        // else: a destination ack cannot hide an incoming source footer, and a
+        // source ack cannot hide an unanswered destination prompt. That is what
+        // the previous timestamp-only watermark could not express, and why a
+        // one-directional guard here was never going to be enough.
+        //
+        // Keyless acks (written before the identity existed) keep the old
+        // watermark semantics, so the later of the two still wins for them.
+        this.transferBlockedAck(oldSessionId, newSessionId, namespace)
+
+        // The footer has to follow its transcript. `mergeSessionMessages` moves
+        // the blocked turn onto the destination but replays no `message-added`,
+        // so nothing re-derives the signal there — the conversation would keep
+        // the unanswered footer in its history while dropping out of the
+        // Blocked section entirely. Newest wins, matching the monotonic rule
+        // the live writes use.
+        // A source with NO footer is not "nothing to say": it may hold a
+        // delivered reply that answered its own footer and, once merged, also
+        // answers the destination's older one. Skipping reconciliation there
+        // left the destination showing a blocker the combined transcript
+        // answers.
+        if (oldStored.lastNotifyStatus === null || oldStored.lastNotifyAt === null) {
+            const target = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
+            const targetAt = target?.lastNotifyAt ?? null
+            if (target && target.lastNotifyStatus !== null && targetAt !== null) {
+                const newest = this.latestDeliveredOperatorReply(newSessionId)
+                // Measured against the footer's HUB ARRIVAL, not its runner
+                // timestamp and not a position: after the merge renumbering,
+                // an EARLIER destination reply sits above every source row and
+                // read as proof it had answered a later source footer.
+                const targetReceivedAt = target.lastNotifyReceivedAt ?? targetAt
+                if (newest !== null && this.replyAnswersFooter(newest, targetReceivedAt)) {
+                    this.clearSessionLastNotify(newSessionId, operatorReplyDeliveredAt(newest))
+                }
+            }
+        }
+
+        const oldNotifyAt = oldStored.lastNotifyAt
+        if (oldStored.lastNotifyStatus !== null && oldNotifyAt !== null) {
+            const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
+            const targetNotifyAt = latest?.lastNotifyAt ?? null
+            // A null on the destination is ambiguous: it can mean "never had a
+            // footer", or "the operator already answered and markMessageQueued
+            // cleared it". Copying in that second case resurrects a blocker
+            // that was dealt with, so check the (already merged) transcript for
+            // a delivered reply newer than the footer before carrying it over.
+            // Mirrors the operator-reply boundary the startup backfill applies.
+            const newestReply = this.latestDeliveredOperatorReply(newSessionId)
+            const oldReceivedAt = oldStored.lastNotifyReceivedAt ?? oldNotifyAt
+            const answeredSince = newestReply !== null
+                && this.replyAnswersFooter(newestReply, oldReceivedAt)
+            // Footer vs footer is a same-runner-clock comparison, so `at` is
+            // the right key here even though the reply comparison above is not.
+            if (latest && !answeredSince && (targetNotifyAt === null || oldNotifyAt > targetNotifyAt)) {
+                this.setSessionLastNotify(newSessionId, {
+                    status: oldStored.lastNotifyStatus,
+                    at: oldNotifyAt,
+                    note: oldStored.lastNotifyNote,
+                    receivedAt: oldStored.lastNotifyReceivedAt
+                })
             }
         }
 

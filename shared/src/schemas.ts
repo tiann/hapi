@@ -542,6 +542,20 @@ export const TeamStateSchema = z.object({
 
 export type TeamState = z.infer<typeof TeamStateSchema>
 
+/** Last `AGENT_NOTIFY_SUMMARY` footer the agent emitted (see `notifyAttention`). */
+export const SessionNotifySignalSchema = z.object({
+    status: z.string(),
+    at: z.number(),
+    note: z.string().nullable().default(null)
+})
+
+/** Operator's manual unblock acknowledgement (#1717). */
+export const SessionBlockedAckSchema = z.object({
+    at: z.number(),
+    reason: z.string(),
+    keys: z.array(z.string().max(256)).max(64).nullish()
+})
+
 export const ThreadGoalStatusSchema = z.enum([
     'active',
     'paused',
@@ -583,6 +597,10 @@ export const DecryptedMessageSchema = z.object({
     localId: z.string().nullable(),
     content: z.unknown(),
     createdAt: z.number(),
+    /** When the HUB received this message, vs `createdAt`'s runner clock
+     *  (#1717). The blocked clear boundary is a hub stamp, so only this can be
+     *  ordered against it. Optional: older hubs and senders omit it. */
+    receivedAt: z.number().nullable().optional(),
     invokedAt: z.number().nullable().optional(),
     scheduledAt: z.number().nullable().optional(),
     // The agent was sent the steer but its final outcome could not be proven.
@@ -642,6 +660,16 @@ export const SessionSchema = z.object({
     // full-session payloads and hand-built Session literals stay valid.
     todosUpdatedAt: z.number().optional(),
     teamStateUpdatedAt: z.number().optional(),
+    /** Last agent notify footer. Drives the session list's blocked chrome;
+     *  nullish on hubs that have not seen a footer for this session yet. */
+    lastNotify: SessionNotifySignalSchema.nullish(),
+    /** Operator dismissed blocked chrome up to this point; newer blockers still
+     *  count. See `SessionBlockedAck`. */
+    blockedAck: SessionBlockedAckSchema.nullish(),
+    /** Monotonic watermark for `lastNotify` / `blockedAck` (#1717). Both ride
+     *  full-session snapshots on two SSE streams, so a client needs an ordering
+     *  key to reject a stale snapshot that would revive a cleared blocker. */
+    notifyUpdatedAt: z.number().int().nonnegative().safe().optional(),
     model: z.string().nullable().optional().default(null),
     modelReasoningEffort: z.string().nullable().optional().default(null),
     effort: z.string().nullable().optional().default(null),

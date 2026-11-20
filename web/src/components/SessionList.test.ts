@@ -3,6 +3,9 @@ import { toSessionSummary, type Session } from '@hapi/protocol'
 import type { SessionSummary } from '@/types/api'
 import { sessionIsUnread } from '@/lib/sessionAttention'
 import {
+    allocateHiddenBlockers,
+    chooseBlockedJumpTarget,
+    attributeCollapsedBlockers,
     computeOpenSessionTickRatio,
     deduplicateSessionsByAgentId,
     expandSelectedSessionCollapseOverrides,
@@ -1134,5 +1137,141 @@ describe('shouldShowOpenSessionTick', () => {
             insideCollapsedPanel: false,
             tickRatio: null,
         })).toBe(false)
+    })
+})
+
+describe('attributeCollapsedBlockers (#1717 jump pill direction)', () => {
+    const bounds = { top: 100, bottom: 500 }
+
+    it('points up when the collapsed section sits above the viewport', () => {
+        // The bug: these rows leave the DOM when the collapse transition
+        // finishes, and counting them as "below" by default drew a DOWN arrow
+        // for a section above the fold — so activating the pill scrolled up,
+        // against its own hint.
+        expect(attributeCollapsedBlockers({
+            hidden: 3,
+            headerRect: { top: 20, bottom: 40 },
+            bounds
+        })).toEqual({ above: 3, below: 0 })
+    })
+
+    it('points down when the collapsed section sits below the viewport', () => {
+        expect(attributeCollapsedBlockers({
+            hidden: 2,
+            headerRect: { top: 600, bottom: 620 },
+            bounds
+        })).toEqual({ above: 0, below: 2 })
+    })
+
+    it('points nowhere when the header is already on screen', () => {
+        // Expanding scrolls within view, so there is nothing to point at.
+        expect(attributeCollapsedBlockers({
+            hidden: 4,
+            headerRect: { top: 200, bottom: 220 },
+            bounds
+        })).toEqual({ above: 0, below: 0 })
+    })
+
+    it('points nowhere for filter-hidden blockers, which have no header', () => {
+        // They stay in the pill's fleet-wide count, but nothing on the page
+        // says which way they are and guessing drew an arrow that lied.
+        expect(attributeCollapsedBlockers({ hidden: 5, headerRect: null, bounds }))
+            .toEqual({ above: 0, below: 0 })
+    })
+
+    it('is a no-op when nothing is collapsed away', () => {
+        expect(attributeCollapsedBlockers({
+            hidden: 0,
+            headerRect: { top: 20, bottom: 40 },
+            bounds
+        })).toEqual({ above: 0, below: 0 })
+    })
+})
+
+describe('allocateHiddenBlockers (#1717 per-section jump direction)', () => {
+    it('gives a collapsed Pinned section its rows when Blocked has none', () => {
+        // Globally pinned blockers stay in Pinned rather than moving to
+        // Blocked. The caller only ever asked about the Blocked header, so the
+        // only blocker being a pinned one lost the arrow entirely — the pill
+        // still counted it but pointed nowhere.
+        expect(allocateHiddenBlockers(1, [0, 1])).toEqual([0, 1])
+    })
+
+    it('does not count one missing row against two sections', () => {
+        // `missing` is a single pool. Comparing it with each section's size
+        // independently attributed the same row twice, so one hidden blocker
+        // could produce both an up and a down arrow.
+        expect(allocateHiddenBlockers(1, [3, 3])).toEqual([1, 0])
+    })
+
+    it('fills the first section before moving on', () => {
+        expect(allocateHiddenBlockers(5, [2, 4])).toEqual([2, 3])
+    })
+
+    it('leaves filter-hidden rows unallocated', () => {
+        // Three missing but only one is collapsed away; the other two are
+        // hidden by a filter and must get no direction at all.
+        expect(allocateHiddenBlockers(3, [1, 0])).toEqual([1, 0])
+    })
+
+    it('handles nothing missing and nothing collapsed', () => {
+        expect(allocateHiddenBlockers(0, [2, 2])).toEqual([0, 0])
+        expect(allocateHiddenBlockers(2, [0, 0])).toEqual([0, 0])
+    })
+})
+
+describe('chooseBlockedJumpTarget (#1717 jump follows its own arrow)', () => {
+    it('travels down to the off-screen row when the arrow points down', () => {
+        // The bug: with a newer blocker already visible and an older one below
+        // the fold, the arrow pointed down but the cursor selected the visible
+        // row, so the first click appeared to do nothing and the operator had
+        // to click again to go where the arrow said.
+        expect(chooseBlockedJumpTarget({
+            direction: 'down',
+            above: [],
+            below: ['older-below'],
+            fallbackId: 'newer-visible'
+        })).toBe('older-below')
+    })
+
+    it('travels to the NEAREST row above when the arrow points up', () => {
+        // `above` is in document order, so the last entry is the closest one.
+        expect(chooseBlockedJumpTarget({
+            direction: 'up',
+            above: ['far-above', 'near-above'],
+            below: [],
+            fallbackId: 'visible'
+        })).toBe('near-above')
+    })
+
+    it('keeps cycling when blockers lie both ways', () => {
+        // The arrow is not promising a direction, so repeated clicks should
+        // still reach everything rather than pinning one side.
+        expect(chooseBlockedJumpTarget({
+            direction: 'both',
+            above: ['a'],
+            below: ['b'],
+            fallbackId: 'cursor-pick'
+        })).toBe('cursor-pick')
+    })
+
+    it('falls back when the arrow points somewhere with nothing measurable', () => {
+        // Filter-hidden blockers are not in the DOM, so a direction can be
+        // drawn with no row to travel to; the cursor still has to work.
+        expect(chooseBlockedJumpTarget({
+            direction: 'down',
+            above: [],
+            below: [],
+            fallbackId: 'cursor-pick'
+        })).toBe('cursor-pick')
+    })
+
+    it('falls back when there is no direction at all', () => {
+        expect(chooseBlockedJumpTarget({
+            direction: 'none',
+            above: ['a'],
+            below: ['b'],
+            fallbackId: 'cursor-pick'
+        })).toBe('cursor-pick')
     })
 })

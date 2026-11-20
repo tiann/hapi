@@ -6,6 +6,8 @@ import {
     computePendingRequestKinds,
     computePendingRequests,
     computePendingRequestsCount,
+    computePendingRequestRefs,
+    computePendingRequestsNewestAt,
     computeTodoProgress,
     isObject,
     toSessionSummary,
@@ -488,8 +490,37 @@ export function useSSE(options: {
 
                 const existingIndex = previous.sessions.findIndex((item) => item.id === session.id)
                 const existing = existingIndex >= 0 ? previous.sessions[existingIndex] : undefined
+                // Notify/ack ride full-session snapshots on BOTH the global and
+                // session-scoped streams with no delivery ordering between
+                // them, so an older snapshot arriving after a newer clear would
+                // revive the blocker. Keep whichever side has the higher
+                // watermark, exactly as attachedJob does below.
+                const incomingNotifyAt = session.notifyUpdatedAt ?? 0
+                const existingNotifyAt = existing?.notifyUpdatedAt ?? 0
+                const keepExistingNotify = existing !== undefined
+                    && existingNotifyAt > incomingNotifyAt
+                // See useSessions: pending requests follow agentStateVersion.
+                const keepExistingPending = existing !== undefined
+                    && (existing.agentStateVersion ?? 0) > (session.agentStateVersion ?? 0)
                 const summary = {
                     ...toSessionSummary(session),
+                    ...(keepExistingNotify && existing !== undefined
+                        ? {
+                            lastNotify: existing.lastNotify ?? null,
+                            blockedAck: existing.blockedAck ?? null,
+                            notifyUpdatedAt: existingNotifyAt
+                        }
+                        : {}),
+                    ...(keepExistingPending && existing !== undefined
+                        ? {
+                            pendingRequestsCount: existing.pendingRequestsCount,
+                            pendingRequestKinds: existing.pendingRequestKinds,
+                            pendingRequests: existing.pendingRequests,
+                            pendingRequestsNewestAt: existing.pendingRequestsNewestAt,
+                            pendingRequestRefs: existing.pendingRequestRefs,
+                            agentStateVersion: existing.agentStateVersion
+                        }
+                        : {}),
                     attachedJob: existing?.attachedJob ?? null,
                     attachedJobUpdatedAt: existing?.attachedJobUpdatedAt ?? 0,
                     contentRevision: Math.max(existing?.contentRevision ?? 0, session.contentRevision ?? 0),
@@ -571,6 +602,21 @@ export function useSSE(options: {
                     nextSummary.pendingRequestsCount = computePendingRequestsCount(patch.agentState.value)
                     nextSummary.pendingRequestKinds = computePendingRequestKinds(patch.agentState.value)
                     nextSummary.pendingRequests = computePendingRequests(patch.agentState.value, nextSummary.updatedAt)
+                    // Recomputed with the rest: `pendingRequests` is capped, so a
+                    // stale watermark would keep a prompt that arrived after an
+                    // acknowledgement suppressed until the next full refresh.
+                    nextSummary.pendingRequestsNewestAt = computePendingRequestsNewestAt(
+                        patch.agentState.value,
+                        nextSummary.updatedAt
+                    )
+                    // Recomputed with the rest. Leaving the id list at its
+                    // previous value meant a sixth prompt arriving by patch had
+                    // no identity, so the classifier saw nothing unacknowledged
+                    // beyond the already-dismissed five.
+                    nextSummary.pendingRequestRefs = computePendingRequestRefs(
+                        patch.agentState.value,
+                        nextSummary.updatedAt
+                    )
                     nextSummary.agentStateVersion = patch.agentState.version
                 }
                 if (patch.metadata !== undefined && patch.metadata.version >= current.metadataVersion) {

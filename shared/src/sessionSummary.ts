@@ -2,6 +2,7 @@ import type { AgentState, AttachedJob, ExternalRef, Metadata, Session, TodoItem,
 import type { SessionReadState } from './sessionReadState'
 import type { ConversationHistoryCapabilities } from './conversationHistory'
 import { isKnownFlavor } from './flavors'
+import type { SessionBlockedAck, SessionNotifySignal } from './notifyAttention'
 import type { AgentFlavor } from './modes'
 
 export type ForkSessionSummary = {
@@ -25,6 +26,13 @@ export function buildForkSessionSummary(
 
 export type PendingRequestKind = 'permission' | 'input'
 
+/**
+ * Requests that are a *question for the operator* rather than a permission to
+ * act. `CursorCreatePlan` is Cursor's plan-approval prompt — the direct
+ * analogue of Claude's `ExitPlanMode`, and the second most common request tool
+ * in the wild (16 occurrences on a 683-session fleet) — so omitting it left
+ * every Cursor plan review misclassified as a plain permission.
+ */
 const INPUT_REQUEST_TOOLS = new Set([
     'AskUserQuestion',
     'ask_user_question',
@@ -32,7 +40,9 @@ const INPUT_REQUEST_TOOLS = new Set([
     'cursor_ask_question',
     'ExitPlanMode',
     'exit_plan_mode',
-    'request_user_input'
+    'request_user_input',
+    'CursorCreatePlan',
+    'cursor_create_plan'
 ])
 
 /** Cap on `pendingRequests` carried in `SessionSummary`. The list is meant for
@@ -119,6 +129,16 @@ export type SessionSummary = {
      *  / per-row UX. The full count (which may exceed the cap) is in
      *  `pendingRequestsCount`. */
     pendingRequests: PendingRequest[]
+    /** Newest request time across ALL pending requests, ignoring the cap above.
+     *  Optional so an older hub can omit it. Lets a client tell "every prompt
+     *  was acknowledged" from "the acknowledged ones are merely the only ones
+     *  the capped slice carried". */
+    pendingRequestsNewestAt?: number
+    /** Every pending request id, uncapped. `pendingRequests` keeps only the
+     *  oldest few, so an overflow prompt had no identity and fell back to a
+     *  synthetic one — a dismissal then stopped matching the moment the real
+     *  request entered the capped slice. Ids are small; the bodies are not. */
+    pendingRequestRefs?: Array<{ id: string; kind: PendingRequestKind; since: number }>
     backgroundTaskCount: number
     /**
      * Hub-derived "open tool work exists in the transcript tail" (work-scoped
@@ -128,6 +148,14 @@ export type SessionSummary = {
      * Optional because older hubs never send it.
      */
     derivedToolWork?: boolean
+    /** Last `AGENT_NOTIFY_SUMMARY` footer. Orthogonal to `pendingRequestKinds`:
+     *  pending requests mean "live, waiting on a click", this means "the turn
+     *  ended and the agent said it is stuck". See `./notifyAttention`. */
+    lastNotify?: SessionNotifySignal | null
+    /** Operator's manual "not blocked" watermark + rationale. */
+    blockedAck?: SessionBlockedAck | null
+    /** Ordering key for the two fields above; see `Session.notifyUpdatedAt`. */
+    notifyUpdatedAt?: number
     futureScheduledMessageCount: number
     /** Epoch ms of the soonest uninvoked future scheduled message, or null. */
     nextScheduledAt: number | null
@@ -203,6 +231,51 @@ export function getPendingRequests(
 
 export function computePendingRequestsCount(agentState: AgentState | null | undefined): number {
     return agentState?.requests ? Object.keys(agentState.requests).length : 0
+}
+
+/**
+ * Newest request time across ALL pending requests, uncapped (0 when none).
+ *
+ * `pendingRequests` is capped at `PENDING_REQUEST_SUMMARY_CAP` and keeps the
+ * OLDEST entries, so once the cap is full the carried slice cannot answer
+ * "did anything arrive after the operator dismissed this?" — the newer prompt
+ * is simply absent. Computed from `agentState` like `pendingRequestsCount`,
+ * so it costs no storage and needs no migration.
+ */
+/**
+ * A light descriptor for EVERY pending request, uncapped (#1717).
+ *
+ * `pendingRequests` keeps only the oldest few, so a session whose previewed
+ * prompts have all been dismissed says nothing about the ones behind them.
+ * The id alone was not enough either: the chip read its label and age off
+ * aggregate fields that describe all prompts at once, so an overflow question
+ * could be drawn as a Permission with another prompt's timestamp. Carrying the
+ * kind and `since` with the id keeps the chip, the dismissal target and the
+ * age all describing the same request. Same order as `pendingRequests`, so the
+ * capped list is always this list's prefix.
+ */
+export function computePendingRequestRefs(
+    agentState: AgentState | null | undefined,
+    fallbackSince: number
+): Array<{ id: string; kind: PendingRequestKind; since: number }> {
+    return computePendingRequests(agentState, fallbackSince, 200)
+        .map(({ id, kind, since }) => ({ id, kind, since }))
+}
+
+export function computePendingRequestsNewestAt(
+    agentState: AgentState | null | undefined,
+    fallbackSince: number
+): number {
+    const requests = agentState?.requests
+    if (!requests) {
+        return 0
+    }
+    let newest = 0
+    for (const request of Object.values(requests)) {
+        const since = typeof request.createdAt === 'number' ? request.createdAt : fallbackSince
+        if (since > newest) newest = since
+    }
+    return newest
 }
 
 export function computeTodoProgress(todos: TodoItem[] | undefined): SessionSummary['todoProgress'] {
@@ -318,8 +391,13 @@ export function toSessionSummary(
         pendingRequestsCount: computePendingRequestsCount(session.agentState),
         pendingRequestKinds: computePendingRequestKinds(session.agentState),
         pendingRequests: computePendingRequests(session.agentState, session.updatedAt),
+        pendingRequestsNewestAt: computePendingRequestsNewestAt(session.agentState, session.updatedAt),
+        pendingRequestRefs: computePendingRequestRefs(session.agentState, session.updatedAt),
         backgroundTaskCount: session.backgroundTaskCount ?? 0,
         derivedToolWork: session.derivedToolWork === true,
+        lastNotify: session.lastNotify ?? null,
+        blockedAck: session.blockedAck ?? null,
+        notifyUpdatedAt: session.notifyUpdatedAt ?? 0,
         futureScheduledMessageCount: 0,
         nextScheduledAt: null,
         attachedJob,

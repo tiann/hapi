@@ -206,12 +206,24 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
         onSessionActivity: (sessionId, updatedAt) => syncEngine?.recordSessionActivity(sessionId, updatedAt),
         onAgentProgress: (sessionId, at) => syncEngine?.recordAgentProgress(sessionId, at),
         onSweepImmediateQueued: (sessionId, now) => syncEngine?.sweepImmediateQueuedOnSessionEnd(sessionId, now),
-        onMessagesConsumed: (sessionId) => syncEngine?.clearQueuedThinkingGrace(sessionId)
+        onMessagesConsumed: (sessionId) => syncEngine?.clearQueuedThinkingGrace(sessionId),
+        onPromptDelivered: (sessionId, deliveredAt) =>
+            syncEngine?.clearSessionLastNotifyOnDelivery(sessionId, deliveredAt)
     })
 
     syncEngine = new SyncEngine(store, socketServer.io, socketServer.rpcRegistry, sseManager)
     // Accountable principal for A2A work-graph notify ingest (P3).
     syncEngine.setHubOwnerUserId(await getOrCreateOwnerId())
+    // #1717: hubs upgraded mid-flight would otherwise show no blocked chrome
+    // until every agent speaks again. Deferred off the startup path — it is a
+    // bounded catch-up scan, not something the first request should wait on.
+    setTimeout(() => {
+        try {
+            syncEngine?.backfillRecentNotifySignals()
+        } catch (error) {
+            console.error('[notify-backfill] failed', error)
+        }
+    }, 0)
 
     const androidPushConfig = resolveAndroidPushConfig(config)
     const notificationChannels: NotificationChannel[] = []

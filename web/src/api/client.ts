@@ -1534,6 +1534,20 @@ export class ApiClient {
         })
     }
 
+    /** #1717: manually mark a blocked session as not blocked, with a rationale. */
+    async acknowledgeSessionBlocked(
+        sessionId: string,
+        reason: string,
+        observed?: { at: number; key: string }
+    ): Promise<void> {
+        await this.request(`/api/sessions/${encodeURIComponent(sessionId)}/blocked-ack`, {
+            method: 'PUT',
+            body: JSON.stringify(observed === undefined
+                ? { reason }
+                : { reason, observedAt: observed.at, observedKey: observed.key })
+        })
+    }
+
     async deleteSession(sessionId: string): Promise<void> {
         await this.request(`/api/sessions/${encodeURIComponent(sessionId)}`, {
             method: 'DELETE'

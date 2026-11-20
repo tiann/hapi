@@ -3,7 +3,9 @@ import type { Session } from './schemas'
 import {
     PENDING_REQUEST_SUMMARY_CAP,
     computePendingRequestKinds,
+    computePendingRequests,
     computePendingRequestsCount,
+    computePendingRequestsNewestAt,
     computeTodoProgress,
     getPendingRequestKinds,
     getPendingRequests,
@@ -362,6 +364,26 @@ describe('summary derivation helpers', () => {
     it('computePendingRequestsCount handles null agentState', () => {
         expect(computePendingRequestsCount(null)).toBe(0)
         expect(computePendingRequestsCount(undefined)).toBe(0)
+    })
+
+    it('computePendingRequestsNewestAt ignores the summary cap (#1717)', () => {
+        // `pendingRequests` keeps the five OLDEST, so the carried slice cannot
+        // answer "did anything arrive after the operator dismissed this?".
+        // This watermark is computed over every request for exactly that.
+        const requests: Record<string, { tool: string; arguments: object; createdAt: number }> = {}
+        for (let i = 0; i < 7; i += 1) {
+            requests[`req${i}`] = { tool: 'Bash', arguments: {}, createdAt: 1_000 + i }
+        }
+        expect(computePendingRequestsNewestAt({ requests } as never, 0)).toBe(1_006)
+        expect(computePendingRequests({ requests } as never, 0)).toHaveLength(5)
+    })
+
+    it('computePendingRequestsNewestAt falls back and handles empty state', () => {
+        expect(computePendingRequestsNewestAt(null, 42)).toBe(0)
+        expect(computePendingRequestsNewestAt(
+            { requests: { a: { tool: 'Bash', arguments: {} } } } as never,
+            777
+        )).toBe(777)
     })
 
     it('includes attachedJob when provided via extras', () => {

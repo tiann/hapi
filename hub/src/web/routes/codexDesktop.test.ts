@@ -51,6 +51,7 @@ function createImportSyncEngine(store: Store, machines: Machine[], transcripts?:
             store.sessions.getOrCreateSession(tag, metadata, agentState, namespace) as unknown as ReturnType<SyncEngine['getOrCreateSession']>
         ),
         handleRealtimeEvent: () => {},
+        reconcileNotifySignalAfterImport: () => {},
         recordSessionActivity: (sessionId: string, updatedAt: number) => {
             store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
         }
@@ -1036,6 +1037,84 @@ describe('Codex Desktop import routes', () => {
         }
     })
 
+    it('keeps a duplicate\'s answering prompt as its own row, and reconciles the merge', async () => {
+        // Three Majors came from one earlier attempt at this: deduping
+        // DELIVERED prompts by text alone dropped a later "Continue" that
+        // answered a blocker, because an earlier "Continue" was already
+        // present. Stamping the duplicate's delivery onto that earlier row
+        // instead could mark a FUTURE SCHEDULED prompt invoked (so the
+        // scheduler would never send it), left the answering timestamp on a
+        // row whose `seq` still sat before the footer, and changed state
+        // without appending anything so reconciliation was skipped. Keeping
+        // the occurrence as its own row removes all three.
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        const store = new Store(':memory:')
+        const canonical = store.sessions.getOrCreateSession(
+            'canon-session', { codexSessionId: 'codex-thread-9' }, {}, 'default'
+        )
+        const duplicate = store.sessions.getOrCreateSession(
+            'dup-session', { codexSessionId: 'codex-thread-9' }, {}, 'default'
+        )
+        const base = Date.now() - 600_000
+
+        // Canonical already holds an earlier delivered "Continue" …
+        store.messages.addMessage(canonical.id, {
+            role: 'user', content: { type: 'text', text: 'Continue' }, meta: { sentFrom: 'webapp' }
+        }, 'canon-early', null, base, base)
+        store.messages.markMessagesInvoked(canonical.id, ['canon-early'], base + 500)
+        // … plus a FUTURE SCHEDULED "Continue" that must stay unsent.
+        store.messages.addMessage(canonical.id, {
+            role: 'user', content: { type: 'text', text: 'Continue' }, meta: { sentFrom: 'webapp' }
+        }, 'canon-scheduled', base + 3_600_000, base + 1_000, base + 1_000)
+
+        // The duplicate holds the later delivered "Continue" that answered.
+        store.messages.addMessage(duplicate.id, {
+            role: 'user', content: { type: 'text', text: 'Continue' }, meta: { sentFrom: 'webapp' }
+        }, 'dup-answer', null, base + 2_000, base + 2_000)
+        store.messages.markMessagesInvoked(duplicate.id, ['dup-answer'], base + 9_000)
+
+        const reconciled: string[] = []
+        const engine = {
+            getSessionsByNamespace: () => [],
+            transferBlockedAck: () => {},
+            transferAttachedJobs: () => {},
+            deleteSession: async (sessionId: string) => {
+                store.sessions.deleteSession(sessionId, 'default')
+            },
+            handleRealtimeEvent: () => {},
+            reconcileNotifySignalAfterImport: (sessionId: string) => { reconciled.push(sessionId) },
+            recordSessionActivity: () => {}
+        } as unknown as SyncEngine
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
+
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-9'] })
+            })
+            expect(response.status).toBe(200)
+
+            const rows = store.messages.getAllMessages(canonical.id)
+            // The scheduled prompt is untouched and still sendable.
+            const scheduled = rows.find((row) => row.localId === 'canon-scheduled')
+            expect(scheduled?.invokedAt).toBeNull()
+            // The answering occurrence survives as its own row, after the
+            // earlier one, so its position can order against a footer.
+            const answers = rows.filter((row) => row.invokedAt !== null)
+            expect(answers.length).toBeGreaterThanOrEqual(2)
+            expect(Math.max(...answers.map((row) => row.invokedAt ?? 0))).toBe(base + 9_000)
+            // And the merge reconciled the combined transcript.
+            expect(reconciled).toContain(canonical.id)
+        } finally {
+            store.close()
+        }
+    })
+
     it('merges duplicate sessions discovered across SyncEngine cache and persistent store', async () => {
         const app = new Hono<WebAppEnv>()
         app.use('*', async (c, next) => {
@@ -1050,6 +1129,7 @@ describe('Codex Desktop import routes', () => {
         store.messages.addMessage(engineSession.id, { type: 'text', text: 'engine-only message' }, 'engine-1')
         const engine = {
             getSessionsByNamespace: () => [engineSession],
+            transferBlockedAck: () => {},
             transferAttachedJobs: (fromSessionId: string, toSessionId: string) => {
                 store.sessionJobs.transfer(fromSessionId, toSessionId)
             },
@@ -1057,6 +1137,7 @@ describe('Codex Desktop import routes', () => {
                 store.sessions.deleteSession(sessionId, 'default')
             },
             handleRealtimeEvent: () => {},
+            reconcileNotifySignalAfterImport: () => {},
             recordSessionActivity: (sessionId: string, updatedAt: number) => {
                 store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
             }

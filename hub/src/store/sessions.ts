@@ -283,6 +283,16 @@ type DbSessionRow = {
     todos_updated_at: number | null
     team_state: string | null
     team_state_updated_at: number | null
+    last_notify_status: string | null
+    last_notify_at: number | null
+    last_notify_note: string | null
+    blocked_ack_at: number | null
+    blocked_ack_reason: string | null
+    blocked_ack_key: string | null
+    last_notify_cleared_at: number | null
+    last_notify_received_at: number | null
+    last_notify_cleared_author_at: number | null
+    last_notify_updated_at: number | null
     active: number
     active_at: number | null
     seq: number
@@ -313,6 +323,16 @@ function toStoredSession(row: DbSessionRow): StoredSession {
         todosUpdatedAt: row.todos_updated_at,
         teamState: safeJsonParse(row.team_state),
         teamStateUpdatedAt: row.team_state_updated_at,
+        lastNotifyStatus: row.last_notify_status,
+        lastNotifyAt: row.last_notify_at,
+        lastNotifyNote: row.last_notify_note,
+        blockedAckAt: row.blocked_ack_at,
+        blockedAckReason: row.blocked_ack_reason,
+        blockedAckKeys: parseAckKeys(row.blocked_ack_key),
+        lastNotifyClearedAt: row.last_notify_cleared_at,
+        lastNotifyReceivedAt: row.last_notify_received_at,
+        lastNotifyClearedAuthorAt: row.last_notify_cleared_author_at,
+        lastNotifyUpdatedAt: row.last_notify_updated_at,
         active: row.active === 1,
         activeAt: row.active_at,
         seq: row.seq
@@ -693,6 +713,165 @@ function hasNewAgentStateRequest(prior: unknown, next: unknown): boolean {
     return Object.keys(nextRequests).some((requestId) => !Object.hasOwn(priorRequests, requestId))
 }
 
+/**
+ * Persist the last `AGENT_NOTIFY_SUMMARY` footer for a session (#1717).
+ *
+ * Monotonic on `last_notify_at` so a replayed or out-of-order older message
+ * cannot resurrect a stale `blocked` over a newer `done`.
+ *
+ * Deliberately does NOT touch `updated_at`: the message that carried the
+ * footer already advanced the session clock, and moving it again here would
+ * re-sort the session list and re-trigger the unread watermark for a write
+ * that carries no new conversation.
+ */
+export function setSessionLastNotify(
+    db: Database,
+    id: string,
+    signal: { status: string; at: number; note: string | null; receivedAt?: number | null },
+    namespace: string
+): boolean {
+    try {
+        const result = db.prepare(`
+            UPDATE sessions
+            SET last_notify_status = @status,
+                last_notify_at = @at,
+                last_notify_note = @note,
+                last_notify_received_at = @receivedAt,
+                last_notify_updated_at = MAX(COALESCE(last_notify_updated_at, 0) + 1, @rev),
+                seq = seq + 1
+            WHERE id = @id
+              AND namespace = @namespace
+              -- Footer vs footer: both were stamped by the same agent runner
+              -- inside one transcript, so authorship time IS the authoritative
+              -- order between them. Insertion seq is not: it is allocated as
+              -- MAX(seq)+1, so a replayed older footer arriving after a newer
+              -- one carries a HIGHER seq while being older in fact.
+              AND (last_notify_at IS NULL OR last_notify_at <= @at)
+              -- Footer arrival vs the operator's delivery: BOTH hub stamps, so
+              -- this is a single-clock comparison. The footer's own at cannot
+              -- be used here (runner clock), and a position cannot either —
+              -- cancelling a queued row frees its seq for reuse, and a merge
+              -- renumbers positions into something synthetic.
+              AND (@receivedAt IS NULL OR last_notify_cleared_at IS NULL
+                   OR last_notify_cleared_at <= @receivedAt)
+              -- Callers with no arrival stamp (older paths, and the ack/merge
+              -- transfers) keep the original author-time comparison. It is a
+              -- cross-domain guess, which is why every live path now supplies
+              -- an arrival, but dropping it entirely would let those paths
+              -- bypass the boundary altogether.
+              AND (@receivedAt IS NOT NULL OR last_notify_cleared_at IS NULL
+                   OR last_notify_cleared_at <= @at)
+              -- Delayed output from the turn the delivery already answered.
+              -- The clear nulls last_notify_at, so a footer authored BEFORE
+              -- the reply but arriving after it for the first time otherwise
+              -- has nothing to be measured against: its arrival is genuinely
+              -- later, and it would walk straight back in. This keeps the
+              -- superseded footer's author time, which is the same runner clock
+              -- the newcomer carries.
+              AND (last_notify_cleared_author_at IS NULL
+                   OR @at > last_notify_cleared_author_at)
+        `).run({
+            id,
+            status: signal.status,
+            at: signal.at,
+            note: signal.note,
+            receivedAt: signal.receivedAt ?? null,
+            namespace, rev: Date.now() })
+        return result.changes === 1
+    } catch {
+        return false
+    }
+}
+
+/**
+ * Record the operator's manual "this is not blocked" acknowledgement (#1717).
+ *
+ * Monotonic on `blocked_ack_at`: a replayed older ack must not un-dismiss a
+ * newer one. Leaves `updated_at` alone for the same reason the notify writes
+ * do — dismissing chrome is not conversation and must not re-sort the list.
+ */
+export function setSessionBlockedAck(
+    db: Database,
+    id: string,
+    ack: { at: number; reason: string; keys?: string[] | null },
+    namespace: string
+): boolean {
+    try {
+        const result = db.prepare(`
+            UPDATE sessions
+            SET blocked_ack_at = MAX(COALESCE(blocked_ack_at, 0), @at),
+                -- Reason follows the newest acknowledgement; a replayed older
+                -- one must not overwrite it. The KEYS still merge below, so
+                -- dismissing an older prompt is accepted on its own terms.
+                blocked_ack_reason = CASE
+                    WHEN blocked_ack_at IS NULL OR @at >= blocked_ack_at THEN @reason
+                    ELSE blocked_ack_reason
+                END,
+                blocked_ack_key = @keys,
+                last_notify_updated_at = MAX(COALESCE(last_notify_updated_at, 0) + 1, @at),
+                seq = seq + 1
+            WHERE id = @id
+              AND namespace = @namespace
+              -- No monotonic guard on @at. With identities the acknowledgement
+              -- is a SET, so dismissing an OLDER prompt after a newer one is
+              -- legitimate — the guard rejected it and the route turned that
+              -- into a 500. Ordering is carried by the keys, not the clock.
+        `).run({ id, at: ack.at, reason: ack.reason, keys: serialiseAckKeys(ack.keys), namespace })
+        return result.changes === 1
+    } catch {
+        return false
+    }
+}
+
+/**
+ * Drop the stored notify footer — the agent started a new turn, so its last
+ * self-report no longer describes the present. No-op (returns false) when
+ * nothing was stored, so callers can guard cheap.
+ */
+export function clearSessionLastNotify(
+    db: Database,
+    id: string,
+    namespace: string,
+    clearedAt: number = Date.now()
+): boolean {
+    try {
+        const result = db.prepare(`
+            UPDATE sessions
+            SET last_notify_status = NULL,
+                last_notify_at = NULL,
+                last_notify_note = NULL,
+                last_notify_cleared_at = MAX(COALESCE(last_notify_cleared_at, 0), @clearedAt),
+                -- Capture the author time of the footer being cleared, in the
+                -- same move that nulls it. Delayed output from that turn is
+                -- then still rejectable even though nothing is stored any more.
+                --
+                -- Untouched when there is no footer to capture: a 0 sentinel
+                -- here would suppress every footer with a non-positive
+                -- timestamp, which is exactly the kind of silent suppression
+                -- this feature must not do.
+                last_notify_cleared_author_at = CASE
+                    WHEN last_notify_at IS NULL THEN last_notify_cleared_author_at
+                    WHEN last_notify_cleared_author_at IS NULL THEN last_notify_at
+                    ELSE MAX(last_notify_cleared_author_at, last_notify_at)
+                END,
+                last_notify_updated_at = MAX(COALESCE(last_notify_updated_at, 0) + 1, @clearedAt),
+                seq = seq + 1
+            WHERE id = @id
+              AND namespace = @namespace
+              -- No last_notify_status IS NOT NULL guard: the clear boundary
+              -- has to advance on a qualifying turn start even when no footer
+              -- is stored yet, or a footer still in flight at turn start slips
+              -- past it later. Still a no-op write when neither would move.
+              AND (last_notify_status IS NOT NULL
+                   OR last_notify_cleared_at IS NULL
+                   OR last_notify_cleared_at < @clearedAt)
+        `).run({ id, namespace, clearedAt })
+        return result.changes === 1
+    } catch {
+        return false
+    }
+}
+
 export function setSessionTodos(
     db: Database,
     id: string,
@@ -1063,4 +1242,88 @@ export function deleteSession(db: Database, id: string, namespace: string): bool
         }
         return result.changes > 0
     })
+}
+
+/**
+ * Replace the notify signal and its clear boundary in ONE write.
+ *
+ * Rewind needs this: clearing (which stamps the boundary at now) and then
+ * restoring the retained footer separately makes the restore fail its own
+ * boundary check, so a session whose retained history still ends blocked
+ * dropped out of the Blocked section. Bypasses the monotonic guards on
+ * purpose — the transcript, not arrival order, is the truth after a truncation.
+ */
+export function replaceSessionNotifyAfterTruncate(
+    db: Database,
+    id: string,
+    namespace: string,
+    signal: { status: string; at: number; note: string | null; receivedAt?: number | null } | null,
+    clearedAt: number,
+    clearedAuthorAt: number | null = null
+): boolean {
+    try {
+        // Every boundary is assigned ABSOLUTELY here, never via MAX, and
+        // scoped to the surviving transcript (#1717). The rewind deleted the
+        // history the old values described, so carrying them forward rejected
+        // genuine new footers with no way to ever lower them again.
+        const result = db.prepare(`
+            UPDATE sessions
+            SET last_notify_status = @status,
+                last_notify_at = @at,
+                last_notify_note = @note,
+                last_notify_received_at = @receivedAt,
+                last_notify_cleared_at = @clearedAt,
+                -- Re-derived from the RETAINED history, not dropped. Nulling
+                -- it threw away the one thing that rejects a late footer from
+                -- a turn the retained reply already answered: after the
+                -- rewind such a footer arrives fresh, so arrival cannot catch
+                -- it and only its author time can. Carrying the OLD value
+                -- would be wrong too — it describes deleted history — which is
+                -- why this is the value the reconciliation just computed.
+                last_notify_cleared_author_at = @clearedAuthorAt,
+                last_notify_updated_at = MAX(COALESCE(last_notify_updated_at, 0) + 1, @rev),
+                seq = seq + 1
+            WHERE id = @id AND namespace = @namespace
+        `).run({
+            id,
+            namespace,
+            status: signal?.status ?? null,
+            at: signal?.at ?? null,
+            note: signal?.note ?? null,
+            receivedAt: signal?.receivedAt ?? null,
+            clearedAuthorAt,
+            // The derived delivery boundary, already a hub stamp. No clamping
+            // against the retained footer is needed any more: the boundary is
+            // compared against a footer's hub ARRIVAL, and the retained footer
+            // is written here rather than re-validated through that guard.
+            clearedAt,
+            rev: Date.now()
+        })
+        return result.changes === 1
+    } catch {
+        return false
+    }
+}
+
+/** Dismissed-blocker identities are stored as a JSON array in one column. */
+export function parseAckKeys(raw: string | null | undefined): string[] | null {
+    // `undefined` reaches here when the column is absent on a database that
+    // claims a version it never migrated to. Treat it like "no dismissals"
+    // rather than letting `raw.length` throw on every session load.
+    if (raw === null || raw === undefined) return null
+    try {
+        const parsed: unknown = JSON.parse(raw)
+        if (!Array.isArray(parsed)) return null
+        return parsed.filter((item): item is string => typeof item === 'string')
+    } catch {
+        // Pre-set rows stored a single bare key; keep honouring them.
+        return raw.length > 0 ? [raw] : null
+    }
+}
+
+function serialiseAckKeys(keys: string[] | null | undefined): string | null {
+    if (!keys || keys.length === 0) return null
+    // Bounded so a long-lived session cannot grow this without limit; the
+    // newest dismissals are the ones still capable of hiding a live blocker.
+    return JSON.stringify(keys.slice(-64))
 }

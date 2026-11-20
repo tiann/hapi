@@ -166,6 +166,7 @@ function emitImportedMessages(engine: SyncEngine, sessionId: string, messages: S
                 localId: message.localId,
                 content: message.content,
                 createdAt: message.createdAt,
+                receivedAt: message.receivedAt,
                 invokedAt: message.invokedAt
             }
         })
@@ -479,6 +480,9 @@ export function runLocalImportSync(options: {
             const activityAt = committed.appended.at(-1)?.createdAt ?? transcript.modifiedAt
             engine.recordSessionActivity(hapiSessionId, activityAt)
             emitImportedMessages(engine, hapiSessionId, committed.appended)
+            // Live ingestion stamped a footer per imported row; only the
+            // transcript as a whole can say whether it is still unanswered.
+            engine.reconcileNotifySignalAfterImport(hapiSessionId)
             engine.handleRealtimeEvent({ type: 'session-updated', sessionId: hapiSessionId })
             return outcome
         } catch (error) {

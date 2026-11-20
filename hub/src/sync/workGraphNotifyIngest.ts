@@ -9,7 +9,11 @@ import {
     unwrapRoleWrappedRecordEnvelope,
     type NotifySummary,
     type WorkGraphEvent,
-    type WorkGraphEventCreate
+    type WorkGraphEventCreate,
+    isBlockedNotifyStatus,
+    normalizeNotifyStatus,
+    pickNotifyNote,
+    type SessionNotifySignal
 } from '@hapi/protocol'
 import type { Store, StoredMessage } from '../store'
 import { WorkGraphValidationError } from '../store'
@@ -598,5 +602,249 @@ export function ingestNotifySummaryFromMessage(input: NotifyIngestInput): Notify
             return null
         }
         throw error
+    }
+}
+
+/**
+ * True for an operator prompt the agent has actually been given.
+ *
+ * A scheduled message is withheld from the CLI until it matures AND is
+ * invoked, so an overdue-but-uninvoked one has still answered nothing — the
+ * due time alone is not delivery. Ordering uses the invocation time, because
+ * that is when the agent saw it.
+ */
+export function isDeliveredOperatorReply(
+    message: {
+        content: unknown
+        scheduledAt: number | null
+        invokedAt: number | null
+        sweptAt?: number | null
+        agentDelivered?: number | null
+    }
+): boolean {
+    if (!isOperatorReplyMessage(message.content)) return false
+    // The CLI consumed the row synchronously without prompting the agent: a
+    // slash command it handled itself, a rejected or aborted message, a failed
+    // steer. `invoked_at` is stamped regardless, so without the persisted
+    // disposition the transcript paths read it as an answer the agent never
+    // got. NULL is "written before this was recorded" and stays permissive.
+    if (message.agentDelivered === 0) return false
+    // The session-end sweep stamps `invokedAt` to unpin the floating bar, on
+    // rows the runtime never received. Its own documentation calls that
+    // synthetic. Treating it as a delivered reply let a session end answer a
+    // blocker nobody replied to.
+    if (message.sweptAt != null && message.sweptAt === message.invokedAt) return false
+    // Delivery evidence for EVERY queued reply, not just scheduled ones: a
+    // prompt still sitting in the queue with a null `invokedAt` has not
+    // reached the agent either, and treating it as an answer buries a footer
+    // the agent never saw.
+    return message.invokedAt !== null
+}
+
+/**
+ * When the hub received a message, as opposed to when its author wrote it.
+ *
+ * The key a delivery boundary is measured against (#1717). `createdAt` is the
+ * agent runner's own clock, preserved verbatim through transcript replay, so it
+ * cannot be compared with the hub-stamped `invokedAt` of a reply. Hub arrival
+ * can: both sides are then the same clock. A position cannot be used either —
+ * insertion `seq` is allocated as MAX(seq)+1, so cancelling a queued row frees
+ * its number for reuse, and a merge renumbers one side's positions into
+ * something synthetic rather than real.
+ *
+ * Rows written before `received_at` existed fall back to `createdAt`, the only
+ * evidence they carry.
+ */
+export function messageReceivedAt(
+    message: { createdAt: number; receivedAt?: number | null }
+): number {
+    return message.receivedAt ?? message.createdAt
+}
+
+/**
+ * When a delivered reply reached the agent, in the hub's clock (#1717).
+ *
+ * `invoked_at` is hub-stamped only for a reply that went through the hub
+ * QUEUE. A prompt typed straight into a local agent terminal has no local id,
+ * so nothing ever stamped it and `invoked_at` carries the runner's transcript
+ * clock — measuring that against a footer's hub arrival is the cross-clock
+ * comparison this area exists to avoid. For those, the row's own hub arrival
+ * is the right stand-in, because that is when the hub saw the reply.
+ *
+ * Shared by every path that has to order a reply against a footer — live
+ * ingestion, the transcript derivation, and the session merges — because the
+ * two that had their own copy of this rule disagreed about local replies.
+ */
+export function operatorReplyDeliveredAt(
+    message: {
+        createdAt: number
+        receivedAt?: number | null
+        scheduledAt: number | null
+        invokedAt: number | null
+        localId?: string | null
+    }
+): number {
+    return message.localId == null
+        ? messageReceivedAt(message)
+        : deliveredOperatorReplyAt(message)
+}
+
+/** When the agent actually saw a delivered reply. */
+export function deliveredOperatorReplyAt(
+    message: { createdAt: number; scheduledAt: number | null; invokedAt: number | null }
+): number {
+    // Invocation time, always. A reply composed before a footer can be
+    // invoked after it; ordering on `createdAt` would let that reply "answer"
+    // a footer written while it was still queued.
+    return message.invokedAt ?? message.createdAt
+}
+
+/**
+ * True for a real operator prompt — the thing that answers a blocked agent.
+ * Excludes the Claude jsonl transcript echo, which replays the same prompt as
+ * a second `role=user` row and would otherwise look like a fresh reply.
+ */
+export function isOperatorReplyMessage(content: unknown): boolean {
+    if (!isInboundUserMessage(content)) return false
+    return asRecord(asRecord(content)?.meta)?.isTranscriptEcho !== true
+}
+
+/**
+ * Parse an agent message down to the compact signal the session list renders
+ * (#1717 blocked chrome).
+ *
+ * Shares the agent-message gating and footer extraction with the work-graph
+ * ingest below so both surfaces agree on what counts as a footer — the list
+ * must never light up on something the ledger ignored, or vice versa.
+ *
+ * `note` is only carried for blocked statuses: it exists to give the row
+ * tooltip something actionable, and storing it for every `done` footer would
+ * grow the /sessions payload for nothing.
+ */
+/**
+ * True for Claude subagent (sidechain) output.
+ *
+ * Checked on the raw record and one envelope level down, because the local
+ * transcript scanner and the remote SDK converter wrap the flags differently.
+ */
+function isSidechainOutput(content: unknown, depth: number = 0): boolean {
+    const record = asRecord(content)
+    if (!record || depth > 4) return false
+    if (record.isSidechain === true) return true
+    if (typeof record.parentToolUseId === 'string' && record.parentToolUseId.length > 0) return true
+    for (const key of ['content', 'data', 'message'] as const) {
+        if (isSidechainOutput(record[key], depth + 1)) return true
+    }
+    return false
+}
+
+export function extractSessionNotifySignal(
+    content: unknown,
+    ts: number
+): SessionNotifySignal | null {
+    if (!isAgentMessageContent(content)) {
+        return null
+    }
+
+    // A subagent's footer describes the subagent, not the session. Both the
+    // local transcript scanner and the remote SDK converter forward sidechain
+    // assistant output, so without this a background subagent's `done` erases
+    // the main agent's unanswered blocker — or its `blocked` flags a parent
+    // that actually finished.
+    if (isSidechainOutput(content)) {
+        return null
+    }
+
+    // A live stream snapshot is a transient cumulative render of a message
+    // still being written, and the hub sweeps it from the transcript once the
+    // message settles. OpenCode emits them, so a snapshot can end on a valid
+    // footer while the settled message goes on to add prose after it and carry
+    // no valid footer at all — and the list kept the status derived from the
+    // snapshot, showing blocked once thinking ended. The work-graph ingest has
+    // skipped these all along; list status has to agree, and for the same
+    // reason: only settled output is the agent's actual self-report.
+    if (isLiveStreamSnapshot(content)) {
+        return null
+    }
+
+    const agentBody = unwrapRoleWrappedRecordEnvelope(content)
+    const agentContent = agentBody?.role === 'agent' ? agentBody.content : content
+    const plainText = extractAssistantPlainText(agentContent)
+    if (!plainText) {
+        return null
+    }
+
+    const notify = extractNotifySummary(plainText)
+    if (!notify) {
+        return null
+    }
+
+    const status = normalizeNotifyStatus(notify.status)
+    if (!status) {
+        return null
+    }
+
+    return {
+        status,
+        at: ts,
+        note: isBlockedNotifyStatus(status) ? pickNotifyNote(notify) : null
+    }
+}
+
+/**
+ * Ledger event for an operator's manual unblock (#1717).
+ *
+ * Pure so the recorded payload is testable without standing
+ * up a SyncEngine. Carries the agent's prior claim alongside the operator's
+ * rationale, so a reader can distinguish "operator disagreed with the agent"
+ * from "operator resolved it elsewhere" — the two have very different
+ * implications for whether the agent's judgement should be trusted next time.
+ */
+export function buildOperatorUnblockEvent(input: {
+    sessionId: string
+    ownerUserId: string | number
+    reason: string
+    /** When the operator made this decision — hub now, NOT the blocker's own
+     *  timestamp. The session event log sorts by event time, so stamping a
+     *  days-old blocker's time filed today's rationale among last week's
+     *  activity, or outside a recent-events window entirely. */
+    acknowledgedAt: number
+    /** The dismissed blocker's own timestamp, kept as a detail rather than as
+     *  the event's position in the log. */
+    observedAt?: number | null
+    /** Identity of the blocker the operator dismissed. Recorded even when the
+     *  footer it named has since been replaced, so the event can still be
+     *  matched back to what was actually reviewed. */
+    observedKey?: string | null
+    priorNotify: NotifySummary | SessionNotifySignal | null
+}): WorkGraphEventCreate {
+    const principalId = String(input.ownerUserId)
+    const prior = input.priorNotify
+    return {
+        source_kind: 'operator',
+        source_ref: principalId,
+        sink_kind: 'session',
+        sink_ref: input.sessionId,
+        event_type: 'operator_unblock',
+        summary: clampUtf8(input.reason, WORK_GRAPH_MAX_SUMMARY),
+        related_session_id: input.sessionId,
+        provenance: 'hapi-web/session-action-menu',
+        payload_json: {
+            reason: clampJsonUtf8(input.reason, WORK_GRAPH_MAX_STRING),
+            acknowledged_at: input.acknowledgedAt,
+            // The identity is recorded unconditionally. The prior_* fields go
+            // null when the footer named by the key has already been replaced,
+            // and without the key the event could not be matched back to what
+            // the operator actually dismissed — including for a live request,
+            // which has no footer at all.
+            blocker_key: input.observedKey
+                ? clampJsonUtf8(input.observedKey, WORK_GRAPH_MAX_STRING)
+                : null,
+            observed_at: input.observedAt ?? null,
+            prior_status: prior?.status ?? null,
+            prior_note: (prior && 'note' in prior ? prior.note : null) ?? null,
+            prior_at: (prior && 'at' in prior ? prior.at : null) ?? null
+        },
+        principal: { kind: 'human', id: principalId }
     }
 }

@@ -203,6 +203,91 @@ describe('SyncEngine.handleRealtimeEvent notify → work-graph ingest', () => {
         expect(rows[0]!.payloadJson).toMatchObject({ status: 'done' })
     })
 
+    function footerEvent(
+        sessionId: string,
+        id: string,
+        seq: number,
+        createdAt: number,
+        status: string
+    ): SyncEvent {
+        return {
+            type: 'message-received',
+            sessionId,
+            message: {
+                id,
+                seq,
+                localId: null,
+                createdAt,
+                content: {
+                    role: 'agent',
+                    content: {
+                        type: 'output',
+                        data: {
+                            type: 'assistant',
+                            message: {
+                                content: [{
+                                    type: 'text',
+                                    text: `Update.\n\nAGENT_NOTIFY_SUMMARY {"status":"${status}","summary":"s-${status}","project":"hapi"}`
+                                }]
+                            }
+                        }
+                    }
+                }
+            }
+        } as SyncEvent
+    }
+
+    it('a replayed older footer does not restore a blocker the newer one closed', () => {
+        // Through LIVE ingestion, which is the only path that supplies a `seq`
+        // — a store/cache test without one cannot see this at all.
+        //
+        // `seq` is allocated MAX(seq)+1 at insertion, so a footer Claude
+        // replays AFTER a newer one carries a HIGHER seq while being older in
+        // fact. Ordering footers against each other by seq therefore let the
+        // stale `blocked` win and put an answered session back into Blocked.
+        // Two footers share one runner clock, so between them authorship time
+        // is authoritative; seq is only for comparing a footer to a
+        // hub-stamped reply.
+        const { engine, store } = makeEngine()
+        const session = store.sessions.getOrCreateSession(
+            'notify-replay-order',
+            { path: '/tmp', host: 'h', flavor: 'claude' },
+            null,
+            'default'
+        )
+        engine.handleRealtimeEvent({ type: 'session-updated', sessionId: session.id })
+
+        const blockedAt = 1_660_000_000_000
+        // The agent reported blocked, then reported done ten seconds later.
+        engine.handleRealtimeEvent(footerEvent(session.id, 'm-1', 1, blockedAt, 'blocked'))
+        engine.handleRealtimeEvent(footerEvent(session.id, 'm-2', 2, blockedAt + 10_000, 'done'))
+        expect(store.sessions.getSession(session.id)?.lastNotifyStatus).toBe('done')
+
+        // Now the older `blocked` turn is replayed, keeping its original
+        // timestamp but landing at a higher insertion seq.
+        engine.handleRealtimeEvent(footerEvent(session.id, 'm-3', 3, blockedAt, 'blocked'))
+
+        expect(store.sessions.getSession(session.id)?.lastNotifyStatus).toBe('done')
+    })
+
+    it('still accepts a genuinely newer footer through live ingestion', () => {
+        // Positive control: the guard above must not simply freeze the footer.
+        const { engine, store } = makeEngine()
+        const session = store.sessions.getOrCreateSession(
+            'notify-replay-forward',
+            { path: '/tmp', host: 'h', flavor: 'claude' },
+            null,
+            'default'
+        )
+        engine.handleRealtimeEvent({ type: 'session-updated', sessionId: session.id })
+
+        const base = 1_660_000_000_000
+        engine.handleRealtimeEvent(footerEvent(session.id, 'f-1', 1, base, 'done'))
+        engine.handleRealtimeEvent(footerEvent(session.id, 'f-2', 2, base + 5_000, 'blocked'))
+
+        expect(store.sessions.getSession(session.id)?.lastNotifyStatus).toBe('blocked')
+    })
+
     it('does not ingest when the footer is missing', () => {
         const { engine, store } = makeEngine()
         const session = store.sessions.getOrCreateSession(

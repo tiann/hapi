@@ -345,6 +345,7 @@ describe('SessionList machine filter', () => {
             'Activenow',
             'Workingonly',
             'Withdraftsonly',
+            'Blockedonly',
             'All(2)',
             'Mint(1)',
             'Teemo(1)'
@@ -356,7 +357,7 @@ describe('SessionList machine filter', () => {
 })
 
 describe('SessionList session filter menu', () => {
-    it('lists unread, date, active, working, and scratchlist and closes when clicking outside', () => {
+    it('lists unread, date, active, working, scratchlist, and blocked and closes when clicking outside', () => {
         renderSessionList([
             makeSession({ id: 'session-1', metadata: { path: '/work/hapi', name: 'Session one' } })
         ])
@@ -375,7 +376,8 @@ describe('SessionList session filter menu', () => {
             'Updated date',
             'Active now',
             'Working only',
-            'With drafts only'
+            'With drafts only',
+            'Blocked only'
         ])
 
         fireEvent.click(screen.getByRole('button', { name: 'Close' }))
@@ -531,6 +533,25 @@ describe('SessionList session filter menu', () => {
         expect(screen.getByTitle('/work/job')).toBeTruthy()
         expect(screen.queryByTitle('/work/idle')).toBeNull()
         expect(screen.queryByTitle('/work/disconnected')).toBeNull()
+    })
+
+    it('filters to blocked sessions with Blocked only, AND-composed with other lenses (#1996)', () => {
+        renderSessionList([
+            makeSession({
+                id: 'blocked-one',
+                lastNotify: { status: 'blocked', at: Date.now(), note: 'needs a decision' },
+                metadata: { path: '/work/blocked', name: 'Blocked session' }
+            }),
+            makeSession({ id: 'fine-one', metadata: { path: '/work/fine', name: 'Fine session' } })
+        ])
+
+        fireEvent.click(screen.getByRole('button', { name: 'Sort and filter' }))
+        fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Blocked only' }))
+
+        // Blocked sessions float into their own section (#1717), so they are
+        // not found by directory-group title — assert by row id instead.
+        expect(document.querySelector('[data-session-id="blocked-one"]')).toBeTruthy()
+        expect(document.querySelector('[data-session-id="fine-one"]')).toBeNull()
     })
 
     it('keeps the existing unread filter behavior behind the unified menu', () => {

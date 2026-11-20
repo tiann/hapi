@@ -72,6 +72,7 @@ function harness() {
     const events: unknown[] = []
     const appliedConfigs: Array<Record<string, unknown>> = []
     const engine = {
+        reconcileNotifySignalAfterImport: () => {},
         recordSessionActivity: (sessionId: string, updatedAt: number) => {
             store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
         },
