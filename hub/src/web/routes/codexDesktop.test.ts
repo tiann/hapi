@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test'
+import type { Database } from 'bun:sqlite'
 import { randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -1539,6 +1540,88 @@ describe('Codex Desktop import routes', () => {
             // reads the footer as answered, not reopened.
             expect(footers[0]!.receivedAt ?? footers[0]!.createdAt)
                 .toBeLessThan(replies[0]!.reconciledInvokedAt!)
+        } finally {
+            store.close()
+        }
+    })
+
+    it('still recognizes a pre-upgrade import with no `imported` column value (cold-review round 23 follow-up)', async () => {
+        // `imported` is a plain additive column with no backfill — a row
+        // written by `addImportedMessage` before this hub upgraded reads
+        // `imported: null`, same as any genuinely live row. Defaulting that
+        // to "live" would resurface the exact round-21 bug for historical
+        // data: content-only alignment would stop recognizing the live
+        // duplicate as the same occurrence, and APPEND it instead of
+        // upgrading the survivor in place.
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        const store = new Store(':memory:')
+        const canonical = store.sessions.getOrCreateSession(
+            'canon-pre-upgrade-import', { codexSessionId: 'codex-thread-23c' }, {}, 'default'
+        )
+        const duplicate = store.sessions.getOrCreateSession(
+            'dup-pre-upgrade-live', { codexSessionId: 'codex-thread-23c' }, {}, 'default'
+        )
+        const base = Date.now() - 600_000
+
+        for (let i = 0; i < 3; i++) {
+            store.messages.addImportedMessage(canonical.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: { type: 'assistant', message: { content: [{ type: 'text', text: `filler ${i}` }] } }
+                }
+            }, `pre-upgrade-filler-${i}`, base)
+        }
+        const importedPrompt = store.messages.addImportedMessage(
+            canonical.id,
+            { role: 'user', content: { type: 'text', text: 'Continue' }, meta: { sentFrom: 'webapp' } },
+            'pre-upgrade-import-prompt',
+            base + 5_000
+        )
+        // Simulate a row written before this hub had the `imported` column
+        // at all — not merely unset by this code path, but genuinely absent
+        // the way a pre-upgrade row would be.
+        const db = (store as unknown as { db: Database }).db
+        db.query('UPDATE messages SET imported = NULL WHERE id = ?').run(importedPrompt.message.id)
+
+        store.messages.addMessage(duplicate.id, {
+            role: 'user', content: { type: 'text', text: 'Continue' }, meta: { sentFrom: 'webapp' }
+        }, 'pre-upgrade-live-prompt', null, base + 1_500, base + 1_500)
+        store.messages.markMessagesInvoked(duplicate.id, ['pre-upgrade-live-prompt'], base + 2_000)
+
+        const engine = {
+            getSessionsByNamespace: () => [],
+            transferBlockedAck: () => {},
+            transferAttachedJobs: () => {},
+            deleteSession: async (sessionId: string) => {
+                store.sessions.deleteSession(sessionId, 'default')
+            },
+            handleRealtimeEvent: () => {},
+            reconcileNotifySignalAfterImport: () => {},
+            recordSessionActivity: () => {}
+        } as unknown as SyncEngine
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
+
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-23c'] })
+            })
+            expect(response.status).toBe(200)
+            const body = await response.json() as { merged: Array<{ canonicalSessionId?: string }> }
+            expect(body.merged[0]?.canonicalSessionId).toBe(canonical.id)
+
+            const rows = store.messages.getAllMessages(canonical.id)
+            const prompts = rows.filter((row) => JSON.stringify(row.content).includes('Continue'))
+            // One prompt, not two — the live duplicate still aligns with the
+            // pre-upgrade import instead of being appended beside it.
+            expect(prompts).toHaveLength(1)
+            expect(prompts[0]?.reconciledInvokedAt).toBe(base + 2_000)
         } finally {
             store.close()
         }

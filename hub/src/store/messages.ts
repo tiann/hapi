@@ -135,7 +135,7 @@ function toStoredMessage(row: DbMessageRow): StoredMessage {
         localId: row.local_id,
         invokedAt: row.invoked_at ?? null,
         reconciledInvokedAt: row.reconciled_invoked_at ?? null,
-        imported: row.imported === 1,
+        imported: row.imported === 1 ? true : row.imported === 0 ? false : null,
         sweptAt: row.swept_at ?? null,
         receivedAt: row.received_at ?? null,
         agentDelivered: row.agent_delivered ?? null,
@@ -206,9 +206,9 @@ export function addMessage(
         const previousHead = getNewestMessagePosition(db, sessionId)
         prepareCached(db, `
             INSERT INTO messages (
-                id, session_id, content, created_at, received_at, seq, local_id, invoked_at, scheduled_at
+                id, session_id, content, created_at, received_at, seq, local_id, invoked_at, scheduled_at, imported
             ) VALUES (
-                @id, @session_id, @content, @created_at, @received_at, @seq, @local_id, @invoked_at, @scheduled_at
+                @id, @session_id, @content, @created_at, @received_at, @seq, @local_id, @invoked_at, @scheduled_at, 0
             )
         `).run({
             id,

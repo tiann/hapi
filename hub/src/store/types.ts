@@ -72,12 +72,16 @@ export type StoredMessage = {
      *  cannot move the row's place in the transcript (#1717 cold-review
      *  round 23). */
     reconciledInvokedAt?: number | null
-    /** True when this row was created by `addImportedMessage`, set once at
+    /** Whether this row was created by `addImportedMessage`, set once at
      *  insert time. The explicit provenance fact — never infer it from a
      *  clock coincidence; `invokedAt === createdAt` is true for every live
      *  footer too, and `receivedAt === createdAt` can coincide for a
-     *  genuine live message (#1717 cold-review round 23). */
-    imported?: boolean
+     *  genuine live message (#1717 cold-review round 23). `null` means
+     *  UNKNOWN, not "live": a row written before this column existed never
+     *  had the fact recorded at all, live or imported — callers that care
+     *  fall back to the clock heuristic for exactly that case, matching the
+     *  behaviour this hub already shipped for historical data. */
+    imported?: boolean | null
     /** Set when the session-end sweep stamped `invokedAt` without a runtime
      *  ACK, so a reply can be told apart from one the agent actually got. */
     sweptAt?: number | null

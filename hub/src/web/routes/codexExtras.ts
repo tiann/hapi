@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { AGENT_MESSAGE_PAYLOAD_TYPE } from '@hapi/protocol'
 import type { Store, StoredMessage } from '../../store'
-import { isDeliveredOperatorReply, operatorReplyDeliveredAt } from '../../sync/workGraphNotifyIngest'
+import { isDeliveredOperatorReply, isOperatorReplyMessage, operatorReplyDeliveredAt } from '../../sync/workGraphNotifyIngest'
 import { truncateOversizedMessageContent } from '../../store/contentCodec'
 import type { SyncEngine } from '../../sync/syncEngine'
 import { collectImportCandidates, type ImportCandidate } from './localSessions/matchContentPrefix'
@@ -869,6 +869,25 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
     // genuine live Codex message that never carried its own `created_at` at
     // all. Neither clock was ever the fact being asked about; provenance is
     // a fact about how the row was WRITTEN, not about what time it carries.
+    //
+    // `imported` is a plain additive column with no backfill: a row written
+    // by `addImportedMessage` before this hub had the column reads
+    // `imported: null` — identical to a genuinely live row, since neither
+    // ever had the fact recorded. Defaulting unknown to "live" resurfaces
+    // the round-21 bug for exactly that historical data: a live duplicate of
+    // an old import would stop being recognized as the same occurrence and
+    // get appended instead of upgrading the survivor in place. Falling back
+    // to the pre-round-23 clock heuristic for the unknown case reproduces
+    // this hub's own already-shipped behaviour for it, rather than silently
+    // regressing it — there is no durable per-message record to backfill
+    // provenance from instead (`events.source_kind` is a work-graph-ledger
+    // column, unrelated to `messages`).
+    const isImported = (message: StoredMessage): boolean => {
+        if (message.imported !== null && message.imported !== undefined) return message.imported
+        return isOperatorReplyMessage(message.content)
+            ? message.invokedAt !== null && message.invokedAt === message.createdAt
+            : message.receivedAt !== null && message.receivedAt === message.createdAt
+    }
     const contentKeyOf = (message: StoredMessage): string =>
         getComparableStoredMessageKey(message)
     const timedKeyOf = (message: StoredMessage): string =>
@@ -894,7 +913,7 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
         // with a reply must be upgradeable the same way the reply is, or
         // upgrading only the reply's stamp and leaving the footer's
         // untouched synthetic one breaks the order between them.
-        if (message.imported) syntheticContents.add(content)
+        if (isImported(message)) syntheticContents.add(content)
         if (!isDeliveredOperatorReply(message)) continue
         canonicalTimedCounts.set(timedKeyOf(message), (canonicalTimedCounts.get(timedKeyOf(message)) ?? 0) + 1)
     }
@@ -923,7 +942,7 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
     // real stamp is the truthful one, so it wins deterministically.
     const sourcesByStampFidelity = sessionStates.slice(1).slice().sort((a, b) => {
         const real = (candidate: typeof a): number => candidate.storedMessages.some(
-            (message) => isDeliveredOperatorReply(message) && !message.imported
+            (message) => isDeliveredOperatorReply(message) && !isImported(message)
         ) ? 0 : 1
         return real(a) - real(b)
     })
@@ -935,7 +954,7 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
             // Fall back to content-only alignment when a delivery stamp on
             // either side is synthesized, since the two cannot be compared.
             const alignOnContent = !isDeliveredOperatorReply(message)
-                || message.imported
+                || isImported(message)
                 || syntheticContents.has(content)
             const comparableKey = alignOnContent ? content : timedKeyOf(message)
             const have = alignOnContent
@@ -961,7 +980,7 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
                 // footer and the reply that answers it must upgrade together
                 // — upgrading only the reply left the footer at its original
                 // synthetic stamp and could invert their order.
-                if (alignOnContent && syntheticContents.has(content) && !message.imported) {
+                if (alignOnContent && syntheticContents.has(content) && !isImported(message)) {
                     const canonicalId = canonicalContentOccurrences.get(content)?.[ordinal - 1]
                     if (canonicalId) {
                         options.store.messages.upgradeMessageDeliveryStamp(canonicalId, {
@@ -1008,7 +1027,7 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
             // Tracked for ANY role, same as the initial canonical tally
             // (round 22) — a copied footer can still be the surviving
             // synthetic occurrence a later duplicate's upgrade targets.
-            if (message.imported) syntheticContents.add(content)
+            if (isImported(message)) syntheticContents.add(content)
             if (isDeliveredOperatorReply(message)) {
                 const timed = timedKeyOf(message)
                 canonicalTimedCounts.set(timed, (canonicalTimedCounts.get(timed) ?? 0) + 1)
