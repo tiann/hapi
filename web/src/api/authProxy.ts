@@ -1,3 +1,5 @@
+import { observeFetchThrough } from '@/lib/telemetry/httpObserver'
+
 /** Message of AuthProxyRedirectError; the login screen keys its redirect notice on it. */
 export const AUTH_PROXY_REDIRECT_MESSAGE = 'Request was redirected'
 
@@ -12,7 +14,21 @@ export class AuthProxyRedirectError extends Error {
 }
 
 export async function fetchThroughAuthProxy(input: string, init?: RequestInit): Promise<Response> {
-    const first = await fetch(input, { ...init, redirect: 'manual' })
+    // Telemetry observation wrapper (详细日志模式 P0): one perf http row per
+    // request, trace-id header injection and Bearer-token harvesting. When the
+    // SDK is not installed (dev, old build) this is a transparent passthrough
+    // and the semantics below are byte-identical to the unwrapped original.
+    return observeFetchThrough(input, init, (observedInit, fetchOne) => rawFetchAuthProxy(input, observedInit, fetchOne))
+}
+
+/** The original redirect-manual logic, parameterized on the fetch call so the
+ *  observer can count attempts (opaqueredirect retry = attempt 2). */
+async function rawFetchAuthProxy(
+    input: string,
+    init: RequestInit | undefined,
+    fetchOne: (init: RequestInit | undefined) => Promise<Response>
+): Promise<Response> {
+    const first = await fetchOne({ ...init, redirect: 'manual' })
     if (first.type !== 'opaqueredirect') {
         return first
     }
@@ -22,7 +38,7 @@ export async function fetchThroughAuthProxy(input: string, init?: RequestInit): 
     // init is safe and lets ordinary redirects (http -> https) succeed. Only a failing retry
     // means the browser could not follow the redirect (e.g. cross-origin without CORS).
     try {
-        return await fetch(input, init)
+        return await fetchOne(init)
     } catch (e) {
         if (e instanceof TypeError) {
             throw new AuthProxyRedirectError(new URL(input, window.location.href).origin)

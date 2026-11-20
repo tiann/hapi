@@ -13,6 +13,20 @@ import { createAppRouter } from './router'
 import { I18nProvider } from './lib/i18n-context'
 import { restoreSpaRedirect } from './lib/spaRedirect'
 import { installScrollRestorationGuard } from './lib/scrollStorageGuard'
+import { installTelemetry, TelemetryErrorBoundary } from './lib/telemetry'
+import { resolveLiveBaseUrl } from './lib/telemetry/device'
+
+// Telemetry SDK first (详细日志模式 P0): the authProxy fetch wrapper and the
+// global error handlers must be in place before any render or hub request.
+// dev builds are a complete no-op. The JWT only exists inside React (useAuth),
+// so getAuthToken stays null here — the SDK learns the live Bearer token from
+// the authProxy single fetch point (httpObserver.noteBearerFromHeaders) and
+// re-resolves the hub baseUrl (?hub= > localStorage `hapi_hub_url` > origin)
+// on every send, so a settings-side hub switch needs no reinstall.
+installTelemetry({
+    getAuthToken: () => null,
+    baseUrl: resolveLiveBaseUrl(''),
+})
 
 function getStartParam(): string | null {
     const query = new URLSearchParams(window.location.search)
@@ -62,7 +76,9 @@ async function bootstrap() {
         <React.StrictMode>
             <I18nProvider>
                 <QueryClientProvider client={queryClient}>
-                    <RouterProvider router={router} />
+                    <TelemetryErrorBoundary>
+                        <RouterProvider router={router} />
+                    </TelemetryErrorBoundary>
                     {import.meta.env.DEV ? <ReactQueryDevtools initialIsOpen={false} /> : null}
                 </QueryClientProvider>
             </I18nProvider>

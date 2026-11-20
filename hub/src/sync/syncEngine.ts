@@ -1878,6 +1878,15 @@ export class SyncEngine {
         this.messageService.releaseMatureScheduledMessages(Date.now(), held)
         void this.reconcileOpenCodeClears()
         this.reconcileDerivedToolWork()
+        // Telemetry maintenance (P0) rides the same 5s tick: hub-plane queue
+        // flush, dirty-bucket rollup, throttled retention sweep and the L3
+        // 24h auto-fallback. Internally throttled and fail-silent — telemetry
+        // must never break the engine tick.
+        try {
+            this.store.telemetry.tick(Date.now(), { dataDir: this.resolveSettingsDataDir() })
+        } catch {
+            // Fail-silent by contract (research report §7.2).
+        }
     }
 
     /**

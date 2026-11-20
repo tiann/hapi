@@ -1,4 +1,5 @@
 import { mergeReadState } from '@hapi/protocol'
+import { unwrapRoleWrappedRecordEnvelope } from '@hapi/protocol/messages'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import {
@@ -25,6 +26,15 @@ import type {
 import { queryKeys } from '@/lib/query-keys'
 import { applyAgyCatalogAnnouncement } from '@/lib/agyCatalogAnnouncement'
 import { clearMessageWindow, getMessageWindowState, ingestIncomingMessages, markMessagesConsumed, markMessagesIndeterminate, markMessagesDispatching, markMessagesRequeued, removeOptimisticMessage, updateMessageStatus } from '@/lib/message-window-store'
+import {
+    armSessionStall,
+    disarmSessionStall,
+    noteSessionMessage,
+    noteSessionThinking,
+    startSseEpisode,
+    type SseEpisodeHandle
+} from '@/lib/sseTelemetryObserver'
+import { noteAgentMessage, noteThinking } from '@/chat/turnLatency'
 import {
     applySessionDetailPatch,
     isNewerVersionedPatch,
@@ -186,6 +196,25 @@ function isMachineRecord(value: unknown): value is Machine {
     return MachineSchema.safeParse(value).success
 }
 
+/** Observation helper (turn_latency): classify a message-received payload as
+ * agent-side and return a short kind label for the first-event distribution
+ * (e.g. 'tool-call' vs 'text'), or null for user/system rows. */
+function agentMessageEventKind(content: unknown): string | null {
+    try {
+        const unwrapped = unwrapRoleWrappedRecordEnvelope(content)
+        if (!unwrapped || unwrapped.role !== 'agent') {
+            return null
+        }
+        const payload = unwrapped.content as { type?: unknown; data?: { type?: unknown } } | null
+        if (payload && typeof payload === 'object' && typeof payload.data?.type === 'string') {
+            return payload.data.type
+        }
+        return 'message'
+    } catch {
+        return null
+    }
+}
+
 function getMachinePatch(value: unknown): { active?: boolean; activeAt?: number; updatedAt?: number } | null {
     const parsed = MachinePatchSchema.safeParse(value)
     if (!parsed.success) {
@@ -340,6 +369,14 @@ export function useSSE(options: {
         const eventSource = new EventSource(url)
         let disconnectNotified = false
         let reconnectRequested = false
+        // Observation only: this effect run's connection episode (perf) and,
+        // for a session-scoped subscription, the thinking-phase stall tracker
+        // (diag). Both are fail-silent and never touch connection behavior.
+        const episode: SseEpisodeHandle = startSseEpisode(scope, subscriptionKey)
+        const stallSessionId = subscription.sessionId
+        if (stallSessionId) {
+            armSessionStall(stallSessionId)
+        }
         eventSourceRef.current = eventSource
         lastActivityAtRef.current = Date.now()
 
@@ -390,6 +427,7 @@ export function useSSE(options: {
             }
             reconnectRequested = true
             notifyDisconnect(reason)
+            episode.end(reason)
             eventSource.close()
             if (eventSourceRef.current === eventSource) {
                 eventSourceRef.current = null
@@ -680,11 +718,17 @@ export function useSSE(options: {
                 return
             }
 
+            // Observation funnels (fail-silent): every connection-changed
+            // handshake completes the episode's connect leg; every
+            // message-received feeds the stall tracker (pipe is alive) and
+            // the turn_latency first-agent clock for its session.
             if (event.type === 'connection-changed') {
                 const data = event.data
+                let handshakeSubscriptionId: string | null = null
                 if (data && typeof data === 'object' && 'subscriptionId' in data) {
                     const nextId = (data as { subscriptionId?: unknown }).subscriptionId
                     if (typeof nextId === 'string' && nextId.length > 0) {
+                        handshakeSubscriptionId = nextId
                         setSubscriptionId(nextId)
                     }
                 }
@@ -694,7 +738,20 @@ export function useSSE(options: {
                 // the field, which safely reads as a full resync.
                 const resumed = data && typeof data === 'object'
                     && (data as { resume?: unknown }).resume === 'ok'
+                episode.noteConnect(handshakeSubscriptionId, Boolean(resumed))
                 onConnectRef.current?.({ resumed: Boolean(resumed) })
+            }
+
+            if (event.type === 'message-received') {
+                try {
+                    noteSessionMessage(event.sessionId)
+                    const agentKind = agentMessageEventKind(event.message.content)
+                    if (agentKind) {
+                        noteAgentMessage(event.sessionId, agentKind)
+                    }
+                } catch {
+                    // fail-silent
+                }
             }
 
             if (event.type === 'toast') {
@@ -785,6 +842,17 @@ export function useSSE(options: {
                 } else {
                     const patch = getSessionPatch(event.data)
                     if (patch) {
+                        if (patch.thinking !== undefined) {
+                            // Observation funnel: a thinking transition both
+                            // completes a turn_latency turn and clears/arms
+                            // the session's stall silence clock.
+                            try {
+                                noteThinking(event.sessionId, patch.thinking)
+                                noteSessionThinking(event.sessionId, patch.thinking)
+                            } catch {
+                                // fail-silent
+                            }
+                        }
                         const detailPatched = patchSessionDetail(event.sessionId, patch)
                         const summaryPatched = patchSessionSummary(event.sessionId, patch)
 
@@ -852,6 +920,10 @@ export function useSSE(options: {
             if (typeof parsed.type !== 'string') {
                 return
             }
+
+            // Observation only: count every parsed event and its wire bytes
+            // (serialized.length * 2, the hub sseManager byte convention).
+            episode.noteEvent(typeof message.data === 'string' ? message.data.length * 2 : 0)
 
             handleSyncEvent(parsed as SyncEvent)
 
@@ -949,6 +1021,12 @@ export function useSSE(options: {
             clearInterval(watchdogTimer)
             clearTimeout(connectDeadlineTimer)
             document.removeEventListener('visibilitychange', onVisibilityChange)
+            // Observation teardown (idempotent: a requestReconnect already
+            // ended the episode with its reason code).
+            episode.end('unsubscribe')
+            if (stallSessionId) {
+                disarmSessionStall(stallSessionId)
+            }
             if (invalidationTimerRef.current) {
                 clearTimeout(invalidationTimerRef.current)
                 invalidationTimerRef.current = null

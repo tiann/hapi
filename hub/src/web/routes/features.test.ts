@@ -33,7 +33,9 @@ describe('features routes', () => {
         expect(response.status).toBe(200)
         expect(await response.json()).toEqual({
             githubPrAwareness: { enabled: false, source: 'default' },
-            prChipDisplay: DEFAULT_PR_CHIP_DISPLAY
+            prChipDisplay: DEFAULT_PR_CHIP_DISPLAY,
+            telemetry: true,
+            telemetryLevel: 0
         })
     })
 
@@ -57,7 +59,9 @@ describe('features routes', () => {
         expect(response.status).toBe(200)
         expect(await response.json()).toEqual({
             githubPrAwareness: { enabled: true, source: 'file' },
-            prChipDisplay: DEFAULT_PR_CHIP_DISPLAY
+            prChipDisplay: DEFAULT_PR_CHIP_DISPLAY,
+            telemetry: true,
+            telemetryLevel: 0
         })
         expect(enabled).toBe(true)
     })

@@ -22,6 +22,7 @@ import { IosPushService } from './push-ios/iosPushService'
 import { IosPushNotificationChannel } from './push-ios/iosPushChannel'
 import { resolveIosPushConfig } from './push-ios/iosPushConfig'
 import { VisibilityTracker } from './visibility/visibilityTracker'
+import { resolveHubVersion } from './store/telemetry'
 import { TunnelManager } from './tunnel'
 import { refreshRejectedRelayAuthKey, resolveRelayAuthKey } from './tunnel/relayAuth'
 import { waitForTunnelTlsReady } from './tunnel/tlsGate'
@@ -178,6 +179,13 @@ export async function startHub(options: StartHubOptions = {}): Promise<HubInstan
     }
 
     const store = new Store(config.dbPath)
+    // Telemetry deploy mark: one perf_deploy_marks row per hub start so perf
+    // timelines can annotate observation gaps (release blips, nightly trim).
+    // Fail-silent — a telemetry hiccup must never block startup.
+    try {
+        store.telemetry.recordDeployMark('hub-start', resolveHubVersion())
+    } catch {
+    }
     const jwtSecret = await getOrCreateJwtSecret()
     const vapidKeys = await getOrCreateVapidKeys(config.dataDir)
     const vapidSubject = process.env.VAPID_SUBJECT ?? 'mailto:admin@hapi.run'
