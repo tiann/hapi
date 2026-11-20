@@ -427,6 +427,7 @@ export class SharedCodexRoot {
             }
         }
         if (this.stopping) throw new Error('Codex execution is stopping');
+        if (!this.client.isInitialized()) throw new Error('Codex side connection closed before the session was ready; retry the resume');
         this.registerControls();
         this.activated = true;
         this.ready();

@@ -22,7 +22,7 @@ const BOOTSTRAP_START_MARKER = vi.hoisted(() => 'Tue Sep 29 09:00:00 2026');
 class MockSession extends EventEmitter {
     readonly sessionId: string;
     state: AgentState = { requests: { 'old-worker': { tool: 'request_user_input', arguments: {}, createdAt: 0 } } }; metadata: Metadata;
-    messages: unknown[] = []; consumed: string[] = []; dead = false;
+    messages: unknown[] = []; consumed: string[] = []; dead = false; readySignals = 0;
     serviceTier?: string | null;
     user?: (message: { content: { text: string } }, id?: string) => void;
     rpc = new Map<string, (params: unknown) => Promise<unknown>>();
@@ -39,7 +39,7 @@ class MockSession extends EventEmitter {
     emitMessagesConsumed(ids: string[]) { this.consumed.push(...ids); }
     emitSteerIndeterminate() {}
     keepAlive(_thinking?: boolean, _mode?: unknown, settings?: { serviceTier?: string | null }) { if (settings && 'serviceTier' in settings) this.serviceTier = settings.serviceTier; }
-    emitSessionReady() {}
+    emitSessionReady() { this.readySignals++; }
     async setSteerDeliveryState() { return true; }
     syncNativeQueuedMessage() {}
     sendSessionDeath() { this.dead = true; } async flush() {} close() {} isPending() { return false; }
@@ -256,6 +256,25 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             expect(second.runtime.sessions[original.sessionId].active).toBe(true);
             await expect(concurrent.request('thread/settings/update', { threadId, serviceTier: null })).rejects.toThrow('initialization is pending');
             await expect(second.client.request('thread/queue/delete', { threadId, queuedSubmissionId: 'not-bound' })).rejects.toThrow('tier confirmation');
+            const originalBind = SharedCodexRoot.prototype.bind;
+            let sideConnection: CodexAppServerClient | undefined;
+            const bound = vi.spyOn(SharedCodexRoot.prototype, 'bind').mockImplementation(async function(this: InstanceType<typeof SharedCodexRoot>, ...args) {
+                await originalBind.apply(this, args);
+                if (this.threadId === threadId) sideConnection = this.client;
+            });
+            const dropSideConnection = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(async function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
+                if (sideConnection && this === controlConnection && method === 'thread/resume' && record(params).threadId === threadId) {
+                    const abandon = (sideConnection as unknown as { transportAbandonedHandler: () => void }).transportAbandonedHandler;
+                    await sideConnection.disconnect();
+                    abandon();
+                }
+                return originalNativeRequest.call(this, method, params) as Promise<T>;
+            });
+            extraSpies.push(bound, dropSideConnection);
+            await expect(concurrent.request('thread/resume', { threadId, excludeTurns: true })).rejects.toThrow('side connection closed before the session was ready');
+            expect(retainedSession?.readySignals).toBe(0);
+            expect(second.runtime.sessions[original.sessionId].active).toBe(true);
+            bound.mockRestore(); dropSideConnection.mockRestore();
             const activate = vi.spyOn(SharedCodexRoot.prototype, 'activate');
             extraSpies.push(activate);
             const attempts = await Promise.allSettled([second.client, concurrent].map(client =>
@@ -272,6 +291,7 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             }
             await concurrent.request('thread/resume', { threadId, excludeTurns: true });
             expect(activate).toHaveBeenCalledTimes(1);
+            expect(retainedSession?.readySignals).toBe(1);
             activate.mockRestore();
             const third = await start();
             await saveRuntime({ ...third.runtime, pendingCreations: ['unrelated-creation'] });
