@@ -284,40 +284,49 @@ fn ascii_order_matches_typescript_locale_compare() {
 }
 
 #[tokio::test]
-async fn directory_tree_keeps_lexical_paths_under_symlinked_root() {
-    let base = tempdir().unwrap();
-    let real = base.path().join("real");
-    fs::create_dir_all(real.join("src")).unwrap();
-    let link = base.path().join("link");
-    symlink(&real, &link).unwrap();
-    let rpc = RpcHandlerManager::new("s");
-    files::register(&rpc, &link, &GeneratedImages::default());
-    let reply: Value = serde_json::from_str(
-        &rpc.handle_request(
-            &json!({"method":"s:getDirectoryTree","params":"{\"path\":\".\",\"maxDepth\":1}"}),
-        )
-        .await
-        .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(reply["tree"]["path"], link.to_str().unwrap());
-    assert_eq!(reply["tree"]["name"], "link");
+async fn conditional_writes_keep_content_and_skip_special_files() {
+    let f = Fixture::new();
+    let dir = f.dir.path();
+    fs::write(dir.join("file"), "abc").unwrap();
+    let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    let missing = "The first argument must be of type string or an instance of Buffer, ArrayBuffer, or Array or an Array-like Object. Received undefined";
     assert_eq!(
-        reply["tree"]["children"][0]["path"],
-        link.join("src").to_str().unwrap()
+        f.call("writeFile", json!({"path":"file","expectedHash":abc}))
+            .await,
+        error(missing)
     );
-    fs::write(real.join("file"), "").unwrap();
-    let reply: Value = serde_json::from_str(
-        &rpc.handle_request(&json!({"method":"s:listDirectory","params":"{\"path\":\"file\"}"}))
-            .await
-            .unwrap(),
-    )
-    .unwrap();
+    assert_eq!(fs::read(dir.join("file")).unwrap(), b"abc");
     assert_eq!(
-        reply["error"],
-        format!(
-            "ENOTDIR: not a directory, scandir '{}'",
-            link.join("file").display()
-        )
+        f.call("writeFile", json!({"path":"new","content":null}))
+            .await,
+        error(missing.replace("undefined", "null"))
     );
+    assert!(!dir.join("new").exists());
+    assert_eq!(
+        f.call("writeFile", json!({"path":"file"})).await,
+        error("File already exists but was expected to be new")
+    );
+    assert_eq!(
+        f.call(
+            "writeFile",
+            json!({"path":"file","expectedHash":abc,"content":""})
+        )
+        .await["hash"],
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
+    assert_eq!(fs::read(dir.join("file")).unwrap(), b"");
+    let fifo = dir.join("fifo");
+    nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU).unwrap();
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        f.call(
+            "writeFile",
+            json!({"path":"fifo","expectedHash":abc,"content":"YQ=="}),
+        ),
+    )
+    .await;
+    if result.is_err() {
+        let _ = fs::write(&fifo, "x");
+    }
+    assert_eq!(result.unwrap(), error("Path is not a regular file"));
 }

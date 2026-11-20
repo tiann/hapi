@@ -207,21 +207,28 @@ fn handle(method: &str, root: &Path, data: Value) -> Result<Value, String> {
             if let Err(e) = p.metadata() {
                 return Err(fs_error(e, "scandir", &p));
             }
-            canonical(root, &p)?;
-            Ok(json!({"success":true,"entries":entries(&p,None)?}))
+            let resolved = canonical(root, &p)?;
+            Ok(json!({"success":true,"entries":entries(&resolved,None)?}))
         }
         "getDirectoryTree" => {
             let d = data["maxDepth"].as_f64().unwrap_or(0.);
             if d < 0. {
                 return Err("maxDepth must be non-negative".into());
             }
-            canonical(root, &p).map_err(|_| "Failed to access the specified path")?;
+            let p = canonical(root, &p).map_err(|_| "Failed to access the specified path")?;
             Ok(
                 json!({"success":true,"tree":tree(&p,d.ceil() as u64).ok_or("Failed to access the specified path")?}),
             )
         }
         "writeFile" => {
-            let bytes = decode(field(&data, "content"));
+            let bytes = match &data["content"] {
+                Value::String(s) => Ok(decode(s)),
+                v => Err(format!("The first argument must be of type string or an instance of Buffer, ArrayBuffer, or Array or an Array-like Object. Received {}", match v {
+                    Value::Null if data.get("content").is_some() => "null".into(),
+                    Value::Null => "undefined".into(),
+                    v => format!("type {}", if v.is_number() { "number" } else if v.is_boolean() { "boolean" } else { "object" }),
+                })),
+            };
             let mut f = if let Some(expected) = data["expectedHash"].as_str() {
                 let resolved = p.canonicalize().map_err(|e| {
                     if e.kind() == io::ErrorKind::NotFound {
@@ -234,8 +241,16 @@ fn handle(method: &str, root: &Path, data: Value) -> Result<Value, String> {
                 let mut f = OpenOptions::new()
                     .read(true)
                     .write(true)
+                    .custom_flags(nix::libc::O_NONBLOCK | nix::libc::O_NOFOLLOW)
                     .open(&p)
                     .map_err(|e| fs_error(e, "open", &p))?;
+                if !f
+                    .metadata()
+                    .map_err(|e| fs_error(e, "fstat", &p))?
+                    .is_file()
+                {
+                    return Err("Path is not a regular file".into());
+                }
                 let mut existing = Vec::new();
                 f.read_to_end(&mut existing)
                     .map_err(|e| fs_error(e, "read", &p))?;
@@ -244,6 +259,9 @@ fn handle(method: &str, root: &Path, data: Value) -> Result<Value, String> {
                     return Err(format!(
                         "File hash mismatch. Expected: {expected}, Actual: {actual}"
                     ));
+                }
+                if let Err(e) = &bytes {
+                    return Err(e.clone());
                 }
                 use std::io::Seek;
                 f.rewind()
@@ -256,6 +274,13 @@ fn handle(method: &str, root: &Path, data: Value) -> Result<Value, String> {
                 }
                 let parent = canonical(root, p.parent().unwrap_or(root))?;
                 let p = parent.join(p.file_name().ok_or("Invalid file path")?);
+                if let Err(e) = &bytes {
+                    return Err(if p.symlink_metadata().is_ok() {
+                        "File already exists but was expected to be new".into()
+                    } else {
+                        e.clone()
+                    });
+                }
                 File::create_new(&p).map_err(|e| {
                     if e.kind() == io::ErrorKind::AlreadyExists {
                         "File already exists but was expected to be new".into()
@@ -264,6 +289,7 @@ fn handle(method: &str, root: &Path, data: Value) -> Result<Value, String> {
                     }
                 })?
             };
+            let bytes = bytes?;
             f.write_all(&bytes).map_err(|e| fs_error(e, "write", &p))?;
             Ok(json!({"success":true,"hash":hash(&bytes)}))
         }

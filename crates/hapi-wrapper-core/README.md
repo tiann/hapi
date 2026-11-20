@@ -31,6 +31,8 @@ server certificate and private key. They are used only by the TLS tests.
 The file RPCs check both the lexical path and its canonical target against the
 working directory, so `listDirectory` and `writeFile` refuse a symlink that
 leads outside it (TypeScript checks only the lexical path for these two).
+Tree and listing traverse the canonical path, so `getDirectoryTree` reports
+canonical paths. The handlers are built on Unix only.
 Directory entries follow English `localeCompare` order for printable ASCII;
 other characters sort after ASCII by code point.
 
