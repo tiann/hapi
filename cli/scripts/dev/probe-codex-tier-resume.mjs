@@ -31,10 +31,21 @@ const server = createServer((req, res) => {
 });
 await new Promise(r => server.listen(0, '127.0.0.1', r));
 const endpoint = 'http://127.0.0.1:' + server.address().port + '/v1';
-let child, pending = new Map(), sequence = 0;
+let child, childDone, sequence = 0;
+const pending = new Map();
+function rejectPending(error) {
+    for (const request of pending.values()) request.reject(error);
+    pending.clear();
+    finished?.reject(error);
+}
 async function start(tier) {
     await fs.writeFile(path.join(home, 'config.toml'), `model = "gpt-6-astra"\nmodel_provider = "${tier === 'priority' ? 'openai' : 'fixture'}"\nservice_tier = "${tier}"\n[features]\nultrafast_mode = true\nfast_mode = true\n[model_providers.fixture]\nname = "Local fixture"\nbase_url = "${endpoint}"\nwire_api = "responses"\nrequires_openai_auth = false\n`);
     child = spawn(executable, ['app-server'], { env: { ...process.env, CODEX_HOME: home, OPENAI_API_KEY: "fixture", OPENAI_BASE_URL: endpoint }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    const proc = child;
+    childDone = new Promise(resolve => proc.once('close', resolve));
+    proc.once('exit', (code, signal) => rejectPending(Error('Codex probe child exited: ' + (signal ?? code))));
+    proc.once('error', rejectPending);
+    proc.stdin.on('error', rejectPending);
     child.stderr.resume();
     let buffer = '';
     child.stdout.on('data', b => { buffer += b.toString(); for (;;) {
@@ -46,7 +57,7 @@ async function start(tier) {
         try {
             const v = JSON.parse(line);
             if (v.method === 'turn/completed')
-                finished?.();
+                finished?.resolve();
             const done = pending.get(v.id);
             if (done) {
                 pending.delete(v.id);
@@ -59,9 +70,33 @@ async function start(tier) {
     console.log(JSON.stringify({ nativeVersion: initialized.userAgent.match(/[A-Za-z_-]+\/\d+\.\d+\.\d+/)?.[0] }));
     child.stdin.write(JSON.stringify({ method: 'initialized' }) + '\n');
 }
-function request(method, params) { return new Promise((resolve, reject) => { const id = ++sequence; const timer = setTimeout(() => { pending.delete(id); reject(Error('Native probe timed out: ' + method)); }, 15000); pending.set(id, { resolve: v => { clearTimeout(timer); resolve(v); }, reject: e => { clearTimeout(timer); reject(e); } }); child.stdin.write(JSON.stringify({ id, method, params }) + '\n'); }); }
-async function stop() { if (!child)
-    return; const proc = child; child = undefined; await new Promise(resolve => { const timer = setTimeout(() => proc.kill(), 3000); proc.once('exit', () => { clearTimeout(timer); resolve(); }); proc.stdin.end(); }); }
+function request(method, params) {
+    return new Promise((resolve, reject) => {
+        if (!child?.stdin.writable) return reject(Error('Codex probe child is no longer running'));
+        const id = ++sequence;
+        const timer = setTimeout(() => {
+            pending.delete(id);
+            reject(Error('Native probe timed out: ' + method));
+        }, 15000);
+        pending.set(id, {
+            resolve: value => { clearTimeout(timer); resolve(value); },
+            reject: error => { clearTimeout(timer); reject(error); }
+        });
+        child.stdin.write(JSON.stringify({ id, method, params }) + '\n');
+    });
+}
+async function stop() {
+    if (!child) return;
+    const proc = child;
+    child = undefined;
+    const timer = setTimeout(() => proc.kill(), 3000);
+    try {
+        if (proc.stdin.writable) proc.stdin.end();
+        await childDone;
+    } finally {
+        clearTimeout(timer);
+    }
+}
 try {
     await start('priority');
     const cfg = await request('config/read', { includeLayers: false });
@@ -70,7 +105,14 @@ try {
     if (initial.serviceTier !== 'priority')
         throw Error('Initial tier not inherited: ' + initial.serviceTier);
     const thread = initial.thread.id;
-    const done = new Promise((resolve, reject) => { const timer = setTimeout(() => reject(Error('Mock turn timed out')), 20000); finished = () => { clearTimeout(timer); resolve(); }; });
+    const done = new Promise((resolve, reject) => {
+        const timer = setTimeout(() => finished?.reject(Error('Mock turn timed out')), 20000);
+        finished = {
+            resolve: () => { clearTimeout(timer); finished = undefined; resolve(); },
+            reject: error => { clearTimeout(timer); finished = undefined; reject(error); }
+        };
+    });
+    void done.catch(() => {}); // Child exit can reject both the request and completion.
     await request('turn/start', { threadId: thread, input: [{ type: 'text', text: 'fixture' }] });
     await done;
     await request('thread/metadata/update', { threadId: thread, gitInfo: { sha: null, branch: null, originUrl: null } });

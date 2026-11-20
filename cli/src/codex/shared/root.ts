@@ -874,6 +874,8 @@ export class SharedCodexRoot {
         if (explicitTier) this.markTierExplicit();
         const revision = this.settingsRevision;
         const deadline = Date.now() + 25_000;
+        const model = string(record(record(params.collaborationMode).settings).model) ?? string(params.model);
+        const expected = { ...(model ? { model } : {}), ...(params.serviceTier !== undefined ? { serviceTier: params.serviceTier } : {}) };
         try {
             const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline, true, () => current() && (verifyUltrafast || params.serviceTier !== undefined), operationId));
             if (!current()) return;
@@ -883,12 +885,13 @@ export class SharedCodexRoot {
                     await this.confirmEffectiveUltrafast(deadline, operationId);
                     if (current()) this.rememberTierConfirmation();
                 }
-                else if (fallbackNotice && this.hasConfirmedStandardTier) this.notice(fallbackNotice);
+                else if (params.serviceTier !== undefined && settingsMatch(this.settingsNative, { serviceTier: params.serviceTier })) {
+                    this.rememberTierConfirmation();
+                    if (fallbackNotice && this.hasConfirmedStandardTier) this.notice(fallbackNotice);
+                }
                 return;
             }
             this.acceptSettings(snapshot, true);
-            const model = string(record(record(params.collaborationMode).settings).model) ?? string(params.model);
-            const expected = { ...(model ? { model } : {}), ...(params.serviceTier !== undefined ? { serviceTier: params.serviceTier } : {}) };
             if (verifyUltrafast && !this.hasUltrafastTier && this.settings.serviceTier !== 'fast') {
                 await this.writeNativeSettings({ threadId: this.threadId, serviceTier: null }, { serviceTier: null }, deadline, operationId);
                 if (current()) this.rememberTierConfirmation();

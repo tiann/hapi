@@ -1781,6 +1781,30 @@ it.each(['default', 'priority'])('keeps newer Standard unless a delayed lost rep
     expect(f.root.hasConfirmedStandardTier).toBe(true);
 });
 
+it('keeps a newer native Standard notification confirmed when an older reply is lost', async () => {
+    const f = await fixture({ bindTier: 'priority' });
+    await f.root.activate();
+    const older = await f.root.prepareNativeTurn({ serviceTier: 'priority' });
+    let entered!: () => void, release!: (value: unknown) => void;
+    const reading = new Promise<void>(resolve => { entered = resolve; });
+    const held = new Promise(resolve => { release = resolve; });
+    const original = f.root.client.request.bind(f.root.client);
+    vi.spyOn(f.root.client, 'request').mockImplementationOnce(async () => {
+        entered();
+        return await held as never;
+    }).mockImplementation(original);
+    const confirming = f.root.confirmNativeTurn({ serviceTier: null }, true);
+    await reading;
+    f.native.settings.serviceTier = 'default';
+    f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: f.native.settings });
+    await f.drain();
+    release({ model: 'mock', serviceTier: 'priority' });
+    await confirming;
+    await f.root.recoverLostNativeTurn(older.params, true, older.previousTier, older.generation);
+    expect(f.root.hasConfirmedStandardTier).toBe(true);
+    expect(f.root.needsTierConfirmation).toBe(false);
+});
+
 it('confirms an identical tier from a fresh snapshot without requiring a duplicate event', async () => {
     const f = await fixture(); await f.root.activate();
     await f.root.applySettings({ serviceTier: 'ultrafast' });
