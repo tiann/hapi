@@ -12,3 +12,10 @@ server certificate and private key. They are used only by the TLS tests.
 Socket.IO JSON decoding replaces each unpaired UTF-16 surrogate with U+FFFD.
 Valid surrogate pairs retain their character, and re-encoding preserves the
 normalized string.
+
+The `permission` module ports the CLI's shared permission bookkeeping
+(`cli/src/modules/common/permission/BasePermissionHandler.ts`): mode- and
+name-based auto-approval, pending requests mirrored into `agentState`, and
+cancellation of orphaned or superseded requests. It does not depend on a
+transport; `response_handler` returns the closure that an RPC layer registers
+for the `permission` method.
