@@ -328,6 +328,14 @@ it('starts an interrupted native queue after tier recovery without submitting th
     expect(request.mock.calls.filter(([method]) => method === 'thread/queue/add')).toHaveLength(1);
 });
 
+it('keeps imported tier intent unset until a tier is chosen', async () => {
+    const f = await fixture({ nativeImport: true, bindTier: 'priority' });
+    await f.root.activate();
+    expect(f.metadata().codexServiceTierExplicit).toBeUndefined();
+    await f.root.applySettings({ serviceTier: 'standard' });
+    expect(f.metadata().codexServiceTierExplicit).toBe(true);
+});
+
 it.each(['current', 'latest', 'clear'])('passes Plan into activation and returns the recoverable %s child without a second settings write', async kind => {
     const initialSettings = vi.fn(async () => { throw new Error('second settings write would archive or orphan the recoverable child'); });
     const end = vi.fn(async () => {});
@@ -344,11 +352,13 @@ it.each(['current', 'latest', 'clear'])('passes Plan into activation and returns
 });
 
 async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; create?: RootHost['create'];
-    initialTierPending?: boolean; holdTierMetadata?: boolean; bindTier?: string; startupCatalogConfig?: unknown;
+    initialTierPending?: boolean; holdTierMetadata?: boolean; bindTier?: string; startupCatalogConfig?: unknown; nativeImport?: boolean;
     attached?: boolean; settingsFor?: RootHost['settingsFor']; beforeSubscribe?: RootHost['beforeSubscribe']; validateHistory?: RootHost['validateHistory']; initialState?: AgentState }) {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-shared-root-'));
     let state: AgentState = opts?.initialState ?? { steeringActive: true };
-    let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex', ...(opts?.initialTierPending ? { codexTierConfirmationPending: true } : {}) };
+    let metadata: Metadata = { path: directory, host: 'test', flavor: 'codex',
+        ...(opts?.nativeImport ? {} : { codexServiceTierExplicit: false }),
+        ...(opts?.initialTierPending ? { codexTierConfirmationPending: true } : {}) };
     if (opts?.attached) metadata.codexRuntime = { kind: 'attached', bindingId: '11111111-1111-4111-8111-111111111111', state: 'attached' };
     let reconnect: (() => void) | null = null;
     let userMessage: Parameters<ApiSessionClient['onUserMessage']>[0] | undefined;

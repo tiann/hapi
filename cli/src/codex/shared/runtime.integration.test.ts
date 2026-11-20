@@ -425,8 +425,35 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             await second.client.request('thread/settings/update', { threadId: pausedFallback.thread.id, serviceTier: null });
             expect(state.sessions.get(pausedSid)?.metadata.codexTierConfirmationPending).toBe(false);
             await second.client.request('thread/settings/update', { threadId: unsupported.thread.id, serviceTier: 'priority' });
+            const imported = await second.client.request<{ thread: { id: string } }>('thread/start', { cwd, serviceTier: 'priority' });
+            const importedSid = Object.entries(second.runtime.sessions).find(([, binding]) => binding.threadId === imported.thread.id)![0];
+            // Codex records the selected tier in the rollout's turn context.
+            const importedTurn = await second.client.request<{ turn: { id: string } }>('turn/start', {
+                threadId: imported.thread.id, input: [{ type: 'text', text: 'Persist the local tier fixture', text_elements: [] }]
+            });
+            await second.client.request('turn/interrupt', { threadId: imported.thread.id, turnId: importedTurn.turn.id }).catch(() => {});
+            const abandoned = await second.client.request<{ thread: { id: string } }>('thread/start', { cwd, serviceTier: null });
+            const abandonedSid = Object.entries(second.runtime.sessions).find(([, binding]) => binding.threadId === abandoned.thread.id)![0];
             second.abort.abort(); await second.done;
             await configure('default');
+            delete state.sessions.get(importedSid)!.metadata.codexServiceTierExplicit;
+            expect(await third.client.request('thread/resume', { threadId: imported.thread.id, excludeTurns: true })).toMatchObject({ serviceTier: 'priority' });
+            expect(state.sessions.get(importedSid)?.metadata.codexServiceTierExplicit).toBeUndefined();
+            const abandonedMetadata = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
+                if (method === 'thread/metadata/update' && record(params).threadId === abandoned.thread.id) {
+                    return Promise.reject(new Error('fixture metadata update unavailable before archive'));
+                }
+                return originalRequest.call(this, method, params) as Promise<T>;
+            });
+            extraSpies.push(abandonedMetadata);
+            await expect(third.client.request('thread/resume', { threadId: abandoned.thread.id, excludeTurns: true })).rejects.toThrow('before archive');
+            expect(third.runtime.sessions[abandonedSid].active).toBe(true);
+            await third.client.request('thread/archive', { threadId: abandoned.thread.id });
+            abandonedMetadata.mockRestore();
+            await vi.waitFor(() => expect(state.sessions.get(abandonedSid)?.dead).toBe(true));
+            expect(state.sessions.get(abandonedSid)?.metadata.lifecycleState).toBe('archived');
+            expect(third.runtime.sessions[abandonedSid].active).toBe(false);
+            await expect(withThreadOwnership(third.runtime.codexHome, abandoned.thread.id, 'archive-verifier', async () => true)).resolves.toBe(true);
             expect((await third.client.request<{ serviceTier: string }>('thread/resume', { threadId, excludeTurns: true })).serviceTier).toBe('priority');
             expect(state.sessions.get(original.sessionId)?.metadata.codexServiceTierExplicit).toBe(true);
             // Re-import selected Ultrafast in HAPI while the native snapshot still stores Fast.
@@ -480,6 +507,11 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             releaseLaunch(); stalledSnapshot.mockRestore();
             expect(state.sessions.get(unsupportedSid)!.metadata.codexServiceTierExplicit).toBe(true);
             await third.client.request('turn/interrupt', { threadId: unsupported.thread.id, turnId: result.turn.id }).catch(() => {});
+            third.abort.abort(); await third.done;
+            const importedAgain = await start({ resumeSessionId: imported.thread.id });
+            expect(await importedAgain.client.request('thread/resume', { threadId: imported.thread.id, excludeTurns: true })).toMatchObject({ serviceTier: 'priority' });
+            expect(state.sessions.get(importedSid)?.metadata.codexServiceTierExplicit).toBeUndefined();
+            importedAgain.abort.abort(); await importedAgain.done;
             await configure();
             const unset = await start();
             const unsetThread = unset.runtime.sessions[unset.sessionId].threadId;

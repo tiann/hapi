@@ -159,15 +159,16 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         });
         return shutdownPromise;
     };
-    const end = async (root: SharedCodexRoot, nativeArchive = true): Promise<void> => {
-        if (!roots.has(root.threadId) || ending.has(root)) return;
+    const end = async (root: SharedCodexRoot, nativeArchive = true, threadId = root.threadId): Promise<void> => {
+        const owned = roots.get(threadId) ?? retryableBindings.get(threadId)?.root;
+        if (owned !== root || ending.has(root)) return;
         ending.add(root);
-        try { if (nativeArchive) await root.client.request('thread/archive', { threadId: root.threadId }); } catch (error) { ending.delete(root); throw error; }
-        roots.delete(root.threadId);
-        retryableBindings.delete(root.threadId);
-        resumingThreads.delete(root.threadId);
-        pendingAdmission.delete(root.threadId);
-        nativeSettings.delete(root.threadId);
+        try { if (nativeArchive) await root.client.request('thread/archive', { threadId }); } catch (error) { ending.delete(root); throw error; }
+        roots.delete(threadId);
+        retryableBindings.delete(threadId);
+        resumingThreads.delete(threadId);
+        pendingAdmission.delete(threadId);
+        nativeSettings.delete(threadId);
         runtime.sessions[root.session.sessionId].active = false; await persist();
         // Let the RPC acknowledgement leave both gateway and hub sockets before detach.
         setTimeout(() => {
@@ -235,6 +236,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             // Metadata write materializes an empty legacy rollout for native resume.
             await control.request('thread/metadata/update', { threadId, gitInfo: gitInfo(string(record(response.thread).cwd) ?? root.bootstrap.workingDirectory) });
             assertRunning();
+            if (ending.has(root)) throw new Error('Codex thread was archived during binding');
             if (requestedUltrafast || downgraded || root.session.getMetadata()?.codexTierConfirmationPending === true) root.beginTierConfirmation();
             roots.set(threadId, root);
             await root.bind(threadId, response, subscribe);
@@ -483,7 +485,9 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             }
             await bindAccepted(reservation, record(response.result));
         } else if (request.method === 'thread/archive' && !response.error) {
-            const root = roots.get(string(record(request.params).threadId) ?? ''); if (root) await end(root, false);
+            const threadId = string(record(request.params).threadId);
+            const root = threadId ? roots.get(threadId) ?? retryableBindings.get(threadId)?.root : undefined;
+            if (root && threadId) await end(root, false, threadId);
         } else if (request.method === 'thread/queue/delete' && !response.error && record(response.result).deleted === true) {
             const root = roots.get(string(record(request.params).threadId) ?? '');
             const nativeId = string(record(request.params).queuedSubmissionId);

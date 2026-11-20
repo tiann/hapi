@@ -89,7 +89,7 @@ export class SharedCodexRoot {
     private settings: RuntimeSettings = {};
     private settingsNative: Record<string, unknown> = {};
     private modelProvider?: string;
-    private serviceTierExplicit = false;
+    private serviceTierExplicit?: boolean;
     private tierConfirmationPending = false;
     private tierConfirmationResolved = false;
     get hasUltrafastTier(): boolean { return this.settingsNative.serviceTier === 'ultrafast'; }
@@ -407,7 +407,8 @@ export class SharedCodexRoot {
         this.tierConfirmationPending = deferInput || this.tierConfirmationPending
             || !this.tierConfirmationResolved && this.session.getMetadata()?.codexTierConfirmationPending === true;
         if (deferInput) this.tierConfirmationResolved = false;
-        this.serviceTierExplicit = serviceTierExplicit ?? (options.serviceTier !== undefined || this.session.getMetadata()?.codexServiceTierExplicit === true);
+        this.serviceTierExplicit = serviceTierExplicit
+            ?? (options.serviceTier !== undefined ? true : this.session.getMetadata()?.codexServiceTierExplicit);
         this.session.updateMetadata(metadata => ({
             ...metadata,
             codexServiceTierExplicit: this.serviceTierExplicit,
