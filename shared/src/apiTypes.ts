@@ -1743,6 +1743,15 @@ export type CreateBoardItemRequest = z.infer<typeof CreateBoardItemRequestSchema
 export type CreateBoardItemResponse = {
     ok: true
     url: string
+    /**
+     * Set only when a retry-attach's best-effort assignee re-application
+     * failed but the issue still reached the board (review finding,
+     * tiann/hapi#2147, follow-up) — that failure is deliberately
+     * non-fatal (see todoBoard.ts's createIssue route), so without this
+     * field a retry-only flow that never saw the first attempt's explicit
+     * 502 would have no way to learn the assignees are still outstanding.
+     */
+    warning?: string
 }
 
 export type UsageSummaryResponse = {

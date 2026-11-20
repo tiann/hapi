@@ -2837,8 +2837,13 @@ body:
             })
         })
         expect(response.status).toBe(200)
-        const body = await response.json() as { ok: true; url: string }
+        const body = await response.json() as { ok: true; url: string; warning?: string }
         expect(body.url).toBe('https://github.com/heavygee/hapi/issues/42')
+        // Meta review follow-up: the swallowed failure must still be
+        // recorded on the success response — otherwise a retry-only flow
+        // that never saw the first attempt's explicit 502 has no way to
+        // learn the assignees are still outstanding.
+        expect(body.warning).toContain('could not find user "ghost"')
         expect(calls).toEqual(['addItemToProject:https://github.com/heavygee/hapi/issues/42'])
     })
 })

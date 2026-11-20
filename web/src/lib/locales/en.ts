@@ -265,6 +265,8 @@ export default {
   'boards.newCard.error': 'Could not create the issue.',
   'boards.newCard.boardRemoved': 'This board is no longer available. Close this dialog and choose a destination again.',
   'boards.newCard.minLength': 'Minimum {count} characters',
+  'boards.newCard.assigneesWarningTitle': 'Issue created, assignees not applied',
+  'boards.newCard.assigneesWarningBody': '{message}',
   'codexSync.tooltip': 'Import sessions from Codex into Hapi',
   'codexSync.newSessionAction': 'Import Codex history',
   'codexSync.confirm.title': 'Import Codex sessions',

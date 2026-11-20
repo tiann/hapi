@@ -2154,6 +2154,12 @@ export function createBoardRoutes(
         }
 
         let issueUrl: string
+        // Set only by the retry-attach branch's swallowed assignee failure
+        // below — carried into the final success response so a retry-only
+        // flow that never saw the first attempt's explicit 502 still has
+        // some record that the assignees are outstanding (review finding,
+        // tiann/hapi#2147, follow-up).
+        let assigneesWarning: string | undefined
         if (parsed.data.existingIssueUrl) {
             // Retry-attach: the issue already exists from a prior submission
             // whose project-attach step failed — do not call createIssue
@@ -2197,8 +2203,10 @@ export function createBoardRoutes(
             if (issueAssignees.length > 0) {
                 try {
                     await actions.setAssignees({ host: board.host, url: issueUrl, isPullRequest: false }, issueAssignees, [])
-                } catch {
-                    // Swallowed — see comment above.
+                } catch (error) {
+                    // Not returned — see comment above — but recorded for
+                    // the success response below.
+                    assigneesWarning = `Assignees could not be applied: ${error instanceof Error ? error.message : 'unknown error'}`
                 }
             }
         } else {
@@ -2233,7 +2241,7 @@ export function createBoardRoutes(
             return c.json({ error: `Issue created at ${issueUrl} but could not be added to the board: ${message}`, url: issueUrl }, 502)
         }
 
-        const body: CreateBoardItemResponse = { ok: true, url: issueUrl }
+        const body: CreateBoardItemResponse = { ok: true, url: issueUrl, ...(assigneesWarning ? { warning: assigneesWarning } : {}) }
         return c.json(body)
     })
 

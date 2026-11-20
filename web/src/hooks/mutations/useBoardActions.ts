@@ -7,7 +7,7 @@ import { queryKeys } from '@/lib/query-keys'
 export function useBoardActions(api: ApiClient | null): {
     addBoard: (url: string) => Promise<void>
     removeBoard: (boardId: string) => Promise<void>
-    createBoardItem: (boardId: string, payload: CreateBoardItemRequest) => Promise<string>
+    createBoardItem: (boardId: string, payload: CreateBoardItemRequest) => Promise<{ url: string; warning?: string }>
 } {
     const queryClient = useQueryClient()
 
@@ -79,7 +79,14 @@ export function useBoardActions(api: ApiClient | null): {
         // member of more than one board (an unfiltered project and one of
         // its saved views), and only this one's cache was just hand-set.
         await queryClient.invalidateQueries({ queryKey: queryKeys.boardItemsAll })
-        return response.url
+        // `warning` carries a non-fatal partial failure (a retry-attach's
+        // best-effort assignee re-application that didn't take) — the
+        // create itself still succeeded, so this is returned alongside the
+        // url rather than thrown (review finding, tiann/hapi#2147,
+        // follow-up); the caller decides how to surface it, same
+        // "leaves presentation to the caller" contract as the rest of
+        // this hook.
+        return { url: response.url, warning: response.warning }
     }, [api, queryClient])
 
     return { addBoard, removeBoard, createBoardItem }

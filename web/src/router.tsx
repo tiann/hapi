@@ -716,11 +716,25 @@ function SessionsPage() {
                             issueTemplatesError={newCardTemplatesError}
                             onIssueTemplatesRefetch={refetchNewCardTemplates}
                             onNewCardRepoChange={setNewCardRepo}
-                            onCreateCard={(payload) => {
+                            onCreateCard={async (payload) => {
                                 if (newCardBoardMissing || !newCardBoardId) {
                                     return Promise.reject(new Error(t('boards.newCard.boardRemoved')))
                                 }
-                                return createBoardItem(newCardBoardId, payload)
+                                const result = await createBoardItem(newCardBoardId, payload)
+                                // Non-fatal: the issue is already on the board by
+                                // the time this fires (review finding,
+                                // tiann/hapi#2147, follow-up) — a toast, not an
+                                // error state, since NewCardDialog has already
+                                // closed on this same success.
+                                if (result.warning) {
+                                    addToast({
+                                        title: t('boards.newCard.assigneesWarningTitle'),
+                                        body: t('boards.newCard.assigneesWarningBody', { message: result.warning }),
+                                        sessionId: '',
+                                        url: result.url
+                                    })
+                                }
+                                return result.url
                             }}
                         />
                     ) : (
