@@ -43,6 +43,14 @@ jobs:
             - run: docker pull mcr.microsoft.com/powershell:latest
             - run: bun run test:cli
 
+    wrapper-parity:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
+            - uses: oven-sh/setup-bun@v2
+            - run: bun install --frozen-lockfile
+            - run: bun run test:parity
+
     unit-web:
         runs-on: ubuntu-latest
         steps:
@@ -67,7 +75,7 @@ jobs:
     # Keep the required check name used by auto-merge. A skipped check may
     # count as passing, so run the gate even if a dependency did not succeed.
     test:
-        needs: [browser, unit-cli, unit-web, core]
+        needs: [browser, unit-cli, unit-web, core, wrapper-parity]
         if: ${{ always() }}
         runs-on: ubuntu-latest
         steps:
