@@ -962,6 +962,7 @@ export function measureOpenSessionTickContentOffset(
 }
 
 export function SessionListSearch(props: {
+    searchRef?: (node: HTMLDivElement | null) => void
     value: string
     onChange: (value: string) => void
     customStart?: string
@@ -1215,6 +1216,7 @@ export function SessionListSearch(props: {
             : 0
         return (
             <div
+                ref={props.searchRef}
                 data-testid="session-list-search"
                 data-expanded="false"
                 style={chromeFloor > 0 || reservedCap > 0
@@ -1296,6 +1298,7 @@ export function SessionListSearch(props: {
 
     return (
         <div
+            ref={props.searchRef}
             data-testid="session-list-search"
             data-expanded="true"
             className="relative min-w-0 flex-1"
@@ -2078,6 +2081,57 @@ export function SessionList(props: {
     const [searchMaxPx, setSearchMaxPx] = useState(0)
     // jsdom reports clientWidth 0; the row observer publishes the stubbed width.
     const [toolbarRowBoxPx, setToolbarRowBoxPx] = useState(0)
+
+    const searchChromeDirtyRef = useRef(true)
+    const [, bumpSearchChromeTick] = useState(0)
+    const searchNodeRef = useRef<HTMLElement | null>(null)
+    const searchMutationObserverRef = useRef<MutationObserver | null>(null)
+    const observedChromePartsRef = useRef<Set<HTMLElement>>(new Set())
+
+    const syncSearchChromeObservers = useCallback((search: HTMLElement | null) => {
+        searchNodeRef.current = search
+        const ro = actionsObserverRef.current
+        if (!search) {
+            searchMutationObserverRef.current?.disconnect()
+            searchMutationObserverRef.current = null
+            if (ro) {
+                for (const el of observedChromePartsRef.current) ro.unobserve(el)
+            }
+            observedChromePartsRef.current.clear()
+            return
+        }
+        if (ro) {
+            ro.observe(search)
+            const currentParts = new Set(search.querySelectorAll<HTMLElement>('[data-toolbar-chrome]'))
+            for (const el of observedChromePartsRef.current) {
+                if (!currentParts.has(el)) {
+                    ro.unobserve(el)
+                    observedChromePartsRef.current.delete(el)
+                }
+            }
+            for (const el of currentParts) {
+                if (!observedChromePartsRef.current.has(el)) {
+                    ro.observe(el)
+                    observedChromePartsRef.current.add(el)
+                }
+            }
+        }
+        if (typeof MutationObserver !== 'undefined' && !searchMutationObserverRef.current) {
+            const mo = new MutationObserver(() => {
+                syncSearchChromeObservers(search)
+                searchChromeDirtyRef.current = true
+                bumpSearchChromeTick((v) => v + 1)
+            })
+            mo.observe(search, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-expanded'] })
+            searchMutationObserverRef.current = mo
+        }
+    }, [])
+
+    const setSearchNode = useCallback((node: HTMLDivElement | null) => {
+        syncSearchChromeObservers(node)
+        searchChromeDirtyRef.current = true
+    }, [syncSearchChromeObservers])
+
     // Search expand unmounts the actions box. A callback ref re-observes the
     // new node when search collapses; an effect keyed only on showHeaderRow does not.
     const setHeaderActionsNode = useCallback((node: HTMLDivElement | null) => {
@@ -2097,6 +2151,7 @@ export function SessionList(props: {
         const ro = new ResizeObserver((entries) => {
             let actionsWidth = 0
             let sawActions = false
+            let sawSearch = false
             for (const entry of entries) {
                 const target = entry.target
                 const reported = entry.contentRect.width ?? 0
@@ -2109,15 +2164,24 @@ export function SessionList(props: {
                     sawActions = true
                     actionsWidth = width
                 }
+                if (target instanceof HTMLElement && (target.dataset.testid === 'session-list-search' || target.hasAttribute('data-toolbar-chrome'))) {
+                    sawSearch = true
+                }
             }
             if (sawActions) publishActions(actionsWidth)
+            if (sawSearch) {
+                searchChromeDirtyRef.current = true
+                bumpSearchChromeTick((v) => v + 1)
+            }
         })
         ro.observe(node)
         const row = headerRowRef.current
         if (row && row !== node) ro.observe(row)
         actionsObserverRef.current = ro
+        const search = searchNodeRef.current ?? headerRowRef.current?.querySelector<HTMLElement>('[data-testid="session-list-search"]') ?? null
+        syncSearchChromeObservers(search)
         publishActions(node.clientWidth || node.getBoundingClientRect().width)
-    }, [])
+    }, [syncSearchChromeObservers])
     const normalizedQuery = normalizeSearch(searchQuery)
     const timeRange = getSessionTimeRange(customStart, customEnd)
     const isSearchFiltering = normalizedQuery.length > 0 || timeRange !== null
@@ -3052,13 +3116,18 @@ export function SessionList(props: {
 
     useEffect(() => () => {
         actionsObserverRef.current?.disconnect()
+        searchMutationObserverRef.current?.disconnect()
     }, [])
+
     useLayoutEffect(() => {
         const search = headerRowRef.current?.querySelector<HTMLElement>('[data-testid="session-list-search"]')
-        const nextChrome = search && search.dataset.expanded !== 'true'
-            ? measureSearchChrome(search)
-            : 0
-        setSearchChromePx((previous) => previous === nextChrome ? previous : nextChrome)
+        if (searchChromeDirtyRef.current || typeof ResizeObserver === 'undefined') {
+            searchChromeDirtyRef.current = false
+            const nextChrome = search && search.dataset.expanded !== 'true'
+                ? measureSearchChrome(search)
+                : 0
+            setSearchChromePx((previous) => previous === nextChrome ? previous : nextChrome)
+        }
         const root = toolbarMeasureRef.current
         if (!root) return
         const next: Record<string, number> = {}
@@ -3304,6 +3373,7 @@ export function SessionList(props: {
                 >
                     {showSearch ? (
                         <SessionListSearch
+                            searchRef={setSearchNode}
                             value={searchQuery}
                             onChange={setSearchQuery}
                             expanded={searchExpanded}
