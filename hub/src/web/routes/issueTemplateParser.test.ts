@@ -631,6 +631,33 @@ body:
         expect(template.githubValid).toBe(false)
     })
 
+    // Regression (bot review, tiann/hapi#2147, follow-up): this
+    // codebase's own `yaml` dependency only coerces literal `true`/
+    // `false` to a non-string — it leaves GitHub's own cited example,
+    // bare `Yes`, as a plain string, identical to a legitimately quoted
+    // `"Yes"`. GitHub's own backend parser coerces `yes`/`no`/`on`/`off`
+    // too (any case), so this parser has to read the CST's quote style
+    // to tell the two apart, not just the already-resolved JS value.
+    it('is genuinely invalid when a dropdown option is an unquoted GitHub-boolean word this parser\'s own yaml library leaves as a string', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: dropdown\n    id: pie\n    attributes:\n      label: Pie?\n      options:\n        - Steak\n        - Yes'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+    })
+
+    // A quoted "Yes" is exactly what GitHub's own docs say fixes the
+    // error above — must not be caught by the same check.
+    it('allows a dropdown option that is a quoted GitHub-boolean word', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: dropdown\n    id: pie\n    attributes:\n      label: Pie?\n      options:\n        - Steak\n        - "Yes"'
+        )
+        expect(template.kind).toBe('form')
+    })
+
     // Regression (Meta review, tiann/hapi#2147, follow-up): "None" is a
     // reserved word GitHub auto-populates as the non-choice option on an
     // optional dropdown — GitHub's own documented example rejects a

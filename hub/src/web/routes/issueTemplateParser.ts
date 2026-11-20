@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { parse as parseYaml } from 'yaml'
+import { parse as parseYaml, parseDocument } from 'yaml'
 import type { IssueFormCheckboxOption, IssueFormField, IssueTemplate } from '@hapi/protocol'
 
 /** Hash of a template's raw file content — see IssueTemplateBase.revision. */
@@ -146,12 +146,17 @@ function generateFieldId(label: string, usedIds: Set<string>): string | undefine
  * field").
  */
 export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
-    let doc: unknown
-    try {
-        doc = parseYaml(raw)
-    } catch {
+    // Parsed via the CST-preserving `parseDocument` (not the plain `parse`)
+    // so dropdown options can be checked for literal quoting below — see
+    // the dropdown branch's own comment for why that distinction matters.
+    // `parseDocument` never throws; malformed YAML surfaces in `.errors`
+    // instead, with `.toJS()` still producing a best-effort (and here,
+    // unusable) result alongside it.
+    const cstDoc = parseDocument(raw)
+    if (cstDoc.errors.length > 0) {
         return { id, name: id, kind: 'unsupported', reason: 'Could not parse this template\'s YAML', githubValid: false }
     }
+    const doc: unknown = cstDoc.toJS()
     if (!doc || typeof doc !== 'object' || Array.isArray(doc)) {
         return { id, name: id, kind: 'unsupported', reason: 'Template is not a valid issue form', githubValid: false }
     }
@@ -287,7 +292,7 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
     // `.github`-inheritance coverage.
     const idlessLabels = new Set<string>()
     const fields: IssueFormField[] = []
-    for (const element of bodyRaw) {
+    for (const [elementIndex, element] of bodyRaw.entries()) {
         if (!element || typeof element !== 'object') {
             return { id, name, kind: 'unsupported', reason: 'Template body contains a malformed element', githubValid: false }
         }
@@ -411,15 +416,33 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
             // a two-option dropdown where one option parsed as a Boolean
             // used to silently become a one-option dropdown that still
             // passed every check below, rather than the malformed template
-            // it actually is. (This codebase's own `yaml` dependency only
-            // coerces literal `true`/`false`, not GitHub's other cited
-            // examples like bare `yes`/`off` — confirmed directly by
-            // parsing them — but the fix doesn't need to chase specific
-            // words: any non-string entry in the parsed array is this bug,
-            // regardless of which YAML schema produced it.)
+            // it actually is.
             const rawOptions = Array.isArray(attrs.options) ? attrs.options : []
             if (rawOptions.some(option => typeof option !== 'string')) {
                 return { id, name, kind: 'unsupported', reason: `Dropdown field "${label}" has an option that YAML parsed as a non-string value — wrap it in quotes`, githubValid: false }
+            }
+            // The check above alone isn't enough (bot review, tiann/hapi#2147,
+            // follow-up): this codebase's own `yaml` dependency only coerces
+            // literal `true`/`false` to a non-string — it leaves GitHub's
+            // other cited examples (bare `yes`, `no`, `on`, `off`, any case)
+            // as plain strings, confirmed directly by parsing them. GitHub's
+            // own backend parser (the authority `githubValid` answers to)
+            // coerces those too, so an unquoted `- Yes` is a string here but
+            // a Boolean there, and GitHub rejects it while this parser,
+            // checking only the already-resolved JS value, could not tell
+            // the difference between that and a legitimately quoted `"Yes"`
+            // — both arrive as the identical string. Resolved by reading
+            // this specific options array from the CST instead of the
+            // plain object: `parseDocument` preserves each scalar's actual
+            // quote style (`PLAIN` vs `QUOTE_SINGLE`/`QUOTE_DOUBLE`), which
+            // is exactly the information GitHub's own parser is reacting
+            // to and this codebase's plain `.toJS()` value discards.
+            const optionsNode = cstDoc.getIn(['body', elementIndex, 'attributes', 'options'], true) as { items?: { type?: string }[] } | undefined
+            const BOOLEAN_WORDS = new Set(['y', 'yes', 'n', 'no', 'true', 'false', 'on', 'off'])
+            if (optionsNode?.items?.some((item, i) =>
+                item.type === 'PLAIN' && BOOLEAN_WORDS.has(String(rawOptions[i]).toLowerCase())
+            )) {
+                return { id, name, kind: 'unsupported', reason: `Dropdown field "${label}" has an unquoted option GitHub's own parser would read as a Boolean — wrap it in quotes`, githubValid: false }
             }
             const options = rawOptions as string[]
             if (options.length === 0) {
