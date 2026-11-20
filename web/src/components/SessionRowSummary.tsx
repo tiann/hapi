@@ -8,6 +8,7 @@ import { getAttentionLabel, SessionAttentionIndicator, SessionRequestIcon } from
 import { classifySessionAttention, sessionIsUnread } from '@/lib/sessionAttention'
 import { getSessionLastSeenAt, getSessionManualUnreadAt } from '@/lib/sessionLastSeen'
 import { formatRelativeTime } from '@/lib/relativeTime'
+import { getStoppedSessionTime, isSessionActiveForList } from '@/lib/sessionListOrder'
 import { formatScheduledTooltipDetail } from '@/lib/scheduledTime'
 import { getCodexImportedAt, subscribeCodexImportedSessions } from '@/lib/codexImportedSessions'
 import { useMinuteTick } from '@/hooks/useMinuteTick'
@@ -71,12 +72,16 @@ function formatCodexImportedRelativeTime(
 function getSessionTimeLabel(
     session: SessionSummary,
     importedAt: number | null,
-    t: (key: string, params?: Record<string, string | number>) => string
+    t: (key: string, params?: Record<string, string | number>) => string,
+    showStoppedTime: boolean
 ): string | null {
     if (importedAt !== null) {
         return formatCodexImportedRelativeTime(importedAt, t)
     }
-    return formatRelativeTime(session.updatedAt, t)
+    // In a list ordering stopped sessions by stop time (Active first), a stopped
+    // row shows that time: its stop time when later than its last update.
+    const time = showStoppedTime && !isSessionActiveForList(session) ? getStoppedSessionTime(session) : session.updatedAt
+    return formatRelativeTime(time, t)
 }
 
 const PRESENCE_BADGE_CLASS = {
@@ -133,6 +138,8 @@ export function SessionRowSummary(props: {
     contentSearchTruncated?: boolean
     /** Extra classes for the right-hand time/progress cluster (e.g. to yield to hover actions). */
     trailingClassName?: string
+    /** Show a stopped row's stop time, for lists that order stopped rows by it (Active first). */
+    showStoppedTime?: boolean
 }) {
     const {
         session: s,
@@ -154,6 +161,7 @@ export function SessionRowSummary(props: {
         contentSnippet,
         contentSearchTruncated = false,
         trailingClassName,
+        showStoppedTime = false,
     } = props
     const { t } = useTranslation()
     const sessionName = getSessionTitle(s)
@@ -193,7 +201,7 @@ export function SessionRowSummary(props: {
     const codexSessionId = s.metadata?.flavor === 'codex' ? s.metadata?.agentSessionId : null
     const legacyImportedAt = useSyncExternalStore(subscribeCodexImportedSessions, () => getCodexImportedAt(codexSessionId))
     const importedAt = s.metadata?.codexImportedAt !== undefined ? s.metadata.codexImportedAt : legacyImportedAt
-    const timeLabel = getSessionTimeLabel(s, importedAt, t)
+    const timeLabel = getSessionTimeLabel(s, importedAt, t, showStoppedTime)
     const attachedJob = s.attachedJob?.status === 'running' ? s.attachedJob : null
     const jobStale = attachedJob ? isAttachedJobStale(attachedJob, nowMs) : false
     const jobFraction = attachedJob ? attachedJobFraction(attachedJob) : null
