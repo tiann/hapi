@@ -1204,11 +1204,17 @@ function SessionChatInner(props: SessionChatProps) {
     }, [agentFlavor, sessionId, sessionModel, queryClient])
     const controlledByUser = props.session.agentState?.controlledByUser === true && !props.session.metadata?.capabilities?.concurrentClients
     const codexCollaborationModeSupported = agentFlavor === 'codex' && !controlledByUser
+    const metadata = props.session.metadata
     const codexModelsState = useCodexModels({
         api: props.api,
         sessionId: props.session.id,
-        machineId: props.session.metadata?.machineId ?? null,
-        preferSession: props.session.metadata?.capabilities?.concurrentClients === true,
+        machineId: metadata?.machineId ?? null,
+        // Cold resume keeps the session ID but refreshes the process metadata.
+        sessionRuntimeGeneration: JSON.stringify([
+            metadata?.machineId, metadata?.hostPid, metadata?.hostStartMarker,
+            metadata?.lifecycleStateSince, metadata?.codexRuntime?.bindingId
+        ]),
+        preferSession: metadata?.capabilities?.concurrentClients === true,
         enabled: agentFlavor === 'codex' && props.session.active && !controlledByUser
     })
     const effectiveCodexServiceTier = agentFlavor === 'codex'

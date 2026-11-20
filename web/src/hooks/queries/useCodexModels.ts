@@ -7,6 +7,7 @@ import { queryKeys } from '@/lib/query-keys'
 export function useCodexModels(args: {
     api: ApiClient | null
     sessionId?: string | null
+    sessionRuntimeGeneration?: string
     machineId?: string | null
     preferSession?: boolean
     enabled?: boolean
@@ -16,7 +17,7 @@ export function useCodexModels(args: {
     isLoading: boolean
     error: string | null
 } {
-    const { api, sessionId, machineId } = args
+    const { api, sessionId, sessionRuntimeGeneration, machineId } = args
     const enabled = Boolean(args.enabled && api && (sessionId || machineId))
     const preferSession = Boolean(enabled && args.preferSession && sessionId)
 
@@ -48,7 +49,7 @@ export function useCodexModels(args: {
         ))
     )
     const sessionQuery = useQuery({
-        queryKey: queryKeys.sessionCodexModels(sessionId ?? 'unknown'),
+        queryKey: queryKeys.sessionCodexModels(sessionId ?? 'unknown', sessionRuntimeGeneration),
         queryFn: async () => {
             if (!api || !sessionId) {
                 throw new Error('API unavailable')

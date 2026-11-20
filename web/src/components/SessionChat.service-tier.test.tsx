@@ -33,7 +33,8 @@ vi.mock('@/components/AssistantChat/HappyComposer', () => ({ HappyComposer: (pro
     Reset Standard / fast:{String(props.fastAvailable)} / ultra:{String(props.ultrafastAvailable)}
 </button></> }))
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
-    function shell(session: Session, catalog: ReturnType<typeof vi.fn>, setServiceTier: ReturnType<typeof vi.fn>, sessionCatalog = catalog): ReactNode {
+    function shell(session: Session, catalog: ReturnType<typeof vi.fn>, setServiceTier: ReturnType<typeof vi.fn>, sessionCatalog = catalog,
+        queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })): ReactNode {
         const api = {
             getMachineCodexModels: catalog,
             getSessionCodexModels: sessionCatalog,
@@ -41,7 +42,6 @@ afterEach(() => { cleanup(); vi.restoreAllMocks() })
             setModel: vi.fn(async () => { throw new Error('Catalog provider could not be verified. Switch to Standard before changing models.') }),
             fetchTranscriptionProviders: vi.fn(async () => [])
         } as unknown as ApiClient
-        const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
         return (
             <QueryClientProvider client={queryClient}>
                 <I18nProvider>
@@ -120,6 +120,33 @@ it.each(['attached', 'owned'])('offers %s Ultrafast when native provider-scoped 
     render(shell(session, catalog, vi.fn()));
     expect(await screen.findByRole('button', { name: 'Reset Standard / fast:false / ultra:true' })).toBeTruthy();
 });
+
+it('withholds the previous runtime catalog when the same Codex session resumes', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const model = { id: 'gpt-6.2-sol', displayName: 'GPT-6.2 Sol', isDefault: true }
+    let finishCatalog!: (result: { success: boolean; models: Array<typeof model & { serviceTiers: string[] }> }) => void
+    const newCatalog = new Promise<Parameters<typeof finishCatalog>[0]>(resolve => { finishCatalog = resolve })
+    const sessionCatalog = vi.fn().mockResolvedValueOnce({ success: true, models: [{ ...model, serviceTiers: ['ultrafast'] }] })
+        .mockReturnValueOnce(newCatalog)
+    const machineCatalog = vi.fn()
+    const setTier = vi.fn()
+    const session = { id: 'tier-session', active: true, model: model.id, serviceTier: 'fast', metadata: {
+        flavor: 'codex', machineId: 'machine', hostPid: 100, hostStartMarker: 'first-runtime',
+        codexProviderScopedCatalog: true, capabilities: { concurrentClients: true }
+    } } as unknown as Session
+    const view = render(shell(session, machineCatalog, setTier, sessionCatalog, queryClient))
+    expect(await screen.findByRole('button', { name: 'Reset Standard / fast:false / ultra:true' })).toBeInTheDocument()
+    expect(sessionCatalog).toHaveBeenCalledTimes(1)
+
+    view.rerender(shell({ ...session, metadata: { ...session.metadata!, hostPid: 100, hostStartMarker: 'second-runtime' } },
+        machineCatalog, setTier, sessionCatalog, queryClient))
+    expect(screen.getByRole('button', { name: 'Reset Standard / fast:false / ultra:false' })).toBeEnabled()
+    await waitFor(() => expect(sessionCatalog).toHaveBeenCalledTimes(2))
+    finishCatalog({ success: true, models: [{ ...model, serviceTiers: ['priority'] }] })
+    expect(await screen.findByRole('button', { name: 'Reset Standard / fast:true / ultra:false' })).toBeEnabled()
+    expect(sessionCatalog.mock.calls).toEqual([['tier-session'], ['tier-session']])
+    expect(machineCatalog).not.toHaveBeenCalled()
+})
 
 it('keeps Standard recovery available for a paused launch without a usable tier catalog', async () => {
     const catalog = vi.fn(async () => ({ success: true, models: [] }));
