@@ -422,11 +422,48 @@ body:
         expect(template.kind === 'unsupported' && template.githubValid).toBe(false)
     })
 
+    // Regression (Meta review, tiann/hapi#2147, follow-up): GitHub's own
+    // top-level syntax table documents exactly eight permitted keys
+    // (name/description/body/assignees/labels/title/type/projects) and
+    // rejects a form with any other top-level key outright — nothing
+    // here ever checked for this. The same mechanism also closes
+    // GitHub's separate "Forbidden keys" rule (y/yes/true/off/...): a
+    // key outside the permitted set is rejected regardless of what it
+    // looks like, with no separate boolean-ish-name list to maintain.
+    it('is genuinely invalid when the template has an unexpected top-level key', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nhello: world\nbody:\n  - type: input\n    attributes:\n      label: Contact'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('hello')
+    })
+
     // Review finding (tiann/hapi#2147): `description` is required alongside
     // `name` per GitHub's own top-level syntax table — a form missing it
     // used to be accepted as usable anyway.
     it('is unsupported when description is missing', () => {
         const template = parseIssueFormYaml('x.yml', 'name: Bug\nbody:\n  - type: input\n    attributes:\n      label: Contact')
+        expect(template.kind).toBe('unsupported')
+        expect(template.kind === 'unsupported' && template.githubValid).toBe(false)
+    })
+
+    // Regression (Meta review, tiann/hapi#2147, follow-up): GitHub's own
+    // docs state this explicitly — "Empty strings, or strings consisting
+    // of only whitespaces, are also not permissible when the field
+    // expects a string" — for both a top-level key and a field's label.
+    // A bare truthiness check only ever caught an empty string, not a
+    // whitespace-only one, which is truthy in JS.
+    it('is unsupported when description is only whitespace', () => {
+        const template = parseIssueFormYaml('x.yml', 'name: Bug\ndescription: "   "\nbody:\n  - type: input\n    attributes:\n      label: Contact')
+        expect(template.kind).toBe('unsupported')
+        expect(template.kind === 'unsupported' && template.githubValid).toBe(false)
+    })
+
+    it('is unsupported when a field label is only whitespace', () => {
+        const template = parseIssueFormYaml('x.yml', 'name: Bug\ndescription: Bug\nbody:\n  - type: input\n    attributes:\n      label: "   "')
         expect(template.kind).toBe('unsupported')
         expect(template.kind === 'unsupported' && template.githubValid).toBe(false)
     })
@@ -622,6 +659,24 @@ body:
         if (template.kind !== 'unsupported') return
         expect(template.githubValid).toBe(false)
         expect(template.reason).toContain('Terms')
+    })
+
+    // Regression (Meta review, tiann/hapi#2147, follow-up): GitHub's own
+    // docs state the "Checkboxes must have unique labels" rule is
+    // broader than within-one-field — a checkbox option's label must be
+    // unique among its peers AND among other input types, confirmed
+    // directly via GitHub's own example (a checkbox option labelled
+    // "Name" against an unrelated textarea also labelled "Name" is
+    // rejected). Checkbox options can never carry their own `id`, so
+    // there's no escape hatch the way two top-level fields have.
+    it('is genuinely invalid when a checkbox option\'s label collides with an unrelated field\'s label', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: textarea\n    attributes:\n      label: Name\n  - type: checkboxes\n    id: opts\n    attributes:\n      label: Options\n      options:\n        - label: Name'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
     })
 })
 

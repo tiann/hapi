@@ -13,6 +13,19 @@ function asString(value: unknown): string | undefined {
     return typeof value === 'string' ? value : undefined
 }
 
+// GitHub's own docs state this explicitly, for both a top-level key and a
+// field's own `label` (bot review, tiann/hapi#2147, follow-up, confirmed
+// directly against GitHub's validation-errors page): "Empty strings, or
+// strings consisting of only whitespaces, are also not permissible when
+// the field expects a string." A bare `!asString(...)` check only ever
+// caught the non-string case (a Boolean-coerced value) and an EMPTY
+// string — a whitespace-only one (`description: "   "`) is truthy in JS
+// and silently passed every required-string check in this file.
+function asNonBlankString(value: unknown): string | undefined {
+    const str = asString(value)
+    return str && str.trim().length > 0 ? str : undefined
+}
+
 function asStringArray(value: unknown): string[] {
     return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : []
 }
@@ -143,13 +156,31 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
         return { id, name: id, kind: 'unsupported', reason: 'Template is not a valid issue form', githubValid: false }
     }
     const obj = doc as Record<string, unknown>
+    // GitHub's own top-level syntax table documents exactly these eight
+    // keys (bot review, tiann/hapi#2147, follow-up, confirmed directly
+    // against GitHub's docs) and rejects any other top-level key outright
+    // ("`input` is not a permitted key") — nothing here ever checked for
+    // one. This is the SAME mechanism, not a separate check, as GitHub's
+    // documented "Forbidden keys" list (y/yes/true/off/...): those exist
+    // because an unquoted boolean-like key could otherwise slip past a
+    // permitted-key check that only looked at known boolean-ish names —
+    // here, any key outside this exact set is rejected regardless of
+    // what it looks like, so a form using one of those names as a key
+    // gets caught the same way a typo'd key would, with no separate list
+    // to maintain.
+    const PERMITTED_TOP_LEVEL_KEYS = new Set(['name', 'description', 'body', 'assignees', 'labels', 'title', 'type', 'projects'])
+    for (const key of Object.keys(obj)) {
+        if (!PERMITTED_TOP_LEVEL_KEYS.has(key)) {
+            return { id, name: id, kind: 'unsupported', reason: `Template has an unexpected top-level key "${key}"`, githubValid: false }
+        }
+    }
     // GitHub requires `name` on an issue form — the legacy .md path
     // already enforces this via hasRequiredLegacyTemplateFrontmatter, but
     // this .yml path fell back to the filename instead of rejecting it,
     // so a file missing it was accepted as a usable form and counted
     // toward local .github-inheritance coverage even though GitHub's own
     // chooser would never have offered it (review finding, tiann/hapi#2147).
-    const name = asString(obj.name)
+    const name = asNonBlankString(obj.name)
     if (!name) {
         return { id, name: id, kind: 'unsupported', reason: 'Template is missing the required "name" field', githubValid: false }
     }
@@ -157,7 +188,7 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
     // syntax table (review finding, tiann/hapi#2147, follow-up on the name
     // check above) — a form missing it isn't one GitHub's own template
     // editor would even save, let alone offer in the chooser.
-    if (!asString(obj.description)) {
+    if (!asNonBlankString(obj.description)) {
         return { id, name, kind: 'unsupported', reason: 'Template is missing the required "description" field', githubValid: false }
     }
     const bodyRaw = obj.body
@@ -297,7 +328,7 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
         // follow-up): a label-less upload field is malformed, not merely
         // unsupported, and GitHub's own chooser would never offer it.
         if (type === 'upload') {
-            const uploadLabel = asString(attrs.label)
+            const uploadLabel = asNonBlankString(attrs.label)
             if (!uploadLabel) {
                 return { id, name, kind: 'unsupported', reason: 'A "upload" field is missing a label', githubValid: false }
             }
@@ -326,7 +357,7 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
             }
         }
 
-        const label = asString(attrs.label)
+        const label = asNonBlankString(attrs.label)
         if (!label) {
             return { id, name, kind: 'unsupported', reason: `A "${type}" field is missing a label`, githubValid: false }
         }
@@ -425,28 +456,37 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
         } else {
             const rawOptions = Array.isArray(attrs.options) ? attrs.options : []
             const options: IssueFormCheckboxOption[] = []
-            const seenOptionLabels = new Set<string>()
             for (const rawOption of rawOptions) {
-                const optionLabel = asString(asRecord(rawOption).label)
+                const optionLabel = asNonBlankString(asRecord(rawOption).label)
                 if (!optionLabel) {
                     return { id, name, kind: 'unsupported', reason: `Checkboxes field "${label}" has a malformed option`, githubValid: false }
                 }
-                // Same structural defect the dropdown-options and
-                // field-id checks already catch (bot review,
-                // tiann/hapi#2147, follow-up) — GitHub requires a
-                // checkboxes field's own option labels to be distinct
-                // too. Arguably worse here than for dropdown: this
-                // codebase's own validateIssueFormAnswers checks a
-                // checked answer against the field's declared option
-                // labels by string match, so a duplicate makes a
-                // required-option check satisfiable by an ambiguous
-                // value, and the dialog renders and keys both checkboxes
-                // by that same label, with no way for the user to tell
-                // which one they ticked.
-                if (seenOptionLabels.has(optionLabel)) {
-                    return { id, name, kind: 'unsupported', reason: `Checkboxes field "${label}" has duplicate options`, githubValid: false }
+                // GitHub's own docs state this explicitly — "Checkboxes
+                // must have unique labels" — as broader than "distinct
+                // within this one field": a nested checkbox option's
+                // label must be unique "among its peers, as well as
+                // among other input types" (bot review, tiann/hapi#2147,
+                // follow-up, confirmed directly against GitHub's
+                // validation-errors page, whose own example rejects a
+                // checkbox option labelled "Name" against an unrelated
+                // textarea field also labelled "Name"). A checkbox
+                // option can never carry its own `id` (GitHub's docs:
+                // "Nested checkbox elements do not support the id
+                // attribute"), so every option label is checked against
+                // the SAME idlessLabels pool every other idless field
+                // label uses, not a separate per-field set — catching a
+                // same-field duplicate the same way it catches a
+                // cross-field one. This codebase's own
+                // validateIssueFormAnswers checks a checked answer
+                // against the field's declared option labels by string
+                // match, so a duplicate makes a required-option check
+                // satisfiable by an ambiguous value, and the dialog
+                // renders and keys both checkboxes by that same label,
+                // with no way for the user to tell which one they ticked.
+                if (idlessLabels.has(optionLabel)) {
+                    return { id, name, kind: 'unsupported', reason: `Checkboxes field "${label}" has an option labelled "${optionLabel}" that collides with another field's label`, githubValid: false }
                 }
-                seenOptionLabels.add(optionLabel)
+                idlessLabels.add(optionLabel)
                 options.push({ label: optionLabel, required: asRecord(rawOption).required === true })
             }
             if (options.length === 0) {
