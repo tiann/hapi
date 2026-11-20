@@ -2289,8 +2289,13 @@ it('preserves accepted explicit tier intent across a later model-only change', a
     vi.spyOn(f.root.client, 'request').mockImplementationOnce(() => snapshot as never);
     const pending = f.root.confirmNativeTurn({ model: 'mock', serviceTier: 'priority' }, true);
     expect(f.metadata().codexServiceTierExplicit).toBe(true);
+    expect(f.metadata().codexPendingServiceTier).toBe('fast');
+    expect(f.metadata().codexTierConfirmationPending).toBe(true);
     release({ model: 'changed-model', serviceTier: 'priority' }); await pending;
     expect(f.metadata().codexServiceTierExplicit).toBe(true);
+    expect(f.metadata().codexPendingServiceTier).toBeUndefined();
+    expect(f.metadata().codexTierConfirmationPending).toBe(false);
+    expect(f.metadata().codexConfirmedServiceTier).toBe('fast');
     expect(f.root.freshParams()).toMatchObject({ model: 'changed-model', serviceTier: 'priority' });
 });
 it('does not reset a newer Fast choice during model-only native turn discovery', async () => {

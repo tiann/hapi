@@ -961,7 +961,6 @@ export class SharedCodexRoot {
         const revision = this.settingsRevision;
         const deadline = Date.now() + 25_000;
         const model = string(record(record(params.collaborationMode).settings).model) ?? string(params.model);
-        const expected = { ...(model ? { model } : {}), ...(params.serviceTier !== undefined ? { serviceTier: params.serviceTier } : {}) };
         try {
             const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline, true, () => current() && (verifyUltrafast || params.serviceTier !== undefined), operationId));
             if (!current()) return;
@@ -988,8 +987,15 @@ export class SharedCodexRoot {
                 }
                 return;
             }
-            if (!settingsMatch(this.settingsNative, expected)) throw new Error('Native turn settings are not confirmed');
-            if (verifyUltrafast || params.serviceTier !== undefined) this.completeTierConfirmation(operationId);
+            const tierConfirmed = params.serviceTier !== undefined
+                ? settingsMatch(snapshot, { serviceTier: params.serviceTier })
+                : verifyUltrafast && snapshot.serviceTier !== undefined;
+            // A later model-only update can legitimately change the model
+            // while the snapshot still confirms this turn's tier.
+            if (tierConfirmed) this.completeTierConfirmation(operationId);
+            else if (verifyUltrafast || params.serviceTier !== undefined || model && snapshot.model !== model) {
+                throw new Error('Native turn settings are not confirmed');
+            }
             this.alive();
             if (fallbackNotice) this.notice(fallbackNotice);
         } catch {
