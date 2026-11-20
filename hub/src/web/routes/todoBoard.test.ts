@@ -1757,11 +1757,17 @@ body:
         expect(body.githubNewIssueUrl).toBe('https://github.com/heavygee/hapi/issues/new/choose')
     })
 
-    // blankAllowed comes from the TARGET's own isBlankIssuesEnabled (GitHub's
-    // own, already inheritance-resolved field) regardless of what the
-    // .github fallback's own config.yml says — the fallback below is for
-    // the template LIST only (review finding, tiann/hapi#2147, round 11).
-    it('inherits templates from the owner\'s .github repo when the target has no directory of its own, independent of blank-issue policy', async () => {
+    // Templates AND policy both inherit from .github here (review finding,
+    // tiann/hapi#2147, round 9→11): blankAllowed is the conjunction of the
+    // target's own isBlankIssuesEnabled (viewer-eligible: true) and the
+    // APPLICABLE config's blank_issues_enabled (inherited from .github's
+    // PUBLIC, eligible config.yml: false) — the viewer check alone isn't
+    // sufficient (it's eligible-to-this-viewer, not the repo's actual
+    // policy; round 11 found isBlankIssuesEnabled reads true for a
+    // WRITE-access viewer even on a repo whose own config disables blank
+    // issues), so the real policy still has to come from the applicable
+    // config.yml.
+    it('inherits both templates and blank-issue policy from the owner\'s .github repo when the target has no directory of its own', async () => {
         const calls: string[] = []
         const app = await createApp(
             () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
@@ -1782,9 +1788,6 @@ body:
                         }
                     }
                 }
-                // The target's own isBlankIssuesEnabled: true, deliberately
-                // opposite of .github's config.yml above — proves the two
-                // are unrelated now.
                 return { data: { repository: { isBlankIssuesEnabled: true, issueTemplateDir: null } } }
             }
         )
@@ -1792,7 +1795,7 @@ body:
         expect(response.status).toBe(200)
         const body = await response.json() as { templates: Array<{ id: string }>; blankAllowed: boolean }
         expect(body.templates.map(t => t.id)).toEqual(['bug_report.yml'])
-        expect(body.blankAllowed).toBe(true)
+        expect(body.blankAllowed).toBe(false)
         expect(calls).toEqual(['no-local-templates', '.github'])
     })
 
@@ -1800,8 +1803,9 @@ body:
     // PUBLIC .github repo — a private one (readable here only because the
     // hub's gh account happens to have access) must not leak its templates
     // into a board for a repo GitHub itself would never apply them to.
-    // blankAllowed is unaffected either way — it comes from the target's
-    // own isBlankIssuesEnabled, which has nothing to do with this fetch.
+    // blankAllowed stays true too: PRIVATE is determinately inapplicable
+    // (not unresolved), so its config.yml is ignored and the true default
+    // stands — same policy outcome as "no .github repo at all."
     it('does not inherit templates from a private .github repo', async () => {
         const calls: string[] = []
         const app = await createApp(
@@ -1844,9 +1848,11 @@ body:
     // policy, not a general Enterprise-Cloud one, and nothing distinguishes
     // the two via API — so this defaults to ineligible and requires an
     // explicit operator opt-in for the EMU case (see the sibling test
-    // below for that case). blankAllowed is unaffected either way — same
-    // as the private-repo test above, it comes from the target's own field.
-    it('does not inherit templates from an internal .github repo by default', async () => {
+    // below for that case). Unlike the private-repo test above, INTERNAL
+    // without opt-in is genuinely unresolved (not determinately
+    // inapplicable) — so blankAllowed still fails closed here, even
+    // though the target's own isBlankIssuesEnabled is true.
+    it('does not inherit templates from an internal .github repo by default, and fails closed on blank issues', async () => {
         const calls: string[] = []
         const app = await createApp(
             () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
@@ -1874,7 +1880,7 @@ body:
         expect(response.status).toBe(200)
         const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
         expect(body.templates).toEqual([])
-        expect(body.blankAllowed).toBe(true)
+        expect(body.blankAllowed).toBe(false)
         expect(calls).toEqual(['no-local-templates', '.github'])
     })
 
@@ -1907,7 +1913,7 @@ body:
         expect(response.status).toBe(200)
         const body = await response.json() as { templates: Array<{ id: string }>; blankAllowed: boolean }
         expect(body.templates.map(t => t.id)).toEqual(['bug_report.yml'])
-        expect(body.blankAllowed).toBe(true)
+        expect(body.blankAllowed).toBe(false)
         expect(calls).toEqual(['no-local-templates', '.github'])
     })
 
@@ -1969,9 +1975,10 @@ body:
         expect(response.status).toBe(200)
         const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
         expect(body.templates).toEqual([])
-        // Target's own isBlankIssuesEnabled: true survives even though
-        // .github's config.yml says false — the two are unrelated.
-        expect(body.blankAllowed).toBe(true)
+        // The applicable policy inherits from .github's config.yml (false)
+        // even though the target's own isBlankIssuesEnabled is true — the
+        // conjunction needs both to say yes.
+        expect(body.blankAllowed).toBe(false)
         expect(calls).toEqual(['readme-only', '.github'])
     })
 
@@ -2015,11 +2022,11 @@ body:
         expect(response.status).toBe(200)
         // Inheritance replaces the whole TEMPLATE LIST with .github's own
         // content (just its config.yml here, no templates of its own) —
-        // the malformed local file isn't merged in alongside it. blankAllowed
-        // stays the target's own true, unrelated to .github's config.yml.
+        // the malformed local file isn't merged in alongside it. The
+        // applicable policy also inherits from that same config.yml.
         const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
         expect(body.templates).toEqual([])
-        expect(body.blankAllowed).toBe(true)
+        expect(body.blankAllowed).toBe(false)
         expect(calls).toEqual(['malformed-only', '.github'])
     })
 
@@ -2059,7 +2066,7 @@ body:
         expect(response.status).toBe(200)
         const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
         expect(body.templates).toEqual([])
-        expect(body.blankAllowed).toBe(true)
+        expect(body.blankAllowed).toBe(false)
         expect(calls).toEqual(['bad-config', '.github'])
     })
 
@@ -2099,7 +2106,7 @@ body:
         expect(response.status).toBe(200)
         const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
         expect(body.templates).toEqual([])
-        expect(body.blankAllowed).toBe(true)
+        expect(body.blankAllowed).toBe(false)
         expect(calls).toEqual(['scalar-config', '.github'])
     })
 
@@ -2139,18 +2146,18 @@ body:
     // the ordinary case of a valid repo with no templates of its own.
     //
     // Still returns 200 with an empty template list — that part of the
-    // outcome doesn't change. blankAllowed is a SEPARATE assertion here
-    // (review finding, tiann/hapi#2147, round 11): NOT_FOUND on `.github`
-    // means "can't read it," not "it doesn't exist" — a hub credential
-    // that can write issues to the destination but lacks read access to
-    // the owner's `.github` repo gets the exact same NotFoundError as one
-    // where `.github` genuinely doesn't exist. Scoring that unreadable
-    // state as "no .github repo, therefore blank issues must be allowed"
-    // used to score an indistinguishable absence as a permission. Now
-    // blankAllowed never depends on this fetch at all — it's read directly
-    // from the target's own isBlankIssuesEnabled regardless of whether
-    // `.github` is readable, missing, or genuinely nonexistent.
-    it('returns the target\'s own isBlankIssuesEnabled, not a 502, when the .github lookup rejects with NOT_FOUND (gh exits nonzero)', async () => {
+    // outcome doesn't change. blankAllowed fails closed here even though
+    // the target's own isBlankIssuesEnabled is true (review finding,
+    // tiann/hapi#2147, round 11): NOT_FOUND on `.github` means "can't
+    // read it," not "it doesn't exist" — a hub credential that can write
+    // issues to the destination but lacks read access to the owner's
+    // `.github` repo gets the exact same NotFoundError as one where
+    // `.github` genuinely doesn't exist. Scoring that unreadable state as
+    // "no .github repo, therefore the policy is unopposed" used to score
+    // an indistinguishable absence as a permission — applicability is
+    // unresolved either way, so the policy half of the answer fails
+    // closed regardless of what the viewer-eligibility half says.
+    it('fails closed on blankAllowed even though the target\'s own isBlankIssuesEnabled is true, when the .github lookup rejects with NOT_FOUND (gh exits nonzero)', async () => {
         const calls: string[] = []
         const app = await createApp(
             () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
@@ -2166,17 +2173,14 @@ body:
         expect(response.status).toBe(200)
         const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
         expect(body.templates).toEqual([])
-        expect(body.blankAllowed).toBe(true)
+        expect(body.blankAllowed).toBe(false)
         expect(calls).toEqual(['no-local-templates', '.github'])
     })
 
-    // The regression this whole fix targets: the hub can genuinely write
-    // issues to this repo (ALWAYS_MEMBER) but can't read `.github` — same
-    // NotFoundError as above — and GitHub's own isBlankIssuesEnabled says
-    // the EFFECTIVE policy (already inheriting from wherever it actually
-    // comes from) is false. The old code would have defaulted to true
-    // here purely because `.github` was unreadable; this must stay false.
-    it('does not fall open to blankAllowed: true just because .github is unreadable, when the target says blank issues are disabled', async () => {
+    // Sibling of the test above with the viewer-eligibility half ALSO
+    // false, just to pin that either half failing is enough on its own —
+    // the conjunction doesn't require both reasons to agree.
+    it('also fails closed when the target\'s own isBlankIssuesEnabled is false and .github is unreadable', async () => {
         const app = await createApp(
             () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
             (target: { repo: string }) => {
