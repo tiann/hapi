@@ -10,6 +10,7 @@ import {
     buildWorkAdFromNotify,
     extractSessionNotifySignal,
     ingestNotifySummaryFromMessage,
+    isDeliveredOperatorReply,
     isOperatorReplyMessage,
     mapNotifyStatusToWorkAdStatus
 } from './workGraphNotifyIngest'
@@ -1309,6 +1310,60 @@ describe('isOperatorReplyMessage (#1717 backfill boundary)', () => {
 
     it('ignores agent output', () => {
         expect(isOperatorReplyMessage(assistantOutput('working on it'))).toBe(false)
+    })
+})
+
+describe('isDeliveredOperatorReply (#1717 what counts as an answer)', () => {
+    function reply(overrides: {
+        invokedAt?: number | null
+        sweptAt?: number | null
+        agentDelivered?: number | null
+    }) {
+        // `in`, not `??`: an explicit null is the case under test here, and
+        // `??` would quietly substitute the default for it.
+        return {
+            content: userInbound('here is the key'),
+            scheduledAt: null,
+            invokedAt: 'invokedAt' in overrides ? overrides.invokedAt! : 1_000,
+            sweptAt: 'sweptAt' in overrides ? overrides.sweptAt! : null,
+            agentDelivered: 'agentDelivered' in overrides ? overrides.agentDelivered! : null
+        }
+    }
+
+    it('counts a prompt the agent was actually handed', () => {
+        expect(isDeliveredOperatorReply(reply({}))).toBe(true)
+    })
+
+    it('does not count a prompt still sitting in the queue', () => {
+        // A null `invokedAt` means the agent never saw it, so treating it as an
+        // answer buries a footer nobody replied to.
+        expect(isDeliveredOperatorReply(reply({ invokedAt: null }))).toBe(false)
+    })
+
+    it('does not count the session-end sweep', () => {
+        // The sweep stamps `invokedAt` to unpin the floating bar on rows the
+        // runtime never received. Treating that as a delivered reply let a
+        // session simply ending answer a blocker nobody replied to.
+        expect(isDeliveredOperatorReply(reply({ sweptAt: 1_000 }))).toBe(false)
+    })
+
+    it('does not count a row the CLI handled locally', () => {
+        // Independent of the sweep check: a slash command the CLI handled
+        // itself has `invoked_at` stamped and no sweep marker at all.
+        expect(isDeliveredOperatorReply(reply({ agentDelivered: 0 }))).toBe(false)
+    })
+
+    it('rejects a swept row on the disposition alone, without the sweep marker', () => {
+        // Defence in depth for the case above: the sweep now records
+        // `agentDelivered: false` as well, so losing the `sweptAt` comparison
+        // would not silently turn session-end into an answer.
+        expect(isDeliveredOperatorReply(reply({ sweptAt: null, agentDelivered: 0 }))).toBe(false)
+    })
+
+    it('treats a row written before the disposition existed as delivered', () => {
+        // NULL is "not recorded", and history already on disk must not be
+        // retroactively un-answered by an upgrade.
+        expect(isDeliveredOperatorReply(reply({ agentDelivered: null }))).toBe(true)
     })
 })
 

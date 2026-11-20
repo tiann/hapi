@@ -1102,7 +1102,13 @@ export class MessageService {
                 && !id.startsWith(JOB_WAKE_MESSAGE_LOCAL_ID_PREFIX)
             )
         if (localIds.length === 0) return null
-        this.store.messages.markMessagesInvoked(sessionId, localIds, invokedAt)
+        // `agentDelivered: false` because that is simply what happened: the
+        // sweep stamps `invoked_at` to unpin the floating bar on rows the
+        // runtime never received (#1717). The `sweptAt === invokedAt` check
+        // below already excludes them from answering a blocker, so this is
+        // defence in depth — but it puts the truth in the row rather than
+        // leaving it inferable from one guard.
+        this.store.messages.markMessagesInvoked(sessionId, localIds, invokedAt, { agentDelivered: false })
         // Record that THIS invokedAt came from the sweep, not a runtime ACK.
         this.store.messages.markMessagesSwept(sessionId, localIds, invokedAt)
         this.forgetScheduledMatureNotified(localIds)
