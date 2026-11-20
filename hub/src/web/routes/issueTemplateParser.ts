@@ -38,18 +38,20 @@ function slugify(label: string): string {
     return slug || 'field'
 }
 
-// GitHub documents this exact collision as its own validation error
-// ("Labels are too similar" — confirmed directly against GitHub's docs,
-// bot review follow-up): if an idless field's label parameterizes to a
-// reference another field already claims — another idless field's label,
-// OR another field's *explicit* id, GitHub's own documented example pairs
-// an idless "Name?" against an explicit `id: name` field with label
-// "Name???????" and rejects the form outright — GitHub rejects the whole
-// form. A numeric suffix used to paper over this (silently handing out
-// `name-us-2`) instead of rejecting, which is the same "malformed template
-// silently tolerated, wrongly counted as local .github coverage" class as
-// every other duplicate-identifier check in this file. No suffix retry:
-// a collision is a rejection, not something to resolve.
+// GitHub documents this exact collision as its own validation error,
+// "Labels are too similar" (bot review follow-up), confirmed directly
+// against https://docs.github.com/en/communities/using-templates-to-encourage-useful-issues-and-pull-requests/common-validation-errors-when-creating-issue-forms#labels-are-too-similar
+// — if an idless field's label parameterizes to a reference another field
+// already claims — another idless field's label, OR another field's
+// *explicit* id — GitHub rejects the form outright. GitHub's own
+// documented example pairs an idless "Name?" against an explicit `id:
+// name` field with label "Name???????" and rejects it, even though the
+// labels are literally different text. A numeric suffix used to paper
+// over this (silently handing out `name-us-2`) instead of rejecting,
+// which is the same "malformed template silently tolerated, wrongly
+// counted as local .github coverage" class as every other
+// duplicate-identifier check in this file. No suffix retry: a collision
+// is a rejection, not something to resolve.
 function generateFieldId(label: string, usedIds: Set<string>): string | undefined {
     const candidate = slugify(label)
     if (usedIds.has(candidate)) return undefined
