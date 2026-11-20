@@ -476,7 +476,8 @@ describe('claudeRemote in-process /clear', () => {
         'autonomous-eof', 'acknowledged', 'hook', 'late-result', 'late-init',
         'late-stale-result', 'late-hook', 'tagged-timeout', 'silent-timeout', 'result-eof',
         'unacknowledged-input-eof', 'acknowledged-input-eof', 'failed-clear-input-eof',
-        'follow-up-result', 'legacy-follow-up-result', 'follow-up-after-compact', 'later-follow-up-result', 'idle-background-output'
+        'follow-up-result', 'legacy-follow-up-result', 'follow-up-after-compact',
+        'later-follow-up-result', 'idle-background-output', 'native-slash-follow-up'
     ] as const)('settles an in-process clear on %s', async (outcome) => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
@@ -490,9 +491,10 @@ describe('claudeRemote in-process /clear', () => {
         const interveningCompact = outcome === 'follow-up-after-compact';
         const hasLaterFollowUp = outcome === 'later-follow-up-result';
         const idleBackgroundOutput = outcome === 'idle-background-output';
+        const nativeSlashFollowUp = outcome === 'native-slash-follow-up';
         const hasFollowUpResult = outcome === 'follow-up-result' || legacyFollowUp || interveningCompact || hasLaterFollowUp;
         const success = outcome === 'success' || outcome === 'eof' || outcome === 'hook'
-            || outcome === 'result-eof' || exitsAfterFollowUp || hasFollowUpResult || idleBackgroundOutput;
+            || outcome === 'result-eof' || exitsAfterFollowUp || hasFollowUpResult || idleBackgroundOutput || nativeSlashFollowUp;
         const resultId = success || lateRotation ? 'fresh-native-session' : priorId;
         const timeoutNotice = 'Claude did not identify the /clear result. Waiting for Claude to exit so background tasks can finish.';
         const completion = success ? 'Context was reset'
@@ -515,6 +517,7 @@ describe('claudeRemote in-process /clear', () => {
         let followUpResult: SDKMessage | undefined;
         let laterFollowUpResult: SDKMessage | undefined;
         let compactResult: SDKMessage | undefined;
+        let nativeSlashResult: SDKMessage | undefined;
 
         queryMock.mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<{ uuid: string; message: { content: string } }> }) => ({
             async *[Symbol.asyncIterator]() {
@@ -562,10 +565,23 @@ describe('claudeRemote in-process /clear', () => {
                     return;
                 }
                 if (idleBackgroundOutput) {
-                    yield { type: 'assistant', session_id: priorId, message: { role: 'assistant', content: [] } };
+                    yield {
+                        type: 'assistant',
+                        session_id: priorId,
+                        message: { role: 'assistant', content: [{ type: 'text', text: 'background output' }], usage: { input_tokens: 123 } }
+                    };
                     yield autonomousResult;
                     expect(thinking.at(-1)).toBe(false);
                     return;
+                }
+                if (nativeSlashFollowUp) {
+                    const alias = await input.next();
+                    expect(alias.value?.message.content).toBe('/reset');
+                    yield { type: 'user', isReplay: true, uuid: alias.value?.uuid };
+                    hookSessionId = 'native-alias-session';
+                    nativeSlashResult = { ...autonomousResult, session_id: hookSessionId, local_command: 'clear' };
+                    yield nativeSlashResult;
+                    expect(order).toContain('follow-up');
                 }
                 if (interveningCompact) {
                     const compact = await input.next();
@@ -621,6 +637,7 @@ describe('claudeRemote in-process /clear', () => {
         }));
 
         const inputs = ['first', '/clear', ...(interveningCompact ? ['/compact'] : []),
+            ...(nativeSlashFollowUp ? ['/reset'] : []),
             ...(idleBackgroundOutput ? [] : ['follow-up']),
             ...(hasLaterFollowUp ? ['later follow-up'] : [])];
         if (timesOut) vi.useFakeTimers();
@@ -680,11 +697,16 @@ describe('claudeRemote in-process /clear', () => {
                 expect(order).toEqual([`session:${priorId}`, 'ready', '/clear', 'accepted', completion]);
             } else if (idleBackgroundOutput) {
                 expect(order).toEqual([`session:${priorId}`, 'ready', '/clear', 'accepted', 'reset', `session:${resultId}`, 'Context was reset']);
-                expect(forwarded).toContainEqual(expect.objectContaining({ type: 'assistant', session_id: priorId }));
+                expect(forwarded).toContainEqual({
+                    type: 'assistant',
+                    session_id: priorId,
+                    message: { role: 'assistant', content: [{ type: 'text', text: 'background output' }] }
+                });
             } else {
                 expect(order).toEqual(success
                     ? [`session:${priorId}`, 'ready', '/clear', 'accepted', 'reset', `session:${resultId}`, 'Context was reset',
                         ...(interveningCompact ? ['/compact', 'accepted', '📦 Compacted'] : []),
+                        ...(nativeSlashFollowUp ? ['/reset', 'reset', 'session:native-alias-session', 'ready'] : []),
                         'follow-up', ...(hasFollowUpResult ? ['ready'] : []),
                         ...(hasLaterFollowUp ? ['later follow-up', 'ready'] : [])]
                     : [`session:${priorId}`, 'ready', '/clear', 'accepted', completion, 'follow-up']);
@@ -698,6 +720,7 @@ describe('claudeRemote in-process /clear', () => {
             const expectedResults = [firstResult, result];
             if (timesOut && outcome !== 'silent-timeout') expectedResults.push(unmatchedResult);
             if (compactResult) expectedResults.push({ ...compactResult, hapi_compact_turn: true });
+            if (nativeSlashResult) expectedResults.push(nativeSlashResult);
             if (followUpResult) expectedResults.push(...(legacyFollowUp ? [] : foreignResults), followUpResult);
             if (laterFollowUpResult) expectedResults.push(laterFollowUpResult);
             expect(forwardedResults).toEqual(expectedResults);

@@ -243,7 +243,7 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
         }
     });
 
-    it.each([false, true])('keeps a clear confirmed by the hook before stream exit after timeout: %s', async (timedOut) => {
+    it.each(['isolated', 'timed-out', 'alias'])('keeps a %s clear confirmed by the hook before stream exit', async (scenario) => {
         const queue = new MessageQueue2<EnhancedMode>(claudeBatchModeHash);
         const client = makeClient();
         const session = makeSession(queue, client);
@@ -252,6 +252,7 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
         session.onConversationReset = vi.fn();
         const mode: EnhancedMode = { permissionMode: 'default' };
         queue.push('first', mode, 'first');
+        const command = scenario === 'alias' ? '/reset' : '/clear';
         const delivered: Array<string | undefined> = [];
         let restartId: string | null = null;
         let confirmedHookId: string | undefined;
@@ -259,10 +260,14 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
         claudeRemoteMock.mockImplementationOnce(async (opts) => {
             delivered.push((await opts.nextMessage())?.message);
             await opts.onReady();
-            queue.pushIsolateAndClear('/clear', mode, 'command');
-            queue.push('follow-up', mode, 'follow-up');
+            if (scenario === 'alias') {
+                queue.push(command, mode, 'command');
+            } else {
+                queue.pushIsolateAndClear(command, mode, 'command');
+            }
             delivered.push((await opts.nextMessage(true))?.message);
-            if (timedOut) {
+            queue.push('follow-up', mode, 'follow-up');
+            if (scenario === 'timed-out') {
                 opts.onResultAccepted?.(true);
                 await opts.onReady('Waiting for Claude to exit');
             }
@@ -280,7 +285,7 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
             await claudeRemoteLauncher(session);
             expect(restartId).toBe('native-after-clear');
             expect(confirmedHookId).toBe('native-after-clear');
-            expect(delivered).toEqual(['first', '/clear', 'follow-up']);
+            expect(delivered).toEqual(['first', command, 'follow-up']);
             expect(session.claudeArgs).toBeUndefined();
             expect(session.onConversationReset).toHaveBeenCalledTimes(1);
         } finally {

@@ -1,10 +1,10 @@
 import { EnhancedMode, PermissionMode } from "./loop";
-import { query, type QueryOptions as Options, type SDKMessage, type SDKSystemMessage, AbortError, SDKUserMessage } from '@/claude/sdk'
+import { query, type QueryOptions as Options, type SDKAssistantMessage, type SDKMessage, type SDKSystemMessage, AbortError, SDKUserMessage } from '@/claude/sdk'
 import { claudeCheckSession } from "./utils/claudeCheckSession";
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
-import { parseSpecialCommand } from "@/parsers/specialCommands";
+import { getClaudeNativeSlashCommand, parseSpecialCommand } from "@/parsers/specialCommands";
 import { logger } from "@/lib";
 import { PushableAsyncIterable } from "@/utils/PushableAsyncIterable";
 import { getProjectPath } from "./utils/path";
@@ -572,7 +572,7 @@ export async function claudeRemote(opts: {
     let correlatesResults: boolean | null = null;
     let promptResultsHaveUuid = false;
     let waitingForClearFollowUp = false;
-    let clearFollowUp: { uuid: string; sessionId: string | null } | undefined;
+    let clearFollowUp: { uuid: string; sessionId: string | null; command?: string } | undefined;
     const clearedSessionIds = new Set<string>();
     const compactCompletionAbort = new AbortController();
     let compactCompletion: Promise<CompactCompletion> | null = null;
@@ -644,8 +644,9 @@ export async function claudeRemote(opts: {
                 specialCommand = nextSpecialCommand;
                 const followUpUuid = pushUserMessage(next.message);
                 if (waitingForClearFollowUp && nextSpecialCommand.type === null) {
-                    clearFollowUp = { uuid: followUpUuid, sessionId: currentSessionId };
-                    waitingForClearFollowUp = false;
+                    const command = getClaudeNativeSlashCommand(next.message);
+                    clearFollowUp = { uuid: followUpUuid, sessionId: currentSessionId, command };
+                    waitingForClearFollowUp = command !== undefined;
                 }
                 if (nextSpecialCommand.type === 'compact') {
                     beginCompactCommand(followUpUuid, false);
@@ -814,11 +815,18 @@ export async function claudeRemote(opts: {
                 continue;
             }
 
+            if (message.type === 'assistant' && fromClearedSession) {
+                const assistant = message as SDKAssistantMessage;
+                const { usage: _usage, ...content } = assistant.message as SDKAssistantMessage['message'] & { usage?: unknown };
+                opts.onMessage({ ...assistant, message: content });
+                continue;
+            }
+
             // Autonomous rounds (background tasks, scheduled follow-ups) stream
             // assistant messages after the previous result flipped thinking off;
             // the SDK never re-fires its own thinking signal for them. Re-bump
             // here so the hub renders the round as working, not waiting.
-            if (message.type === 'assistant' && !fromClearedSession) {
+            if (message.type === 'assistant') {
                 updateThinking(true);
             }
 
@@ -983,10 +991,15 @@ export async function claudeRemote(opts: {
                     continue;
                 }
                 if (clearFollowUp) {
-                    const canAcceptUntagged = !promptResultsHaveUuid && !pushedUuids.has(clearFollowUp.uuid)
-                        && message.user_message_uuid == null && message.local_command == null
-                        && clearFollowUp.sessionId !== null && message.session_id === clearFollowUp.sessionId;
-                    if (message.user_message_uuid !== clearFollowUp.uuid && !canAcceptUntagged) continue;
+                    const hookRotation = clearFollowUp.command === 'clear' ? opts.getClearHookSessionId?.() : undefined;
+                    const nativeSessionId = clearFollowUp.command === 'clear'
+                        ? hookRotation ?? currentSessionId : clearFollowUp.sessionId;
+                    const isMatchingCommand = clearFollowUp.command !== undefined && message.local_command === clearFollowUp.command;
+                    const canAcceptWithoutUuid = !pushedUuids.has(clearFollowUp.uuid)
+                        && message.user_message_uuid == null && nativeSessionId !== null && message.session_id === nativeSessionId
+                        && (isMatchingCommand || (!promptResultsHaveUuid && message.local_command == null));
+                    if (message.user_message_uuid !== clearFollowUp.uuid && !canAcceptWithoutUuid) continue;
+                    if (hookRotation && hookRotation !== clearFollowUp.sessionId) bindClearSession(hookRotation);
                     pushedUuids.delete(clearFollowUp.uuid);
                     clearFollowUp = undefined;
                 }

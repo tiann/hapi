@@ -13,7 +13,7 @@ import { claudeProcessModeKey, claudeBatchModeHash, EnhancedMode } from "./loop"
 import { OutgoingMessageQueue } from "./utils/OutgoingMessageQueue";
 import type { ClaudePermissionMode } from "@hapi/protocol/types";
 import { RPC_METHODS } from "@hapi/protocol/rpcMethods";
-import { parseSpecialCommand } from "@/parsers/specialCommands";
+import { getClaudeNativeSlashCommand, parseSpecialCommand } from "@/parsers/specialCommands";
 import { deriveSpawnArgs, isSessionMaterialized } from './conversationHistory';
 import { ClaudeToolResultImages } from './utils/toolResultImages';
 import { applySessionTitleFallback, readNativeSessionTitle, stripAttachmentReferences } from './utils/sessionTitleFallback';
@@ -605,7 +605,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                 let clearHookSessionId: string | undefined;
                 let awaitingLateClearHook = false;
                 session.handleRemoteClearHook = (sessionId) => {
-                    const clearInFlight = inFlightMessage?.isolate && parseSpecialCommand(inFlightMessage.deliveredText).type === 'clear';
+                    const clearInFlight = inFlightMessage && getClaudeNativeSlashCommand(inFlightMessage.deliveredText) === 'clear';
                     if (!clearInFlight && !awaitingLateClearHook) return false;
                     if (sessionId !== session.sessionId) {
                         resetSession();
@@ -816,6 +816,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             // longer "in flight" either.
                             reachedReadyThisAttempt = true;
                             inFlightMessage = null;
+                            clearHookSessionId = undefined;
                             session.consumeStartupResumeSessionAt?.();
 
                             await messageQueue.flush();
