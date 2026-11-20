@@ -65,7 +65,7 @@ impl IncomingFilter {
             *cursor = (*cursor).min(last_retained);
         }
     }
-    pub fn reconcile_rewind(&mut self, metadata: &Value) {
+    pub(super) fn reconcile_rewind(&mut self, metadata: &Value) {
         let intent = super::metadata::claude_rewind(metadata)
             .and_then(|r| r["truncateFromLocalId"].as_str().map(str::to_owned));
         let previous = std::mem::replace(&mut self.rewind.observed_claude, intent);
@@ -83,7 +83,7 @@ impl IncomingFilter {
             }
         }
     }
-    pub fn arm_claude_rewind_on_reconnect(&mut self) {
+    pub(super) fn arm_claude_rewind_on_reconnect(&mut self) {
         if self.rewind.observed_claude.is_some() {
             self.arm_rewind();
         }
@@ -107,16 +107,16 @@ impl IncomingFilter {
             progress.after = progress.after.min(after);
         }
     }
-    pub fn rewind_pending(&self) -> bool {
+    pub(super) fn rewind_pending(&self) -> bool {
         self.rewind.pending.is_some()
     }
-    pub fn rewind_restart(&self, epoch: u64) -> Option<(i64, u64)> {
+    pub(super) fn rewind_restart(&self, epoch: u64) -> Option<(i64, u64)> {
         (self.rewind.epoch != epoch).then(|| {
             let after = self.rewind.pending.as_ref().map(|p| p.after);
             (after.or(self.cursor).unwrap_or(0), self.rewind.epoch)
         })
     }
-    pub fn backfill_start(&self, start_cursor: Option<i64>) -> Option<(i64, u64)> {
+    pub(super) fn backfill_start(&self, start_cursor: Option<i64>) -> Option<(i64, u64)> {
         let start = match &self.rewind.pending {
             Some(pending) => pending.after,
             None => match self.backfill_cursor() {
@@ -126,7 +126,7 @@ impl IncomingFilter {
         };
         Some((start, self.rewind.epoch))
     }
-    pub fn complete_rewind(&mut self, epoch: u64) {
+    pub(super) fn complete_rewind(&mut self, epoch: u64) {
         if self
             .rewind
             .pending
@@ -136,24 +136,24 @@ impl IncomingFilter {
             self.rewind.pending = None;
         }
     }
-    pub fn rewind_stale(&self, attempted_epoch: u64) -> bool {
+    pub(super) fn rewind_stale(&self, attempted_epoch: u64) -> bool {
         self.rewind
             .pending
             .as_ref()
             .is_some_and(|p| p.epoch != attempted_epoch)
     }
-    pub fn set_rewind_syncing(&mut self, syncing: bool) {
+    pub(super) fn set_rewind_syncing(&mut self, syncing: bool) {
         self.rewind.syncing = syncing;
     }
-    pub fn claim_rewind_schedule(&mut self) -> bool {
+    pub(super) fn claim_rewind_schedule(&mut self) -> bool {
         let claim = self.rewind.pending.is_some() && !self.rewind.scheduled && !self.rewind.syncing;
         self.rewind.scheduled |= claim;
         claim
     }
-    pub fn release_rewind_schedule(&mut self) {
+    pub(super) fn release_rewind_schedule(&mut self) {
         self.rewind.scheduled = false;
     }
-    pub fn start_backfill(&mut self) -> Option<i64> {
+    pub(super) fn start_backfill(&mut self) -> Option<i64> {
         let cursor = self.cursor?;
         Some(
             self.backfill
@@ -164,10 +164,10 @@ impl IncomingFilter {
                 .after,
         )
     }
-    pub fn backfill_cursor(&self) -> Option<i64> {
+    pub(super) fn backfill_cursor(&self) -> Option<i64> {
         self.backfill.as_ref().map(|progress| progress.after)
     }
-    pub fn page_scanned(&mut self, after: i64) {
+    pub(super) fn page_scanned(&mut self, after: i64) {
         if let Some(pending) = &mut self.rewind.pending {
             pending.after = pending.after.max(after);
             self.cursor = Some(self.cursor.unwrap_or(after).max(after));
@@ -178,12 +178,17 @@ impl IncomingFilter {
             progress.live_ids.retain(|_, seq| *seq > after);
         }
     }
-    pub fn finish_backfill(&mut self) {
+    pub(super) fn finish_backfill(&mut self) {
         if self.rewind.pending.is_none() {
             self.backfill = None;
         }
     }
-    pub fn accept_delivery(&mut self, id: Option<&str>, seq: Option<i64>, from_page: bool) -> bool {
+    pub(super) fn accept_delivery(
+        &mut self,
+        id: Option<&str>,
+        seq: Option<i64>,
+        from_page: bool,
+    ) -> bool {
         let accepted = self.accept(id, seq);
         let Some(progress) = &mut self.backfill else {
             return accepted;
@@ -216,7 +221,7 @@ impl IncomingFilter {
         true
     }
 }
-pub fn user_message(raw: &Value) -> Option<Value> {
+pub(super) fn user_message(raw: &Value) -> Option<Value> {
     let content = &raw["content"];
     if raw["role"] != "user" || content["type"] != "text" {
         return None;

@@ -392,7 +392,7 @@ impl Document {
             archive,
         }
     }
-    pub fn observe(&self, f: impl Fn(&Value) + Send + Sync + 'static) {
+    pub(super) fn observe(&self, f: impl Fn(&Value) + Send + Sync + 'static) {
         let _ = self.snapshot.observer.set(Box::new(f));
     }
     pub fn get(&self) -> Snapshot {
