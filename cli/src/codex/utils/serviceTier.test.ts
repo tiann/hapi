@@ -222,6 +222,7 @@ it.each([['priority', 'priority'], ['ultrafast', 'ultrafast'], ['default', null]
 it('does not replace explicit or legacy native tier intent', async () => {
     const readConfig = vi.fn();
     expect(await inheritedResumeTier({ readConfig }, { serviceTier: 'ultrafast' }, true, '/project')).toEqual({ serviceTier: 'ultrafast' });
+    expect(await inheritedResumeTier({ readConfig }, {}, true, '/project', 'flex')).toEqual({});
     expect(await inheritedResumeTier({ readConfig }, {}, undefined, '/project')).toEqual({});
     expect(readConfig).not.toHaveBeenCalled();
 });

@@ -89,13 +89,23 @@ describe('buildCliArgs', () => {
         expect(args).toContain('high')
     })
 
-    it('passes --service-tier through for codex (resume preserves Fast/Standard)', () => {
+    it.each(['standard', 'fast', 'ultrafast'])('passes a selectable Codex --service-tier %s through', serviceTier => {
         const args = buildCliArgs('codex', {
             directory: '/tmp',
-            serviceTier: 'fast',
+            serviceTier,
         })
         expect(args).toContain('--service-tier')
-        expect(args).toContain('fast')
+        expect(args[args.indexOf('--service-tier') + 1]).toBe(serviceTier)
+    })
+
+    it('leaves a native-only Codex tier to native resume', () => {
+        const args = buildCliArgs('codex', {
+            directory: '/tmp',
+            serviceTier: 'flex',
+            resumeSessionId: 'native-flex',
+        })
+        expect(args).not.toContain('--service-tier')
+        expect(args).toContain('native-flex')
     })
 
     it('passes --collaboration-mode through for codex Plan mode', () => {

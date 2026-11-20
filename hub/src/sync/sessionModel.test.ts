@@ -5510,7 +5510,12 @@ describe('session model', () => {
     })
 })
 
-it.each([false, true, undefined])('resumes effective Ultrafast with explicit HAPI intent %s', async explicit => {
+it.each([
+    { effective: 'ultrafast', explicit: false, expected: undefined },
+    { effective: 'ultrafast', explicit: true, expected: 'ultrafast' },
+    { effective: 'ultrafast', explicit: undefined, expected: 'ultrafast' },
+    { effective: 'flex', explicit: true, expected: undefined },
+])('keeps effective $effective distinct from the runner tier (explicit $explicit)', async ({ effective, explicit, expected }) => {
     const store = new Store(':memory:')
     const engine = new SyncEngine(store, {} as never, new RpcRegistry(), { broadcast() {} } as never)
     try {
@@ -5520,8 +5525,9 @@ it.each([false, true, undefined])('resumes effective Ultrafast with explicit HAP
         }, null, 'default')
         engine.getOrCreateMachine('machine-1', { host: 'localhost', platform: 'linux', happyCliVersion: '0.36.5' }, null, 'default')
         engine.handleMachineAlive({ machineId: 'machine-1', time: Date.now() })
-        engine.handleSessionAlive({ sid: session.id, time: Date.now(), serviceTier: 'ultrafast' })
+        engine.handleSessionAlive({ sid: session.id, time: Date.now(), serviceTier: effective })
         engine.handleSessionEnd({ sid: session.id, time: Date.now() })
+        expect(engine.getSession(session.id)?.serviceTier).toBe(effective)
         let tier: string | undefined = 'not-called'
         ;(engine as any).rpcGateway.spawnSession = async (...args: Parameters<SyncEngine['spawnSession']>) => {
             tier = args[11]
@@ -5529,7 +5535,7 @@ it.each([false, true, undefined])('resumes effective Ultrafast with explicit HAP
         }
         ;(engine as any).waitForSessionActive = async () => true
         expect(await engine.resumeSession(session.id, 'default')).toEqual({ type: 'success', sessionId: session.id })
-        expect(tier as string | undefined).toBe(explicit === false ? undefined : 'ultrafast')
+        expect(tier as string | undefined).toBe(expected)
     } finally { engine.stop() }
 })
 

@@ -446,17 +446,20 @@ describe('archived Codex fork coordination', () => {
 })
 
 it.each([
-    { explicit: false, pending: false, expected: undefined },
-    { explicit: true, pending: false, expected: 'ultrafast' },
-    { explicit: true, pending: true, expected: 'standard' },
-])('preserves tier intent when launching an archived fork (%j)', async ({ explicit, pending, expected }) => {
+    { effective: 'ultrafast', explicit: false, pending: false, expected: undefined },
+    { effective: 'ultrafast', explicit: true, pending: false, expected: 'ultrafast' },
+    { effective: 'ultrafast', explicit: true, pending: true, expected: 'standard' },
+    { effective: 'flex', explicit: true, pending: false, expected: undefined },
+    { effective: 'flex', explicit: true, pending: true, expected: 'standard' },
+])('preserves tier intent when launching an archived fork (%j)', async ({ effective, explicit, pending, expected }) => {
     const f = fixture();
     try {
         const current = f.store.sessions.getSession(f.source.id)!;
         f.store.sessions.updateSessionMetadata(f.source.id, { ...current.metadata!, codexServiceTierExplicit: explicit }, current.metadataVersion, 'ns');
         ;(f.engine as any).sessionCache.refreshSession(f.source.id);
-        f.engine.handleSessionAlive({ sid: f.source.id, time: Date.now(), serviceTier: 'ultrafast' });
+        f.engine.handleSessionAlive({ sid: f.source.id, time: Date.now(), serviceTier: effective });
         f.engine.handleSessionEnd({ sid: f.source.id, time: Date.now() });
+        expect(f.engine.getSession(f.source.id)?.serviceTier).toBe(effective);
         if (pending) await f.engine.applySessionConfig(f.source.id, { serviceTier: 'standard' });
         let tier: string | undefined;
         const spawn = f.rpc.spawnSession;

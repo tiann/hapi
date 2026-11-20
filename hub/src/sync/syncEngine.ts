@@ -24,6 +24,7 @@ import { hasConversationMessageContent, unwrapRoleWrappedRecordEnvelope } from '
 import type { Server } from 'socket.io'
 import { createHash, randomUUID } from 'node:crypto'
 import type { BranchConversationRequest, BranchConversationResponse } from '@hapi/protocol/apiTypes'
+import { SessionServiceTierRequestSchema } from '@hapi/protocol/apiTypes'
 import { branchSessionId, buildBranchPrompt } from './branchTranscript'
 import type { Store, CancelQueuedMessageResult } from '../store'
 import type { StoredMessage } from '../store/types'
@@ -4293,7 +4294,10 @@ export class SyncEngine {
         if (metadata?.codexPendingServiceTier !== undefined) return metadata.codexPendingServiceTier
         if (metadata?.codexTierConfirmationPending || metadata?.codexServiceTierExplicit === false) return undefined
         if (this.codexUsesNativeTier(metadata)) return undefined
-        return session.serviceTier ?? undefined
+        // Native-only effective tiers are restored by Codex, outside the
+        // HAPI runner's selectable service-tier overrides.
+        const tier = SessionServiceTierRequestSchema.shape.serviceTier.safeParse(session.serviceTier)
+        return tier.success ? tier.data : undefined
     }
 
     async applySessionConfig(
