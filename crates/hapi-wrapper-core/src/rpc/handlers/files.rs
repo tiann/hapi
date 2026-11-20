@@ -152,7 +152,7 @@ fn tree(p: &Path, d: u64) -> Option<Value> {
     let mut v = json!({"path":p.to_string_lossy(),"name":p.file_name().unwrap_or(p.as_os_str()).to_string_lossy(),"type":if m.is_dir(){"directory"}else{"file"}});
     metadata(&mut v, &m);
     if m.is_dir() && d > 0 {
-        v["children"] = json!(entries(p, Some(d - 1)).ok()?);
+        v["children"] = Value::Array(entries(p, Some(d - 1)).ok()?);
     }
     Some(v)
 }
