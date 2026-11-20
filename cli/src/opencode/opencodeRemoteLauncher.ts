@@ -1205,10 +1205,14 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                     opencodeWorkerProcess: { workerId: this.workerId, pid: process.pid, startMarker: workerStartMarker } }));
             if (!await session.client.flushMetadata() || this.rewindStopped) return;
             session.client.rpcHandlerManager.registerHandler(RPC_METHODS.RewindConversation, async (payload: unknown) => {
-                if (this.runtimeGate.recoveryPending) return {
-                    success: false, outcome: 'rejected', error: OPENCODE_RECOVERY_HANDOFF_REFUSAL
-                };
-                this.runtimeGate.assertHandoffAllowed();
+                try {
+                    this.runtimeGate.assertHandoffAllowed();
+                } catch (error) {
+                    if (error instanceof OpenCodeHandoffRefusedError) {
+                        return { success: false, outcome: 'rejected', error: error.message };
+                    }
+                    throw error;
+                }
                 const input = payload as { messageLocalId?: string; opencodeRewind?: unknown };
                 const operation = OpenCodeRewindSchema.parse(input?.opencodeRewind);
                 if (input.messageLocalId !== operation.requestedLocalId) throw new Error('Rewind boundary mismatch');

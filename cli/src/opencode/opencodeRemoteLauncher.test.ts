@@ -1427,6 +1427,63 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         }
     });
 
+    linuxRecoveryTest.each(['clear-prepared', 'recovering', 'ending'] as const)(
+        'returns the explicit pre-dispatch rejection shape when rewind arrives during %s', async (state) => {
+            harness.detectedVersion = 'v2';
+            harness.discoveredPort = 41234;
+            harness.discoveredPassword = 'fixture-password';
+            harness.servePid = process.pid;
+            const rows = [{ id: 'u1', type: 'user', text: 'one' }, { id: 'a1', type: 'assistant', text: 'answer' }];
+            harness.clientMetadata = {
+                path: '/tmp/hapi-opencode-test',
+                host: 'fixture',
+                opencodeSessionId: 'acp-session-1',
+                opencodeHistoryCheckpoint: { sessionId: 'acp-session-1', messageIds: ['u1', 'a1'], userMessageIds: ['u1'], localMessageIds: [] },
+                conversationHistoryIndexes: { one: 0 }
+            };
+            const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async input => {
+                const url = String(input);
+                if (url.includes('/message?')) return Response.json({ data: rows, cursor: {} });
+                if (url.endsWith('/active')) return Response.json({ data: {} });
+                if (url.endsWith('/inbox')) return Response.json({ data: [] });
+                if (url.endsWith('/doc') || url.endsWith('/openapi.json')) return Response.json({ paths: {
+                    '/api/session/{sessionID}/fork': {}, '/api/session/{sessionID}/revert/stage': {}, '/api/session/{sessionID}/revert/commit': {} } });
+                return Response.json({ data: { id: 'acp-session-1' } });
+            });
+            const gate = new OpenCodeRuntimeGate();
+            const { session, rpcHandlers } = createSessionStub([], { keepOpen: true });
+            session.sessionId = 'acp-session-1';
+            Object.assign(session.client, {
+                flush: async () => true,
+                reportOpenCodeRewind: async (report: OpenCodeRewindReport) => ({ ...report.operation, phase: 'rejected' as const })
+            });
+            const launcher = opencodeRemoteLauncher({ ...session, runtimeGate: gate } as never);
+            try {
+                await vi.waitFor(() => expect(rpcHandlers.has(RPC_METHODS.RewindConversation)).toBe(true));
+                if (state === 'clear-prepared') {
+                    gate.handleClearAdmission({ action: 'prepare-clear', reservationId: 'clear-1' });
+                } else if (state === 'recovering') {
+                    gate.setRecoveryPending(true);
+                } else {
+                    gate.requestSessionExit();
+                }
+                await expect(rpcHandlers.get(RPC_METHODS.RewindConversation)!({})).resolves.toMatchObject({
+                    success: false,
+                    outcome: 'rejected',
+                    error: expect.any(String)
+                });
+            } finally {
+                if (state === 'clear-prepared') {
+                    gate.handleClearAdmission({ action: 'cancel-clear', reservationId: 'clear-1' });
+                }
+                gate.setRecoveryPending(false);
+                session.queue.close();
+                await launcher.catch(() => {});
+                fetchSpy.mockRestore();
+            }
+        }
+    );
+
     linuxRecoveryTest('resumes the same v2 native conversation after writer verification and Clear reservation settlement', async () => {
         harness.detectedVersion = 'v2';
         const stopped = Promise.withResolvers<void>();
