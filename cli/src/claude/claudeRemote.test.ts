@@ -477,7 +477,7 @@ describe('claudeRemote in-process /clear', () => {
         'late-stale-result', 'late-hook', 'tagged-timeout', 'silent-timeout', 'result-eof',
         'unacknowledged-input-eof', 'acknowledged-input-eof', 'failed-clear-input-eof',
         'follow-up-result', 'legacy-follow-up-result', 'follow-up-after-compact',
-        'later-follow-up-result', 'idle-background-output', 'native-slash-follow-up'
+        'later-follow-up-result', 'idle-background-output', 'native-slash-follow-up', 'native-slash-follow-up-without-hook'
     ] as const)('settles an in-process clear on %s', async (outcome) => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
@@ -491,7 +491,7 @@ describe('claudeRemote in-process /clear', () => {
         const interveningCompact = outcome === 'follow-up-after-compact';
         const hasLaterFollowUp = outcome === 'later-follow-up-result';
         const idleBackgroundOutput = outcome === 'idle-background-output';
-        const nativeSlashFollowUp = outcome === 'native-slash-follow-up';
+        const nativeSlashFollowUp = outcome === 'native-slash-follow-up' || outcome === 'native-slash-follow-up-without-hook';
         const hasFollowUpResult = outcome === 'follow-up-result' || legacyFollowUp || interveningCompact || hasLaterFollowUp;
         const success = outcome === 'success' || outcome === 'eof' || outcome === 'hook'
             || outcome === 'result-eof' || exitsAfterFollowUp || hasFollowUpResult || idleBackgroundOutput || nativeSlashFollowUp;
@@ -578,8 +578,8 @@ describe('claudeRemote in-process /clear', () => {
                     const alias = await input.next();
                     expect(alias.value?.message.content).toBe('/reset');
                     yield { type: 'user', isReplay: true, uuid: alias.value?.uuid };
-                    hookSessionId = 'native-alias-session';
-                    nativeSlashResult = { ...autonomousResult, session_id: hookSessionId, local_command: 'clear' };
+                    if (outcome === 'native-slash-follow-up') hookSessionId = 'native-alias-session';
+                    nativeSlashResult = { ...autonomousResult, session_id: 'native-alias-session', local_command: 'clear' };
                     yield nativeSlashResult;
                     expect(order).toContain('follow-up');
                 }

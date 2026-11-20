@@ -67,6 +67,12 @@ function isCommandResult(message: SDKMessage, uuid: string, command: 'compact' |
             && (message.local_command === command || (message.local_command == null && legacyMatch))));
 }
 
+function getClearResultSessionId(message: SDKMessage, previousSessionId: string | null): string | undefined {
+    const id = message.session_id;
+    return message.subtype === 'success' && message.is_error !== true
+        && typeof id === 'string' && id && id !== previousSessionId ? id : undefined;
+}
+
 function unidentifiedCommandResult(command: 'compact' | 'clear'): string {
     return command === 'compact'
         ? '📦 Claude did not identify the /compact result'
@@ -991,15 +997,19 @@ export async function claudeRemote(opts: {
                     continue;
                 }
                 if (clearFollowUp) {
-                    const hookRotation = clearFollowUp.command === 'clear' ? opts.getClearHookSessionId?.() : undefined;
-                    const nativeSessionId = clearFollowUp.command === 'clear'
-                        ? hookRotation ?? currentSessionId : clearFollowUp.sessionId;
+                    const matchesUuid = message.user_message_uuid === clearFollowUp.uuid;
                     const isMatchingCommand = clearFollowUp.command !== undefined && message.local_command === clearFollowUp.command;
+                    const isClear = clearFollowUp.command === 'clear';
+                    const hookRotation = isClear ? opts.getClearHookSessionId?.() : undefined;
+                    const resultRotation = isClear && (matchesUuid || isMatchingCommand)
+                        ? getClearResultSessionId(message, clearFollowUp.sessionId) : undefined;
+                    const rotatedId = hookRotation ?? resultRotation;
+                    const nativeSessionId = isClear ? rotatedId ?? currentSessionId : clearFollowUp.sessionId;
                     const canAcceptWithoutUuid = !pushedUuids.has(clearFollowUp.uuid)
                         && message.user_message_uuid == null && nativeSessionId !== null && message.session_id === nativeSessionId
                         && (isMatchingCommand || (!promptResultsHaveUuid && message.local_command == null));
-                    if (message.user_message_uuid !== clearFollowUp.uuid && !canAcceptWithoutUuid) continue;
-                    if (hookRotation && hookRotation !== clearFollowUp.sessionId) bindClearSession(hookRotation);
+                    if (!matchesUuid && !canAcceptWithoutUuid) continue;
+                    if (rotatedId && rotatedId !== clearFollowUp.sessionId) bindClearSession(rotatedId);
                     pushedUuids.delete(clearFollowUp.uuid);
                     clearFollowUp = undefined;
                 }
@@ -1009,11 +1019,7 @@ export async function claudeRemote(opts: {
                 }
                 if (clear) {
                     if (!isClearResult) continue;
-                    const resultId = message.session_id;
-                    const succeeded = message.subtype === 'success' && message.is_error !== true;
-                    const rotatedId = clearSessionId ?? (succeeded
-                        && typeof resultId === 'string' && resultId && resultId !== clear.previousSessionId
-                        ? resultId : undefined);
+                    const rotatedId = clearSessionId ?? getClearResultSessionId(message, clear.previousSessionId);
                     cancelCommandResultTimeout();
                     clearState.active = null;
                     pushedUuids.delete(clear.uuid);
