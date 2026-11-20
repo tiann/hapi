@@ -243,7 +243,7 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
         }
     });
 
-    it('keeps a clear confirmed by the hook when the stream exits before its result', async () => {
+    it.each([false, true])('keeps a clear confirmed by the hook before stream exit after timeout: %s', async (timedOut) => {
         const queue = new MessageQueue2<EnhancedMode>(claudeBatchModeHash);
         const client = makeClient();
         const session = makeSession(queue, client);
@@ -262,6 +262,10 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
             queue.pushIsolateAndClear('/clear', mode, 'command');
             queue.push('follow-up', mode, 'follow-up');
             delivered.push((await opts.nextMessage(true))?.message);
+            if (timedOut) {
+                opts.onResultAccepted?.(true);
+                await opts.onReady('Waiting for Claude to exit');
+            }
             session.handleRemoteClearHook?.('native-after-clear');
             confirmedHookId = opts.getClearHookSessionId?.();
             throw new Error('stream ended after native clear');

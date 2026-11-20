@@ -121,7 +121,7 @@ export async function claudeRemote(opts: {
      * The delivered input finished at the SDK boundary although onReady is
      * still deferred (compact summary lookup, or a steer follow-up turn).
      */
-    onResultAccepted?: () => void,
+    onResultAccepted?: (keepClearHookPending?: boolean) => void,
     /** The native prompt uuid of a just-submitted user message (queue batches only). */
     onInputSubmitted?: (nativePromptUuid: string) => void,
     onCompletionEvent?: (message: string) => void,
@@ -763,7 +763,7 @@ export async function claudeRemote(opts: {
                     compactState.active = null;
                     inputEnded = true;
                     messages.end();
-                    opts.onResultAccepted?.();
+                    opts.onResultAccepted?.(clear !== null && rotatedId === undefined);
                     updateThinking(false);
                     const waitNotice = 'Waiting for Claude to exit so background tasks can finish.';
                     if (rotatedId) {
@@ -834,7 +834,7 @@ export async function claudeRemote(opts: {
             // tok/s fields for it while autonomous round results stay unmarked.
             const compact = compactState.active;
             const isCompactTurnResult = compact !== null
-                && isCommandResult(message, compact.uuid, 'compact', compact.sawCompactSignal);
+                && isCommandResult(message, compact.uuid, 'compact', compact.initial && compact.sawCompactSignal);
             if (!isClearResult && !isManualCompactBoundaryMessage(message) && !isCompactEchoMessage(message)) {
                 opts.onMessage(isCompactTurnResult ? { ...message, hapi_compact_turn: true } : message);
             }

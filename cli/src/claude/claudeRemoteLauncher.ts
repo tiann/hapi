@@ -598,14 +598,15 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     session.onConversationReset?.();
                 };
                 let clearHookSessionId: string | undefined;
+                let awaitingLateClearHook = false;
                 session.handleRemoteClearHook = (sessionId) => {
-                    if (!inFlightMessage?.isolate || parseSpecialCommand(inFlightMessage.deliveredText).type !== 'clear') {
-                        return false;
-                    }
+                    const clearInFlight = inFlightMessage?.isolate && parseSpecialCommand(inFlightMessage.deliveredText).type === 'clear';
+                    if (!clearInFlight && !awaitingLateClearHook) return false;
                     if (sessionId !== session.sessionId) {
                         resetSession();
                         session.onSessionFound(sessionId);
                         clearHookSessionId = sessionId;
+                        awaitingLateClearHook = false;
                         inFlightMessage = null;
                     }
                     return true;
@@ -774,7 +775,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                     nativeTitle ?? stripAttachmentReferences(initialMessage)
                                 ));
                         },
-                        onResultAccepted: () => {
+                        onResultAccepted: (keepClearHookPending = false) => {
                             // The input has completed at the SDK boundary even
                             // if ready is deferred (compact summary lookup, or
                             // a steer follow-up turn). A later stream failure
@@ -782,6 +783,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             reachedReadyThisAttempt = true;
                             inFlightMessage = null;
                             clearHookSessionId = undefined;
+                            awaitingLateClearHook = keepClearHookPending;
                         },
                         onCompletionEvent: (message: string) => {
                             logger.debug(`[remote]: Completion event: ${message}`);

@@ -474,14 +474,14 @@ describe('claudeRemote in-process /clear', () => {
     it.each([
         'success', 'failure', 'untagged-failure', 'eof', 'no-result',
         'autonomous-eof', 'acknowledged', 'hook', 'late-result', 'late-init',
-        'late-stale-result', 'tagged-timeout', 'silent-timeout'
+        'late-stale-result', 'late-hook', 'tagged-timeout', 'silent-timeout'
     ] as const)('settles an in-process clear on %s', async (outcome) => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
         const order: string[] = [];
         const forwarded: SDKMessage[] = [];
         const priorId = 'previous-native-session';
-        const lateRotation = outcome === 'late-result' || outcome === 'late-init' || outcome === 'late-stale-result';
+        const lateRotation = outcome === 'late-result' || outcome === 'late-init' || outcome === 'late-stale-result' || outcome === 'late-hook';
         const timesOut = lateRotation || outcome === 'untagged-failure' || outcome === 'tagged-timeout' || outcome === 'silent-timeout';
         const success = outcome === 'success' || outcome === 'eof' || outcome === 'hook';
         const resultId = success || lateRotation ? 'fresh-native-session' : priorId;
@@ -489,6 +489,7 @@ describe('claudeRemote in-process /clear', () => {
         const completion = success ? 'Context was reset'
             : timesOut ? timeoutNotice : 'Could not reset context';
         let hookSessionId: string | undefined;
+        let awaitingLateClearHook = false;
         const result: SDKMessage = {
             type: 'result', subtype: 'success', is_error: false, session_id: priorId, user_message_uuid: 'first-input'
         };
@@ -544,6 +545,9 @@ describe('claudeRemote in-process /clear', () => {
                         expect(order).not.toContain('reset');
                         if (outcome === 'late-result') {
                             yield { ...result, session_id: resultId, user_message_uuid: clear.value?.uuid };
+                        } else if (outcome === 'late-hook') {
+                            expect(awaitingLateClearHook).toBe(true);
+                            hookSessionId = resultId;
                         } else {
                             yield { type: 'system', subtype: 'init', session_id: resultId };
                             if (outcome === 'late-stale-result') {
@@ -574,7 +578,10 @@ describe('claudeRemote in-process /clear', () => {
                     return message ? { message, mode: { permissionMode: 'default' } } : null;
                 },
                 onReady: (event) => { order.push(event ?? 'ready'); },
-                onResultAccepted: () => order.push('accepted'),
+                onResultAccepted: (keepClearHookPending) => {
+                    awaitingLateClearHook = keepClearHookPending === true;
+                    order.push('accepted');
+                },
                 isAborted: () => false,
                 onSessionFound: (id) => { order.push(`session:${id}`); },
                 onMessage: (message) => { forwarded.push(message); },
@@ -842,7 +849,7 @@ describe('claudeRemote /compact result reporting', () => {
         }
     });
 
-    it.each([false, true])('keeps a matched status-only compact successful after an autonomous result: %s', async (autonomous) => {
+    it.each(['none', 'before-progress', 'after-boundary'])('settles a live compact only on its result with autonomous output %s', async (autonomous) => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
         const events: string[] = [];
@@ -852,17 +859,23 @@ describe('claudeRemote /compact result reporting', () => {
                 const first = await input.next();
                 yield { ...resultMessage, user_message_uuid: first.value?.uuid };
                 const compact = await input.next();
-                if (autonomous) yield resultMessage;
+                if (autonomous === 'before-progress') yield resultMessage;
                 yield { type: 'system', subtype: 'status', status: 'compacting' };
-                if (autonomous) {
+                if (autonomous === 'before-progress') {
                     await vi.advanceTimersByTimeAsync(31_000);
+                    expect(events).toEqual(['ready']);
+                }
+                if (autonomous === 'after-boundary') {
+                    yield { type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'manual' } };
+                    yield { ...resultMessage, is_error: true, subtype: 'error_during_execution' };
+                    await vi.advanceTimersByTimeAsync(1);
                     expect(events).toEqual(['ready']);
                 }
                 yield { ...resultMessage, user_message_uuid: compact.value?.uuid };
             }
         }));
         const inputs = ['first', '/compact'];
-        if (autonomous) vi.useFakeTimers();
+        if (autonomous !== 'none') vi.useFakeTimers();
         try {
             await claudeRemote({
                 sessionId: 'session-1',
@@ -881,7 +894,7 @@ describe('claudeRemote /compact result reporting', () => {
             });
             expect(events).toEqual(['ready', '📦 Compacted']);
         } finally {
-            if (autonomous) vi.useRealTimers();
+            if (autonomous !== 'none') vi.useRealTimers();
             queryMock.mockReset();
             querySpy.mockRestore();
         }
@@ -1158,11 +1171,11 @@ describe('claudeRemote /compact result reporting', () => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
         const completionEvents: string[] = [];
-        queryMock.mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<unknown> }) => ({
+        queryMock.mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<{ uuid: string }> }) => ({
             async *[Symbol.asyncIterator]() {
                 const promptIterator = prompt[Symbol.asyncIterator]();
-                await promptIterator.next();
-                yield resultMessage;
+                const first = await promptIterator.next();
+                yield { ...resultMessage, user_message_uuid: first.value?.uuid };
                 // A compact response cannot arrive until the later-turn
                 // command has actually entered the SDK prompt queue.
                 await promptIterator.next();
@@ -1173,7 +1186,7 @@ describe('claudeRemote /compact result reporting', () => {
                     session_id: 's-1',
                     uuid: 'u-2'
                 } as unknown as SDKMessage;
-                yield resultMessage;
+                yield { ...resultMessage, local_command: 'compact' };
             }
         }));
 
@@ -1183,10 +1196,13 @@ describe('claudeRemote /compact result reporting', () => {
                 sessionId: 'session-1', path: process.cwd(), mcpServers: {}, claudeEnvVars: {},
                 claudeArgs: [], allowedTools: [], hookSettingsPath: '/tmp/hook.json',
                 canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
-                nextMessage: async () => {
+                nextMessage: async (correlatesResults) => {
                     nextCallCount += 1;
                     if (nextCallCount === 1) return { message: 'hi', mode: { permissionMode: 'default' } };
-                    if (nextCallCount === 2) return { message: '/compact', mode: { permissionMode: 'default' } };
+                    if (nextCallCount === 2) {
+                        expect(correlatesResults).toBe(true);
+                        return { message: '/compact', mode: { permissionMode: 'default' } };
+                    }
                     return null;
                 },
                 onReady: (completionEvent, compactSummary) => {
