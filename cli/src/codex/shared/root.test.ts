@@ -1781,6 +1781,21 @@ it('accepts null as an explicit Standard reset rather than account inheritance',
     expect(f.root.freshParams().serviceTier).toBe('default');
 });
 
+it('reports a newer Fast selection before an Ultrafast write can be confirmed', async () => {
+    const f = await fixture(); await f.root.activate();
+    const original = f.root.client.request.bind(f.root.client);
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/resume' && f.native.settings.serviceTier === 'ultrafast') {
+            f.native.settings.serviceTier = 'priority';
+        }
+        return original(method, params);
+    });
+    await expect(f.root.applySettings({ serviceTier: 'ultrafast' })).rejects.toThrow('superseded by a newer Fast selection');
+    expect(f.native.settings.serviceTier).toBe('priority');
+    const writes = request.mock.calls.filter(([method]) => method === 'thread/settings/update');
+    expect(writes).toEqual([['thread/settings/update', expect.objectContaining({ serviceTier: 'ultrafast' })]]);
+});
+
 it('preserves settings when an active thread provider differs from the startup catalog', async () => {
     const f = await fixture();
     f.root.acceptSettings({ model: 'mock', modelProvider: 'other-provider' }, true);

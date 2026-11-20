@@ -473,6 +473,39 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             expect(state.sessions.get(pausedSid)?.messages).not.toContainEqual({ type: 'message', message: 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.' });
             await second.client.request('thread/settings/update', { threadId: pausedFallback.thread.id, serviceTier: null });
             expect(state.sessions.get(pausedSid)?.metadata.codexTierConfirmationPending).toBe(false);
+            const tierFrontend = new CodexAppServerClient({ endpoint: second.runtime.endpoint, token: second.runtime.token });
+            clients.push(tierFrontend); await initializeSharedClient(tierFrontend);
+            let tierThread = '';
+            // Simulate a previously enabled feature. The real native server on
+            // reload runs the configured disabled feature and falls back.
+            const oldTier = vi.spyOn(SharedCodexRoot.prototype, 'confirmUltrafastLaunch').mockImplementationOnce(async function(this: InstanceType<typeof SharedCodexRoot>) {
+                tierThread = this.threadId;
+                this.acceptSettings({ serviceTier: 'ultrafast' }, true);
+            });
+            const originalActivate = SharedCodexRoot.prototype.activate;
+            const lostBeforeActivation = vi.spyOn(SharedCodexRoot.prototype, 'activate').mockImplementationOnce(async function(this: InstanceType<typeof SharedCodexRoot>, ...args) {
+                await this.client.disconnect();
+                const reconnect = (controlConnection as unknown as { transportAbandonedHandler: () => void }).transportAbandonedHandler;
+                await controlConnection!.disconnect();
+                reconnect();
+                return originalActivate.apply(this, args);
+            });
+            extraSpies.push(oldTier, lostBeforeActivation);
+            await expect(tierFrontend.request('thread/start', {
+                cwd, model: 'gpt-6-astra', serviceTier: 'ultrafast', config: { thread_unload_delay_secs: 0 }
+            })).rejects.toThrow('side connection closed before the session was ready');
+            await tierFrontend.disconnect();
+            await vi.waitFor(async () => {
+                expect(controlConnection!.isInitialized()).toBe(true);
+                expect(await observer.request('thread/read', { threadId: tierThread, includeTurns: false }))
+                    .toMatchObject({ thread: { status: { type: 'notLoaded' } } });
+            }, { timeout: 5_000 });
+            await observer.request('thread/resume', { threadId: tierThread, excludeTurns: true });
+            expect(oldTier.mock.contexts.filter(root => root instanceof SharedCodexRoot && root.threadId === tierThread)).toHaveLength(2);
+            const tierSid = Object.entries(second.runtime.sessions).find(([, binding]) => binding.threadId === tierThread)![0];
+            expect(state.sessions.get(tierSid)?.messages).toContainEqual({ type: 'message', message: 'Codex did not apply Ultrafast; changed to Standard.' });
+            expect(state.sessions.get(tierSid)?.readySignals).toBe(1);
+            oldTier.mockRestore(); lostBeforeActivation.mockRestore();
             await second.client.request('thread/settings/update', { threadId: unsupported.thread.id, serviceTier: 'priority' });
             const imported = await second.client.request<{ thread: { id: string } }>('thread/start', { cwd, serviceTier: 'priority' });
             const importedSid = Object.entries(second.runtime.sessions).find(([, binding]) => binding.threadId === imported.thread.id)![0];

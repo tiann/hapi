@@ -262,11 +262,11 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         // again. Restore HAPI's configuration from the original intent.
         const tier = await resolveUltrafastLaunch(control, 'thread/resume', { ...reservation.executionParams, ...view },
             root.bootstrap.workingDirectory, undefined, savedThread, startupCatalogConfig);
+        reservation.tierConfirmationPending = undefined;
         if (tier.downgraded) {
             reservation.executionParams = { ...reservation.executionParams, serviceTier: null };
             reservation.requestedUltrafast = false;
             reservation.downgraded = true;
-            reservation.tierConfirmationPending = undefined;
         }
         return root.config(tier.params);
     };

@@ -994,7 +994,8 @@ export class SharedCodexRoot {
     private async writeNativeSettings(params: Record<string, unknown>, expected = params, deadline = Date.now() + 25_000, operationId = ++this.tierOperationCounter): Promise<void> {
         if (this.closed || this.stopping) throw new Error('Codex execution is stopping');
         if (Date.now() >= deadline) throw new Error('Settings update timed out before execution; settings were not changed');
-        const verifyUltrafast = expected.serviceTier === 'ultrafast' || expected.serviceTier === undefined && this.hasUltrafastTier;
+        const requestedUltrafast = expected.serviceTier === 'ultrafast';
+        const verifyUltrafast = requestedUltrafast || expected.serviceTier === undefined && this.hasUltrafastTier;
         const changesTier = expected.serviceTier !== undefined || verifyUltrafast;
         // Native suppresses identical notifications. Verify a current loaded
         // snapshot rather than waiting for an event that will never be emitted.
@@ -1004,7 +1005,7 @@ export class SharedCodexRoot {
             const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline));
             if (this.settingsRevision === revision) this.acceptSettings(snapshot, true);
             if (settingsMatch(this.settingsNative, comparable)) {
-                if (verifyUltrafast) await this.confirmEffectiveUltrafast(deadline, ++this.tierOperationCounter);
+                if (verifyUltrafast) await this.confirmEffectiveUltrafast(deadline, ++this.tierOperationCounter, requestedUltrafast);
                 return;
             }
         }
@@ -1024,9 +1025,9 @@ export class SharedCodexRoot {
             // native notification, not our submitted candidate, establishes state.
             await accepted;
         } finally { clearTimeout(timer); this.settingsListeners.delete(changed); }
-        if (verifyUltrafast) await this.confirmEffectiveUltrafast(deadline, operationId);
+        if (verifyUltrafast) await this.confirmEffectiveUltrafast(deadline, operationId, requestedUltrafast);
     }
-    private async confirmEffectiveUltrafast(deadline: number, operationId: number): Promise<void> {
+    private async confirmEffectiveUltrafast(deadline: number, operationId: number, requestedUltrafast = false): Promise<void> {
         // Settings notifications report selection; a loaded thread can still
         // filter Ultrafast using the feature state captured when it started.
         for (let attempt = 0; attempt < 3; attempt++) {
@@ -1037,7 +1038,10 @@ export class SharedCodexRoot {
             this.acceptSettings(snapshot, true);
             if (this.hasUltrafastTier) return;
             // A concurrent native client may have deliberately selected Fast.
-            if (this.settings.serviceTier === 'fast') return;
+            if (this.settings.serviceTier === 'fast') {
+                if (requestedUltrafast) throw new Error('Codex settings were superseded by a newer Fast selection; refresh before retrying');
+                return;
+            }
             await this.writeNativeSettings({ threadId: this.threadId, serviceTier: null }, { serviceTier: null }, deadline, operationId);
             this.notice('Codex did not apply Ultrafast; changed to Standard.');
             return;
