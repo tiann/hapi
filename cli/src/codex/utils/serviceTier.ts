@@ -91,10 +91,11 @@ export async function isUltrafastAvailable(
     if (!scoped && !catalogProvider) throw new Error('Cannot verify the Codex catalog provider; settings were not changed');
     const explicitModel = typeof model === 'string' && model.trim() ? model : undefined;
     const verifyConfig = scoped && startupCatalogConfig !== undefined;
+    const startup = verifyConfig ? await bounded(() => Promise.resolve(startupCatalogConfig)) : undefined;
     const current = verifyConfig || !explicitModel || !modelProvider
         ? await bounded(() => client.readConfig({ cwd, includeLayers: verifyConfig })) : undefined;
     const assertCatalogConfiguration = (response: typeof current) => {
-        if (!response || !catalogConfigurationMatches(startupCatalogConfig, response)) {
+        if (!response || !catalogConfigurationMatches(startup, response)) {
             throw new Error('Cannot verify the Codex catalog against the launch provider configuration; settings were not changed. Restart the Codex runtime and retry.');
         }
     };

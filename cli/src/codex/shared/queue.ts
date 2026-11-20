@@ -10,7 +10,7 @@ export const SubmissionSchema = z.object({ id: z.string(), input: InputSchema, c
 const StateSchema = z.enum(['unknown', 'queued', 'consumed', 'canceled', 'rejected', 'released']);
 const EntrySchema = z.object({
     input: InputSchema, state: StateSchema, nativeId: z.string().optional(), batchId: z.string().optional(),
-    detachedSteer: z.boolean().optional()
+    detachedSteer: z.boolean().optional(), canceledBeforeAdmission: z.boolean().optional()
 });
 const MemberSchema = z.object({ id: z.string(), input: InputSchema });
 const RemovalSchema = z.object({
@@ -118,6 +118,27 @@ export class SharedCodexQueue {
     }
     owns(id: string): boolean { return id in this.entries; }
     state(id: string): Entry['state'] | undefined { return this.entries[id]?.state; }
+    isHeldCancellation(id: string): boolean { return this.entries[id]?.canceledBeforeAdmission === true; }
+
+    cancelHeld(id: string): Promise<boolean> {
+        return this.serial(async () => {
+            if (this.entries[id]) return this.isHeldCancellation(id);
+            this.entries[id] = { input: [], state: 'canceled', canceledBeforeAdmission: true };
+            try { await this.save(); }
+            catch (error) { delete this.entries[id]; throw error; }
+            return true;
+        });
+    }
+
+    retryHeldCancellation(id: string): Promise<void> {
+        return this.serial(async () => {
+            const entry = this.entries[id];
+            if (!entry?.canceledBeforeAdmission) return;
+            delete entry.canceledBeforeAdmission;
+            try { await this.save(); }
+            catch (error) { entry.canceledBeforeAdmission = true; throw error; }
+        });
+    }
 
     private nativeIdFor(entry: Entry): string | undefined {
         if (entry.detachedSteer) return undefined;
@@ -494,7 +515,11 @@ export class SharedCodexQueue {
     }
 
     enqueue(id: string, input: QueueInput, resumeInterrupted = false, batchKey?: string): Promise<void> {
-        return this.serial(() => batchKey ? this.enqueueBatched(id, input, resumeInterrupted, batchKey) : this.enqueueLegacy(id, input, resumeInterrupted));
+        return this.serial(async () => {
+            if (this.isHeldCancellation(id)) return;
+            if (batchKey) await this.enqueueBatched(id, input, resumeInterrupted, batchKey);
+            else await this.enqueueLegacy(id, input, resumeInterrupted);
+        });
     }
     private async enqueueLegacy(id: string, input: QueueInput, resumeInterrupted: boolean): Promise<void> {
         const existing = this.entries[id];
@@ -621,6 +646,7 @@ export class SharedCodexQueue {
             const entry = this.entries[id];
             if (!entry) return 'indeterminate';
             if (entry.state === 'consumed') return 'consumed';
+            if (entry.canceledBeforeAdmission) return true;
             if (entry.state === 'canceled' || entry.state === 'rejected' || entry.state === 'released') {
                 entry.state = 'canceled'; await this.save(); return true;
             }

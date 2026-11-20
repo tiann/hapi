@@ -17,6 +17,19 @@ async function fixture() {
     return { queue, rpc, consumed, uncertain, client, dir };
 }
 describe('shared native queue', () => {
+    it('repeats a durable cancel acknowledgement after reload and blocks redelivery until explicit retry', async () => {
+        const { queue, rpc, client, dir, consumed, uncertain } = await fixture();
+        expect(await queue.cancelHeld('held')).toBe(true);
+        const restarted = new SharedCodexQueue(client, 'thread', join(dir, 'ledger.json'), consumed, uncertain);
+        await restarted.load();
+        expect(await restarted.cancel('held')).toBe(true);
+        await restarted.enqueue('held', input);
+        expect(rpc).not.toHaveBeenCalled();
+        await restarted.retryHeldCancellation('held');
+        rpc.mockResolvedValueOnce({ queuedSubmission: { id: 'native', clientUserMessageId: 'held', input } });
+        await restarted.enqueue('held', input);
+        expect(rpc).toHaveBeenCalledWith('thread/queue/add', expect.objectContaining({ clientUserMessageId: 'held' }));
+    });
     it('does not restore potentially stale input when the shutdown snapshot is unavailable', async () => {
         const { queue, rpc, uncertain } = await fixture();
         rpc.mockResolvedValueOnce({ queuedSubmission: { id: 'n', input, clientUserMessageId: 'local' } }); await queue.enqueue('local', input);

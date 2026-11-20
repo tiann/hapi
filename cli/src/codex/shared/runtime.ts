@@ -517,15 +517,25 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         assertRunning();
         // Even provider-scoped model/list can resolve a named provider from
         // startup config while thread/start loads the current provider config.
-        try {
-            if (control.supportsEffectiveUltrafastLaunch()) {
-                const config = await control.readConfig({ cwd: launch.cwd, includeLayers: true });
-                startupCatalogConfig = catalogConfiguration(config) ?? null;
-            } else if (control.usesStartupModelCatalog()) {
+        if (control.supportsEffectiveUltrafastLaunch()) {
+            startupCatalogConfig = (async () => {
+                let timer: ReturnType<typeof setTimeout> | undefined;
+                try {
+                    const config = await Promise.race([
+                        control.readConfig({ cwd: launch.cwd, includeLayers: true }),
+                        new Promise<null>(resolve => { timer = setTimeout(() => resolve(null), 5_000); })
+                    ]);
+                    return config ? catalogConfiguration(config) ?? null : null;
+                } catch {
+                    logger.debug('[Codex shared] catalog provider snapshot unavailable');
+                    return null;
+                } finally { clearTimeout(timer); }
+            })();
+        } else if (control.usesStartupModelCatalog()) {
+            try {
                 catalogProvider = string((await control.readConfig({ cwd: launch.cwd, includeLayers: false })).config.model_provider) ?? 'openai';
-            }
+            } catch { logger.debug('[Codex shared] catalog provider snapshot unavailable'); }
         }
-        catch { logger.debug('[Codex shared] catalog provider snapshot unavailable'); }
         assertRunning();
         control.setTransportAbandonedHandler(reconnectControl);
         await checkSharedCapabilities(control);

@@ -138,6 +138,9 @@ it('acknowledges cancellation of a held Web message and submits only the remaini
     f.submit('cancel this message', 'held-canceled');
     f.submit('keep this message', 'held-kept');
     await expect(f.cancel('held-canceled')).resolves.toBe(true);
+    expect((await f.ledger()).entries['held-canceled']).toMatchObject({ state: 'canceled', canceledBeforeAdmission: true });
+    await expect(f.cancel('held-canceled')).resolves.toBe(true);
+    f.submit('redelivery after the first acknowledgement was lost', 'held-canceled');
     expect(f.native.queue).toHaveLength(0);
     await f.root.applySettings({ serviceTier: 'standard' });
     await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));

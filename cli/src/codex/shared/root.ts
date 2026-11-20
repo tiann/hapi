@@ -103,7 +103,7 @@ export class SharedCodexRoot {
     private readonly bound = new Promise<void>(resolve => { this.ready = resolve; });
     private inputReady!: () => void;
     private inputGateResolved = false;
-    private readonly heldMessages = new Map<string, symbol>();
+    private readonly heldMessages = new Map<string, symbol | null>();
     private inputGate = new Promise<void>(resolve => { this.inputReady = () => { this.inputGateResolved = true; resolve(); }; });
     private tierOperationCounter = 0;
     private confirmedTierOperation = 0;
@@ -178,7 +178,7 @@ export class SharedCodexRoot {
             this.work = this.work.catch(() => {}).then(async () => {
                 await this.bound;
                 await this.inputGate;
-                if (this.closed || this.stopping || !stillHeld()) return;
+                if (this.closed || this.stopping || !stillHeld() || this.queue.isHeldCancellation(id)) return;
                 if (this.host.attached) await this.refresh();
                 if (this.closed || this.stopping || !stillHeld()) return;
                 const text = formatMessageWithAttachments(message.content.text, message.content.attachments);
@@ -212,16 +212,26 @@ export class SharedCodexRoot {
             }).catch(error => this.notice(`Message not confirmed: ${error instanceof Error ? error.message : error}. Inspect the queue before retrying.`)).finally(releaseHeld);
         });
         this.session.onCancelQueuedMessage(async id => {
-            const held = this.heldMessages.delete(id);
-            if (held && !this.queue?.state(id)) return true;
+            const held = this.heldMessages.has(id);
+            // Keep redeliveries held until the cancel is recorded durably.
+            if (held) this.heldMessages.set(id, null);
             await this.bound;
-            return this.stopping ? 'indeterminate' : this.queue.cancel(id);
+            if (this.stopping) return 'indeterminate';
+            try {
+                const result = held && await this.queue.cancelHeld(id) ? true : await this.queue.cancel(id);
+                if (held && (result === true || result === 'consumed')) this.heldMessages.delete(id);
+                return result;
+            } catch (error) {
+                logger.debug('[Codex shared] queue cancellation could not be saved', error);
+                return 'indeterminate';
+            }
         });
         // Absence from history is NOT proof an uncertain mutation failed.
         this.session.onRetryQueuedMessage(async id => {
             await this.bound;
             if (this.stopping) return false;
             await this.refresh();
+            await this.queue.retryHeldCancellation(id);
             return ['rejected', 'canceled', 'released'].includes(this.queue.state(id) ?? '');
         });
         this.session.onReconnect(() => {
@@ -1088,8 +1098,11 @@ export class SharedCodexRoot {
             let canVerifyUltrafast = false;
             if (!this.host.attached && this.host.startupCatalogConfig != null && this.client.supportsEffectiveUltrafastLaunch()) {
                 try {
-                    const config = await this.client.readConfig({ cwd: this.bootstrap.workingDirectory, includeLayers: true });
-                    canVerifyUltrafast = catalogConfigurationMatches(this.host.startupCatalogConfig, config);
+                    const startup = await this.host.startupCatalogConfig;
+                    if (startup != null) {
+                        const config = await this.client.readConfig({ cwd: this.bootstrap.workingDirectory, includeLayers: true });
+                        canVerifyUltrafast = catalogConfigurationMatches(startup, config);
+                    }
                 } catch { /* Keep the model list and withhold unverified Ultrafast. */ }
             }
             const models = entries.map(entry => normalizeCodexModel(entry, canVerifyUltrafast)).filter(model => model !== null);

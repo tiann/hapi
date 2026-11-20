@@ -98,6 +98,21 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                     workingDirectory: options.workingDirectory, machineId: 'test', startedBy: options.startedBy, api: {} } as never;
             });
             await configure('priority');
+            const readConfig = CodexAppServerClient.prototype.readConfig;
+            let releaseSnapshot!: () => void;
+            const snapshotGate = new Promise<void>(resolve => { releaseSnapshot = resolve; });
+            const stalledCatalog = vi.spyOn(CodexAppServerClient.prototype, 'readConfig').mockImplementation(async function(this: CodexAppServerClient, params) {
+                if (params.includeLayers) await snapshotGate;
+                return readConfig.call(this, params);
+            });
+            extraSpies.push(stalledCatalog);
+            try {
+                const standard = await start({ serviceTier: 'standard' });
+                const standardThread = standard.runtime.sessions[standard.sessionId].threadId;
+                expect(await standard.client.request('thread/resume', { threadId: standardThread, excludeTurns: true })).toMatchObject({ serviceTier: 'default' });
+                releaseSnapshot();
+                standard.abort.abort(); await standard.done;
+            } finally { releaseSnapshot(); stalledCatalog.mockRestore(); }
             const original = await start(); const threadId = original.runtime.sessions[original.sessionId].threadId;
             original.abort.abort(); await original.done;
             await configure('default');
