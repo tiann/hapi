@@ -108,7 +108,7 @@ export class OpenCodeRuntimeGate {
         this.assertSessionOpen();
         if (action === 'prepare-clear') {
             if (matches && current.phase !== 'revoked') return;
-            if (current) throw new OpenCodeHandoffRefusedError('Another OpenCode Clear reservation is pending.');
+            if (current) throw new Error('Another OpenCode Clear reservation is pending.');
             // Hub starts its deadline before sending prepare. A lost settlement
             // can hold recovery only for the duration of that RPC window.
             const deadline = performance.now() + DEFAULT_RPC_TIMEOUT_MS;

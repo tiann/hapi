@@ -521,7 +521,14 @@ describe('runOpencode set-session-config handler', () => {
             const handler = harness.session.rpcHandlerManager.registerHandler.mock.calls.find(([name]) => name === RPC_METHODS.CheckOpenCodeHandoff)![1];
             const send = (action: string, reservationId = 'one') => handler({ action, reservationId });
             send('prepare-clear');
-            expect(() => send('prepare-clear', 'competing')).toThrow();
+            let competingError: unknown;
+            try {
+                send('prepare-clear', 'competing');
+            } catch (error) {
+                competingError = error;
+            }
+            expect(competingError).toBeInstanceOf(Error);
+            expect(competingError).not.toBeInstanceOf(OpenCodeHandoffRefusedError);
             if (order === 'loss after commit') send('commit-clear');
             gate.setRecoveryPending(true);
             let resumed = false;
@@ -541,6 +548,35 @@ describe('runOpencode set-session-config handler', () => {
             await waiting;
             expect(resumed).toBe(true);
         } finally { vi.useRealTimers(); }
+    });
+
+    it('returns an untagged retryable error when a reconnected Clear retry arrives before the previous prepared lease expires', async () => {
+        await runOpencode({ startingMode: 'remote' });
+        vi.useFakeTimers();
+        try {
+            const handler = harness.session.rpcHandlerManager.registerHandler.mock.calls.find(([name]) => name === RPC_METHODS.CheckOpenCodeHandoff)![1];
+            const { RpcHandlerManager } = await import('@/api/rpc/RpcHandlerManager');
+            const rpc = new RpcHandlerManager({ scopePrefix: 'source-session' });
+            rpc.registerHandler(RPC_METHODS.CheckOpenCodeHandoff, handler);
+            const call = async (action: string, reservationId: string) => JSON.parse(await rpc.handleRequest({
+                method: `source-session:${RPC_METHODS.CheckOpenCodeHandoff}`,
+                params: JSON.stringify({ action, reservationId })
+            })) as { allowed?: boolean; error?: string; code?: string };
+
+            // First attempt prepares, then disconnects before commit or cancel arrives.
+            expect(await call('prepare-clear', 'before-disconnect')).toEqual({ allowed: true });
+            // Retry after reconnect gets a new reservation ID while the first lease is still unsettled.
+            const competing = await call('prepare-clear', 'after-reconnect');
+            expect(competing).toEqual({ error: 'Another OpenCode Clear reservation is pending.' });
+            expect(competing.code).toBeUndefined();
+            // Once the old lease expires, the retry with the new reservation ID succeeds.
+            await vi.advanceTimersByTimeAsync(DEFAULT_RPC_TIMEOUT_MS + 1);
+            expect(await call('prepare-clear', 'after-reconnect')).toEqual({ allowed: true });
+            expect(await call('commit-clear', 'after-reconnect')).toEqual({ allowed: true });
+            expect(await call('finish-clear', 'after-reconnect')).toEqual({ allowed: true });
+        } finally {
+            vi.useRealTimers();
+        }
     });
 
     it('refuses Clear before input demand can wake a parked session', async () => {
