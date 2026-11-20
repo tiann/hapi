@@ -1,0 +1,124 @@
+{
+  "flavor": "claude",
+  "argv": [
+    "claude",
+    "--hapi-starting-mode",
+    "remote",
+    "--started-by",
+    "runner",
+    "--hapi-session-id",
+    "a1111111-1111-4111-8111-111111111111"
+  ],
+  "env": {},
+  "hubScript": [
+    {
+      "rpc": "set-session-config",
+      "params": {
+        "model": "sonnet",
+        "effort": "high"
+      }
+    },
+    {
+      "sendUpdate": {
+        "t": "new-message",
+        "message": {
+          "id": "message-1",
+          "localId": "local-1",
+          "seq": 1,
+          "createdAt": 1,
+          "content": {
+            "role": "user",
+            "content": {
+              "type": "text",
+              "text": "hello"
+            }
+          }
+        }
+      },
+      "until": [
+        {
+          "event": "message",
+          "contains": "\"type\":\"ready\""
+        },
+        {
+          "event": "update-metadata",
+          "result": "success",
+          "count": 2
+        },
+        {
+          "event": "update-metadata",
+          "contains": "\"summary\":",
+          "result": "success"
+        },
+        {
+          "event": "update-state",
+          "result": "success",
+          "count": 2
+        },
+        {
+          "event": "update-state",
+          "contains": "\"steeringActive\":false",
+          "result": "success"
+        }
+      ]
+    },
+    {
+      "rpc": "set-session-config",
+      "params": {
+        "model": "sonnet",
+        "effort": "low"
+      }
+    },
+    {
+      "sendUpdate": {
+        "t": "new-message",
+        "message": {
+          "id": "message-2",
+          "localId": "local-2",
+          "seq": 2,
+          "createdAt": 2,
+          "content": {
+            "role": "user",
+            "content": {
+              "type": "text",
+              "text": "Continue at low effort"
+            }
+          }
+        }
+      },
+      "until": [
+        {
+          "event": "message",
+          "contains": "\"type\":\"ready\""
+        },
+        {
+          "event": "update-state",
+          "result": "success",
+          "count": 2
+        },
+        {
+          "event": "update-state",
+          "contains": "\"steeringActive\":false",
+          "result": "success"
+        },
+        {
+          "event": "update-metadata",
+          "contains": "\"local-2\":",
+          "result": "success"
+        }
+      ]
+    },
+    {
+      "signal": "SIGTERM",
+      "settledAlive": {
+        "effort": "low",
+        "mode": "remote",
+        "model": "sonnet",
+        "permissionMode": "default",
+        "thinking": false
+      }
+    }
+  ],
+  "agentScript": "agent.jsonl",
+  "timeoutMs": 120000
+}
