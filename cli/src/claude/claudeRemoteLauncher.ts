@@ -651,7 +651,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             const localId = inFlightMessage?.items.find((item) => item.localId)?.localId;
                             recordHistoryPoint(localId, nativePromptUuid);
                         },
-                        onInputNotSent: restoreInFlightMessage,
+                        onInputUndelivered: restoreInFlightMessage,
                         nextMessage: async (correlatesResults, streamSignal) => {
                             // Flush any pending outgoing messages before consuming the next user
                             // turn. Without this, scheduleProcessing()'s setTimeout(fn,0) fires

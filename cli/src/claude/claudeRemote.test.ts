@@ -474,7 +474,8 @@ describe('claudeRemote in-process /clear', () => {
     it.each([
         'success', 'failure', 'untagged-failure', 'eof', 'no-result',
         'autonomous-eof', 'acknowledged', 'hook', 'late-result', 'late-init',
-        'late-stale-result', 'late-hook', 'tagged-timeout', 'silent-timeout', 'result-eof'
+        'late-stale-result', 'late-hook', 'tagged-timeout', 'silent-timeout', 'result-eof',
+        'unacknowledged-input-eof', 'acknowledged-input-eof'
     ] as const)('settles an in-process clear on %s', async (outcome) => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
@@ -483,7 +484,8 @@ describe('claudeRemote in-process /clear', () => {
         const priorId = 'previous-native-session';
         const lateRotation = outcome === 'late-result' || outcome === 'late-init' || outcome === 'late-stale-result' || outcome === 'late-hook';
         const timesOut = lateRotation || outcome === 'untagged-failure' || outcome === 'tagged-timeout' || outcome === 'silent-timeout';
-        const success = outcome === 'success' || outcome === 'eof' || outcome === 'hook' || outcome === 'result-eof';
+        const exitsAfterFollowUp = outcome === 'unacknowledged-input-eof' || outcome === 'acknowledged-input-eof';
+        const success = outcome === 'success' || outcome === 'eof' || outcome === 'hook' || outcome === 'result-eof' || exitsAfterFollowUp;
         const resultId = success || lateRotation ? 'fresh-native-session' : priorId;
         const timeoutNotice = 'Claude did not identify the /clear result. Waiting for Claude to exit so background tasks can finish.';
         const completion = success ? 'Context was reset'
@@ -565,6 +567,10 @@ describe('claudeRemote in-process /clear', () => {
                 } else {
                     expect(order).toContain(completion);
                     expect(followUp.value?.message.content).toBe('follow-up');
+                    if (outcome === 'unacknowledged-input-eof') yield result;
+                    if (outcome === 'acknowledged-input-eof') {
+                        yield { type: 'user', isReplay: true, uuid: followUp.value?.uuid };
+                    }
                 }
             }
         }));
@@ -589,7 +595,7 @@ describe('claudeRemote in-process /clear', () => {
                     }
                     return message ? { message, mode: { permissionMode: 'default' } } : null;
                 },
-                onInputNotSent: () => { inputs.unshift('follow-up'); },
+                onInputUndelivered: () => { inputs.unshift('follow-up'); },
                 onReady: (event, _summary, contextTokens) => {
                     if (event === 'Context was reset') clearContextTokens.push(contextTokens);
                     order.push(event ?? 'ready');
@@ -630,11 +636,12 @@ describe('claudeRemote in-process /clear', () => {
                     : [`session:${priorId}`, 'ready', '/clear', 'accepted', completion, 'follow-up']);
             }
             expect(clearContextTokens).toEqual(success || lateRotation ? [0] : []);
-            if (outcome === 'result-eof') expect(inputs).toEqual(['follow-up']);
+            if (outcome === 'result-eof' || outcome === 'unacknowledged-input-eof') expect(inputs).toEqual(['follow-up']);
+            if (outcome === 'acknowledged-input-eof') expect(inputs).toEqual([]);
             const forwardedResults = forwarded.filter((message) => message.type === 'result');
             expect(forwardedResults).toEqual(timesOut && outcome !== 'silent-timeout'
                 ? [result, result, unmatchedResult]
-                : [result, result]);
+                : outcome === 'unacknowledged-input-eof' ? [result, result, result] : [result, result]);
         } finally {
             finishFollowUp.resolve(undefined);
             if (timesOut) vi.useRealTimers();
@@ -868,16 +875,18 @@ describe('claudeRemote /compact result reporting', () => {
         }
     });
 
-    it.each(['none', 'before-progress', 'after-boundary', 'auto-compaction'])('settles a live compact only on its result with autonomous output %s', async (autonomous) => {
+    it.each(['none', 'before-progress', 'after-boundary', 'auto-compaction', 'auto-compaction-timeout'])('settles a live compact only on its result with autonomous output %s', async (autonomous) => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
         const events: string[] = [];
+        const timeoutNotice = '📦 Claude did not identify the /compact result. Waiting for Claude to exit so background tasks can finish.';
         queryMock.mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<{ uuid: string }> }) => ({
             async *[Symbol.asyncIterator]() {
                 const input = prompt[Symbol.asyncIterator]();
                 const first = await input.next();
                 yield { ...resultMessage, user_message_uuid: first.value?.uuid };
                 const compact = await input.next();
+                if (autonomous === 'auto-compaction-timeout') await vi.advanceTimersByTimeAsync(10_000);
                 if (autonomous === 'before-progress') yield resultMessage;
                 yield { type: 'system', subtype: 'status', status: 'compacting' };
                 if (autonomous === 'before-progress') {
@@ -890,7 +899,13 @@ describe('claudeRemote /compact result reporting', () => {
                     await vi.advanceTimersByTimeAsync(1);
                     expect(events).toEqual(['ready']);
                 }
-                if (autonomous === 'auto-compaction') {
+                if (autonomous === 'auto-compaction-timeout') {
+                    await vi.advanceTimersByTimeAsync(10_000);
+                    yield { type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'auto' } };
+                    await vi.advanceTimersByTimeAsync(10_001);
+                    expect(events).toEqual(['ready', timeoutNotice]);
+                    expect((await input.next()).done).toBe(true);
+                } else if (autonomous === 'auto-compaction') {
                     yield { type: 'system', subtype: 'compact_boundary', compact_metadata: { trigger: 'auto' } };
                     yield { ...resultMessage, user_message_uuid: compact.value?.uuid, result: 'Not enough messages to compact.' };
                 } else {
@@ -916,9 +931,9 @@ describe('claudeRemote /compact result reporting', () => {
                 onSessionFound: () => {},
                 onMessage: () => {}
             });
-            expect(events).toEqual(['ready', autonomous === 'auto-compaction'
-                ? '📦 Compaction failed: Not enough messages to compact.'
-                : '📦 Compacted']);
+            const outcome = autonomous === 'auto-compaction-timeout' ? timeoutNotice
+                : autonomous === 'auto-compaction' ? '📦 Compaction failed: Not enough messages to compact.' : '📦 Compacted';
+            expect(events).toEqual(['ready', outcome]);
         } finally {
             if (autonomous !== 'none') vi.useRealTimers();
             queryMock.mockReset();

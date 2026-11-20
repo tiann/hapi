@@ -305,7 +305,7 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
             opts.onSessionFound('new-session');
             await opts.onReady('Context was reset', undefined, 0);
             expect((await opts.nextMessage(true))?.message).toBe('follow-up');
-            opts.onInputNotSent();
+            opts.onInputUndelivered();
         }).mockImplementationOnce(async (opts) => {
             const localIds = queue.queue.map(({ localId }) => localId);
             const next = queue.size() > 0 ? await opts.nextMessage() : null;
