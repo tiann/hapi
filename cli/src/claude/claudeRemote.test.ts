@@ -471,7 +471,7 @@ describe('claudeRemote async message handling', () => {
 });
 
 describe('claudeRemote in-process /clear', () => {
-    it.each(['success', 'failure', 'untagged-failure', 'eof', 'no-result', 'acknowledged', 'hook'] as const)('settles an in-process clear on %s', async (outcome) => {
+    it.each(['success', 'failure', 'untagged-failure', 'eof', 'no-result', 'autonomous-eof', 'acknowledged', 'hook'] as const)('settles an in-process clear on %s', async (outcome) => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
         const order: string[] = [];
@@ -504,6 +504,10 @@ describe('claudeRemote in-process /clear', () => {
                 await Promise.resolve();
                 expect(order).toEqual([`session:${priorId}`, 'ready', '/clear']);
                 if (outcome === 'eof' || outcome === 'no-result') return;
+                if (outcome === 'autonomous-eof') {
+                    yield { ...result, user_message_uuid: undefined };
+                    return;
+                }
                 if (outcome === 'acknowledged') {
                     yield { type: 'user', isReplay: true, uuid: clear.value?.uuid };
                     return;
@@ -520,7 +524,12 @@ describe('claudeRemote in-process /clear', () => {
                     await vi.advanceTimersByTimeAsync(31_000);
                 }
                 expect(order).toContain(completion);
-                expect((await input.next()).value?.message.content).toBe('follow-up');
+                const followUp = await input.next();
+                if (untaggedFailure) {
+                    expect(followUp.done).toBe(true);
+                } else {
+                    expect(followUp.value?.message.content).toBe('follow-up');
+                }
             }
         }));
 
@@ -548,7 +557,7 @@ describe('claudeRemote in-process /clear', () => {
                 getClearHookSessionId: () => hookSessionId,
                 onSessionReset: () => order.push('reset')
             });
-            if (outcome === 'no-result') {
+            if (outcome === 'no-result' || outcome === 'autonomous-eof') {
                 await expect(execution).rejects.toThrow('Claude exited before acknowledging /clear');
                 expect(order).toEqual([`session:${priorId}`, 'ready', '/clear']);
                 return;
@@ -558,6 +567,8 @@ describe('claudeRemote in-process /clear', () => {
                 expect(order).toEqual([`session:${priorId}`, 'ready', '/clear', 'accepted', 'reset', `session:${resultId}`]);
             } else if (outcome === 'acknowledged') {
                 expect(order).toEqual([`session:${priorId}`, 'ready', '/clear', 'accepted', 'Claude did not identify the /clear result']);
+            } else if (untaggedFailure) {
+                expect(order).toEqual([`session:${priorId}`, 'ready', '/clear', 'accepted', completion]);
             } else {
                 expect(order).toEqual(success
                     ? [`session:${priorId}`, 'ready', '/clear', 'accepted', 'reset', `session:${resultId}`, 'Context was reset', 'follow-up']
@@ -733,14 +744,14 @@ describe('claudeRemote /compact result reporting', () => {
     it.each([
         { identity: 'uuid', next: 'follow-up' },
         { identity: 'name', next: 'follow-up' },
-        { identity: 'none', next: '/compact' }
+        { identity: 'untagged', next: 'follow-up' },
+        { identity: 'absent', next: '/compact' }
     ])('recovers from an unidentified compact with $identity and next $next', async ({ identity, next }) => {
         vi.useFakeTimers();
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
         const events: string[] = [];
         let accepted = 0;
-        let parkedMessage: string | undefined;
         queryMock.mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<{ uuid: string; message: { content: string } }> }) => ({
             async *[Symbol.asyncIterator]() {
                 const input = prompt[Symbol.asyncIterator]();
@@ -753,20 +764,16 @@ describe('claudeRemote /compact result reporting', () => {
                 expect(events).toEqual(['ready']);
                 await vi.advanceTimersByTimeAsync(31_000);
                 expect(events).toEqual(['ready', '📦 Claude did not identify the /compact result']);
-                const followUp = await input.next();
-                if (next === '/compact') {
-                    expect(followUp.done).toBe(true);
-                    return;
+                expect((await input.next()).done).toBe(true);
+                if (identity !== 'absent') {
+                    yield {
+                        ...resultMessage,
+                        local_command: identity === 'name' ? 'compact' : undefined,
+                        user_message_uuid: identity === 'uuid' ? compact.value?.uuid : undefined
+                    };
                 }
-                expect(followUp.value?.message.content).toBe(next);
-                yield {
-                    ...resultMessage,
-                    local_command: 'compact',
-                    user_message_uuid: identity === 'uuid' ? compact.value?.uuid : undefined
-                };
                 expect(events).toEqual(['ready', '📦 Claude did not identify the /compact result']);
                 expect(accepted).toBe(1);
-                yield { ...resultMessage, user_message_uuid: followUp.value?.uuid };
             }
         }));
         const inputs = ['first', '/compact', next];
@@ -779,13 +786,7 @@ describe('claudeRemote /compact result reporting', () => {
                 canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
                 nextMessage: async (correlatesResults) => {
                     const message = inputs.shift();
-                    if (message === '/compact') {
-                        expect(correlatesResults).toBe(accepted === 0);
-                        if (!correlatesResults) {
-                            parkedMessage = message;
-                            return null;
-                        }
-                    }
+                    if (message === '/compact' && accepted === 0) expect(correlatesResults).toBe(true);
                     return message ? { message, mode: { permissionMode: 'default' } } : null;
                 },
                 onReady: (event) => { events.push(event ?? 'ready'); },
@@ -795,20 +796,11 @@ describe('claudeRemote /compact result reporting', () => {
                 onMessage: () => {}
             };
             await claudeRemote(options);
-            if (parkedMessage) {
-                queryMock.mockReturnValueOnce(createAsyncStream([
-                    { type: 'system', subtype: 'status', status: 'compacting' },
-                    { ...resultMessage, local_command: 'compact' }
-                ]));
-                await claudeRemote({
-                    ...options,
-                    nextMessage: async () => {
-                        const message = parkedMessage;
-                        parkedMessage = undefined;
-                        return message ? { message, mode: { permissionMode: 'default' } } : null;
-                    }
-                });
-            }
+            expect(inputs).toEqual([next]);
+            queryMock.mockReturnValueOnce(createAsyncStream(next === '/compact'
+                ? [{ type: 'system', subtype: 'status', status: 'compacting' }, { ...resultMessage, local_command: 'compact' }]
+                : [resultMessage]));
+            await claudeRemote(options);
             expect(events).toEqual(['ready', '📦 Claude did not identify the /compact result', next === '/compact' ? '📦 Compacted' : 'ready']);
         } finally {
             vi.useRealTimers();

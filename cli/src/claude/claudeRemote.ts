@@ -754,7 +754,6 @@ export async function claudeRemote(opts: {
                     const rotatedId = clear ? getClearRotation(clear) : undefined;
                     clearState.active = null;
                     compactState.active = null;
-                    correlatesResults = false;
                     opts.onResultAccepted?.();
                     updateThinking(false);
                     if (rotatedId) {
@@ -763,7 +762,8 @@ export async function claudeRemote(opts: {
                     } else {
                         await opts.onReady(unidentifiedCommandResult(clear ? 'clear' : 'compact'));
                     }
-                    scheduleNextMessage();
+                    inputEnded = true;
+                    messages.end();
                     continue;
                 }
                 pendingResponseNext = null;
@@ -781,7 +781,6 @@ export async function claudeRemote(opts: {
             logger.debugLargeJson(`[claudeRemote] Message ${message.type}`, message);
 
             if (timedOutCommand && isCommandResult(message, timedOutCommand.uuid, timedOutCommand.command, false)) {
-                timedOutCommand = null;
                 continue;
             }
 
@@ -937,6 +936,10 @@ export async function claudeRemote(opts: {
 
             // Handle result messages
             if (message.type === 'result') {
+                if (timedOutCommand) {
+                    updateThinking(false);
+                    continue;
+                }
                 resultSeq += 1;
                 if (correlatesResults === null && (typeof message.user_message_uuid === 'string' || typeof message.local_command === 'string')) {
                     correlatesResults = true;
@@ -1063,7 +1066,7 @@ export async function claudeRemote(opts: {
         const pending = clear ?? (compact?.initial === false ? compact : null);
         if (pending && !opts.signal?.aborted && !(clear && getClearRotation(clear))) {
             const command = clear ? 'clear' : 'compact';
-            const acknowledged = !pushedUuids.has(pending.uuid) || commandResultTimeout !== null
+            const acknowledged = !pushedUuids.has(pending.uuid)
                 || compact?.sawCompactingStatus || compact?.sawCompactSignal;
             if (!acknowledged) throw new Error(`Claude exited before acknowledging /${command}`);
             opts.onResultAccepted?.();
