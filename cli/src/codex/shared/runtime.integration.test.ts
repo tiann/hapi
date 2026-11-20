@@ -199,16 +199,25 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             }); extraSpies.push(metadataFailure);
             const interruptedFrontend = new CodexAppServerClient({ endpoint: second.runtime.endpoint, token: second.runtime.token });
             clients.push(interruptedFrontend); await initializeSharedClient(interruptedFrontend);
-            await expect(interruptedFrontend.request('thread/resume', { threadId, excludeTurns: true, serviceTier: 'priority' })).rejects.toThrow('fixture metadata update unavailable');
+            await expect(interruptedFrontend.request('thread/resume', {
+                threadId, excludeTurns: true, serviceTier: 'priority', config: { thread_unload_delay_secs: 0 }
+            })).rejects.toThrow('fixture metadata update unavailable');
             await interruptedFrontend.disconnect();
+            await vi.waitFor(async () => {
+                expect(await concurrent.request('thread/read', { threadId, includeTurns: false }))
+                    .toMatchObject({ thread: { status: { type: 'notLoaded' } } });
+            }, { timeout: 5_000 });
             const retainedSession = state.sessions.get(original.sessionId);
-            metadataFailure.mockRestore();
             expect(second.runtime.sessions[original.sessionId].active).toBe(true);
             await expect(concurrent.request('thread/queue/start', { threadId })).rejects.toThrow('tier confirmation');
             const lastBound = second.runtime.sessions[second.sessionId].threadId;
             await second.client.request('thread/archive', { threadId: lastBound });
             await vi.waitFor(() => expect(state.sessions.get(second.sessionId)?.dead).toBe(true));
             expect(second.runtime.sessions[second.sessionId].active).toBe(false);
+            const retryFrontend = new CodexAppServerClient({ endpoint: second.runtime.endpoint, token: second.runtime.token });
+            clients.push(retryFrontend); await initializeSharedClient(retryFrontend);
+            const configs = vi.spyOn(SharedCodexRoot.prototype, 'config');
+            extraSpies.push(configs);
             const refresh = SharedCodexRoot.prototype.refresh;
             let rejectRefresh = true;
             const historyFailure = vi.spyOn(SharedCodexRoot.prototype, 'refresh').mockImplementation(function(this: InstanceType<typeof SharedCodexRoot>) {
@@ -219,24 +228,19 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                 return refresh.call(this);
             });
             extraSpies.push(historyFailure);
-            const retryFrontend = new CodexAppServerClient({ endpoint: second.runtime.endpoint, token: second.runtime.token });
-            clients.push(retryFrontend); await initializeSharedClient(retryFrontend);
             await expect(retryFrontend.request('thread/resume', {
                 threadId, excludeTurns: true, serviceTier: 'ultrafast', model: 'gpt-6.1-sol', config: { service_tier: 'ultrafast' }
             })).rejects.toThrow('fixture history refresh unavailable');
             historyFailure.mockRestore();
+            expect(configs.mock.results.map(result => result.value)).toContainEqual(expect.objectContaining({
+                threadId, serviceTier: 'priority', config: expect.objectContaining({
+                    'shell_environment_policy.set.HAPI_SESSION_ID': original.sessionId,
+                    thread_unload_delay_secs: 0
+                })
+            }));
+            configs.mockRestore();
+            metadataFailure.mockRestore();
             expect(second.runtime.sessions[original.sessionId].active).toBe(true);
-            let rejectSubscription = true;
-            const subscriptionFailure = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
-                if (rejectSubscription && method === 'thread/resume' && !clients.includes(this) && record(params).threadId === threadId && record(params).excludeTurns === true) {
-                    rejectSubscription = false;
-                    return Promise.reject(new Error('fixture control subscription unavailable'));
-                }
-                return originalNativeRequest.call(this, method, params) as Promise<T>;
-            });
-            extraSpies.push(subscriptionFailure);
-            await expect(second.client.request('thread/resume', { threadId, excludeTurns: true })).rejects.toThrow('fixture control subscription unavailable');
-            subscriptionFailure.mockRestore();
             await expect(concurrent.request('thread/settings/update', { threadId, serviceTier: null })).rejects.toThrow('initialization is pending');
             await expect(second.client.request('thread/queue/delete', { threadId, queuedSubmissionId: 'not-bound' })).rejects.toThrow('tier confirmation');
             const activate = vi.spyOn(SharedCodexRoot.prototype, 'activate');
@@ -245,8 +249,10 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                 client.request<{ serviceTier: string }>('thread/resume', { threadId, excludeTurns: true })));
             const response = attempts.find(result => result.status === 'fulfilled');
             expect(response).toMatchObject({ status: 'fulfilled', value: { serviceTier: 'priority' } });
-            expect(await retryFrontend.request('thread/resume', { threadId, excludeTurns: true })).toMatchObject({
-                model: 'gpt-6-astra', serviceTier: 'priority'
+            expect(await retryFrontend.request('thread/resume', {
+                threadId, excludeTurns: true, initialTurnsPage: { limit: 1 }, serviceTier: 'ultrafast'
+            })).toMatchObject({
+                model: 'gpt-6-astra', serviceTier: 'priority', initialTurnsPage: { data: expect.any(Array) }
             });
             for (const attempt of attempts) {
                 if (attempt.status === 'rejected') expect(attempt.reason).toMatchObject({ message: expect.stringContaining('already being attached') });

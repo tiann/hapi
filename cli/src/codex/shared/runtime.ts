@@ -18,7 +18,19 @@ import { SharedCodexRoot } from './root';
 import { buildForkSessionSummary } from '@hapi/protocol';
 
 export type RuntimeReady = { sessionId: string; runtime: CodexRuntimeRecord };
-type Reservation = { root: SharedCodexRoot; resumeId?: string; freshThread?: boolean; initialOptions?: SharedLaunchOptions; serviceTierExplicit?: boolean; requestedUltrafast?: boolean; downgraded?: boolean; rootBound?: boolean; controlSubscribed?: boolean; tierConfirmationPending?: boolean };
+type Reservation = {
+    root: SharedCodexRoot;
+    executionParams: Record<string, unknown>;
+    resumeId?: string;
+    freshThread?: boolean;
+    initialOptions?: SharedLaunchOptions;
+    serviceTierExplicit?: boolean;
+    requestedUltrafast?: boolean;
+    downgraded?: boolean;
+    rootBound?: boolean;
+    controlSubscription?: number;
+    tierConfirmationPending?: boolean;
+};
 
 function gitInfo(cwd: string): { sha: string | null; branch: string | null; originUrl: string | null } {
     const git = (...args: string[]) => {
@@ -36,7 +48,7 @@ function gitInfo(cwd: string): { sha: string | null; branch: string | null; orig
 function rejoinThreadParams(params: Record<string, unknown>): Record<string, unknown> {
     // Codex can rebuild an idle thread when an override differs and all
     // subscribers have disconnected. Rejoin the already accepted settings.
-    return { threadId: params.threadId, excludeTurns: params.excludeTurns };
+    return { threadId: params.threadId, excludeTurns: params.excludeTurns, initialTurnsPage: params.initialTurnsPage };
 }
 async function freePort(): Promise<number> {
     const server = createServer();
@@ -109,8 +121,11 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         if (root && !root.client.isInitialized()) root.acceptSettings(settings, false);
     });
     let reconnectingControl = false;
+    let controlGeneration = 0;
     const reconnectControl = () => {
-        if (stopping || reconnectingControl) return;
+        if (stopping) return;
+        controlGeneration++;
+        if (reconnectingControl) return;
         reconnectingControl = true;
         void (async () => {
             while (!stopping) {
@@ -237,6 +252,22 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         runtime.pendingCreations = runtime.pendingCreations?.filter(sid => sid !== root.session.sessionId); await persist();
     };
     const reserve = async (root: SharedCodexRoot, threadId: string) => withThreadOwnership(home, threadId, id, () => reserveRecord(root, threadId));
+    const acceptedResumeParams = async (reservation: Reservation, params: Record<string, unknown>, savedThread?: Record<string, unknown>): Promise<Record<string, unknown>> => {
+        const view = rejoinThreadParams(params);
+        if (reservation.controlSubscription === controlGeneration && control.isInitialized()) return view;
+        const root = reservation.root;
+        // Without a confirmed live subscription, Codex can load the thread
+        // again. Restore HAPI's configuration from the original intent.
+        const tier = await resolveUltrafastLaunch(control, 'thread/resume', { ...reservation.executionParams, ...view },
+            root.bootstrap.workingDirectory, undefined, savedThread, startupCatalogConfig);
+        if (tier.downgraded) {
+            reservation.executionParams = { ...reservation.executionParams, serviceTier: null };
+            reservation.requestedUltrafast = false;
+            reservation.downgraded = true;
+            reservation.tierConfirmationPending = undefined;
+        }
+        return root.config(tier.params);
+    };
     const bind = async (root: SharedCodexRoot, response: Record<string, unknown>, subscribe: boolean, initialOptions?: SharedLaunchOptions, freshThread = false, serviceTierExplicit?: boolean, requestedUltrafast = false, downgraded = false, resume?: Reservation) => {
         assertRunning();
         const threadId = string(record(response.thread).id);
@@ -247,7 +278,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         if (!reserved) await reserve(root, threadId);
         if (ending.has(root)) throw new Error('Codex thread was archived during binding');
         if (!resume?.rootBound) {
-            // Metadata write materializes an empty legacy rollout for native resume.
+            // Native resume needs an empty thread's rollout to be materialized.
             await control.request('thread/metadata/update', { threadId, gitInfo: gitInfo(string(record(response.thread).cwd) ?? root.bootstrap.workingDirectory) });
             assertRunning();
             if (ending.has(root)) throw new Error('Codex thread was archived during binding');
@@ -258,13 +289,12 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             // activation, including when the first bind had to be retried.
             if (freshThread) root.seedFreshUsage();
             if (resume) resume.rootBound = true;
-        }
+        } else root.acceptSettings(response, true);
         assertRunning();
-        // If this fails after binding, retry only the subscription. Rebinding
-        // would replace the queue and replay state on an already attached root.
-        if (!resume?.controlSubscribed) {
+        if (resume?.controlSubscription !== controlGeneration) {
+            const generation = controlGeneration;
             await control.request('thread/resume', { threadId, excludeTurns: true });
-            if (resume) resume.controlSubscribed = true;
+            if (resume) resume.controlSubscription = generation;
         }
         if (ending.has(root)) throw new Error('Codex thread was archived during binding');
         let tierConfirmationPending = resume?.tierConfirmationPending ?? false;
@@ -283,7 +313,12 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 logger.debug('[Codex shared] tier confirmation pending', error);
             }
         }
-        if (resume) resume.tierConfirmationPending = tierConfirmationPending;
+        if (resume) {
+            resume.tierConfirmationPending = tierConfirmationPending;
+            if (!tierConfirmationPending && (requestedUltrafast || downgraded) && root.hasConfirmedStandardTier) {
+                resume.executionParams = { ...resume.executionParams, serviceTier: null };
+            }
+        }
         if (downgraded && standardConfirmed) root.session.sendSessionEvent({ type: 'message', message: ULTRAFAST_FALLBACK_NOTICE });
         await root.activate(initialOptions, serviceTierExplicit, tierConfirmationPending);
         pendingAdmission.delete(threadId);
@@ -338,7 +373,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             nativeDispatched = true;
             const response = record(await root.client.request(method, request));
             nativeSucceeded = true;
-            const reservation: Reservation = { root, initialOptions, freshThread: method === 'thread/start',
+            const reservation: Reservation = { root, initialOptions, freshThread: method === 'thread/start', executionParams: resolved.params,
                 serviceTierExplicit, requestedUltrafast: resolved.params.serviceTier === 'ultrafast', downgraded: resolved.downgraded };
             try {
                 await bindAccepted(reservation, response);
@@ -446,8 +481,9 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         try {
             if (accepted) {
                 // Keep the tier intent already checked for this reservation.
+                const retainedParams = await acceptedResumeParams(accepted, params, savedThread);
                 reservations.set(key(connection, request), accepted);
-                return { ...request, params: rejoinThreadParams(params) };
+                return { ...request, params: retainedParams };
             }
             if (request.method !== 'thread/resume') {
                 runtime.pendingCreations = [...runtime.pendingCreations ?? [], root.session.sessionId]; await persist();
@@ -458,7 +494,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 : params;
             const tier = await resolveUltrafastLaunch(control, request.method!, resolved, cwd, undefined, savedThread, startupCatalogConfig);
             reservations.set(key(connection, request), { root, resumeId: request.method === 'thread/resume' ? threadId : undefined,
-                freshThread: request.method === 'thread/start',
+                freshThread: request.method === 'thread/start', executionParams: tier.params,
                 serviceTierExplicit: params.serviceTier !== undefined || request.method === 'thread/resume' && metadata?.codexPendingServiceTier !== undefined
                     ? true : request.method === 'thread/resume' ? undefined : false,
                 requestedUltrafast: tier.params.serviceTier === 'ultrafast', downgraded: tier.downgraded });
