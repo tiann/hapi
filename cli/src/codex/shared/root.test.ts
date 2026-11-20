@@ -132,6 +132,18 @@ it('allows cancellation while tier confirmation keeps queued input paused', asyn
     await expect(f.root.nativeQueueMutation('thread/queue/start', { threadId: 'thread' })).rejects.toThrow('tier confirmation');
 });
 
+it('acknowledges cancellation of a held Web message and submits only the remaining message after tier recovery', async () => {
+    const f = await fixture();
+    await f.root.activate({}, false, true);
+    f.submit('cancel this message', 'held-canceled');
+    f.submit('keep this message', 'held-kept');
+    await expect(f.cancel('held-canceled')).resolves.toBe(true);
+    expect(f.native.queue).toHaveLength(0);
+    await f.root.applySettings({ serviceTier: 'standard' });
+    await vi.waitFor(() => expect(f.native.queue).toHaveLength(1));
+    expect(f.native.queue[0].input).toEqual([{ type: 'text', text: 'keep this message' }]);
+});
+
 it('does not publish cold-resume readiness before startup controls are registered', async () => {
     const f = await fixture({ initialTierPending: true, bindTier: 'ultrafast' });
     await f.root.confirmUltrafastLaunch();
@@ -292,6 +304,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     let reconnect: (() => void) | null = null;
     let userMessage: Parameters<ApiSessionClient['onUserMessage']>[0] | undefined;
     let retryMessage: Parameters<ApiSessionClient['onRetryQueuedMessage']>[0] | undefined;
+    let cancelMessage: Parameters<ApiSessionClient['onCancelQueuedMessage']>[0] | undefined;
     const updateState = vi.fn((fn: (value: AgentState) => AgentState) => { state = fn(state); });
     const rpc = new Map<string, (raw: unknown) => Promise<unknown>>();
     const send = vi.fn();
@@ -306,7 +319,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
         updateMetadata: (fn: (value: Metadata) => Metadata) => { const next = fn(metadata); metadata = opts?.holdTierMetadata ? { ...next, codexTierConfirmationPending: metadata.codexTierConfirmationPending } : next; },
         updateAgentState: updateState, keepAlive() {},
         onUserMessage: (callback: Parameters<ApiSessionClient['onUserMessage']>[0]) => { userMessage = callback; },
-        onCancelQueuedMessage() {},
+        onCancelQueuedMessage: (callback: Parameters<ApiSessionClient['onCancelQueuedMessage']>[0]) => { cancelMessage = callback; },
         onRetryQueuedMessage: (callback: Parameters<ApiSessionClient['onRetryQueuedMessage']>[0]) => { retryMessage = callback; },
         onReconnect: (fn: (() => void) | null) => { reconnect = fn; },
         on(event: string, listener: () => void) {
@@ -341,6 +354,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
 session, root, native, rpc, send, events, consumed, uncertain, sessionReady,
         ledger: async () => JSON.parse(await readFile(join(directory, 'sid.queue.json'), 'utf8')),
         retry: (id: string) => retryMessage?.(id),
+        cancel: (id: string) => cancelMessage?.(id),
         submit: (text: string, id: string) => userMessage?.({ role: 'user', content: { type: 'text', text } }, id), metadata: () => metadata, state: () => state, updateState,
         drain: () => (root as unknown as { notifications: Promise<void> }).notifications,
         reconnect: () => reconnect?.(),

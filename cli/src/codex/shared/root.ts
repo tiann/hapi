@@ -103,6 +103,7 @@ export class SharedCodexRoot {
     private readonly bound = new Promise<void>(resolve => { this.ready = resolve; });
     private inputReady!: () => void;
     private inputGateResolved = false;
+    private readonly heldMessages = new Map<string, symbol>();
     private inputGate = new Promise<void>(resolve => { this.inputReady = () => { this.inputGateResolved = true; resolve(); }; });
     private tierOperationCounter = 0;
     private confirmedTierOperation = 0;
@@ -168,15 +169,27 @@ export class SharedCodexRoot {
             } else void this.reconnect();
         });
         this.session.onUserMessage((message, localId) => {
+            const id = localId ?? randomUUID();
+            if (this.heldMessages.has(id)) return;
+            const attempt = Symbol();
+            this.heldMessages.set(id, attempt);
+            const stillHeld = () => this.heldMessages.get(id) === attempt;
+            const releaseHeld = () => { if (stillHeld()) this.heldMessages.delete(id); };
             this.work = this.work.catch(() => {}).then(async () => {
                 await this.bound;
                 await this.inputGate;
-                if (this.closed || this.stopping) return;
+                if (this.closed || this.stopping || !stillHeld()) return;
                 if (this.host.attached) await this.refresh();
-                if (this.closed || this.stopping) return;
-                const id = localId ?? randomUUID();
+                if (this.closed || this.stopping || !stillHeld()) return;
                 const text = formatMessageWithAttachments(message.content.text, message.content.attachments);
-                const resolved = text.trim().startsWith('/') ? await this.queue.command(id, () => this.command(text)) : text;
+                const slash = text.trim().startsWith('/');
+                let resolved: string | null = text;
+                if (slash) {
+                    // Once the command is dispatched, its ledger owns cancel.
+                    releaseHeld();
+                    resolved = await this.queue.command(id, () => this.command(text));
+                    if (resolved !== null && !this.heldMessages.has(id)) this.heldMessages.set(id, attempt);
+                }
                 if (resolved === null) { this.session.emitMessagesConsumed([id], { clearQueuedThinkingGrace: true }); return; }
                 // Compute the batch key now: this.settings may have changed
                 // while this message waited behind earlier queued work (e.g. a
@@ -192,12 +205,18 @@ export class SharedCodexRoot {
                     disallowedTools: message.meta?.disallowedTools ?? null
                 });
                 if (this.needsTierConfirmation) await this.inputGate;
-                if (this.closed || this.stopping) return;
+                if (this.closed || this.stopping || !stillHeld()) return;
+                releaseHeld();
                 await this.queue.enqueue(id, buildUserInputFromMessage(resolved), this.interrupted,
-                    text.trim().startsWith('/') || message.meta?.isNativeQueuedMessage ? undefined : batchKey);
-            }).catch(error => this.notice(`Message not confirmed: ${error instanceof Error ? error.message : error}. Inspect the queue before retrying.`));
+                    slash || message.meta?.isNativeQueuedMessage ? undefined : batchKey);
+            }).catch(error => this.notice(`Message not confirmed: ${error instanceof Error ? error.message : error}. Inspect the queue before retrying.`)).finally(releaseHeld);
         });
-        this.session.onCancelQueuedMessage(async id => { await this.bound; return this.stopping ? 'indeterminate' : this.queue.cancel(id); });
+        this.session.onCancelQueuedMessage(async id => {
+            const held = this.heldMessages.delete(id);
+            if (held && !this.queue?.state(id)) return true;
+            await this.bound;
+            return this.stopping ? 'indeterminate' : this.queue.cancel(id);
+        });
         // Absence from history is NOT proof an uncertain mutation failed.
         this.session.onRetryQueuedMessage(async id => {
             await this.bound;

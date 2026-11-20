@@ -18,7 +18,7 @@ import { SharedCodexRoot } from './root';
 import { buildForkSessionSummary } from '@hapi/protocol';
 
 export type RuntimeReady = { sessionId: string; runtime: CodexRuntimeRecord };
-type Reservation = { root: SharedCodexRoot; resumeId?: string; freshThread?: boolean; serviceTierExplicit?: boolean; requestedUltrafast?: boolean; downgraded?: boolean; rootBound?: boolean; controlSubscribed?: boolean };
+type Reservation = { root: SharedCodexRoot; resumeId?: string; freshThread?: boolean; initialOptions?: SharedLaunchOptions; serviceTierExplicit?: boolean; requestedUltrafast?: boolean; downgraded?: boolean; rootBound?: boolean; controlSubscribed?: boolean };
 
 function gitInfo(cwd: string): { sha: string | null; branch: string | null; originUrl: string | null } {
     const git = (...args: string[]) => {
@@ -277,6 +277,32 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         // generation. The marker therefore comes from the local bootstrap.
         await notifyRunnerSessionStarted(root.session.sessionId, { ...(root.session.getMetadata() ?? root.bootstrap.metadata), hostStartMarker: root.bootstrap.metadata.hostStartMarker });
     };
+    const bindAccepted = async (reservation: Reservation, result: Record<string, unknown>): Promise<void> => {
+        const nativeThreadId = string(record(result.thread).id);
+        if (!reservation.resumeId && nativeThreadId) {
+            reservation.resumeId = nativeThreadId;
+            resumingThreads.add(nativeThreadId);
+        }
+        const threadId = reservation.resumeId;
+        try {
+            await bind(reservation.root, result, true, reservation.initialOptions, reservation.freshThread,
+                reservation.serviceTierExplicit, reservation.requestedUltrafast, reservation.downgraded, threadId ? reservation : undefined);
+        } catch (error) {
+            if (threadId && threadId === nativeThreadId && !ending.has(reservation.root) && !reservation.controlSubscribed) {
+                retryableBindings.set(threadId, reservation);
+                pendingAdmission.add(threadId);
+                resumingThreads.delete(threadId);
+            } else if (threadId) {
+                retryableBindings.delete(threadId);
+                if (reservation.root.isActivated) resumingThreads.delete(threadId);
+            }
+            throw error;
+        }
+        if (threadId) {
+            resumingThreads.delete(threadId);
+            retryableBindings.delete(threadId);
+        }
+    };
     const create = (method: 'thread/start' | 'thread/fork', params: Record<string, unknown>, parent?: SharedCodexRoot, initialOptions?: SharedLaunchOptions): Promise<SharedCodexRoot> => operation(async () => {
         params = nativeTierParams(params);
         const serviceTierExplicit = params.serviceTier !== undefined;
@@ -291,7 +317,18 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             runtime.pendingCreations = [...runtime.pendingCreations ?? [], root.session.sessionId]; await persist();
             const response = record(await root.client.request(method, root.config({ ...params, ...(method === 'thread/fork' ? { deferGoalContinuation: true } : {}) })));
             nativeSucceeded = true;
-            await bind(root, response, true, initialOptions, method === 'thread/start', serviceTierExplicit, params.serviceTier === 'ultrafast', downgraded);
+            const reservation: Reservation = { root, initialOptions, freshThread: method === 'thread/start',
+                serviceTierExplicit, requestedUltrafast: params.serviceTier === 'ultrafast', downgraded };
+            try {
+                await bindAccepted(reservation, response);
+            } catch (error) {
+                const threadId = reservation.resumeId;
+                if (!threadId || retryableBindings.get(threadId) !== reservation || resumingThreads.has(threadId) || stopping) throw error;
+                // A transient setup failure must not require repeating a Web
+                // fork. The native writer already accepted this conversation.
+                resumingThreads.add(threadId);
+                await bindAccepted(reservation, response);
+            }
             return root;
         } catch (error) {
             // A timed-out native mutation may have succeeded. Never replay it or kill unrelated roots.
@@ -439,34 +476,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 if (reservation.resumeId) resumingThreads.delete(reservation.resumeId);
                 return;
             }
-            const result = record(response.result);
-            const nativeThreadId = string(record(result.thread).id);
-            // Accepted start/fork requests can now be recovered by native ID
-            // through resume; never send the creation request again.
-            if (!reservation.resumeId && nativeThreadId) {
-                reservation.resumeId = nativeThreadId;
-                resumingThreads.add(nativeThreadId);
-            }
-            try {
-                await bind(reservation.root, result, true, undefined, reservation.freshThread, reservation.serviceTierExplicit, reservation.requestedUltrafast, reservation.downgraded, reservation.resumeId ? reservation : undefined);
-            } catch (error) {
-                // The original queue, projection and native writer survive
-                // a partial bind. Retry until activation has begun.
-                if (!reservation.resumeId || ending.has(reservation.root) || reservation.controlSubscribed
-                    || nativeThreadId !== reservation.resumeId) {
-                    if (reservation.resumeId) {
-                        retryableBindings.delete(reservation.resumeId);
-                        if (reservation.root.isActivated) resumingThreads.delete(reservation.resumeId);
-                    }
-                    throw error;
-                }
-                retryableBindings.set(reservation.resumeId, reservation);
-                pendingAdmission.add(reservation.resumeId);
-                resumingThreads.delete(reservation.resumeId);
-                throw error;
-            }
-            if (reservation.resumeId) resumingThreads.delete(reservation.resumeId);
-            if (reservation.resumeId) retryableBindings.delete(reservation.resumeId);
+            await bindAccepted(reservation, record(response.result));
         } else if (request.method === 'thread/archive' && !response.error) {
             const root = roots.get(string(record(request.params).threadId) ?? ''); if (root) await end(root, false);
         } else if (request.method === 'thread/queue/delete' && !response.error && record(response.result).deleted === true) {

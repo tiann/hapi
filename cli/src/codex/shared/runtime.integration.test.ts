@@ -295,6 +295,30 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             await expect(observer.request('thread/resume', { threadId: acceptedThread, excludeTurns: true })).resolves.toMatchObject({ thread: { id: acceptedThread } });
             expect(state.sessions.get(acceptedSid)?.metadata.codexServiceTierExplicit).toBe(true);
             expect(Object.entries(second.runtime.sessions).filter(([, binding]) => !knownThreads.has(binding.threadId))).toHaveLength(1);
+            const beforeWebFork = new Set(Object.values(second.runtime.sessions).map(binding => binding.threadId));
+            let webForkThread: string | undefined;
+            const failWebForkSubscription = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
+                const candidate = record(params).threadId;
+                if (!webForkThread && !clients.includes(this) && method === 'thread/resume' && record(params).excludeTurns === true
+                    && typeof candidate === 'string' && !beforeWebFork.has(candidate)) {
+                    webForkThread = candidate;
+                    return Promise.reject(new Error('fixture Web fork subscription unavailable'));
+                }
+                return originalRequest.call(this, method, params) as Promise<T>;
+            });
+            extraSpies.push(failWebForkSubscription);
+            // This fixture checks bind recovery, not inheritance of the
+            // engine's implicit named permission profile.
+            const selectedUltrafast = vi.spyOn(SharedCodexRoot.prototype, 'freshParams').mockReturnValueOnce({
+                cwd, model: 'gpt-6-astra', serviceTier: 'ultrafast', approvalPolicy: 'never', sandbox: 'read-only'
+            });
+            extraSpies.push(selectedUltrafast);
+            const fork = await retainedSession!.rpc.get(RPC_METHODS.ForkConversation)!({}) as { sessionId: string; nativeSessionId: string };
+            expect(webForkThread).toBeTruthy();
+            expect(fork.nativeSessionId).toBe(webForkThread);
+            expect(second.runtime.sessions[fork.sessionId]).toMatchObject({ threadId: webForkThread, active: true });
+            expect(Object.values(second.runtime.sessions).filter(binding => !beforeWebFork.has(binding.threadId))).toHaveLength(1);
+            failWebForkSubscription.mockRestore(); selectedUltrafast.mockRestore();
             const originalStandard = SharedCodexRoot.prototype.confirmStandardLaunch;
             const standardRace = vi.spyOn(SharedCodexRoot.prototype, 'confirmStandardLaunch').mockImplementationOnce(async function(this: InstanceType<typeof SharedCodexRoot>, explicit) {
                 await this.client.request('thread/settings/update', { threadId: this.threadId, serviceTier: 'priority' });
