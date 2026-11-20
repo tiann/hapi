@@ -63,15 +63,32 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
     afterEach(() => { vi.unstubAllEnvs(); state.sessions.clear(); state.beforeBootstrap = undefined; });
     it.each(['priority', null])('reports no effective override after accepting tier %s with disabled native Fast', async serviceTier => {
         const home = await mkdtemp(join(tmpdir(), 'hapi-shared-filtered-tier-'));
-        await writeFile(join(home, 'config.toml'), [
-            'model = "mock-model"', 'model_provider = "mock"', '[features]', 'fast_mode = false',
-            '[model_providers.mock]', 'name = "No model calls"', 'base_url = "http://127.0.0.1:1/v1"',
-            'wire_api = "responses"', 'requires_openai_auth = false', 'request_max_retries = 0',
-            '[analytics]', 'enabled = false', '[feedback]', 'enabled = false', ''
-        ].join('\n'));
-        vi.stubEnv('CODEX_HOME', home);
+        let requests = 0;
+        const http = createServer((request, response) => {
+            request.resume();
+            if (!request.url?.endsWith('/responses')) { response.writeHead(404).end(); return; }
+            request.on('end', () => {
+                requests++;
+                const id = randomUUID();
+                const events = [{ type: 'response.created', response: { id } },
+                    { type: 'response.output_item.done', item: { id: `msg_${id}`, type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'OK' }] } },
+                    { type: 'response.completed', response: { id, usage: { input_tokens: 0, output_tokens: 0, total_tokens: 0 } } }];
+                response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+                response.end(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(''));
+            });
+        });
         const client = new CodexAppServerClient({ cwd: home });
         try {
+            await new Promise<void>(resolve => http.listen(0, '127.0.0.1', resolve));
+            const port = (http.address() as { port: number }).port;
+            await writeFile(join(home, 'config.toml'), [
+                'model = "mock-model"', 'model_provider = "mock"', 'check_for_update_on_startup = false',
+                '[features]', 'fast_mode = false', '[model_providers.mock]', 'name = "Mock Responses API"',
+                `base_url = "http://127.0.0.1:${port}/v1"`, 'wire_api = "responses"', 'supports_websockets = false',
+                'requires_openai_auth = false', 'request_max_retries = 0', 'stream_max_retries = 0',
+                '[analytics]', 'enabled = false', '[feedback]', 'enabled = false', ''
+            ].join('\n'));
+            vi.stubEnv('CODEX_HOME', home);
             await initializeSharedClient(client);
             const start = await client.request<{ thread: { id: string } }>('thread/start', { cwd: home });
             const threadId = start.thread.id;
@@ -81,12 +98,14 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             });
             expect(accepted.turn.id).toBeTruthy();
             await vi.waitFor(async () => {
+                expect(requests).toBeGreaterThan(0);
                 expect(await client.request('thread/read', { threadId, includeTurns: false }))
                     .toMatchObject({ thread: { status: { type: 'idle' } } });
-            }, { timeout: 5_000 });
+            }, { timeout: 10_000 });
             expect(await client.request('thread/resume', { threadId, excludeTurns: true })).toMatchObject({ serviceTier: null });
         } finally {
             await client.disconnect({ gracefulTimeoutMs: 2_000 });
+            await new Promise<void>(resolve => http.close(() => resolve()));
             await rm(home, { recursive: true, force: true });
         }
     }, 30_000);
