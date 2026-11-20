@@ -30,23 +30,29 @@ function asNumber(value: unknown): number | undefined {
 // reaches the rendered issue body (formatIssueBody keys sections by `label`,
 // not `id`), so a field without one is still fully usable here, just needs a
 // stable *internal* key for the answers map. Generated from the label
-// (GitHub's own fallback source), slugified; a numeric suffix resolves any
-// collision against both explicit and other generated ids in the same
-// template (review finding: rejecting the whole template over a missing id
-// makes an otherwise-valid, GitHub-accepted form unusable in Boards).
+// (GitHub's own fallback source), slugified (review finding: rejecting the
+// whole template over a missing id makes an otherwise-valid, GitHub-accepted
+// form unusable in Boards).
 function slugify(label: string): string {
     const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
     return slug || 'field'
 }
 
-function generateFieldId(label: string, usedIds: Set<string>): string {
-    const base = slugify(label)
-    let candidate = base
-    let suffix = 2
-    while (usedIds.has(candidate)) {
-        candidate = `${base}-${suffix}`
-        suffix += 1
-    }
+// GitHub documents this exact collision as its own validation error
+// ("Labels are too similar" — confirmed directly against GitHub's docs,
+// bot review follow-up): if an idless field's label parameterizes to a
+// reference another field already claims — another idless field's label,
+// OR another field's *explicit* id, GitHub's own documented example pairs
+// an idless "Name?" against an explicit `id: name` field with label
+// "Name???????" and rejects the form outright — GitHub rejects the whole
+// form. A numeric suffix used to paper over this (silently handing out
+// `name-us-2`) instead of rejecting, which is the same "malformed template
+// silently tolerated, wrongly counted as local .github coverage" class as
+// every other duplicate-identifier check in this file. No suffix retry:
+// a collision is a rejection, not something to resolve.
+function generateFieldId(label: string, usedIds: Set<string>): string | undefined {
+    const candidate = slugify(label)
+    if (usedIds.has(candidate)) return undefined
     usedIds.add(candidate)
     return candidate
 }
@@ -252,7 +258,11 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
             }
             idlessLabels.add(label)
         }
-        const fieldId = explicitFieldId ?? generateFieldId(label, usedIds)
+        const generatedFieldId = explicitFieldId ? undefined : generateFieldId(label, usedIds)
+        if (!explicitFieldId && generatedFieldId === undefined) {
+            return { id, name, kind: 'unsupported', reason: `Field "${label}" generates the same identifier as another field in this form ("Labels are too similar")`, githubValid: false }
+        }
+        const fieldId = explicitFieldId ?? generatedFieldId as string
         const description = asString(attrs.description)
         const validations = asRecord(elObj.validations)
         const required = validations.required === true

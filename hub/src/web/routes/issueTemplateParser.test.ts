@@ -211,13 +211,18 @@ body:
         }])
     })
 
-    // Labels deliberately distinct strings (bot review, tiann/hapi#2147,
-    // follow-up: two id-less fields with the SAME literal label is a
-    // separate, genuine GitHub validation error — covered below, not
-    // this test) — this one exercises generateFieldId's own suffix
-    // collision-avoidance for two DIFFERENT labels that happen to
-    // slugify to the same internal key.
-    it('resolves a generated-id collision against another field\'s explicit or generated id', () => {
+    // GitHub documents this exact scenario as its own validation error,
+    // "Labels are too similar" (bot review, tiann/hapi#2147, follow-up),
+    // confirmed directly against GitHub's docs — its own example pairs an
+    // idless field against another field's *explicit* id and rejects the
+    // whole form, even though the labels themselves are different strings
+    // (distinct from "Body must have unique labels" above, which is about
+    // literal label-text equality). This parser's own `generateFieldId`
+    // used to paper over the identical-reference collision with a numeric
+    // suffix (`name-us-2`) instead of rejecting, silently accepting a form
+    // GitHub itself rejects outright — same "wrongly counts as local
+    // .github coverage" bug as every other duplicate-identifier check here.
+    it('is genuinely invalid when an idless field\'s label generates the same reference as another field\'s id', () => {
         const yaml = `
 name: Bug
 description: Bug
@@ -229,16 +234,33 @@ body:
     id: name-us
     attributes:
       label: Something Else
+`
+        const template = parseIssueFormYaml('x.yml', yaml)
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('Name (US)')
+    })
+
+    // Same rule, the other pairing: two idless fields whose DIFFERENT
+    // labels both generate the same reference.
+    it('is genuinely invalid when two idless fields\' different labels generate the same reference', () => {
+        const yaml = `
+name: Bug
+description: Bug
+body:
+  - type: input
+    attributes:
+      label: Name (US)
   - type: input
     attributes:
       label: Name_US
 `
         const template = parseIssueFormYaml('x.yml', yaml)
-        expect(template.kind).toBe('form')
-        if (template.kind !== 'form') return
-        const ids = template.fields.map(f => f.kind !== 'markdown' ? f.id : null)
-        expect(ids).toEqual(['name-us-2', 'name-us', 'name-us-3'])
-        expect(new Set(ids).size).toBe(3)
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('Name_US')
     })
 
     // Regression (bot review, tiann/hapi#2147, follow-up): GitHub's own
