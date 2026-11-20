@@ -70,6 +70,7 @@ function isCommandResult(message: SDKMessage, uuid: string, command: 'compact' |
 // mid-session. Launching Claude natively in them skips canCallTool, so a later
 // downgrade (e.g. Yolo -> Default) would never take effect.
 const EFFORT_APPLY_TIMEOUT_MS = 5_000;
+const UNIDENTIFIED_COMPACT_RESULT_TIMEOUT_MS = 30_000;
 
 function nativePermissionMode(mode: PermissionMode): PermissionMode {
     return mode === 'acceptEdits' || mode === 'bypassPermissions' ? 'default' : mode;
@@ -559,6 +560,20 @@ export async function claudeRemote(opts: {
     let correlatesResults = false;
     const compactCompletionAbort = new AbortController();
     let compactCompletion: Promise<CompactCompletion> | null = null;
+    const timedOutCompactUuids = new Set<string>();
+    let compactResultTimeout: Promise<null> | null = null;
+    let compactResultTimer: ReturnType<typeof setTimeout> | undefined;
+    const cancelCompactResultTimeout = () => {
+        clearTimeout(compactResultTimer);
+        compactResultTimer = undefined;
+        compactResultTimeout = null;
+    };
+    const bindClearSession = (id: string, init?: SDKSystemMessage) => {
+        opts.onSessionReset?.(id);
+        currentSessionId = id;
+        opts.onSessionFound(id);
+        if (init?.session_id === id) opts.onMessage(init);
+    };
     const abortCompactCompletion = () => compactCompletionAbort.abort();
     opts.signal?.addEventListener('abort', abortCompactCompletion, { once: true });
     if (opts.signal?.aborted) compactCompletionAbort.abort();
@@ -706,7 +721,22 @@ export async function claudeRemote(opts: {
                 }
                 message = winner.result.value;
             } else {
-                const next = await pendingResponseNext;
+                const next = await (compactResultTimeout
+                    ? Promise.race([pendingResponseNext, compactResultTimeout])
+                    : pendingResponseNext);
+                if (next === null) {
+                    cancelCompactResultTimeout();
+                    if (compactState.active) {
+                        timedOutCompactUuids.add(compactState.active.uuid);
+                        pushedUuids.delete(compactState.active.uuid);
+                    }
+                    compactState.active = null;
+                    opts.onResultAccepted?.();
+                    updateThinking(false);
+                    await opts.onReady('📦 Claude did not identify the /compact result');
+                    scheduleNextMessage();
+                    continue;
+                }
                 pendingResponseNext = null;
                 if (next.done) {
                     responseClosed = true;
@@ -720,6 +750,11 @@ export async function claudeRemote(opts: {
                 `subtype=${'subtype' in message ? String((message as any).subtype) : 'n/a'}`
             );
             logger.debugLargeJson(`[claudeRemote] Message ${message.type}`, message);
+
+            if (message.type === 'result' && typeof message.user_message_uuid === 'string'
+                && timedOutCompactUuids.delete(message.user_message_uuid)) {
+                continue;
+            }
 
             // Autonomous rounds (background tasks, scheduled follow-ups) stream
             // assistant messages after the previous result flipped thinking off;
@@ -879,10 +914,7 @@ export async function claudeRemote(opts: {
                     const id = message.session_id;
                     if (message.subtype === 'success' && message.is_error !== true
                         && typeof id === 'string' && id && id !== clear.previousSessionId) {
-                        opts.onSessionReset?.(id);
-                        currentSessionId = id;
-                        opts.onSessionFound(id);
-                        if (clear.init?.session_id === id) opts.onMessage(clear.init);
+                        bindClearSession(id, clear.init);
                         await opts.onReady('Context was reset', undefined, 0);
                     } else {
                         await opts.onReady('Could not reset context');
@@ -890,7 +922,15 @@ export async function claudeRemote(opts: {
                     scheduleNextMessage();
                     continue;
                 }
-                if (compact && !isCompactTurnResult) continue;
+                if (compact && !isCompactTurnResult) {
+                    if (!compact.initial && message.user_message_uuid == null && message.local_command == null
+                        && compactResultTimeout === null) {
+                        compactResultTimeout = new Promise((resolve) => {
+                            compactResultTimer = setTimeout(resolve, UNIDENTIFIED_COMPACT_RESULT_TIMEOUT_MS, null);
+                        });
+                    }
+                    continue;
+                }
                 if (resultSeq === 1 && specialCommand.type === null && initial) {
                     opts.onFirstResult?.(initial.message);
                 }
@@ -913,6 +953,7 @@ export async function claudeRemote(opts: {
                 );
 
                 if (compact) {
+                    cancelCompactResultTimeout();
                     const sessionId = currentSessionId;
                     const baseline = compact.baseline;
                     const failed = !compact.sawCompactSignal || message.is_error === true || message.subtype !== 'success';
@@ -995,6 +1036,13 @@ export async function claudeRemote(opts: {
         }
     } finally {
         closeSteering();
+        cancelCompactResultTimeout();
+        const clearInit = clearState.active?.init;
+        if (clearInit?.session_id) {
+            opts.onResultAccepted?.();
+            bindClearSession(clearInit.session_id, clearInit);
+            opts.onCompletionEvent?.('Context was reset');
+        }
         if (compactCompletion) {
             compactCompletionAbort.abort();
             await Promise.allSettled([compactCompletion]);
