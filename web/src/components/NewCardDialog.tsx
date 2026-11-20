@@ -199,27 +199,19 @@ export function NewCardDialog(props: NewCardDialogProps) {
     }
 
     const handleFormNext = () => {
-        if (recoveryExpired) {
-            // No live token to preserve either way once expired — always
-            // abandon rather than running the usual unchanged-content
-            // check below, which exists to decide whether a *live* token
-            // is still safe to retry with (review finding, tiann/hapi#2147,
-            // follow-up). Reaching the review step again re-enables normal
-            // submission (a fresh, explicit choice the user makes after
-            // already having seen orphanedIssueUrl in the expired error).
-            setOrphanedIssueUrl(null)
-            setOrphanedRecoveryToken(null)
-            setOrphanedSubmissionSnapshot(null)
-            setRecoveryExpired(false)
-            setStep('review')
-            return
-        }
-        // Abandon the pending retry-attach association only once the
-        // current submission actually diverges from what was submitted
-        // when it was set (review finding, hapi#238, follow-up) — not on
-        // every form→review transition regardless of whether anything
-        // changed, which orphaned the first issue and created a duplicate
-        // for a plain Back-then-Next with no edits.
+        // Abandon the pending retry-attach/recovery-expired association
+        // only once the current submission actually diverges from what
+        // was submitted when it was set (review finding, hapi#238,
+        // follow-up; extended to the expired case, bot review,
+        // tiann/hapi#2147, follow-up) — not on every form→review
+        // transition regardless of whether anything changed. An
+        // unchanged Back-then-Next must not silently discard either the
+        // live-token or the expired-but-still-orphaned state: if it did,
+        // a plain "look at this again" lands the user back on an ordinary
+        // "Create issue" button with no new warning, and clicking it
+        // files a genuine duplicate while the first issue stays off the
+        // board. Only an actual edit (a real divergence, checked below)
+        // counts as the explicit "create a different issue" choice.
         if (orphanedIssueUrl && orphanedSubmissionSnapshot) {
             const unchanged = orphanedSubmissionSnapshot.repo === repoInput.trim()
                 && orphanedSubmissionSnapshot.title === finalTitle
@@ -228,6 +220,7 @@ export function NewCardDialog(props: NewCardDialogProps) {
             if (!unchanged) {
                 setOrphanedIssueUrl(null)
                 setOrphanedRecoveryToken(null)
+                setRecoveryExpired(false)
                 setOrphanedSubmissionSnapshot(null)
             }
         }
@@ -530,9 +523,9 @@ export function NewCardDialog(props: NewCardDialogProps) {
                                 </div>
                             </div>
 
-                            {error ? (
+                            {error || orphanedIssueUrl ? (
                                 <div className="flex flex-col gap-2 rounded-md bg-red-50 p-3 text-sm text-red-600 dark:bg-red-900/20 dark:text-red-400">
-                                    <span>{error}</span>
+                                    {error ? <span>{error}</span> : null}
                                     {orphanedIssueUrl ? (
                                         <a href={orphanedIssueUrl} target="_blank" rel="noreferrer" className="font-medium underline">
                                             {orphanedIssueUrl}

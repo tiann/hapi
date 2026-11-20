@@ -636,7 +636,45 @@ describe('NewCardDialog', () => {
     // permanent dead end either — once the user explicitly navigates back
     // to the review step (a visible, deliberate choice, after already
     // having seen the orphaned issue's link), normal submission resumes.
-    it('re-enables a normal create after Back-then-Next once a retry has expired', async () => {
+    // Bot review, tiann/hapi#2147, follow-up: unchanged Back-then-Next
+    // must NOT silently discard the expired-recovery state — a plain
+    // "look at this again" with no edits must not land the user back on
+    // an ordinary "Create issue" button with no warning, since clicking
+    // it would file a genuine duplicate while the first issue stays off
+    // the board.
+    it('keeps the expired recovery state through an unchanged Back-then-Next', async () => {
+        const onSubmit = vi.fn()
+            .mockRejectedValueOnce(new ApiError(
+                'Issue created at https://github.com/heavygee/hapi/issues/42 but could not be added to the board: boom',
+                502, undefined, JSON.stringify({ url: 'https://github.com/heavygee/hapi/issues/42', recoveryToken: 'signed-recovery-token' })
+            ))
+            .mockRejectedValueOnce(new ApiError(
+                'This retry has expired or no longer matches — start the submission over',
+                400, undefined, JSON.stringify({ error: 'This retry has expired or no longer matches — start the submission over', code: 'recovery_expired' })
+            ))
+        renderDialog({ templates: [], blankAllowed: true, onSubmit })
+
+        fireEvent.change(screen.getByPlaceholderText('owner/repo'), { target: { value: 'heavygee/hapi' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+        fireEvent.click(await screen.findByText('Open a blank issue'))
+        fireEvent.change(screen.getAllByRole('textbox')[0]!, { target: { value: 'A plain title' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Create issue' }))
+
+        const retryButton = await screen.findByRole('button', { name: 'Retry adding to board' })
+        fireEvent.click(retryButton)
+        await screen.findByText(/This retry window has closed/)
+
+        fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+
+        expect(await screen.findByText(/This retry window has closed/)).toBeInTheDocument()
+        expect(screen.getByRole('link', { name: 'https://github.com/heavygee/hapi/issues/42' })).toBeInTheDocument()
+        expect(screen.queryByRole('button', { name: 'Create issue' })).toBeNull()
+        expect(screen.queryByRole('button', { name: 'Retry adding to board' })).toBeNull()
+    })
+
+    it('re-enables a normal create after editing the form once a retry has expired', async () => {
         const onSubmit = vi.fn()
             .mockRejectedValueOnce(new ApiError(
                 'Issue created at https://github.com/heavygee/hapi/issues/42 but could not be added to the board: boom',
@@ -661,6 +699,9 @@ describe('NewCardDialog', () => {
         await screen.findByText(/This retry window has closed/)
 
         fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+        // An actual edit — the explicit "create a different issue" signal,
+        // same bar the live-token unchanged-check already uses.
+        fireEvent.change(screen.getAllByRole('textbox')[0]!, { target: { value: 'A different title' } })
         fireEvent.click(screen.getByRole('button', { name: 'Next' }))
 
         fireEvent.click(await screen.findByRole('button', { name: 'Create issue' }))
