@@ -26,6 +26,8 @@ import { getAgentLaunchCommand } from './agentLaunchCommand'
 const CACHE_TTL_MS = 60_000
 const DEFAULT_PROVIDER_PROBE_TIMEOUT_MS = 5_000
 const AGY_PROBE_TIMEOUT_MS = DEFAULT_PROVIDER_PROBE_TIMEOUT_MS
+const AGY_UNAUTHENTICATED_CACHE_TTL_MS = 10 * 60_000
+const AGY_ERROR_CACHE_TTL_MS = 60_000
 const CLAUDE_PROBE_TIMEOUT_MS = DEFAULT_PROVIDER_PROBE_TIMEOUT_MS
 const CLAUDE_INIT_REQ_ID = 'hapi-claude-quota-init'
 const CLAUDE_STATUS_REQ_ID = 'hapi-claude-quota-status'
@@ -195,6 +197,10 @@ let cachedResponse: { startedAt: number; expiresAt: number; response: AgentQuota
 let inflightPromise: Promise<AgentQuotasResponse> | null = null
 const liveClaudeBuckets = new Map<string, LiveClaudeBucketRecord>()
 let liveAgyTierLabel: string | null = null
+let agyUnauthenticatedUntil = 0
+let agyErrorUntil = 0
+let agyErrorNote: string | null = null
+let agyProbeInflight: Promise<AgentQuotaAccount> | null = null
 
 function shortHash(value: string): string {
     return createHash('sha256').update(value).digest('hex').slice(0, 16)
@@ -716,9 +722,15 @@ export function parseAgyCreditsCommandJson(stdout: string): number | null {
     return null
 }
 
-function runAgyHeadlessCommand(command: string, promptCommand: string, env: NodeJS.ProcessEnv): Promise<{ stdout: string; stderr: string }> {
+type AgyCommandOutput = {
+    stdout: string
+    stderr: string
+    exitCode: number | null
+}
+
+function runAgyCommand(command: string, args: string[], label: string, env: NodeJS.ProcessEnv): Promise<AgyCommandOutput> {
     return new Promise((resolve, reject) => {
-        const child = spawn(command, ['-p', promptCommand, '--output-format', 'json'], {
+        const child = spawn(command, args, {
             cwd: homedir(),
             env: buildAgyAcpEnv(env),
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -739,7 +751,7 @@ function runAgyHeadlessCommand(command: string, promptCommand: string, env: Node
 
         const timer = setTimeout(() => {
             void killProcessByChildProcess(child, true).catch(() => undefined)
-            finish(() => reject(new Error(`Antigravity ${promptCommand} timed out`)))
+            finish(() => reject(new Error(`Antigravity ${label} timed out`)))
         }, AGY_PROBE_TIMEOUT_MS)
 
         child.stdout?.on('data', (chunk) => {
@@ -751,13 +763,82 @@ function runAgyHeadlessCommand(command: string, promptCommand: string, env: Node
         child.on('error', (error) => {
             finish(() => reject(error))
         })
-        child.on('close', () => {
-            finish(() => resolve({ stdout, stderr }))
+        child.on('close', (exitCode) => {
+            finish(() => resolve({ stdout, stderr, exitCode }))
         })
     })
 }
 
-export async function probeAgyQuota(env: NodeJS.ProcessEnv = process.env): Promise<AgentQuotaAccount> {
+function runAgyHeadlessCommand(command: string, promptCommand: string, env: NodeJS.ProcessEnv): Promise<AgyCommandOutput> {
+    return runAgyCommand(command, ['-p', promptCommand, '--output-format', 'json'], promptCommand, env)
+}
+
+// Only one negative verdict stays live: the freshest recording replaces the
+// older one, so a normal poll reports the latest known state.
+function cacheAgyUnauthenticated(): void {
+    agyUnauthenticatedUntil = Date.now() + AGY_UNAUTHENTICATED_CACHE_TTL_MS
+    agyErrorUntil = 0
+    agyErrorNote = null
+}
+
+function cacheAgyError(note: string): void {
+    agyErrorUntil = Date.now() + AGY_ERROR_CACHE_TTL_MS
+    agyErrorNote = note
+    agyUnauthenticatedUntil = 0
+}
+
+function clearAgyAuthCaches(): void {
+    agyUnauthenticatedUntil = 0
+    agyErrorUntil = 0
+    agyErrorNote = null
+}
+
+type AgyAuthCheck =
+    | { outcome: 'authenticated' }
+    | { outcome: 'unauthenticated' }
+    | { outcome: 'error'; note: string }
+
+const AGY_SIGN_IN_MESSAGE_PATTERN = /please sign in/i
+
+function classifyAgyAuthCheck(result: AgyCommandOutput): AgyAuthCheck {
+    if (result.exitCode === 0) return { outcome: 'authenticated' }
+    const output = `${result.stdout}\n${result.stderr}`
+    if (result.exitCode === 1 && AGY_SIGN_IN_MESSAGE_PATTERN.test(output)) {
+        return { outcome: 'unauthenticated' }
+    }
+    const exitLabel = result.exitCode === null ? 'signal' : `exit ${result.exitCode}`
+    return { outcome: 'error', note: `Antigravity auth check failed (${exitLabel})` }
+}
+
+async function checkAgyAuthentication(
+    command: string,
+    env: NodeJS.ProcessEnv,
+    options?: { refresh?: boolean }
+): Promise<AgyAuthCheck> {
+    if (!options?.refresh) {
+        if (agyUnauthenticatedUntil > Date.now()) return { outcome: 'unauthenticated' }
+        if (agyErrorUntil > Date.now() && agyErrorNote) return { outcome: 'error', note: agyErrorNote }
+    }
+    try {
+        const result = await runAgyCommand(command, ['models'], 'models', env)
+        const classified = classifyAgyAuthCheck(result)
+        if (classified.outcome === 'unauthenticated') cacheAgyUnauthenticated()
+        if (classified.outcome === 'error') cacheAgyError(classified.note)
+        return classified
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        const note = message.includes('timed out')
+            ? 'Antigravity auth check timed out'
+            : 'Antigravity auth check failed'
+        cacheAgyError(note)
+        return { outcome: 'error', note }
+    }
+}
+
+export async function probeAgyQuota(
+    env: NodeJS.ProcessEnv = process.env,
+    options?: { refresh?: boolean }
+): Promise<AgentQuotaAccount> {
     const updatedAt = Date.now()
     const availability = getAgentAvailability('agy', env)
     if (!availability.available) {
@@ -771,14 +852,9 @@ export async function probeAgyQuota(env: NodeJS.ProcessEnv = process.env): Promi
     }
 
     const executable = getAgentLaunchCommand('agy', env)
-    try {
-        const [usageOut, creditsOut] = await Promise.all([
-            runAgyHeadlessCommand(executable, '/usage', env),
-            runAgyHeadlessCommand(executable, '/credits', env).catch(() => ({ stdout: '', stderr: '' }))
-        ])
-
-        const parsedUsage = parseAgyUsageCommandJson(`${usageOut.stdout}\n${usageOut.stderr}`)
-        if (parsedUsage?.unauthenticated) {
+    const refresh = options?.refresh === true
+    if (!refresh) {
+        if (agyUnauthenticatedUntil > updatedAt) {
             return {
                 agent: 'agy',
                 available: true,
@@ -788,43 +864,110 @@ export async function probeAgyQuota(env: NodeJS.ProcessEnv = process.env): Promi
                 updatedAt
             }
         }
-
-        if (!parsedUsage) {
+        if (agyErrorUntil > updatedAt && agyErrorNote) {
             return {
                 agent: 'agy',
                 available: true,
                 status: 'error',
                 buckets: [],
-                note: 'Unable to parse Antigravity quota output',
+                note: agyErrorNote,
                 updatedAt
             }
         }
-
-        const remainingCredits = parseAgyCreditsCommandJson(creditsOut.stdout)
-        const creditsLabel = remainingCredits !== null && remainingCredits > 0
-            ? `${remainingCredits.toLocaleString('en-US')} G1 credits`
-            : null
-
-        return {
-            agent: 'agy',
-            available: true,
-            status: 'ok',
-            accountLabel: null,
-            planLabel: liveAgyTierLabel ?? readPersistedLiveQuotaState(env).agyTierLabel ?? null,
-            creditsLabel,
-            buckets: parsedUsage.buckets,
-            updatedAt
-        }
-    } catch (error) {
-        return {
-            agent: 'agy',
-            available: true,
-            status: 'error',
-            buckets: [],
-            note: error instanceof Error ? error.message : 'Failed to query Antigravity quota',
-            updatedAt
-        }
     }
+    // One auth check + print sequence at a time, shared by every caller
+    // (including explicit refreshes), so concurrent quota requests can never
+    // multiply the print-mode invocations.
+    if (agyProbeInflight) return agyProbeInflight
+
+    const probe = (async (): Promise<AgentQuotaAccount> => {
+        const auth = await checkAgyAuthentication(executable, env, { refresh })
+        if (auth.outcome === 'unauthenticated') {
+            return {
+                agent: 'agy',
+                available: true,
+                status: 'unauthenticated',
+                buckets: [],
+                note: 'Not signed in to Antigravity',
+                updatedAt
+            }
+        }
+        if (auth.outcome === 'error') {
+            return {
+                agent: 'agy',
+                available: true,
+                status: 'error',
+                buckets: [],
+                note: auth.note,
+                updatedAt
+            }
+        }
+        // The auth check succeeded: stale unauthenticated/error verdicts from
+        // earlier probes must not short-circuit later normal polls.
+        clearAgyAuthCaches()
+
+        try {
+            const usageOut = await runAgyHeadlessCommand(executable, '/usage', env)
+
+            const parsedUsage = parseAgyUsageCommandJson(`${usageOut.stdout}\n${usageOut.stderr}`)
+            if (parsedUsage?.unauthenticated) {
+                cacheAgyUnauthenticated()
+                return {
+                    agent: 'agy',
+                    available: true,
+                    status: 'unauthenticated',
+                    buckets: [],
+                    note: 'Not signed in to Antigravity',
+                    updatedAt
+                }
+            }
+
+            if (usageOut.exitCode !== 0 || !parsedUsage) {
+                cacheAgyError('Unable to parse Antigravity quota output')
+                return {
+                    agent: 'agy',
+                    available: true,
+                    status: 'error',
+                    buckets: [],
+                    note: 'Unable to parse Antigravity quota output',
+                    updatedAt
+                }
+            }
+
+            const creditsOut = await runAgyHeadlessCommand(executable, '/credits', env)
+                .catch(() => ({ stdout: '', stderr: '', exitCode: null }))
+            const remainingCredits = parseAgyCreditsCommandJson(creditsOut.stdout)
+            const creditsLabel = remainingCredits !== null && remainingCredits > 0
+                ? `${remainingCredits.toLocaleString('en-US')} G1 credits`
+                : null
+
+            return {
+                agent: 'agy',
+                available: true,
+                status: 'ok',
+                accountLabel: null,
+                planLabel: liveAgyTierLabel ?? readPersistedLiveQuotaState(env).agyTierLabel ?? null,
+                creditsLabel,
+                buckets: parsedUsage.buckets,
+                updatedAt
+            }
+        } catch (error) {
+            const note = error instanceof Error ? error.message : 'Failed to query Antigravity quota'
+            cacheAgyError(note)
+            return {
+                agent: 'agy',
+                available: true,
+                status: 'error',
+                buckets: [],
+                note,
+                updatedAt
+            }
+        }
+    })()
+    agyProbeInflight = probe
+    return await probe.finally(() => {
+        if (agyProbeInflight === probe) agyProbeInflight = null
+    })
 }
 
 type ClaudeControlProbeResult = {
@@ -1230,7 +1373,7 @@ export async function getAgentQuotasResponse(options?: {
     const promise = (async (): Promise<AgentQuotasResponse> => {
         const accounts = await Promise.all([
             probeCodexQuota(env, probeTimeoutMs),
-            probeAgyQuota(env),
+            probeAgyQuota(env, { refresh }),
             probeClaudeQuota(env)
         ])
         const fetchedAt = Date.now()
@@ -1259,5 +1402,9 @@ export function _resetAgentQuotasCacheForTests(): void {
     inflightPromise = null
     liveClaudeBuckets.clear()
     liveAgyTierLabel = null
+    agyUnauthenticatedUntil = 0
+    agyErrorUntil = 0
+    agyErrorNote = null
+    agyProbeInflight = null
     claudeStatusProbeOverrideForTests = null
 }
