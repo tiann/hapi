@@ -866,9 +866,20 @@ describe('runOpencode set-session-config handler', () => {
         await vi.waitFor(() => expect(harness.listSlashCommands).toHaveBeenCalled());
         await new Promise<void>(resolve => setImmediate(resolve));
         expect(queue.queue.map(row => row.localId)).toEqual(['clear']);
-        gate.setRecoveryPending(recovering);
-        harness.reserveOpenCodeClearSession.mockRejectedValueOnce(new OpenCodeHandoffRefusedError('Clear admission refused'));
+        if (recovering) {
+            gate.setRecoveryPending(true);
+            gate.setRecoveryPending(false);
+        } else {
+            harness.reserveOpenCodeClearSession.mockRejectedValueOnce(new OpenCodeHandoffRefusedError('Clear admission refused'));
+        }
         expect(await (options.onClearRequested as () => Promise<unknown>)()).toBe(false);
+        if (recovering) {
+            expect(harness.reserveOpenCodeClearSession).not.toHaveBeenCalled();
+            expect(harness.session.sendSessionEvent).toHaveBeenCalledWith({
+                type: 'message',
+                message: 'OpenCode is recovering. If you pressed Stop, send a message to resume, then try again.'
+            });
+        }
         submit({ content: { text: 'later' } }, 'later');
         await vi.waitFor(() => expect(queue.queue.map(row => row.localId)).toEqual(['clear', 'held', 'later']));
         expect(harness.session.emitMessagesConsumed).toHaveBeenCalledWith(['plan'], { clearQueuedThinkingGrace: true });

@@ -1098,6 +1098,85 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         }
     });
 
+    linuxRecoveryTest('rejects a queued Clear after generation loss before dequeue instead of admitting it on the replacement', async () => {
+        harness.detectedVersion = 'v2';
+        const { session, sessionEvents } = createSessionStub([], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        const gate = new OpenCodeRuntimeGate();
+        (session as unknown as { runtimeGate: OpenCodeRuntimeGate }).runtimeGate = gate;
+        const prompt = Promise.withResolvers<void>();
+        harness.promptImpl = () => prompt.promise;
+        const reserve = vi.fn(async () => {});
+        const onClearRequested = vi.fn(async (): Promise<void | false> => {
+            try {
+                if (clearGeneration !== gate.currentClearGeneration) {
+                    throw new OpenCodeHandoffRefusedError('OpenCode is recovering.');
+                }
+                await reserve();
+                return undefined;
+            } catch (error) {
+                if (!(error instanceof OpenCodeHandoffRefusedError)) throw error;
+                session.sendSessionEvent({ type: 'message', message: error.message });
+                return false;
+            }
+        });
+        let clearGeneration = gate.currentClearGeneration;
+        const launcher = opencodeRemoteLauncher(session as never, {
+            recoveryBackoffsMs: [0],
+            onClearRequested
+        });
+        try {
+            session.queue.push('active prompt', createMode(), 'first');
+            await vi.waitFor(() => expect(harness.promptCount).toBe(1));
+            clearGeneration = gate.currentClearGeneration;
+            session.queue.pushIsolated('', { ...createClearMode(), clearGeneration }, 'clear');
+            harness.unexpectedExitHandler!(new Error('child exit before clear dequeue'), { childProcessExited: true });
+            prompt.resolve();
+            harness.promptImpl = null;
+            session.queue.push('after refused clear', createMode(), 'second');
+            await vi.waitFor(() => expect(harness.promptCount).toBe(2), { timeout: 4000 });
+            expect(reserve).not.toHaveBeenCalled();
+            expect(sessionEvents.some(e => String(e.message).includes('OpenCode is recovering'))).toBe(true);
+        } finally {
+            prompt.resolve();
+            harness.promptImpl = null;
+            session.queue.close();
+            await launcher.catch(() => {});
+        }
+    });
+
+    linuxRecoveryTest('proceeds with an admitted Clear even when launcher generation advanced after queueing', async () => {
+        harness.detectedVersion = 'v2';
+        harness.treeGone = false;
+        const reservation = Promise.withResolvers<void>();
+        const reserve = vi.fn(() => reservation.promise);
+        const confirmed = vi.fn(async () => {});
+        const { session } = createSessionStub([], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        const gate = new OpenCodeRuntimeGate();
+        (session as unknown as { runtimeGate: OpenCodeRuntimeGate }).runtimeGate = gate;
+        const launcher = opencodeRemoteLauncher(session as never, {
+            recoveryBackoffsMs: [0],
+            onClearRequested: reserve,
+            onClearCleanupComplete: confirmed
+        });
+        try {
+            const completed = expect(launcher).resolves.toBe('exit');
+            void completed.catch(() => {});
+            session.queue.pushIsolated('', { ...createClearMode(), clearGeneration: gate.currentClearGeneration }, 'clear');
+            await vi.waitFor(() => expect(reserve).toHaveBeenCalledOnce());
+            harness.unexpectedExitHandler!(new Error('child exit'), { childProcessExited: true });
+            reservation.resolve();
+            await vi.waitFor(() => expect(confirmed).toHaveBeenCalledOnce());
+            await completed;
+            expect(harness.createBackendArgs).toHaveLength(1);
+        } finally {
+            reservation.resolve();
+            session.queue.close();
+            await launcher.catch(() => {});
+        }
+    });
+
     linuxRecoveryTest('fails input, refuses same-ID Switch and accepts Clear after a permanently incomplete capture', async () => {
         harness.detectedVersion = 'v2';
         harness.treeGone = false;

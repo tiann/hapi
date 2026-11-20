@@ -151,6 +151,7 @@ export async function runOpencode(opts: {
     // their durable rows to the reserved replacement on success.
     let clearTransitionLatched = false;
     let queuedClearLocalId: string | null = null;
+    let queuedClearGeneration: number | null = null;
     const heldDuringClear: Array<{ message: Parameters<Parameters<typeof session.onUserMessage>[0]>[0]; localId?: string }> = [];
     // True from the moment onCompactAvailabilityChange(false) fires (which,
     // per onLeavingRemote's contract, only ever happens because remote mode
@@ -379,9 +380,14 @@ export async function runOpencode(opts: {
                     // listSlashCommands race, so they take the rejection path.
                     clearTransitionLatched = true;
                     queuedClearLocalId = localId ?? null;
+                    queuedClearGeneration = runtimeGate.currentClearGeneration;
                     // A clear is isolated but retains its FIFO position:
                     // older prompts and native /compact work finish first.
-                    messageQueue.pushIsolated('', { ...buildMode(), operation: 'clear' }, localId);
+                    messageQueue.pushIsolated('', {
+                        ...buildMode(),
+                        operation: 'clear',
+                        clearGeneration: queuedClearGeneration
+                    }, localId);
                     return;
                 }
 
@@ -521,6 +527,7 @@ export async function runOpencode(opts: {
 
     const releaseHeldClearInput = () => {
         queuedClearLocalId = null;
+        queuedClearGeneration = null;
         clearTransitionLatched = false;
         for (const held of heldDuringClear.splice(0)) {
             enqueueUserMessage(held.message, held.localId, true);
@@ -648,6 +655,10 @@ export async function runOpencode(opts: {
             },
             onClearRequested: async (): Promise<void | false> => {
                 try {
+                    if (runtimeGate.recoveryPending
+                        || (queuedClearGeneration !== null && queuedClearGeneration !== runtimeGate.currentClearGeneration)) {
+                        throw new OpenCodeHandoffRefusedError(OPENCODE_RECOVERY_HANDOFF_REFUSAL);
+                    }
                     clearReplacementSessionId = await withRetry(() => api.reserveOpenCodeClearSession(session.sessionId), {
                         minDelay: 500, maxDelay: 30_000, shouldRetry: isRetryableConnectionError
                     });

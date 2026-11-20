@@ -54,6 +54,7 @@ export class OpenCodeRuntimeGate {
     /** One session/wrapper owner, shared by sequential local/remote launchers. */
     readonly workerId = randomUUID();
     private recovering = false;
+    private clearGeneration = 0;
     private clearAdmission?: {
         id: string;
         phase: 'prepared' | 'committed' | 'revoked';
@@ -63,8 +64,10 @@ export class OpenCodeRuntimeGate {
     };
     private readonly exitRequest = new AbortController();
 
+    get currentClearGeneration(): number { return this.clearGeneration; }
     get recoveryPending(): boolean { return this.recovering; }
     setRecoveryPending(pending: boolean): void {
+        if (pending && !this.recovering) this.clearGeneration++;
         this.recovering = pending;
         if (pending && this.clearAdmission?.phase === 'prepared') this.clearAdmission.phase = 'revoked';
     }
