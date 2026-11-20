@@ -1558,6 +1558,7 @@ async fn extension_sees_connect_and_disconnect_per_generation() {
         matches!(e, SessionEvent::Connected)
     })
     .await;
+    assert!(client.flush(LIMIT).await);
     h.command("drop", Value::Null).await;
     wait(&mut started.events, |e| {
         matches!(e, SessionEvent::Disconnected)
@@ -1579,6 +1580,7 @@ async fn extension_sees_connect_and_disconnect_per_generation() {
     );
     client.close();
     client.close();
+    drop((client, started));
     assert_eq!(
         probe.log(),
         [
@@ -1589,6 +1591,23 @@ async fn extension_sees_connect_and_disconnect_per_generation() {
             "disconnected"
         ]
     );
+}
+#[tokio::test]
+async fn dropping_the_client_finishes_extensions() {
+    if ran_in_child("dropping_the_client_finishes_extensions").await {
+        return;
+    }
+    let h = Hub::new().await;
+    let probe = Arc::new(Probe::default());
+    let mut started = bootstrap_with(&h, vec![probe.clone()]).await;
+    wait(&mut started.events, |e| {
+        matches!(e, SessionEvent::Connected)
+    })
+    .await;
+    let shutdown = started.client.shutdown_extensions();
+    drop(started);
+    timeout(LIMIT, shutdown).await.unwrap();
+    assert_eq!(probe.log(), ["register", "connected:0", "disconnected"]);
 }
 #[tokio::test]
 async fn shutdown_extensions_waits_for_every_extension_until_close() {
@@ -1635,7 +1654,7 @@ async fn close_waits_for_an_in_flight_extension_callback() {
             self.release.lock().unwrap().recv_timeout(LIMIT).unwrap();
         }
     }
-    let h = Hub::new().await;
+    let mut h = Hub::new().await;
     let (entered, mut seen) = mpsc::unbounded_channel();
     let (release, blocked) = std::sync::mpsc::channel();
     let gate = Arc::new(Gate {
@@ -1645,6 +1664,7 @@ async fn close_waits_for_an_in_flight_extension_callback() {
     let probe = Arc::new(Probe::default());
     let started = bootstrap_with(&h, vec![gate, probe.clone()]).await;
     timeout(LIMIT, seen.recv()).await.unwrap().unwrap();
+    let id = started.client.id.clone();
     let client = started.client.clone();
     let mut closing = tokio::task::spawn_blocking(move || client.close());
     assert!(timeout(Duration::from_millis(200), &mut closing)
@@ -1654,4 +1674,11 @@ async fn close_waits_for_an_in_flight_extension_callback() {
     release.send(()).unwrap();
     timeout(LIMIT, closing).await.unwrap().unwrap();
     assert_eq!(probe.log(), ["register", "connected:0", "disconnected"]);
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    let snapshot = h.command("snapshot", Value::Null).await;
+    let wire = wire(&snapshot, &id);
+    assert!(
+        !wire.iter().any(|e| e == "s:probe" || e == "alive"),
+        "{wire:?}"
+    );
 }
