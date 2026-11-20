@@ -56,7 +56,8 @@ const UNSUPPORTED_TEMPLATE: IssueTemplate = {
     id: 'weird.yml',
     name: 'Weird form',
     kind: 'unsupported',
-    reason: 'Uses a form feature not supported yet'
+    reason: 'Uses a form feature not supported yet',
+    githubValid: true
 }
 
 describe('NewCardDialog', () => {

@@ -130,7 +130,7 @@ describe('initialAnswersForFields', () => {
 
 describe('isUsableIssueTemplate', () => {
     it('excludes unsupported templates, includes form and legacy templates', () => {
-        expect(isUsableIssueTemplate({ id: 'a', name: 'A', kind: 'unsupported', reason: 'nope' })).toBe(false)
+        expect(isUsableIssueTemplate({ id: 'a', name: 'A', kind: 'unsupported', reason: 'nope', githubValid: true })).toBe(false)
         expect(isUsableIssueTemplate({ id: 'b', name: 'B', kind: 'form', fields: [], labels: [], assignees: [], revision: 'r1' })).toBe(true)
         expect(isUsableIssueTemplate({ id: 'c', name: 'C', kind: 'legacy', body: '', labels: [], assignees: [], revision: 'r1' })).toBe(true)
     })

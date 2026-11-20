@@ -728,12 +728,19 @@ function repoHasNoIssueTemplateDir(response: GhIssueTemplateDirResponse): boolea
 // would still inherit for a repo whose local directory has no valid
 // template or config.yml. Counts every entry parseIssueTemplateDirResponse
 // would accept as a template candidate, including one HAPI's own picker
-// can't render (`kind: 'unsupported'`) — GitHub's chooser still offers it,
-// so it's still a local override as far as inheritance eligibility goes.
+// can't render for a feature GitHub itself still recognizes
+// (`kind: 'unsupported', githubValid: true`) — GitHub's chooser still
+// offers that one, so it's still a local override as far as inheritance
+// eligibility goes. A genuinely malformed file (`githubValid: false` —
+// bad YAML, missing body/label/options, an unrecognized field type) does
+// NOT count: GitHub's own chooser would never have offered it either,
+// so a repo whose only local file is one of these must still inherit the
+// owner's policy (review finding, tiann/hapi#2147, follow-up).
 function repoHasLocalIssueTemplateCoverage(response: GhIssueTemplateDirResponse): boolean {
     if (repoHasNoIssueTemplateDir(response)) return false
     const { templates, hasConfig } = parseIssueTemplateDirResponse(response)
-    return templates.length > 0 || hasConfig
+    const hasGithubValidTemplate = templates.some(t => t.kind !== 'unsupported' || t.githubValid)
+    return hasGithubValidTemplate || hasConfig
 }
 
 // GitHub only inherits default community files (issue templates, config.yml)

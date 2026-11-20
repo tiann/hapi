@@ -65,16 +65,16 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
     try {
         doc = parseYaml(raw)
     } catch {
-        return { id, name: id, kind: 'unsupported', reason: 'Could not parse this template\'s YAML' }
+        return { id, name: id, kind: 'unsupported', reason: 'Could not parse this template\'s YAML', githubValid: false }
     }
     if (!doc || typeof doc !== 'object' || Array.isArray(doc)) {
-        return { id, name: id, kind: 'unsupported', reason: 'Template is not a valid issue form' }
+        return { id, name: id, kind: 'unsupported', reason: 'Template is not a valid issue form', githubValid: false }
     }
     const obj = doc as Record<string, unknown>
     const name = asString(obj.name) ?? id
     const bodyRaw = obj.body
     if (!Array.isArray(bodyRaw) || bodyRaw.length === 0) {
-        return { id, name, kind: 'unsupported', reason: 'Template has no body elements' }
+        return { id, name, kind: 'unsupported', reason: 'Template has no body elements', githubValid: false }
     }
 
     // GitHub issue forms can also declare a top-level `type:` (issue type)
@@ -86,10 +86,10 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
     // above: the whole template is excluded rather than rendered with
     // one of its declared properties silently dropped (review finding).
     if (asString(obj.type)) {
-        return { id, name, kind: 'unsupported', reason: 'Uses a form feature not supported yet (type)' }
+        return { id, name, kind: 'unsupported', reason: 'Uses a form feature not supported yet (type)', githubValid: true }
     }
     if (asStringArray(obj.projects).length > 0) {
-        return { id, name, kind: 'unsupported', reason: 'Uses a form feature not supported yet (projects)' }
+        return { id, name, kind: 'unsupported', reason: 'Uses a form feature not supported yet (projects)', githubValid: true }
     }
 
     // Seeded with every EXPLICIT id in the form up front — a field whose id
@@ -107,7 +107,7 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
     const fields: IssueFormField[] = []
     for (const element of bodyRaw) {
         if (!element || typeof element !== 'object') {
-            return { id, name, kind: 'unsupported', reason: 'Template body contains a malformed element' }
+            return { id, name, kind: 'unsupported', reason: 'Template body contains a malformed element', githubValid: false }
         }
         const elObj = element as Record<string, unknown>
         const type = elObj.type
@@ -116,7 +116,11 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
                 id,
                 name,
                 kind: 'unsupported',
-                reason: `Uses a form feature not supported yet (${typeof type === 'string' ? `type: ${type}` : 'missing field type'})`
+                reason: `Uses a form feature not supported yet (${typeof type === 'string' ? `type: ${type}` : 'missing field type'})`,
+                // SUPPORTED_FIELD_TYPES already matches GitHub's full
+                // documented set of issue-form field types — anything
+                // outside it isn't a type GitHub itself recognizes either.
+                githubValid: false
             }
         }
 
@@ -129,7 +133,7 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
 
         const label = asString(attrs.label)
         if (!label) {
-            return { id, name, kind: 'unsupported', reason: `A "${type}" field is missing a label` }
+            return { id, name, kind: 'unsupported', reason: `A "${type}" field is missing a label`, githubValid: false }
         }
         const explicitFieldId = asString(elObj.id)
         const fieldId = explicitFieldId ?? generateFieldId(label, usedIds)
@@ -163,7 +167,7 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
         } else if (type === 'dropdown') {
             const options = asStringArray(attrs.options)
             if (options.length === 0) {
-                return { id, name, kind: 'unsupported', reason: `Dropdown field "${label}" has no options` }
+                return { id, name, kind: 'unsupported', reason: `Dropdown field "${label}" has no options`, githubValid: false }
             }
             fields.push({
                 kind: 'dropdown',
@@ -181,12 +185,12 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
             for (const rawOption of rawOptions) {
                 const optionLabel = asString(asRecord(rawOption).label)
                 if (!optionLabel) {
-                    return { id, name, kind: 'unsupported', reason: `Checkboxes field "${label}" has a malformed option` }
+                    return { id, name, kind: 'unsupported', reason: `Checkboxes field "${label}" has a malformed option`, githubValid: false }
                 }
                 options.push({ label: optionLabel, required: asRecord(rawOption).required === true })
             }
             if (options.length === 0) {
-                return { id, name, kind: 'unsupported', reason: `Checkboxes field "${label}" has no options` }
+                return { id, name, kind: 'unsupported', reason: `Checkboxes field "${label}" has no options`, githubValid: false }
             }
             fields.push({ kind: 'checkboxes', id: fieldId, label, description, options })
         }
@@ -272,7 +276,7 @@ export function parseLegacyIssueTemplate(id: string, raw: string): IssueTemplate
     // dropping a declared `type:` here would file an untyped issue despite
     // the template's own frontmatter saying otherwise.
     if (asString(frontmatter.type)) {
-        return { id, name, kind: 'unsupported', reason: 'Uses a template feature not supported yet (type)' }
+        return { id, name, kind: 'unsupported', reason: 'Uses a template feature not supported yet (type)', githubValid: true }
     }
     return {
         id,

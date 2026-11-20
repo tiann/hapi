@@ -134,6 +134,18 @@ export type UnsupportedIssueTemplate = {
     name: string
     kind: 'unsupported'
     reason: string
+    /**
+     * Whether GitHub's own chooser would still recognize this as a
+     * template despite HAPI not rendering it — true only for a feature
+     * HAPI deliberately doesn't submit (`type`, `projects`), false for
+     * anything genuinely malformed (bad YAML, missing body/label/options,
+     * an unrecognized field type). Review finding (tiann/hapi#2147,
+     * follow-up): a repo whose only local file is malformed must not
+     * count as having local template coverage for `.github` inheritance
+     * purposes — GitHub itself would still fall back to the owner's
+     * defaults for that repo.
+     */
+    githubValid: boolean
 }
 
 export type IssueTemplate = StructuredIssueTemplate | LegacyIssueTemplate | UnsupportedIssueTemplate

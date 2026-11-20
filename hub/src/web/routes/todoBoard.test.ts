@@ -1962,6 +1962,52 @@ body:
         expect(calls).toEqual(['readme-only', '.github'])
     })
 
+    // Review finding (tiann/hapi#2147, follow-up on the README-only fix
+    // above): a directory entry that *is* a .yml file still gets pushed
+    // into the picker's template list as a `kind: 'unsupported'` entry
+    // even when it's genuinely malformed (not just a feature HAPI doesn't
+    // render) — unlike README.md, nothing filters it out of the discovery
+    // loop. Treating its mere presence as "local coverage" blocked the
+    // owner's inheritance fallback for a repo whose only local file
+    // GitHub's own chooser would never have offered either.
+    it('falls back to .github when the target directory exists but only has a malformed YAML file', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            (target: { repo: string }) => {
+                calls.push(target.repo)
+                if (target.repo === '.github') {
+                    return {
+                        data: {
+                            repository: {
+                                visibility: 'PUBLIC',
+                                issueTemplateDir: {
+                                    entries: [{ name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }]
+                                }
+                            }
+                        }
+                    }
+                }
+                return {
+                    data: {
+                        repository: {
+                            issueTemplateDir: { entries: [{ name: 'broken.yml', object: { text: 'name: Broken\nbody: []' } }] }
+                        }
+                    }
+                }
+            }
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/malformed-only`)
+        expect(response.status).toBe(200)
+        // Inheritance replaces the whole response with .github's own
+        // content (just its config.yml here, no templates of its own) —
+        // the malformed local file isn't merged in alongside it.
+        const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
+        expect(body.templates).toEqual([])
+        expect(body.blankAllowed).toBe(false)
+        expect(calls).toEqual(['malformed-only', '.github'])
+    })
+
     it('does not recurse when the target repo being queried is already .github', async () => {
         const calls: string[] = []
         const app = await createApp(
