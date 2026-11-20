@@ -22,6 +22,12 @@ const PERMITTED_FIELD_ATTRIBUTES: Record<string, Set<string>> = {
     upload: new Set(['label', 'description'])
 }
 
+// The keys a body element itself may carry, sibling to the attribute
+// check above but one level shallower (confirmed directly against
+// GitHub's validation-errors page) — exactly the set this parser already
+// reads off `elObj` elsewhere in this file.
+const PERMITTED_BODY_ELEMENT_KEYS = new Set(['type', 'id', 'attributes', 'validations'])
+
 function asString(value: unknown): string | undefined {
     return typeof value === 'string' ? value : undefined
 }
@@ -326,6 +332,22 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
             return { id, name, kind: 'unsupported', reason: 'Template body contains a malformed element', githubValid: false }
         }
         const elObj = element as Record<string, unknown>
+
+        // GitHub documents this as its own validation error, "Body[i]: `x`
+        // is not a permitted key" (bot review, tiann/hapi#2147, follow-up,
+        // confirmed directly against GitHub's validation-errors page: "An
+        // unexpected key... was provided at the same indentation level as
+        // `type` and `attributes`") — a sibling rule to the attribute-key
+        // check just below, one level shallower: this one's about keys on
+        // the body ELEMENT itself (`type`/`id`/`attributes`/`validations`,
+        // the exact set this parser already reads from `elObj`), not keys
+        // nested inside `attributes:`. An unrecognized key here was never
+        // checked at all.
+        const unexpectedElementKey = Object.keys(elObj).find(key => !PERMITTED_BODY_ELEMENT_KEYS.has(key))
+        if (unexpectedElementKey !== undefined) {
+            return { id, name, kind: 'unsupported', reason: `Template body has a field with an unexpected key "${unexpectedElementKey}"`, githubValid: false }
+        }
+
         const type = elObj.type
         const attrs = asRecord(elObj.attributes)
 

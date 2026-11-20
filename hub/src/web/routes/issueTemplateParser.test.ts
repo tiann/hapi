@@ -604,6 +604,23 @@ body:
         expect(template.reason).toContain('x')
     })
 
+    // Regression (bot review, tiann/hapi#2147, follow-up): a sibling rule
+    // to the attribute-key check above, one level shallower — GitHub
+    // documents "Body[i]: `x` is not a permitted key" for an unexpected
+    // key at the SAME indentation level as `type` and `attributes`
+    // (confirmed directly against GitHub's own example: `x: woof` sitting
+    // beside `type: markdown`), not nested inside `attributes:`.
+    it('is genuinely invalid when a field has an unexpected key at the same level as type', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: markdown\n    x: woof\n    attributes:\n      value: Hi\n  - type: input\n    id: contact\n    attributes:\n      label: Contact'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('x')
+    })
+
     // Regression (bot review, tiann/hapi#2147, follow-up): two fields
     // explicitly declaring the same id used to both parse successfully,
     // each keeping its own `fieldId = explicitFieldId` — generateFieldId's
