@@ -65,7 +65,7 @@ impl IncomingFilter {
             *cursor = (*cursor).min(last_retained);
         }
     }
-    pub(super) fn reconcile_rewind(&mut self, metadata: &Value) {
+    pub(crate) fn reconcile_rewind(&mut self, metadata: &Value) {
         let intent = super::metadata::claude_rewind(metadata)
             .and_then(|r| r["truncateFromLocalId"].as_str().map(str::to_owned));
         let previous = std::mem::replace(&mut self.rewind.observed_claude, intent);
@@ -116,7 +116,7 @@ impl IncomingFilter {
             (after.or(self.cursor).unwrap_or(0), self.rewind.epoch)
         })
     }
-    pub(super) fn backfill_start(&self, start_cursor: Option<i64>) -> Option<(i64, u64)> {
+    pub(crate) fn backfill_start(&self, start_cursor: Option<i64>) -> Option<(i64, u64)> {
         let start = match &self.rewind.pending {
             Some(pending) => pending.after,
             None => match self.backfill_cursor() {
