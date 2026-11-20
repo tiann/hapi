@@ -169,14 +169,19 @@ export function isRenderIrrelevantPatch(current: SessionSummary, next: SessionSu
         && current.todoProgress?.completed === next.todoProgress?.completed
         && current.todoProgress?.total === next.todoProgress?.total
         && (current.todoProgress == null) === (next.todoProgress == null)
-        && current.pendingRequestKinds.length === next.pendingRequestKinds.length
-        && current.pendingRequestKinds.every((kind, i) => kind === next.pendingRequestKinds[i])
-        && current.pendingRequests.length === next.pendingRequests.length
-        && current.pendingRequests.every((req, i) => {
-            const nextReq = next.pendingRequests[i]
+        // The slim list projection deletes empty pending fields (they are typed
+        // as required but omitted on the wire), so both sides may legitimately
+        // lack them — compare null-tolerantly like todoProgress above.
+        && (current.pendingRequestKinds == null) === (next.pendingRequestKinds == null)
+        && current.pendingRequestKinds?.length === next.pendingRequestKinds?.length
+        && (current.pendingRequestKinds ?? []).every((kind, i) => kind === next.pendingRequestKinds?.[i])
+        && (current.pendingRequests == null) === (next.pendingRequests == null)
+        && current.pendingRequests?.length === next.pendingRequests?.length
+        && (current.pendingRequests ?? []).every((req, i) => {
+            const nextReq = next.pendingRequests?.[i]
             return req.id === nextReq?.id
-                && req.kind === nextReq.kind
-                && req.tool === nextReq.tool
+                && req.kind === nextReq?.kind
+                && req.tool === nextReq?.tool
         })
         && sameSessionSummaryMetadata(current.metadata, next.metadata)
         && current.metadataVersion === next.metadataVersion
