@@ -193,6 +193,19 @@ describe('validateIssueFormAnswers', () => {
         expect(validateIssueFormAnswers(fields, [{ kind: 'checkboxes', id: 'terms', checked: ['Just a note'] }])).toEqual({ valid: true })
     })
 
+    // Regression (bot review, tiann/hapi#2147, follow-up): a checked value
+    // outside the field's own declared options used to satisfy the
+    // group-required check purely by being non-empty, while formatIssueBody
+    // then renders every real option as unchecked (none of them match the
+    // undeclared value) — the hub would file an issue with its required
+    // group reading as entirely unanswered.
+    it('rejects a checkbox selection that is not one of the field\'s own declared options, even when it satisfies group-required', () => {
+        const fields: IssueFormField[] = [
+            { kind: 'checkboxes', id: 'terms', label: 'Code of Conduct', required: true, options: [{ label: 'I agree', required: false }] }
+        ]
+        expect(validateIssueFormAnswers(fields, [{ kind: 'checkboxes', id: 'terms', checked: ['not a real option'] }])).toEqual({ valid: false, fieldLabel: 'Code of Conduct' })
+    })
+
     it('rejects a dropdown selection that is not one of the field\'s own declared options', () => {
         const fields: IssueFormField[] = [
             { kind: 'dropdown', id: 'severity', label: 'Severity', options: ['Low', 'High'], multiple: false, required: false }

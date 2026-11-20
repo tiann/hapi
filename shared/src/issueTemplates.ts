@@ -206,6 +206,17 @@ export function validateIssueFormAnswers(
         const answer = answerById.get(field.id)
         if (field.kind === 'checkboxes') {
             const checked = answer && answer.kind === 'checkboxes' ? answer.checked : []
+            // Mirrors the dropdown check below: a submitted value must be
+            // one of the field's own declared options, not an arbitrary
+            // string (review finding, tiann/hapi#2147, follow-up). Checked
+            // before the required checks below — a `checked` array full of
+            // undeclared values could otherwise satisfy the group-required
+            // check purely by being non-empty, while formatIssueBody then
+            // renders every real option as unchecked (none of them match),
+            // filing an issue whose required group reads as unanswered.
+            if (!checked.every(value => field.options.some(option => option.label === value))) {
+                return { valid: false, fieldLabel: field.label }
+            }
             // Group-level `validations.required` (review finding,
             // tiann/hapi#2147, follow-up) — distinct from any individual
             // option's own `required`: GitHub's own form schema blocks
