@@ -44,7 +44,7 @@ export function FastModeSelector(props: {
             {props.verifySavedUltrafastOnLaunch ? <p role="status" className="text-xs text-[var(--app-hint)]">The current catalog does not list Ultrafast for this model. Codex will verify it when starting the session.</p> : null}
             {props.availabilityUnverified ? <p role="status" className="text-xs text-[var(--app-hint)]">
                 {props.keepExistingTier
-                    ? 'Service tier availability could not be verified. Choose Standard to replace the existing tier.'
+                    ? 'Service tier availability could not be verified. Choose Keep existing tier or Standard.'
                     : 'Service tier availability could not be verified. You can choose Standard or Account default.'}
             </p> : null}
         </div>

@@ -40,13 +40,17 @@ describe('shared native queue', () => {
     it('repeats a durable cancel acknowledgement after reload and blocks redelivery until explicit retry', async () => {
         const { queue, rpc, client, dir, consumed, uncertain } = await fixture();
         expect(await queue.cancelHeld('held')).toBe(true);
-        const restarted = new SharedCodexQueue(client, 'thread', join(dir, 'ledger.json'), consumed, uncertain);
+        const mirror = vi.fn();
+        const restarted = new SharedCodexQueue(client, 'thread', join(dir, 'ledger.json'), consumed, uncertain, mirror);
         await restarted.load();
         expect(await restarted.cancel('held')).toBe(true);
+        // Reconnect after acknowledging the Retry preflight, before the Hub
+        // claims the row and dispatches the retry.
+        restarted.replay();
+        expect(mirror).not.toHaveBeenCalled();
         await restarted.enqueue('held', input);
         expect(rpc).not.toHaveBeenCalled();
         await restarted.retryHeldCancellation('held');
-        const mirror = vi.fn();
         const afterRetry = new SharedCodexQueue(client, 'thread', join(dir, 'ledger.json'), consumed, uncertain, mirror);
         await afterRetry.load();
         afterRetry.replay();

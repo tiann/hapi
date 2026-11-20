@@ -527,7 +527,9 @@ export class SharedCodexQueue {
     replay(): void {
         for (const [id, entry] of Object.entries(this.entries)) {
             if (entry.state === 'queued' || entry.state === 'released') this.mirror?.(id, entry.input);
-            if (entry.state === 'canceled') this.mirror?.(id, null);
+            // A pre-admission cancel can be the Hub's Retry preflight.
+            // Leave that row intact for the Hub to claim or delete.
+            if (entry.state === 'canceled' && !entry.canceledBeforeAdmission) this.mirror?.(id, null);
         }
     }
 

@@ -1,4 +1,4 @@
-import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
+import { useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import type { ApiClient } from '@/api/client'
 import { apiErrorMessage } from '@/api/client'
@@ -566,6 +566,11 @@ export function NewSession(props: {
     const resolvedCodexImportTier = codexImportTier === 'fast' && agent === 'codex'
         && !codexModelsState.isLoading && !codexModelsState.error && !showCodexFastMode
         ? 'default' : codexImportTier
+    const importFastModel = showCodexFastMode && !codexModelsState.isLoading ? model : undefined
+    const importFastModelRef = useRef(importFastModel)
+    useLayoutEffect(() => {
+        importFastModelRef.current = importFastModel
+    }, [importFastModel])
 
     useEffect(() => {
         if (resolvedCodexImportTier !== codexImportTier) setCodexImportTier(resolvedCodexImportTier)
@@ -2075,6 +2080,8 @@ export function NewSession(props: {
                 : undefined
 
             if (agent === 'codex' && selectedCodexImportSession) {
+                // The catalog can change while the directory check is in flight.
+                if (resolvedCodexImportTier === 'fast' && importFastModelRef.current !== model) return
                 setIsImportingCodexSession(true)
                 const result = await props.api.syncCodexSession({
                     sessionIds: [selectedCodexImportSession.id],
@@ -2292,7 +2299,9 @@ export function NewSession(props: {
     const selectedTier = importingCodex ? resolvedCodexImportTier : serviceTierExplicit ? serviceTier : 'default'
     const fastModeSelectionPending = agent === 'codex'
         && selectedTier !== 'standard' && selectedTier !== 'default'
-        && (codexModelsState.isLoading || (selectedTier === 'ultrafast' && (Boolean(codexModelsState.error) || importingCodex || !hasExplicitCatalogModel)))
+        && (codexModelsState.isLoading
+            || (selectedTier === 'ultrafast' && (!hasExplicitCatalogModel || importingCodex || Boolean(codexModelsState.error)))
+            || (importingCodex && Boolean(codexModelsState.error)))
     const verifySavedUltrafastOnLaunch = agent === 'codex' && !importingCodex && selectedTier === 'ultrafast'
         && !showCodexUltrafastMode && !fastModeSelectionPending
     const canCreate = Boolean(

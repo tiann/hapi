@@ -2861,73 +2861,119 @@ describe('NewSession launch preferences', () => {
             model: 'hub-agy-model'
         }))
     })
+
+    it.each([
+        { replacement: 'default', duringValidation: false },
+        { replacement: 'standard', duringValidation: true }
+    ])('requires $replacement when a catalog refresh disables Fast for import', async ({ replacement, duringValidation }) => {
+        savePreferredAgent('codex')
+        savePreferredLaunchSettings('machine-1', 'codex', { model: 'gpt-6.2-sol', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'high' })
+        const syncCodexSession = vi.fn(async () => ({ success: true, hapiSessionIds: ['imported-session'] }))
+        const importApi = {
+            ...api, syncCodexSession, resumeSession: vi.fn(async () => 'imported-session'),
+            getCodexSessions: vi.fn(async () => ({ sessions: [{ id: 'native-import', title: 'Native import', cwd: 'C:\\repo' }], machineId: 'machine-1' })),
+        } as unknown as ApiClient
+        const form = () => <NewSession api={importApi} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />
+        const view = renderWithQuery(form())
+        fireEvent.click(screen.getByRole('button', { name: 'codexSync.newSessionInline.choose' }))
+        await waitFor(() => expect(screen.getByTestId('select-codex-history')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('select-codex-history'))
+        const tier = await screen.findByRole('combobox', { name: 'newSession.fastMode' })
+        const create = screen.getByTestId('create')
+        fireEvent.change(tier, { target: { value: 'fast' } })
+        await waitFor(() => expect(create).toBeEnabled())
+
+        let finishDirectoryCheck: ((result: { exists: Record<string, boolean> }) => void) | undefined
+        if (duringValidation) {
+            mocks.checkPathsExists.mockReturnValueOnce(new Promise(resolve => {
+                finishDirectoryCheck = resolve
+            }))
+            fireEvent.click(create)
+            expect(mocks.checkPathsExists).toHaveBeenCalledTimes(1)
+        }
+        mocks.codexModelsError = 'catalog disconnected'
+        view.rerender(form())
+        await act(async () => finishDirectoryCheck?.({ exists: { 'C:\\repo': true } }))
+        expect(screen.getByRole('option', { name: 'misc.fastModeFast' })).toBeDisabled()
+        expect(tier).toHaveValue('fast')
+        expect(create).toBeDisabled()
+        fireEvent.click(create)
+        expect(syncCodexSession).not.toHaveBeenCalled()
+
+        fireEvent.change(tier, { target: { value: replacement } })
+        await waitFor(() => expect(create).toBeEnabled())
+        fireEvent.click(create)
+        await waitFor(() => expect(syncCodexSession).toHaveBeenCalledWith(expect.objectContaining({
+            serviceTier: replacement === 'default' ? undefined : 'standard',
+        })))
+    })
+
+    it.each(['ultrafast', 'standard'] as const)('keeps the imported tier separately from a saved %s launch preference', async preferredTier => {
+        savePreferredAgent('codex');
+        savePreferredLaunchSettings('machine-1', 'codex', { model: 'gpt-6.2-sol', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'high', serviceTier: preferredTier });
+        const syncCodexSession = vi.fn(async () => ({ success: true, hapiSessionIds: ['imported-session'] }));
+        const importApi = {
+            ...api, syncCodexSession, resumeSession: vi.fn(async () => 'imported-session'),
+            getCodexSessions: vi.fn(async () => ({ sessions: [{ id: 'native-import', title: 'Native import', cwd: 'C:\\repo' }], machineId: 'machine-1' })),
+        } as unknown as ApiClient;
+        renderWithQuery(<NewSession api={importApi} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />);
+        expect(await screen.findByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue(preferredTier);
+        expect(screen.getByRole('option', { name: 'Account default' })).toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: 'codexSync.newSessionInline.choose' }));
+        await waitFor(() => expect(screen.getByTestId('select-codex-history')).toBeEnabled());
+        fireEvent.click(screen.getByTestId('select-codex-history'));
+        expect(await screen.findByRole('option', { name: 'Keep existing tier' })).toBeInTheDocument();
+        expect(screen.getByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue('default');
+        expect(screen.queryByRole('option', { name: 'misc.fastModeUltrafast' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('option', { name: 'Account default' })).not.toBeInTheDocument();
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled());
+        fireEvent.click(screen.getByTestId('create'));
+        await waitFor(() => expect(syncCodexSession).toHaveBeenCalledWith(expect.objectContaining({ serviceTier: undefined })));
+        await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('imported-session'));
+        expect(loadPreferredLaunchSettings('machine-1', 'codex')?.serviceTier).toBe(preferredTier);
+    });
+
+    it('keeps the native tier on import when the selected model loses Fast availability', async () => {
+        savePreferredAgent('codex')
+        savePreferredLaunchSettings('machine-1', 'codex', { model: 'gpt-6.2-sol', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'high' })
+        const syncCodexSession = vi.fn(async () => ({ success: true, hapiSessionIds: ['imported-session'] }))
+        const importApi = {
+            ...api, syncCodexSession, resumeSession: vi.fn(async () => 'imported-session'),
+            getCodexSessions: vi.fn(async () => ({ sessions: [{ id: 'native-import', title: 'Native import', cwd: 'C:\\repo' }], machineId: 'machine-1' })),
+        } as unknown as ApiClient
+        renderWithQuery(<NewSession api={importApi} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        fireEvent.click(screen.getByRole('button', { name: 'codexSync.newSessionInline.choose' }))
+        await waitFor(() => expect(screen.getByTestId('select-codex-history')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('select-codex-history'))
+        const tier = await screen.findByRole('combobox', { name: 'newSession.fastMode' })
+        fireEvent.change(tier, { target: { value: 'fast' } })
+        expect(tier).toHaveValue('fast')
+        mocks.nextModelValue = 'gpt-5.6-terra'
+        fireEvent.click(screen.getByTestId('model'))
+        expect(tier).toHaveValue('default')
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(syncCodexSession).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-5.6-terra', serviceTier: undefined })))
+    })
+
+    it('offers Standard for a native import even when the untouched model has no fast tier and catalog lookup fails', async () => {
+        savePreferredAgent('codex');
+        savePreferredLaunchSettings('machine-1', 'codex', { model: 'gpt-5.6-terra', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'high' });
+        mocks.codexModelsError = 'catalog disconnected';
+        const syncCodexSession = vi.fn(async () => ({ success: true, hapiSessionIds: ['imported-session'] }));
+        const importApi = {
+            ...api, syncCodexSession, resumeSession: vi.fn(async () => 'imported-session'),
+            getCodexSessions: vi.fn(async () => ({ sessions: [{ id: 'native-import', title: 'Native import', cwd: 'C:\\repo' }], machineId: 'machine-1' })),
+        } as unknown as ApiClient;
+        renderWithQuery(<NewSession api={importApi} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />);
+        fireEvent.click(screen.getByRole('button', { name: 'codexSync.newSessionInline.choose' }));
+        await waitFor(() => expect(screen.getByTestId('select-codex-history')).toBeEnabled());
+        fireEvent.click(screen.getByTestId('select-codex-history'));
+        const tier = await screen.findByRole('combobox', { name: 'newSession.fastMode' });
+        expect(screen.getByRole('option', { name: 'Keep existing tier' })).toBeInTheDocument();
+        fireEvent.change(tier, { target: { value: 'standard' } });
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled());
+        fireEvent.click(screen.getByTestId('create'));
+        await waitFor(() => expect(syncCodexSession).toHaveBeenCalledWith(expect.objectContaining({ serviceTier: 'standard' })));
+    });
 })
-
-it.each(['ultrafast', 'standard'] as const)('keeps the imported tier separately from a saved %s launch preference', async preferredTier => {
-    savePreferredAgent('codex');
-    savePreferredLaunchSettings('machine-1', 'codex', { model: 'gpt-6.2-sol', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'high', serviceTier: preferredTier });
-    const syncCodexSession = vi.fn(async () => ({ success: true, hapiSessionIds: ['imported-session'] }));
-    const importApi = {
-        ...api, syncCodexSession, resumeSession: vi.fn(async () => 'imported-session'),
-        getCodexSessions: vi.fn(async () => ({ sessions: [{ id: 'native-import', title: 'Native import', cwd: 'C:\\repo' }], machineId: 'machine-1' })),
-    } as unknown as ApiClient;
-    renderWithQuery(<NewSession api={importApi} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />);
-    expect(await screen.findByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue(preferredTier);
-    expect(screen.getByRole('option', { name: 'Account default' })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'codexSync.newSessionInline.choose' }));
-    await waitFor(() => expect(screen.getByTestId('select-codex-history')).toBeEnabled());
-    fireEvent.click(screen.getByTestId('select-codex-history'));
-    expect(await screen.findByRole('option', { name: 'Keep existing tier' })).toBeInTheDocument();
-    expect(screen.getByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue('default');
-    expect(screen.queryByRole('option', { name: 'misc.fastModeUltrafast' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('option', { name: 'Account default' })).not.toBeInTheDocument();
-    await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled());
-    fireEvent.click(screen.getByTestId('create'));
-    await waitFor(() => expect(syncCodexSession).toHaveBeenCalledWith(expect.objectContaining({ serviceTier: undefined })));
-    await waitFor(() => expect(mocks.onSuccess).toHaveBeenCalledWith('imported-session'));
-    expect(loadPreferredLaunchSettings('machine-1', 'codex')?.serviceTier).toBe(preferredTier);
-});
-
-it('keeps the native tier on import when the selected model loses Fast availability', async () => {
-    savePreferredAgent('codex')
-    savePreferredLaunchSettings('machine-1', 'codex', { model: 'gpt-6.2-sol', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'high' })
-    const syncCodexSession = vi.fn(async () => ({ success: true, hapiSessionIds: ['imported-session'] }))
-    const importApi = {
-        ...api, syncCodexSession, resumeSession: vi.fn(async () => 'imported-session'),
-        getCodexSessions: vi.fn(async () => ({ sessions: [{ id: 'native-import', title: 'Native import', cwd: 'C:\\repo' }], machineId: 'machine-1' })),
-    } as unknown as ApiClient
-    renderWithQuery(<NewSession api={importApi} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
-    fireEvent.click(screen.getByRole('button', { name: 'codexSync.newSessionInline.choose' }))
-    await waitFor(() => expect(screen.getByTestId('select-codex-history')).toBeEnabled())
-    fireEvent.click(screen.getByTestId('select-codex-history'))
-    const tier = await screen.findByRole('combobox', { name: 'newSession.fastMode' })
-    fireEvent.change(tier, { target: { value: 'fast' } })
-    expect(tier).toHaveValue('fast')
-    mocks.nextModelValue = 'gpt-5.6-terra'
-    fireEvent.click(screen.getByTestId('model'))
-    expect(tier).toHaveValue('default')
-    await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
-    fireEvent.click(screen.getByTestId('create'))
-    await waitFor(() => expect(syncCodexSession).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-5.6-terra', serviceTier: undefined })))
-})
-
-it('offers Standard for a native import even when the untouched model has no fast tier and catalog lookup fails', async () => {
-    savePreferredAgent('codex');
-    savePreferredLaunchSettings('machine-1', 'codex', { model: 'gpt-5.6-terra', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'high' });
-    mocks.codexModelsError = 'catalog disconnected';
-    const syncCodexSession = vi.fn(async () => ({ success: true, hapiSessionIds: ['imported-session'] }));
-    const importApi = {
-        ...api, syncCodexSession, resumeSession: vi.fn(async () => 'imported-session'),
-        getCodexSessions: vi.fn(async () => ({ sessions: [{ id: 'native-import', title: 'Native import', cwd: 'C:\\repo' }], machineId: 'machine-1' })),
-    } as unknown as ApiClient;
-    renderWithQuery(<NewSession api={importApi} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />);
-    fireEvent.click(screen.getByRole('button', { name: 'codexSync.newSessionInline.choose' }));
-    await waitFor(() => expect(screen.getByTestId('select-codex-history')).toBeEnabled());
-    fireEvent.click(screen.getByTestId('select-codex-history'));
-    const tier = await screen.findByRole('combobox', { name: 'newSession.fastMode' });
-    expect(screen.getByRole('option', { name: 'Keep existing tier' })).toBeInTheDocument();
-    fireEvent.change(tier, { target: { value: 'standard' } });
-    await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled());
-    fireEvent.click(screen.getByTestId('create'));
-    await waitFor(() => expect(syncCodexSession).toHaveBeenCalledWith(expect.objectContaining({ serviceTier: 'standard' })));
-});
