@@ -292,7 +292,6 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "nix",
  "proptest",
  "rustls",
  "rustls-native-certs",
@@ -466,18 +465,6 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "nix"
-version = "0.32.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77730ed34f01f4990cb2ea67fec715ecebc6fab9a6396cf83c5529b13f581bdc"
-dependencies = [
- "bitflags",
- "cfg-if",
- "cfg_aliases",
- "libc",
 ]
 
 [[package]]

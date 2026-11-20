@@ -2,7 +2,7 @@ use bytes::Bytes;
 use futures_util::Future;
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
 use hyper::{body::Incoming, server::conn::http1, service::service_fn, Request, Response};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use std::{convert::Infallible, io};
 use tokio::{
     net::TcpListener,
@@ -59,7 +59,7 @@ impl Listener {
                         connections.spawn(async move {
                             let signal = closing.clone();
                             let service=service_fn(move |r| { let response=handler(r, port, signal.clone()); async move {Ok::<_, Infallible>(response.await)} });
-                            let conn=http1::Builder::new().serve_connection(TokioIo::new(stream),service);
+                            let conn=http1::Builder::new().timer(TokioTimer::new()).serve_connection(TokioIo::new(stream),service);
                             tokio::pin!(conn);
                             tokio::select!{_= &mut conn=>{},_=closing.changed()=>{conn.as_mut().graceful_shutdown();let _=conn.await;}}
 
@@ -102,12 +102,46 @@ mod tests {
             attempts += 1;
             std::future::ready(match attempts {
                 1 => Err(std::io::ErrorKind::ConnectionAborted.into()),
-                2 => Err(std::io::Error::from_raw_os_error(nix::libc::EMFILE)),
+                2 => Err(std::io::Error::other("too many open files")),
                 _ => Ok(()),
             })
         })
         .await;
         assert_eq!(attempts, 3);
         assert_eq!(start.elapsed(), std::time::Duration::from_millis(100));
+    }
+    #[tokio::test(start_paused = true)]
+    async fn incomplete_headers_expire_but_slow_replies_do_not() {
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let server = super::Listener::bind(|_, _, _| async {
+            tokio::time::sleep(Duration::from_secs(120)).await;
+            super::reply(200, "text/plain", "late")
+        })
+        .await
+        .unwrap();
+        let connect = || tokio::net::TcpStream::connect(("127.0.0.1", server.port));
+        let mut partial = connect().await.unwrap();
+        partial
+            .write_all(b"POST / HTTP/1.1\r\nhost: x\r\n")
+            .await
+            .unwrap();
+        let mut full = connect().await.unwrap();
+        full.write_all(
+            b"POST / HTTP/1.1\r\nhost: x\r\nconnection: close\r\ncontent-length: 0\r\n\r\n",
+        )
+        .await
+        .unwrap();
+        let mut out = Vec::new();
+        tokio::time::timeout(Duration::from_secs(60), partial.read_to_end(&mut out))
+            .await
+            .expect("incomplete header was not timed out")
+            .unwrap();
+        let mut out = String::new();
+        full.read_to_string(&mut out).await.unwrap();
+        assert!(
+            out.starts_with("HTTP/1.1 200") && out.ends_with("late"),
+            "{out}"
+        );
     }
 }

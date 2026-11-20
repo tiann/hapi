@@ -22,4 +22,3 @@ tokio = { version = "1.54", features = ["test-util", "process", "io-util"] }
 tokio-rustls = { version = "0.26", features = ["ring"], default-features = false }
 proptest = "1.12"
 tempfile = "3"
-nix = { version = "0.32", default-features = false }

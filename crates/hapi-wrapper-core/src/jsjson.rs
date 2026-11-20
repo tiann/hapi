@@ -90,6 +90,38 @@ pub fn stringify(value: &Value) -> String {
     }
 }
 
+fn unicode_escape(input: &[u8]) -> Option<u16> {
+    let digits = input.strip_prefix(br"\u")?.get(..4)?;
+    if !digits.iter().all(u8::is_ascii_hexdigit) {
+        return None;
+    }
+    u16::from_str_radix(std::str::from_utf8(digits).ok()?, 16).ok()
+}
+
+pub(crate) fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> serde_json::Result<T> {
+    serde_json::from_slice(bytes).or_else(|error| {
+        let mut normalized = None;
+        let mut pos = 0;
+        while let Some(offset) = bytes[pos..].iter().position(|&b| b == b'\\') {
+            let start = pos + offset;
+            let Some(unit) = unicode_escape(&bytes[start..]) else {
+                pos = (start + 2).min(bytes.len());
+                continue;
+            };
+            pos = start + 6;
+            if (0xd800..=0xdbff).contains(&unit)
+                && unicode_escape(&bytes[pos..]).is_some_and(|low| (0xdc00..=0xdfff).contains(&low))
+            {
+                pos += 6;
+            } else if (0xd800..=0xdfff).contains(&unit) {
+                normalized.get_or_insert_with(|| bytes.to_vec())[start + 2..pos]
+                    .copy_from_slice(b"fffd");
+            }
+        }
+        serde_json::from_slice(&normalized.ok_or(error)?)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

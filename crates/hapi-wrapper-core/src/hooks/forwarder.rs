@@ -132,7 +132,7 @@ async fn forward(args: Args, body: Vec<u8>) -> io::Result<Option<Value>> {
         "agy" if args.event == "pre-invocation" => "agy-pre-invocation",
         "agy" => "pre-tool-use",
         "claude"
-            if serde_json::from_slice::<Value>(&body)
+            if crate::jsjson::decode::<Value>(&body)
                 .ok()
                 .is_some_and(|v| v["hook_event_name"] == "PermissionRequest") =>
         {
@@ -158,7 +158,7 @@ async fn forward(args: Args, body: Vec<u8>) -> io::Result<Option<Value>> {
         .await
         .ok()
         .filter(|(s, _)| *s == 200)
-        .and_then(|(_, b)| serde_json::from_slice::<Value>(&b).ok())
+        .and_then(|(_, b)| crate::jsjson::decode::<Value>(&b).ok())
         .unwrap_or_default();
     if route == "permission-request" {
         return Ok(decision(v));
@@ -346,6 +346,31 @@ mod tests {
                 expected
             );
         }
+    }
+    #[tokio::test]
+    async fn permission_with_lone_surrogate_reaches_handler() {
+        use crate::hooks::server::{HookServer, Options};
+        let server = HookServer::start(Options {
+            on_session_hook: std::sync::Arc::new(|_, _| {}),
+            on_permission_request: Some(std::sync::Arc::new(|v| {
+                Box::pin(
+                    async move { Ok(json!({"behavior":"allow","updatedInput":v["tool_input"]})) },
+                )
+            })),
+            on_pre_tool_use: None,
+            token: Some("token".into()),
+        })
+        .await
+        .unwrap();
+        let body = br#"{"hook_event_name":"PermissionRequest","session_id":"s","tool_name":"T","tool_input":{"s":"a\ud800b"}}"#;
+        assert_eq!(
+            forward(args(server.port, "claude", ""), body.to_vec())
+                .await
+                .unwrap(),
+            Some(
+                json!({"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","updatedInput":{"s":"a\u{fffd}b"}}}})
+            )
+        );
     }
     #[tokio::test]
     async fn delayed_permission_and_unreachable_bridge() {

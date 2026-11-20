@@ -62,7 +62,19 @@ fn pretty(value: &Value) -> io::Result<Vec<u8>> {
     ))?;
     Ok(out)
 }
-pub async fn generate(home: &Path, port: u16, token: &str) -> io::Result<PathBuf> {
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Options<'a> {
+    pub filename_prefix: &'a str,
+    pub hooks_enabled: Option<bool>,
+    pub track_permission_mode: bool,
+    pub include_local_permissions: bool,
+}
+pub async fn generate(
+    home: &Path,
+    port: u16,
+    token: &str,
+    options: Options<'_>,
+) -> io::Result<PathBuf> {
     let exe = std::env::current_exe()?;
     let command = [
         exe.to_str()
@@ -79,18 +91,26 @@ pub async fn generate(home: &Path, port: u16, token: &str) -> io::Result<PathBuf
     .join(" ");
     let dir = home.join("tmp/hooks");
     tokio::fs::create_dir_all(&dir).await?;
-    let path = dir.join(format!("session-hook-{}.json", std::process::id()));
+    let path = dir.join(format!(
+        "{}-{}.json",
+        options.filename_prefix,
+        std::process::id()
+    ));
     let temp = dir.join(format!(".{}.tmp", uuid::Uuid::new_v4()));
-    let mut file = tokio::fs::OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .mode(0o600)
-        .open(&temp)
-        .await?;
+    let mut open = tokio::fs::OpenOptions::new();
+    open.create_new(true).write(true);
+    #[cfg(unix)]
+    open.mode(0o600);
+    let mut file = open.open(&temp).await?;
     use tokio::io::AsyncWriteExt;
     let write = async {
-        file.write_all(&pretty(&build(&command, None, false, false))?)
-            .await?;
+        file.write_all(&pretty(&build(
+            &command,
+            options.hooks_enabled,
+            options.track_permission_mode,
+            options.include_local_permissions,
+        ))?)
+        .await?;
         file.flush().await?;
         tokio::fs::rename(&temp, &path).await
     }
@@ -114,7 +134,32 @@ mod tests {
     #[tokio::test]
     async fn settings_and_cleanup() {
         let home = tempfile::tempdir().unwrap();
-        let path = generate(home.path(), 1234, "t $x").await.unwrap();
+        let remote = Options {
+            filename_prefix: "session-hook",
+            ..Options::default()
+        };
+        let path = generate(home.path(), 1234, "t $x", remote).await.unwrap();
+        let local_path = generate(
+            home.path(),
+            1234,
+            "t $x",
+            Options {
+                filename_prefix: "session-hook-local",
+                track_permission_mode: true,
+                include_local_permissions: true,
+                ..Options::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_ne!(path, local_path);
+        let local_file: Value =
+            serde_json::from_slice(&tokio::fs::read(&local_path).await.unwrap()).unwrap();
+        assert_eq!(
+            local_file["hooks"]["PermissionRequest"][0]["hooks"][0]["timeout"],
+            3600
+        );
+        assert_eq!(local_file["hooks"]["PreToolUse"][0]["matcher"], "*");
         let settings: Value =
             serde_json::from_slice(&tokio::fs::read(&path).await.unwrap()).unwrap();
         assert_eq!(settings["hooks"].as_object().unwrap().len(), 2);
@@ -141,6 +186,7 @@ mod tests {
             format!("session-hook-{}.json", std::process::id())
         );
         cleanup(&path).await.unwrap();
+        cleanup(&local_path).await.unwrap();
         assert!(!path.exists());
         let tracked = build("cmd", Some(false), true, false);
         assert_eq!(tracked["hooksConfig"]["enabled"], false);

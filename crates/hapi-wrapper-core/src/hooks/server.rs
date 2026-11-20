@@ -117,7 +117,7 @@ async fn dispatch(req: Request<Incoming>, options: Options, permission: bool, pr
         Err(_) if pre => return deny(),
         Err(_) => return reply(500, "text/plain", "error"),
     };
-    let parsed = serde_json::from_slice::<Value>(&body);
+    let parsed = crate::jsjson::decode::<Value>(&body);
     let v = match parsed {
         Ok(v) if v.is_object() || v.is_array() => v,
         Err(_) if permission => return no_decision(),
