@@ -470,6 +470,71 @@ describe('claudeRemote async message handling', () => {
     });
 });
 
+describe('claudeRemote in-process /clear', () => {
+    it.each([true, false])('settles the clear result before taking another prompt (success=%s)', async (success) => {
+        const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
+        const { claudeRemote } = await import('./claudeRemote');
+        const order: string[] = [];
+        const forwarded: SDKMessage[] = [];
+        const priorId = 'previous-native-session';
+        const resultId = success ? 'fresh-native-session' : priorId;
+        const result: SDKMessage = { type: 'result', subtype: 'success', is_error: false, session_id: priorId };
+
+        queryMock.mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<{ uuid: string; message: { content: string } }> }) => ({
+            async *[Symbol.asyncIterator]() {
+                const input = prompt[Symbol.asyncIterator]();
+                await input.next();
+                yield { type: 'system', subtype: 'init', session_id: priorId };
+                yield result;
+                const clear = await input.next();
+                expect(clear.value?.message.content).toBe('/clear');
+                yield result;
+                if (success) yield { type: 'system', subtype: 'init', session_id: resultId };
+                await Promise.resolve();
+                expect(order).toEqual([`session:${priorId}`, 'ready', '/clear']);
+                yield {
+                    ...result,
+                    is_error: !success,
+                    ...(success ? { local_command: 'clear' } : {}),
+                    session_id: resultId,
+                    user_message_uuid: clear.value?.uuid
+                };
+                expect(order).toContain(success ? 'Context was reset' : 'Could not reset context');
+                expect((await input.next()).value?.message.content).toBe('follow-up');
+            }
+        }));
+
+        const inputs = ['first', '/clear', 'follow-up'];
+        try {
+            await claudeRemote({
+                sessionId: priorId,
+                path: process.cwd(),
+                allowedTools: [],
+                hookSettingsPath: '/tmp/hook.json',
+                canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
+                nextMessage: async () => {
+                    const message = inputs.shift();
+                    if (message === '/clear' || message === 'follow-up') order.push(message);
+                    return message ? { message, mode: { permissionMode: 'default' } } : null;
+                },
+                onReady: (event) => { order.push(event ?? 'ready'); },
+                onResultAccepted: () => order.push('accepted'),
+                isAborted: () => false,
+                onSessionFound: (id) => { order.push(`session:${id}`); },
+                onMessage: (message) => { forwarded.push(message); },
+                onSessionReset: () => order.push('reset')
+            });
+            expect(order).toEqual(success
+                ? [`session:${priorId}`, 'ready', '/clear', 'accepted', 'reset', `session:${resultId}`, 'Context was reset', 'follow-up']
+                : [`session:${priorId}`, 'ready', '/clear', 'accepted', 'Could not reset context', 'follow-up']);
+            expect(forwarded.filter((message) => message.type === 'result')).toEqual([result, result]);
+        } finally {
+            queryMock.mockReset();
+            querySpy.mockRestore();
+        }
+    });
+});
+
 describe('claudeRemote /compact result reporting', () => {
     beforeEach(() => {
         findLatestCompactSummaryMock.mockReset();
@@ -588,6 +653,42 @@ describe('claudeRemote /compact result reporting', () => {
 
         expect(completionEvents).toEqual(['📦 Compaction started', '📦 Compaction failed']);
     }, 15_000);
+
+    it('settles an identified compact failure without a preceding status', async () => {
+        const completionEvents = await runCompact([{
+            ...resultMessage,
+            local_command: 'compact',
+            result: 'Not enough messages to compact.'
+        }]);
+
+        expect(completionEvents).toEqual([
+            '📦 Compaction started',
+            '📦 Compaction failed: Not enough messages to compact.'
+        ]);
+    });
+
+    it('does not settle a manual compact on an autonomous result after an auto compact', async () => {
+        await runCompact([
+            { type: 'system', subtype: 'status', status: 'compacting' },
+            {
+                type: 'system',
+                subtype: 'compact_boundary',
+                compact_metadata: { trigger: 'auto' },
+            },
+            { ...resultMessage, user_message_uuid: 'autonomous-input' },
+            {
+                type: 'system',
+                subtype: 'compact_boundary',
+                compact_metadata: { trigger: 'manual', pre_tokens: 100, post_tokens: 10 },
+            },
+            { ...resultMessage, local_command: 'compact' }
+        ]);
+
+        expect(lastCompactSummary).toEqual({ summary: '', tokensBefore: 100, tokensAfter: 10 });
+        const [autonomousResult, compactResult] = lastForwarded.filter((message) => message.type === 'result');
+        expect(autonomousResult).not.toHaveProperty('hapi_compact_turn');
+        expect(compactResult).toHaveProperty('hapi_compact_turn', true);
+    });
 
     it('still reports success when no failure status arrives', async () => {
         const completionEvents = await runCompact([

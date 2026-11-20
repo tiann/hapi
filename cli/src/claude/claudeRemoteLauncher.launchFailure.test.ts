@@ -172,6 +172,72 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
         expect(queueSizeOnSecondAttempt).toBe(0);
     });
 
+    it.each(['/compact', '/clear'])('delivers %s alone to the running Claude process', async (command) => {
+        const queue = new MessageQueue2<EnhancedMode>(claudeBatchModeHash);
+        const client = makeClient();
+        const session = makeSession(queue, client);
+        const mode: EnhancedMode = { permissionMode: 'default' };
+        queue.push('first', mode, 'first');
+        const delivered: Array<string | undefined> = [];
+
+        claudeRemoteMock.mockImplementationOnce(async (opts) => {
+            delivered.push((await opts.nextMessage())?.message);
+            await opts.onReady();
+            queue.pushIsolateAndClear(command, mode, 'command');
+            queue.push('follow-up', mode, 'follow-up');
+            const next = await opts.nextMessage();
+            delivered.push(next?.message);
+            if (!next) return;
+            expect(session.isHandlingRemoteClear?.() ?? false).toBe(command === '/clear');
+            opts.onResultAccepted();
+            expect(session.isHandlingRemoteClear?.() ?? false).toBe(false);
+            await opts.onReady();
+            delivered.push((await opts.nextMessage())?.message);
+            triggerSwitch(client);
+        }).mockImplementationOnce(async () => {
+            triggerSwitch(client);
+        });
+
+        try {
+            const { claudeRemoteLauncher } = await import('./claudeRemoteLauncher');
+            await claudeRemoteLauncher(session);
+            expect(delivered).toEqual(['first', command, 'follow-up']);
+            expect(claudeRemoteMock).toHaveBeenCalledTimes(1);
+        } finally {
+            session.stopKeepAlive();
+        }
+    });
+
+    it('keeps the wrapper-side clear when native slash commands are disabled', async () => {
+        const queue = new MessageQueue2<EnhancedMode>(claudeBatchModeHash);
+        const client = makeClient();
+        const session = makeSession(queue, client);
+        session.claudeArgs = ['--disable-slash-commands'];
+        const mode: EnhancedMode = { permissionMode: 'default' };
+        queue.push('first', mode, 'first');
+        const delivered: Array<string | undefined> = [];
+
+        claudeRemoteMock.mockImplementationOnce(async (opts) => {
+            delivered.push((await opts.nextMessage())?.message);
+            await opts.onReady();
+            queue.pushIsolateAndClear('/clear', mode, 'command');
+            const next = await opts.nextMessage();
+            delivered.push(next?.message);
+            if (next) triggerSwitch(client);
+        }).mockImplementationOnce(async (opts) => {
+            delivered.push((await opts.nextMessage())?.message);
+            triggerSwitch(client);
+        });
+
+        try {
+            const { claudeRemoteLauncher } = await import('./claudeRemoteLauncher');
+            await claudeRemoteLauncher(session);
+            expect(delivered).toEqual(['first', undefined, '/clear']);
+        } finally {
+            session.stopKeepAlive();
+        }
+    });
+
     it('sends the result carrier before compact completion and ready', async () => {
         const queue = new MessageQueue2<EnhancedMode>((mode) => JSON.stringify(mode));
         queue.push('/compact', { permissionMode: 'default' });

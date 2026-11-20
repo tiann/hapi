@@ -589,6 +589,8 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     modeHash = claudeBatchModeHash(resumeAtBootstrapMode);
                     mode = resumeAtBootstrapMode;
                 }
+                session.isHandlingRemoteClear = () => inFlightMessage?.isolate === true
+                    && parseSpecialCommand(inFlightMessage.deliveredText).type === 'clear';
                 try {
                     await claudeRemote({
                         sessionId: session.sessionId,
@@ -667,11 +669,16 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             let msg = await session.queue.waitForMessagesAndGetAsString(controller.signal);
 
                             if (msg) {
+                                const command = msg.isolate ? parseSpecialCommand(msg.message).type : null;
+                                const canRunIsolatedInProcess = deliveredMessageThisAttempt
+                                    && !spawnArgs?.includes('--disable-slash-commands')
+                                    && (command === 'compact' || command === 'clear');
+                                const requiresIsolationRestart = msg.isolate && !canRunIsolatedInProcess;
                                 // An effort-only change is applied to the running process.
                                 // The batch is already dequeued, so park it first: if Claude
                                 // refuses, times out or exits meanwhile, it stays in `pending`
                                 // and the next attempt starts with the new effort instead.
-                                const effortOnlyChange = Boolean(modeHash && msg.hash !== modeHash && !msg.isolate && mode
+                                const effortOnlyChange = Boolean(modeHash && msg.hash !== modeHash && !requiresIsolationRestart && mode
                                     && hashObject(claudeProcessModeKey(msg.mode)) === hashObject(claudeProcessModeKey(mode)));
                                 let effortApplied = false;
                                 if (effortOnlyChange && applyEffort !== null) {
@@ -684,7 +691,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                                     }
                                     pending = null;
                                 }
-                                if (((modeHash && msg.hash !== modeHash) || msg.isolate) && !effortApplied) {
+                                if (((modeHash && msg.hash !== modeHash) || requiresIsolationRestart) && !effortApplied) {
                                     // Parked into `pending`, not handed to the
                                     // SDK -- deliberately NOT tracked as
                                     // inFlightMessage. `pending` is declared
@@ -762,12 +769,10 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         onSessionReset: () => {
                             logger.debug('[remote]: Session reset');
                             session.clearSessionId();
-                            // /clear discards the resume anchor along with the
-                            // context. Without this, the flag would outlive the
-                            // reset (claudeRemote() returns before spawning
-                            // Claude, so onSessionFound never fires) and the
-                            // next launch would resume the session the user
-                            // just asked to clear.
+                            permissionHandler.reset();
+                            sdkToLogConverter.resetParentChain();
+                            // Clear the resume anchor even when no process was
+                            // running and there will be no init for a new ID.
                             session.consumeOneTimeFlags();
                             // The reset also discards the conversation a
                             // pending rewind points into: the runner cancels
@@ -984,6 +989,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         restoreInFlightMessage();
                     }
                 } finally {
+                    session.isHandlingRemoteClear = null;
                     logger.debug('[remote]: launch finally');
 
                     for (let [toolCallId, { parentToolCallId }] of ongoingToolCalls) {

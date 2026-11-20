@@ -45,11 +45,25 @@ export interface ClaudeSteerTarget {
 }
 
 interface ActiveCompact {
+    uuid: string;
+    initial: boolean;
     baseline: number | null;
     failure: string | null;
     sawCompactSignal: boolean;
     tokensBefore?: number;
     tokensAfter?: number;
+}
+
+interface ActiveClear {
+    uuid: string;
+    previousSessionId: string | null;
+    init?: SDKSystemMessage;
+}
+
+function isCommandResult(message: SDKMessage, uuid: string, command: 'compact' | 'clear', legacyMatch: boolean): boolean {
+    return message.type === 'result'
+        && (message.user_message_uuid === uuid || (message.user_message_uuid == null
+            && (message.local_command === command || (message.local_command == null && legacyMatch))));
 }
 
 // acceptEdits/bypassPermissions are emulated in canCallTool so they can change
@@ -179,6 +193,7 @@ export async function claudeRemote(opts: {
     // Owns all mutable state from command enqueue through its result. Null
     // means no manual compact turn can claim stream status or boundaries.
     const compactState: { active: ActiveCompact | null } = { active: null };
+    const clearState: { active: ActiveClear | null } = { active: null };
     // The local transcript is keyed by the live session id (updated on init),
     // not opts.sessionId which can be stale for forked sessions.
     let currentSessionId = startFrom;
@@ -252,11 +267,13 @@ export async function claudeRemote(opts: {
             return null;
         }
     };
-    const beginCompactCommand = () => {
+    const beginCompactCommand = (uuid: string, initial: boolean) => {
         logger.debug('[claudeRemote] /compact command detected - will process as normal but with compaction behavior');
         // Keep baseline capture, state arming, and command enqueue in one event
         // loop turn so an autonomous result cannot claim the pending compact.
         compactState.active = {
+            uuid,
+            initial,
             baseline: getTranscriptBytes(),
             failure: null,
             sawCompactSignal: false
@@ -353,14 +370,13 @@ export async function claudeRemote(opts: {
             messages.end();
             return null;
         }
-        if (specialCommand.type === 'compact') {
-            beginCompactCommand();
-        }
-
         mode = next.mode;
         // Push first: an optional call would short-circuit its argument when
         // no hook is set, and the message must reach the prompt regardless.
         const submittedUuid = pushUserMessage(next.message);
+        if (specialCommand.type === 'compact') {
+            beginCompactCommand(submittedUuid, true);
+        }
         // Only a plain prompt becomes a resolvable native history point:
         // command turns (/compact) write XML the transcript classifier
         // filters out, so advertising them sends rewind/fork at a boundary
@@ -572,15 +588,14 @@ export async function claudeRemote(opts: {
                     return;
                 }
                 const nextSpecialCommand = parseSpecialCommand(next.message);
-                if (nextSpecialCommand.type === 'compact') {
-                    // /compact can arrive on any turn, not just the initial
-                    // one — arm the compaction tracking here too so later
-                    // turns get the same summary/token completion output.
-                    beginCompactCommand();
-                }
                 mode = next.mode;
                 specialCommand = nextSpecialCommand;
                 const followUpUuid = pushUserMessage(next.message);
+                if (nextSpecialCommand.type === 'compact') {
+                    beginCompactCommand(followUpUuid, false);
+                } else if (nextSpecialCommand.type === 'clear') {
+                    clearState.active = { uuid: followUpUuid, previousSessionId: currentSessionId };
+                }
                 // See applyInitialTurn: only plain prompts are resolvable
                 // history points.
                 if (nextSpecialCommand.type === null) {
@@ -726,21 +741,26 @@ export async function claudeRemote(opts: {
                 }
             }
 
+            const clear = clearState.active;
+            if (clear && message.type === 'system' && message.subtype === 'init'
+                && typeof message.session_id === 'string' && message.session_id !== clear.previousSessionId) {
+                clear.init = message as SDKSystemMessage;
+                continue;
+            }
+            const isClearResult = clear !== null && isCommandResult(message, clear.uuid, 'clear',
+                clear.init?.session_id !== undefined && message.session_id === clear.init.session_id);
+
             const compactMetadata =
                 message.type === 'system' && message.subtype === 'compact_boundary'
                     ? (message as any).compact_metadata
                     : undefined;
             // The result of the manual /compact turn describes the compaction
             // call, not an assistant round: mark it so the log converter skips
-            // tok/s fields for it (everything else flows as before). The
-            // pending-compaction state alone is not enough — the result
-            // handler below treats only the first result AFTER the compaction
-            // signal as the compact result, so an autonomous round completing
-            // between /compact and the signal must stay unmarked.
-            const isCompactTurnResult = compactState.active !== null
-                && compactState.active.sawCompactSignal === true
-                && message.type === 'result';
-            if (!isManualCompactBoundaryMessage(message) && !isCompactEchoMessage(message)) {
+            // tok/s fields for it while autonomous round results stay unmarked.
+            const compact = compactState.active;
+            const isCompactTurnResult = compact !== null
+                && isCommandResult(message, compact.uuid, 'compact', compact.sawCompactSignal);
+            if (!isClearResult && !isManualCompactBoundaryMessage(message) && !isCompactEchoMessage(message)) {
                 opts.onMessage(isCompactTurnResult ? { ...message, hapi_compact_turn: true } : message);
             }
 
@@ -822,32 +842,53 @@ export async function claudeRemote(opts: {
             // Capture the /compact outcome. Only a reported failure is recorded:
             // anything else leaves the success path untouched, so a status shape
             // we do not recognise cannot invent a failure.
-            if (message.type === 'system' && message.subtype === 'status' && compactState.active) {
+            if (message.type === 'system' && message.subtype === 'status' && compact) {
                 const systemStatus = message as SDKSystemMessage;
-                if (systemStatus.status === 'compacting' || systemStatus.compact_result !== undefined) {
-                    compactState.active.sawCompactSignal = true;
+                if (systemStatus.compact_result !== undefined || (compact.initial && systemStatus.status === 'compacting')) {
+                    compact.sawCompactSignal = true;
                 }
                 if (systemStatus.compact_result === 'failed') {
                     const reason = typeof systemStatus.compact_error === 'string'
                         ? systemStatus.compact_error.trim()
                         : '';
-                    compactState.active.failure = reason;
-                    logger.debug(`[claudeRemote] Compaction reported as failed: ${compactState.active.failure}`);
+                    compact.failure = reason;
+                    logger.debug(`[claudeRemote] Compaction reported as failed: ${reason}`);
                 }
             }
 
             // Capture the compaction token delta from the boundary metadata
             // (pre_tokens/post_tokens are the context sizes on each side).
-            if (isManualCompactBoundaryMessage(message) && compactState.active) {
-                compactState.active.sawCompactSignal = true;
-                if (typeof compactMetadata?.pre_tokens === 'number') compactState.active.tokensBefore = compactMetadata.pre_tokens;
-                if (typeof compactMetadata?.post_tokens === 'number') compactState.active.tokensAfter = compactMetadata.post_tokens;
-                logger.debug(`[claudeRemote] compact_boundary tokens: ${compactState.active.tokensBefore} -> ${compactState.active.tokensAfter}`);
+            if (compact && isManualCompactBoundaryMessage(message)) {
+                compact.sawCompactSignal = true;
+                if (typeof compactMetadata?.pre_tokens === 'number') compact.tokensBefore = compactMetadata.pre_tokens;
+                if (typeof compactMetadata?.post_tokens === 'number') compact.tokensAfter = compactMetadata.post_tokens;
+                logger.debug(`[claudeRemote] compact_boundary tokens: ${compact.tokensBefore} -> ${compact.tokensAfter}`);
             }
 
             // Handle result messages
             if (message.type === 'result') {
                 resultSeq += 1;
+                if (clear) {
+                    if (!isClearResult) continue;
+                    clearState.active = null;
+                    pushedUuids.delete(clear.uuid);
+                    opts.onResultAccepted?.();
+                    updateThinking(false);
+                    const id = message.session_id;
+                    if (message.subtype === 'success' && message.is_error !== true
+                        && typeof id === 'string' && id && id !== clear.previousSessionId) {
+                        opts.onSessionReset?.();
+                        currentSessionId = id;
+                        opts.onSessionFound(id);
+                        if (clear.init?.session_id === id) opts.onMessage(clear.init);
+                        await opts.onReady('Context was reset', undefined, 0);
+                    } else {
+                        await opts.onReady('Could not reset context');
+                    }
+                    scheduleNextMessage();
+                    continue;
+                }
+                if (compact && !isCompactTurnResult) continue;
                 if (resultSeq === 1 && specialCommand.type === null && initial) {
                     opts.onFirstResult?.(initial.message);
                 }
@@ -869,12 +910,12 @@ export async function claudeRemote(opts: {
                     `(nextInFlight=${nextMessageFetchInFlight}, inputEnded=${inputEnded})`
                 );
 
-                if (compactState.active) {
-                    if (!compactState.active.sawCompactSignal) continue;
-                    const compact = compactState.active;
+                if (compact) {
                     const sessionId = currentSessionId;
                     const baseline = compact.baseline;
-                    const failure = compact.failure;
+                    const failed = !compact.sawCompactSignal || message.is_error === true || message.subtype !== 'success';
+                    const resultText = typeof message.result === 'string' ? message.result.trim() : '';
+                    const failure = compact.failure ?? (failed ? resultText : null);
                     const tokenCount = (value: number | undefined): number | undefined =>
                         value !== undefined && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
                     const tokensBefore = tokenCount(compact.tokensBefore);
