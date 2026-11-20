@@ -577,6 +577,7 @@ type BoundaryProjection = {
     canonicalBlocks: readonly ChatBlock[]
     visibleBlocks: readonly VisibleChatBlock[]
     isRunning: boolean
+    tailEvictedWhileFollowing?: boolean
 }
 
 function renderedResponseGroups(blocks: readonly VisibleChatBlock[]): { id: string; keys: string[] }[] {
@@ -599,7 +600,28 @@ export function resolveLatestCompletedBoundaryIdForView(
 ): string | null {
     if (viewMode === 'tail') return currentTailBoundaryId
     const memory = rememberedTailBoundary
-    if (!memory || memory.tailRevision !== currentTailRevision) return null
+    if (!memory || memory.tailRevision !== currentTailRevision) {
+        if (
+            projection?.tailEvictedWhileFollowing
+            && !projection.isRunning
+            && currentTailBoundaryId
+        ) {
+            const lastVisibleGroup = renderedResponseGroups(projection.visibleBlocks).at(-1)
+            const lastCanonicalBlock = projection.canonicalBlocks.at(-1)
+            const lastVisibleBlock = projection.visibleBlocks.at(-1)
+            if (
+                lastVisibleGroup
+                && lastVisibleBlock
+                && visibleBlockRole(lastVisibleBlock) === 'assistant'
+                && lastVisibleGroup.id === currentTailBoundaryId
+                && lastCanonicalBlock
+                && lastVisibleGroup.keys.includes(responseBlockKey(lastCanonicalBlock))
+            ) {
+                return currentTailBoundaryId
+            }
+        }
+        return null
+    }
     if (!projection) return memory.id
     if (projection.isRunning || memory.sessionId !== projection.sessionId
         || !memory.id || !memory.canonicalBlocks || !memory.visibleBlocks) return null
@@ -1868,6 +1890,9 @@ function SessionChatInner(props: SessionChatProps) {
         [threadBlocks, props.hasMoreMessages, toolGroupingMode, codexExplorationCollapsed]
     )
 
+    const effectiveTailEvictedWhileFollowing = props.tailEvictedWhileFollowing
+        ?? Boolean(getMessageWindowState(props.session.id).tailEvictedWhileFollowing)
+
     // Fork-current must compare against assistant-ui message ids (`kind:id`),
     // not raw hub message ids — MessageActions receive the rendered card id,
     // and adjacent assistant blocks join under the first block's id.
@@ -1877,13 +1902,13 @@ function SessionChatInner(props: SessionChatProps) {
     // a valid current Fork action, and loading older pages can make the last
     // visible historical message look like the current fork boundary.
     const currentTailBoundaryId = useMemo(() => {
-        if (props.viewMode !== 'tail') return null
+        if (props.viewMode !== 'tail' && !effectiveTailEvictedWhileFollowing) return null
         return findLatestCompletedBoundaryId(
             visibleBlocks,
             props.session.thinking,
             props.session.activeTurnStartedAt ?? null
         )
-    }, [props.viewMode, props.session.activeTurnStartedAt, props.session.thinking, visibleBlocks])
+    }, [effectiveTailEvictedWhileFollowing, props.viewMode, props.session.activeTurnStartedAt, props.session.thinking, visibleBlocks])
 
     useEffect(() => {
         if (props.viewMode !== 'tail') return
@@ -1903,7 +1928,8 @@ function SessionChatInner(props: SessionChatProps) {
         rememberedTailBoundary,
         props.tailRevision,
         { sessionId: props.session.id, canonicalBlocks: reconciled.blocks, visibleBlocks,
-            isRunning: props.session.thinking }
+            isRunning: props.session.thinking,
+            tailEvictedWhileFollowing: effectiveTailEvictedWhileFollowing }
     )
 
     const assistantForkPoints = useMemo(
@@ -1928,9 +1954,6 @@ function SessionChatInner(props: SessionChatProps) {
         visibleGroupsModeRef.current = toolGroupingMode
         visibleGroupsRef.current = visibleBlocks.filter(isToolGroupBlock)
     }, [toolGroupingMode, visibleBlocks])
-
-    const effectiveTailEvictedWhileFollowing = props.tailEvictedWhileFollowing
-        ?? Boolean(getMessageWindowState(props.session.id).tailEvictedWhileFollowing)
 
     // "N new messages" counts rendered blocks, not raw messages: a subagent run
     // is dozens of sidechain messages but a single Task card, and a tool_use +

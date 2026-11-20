@@ -883,6 +883,34 @@ test('concise view reaches preceding conversation and finishes loading when 900 
     // A jump-to-latest control stays available while the tail has been evicted.
     await expect(page.getByRole('button', { name: 'Scroll to bottom' })).toBeVisible()
 
+    // Reconciling the tail (e.g. after an SSE reconnect gap) replaces the
+    // evicted window with the latest 200 hidden tool rows. Because the user is
+    // still following, HappyThread must re-arm bounded concise coverage and
+    // reveal `Fixture message 300` again without manual scrolling.
+    await page.evaluate(() => {
+        window.__probe.requests.length = 0
+        void window.__probe.refetch()
+    })
+    await expect.poll(async () => await page.evaluate(() => {
+        const state = window.__probe.windowState()
+        return {
+            latestReqs: window.__probe.requests.filter((r) => r.direction === 'latest').length,
+            beforeReqs: window.__probe.requests.filter((r) => r.direction === 'before').length,
+            isLoadingMore: state.isLoadingMore,
+            viewMode: state.viewMode,
+            requiresLatestReset: state.requiresLatestReset,
+            oldestSeq: state.oldestSeq
+        }
+    })).toEqual({
+        latestReqs: 1,
+        beforeReqs: 4,
+        isLoadingMore: false,
+        viewMode: 'history',
+        requiresLatestReset: true,
+        oldestSeq: 201
+    })
+    await expect(page.getByText('Fixture message 300', { exact: true })).toBeVisible()
+
     // Delivering an SSE final reply while auto-follow is still enabled must
     // append and render the reply rather than discarding it under the 600-row
     // user-selected history prepend budget, must advance + acknowledge its

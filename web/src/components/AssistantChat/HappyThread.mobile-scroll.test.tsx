@@ -55,6 +55,7 @@ vi.mock('@assistant-ui/react', async (importOriginal) => {
 })
 
 import { HappyThread } from '@/components/AssistantChat/HappyThread'
+import { useHappyChatContext } from '@/components/AssistantChat/context'
 import { SessionChat } from '@/components/SessionChat'
 import { useConciseChatMode } from '@/hooks/useConciseChatMode'
 import { useMessages } from '@/hooks/queries/useMessages'
@@ -2111,9 +2112,9 @@ describe('concise view history coverage', () => {
         }))
         const cleanupReadState = configureSessionReadState('session-chat-concise-eviction-scope', sendReadState)
 
-        const allMessages: DecryptedMessage[] = Array.from({ length: 902 }, (_, index) => {
+        const allMessages: DecryptedMessage[] = Array.from({ length: 903 }, (_, index) => {
             const seq = index + 1
-            const isHiddenTool = seq > 2
+            const isHiddenTool = seq > 3
             return {
                 id: `m-${seq}`,
                 seq,
@@ -2135,10 +2136,18 @@ describe('concise view history coverage', () => {
                             }
                         }
                     }
-                    : {
-                        role: 'user',
-                        content: { type: 'text', text: `User message ${seq}` }
-                    }
+                    : seq === 2
+                        ? {
+                            role: 'agent',
+                            content: {
+                                type: 'codex',
+                                data: { type: 'message', message: 'Older assistant reply 2' }
+                            }
+                        }
+                        : {
+                            role: 'user',
+                            content: { type: 'text', text: `User message ${seq}` }
+                        }
             } as DecryptedMessage
         })
 
@@ -2175,9 +2184,20 @@ describe('concise view history coverage', () => {
             })
         } as unknown as ApiClient
 
+        let latestObservedMessagesCount = 0
+        const checkBoundary = (id: string) => observedIsLatestBoundary?.(id) ?? false
+        let observedIsLatestBoundary: ((id: string) => boolean) | undefined
+        function BoundaryProbe() {
+            const ctx = useHappyChatContext()
+            observedIsLatestBoundary = ctx.isLatestCompletedBoundary
+            return null
+        }
+        searchTargetTestState.renderMessages = () => <BoundaryProbe />
+
         function SessionChatHarness() {
             const { setConciseChatMode } = useConciseChatMode()
             const msg = useMessages(api, sessionId)
+            latestObservedMessagesCount = msg.messages.length
             searchTargetTestState.extras = {
                 messagesVersion: msg.messagesVersion,
                 historyVersion: msg.historyVersion
@@ -2185,9 +2205,20 @@ describe('concise view history coverage', () => {
             return (
                 <div>
                     <button type="button" onClick={() => setConciseChatMode(true)}>Enable concise</button>
+                    <button type="button" onClick={() => { void msg.refetch() }}>Refetch tail</button>
                     <SessionChat
                         api={api}
-                        session={{ id: sessionId, active: true, thinking: false, agentState: null, metadata: {} } as Session}
+                        session={{
+                            id: sessionId,
+                            active: true,
+                            thinking: false,
+                            agentState: null,
+                            metadata: {
+                                capabilities: {
+                                    conversationHistory: { forkCurrent: true }
+                                }
+                            }
+                        } as unknown as Session}
                         messages={msg.messages}
                         readThroughRevision={msg.readThroughRevision}
                         messagesWarning={msg.warning}
@@ -2246,22 +2277,43 @@ describe('concise view history coverage', () => {
                 })
             }
 
-            // Deliver a live final reply (seq 903, contentRevision 903) while still auto-following after hidden-tail eviction.
+            // Older cards in the recovered window must not be treated as the current fork boundary.
+            expect(checkBoundary('user-text:m-1')).toBe(false)
+            expect(checkBoundary('agent-text:m-2:0')).toBe(false)
+            expect(checkBoundary('user-text:m-3')).toBe(false)
+
+            // Reconciling the tail (e.g. after a reconnect gap) replaces the evicted window with
+            // the latest 200 hidden tool rows and must automatically re-arm concise coverage.
+            const getMessagesCallsBeforeRefetch = (api.getMessages as ReturnType<typeof vi.fn>).mock.calls.length
+            fireEvent.click(result.getByRole('button', { name: 'Refetch tail' }))
+            for (let step = 0; step < 8; step += 1) {
+                await act(async () => {
+                    vi.advanceTimersByTime(200)
+                    await Promise.resolve()
+                })
+            }
+            expect((api.getMessages as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThanOrEqual(getMessagesCallsBeforeRefetch + 5)
+            expect(latestObservedMessagesCount).toBe(800)
+            expect(checkBoundary('user-text:m-1')).toBe(false)
+            expect(checkBoundary('agent-text:m-2:0')).toBe(false)
+            expect(checkBoundary('user-text:m-3')).toBe(false)
+
+            // Deliver a live final reply (seq 904, contentRevision 904) while still auto-following after hidden-tail eviction.
             scrollHeight = 900
             viewport.scrollTop = 370
             act(() => {
                 ingestIncomingMessages(sessionId, [{
-                    id: 'm-903',
-                    seq: 903,
-                    contentRevision: 903,
+                    id: 'm-904',
+                    seq: 904,
+                    contentRevision: 904,
                     localId: null,
-                    createdAt: 1_000_903,
-                    invokedAt: 1_000_903,
+                    createdAt: 1_000_904,
+                    invokedAt: 1_000_904,
                     content: {
                         role: 'agent',
                         content: {
                             type: 'codex',
-                            data: { type: 'message', message: 'Final live reply 903' }
+                            data: { type: 'message', message: 'Final live reply 904' }
                         }
                     }
                 } as DecryptedMessage])
@@ -2274,11 +2326,17 @@ describe('concise view history coverage', () => {
                 })
             }
 
-            expect(getSessionLastSeenAt(sessionId)).toBe(903)
-            expect(hasUnseenContent({ id: sessionId, contentRevision: 903 }, getSessionLastSeenAt(sessionId))).toBe(false)
+            // The newly delivered, completed tail reply restores Fork current while older cards stay suppressed.
+            expect(checkBoundary('agent-text:m-904:0')).toBe(true)
+            expect(checkBoundary('user-text:m-1')).toBe(false)
+            expect(checkBoundary('agent-text:m-2:0')).toBe(false)
+            expect(checkBoundary('user-text:m-3')).toBe(false)
+
+            expect(getSessionLastSeenAt(sessionId)).toBe(904)
+            expect(hasUnseenContent({ id: sessionId, contentRevision: 904 }, getSessionLastSeenAt(sessionId))).toBe(false)
             expect(sendReadState).toHaveBeenCalledWith(sessionId, expect.objectContaining({
                 type: 'read',
-                readRevision: 903
+                readRevision: 904
             }))
             expect(result.queryByRole('button', { name: /new message/i })).toBeNull()
             expect(result.getByRole('button', { name: 'Scroll to bottom' })).toBeTruthy()
@@ -2294,17 +2352,17 @@ describe('concise view history coverage', () => {
 
             act(() => {
                 ingestIncomingMessages(sessionId, [{
-                    id: 'm-904',
-                    seq: 904,
-                    contentRevision: 904,
+                    id: 'm-905',
+                    seq: 905,
+                    contentRevision: 905,
                     localId: null,
-                    createdAt: 1_000_904,
-                    invokedAt: 1_000_904,
+                    createdAt: 1_000_905,
+                    invokedAt: 1_000_905,
                     content: {
                         role: 'agent',
                         content: {
                             type: 'codex',
-                            data: { type: 'message', message: 'Unread live reply 904' }
+                            data: { type: 'message', message: 'Unread live reply 905' }
                         }
                     }
                 } as DecryptedMessage])
@@ -2317,8 +2375,8 @@ describe('concise view history coverage', () => {
                 })
             }
 
-            expect(getSessionLastSeenAt(sessionId)).toBe(903)
-            expect(hasUnseenContent({ id: sessionId, contentRevision: 904 }, getSessionLastSeenAt(sessionId))).toBe(true)
+            expect(getSessionLastSeenAt(sessionId)).toBe(904)
+            expect(hasUnseenContent({ id: sessionId, contentRevision: 905 }, getSessionLastSeenAt(sessionId))).toBe(true)
         } finally {
             cleanupReadState()
             clearMessageWindow(sessionId)

@@ -1011,12 +1011,55 @@ export function HappyThread(props: {
     useLayoutEffect(() => {
         hasMoreMessagesRef.current = props.hasMoreMessages
     }, [props.hasMoreMessages])
+    const rearmConciseCoverageForTailReset = useCallback(() => {
+        if (!conciseViewActiveRef.current) {
+            return
+        }
+        initialConciseCoverageDoneRef.current = false
+        conciseCoveragePagesRef.current = 0
+        autoScrollEnabledRef.current = true
+        if (historyLoaderRef.current.autoPaused) {
+            historyLoaderRef.current = {
+                ...historyLoaderRef.current,
+                autoPaused: false
+            }
+        }
+    }, [])
     useLayoutEffect(() => {
         isSyncingTailRef.current = props.isSyncingTail
         if (props.isSyncingTail && conciseTailEvictedRef.current) {
+            const wasFollowing = atBottomRef.current && !searchTargetHistoryLockRef.current
             updateConciseTailEvicted(false)
+            if (wasFollowing) {
+                rearmConciseCoverageForTailReset()
+            }
         }
-    }, [props.isSyncingTail, updateConciseTailEvicted])
+    }, [props.isSyncingTail, rearmConciseCoverageForTailReset, updateConciseTailEvicted])
+    useLayoutEffect(() => {
+        if (
+            !props.isSyncingTail
+            && !props.isLoadingMoreMessages
+            && conciseViewActive
+            && atBottomRef.current
+            && !searchTargetHistoryLockRef.current
+            && renderedMessagesCount === 0
+            && props.rawMessagesCount > 0
+            && retainedMessagesCount <= CONCISE_TAIL_PRESERVE_RAW_LIMIT
+            && (conciseTailEvictedRef.current || initialConciseCoverageDoneRef.current)
+        ) {
+            updateConciseTailEvicted(false)
+            rearmConciseCoverageForTailReset()
+        }
+    }, [
+        conciseViewActive,
+        props.isLoadingMoreMessages,
+        props.isSyncingTail,
+        props.rawMessagesCount,
+        rearmConciseCoverageForTailReset,
+        renderedMessagesCount,
+        retainedMessagesCount,
+        updateConciseTailEvicted
+    ])
     useLayoutEffect(() => {
         isLoadingMoreRef.current = props.isLoadingMoreMessages
     }, [props.isLoadingMoreMessages])
@@ -1865,9 +1908,13 @@ export function HappyThread(props: {
             scrollToBottomSmooth()
             lastScrollTopRef.current = viewport.scrollTop
         }
+        const hadEvictedConciseTail = conciseTailEvictedRef.current
         updateConciseTailEvicted(false)
         autoScrollEnabledRef.current = true
         atBottomRef.current = true
+        if (hadEvictedConciseTail) {
+            rearmConciseCoverageForTailReset()
+        }
         if (props.onJumpToTail) {
             // A historical search window can look like it is already at the
             // bottom after a clamped/programmatic scroll. Always use the
@@ -1877,7 +1924,7 @@ export function HappyThread(props: {
         } else {
             onViewModeChangeRef.current('tail')
         }
-    }, [activeSearchTargetId, dismissSearchTarget, props.onJumpToTail, releaseSearchTargetHistoryLock, scrollToBottomSmooth, updateConciseTailEvicted])
+    }, [activeSearchTargetId, dismissSearchTarget, props.onJumpToTail, rearmConciseCoverageForTailReset, releaseSearchTargetHistoryLock, scrollToBottomSmooth, updateConciseTailEvicted])
 
     // Reset state when session changes
     useLayoutEffect(() => {
