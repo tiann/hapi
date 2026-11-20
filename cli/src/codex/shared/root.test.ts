@@ -1823,9 +1823,39 @@ it('does not reset a native Flex turn accepted while an older Ultrafast read is 
         .toEqual([['thread/settings/update', expect.objectContaining({ serviceTier: 'ultrafast' })]]);
 });
 
+it('does not write Standard when native Flex is accepted during the fallback recheck', async () => {
+    const f = await fixture(); await f.root.activate();
+    const original = f.root.client.request.bind(f.root.client);
+    let entered!: () => void;
+    let release!: () => void;
+    const rechecking = new Promise<void>(resolve => { entered = resolve; });
+    const holdRecheck = new Promise<void>(resolve => { release = resolve; });
+    let reads = 0;
+    const request = vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method === 'thread/resume' && ++reads <= 2) {
+            if (reads === 1) f.native.settings.serviceTier = 'default';
+            else { entered(); await holdRecheck; }
+        }
+        return original(method, params);
+    });
+    const update = expect(f.root.applySettings({ serviceTier: 'ultrafast' })).rejects.toThrow('superseded by a newer tier selection');
+    await rechecking;
+    const choice = await f.root.prepareNativeTurn({ serviceTier: 'flex' });
+    f.native.settings.serviceTier = 'flex';
+    await f.root.confirmNativeTurn(choice.params, true, choice.fallbackNotice, choice.generation);
+    release();
+    await update;
+    expect(f.root.freshParams().serviceTier).toBe('flex');
+    expect(request.mock.calls.filter(([method]) => method === 'thread/settings/update'))
+        .toEqual([['thread/settings/update', expect.objectContaining({ serviceTier: 'ultrafast' })]]);
+    expect(f.events).not.toHaveBeenCalledWith({ type: 'message', message: 'Codex did not apply Ultrafast; changed to Standard.' });
+});
+
 it.each([
     { expectFast: true, effective: 'priority', ready: true },
     { expectFast: true, effective: 'flex', ready: false },
+    { expectFast: true, effective: 'default', ready: false },
+    { expectFast: false, effective: 'default', ready: true },
     { expectFast: false, effective: 'priority', ready: false },
 ])('restores input after cold resume only for the matching Fast override (%j)', async ({ expectFast, effective, ready }) => {
     const f = await fixture({ initialTierPending: true });
