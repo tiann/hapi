@@ -507,10 +507,13 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private async disconnectBackend(backend: ReturnType<typeof createOpencodeBackend>): Promise<void> {
         if (!this.recoverChildExit) return backend.disconnect();
         const retryingStartup = this.options.isRecoveryAttempt && !this.recoveryAttempt.ready;
+        const switchingSameSession = this.exitReason === 'switch' && this.activeAcpSessionId !== null;
         const requireWriterVerification = () =>
             (!retryingStartup || this.nativeLoadStarted)
             && !this.clearRequested
-            && (Boolean(this.recoveryAttempt.loss && (this.activeAcpSessionId || this.nativeLoadStarted || retryingStartup)) || retryingStartup);
+            && (Boolean(this.recoveryAttempt.loss && (this.activeAcpSessionId || this.nativeLoadStarted || retryingStartup))
+                || retryingStartup
+                || switchingSameSession);
         // Clear hands off to a different native conversation. Every reuse of a
         // lost generation's ID, including a local handoff, joins the same fence.
         const hadLossBeforeDisconnect = this.recoveryAttempt.loss !== null;
@@ -521,8 +524,13 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
                 await backend.disconnect();
             }
             if (!requireWriterVerification()) return;
+        } else if (!hadLossBeforeDisconnect && !retryingStartup) {
+            await backend.disconnect();
         }
         const ended = await backend.disconnect({ verifyTermination: true, waitForTransport: true });
+        if (!hadLossBeforeDisconnect && !retryingStartup && this.recoveryAttempt.loss === null && !backend.canRecheckTermination) {
+            return;
+        }
         const stopped = hadLossBeforeDisconnect ? ended : await backend.recheckTermination();
         if (!stopped && !backend.canRecheckTermination) {
             throw new MissingAcpWriterCapture(() => this.finishWithoutNativeSession());

@@ -527,6 +527,9 @@ export class AcpStdioTransport {
     /** Ends the agent process; resolves true once its whole process tree is confirmed gone. */
     async close(options?: { recovery?: boolean }): Promise<boolean> {
         if (!this.closeRequested) {
+            if (!options?.recovery && !this.isChildDeadAtCloseEntry()) {
+                this.ownedServers?.refresh();
+            }
             this.childExitedBeforeClose = this.isChildDeadAtCloseEntry();
         }
         this.closeRequested = true;

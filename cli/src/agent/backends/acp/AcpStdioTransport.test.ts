@@ -270,26 +270,39 @@ describe('AcpStdioTransport agent CLI guard', () => {
         expect(exits).toEqual([]);
     });
 
-    test.each([false, true])('reports close-time child exit as loss only when the child was already dead at close entry (deadAtEntry=%s)', async (deadAtEntry) => {
-        spawnState.pid = deadAtEntry ? 999999999 : process.pid;
+    test.each([false, true])('refreshes the child exit fence before checking close-entry liveness (diedDuringRefresh=%s)', async (diedDuringRefresh) => {
+        spawnState.pid = process.pid;
+        let refreshes = 0;
         const transport = await AcpStdioTransport.create({
             command: 'opencode',
             args: ['acp'],
-            captureChildExitFence: () => ({ complete: true, verify: async () => true, refresh: () => {} })
+            captureChildExitFence: () => ({
+                complete: true,
+                verify: async () => true,
+                refresh: () => {
+                    if (++refreshes === 1 && diedDuringRefresh) {
+                        spawnState.exitCode = 0;
+                    }
+                }
+            })
         });
+        transport.captureChildExitFence();
         const exits: Array<{ error: Error; childProcessExited: boolean }> = [];
         transport.onUnexpectedExit((error, details) => exits.push({ error, childProcessExited: details.childProcessExited }));
 
-        const closing = transport.close();
-        for (const handler of spawnState.exitHandlers) {
-            handler(deadAtEntry ? 0 : null, deadAtEntry ? null : 'SIGTERM');
-        }
-        await closing;
+        vi.mocked(killProcessByChildProcess).mockImplementationOnce(async () => {
+            for (const handler of spawnState.exitHandlers) {
+                handler(diedDuringRefresh ? 0 : null, diedDuringRefresh ? null : 'SIGTERM');
+            }
+            return true;
+        });
+        await transport.close();
         for (const handler of spawnState.closeHandlers) {
-            handler(deadAtEntry ? 0 : null, deadAtEntry ? null : 'SIGTERM');
+            handler(diedDuringRefresh ? 0 : null, diedDuringRefresh ? null : 'SIGTERM');
         }
 
-        if (deadAtEntry) {
+        expect(refreshes).toBe(1);
+        if (diedDuringRefresh) {
             expect(exits).toEqual([
                 { error: expect.objectContaining({ message: expect.stringContaining('ACP process exited') }), childProcessExited: true }
             ]);

@@ -1264,14 +1264,17 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         ['clear', false]
     ] as const)('uses ordinary v2 teardown for %s without transport loss (completeCapture=%s)', async (action, completeCapture) => {
         harness.detectedVersion = 'v2';
-        harness.treeGone = false;
+        harness.treeGone = action === 'switch';
         harness.completeCapture = completeCapture;
         let childExitedBeforeClose = false;
         const { createOpencodeBackend } = await import('./utils/opencodeBackend');
         const originalFactory = vi.mocked(createOpencodeBackend).getMockImplementation()!;
         vi.mocked(createOpencodeBackend).mockImplementationOnce((opts) => {
             const backend = originalFactory(opts);
-            backend.disconnect = vi.fn(async () => {
+            backend.disconnect = vi.fn(async (disconnectOpts?: { verifyTermination?: boolean; waitForTransport?: boolean }) => {
+                if (disconnectOpts?.verifyTermination) {
+                    return harness.treeGone;
+                }
                 // Real AcpStdioTransport.close() kills the live ACP child and
                 // Node delivers 'exit' before close() resolves, which is suppressed
                 // when childExitedBeforeClose is false.
@@ -1308,7 +1311,7 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         }
     });
 
-    linuxRecoveryTest('checks captured server termination on Switch even when ACP exit arrives after close starts', async () => {
+    linuxRecoveryTest('checks captured server termination on Switch even when ACP dies between close entry and the tree scan', async () => {
         harness.detectedVersion = 'v2';
         let treeKilled = 0;
         let verified = 0;
@@ -1322,9 +1325,6 @@ describe('opencodeRemoteLauncher inline model switch', () => {
                     return harness.treeGone;
                 }
                 treeKilled++;
-                harness.unexpectedExitHandler?.(new Error('ACP process exited (code=null, signal=SIGTERM)'), {
-                    childProcessExited: true
-                });
                 return true;
             }) as never;
             return backend;
