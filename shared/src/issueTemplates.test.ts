@@ -113,9 +113,15 @@ describe('initialAnswersForFields', () => {
         expect(initialAnswersForFields(fields)).toEqual([{ kind: 'dropdown', id: 'version', selected: ['2.0'] }])
     })
 
-    it('does not seed a multi-select dropdown even if defaultIndex is somehow present', () => {
+    // Regression (bot review, tiann/hapi#2147, follow-up): GitHub's own
+    // documented schema defines `default` as a single preselected index
+    // with no stated restriction to single-select, and no documented
+    // validation error forbids combining it with `multiple: true` — this
+    // used to be silently dropped, the same prefill-loss class as the
+    // input/textarea case above, one field shape over.
+    it('seeds a multi-select dropdown\'s defaultIndex too, as a single-element selection', () => {
         const fields: IssueFormField[] = [{ kind: 'dropdown', id: 'browsers', label: 'Browsers', options: ['Firefox', 'Chrome'], multiple: true, defaultIndex: 0, required: false }]
-        expect(initialAnswersForFields(fields)).toEqual([])
+        expect(initialAnswersForFields(fields)).toEqual([{ kind: 'dropdown', id: 'browsers', selected: ['Firefox'] }])
     })
 
     it('skips fields with no default: markdown, unset input/textarea, dropdown with no defaultIndex, checkboxes', () => {
