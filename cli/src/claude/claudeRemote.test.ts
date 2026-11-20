@@ -475,7 +475,7 @@ describe('claudeRemote in-process /clear', () => {
         'success', 'failure', 'untagged-failure', 'eof', 'no-result',
         'autonomous-eof', 'acknowledged', 'hook', 'late-result', 'late-init',
         'late-stale-result', 'late-hook', 'tagged-timeout', 'silent-timeout', 'result-eof',
-        'unacknowledged-input-eof', 'acknowledged-input-eof'
+        'unacknowledged-input-eof', 'acknowledged-input-eof', 'failed-clear-input-eof', 'follow-up-result'
     ] as const)('settles an in-process clear on %s', async (outcome) => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
@@ -485,7 +485,8 @@ describe('claudeRemote in-process /clear', () => {
         const lateRotation = outcome === 'late-result' || outcome === 'late-init' || outcome === 'late-stale-result' || outcome === 'late-hook';
         const timesOut = lateRotation || outcome === 'untagged-failure' || outcome === 'tagged-timeout' || outcome === 'silent-timeout';
         const exitsAfterFollowUp = outcome === 'unacknowledged-input-eof' || outcome === 'acknowledged-input-eof';
-        const success = outcome === 'success' || outcome === 'eof' || outcome === 'hook' || outcome === 'result-eof' || exitsAfterFollowUp;
+        const success = outcome === 'success' || outcome === 'eof' || outcome === 'hook'
+            || outcome === 'result-eof' || exitsAfterFollowUp || outcome === 'follow-up-result';
         const resultId = success || lateRotation ? 'fresh-native-session' : priorId;
         const timeoutNotice = 'Claude did not identify the /clear result. Waiting for Claude to exit so background tasks can finish.';
         const completion = success ? 'Context was reset'
@@ -499,6 +500,8 @@ describe('claudeRemote in-process /clear', () => {
             type: 'result', subtype: 'success', is_error: false, session_id: priorId, user_message_uuid: 'first-input'
         };
         const unmatchedResult = { ...result, is_error: true, user_message_uuid: outcome === 'tagged-timeout' ? 'autonomous-input' : undefined };
+        const autonomousResult = { ...result, user_message_uuid: undefined };
+        let followUpResult: SDKMessage | undefined;
 
         queryMock.mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<{ uuid: string; message: { content: string } }> }) => ({
             async *[Symbol.asyncIterator]() {
@@ -568,8 +571,15 @@ describe('claudeRemote in-process /clear', () => {
                     expect(order).toContain(completion);
                     expect(followUp.value?.message.content).toBe('follow-up');
                     if (outcome === 'unacknowledged-input-eof') yield result;
-                    if (outcome === 'acknowledged-input-eof') {
+                    if (outcome === 'acknowledged-input-eof' || outcome === 'follow-up-result') {
                         yield { type: 'user', isReplay: true, uuid: followUp.value?.uuid };
+                    }
+                    if (outcome === 'follow-up-result') {
+                        yield result;
+                        yield autonomousResult;
+                        expect(order.at(-1)).toBe('follow-up');
+                        followUpResult = { ...result, session_id: resultId, user_message_uuid: followUp.value?.uuid };
+                        yield followUpResult;
                     }
                 }
             }
@@ -632,16 +642,21 @@ describe('claudeRemote in-process /clear', () => {
                 expect(order).toEqual([`session:${priorId}`, 'ready', '/clear', 'accepted', completion]);
             } else {
                 expect(order).toEqual(success
-                    ? [`session:${priorId}`, 'ready', '/clear', 'accepted', 'reset', `session:${resultId}`, 'Context was reset', 'follow-up']
+                    ? [`session:${priorId}`, 'ready', '/clear', 'accepted', 'reset', `session:${resultId}`, 'Context was reset', 'follow-up',
+                        ...(outcome === 'follow-up-result' ? ['ready'] : [])]
                     : [`session:${priorId}`, 'ready', '/clear', 'accepted', completion, 'follow-up']);
             }
             expect(clearContextTokens).toEqual(success || lateRotation ? [0] : []);
-            if (outcome === 'result-eof' || outcome === 'unacknowledged-input-eof') expect(inputs).toEqual(['follow-up']);
+            if (outcome === 'result-eof' || outcome === 'unacknowledged-input-eof' || outcome === 'failed-clear-input-eof') {
+                expect(inputs).toEqual(['follow-up']);
+            }
             if (outcome === 'acknowledged-input-eof') expect(inputs).toEqual([]);
             const forwardedResults = forwarded.filter((message) => message.type === 'result');
-            expect(forwardedResults).toEqual(timesOut && outcome !== 'silent-timeout'
-                ? [result, result, unmatchedResult]
-                : outcome === 'unacknowledged-input-eof' ? [result, result, result] : [result, result]);
+            const expectedResults = [result, result];
+            if (timesOut && outcome !== 'silent-timeout') expectedResults.push(unmatchedResult);
+            if (outcome === 'unacknowledged-input-eof') expectedResults.push(result);
+            if (followUpResult) expectedResults.push(result, autonomousResult, followUpResult);
+            expect(forwardedResults).toEqual(expectedResults);
         } finally {
             finishFollowUp.resolve(undefined);
             if (timesOut) vi.useRealTimers();
