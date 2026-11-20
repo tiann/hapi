@@ -272,3 +272,91 @@ describe('PermissionHandler — steer while a request is pending', () => {
         expect(handler.isAborted('tc-plan')).toBe(false);
     });
 });
+
+describe('PermissionHandler — tool call tracking', () => {
+    const toolUse = (id: string, name: string, input: unknown) => ({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input }] },
+    } as any);
+    const toolResult = (id: string) => ({
+        type: 'user',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] },
+    } as any);
+    const trackedIds = (handler: PermissionHandler) =>
+        (handler as unknown as { toolCalls: { id: string }[] }).toolCalls.map((call) => call.id);
+    const requestPermission = (handler: PermissionHandler, name: string, input: unknown) =>
+        handler.handleToolCall(name, input, { permissionMode: 'default' } as any, { signal: new AbortController().signal });
+
+    it('stops tracking a tool call once its result arrives', () => {
+        const { session } = createFakeSession();
+        const handler = new PermissionHandler(session);
+
+        for (let i = 0; i < 50; i++) {
+            handler.onMessage(toolUse(`tc-${i}`, 'Write', { file_path: `/tmp/${i}.txt`, content: 'x'.repeat(1000) }));
+            handler.onMessage(toolResult(`tc-${i}`));
+        }
+
+        expect(trackedIds(handler)).toEqual([]);
+    });
+
+    it('still aborts the turn on an ExitPlanMode result', () => {
+        const { session } = createFakeSession();
+        const handler = new PermissionHandler(session);
+
+        handler.onMessage(toolUse('tc-plan', 'ExitPlanMode', {}));
+        handler.onMessage(toolResult('tc-plan'));
+
+        expect(handler.isAborted('tc-plan')).toBe(true);
+        expect(handler.isAborted('tc-other')).toBe(false);
+    });
+
+    it('resolves a repeated call to the new tool call, not the finished one', async () => {
+        const { session, getAgentState } = createFakeSession();
+        const handler = new PermissionHandler(session);
+
+        handler.onMessage(toolUse('tc-1', 'Bash', { command: 'ls' }));
+        handler.onMessage(toolResult('tc-1'));
+        handler.onMessage(toolUse('tc-2', 'Bash', { command: 'ls' }));
+        void requestPermission(handler, 'Bash', { command: 'ls' });
+        await Promise.resolve();
+
+        expect(Object.keys(getAgentState().requests ?? {})).toEqual(['tc-2']);
+    });
+
+    it('does not resolve a request to a call that already finished', async () => {
+        vi.useFakeTimers();
+        try {
+            const { session, getAgentState } = createFakeSession();
+            const handler = new PermissionHandler(session);
+
+            // tc-stale never got a result; the identical tc-done did.
+            handler.onMessage(toolUse('tc-stale', 'Bash', { command: 'ls' }));
+            handler.onMessage(toolUse('tc-done', 'Bash', { command: 'ls' }));
+            handler.onMessage(toolResult('tc-done'));
+
+            const result = requestPermission(handler, 'Bash', { command: 'ls' });
+            const rejection = expect(result).rejects.toThrow('Could not resolve tool call ID for Bash');
+            await vi.advanceTimersByTimeAsync(1000);
+            await rejection;
+
+            expect(getAgentState().requests).toEqual({});
+            expect(trackedIds(handler)).toEqual([]);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('caps tracking when results never arrive', () => {
+        const { session } = createFakeSession();
+        const handler = new PermissionHandler(session);
+
+        for (let i = 0; i < 1005; i++) {
+            handler.onMessage(toolUse(`tc-${i}`, 'Read', { file_path: `/tmp/${i}.txt` }));
+        }
+
+        const ids = trackedIds(handler);
+        expect(ids).toHaveLength(1000);
+        expect(ids[0]).toBe('tc-5');
+        expect(ids[999]).toBe('tc-1004');
+    });
+});
