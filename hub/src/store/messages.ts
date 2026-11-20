@@ -830,9 +830,14 @@ export function upgradeMessageDeliveryStamp(
     messageId: string,
     stamp: { invokedAt: number | null; receivedAt?: number | null; agentDelivered?: number | null }
 ): boolean {
+    // `invokedAt` is COALESCEd too (#1717 cold-review round 22): a footer
+    // upgrade passes `null` deliberately — a footer's `invoked_at` carries no
+    // real delivery-time information, so overwriting it would move the
+    // footer's sort position for no reason. Only an operator-reply upgrade
+    // passes a real value here.
     const result = prepareCached(db, `
         UPDATE messages
-        SET invoked_at = @invokedAt,
+        SET invoked_at = COALESCE(@invokedAt, invoked_at),
             received_at = COALESCE(@receivedAt, received_at),
             agent_delivered = COALESCE(@agentDelivered, agent_delivered)
         WHERE id = @id

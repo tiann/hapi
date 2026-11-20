@@ -1224,6 +1224,112 @@ describe('Codex Desktop import routes', () => {
         }
     })
 
+    it('upgrades a footer and the reply that answers it together, preserving their order (cold-review round 22)', async () => {
+        // Round 21's fix only upgraded an operator REPLY's synthetic stamp,
+        // gated on `isDeliveredOperatorReply`. A FOOTER never satisfies that
+        // gate (it is agent-authored), so when the canonical session's import
+        // ALREADY holds both a footer and the reply that answered it — not
+        // just a bare prompt — merging a live duplicate of the same pair
+        // upgraded the reply to its real (early) ack time but left the
+        // footer at its import-time (late) synthetic stamp, inverting their
+        // order: the reply now sorts BEFORE the blocker it supposedly
+        // answers, reading as "answered before asked" and hiding the real
+        // blocker. The fix must upgrade both together.
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        const store = new Store(':memory:')
+        const canonical = store.sessions.getOrCreateSession(
+            'canon-pair-import', { codexSessionId: 'codex-thread-22' }, {}, 'default'
+        )
+        const duplicate = store.sessions.getOrCreateSession(
+            'dup-pair-live', { codexSessionId: 'codex-thread-22' }, {}, 'default'
+        )
+        const base = Date.now() - 600_000
+        const footerText = 'Stuck.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs creds' })
+
+        // Canonical (import): filler to win canonical selection, then the
+        // SAME footer+reply pair the live duplicate holds — both imported,
+        // both synthetic, and stamped well AFTER the real event (simulating
+        // an import that lagged the live transcript).
+        for (let i = 0; i < 3; i++) {
+            store.messages.addImportedMessage(canonical.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: { type: 'assistant', message: { content: [{ type: 'text', text: `filler ${i}` }] } }
+                }
+            }, `pair-filler-${i}`, base)
+        }
+        store.messages.addImportedMessage(canonical.id, {
+            role: 'agent',
+            content: { type: 'output', data: { type: 'assistant', message: { content: [{ type: 'text', text: footerText }] } } }
+        }, 'import-footer', base + 5_000)
+        store.messages.addImportedMessage(
+            canonical.id,
+            { role: 'user', content: { type: 'text', text: 'Continue' }, meta: { sentFrom: 'webapp' } },
+            'import-reply',
+            base + 5_500
+        )
+
+        // Duplicate (live): the real event — footer arrives first, reply
+        // answers it after, each with a genuine (non-synthetic) stamp.
+        store.messages.addMessage(duplicate.id, {
+            role: 'agent',
+            content: { type: 'output', data: { type: 'assistant', message: { content: [{ type: 'text', text: footerText }] } } }
+        }, undefined, null, base + 1_000, base + 1_200)
+        store.messages.addMessage(duplicate.id, {
+            role: 'user', content: { type: 'text', text: 'Continue' }, meta: { sentFrom: 'webapp' }
+        }, 'live-reply', null, base + 1_500, base + 1_500)
+        store.messages.markMessagesInvoked(duplicate.id, ['live-reply'], base + 2_000)
+
+        const engine = {
+            getSessionsByNamespace: () => [],
+            transferBlockedAck: () => {},
+            transferAttachedJobs: () => {},
+            deleteSession: async (sessionId: string) => {
+                store.sessions.deleteSession(sessionId, 'default')
+            },
+            handleRealtimeEvent: () => {},
+            reconcileNotifySignalAfterImport: () => {},
+            recordSessionActivity: () => {}
+        } as unknown as SyncEngine
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
+
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-22'] })
+            })
+            expect(response.status).toBe(200)
+            const body = await response.json() as { merged: Array<{ canonicalSessionId?: string }> }
+            expect(body.merged[0]?.canonicalSessionId).toBe(canonical.id)
+
+            const rows = store.messages.getAllMessages(canonical.id)
+            const footers = rows.filter((row) => JSON.stringify(row.content).includes('AGENT_NOTIFY_SUMMARY'))
+            const replies = rows.filter((row) => JSON.stringify(row.content).includes('Continue'))
+            // One of each — the live duplicate's pair is not appended beside
+            // the import's.
+            expect(footers).toHaveLength(1)
+            expect(replies).toHaveLength(1)
+            // Both rows carry the REAL stamp, not the import's synthetic one
+            // — without upgrading the footer too, it would still read
+            // `base + 5_000`.
+            expect(footers[0]!.receivedAt).toBe(base + 1_200)
+            expect(replies[0]!.invokedAt).toBe(base + 2_000)
+            // And the invariant that actually matters: the footer still
+            // sorts before the reply that answers it.
+            expect(footers[0]!.receivedAt ?? footers[0]!.createdAt)
+                .toBeLessThan(replies[0]!.invokedAt!)
+        } finally {
+            store.close()
+        }
+    })
+
     it('does not duplicate an initiating prompt across a THREE-session merge', async () => {
         // Survivor holds a blocked footer. One duplicate supplies the live
         // prompt that preceded it; another supplies the Desktop import of that

@@ -51,6 +51,13 @@ const INPUT_REQUEST_TOOLS = new Set([
  *  is the authoritative total — `pendingRequests.length` may be smaller. */
 export const PENDING_REQUEST_SUMMARY_CAP = 5
 
+/** Cap on `pendingRequestRefs` and, by extension, on the number of live keys
+ *  `SessionBlockedAck.keys` can carry (#1717 cold-review round 22): a key
+ *  cannot be dismissed-but-live for a request the system never tracks an
+ *  identity for in the first place, so this is the real ceiling to size that
+ *  schema's `.max()` against, not an arbitrary round number. */
+export const PENDING_REQUEST_REFS_CAP = 200
+
 export type PendingRequest = {
     id: string
     kind: PendingRequestKind
@@ -107,6 +114,9 @@ export type SessionSummary = {
     id: string
     active: boolean
     thinking: boolean
+    /** False only during the hub's optimistic queue-to-delivery grace window
+     *  (#1717 cold-review round 22); see `Session.thinkingConfirmed`. */
+    thinkingConfirmed?: boolean
     activeAt: number
     updatedAt: number
     /** Creation time is the stable order key before the first user message. */
@@ -258,7 +268,7 @@ export function computePendingRequestRefs(
     agentState: AgentState | null | undefined,
     fallbackSince: number
 ): Array<{ id: string; kind: PendingRequestKind; since: number }> {
-    return computePendingRequests(agentState, fallbackSince, 200)
+    return computePendingRequests(agentState, fallbackSince, PENDING_REQUEST_REFS_CAP)
         .map(({ id, kind, since }) => ({ id, kind, since }))
 }
 
@@ -375,6 +385,7 @@ export function toSessionSummary(
         id: session.id,
         active: session.active,
         thinking: session.thinking,
+        thinkingConfirmed: session.thinkingConfirmed,
         activeAt: session.activeAt,
         updatedAt: session.updatedAt,
         contentRevision: session.contentRevision,

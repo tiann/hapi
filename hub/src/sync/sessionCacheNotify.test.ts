@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'bun:test'
 import type { SyncEvent } from '@hapi/protocol/types'
+import { SessionBlockedAckSchema } from '@hapi/protocol/schemas'
 import { Store } from '../store'
+import { ACK_KEYS_RETENTION_LIMIT } from '../store/sessions'
 import type { EventPublisher } from './eventPublisher'
 import { SessionCache } from './sessionCache'
 
@@ -875,12 +877,12 @@ describe('notify revision is whatever SQLite says (#1717)', () => {
 })
 
 describe('the acknowledgement broadcast stays inside its own schema (#1717)', () => {
-    it('publishes the persisted, bounded key set on the 65th distinct dismissal', () => {
+    it('publishes the persisted, bounded key set on the (limit+1)th distinct dismissal', () => {
         // The cache keeps dismissal keys after their prompts resolve, so a
-        // long-lived session reaches the 64-key bound. SQLite trims there; the
-        // broadcast did not, so it carried 65 keys and the web rejected the
-        // whole session against its own 64-key schema limit — other tabs
-        // silently missed the live dismissal.
+        // long-lived session reaches the bound. SQLite trims there; the
+        // broadcast did not, so it carried one key over the schema's own
+        // limit and the web rejected the whole session — other tabs silently
+        // missed the live dismissal.
         const store = new Store(':memory:')
         const emitted: SyncEvent[] = []
         const cache = new SessionCache(store, {
@@ -893,7 +895,7 @@ describe('the acknowledgement broadcast stays inside its own schema (#1717)', ()
             'default'
         )
 
-        for (let i = 0; i < 65; i++) {
+        for (let i = 0; i < ACK_KEYS_RETENTION_LIMIT + 1; i++) {
             cache.setSessionBlockedAck(session.id, 'handled', Date.now() + i, `request:r${i}`)
         }
 
@@ -903,16 +905,16 @@ describe('the acknowledgement broadcast stays inside its own schema (#1717)', ()
             .map((event) => (event as { data: { blockedAck?: { keys?: string[] | null } } }).data)
             .at(-1)
 
-        expect(row?.blockedAckKeys).toHaveLength(64)
-        expect(last?.blockedAck?.keys).toHaveLength(64)
+        expect(row?.blockedAckKeys).toHaveLength(ACK_KEYS_RETENTION_LIMIT)
+        expect(last?.blockedAck?.keys).toHaveLength(ACK_KEYS_RETENTION_LIMIT)
         // And it is the SAME bounded set the row holds, not merely the same size.
         expect(last?.blockedAck?.keys).toEqual(row?.blockedAckKeys ?? [])
         expect(cache.getSession(session.id)?.blockedAck?.keys).toEqual(row?.blockedAckKeys ?? [])
     })
 
-    it('never evicts a dismissal whose request is still pending, even when 64 later ones arrive (cold-review round 21)', () => {
-        // The bound used to keep "the newest 64" by position alone. An OLD
-        // dismissal whose request stayed open through 64 later, already-
+    it('never evicts a dismissal whose request is still pending, even when the limit\'s worth of later ones arrive (cold-review round 21)', () => {
+        // The bound used to keep "the newest N" by position alone. An OLD
+        // dismissal whose request stayed open through N later, already-
         // resolved dismissals got evicted on position, and the web then
         // presented that still-open, already-dismissed request as blocked
         // again — a store bug, not a stale cache: the key was genuinely gone.
@@ -935,29 +937,30 @@ describe('the acknowledgement broadcast stays inside its own schema (#1717)', ()
             'default'
         )
 
-        // Dismiss the five still-open requests first (oldest), then 60 more
-        // whose requests are NOT in agentState — already resolved by the time
-        // they were dismissed. 65 distinct keys total, one over the bound.
+        // Dismiss the five still-open requests first (oldest), then enough
+        // more — whose requests are NOT in agentState, already resolved by
+        // the time they were dismissed — to land one over the bound.
+        const total = ACK_KEYS_RETENTION_LIMIT + 1
         for (let i = 0; i < 5; i++) {
             cache.setSessionBlockedAck(session.id, 'handled', Date.now() + i, `request:r${i}`)
         }
-        for (let i = 5; i < 65; i++) {
+        for (let i = 5; i < total; i++) {
             cache.setSessionBlockedAck(session.id, 'handled', Date.now() + i, `request:r${i}`)
         }
 
         const row = store.sessions.getSessionByNamespace(session.id, 'default')
         const keys = row?.blockedAckKeys ?? []
 
-        expect(keys).toHaveLength(64)
+        expect(keys).toHaveLength(ACK_KEYS_RETENTION_LIMIT)
         // Every still-open request survives regardless of how old its
         // dismissal is.
         for (let i = 0; i < 5; i++) {
             expect(keys).toContain(`request:r${i}`)
         }
-        // Budget for resolved keys is 64 - 5 = 59, so only the OLDEST resolved
-        // dismissal (r5) is evicted to make room — not a live one.
+        // Budget for resolved keys is (limit - 5), so only the OLDEST
+        // resolved dismissal (r5) is evicted to make room — not a live one.
         expect(keys).not.toContain('request:r5')
-        for (let i = 6; i < 65; i++) {
+        for (let i = 6; i < total; i++) {
             expect(keys).toContain(`request:r${i}`)
         }
 
@@ -966,6 +969,46 @@ describe('the acknowledgement broadcast stays inside its own schema (#1717)', ()
             .map((event) => (event as { data: { blockedAck?: { keys?: string[] | null } } }).data)
             .at(-1)
         expect(last?.blockedAck?.keys).toEqual(keys)
+    })
+
+    it('keeps a full-session snapshot inside its own schema when 65 live dismissals are all still pending (cold-review round 22)', () => {
+        // Round 21 never evicted a LIVE key, but also never capped how many
+        // live keys could pile up — with 65 requests simultaneously pending
+        // and dismissed, the old 64-key schema bound rejected the whole
+        // snapshot even though every key was genuinely live and correctly
+        // preserved. The fix raises the schema bound to match the system's
+        // own ceiling on pending-request identities, not the retention
+        // budget for RESOLVED keys.
+        const store = new Store(':memory:')
+        const emitted: SyncEvent[] = []
+        const cache = new SessionCache(store, {
+            emit: (event: SyncEvent) => { emitted.push(event) }
+        } as EventPublisher)
+        const requests: Record<string, { tool: string; arguments: Record<string, never> }> = {}
+        for (let i = 0; i < 65; i++) {
+            requests[`r${i}`] = { tool: 'Bash', arguments: {} }
+        }
+        const session = cache.getOrCreateSession(
+            'ack-bound-all-live',
+            { path: '/tmp/project', host: 'localhost' },
+            { requests, completedRequests: {} },
+            'default'
+        )
+
+        for (let i = 0; i < 65; i++) {
+            cache.setSessionBlockedAck(session.id, 'handled', Date.now() + i, `request:r${i}`)
+        }
+
+        const row = store.sessions.getSessionByNamespace(session.id, 'default')
+        const keys = row?.blockedAckKeys ?? []
+
+        // All 65 survive — none evicted, because all 65 are live — and the
+        // count stays comfortably inside SessionBlockedAckSchema's bound.
+        expect(keys).toHaveLength(65)
+        for (let i = 0; i < 65; i++) {
+            expect(keys).toContain(`request:r${i}`)
+        }
+        expect(() => SessionBlockedAckSchema.parse({ at: Date.now(), reason: 'handled', keys })).not.toThrow()
     })
 })
 

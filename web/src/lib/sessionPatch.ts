@@ -67,6 +67,7 @@ export function applySessionDetailPatch(session: Session, patch: SessionPatch): 
     if (patch.readState) assign('readState', mergeReadState(session.readState, patch.readState))
     if (patch.active !== undefined) assign('active', patch.active)
     if (patch.thinking !== undefined) assign('thinking', patch.thinking)
+    if (patch.thinkingConfirmed !== undefined) assign('thinkingConfirmed', patch.thinkingConfirmed)
     if (patch.activeAt !== undefined) assign('activeAt', patch.activeAt)
     // Monotonic with hub applySessionPatch: a rejected stale
     // metadata/agentState replay must not rewind updatedAt.

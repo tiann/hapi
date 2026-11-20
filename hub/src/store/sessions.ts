@@ -8,6 +8,7 @@ import type { StoredSession, VersionedUpdateResult } from './types'
 import { safeJsonParse } from './json'
 import { updateVersionedField } from './versionedUpdates'
 import { removeMessageContentSearchForSession } from './messageContentSearch'
+import { PENDING_REQUEST_REFS_CAP } from '@hapi/protocol'
 
 function runInTransaction<T>(db: Database, operation: () => T): T {
     return db.inTransaction ? operation() : db.transaction(operation)()
@@ -1321,19 +1322,27 @@ export function parseAckKeys(raw: string | null | undefined): string[] | null {
     }
 }
 
-/** Exported so tests can exercise the retention boundary without a magic number. */
-export const ACK_KEYS_RETENTION_LIMIT = 64
+/**
+ * Exported so tests can exercise the retention boundary without a magic
+ * number. Pinned to `PENDING_REQUEST_REFS_CAP`, not an arbitrary round number
+ * (#1717 cold-review round 22): that is already the system's own ceiling on
+ * how many pending-request identities one session tracks, and a live key can
+ * only exist for a request that has one. `SessionBlockedAckSchema.keys` is
+ * bounded by the same constant, so retention and the wire schema can never
+ * disagree about how many keys are allowed through.
+ */
+export const ACK_KEYS_RETENTION_LIMIT = PENDING_REQUEST_REFS_CAP
 
 function serialiseAckKeys(keys: string[] | null | undefined, livePendingKeys?: ReadonlySet<string>): string | null {
     if (!keys || keys.length === 0) return null
     if (keys.length <= ACK_KEYS_RETENTION_LIMIT) return JSON.stringify(keys)
     // Bounded so a long-lived session cannot grow this without limit. Plain
     // "keep the newest N" evicted an OLD dismissal whose request was still
-    // pending once 64 later ones piled up, and the web re-flagged it as
-    // blocked (cold-review round 21) — the key was gone, not the request.
-    // A still-live key (the caller's current footer or an open request) is
-    // preserved regardless of position; only resolved/superseded keys are
-    // evicted, oldest first, to make room.
+    // pending once the limit's worth of later ones piled up, and the web
+    // re-flagged it as blocked (cold-review round 21) — the key was gone, not
+    // the request. A still-live key (the caller's current footer or an open
+    // request) is preserved regardless of position; only resolved/superseded
+    // keys are evicted, oldest first, to make room.
     if (!livePendingKeys || livePendingKeys.size === 0) {
         return JSON.stringify(keys.slice(-ACK_KEYS_RETENTION_LIMIT))
     }

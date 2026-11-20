@@ -1,4 +1,5 @@
 import { describe, expect, it, spyOn } from 'bun:test'
+import { createHash } from 'node:crypto'
 import type { Database } from 'bun:sqlite'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -614,5 +615,70 @@ describe('OpenCode rewind transcript hash survives a hub upgrade (#1717 cold-rev
 
         expect(hashOpenCodeRewindTranscript(edited))
             .not.toBe(hashOpenCodeRewindTranscript(original))
+    })
+
+    // Cold-review round 22: the test above hashes BOTH sides through
+    // `hashOpenCodeRewindTranscript`, so it cannot see a drift between the
+    // helper and what the PRE-#1717 hub actually hashed — a key-order or
+    // null-vs-omitted difference changes the string either way and the test
+    // still passes, because the base serializer never appears in the
+    // experiment. A migration-boundary compatibility claim needs an artifact
+    // produced independently of the code under test: this hardcodes the
+    // exact bytes `toStoredMessage`'s pre-#1717 shape would have produced
+    // (`id, sessionId, content, createdAt, seq, localId, invokedAt,
+    // scheduledAt` — no `contentRevision` for a plain row, no trailing
+    // `deliveryState`/`deliveryPending` for an ordinary queued message) and
+    // hashes THAT directly, the way the old hub's own `JSON.stringify` did.
+    it('matches the hash a pre-upgrade hub would have written for this reservation', () => {
+        const preUpgradeSerializedShape = {
+            id: baseMessage.id,
+            sessionId: baseMessage.sessionId,
+            content: baseMessage.content,
+            createdAt: baseMessage.createdAt,
+            seq: baseMessage.seq,
+            localId: baseMessage.localId,
+            invokedAt: baseMessage.invokedAt,
+            scheduledAt: baseMessage.scheduledAt
+        }
+        const preUpgradeHash = createHash('sha256')
+            .update(JSON.stringify([preUpgradeSerializedShape]))
+            .digest('hex')
+
+        const migratedRow = [{ ...baseMessage, sweptAt: null, receivedAt: null, agentDelivered: null }]
+
+        expect(hashOpenCodeRewindTranscript(migratedRow)).toBe(preUpgradeHash)
+    })
+
+    it('matches the pre-upgrade hash for the conditionally-present fields too', () => {
+        // Same independent-artifact discipline, exercising the three fields
+        // `toStoredMessage` only includes when they apply: `contentRevision`
+        // must be OMITTED, not nulled, when it is the default (0); same for
+        // `deliveryState` / `deliveryPending` on an ordinary queued message.
+        const preUpgradeSerializedShape = {
+            id: baseMessage.id,
+            sessionId: baseMessage.sessionId,
+            content: baseMessage.content,
+            createdAt: baseMessage.createdAt,
+            seq: baseMessage.seq,
+            localId: baseMessage.localId,
+            invokedAt: baseMessage.invokedAt,
+            scheduledAt: baseMessage.scheduledAt
+            // No contentRevision / deliveryState / deliveryPending keys at all.
+        }
+        const preUpgradeHash = createHash('sha256')
+            .update(JSON.stringify([preUpgradeSerializedShape]))
+            .digest('hex')
+
+        const migratedRowWithDefaults = [{
+            ...baseMessage,
+            sweptAt: null,
+            receivedAt: null,
+            agentDelivered: null,
+            contentRevision: undefined,
+            deliveryState: undefined,
+            deliveryPending: undefined
+        }]
+
+        expect(hashOpenCodeRewindTranscript(migratedRowWithDefaults)).toBe(preUpgradeHash)
     })
 })

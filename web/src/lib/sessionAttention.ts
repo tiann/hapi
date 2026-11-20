@@ -262,7 +262,16 @@ export function getSessionBlockedState(
     // point-in-time claim from a turn that has since been superseded, and
     // nothing is waiting on the operator. Also covers the window before the
     // hub's clear-on-new-turn patch lands.
-    if (summary.thinking) {
+    //
+    // `thinkingConfirmed === false` excludes the hub's optimistic
+    // queue-to-delivery grace window (#1717 cold-review round 22): queueing a
+    // reply sets `thinking` before the CLI has confirmed the agent ever saw
+    // it, so a reply cancelled in that window never superseded anything. Not
+    // suppressing here keeps the stored footer visible through the whole
+    // queue-then-cancel cycle, so the arrival tracker never sees it disappear
+    // and reappear and double-alert for the same blocker. Absent (older hubs,
+    // or once the CLI confirms) behaves exactly as before.
+    if (summary.thinking && summary.thinkingConfirmed !== false) {
         return null
     }
 

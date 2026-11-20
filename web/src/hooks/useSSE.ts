@@ -135,6 +135,10 @@ export function isRenderIrrelevantPatch(current: SessionSummary, next: SessionSu
         && current.readState?.version === next.readState?.version
         && current.active === next.active
         && current.thinking === next.thinking
+        // `thinking` can stay `true` across the whole queue-to-delivery grace
+        // window while only this field moves (#1717 cold-review round 22) —
+        // skipping the render here would leave the blocked chip stale.
+        && current.thinkingConfirmed === next.thinkingConfirmed
         && current.updatedAt === next.updatedAt
         && current.lastUserMessageAt === next.lastUserMessageAt
         && current.backgroundTaskCount === next.backgroundTaskCount
@@ -566,6 +570,7 @@ export function useSSE(options: {
                     readState: mergeReadState(current.readState, patch.readState),
                     active: patch.active ?? current.active,
                     thinking: patch.thinking ?? current.thinking,
+                    thinkingConfirmed: patch.thinkingConfirmed ?? current.thinkingConfirmed,
                     activeAt: patch.activeAt ?? current.activeAt,
                     // Monotonic: stale versioned-patch replays can carry an
                     // older updatedAt; never move the list clock backward.

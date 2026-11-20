@@ -417,6 +417,38 @@ describe('getSessionBlockedState', () => {
         )).toBeNull()
     })
 
+    it('keeps a stored footer visible during the queue-to-delivery grace window (cold-review round 22)', () => {
+        // `thinkingConfirmed: false` is what `markMessageQueued` sends while a
+        // reply sits in the hub's optimistic grace window, before the CLI has
+        // confirmed it ever reached the agent. A reply cancelled in that
+        // window never superseded the stored footer, so hiding it here (and
+        // showing it again once `thinking` reverts) made the arrival tracker
+        // read the SAME still-unanswered blocker as a brand-new one and
+        // double-alert.
+        const state = getSessionBlockedState(
+            makeSummary({
+                id: 'a',
+                thinking: true,
+                thinkingConfirmed: false,
+                lastNotify: { status: 'blocked', at: now, note: null }
+            }),
+            { now }
+        )
+        expect(state?.reason).toBe('blocked')
+    })
+
+    it('still suppresses a stored footer once the CLI confirms the turn', () => {
+        expect(getSessionBlockedState(
+            makeSummary({
+                id: 'a',
+                thinking: true,
+                thinkingConfirmed: true,
+                lastNotify: { status: 'blocked', at: now, note: null }
+            }),
+            { now }
+        )).toBeNull()
+    })
+
     it('still blocks on a live prompt while the agent is thinking', () => {
         // A remote Claude agent keeps `thinking` true for the whole wait: the
         // SDK only clears it on the turn's result, and the permission handler

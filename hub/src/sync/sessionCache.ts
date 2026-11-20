@@ -453,6 +453,7 @@ export class SessionCache {
             agentStateVersion: stored.agentStateVersion,
             thinking: existing?.thinking ?? false,
             thinkingAt: existing?.thinkingAt ?? 0,
+            thinkingConfirmed: existing?.thinkingConfirmed,
             activeTurnStartedAt: existing?.activeTurnStartedAt ?? null,
             backgroundTaskCount: existing?.backgroundTaskCount ?? 0,
             backgroundTasks: existing?.backgroundTasks ?? [],
@@ -940,6 +941,7 @@ export class SessionCache {
 
         if (patch.active !== undefined) session.active = patch.active
         if (patch.thinking !== undefined) session.thinking = patch.thinking
+        if (patch.thinkingConfirmed !== undefined) session.thinkingConfirmed = patch.thinkingConfirmed
         if (patch.activeAt !== undefined) session.activeAt = patch.activeAt
         if (patch.contentRevision !== undefined) session.contentRevision = Math.max(session.contentRevision ?? 0, patch.contentRevision)
         if (patch.readState) session.readState = mergeReadState(session.readState, patch.readState)
@@ -1020,6 +1022,7 @@ export class SessionCache {
         const wasActive = session.active
         const wasThinking = session.thinking
         const previousActiveTurnStartedAt = session.activeTurnStartedAt
+        const previousThinkingConfirmed = session.thinkingConfirmed
         const previousPermissionMode = session.permissionMode
         const previousModel = session.model
         const previousModelReasoningEffort = session.modelReasoningEffort
@@ -1038,6 +1041,11 @@ export class SessionCache {
         session.activeAt = Math.max(session.activeAt, hubNow)
         session.thinking = requestedThinking || preserveQueuedThinking
         session.thinkingAt = t
+        // The CLI's OWN report, not the hub's queue-grace override, is what
+        // confirms a turn actually started (#1717 cold-review round 22).
+        // `preserveQueuedThinking` alone leaves it exactly as `markMessageQueued`
+        // set it — still unconfirmed.
+        if (requestedThinking) session.thinkingConfirmed = true
         if (!requestedThinking && preserveQueuedThinking && hasUnconsumedPrompt) {
             session.activeTurnStartedAt = hubNow
         } else if (wasThinking && !session.thinking) {
@@ -1103,9 +1111,11 @@ export class SessionCache {
             || previousCollaborationMode !== session.collaborationMode
             || previousCopilotAgentMode !== session.copilotAgentMode
         const turnBoundaryChanged = previousActiveTurnStartedAt !== session.activeTurnStartedAt
+        const thinkingConfirmedChanged = previousThinkingConfirmed !== session.thinkingConfirmed
         const shouldBroadcast = (!wasActive && session.active)
             || (wasThinking !== session.thinking)
             || turnBoundaryChanged
+            || thinkingConfirmedChanged
             || modeChanged
             || (now - lastBroadcastAt > 60_000)
 
@@ -1118,6 +1128,7 @@ export class SessionCache {
                     active: true,
                     activeAt: session.activeAt,
                     thinking: session.thinking,
+                    thinkingConfirmed: session.thinkingConfirmed,
                     activeTurnStartedAt: session.activeTurnStartedAt,
                     permissionMode: session.permissionMode,
                     model: session.model,
@@ -1187,7 +1198,15 @@ export class SessionCache {
 
         session.thinking = true
         session.thinkingAt = nextTime
-        if (!wasThinking) session.activeTurnStartedAt = activeTurnStartedAt
+        if (!wasThinking) {
+            session.activeTurnStartedAt = activeTurnStartedAt
+            // This turn has only been QUEUED, not confirmed by the CLI — a
+            // cancel before delivery never reaches a running agent at all
+            // (#1717 cold-review round 22). Only stamped on the transition
+            // into thinking: a reply queued mid-turn must not demote an
+            // already-confirmed turn back to unconfirmed.
+            session.thinkingConfirmed = false
+        }
         this.recordTurn(session, wasThinking, session.activeTurnStartedAt ?? nextTime, 'hub_prompt', 'idle')
         session.updatedAt = Math.max(session.updatedAt, nextTime)
         this.pendingThinkingUntilBySessionId.set(session.id, nextTime + QUEUED_MESSAGE_THINKING_GRACE_MS)
@@ -1200,6 +1219,7 @@ export class SessionCache {
                 sessionId: session.id,
                 data: {
                     thinking: true,
+                    thinkingConfirmed: session.thinkingConfirmed,
                     activeTurnStartedAt: session.activeTurnStartedAt,
                     updatedAt: session.updatedAt
                 } satisfies SessionPatch

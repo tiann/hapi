@@ -250,19 +250,28 @@ function extractClaudeUserMessageTextFromAgentOutput(content: unknown): string |
  * repeat the same regression; it would have to touch this function on
  * purpose.
  */
-function hashableOpenCodeRewindFields(message: StoredMessage) {
+function hashableOpenCodeRewindFields(message: StoredMessage): Record<string, unknown> {
+    // Reproduces `toStoredMessage`'s pre-#1717 shape BYTE FOR BYTE: same key
+    // order, and the three conditional fields OMITTED when absent rather than
+    // defaulted to `null` (cold-review round 22). `JSON.stringify` preserves
+    // insertion order and distinguishes a missing key from a `null` one, so
+    // either difference alone still changes the hash string for an unchanged
+    // transcript — defeating the point of this function. `sweptAt` /
+    // `receivedAt` / `agentDelivered` are genuinely new and stay excluded
+    // entirely, not nulled: a pre-upgrade hub's serialized row never had
+    // those keys at all.
     return {
-        deliveryPending: message.deliveryPending ?? null,
-        contentRevision: message.contentRevision ?? null,
         id: message.id,
         sessionId: message.sessionId,
+        ...(message.contentRevision !== undefined ? { contentRevision: message.contentRevision } : {}),
         content: message.content,
         createdAt: message.createdAt,
         seq: message.seq,
         localId: message.localId,
         invokedAt: message.invokedAt,
         scheduledAt: message.scheduledAt,
-        deliveryState: message.deliveryState ?? null
+        ...(message.deliveryState !== undefined ? { deliveryState: message.deliveryState } : {}),
+        ...(message.deliveryPending !== undefined ? { deliveryPending: message.deliveryPending } : {})
     }
 }
 

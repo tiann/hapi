@@ -4,6 +4,7 @@ import { COPILOT_AGENT_MODES, type CopilotAgentMode } from './copilotModes'
 import { CODEX_COLLABORATION_MODES, PERMISSION_MODES } from './modes'
 import { AgentConfigDescriptorSchema } from './agentConfig'
 import { githubPrIdentityKey, isValidGitHubHost } from './projectRegistry'
+import { PENDING_REQUEST_REFS_CAP } from './sessionSummary'
 
 export const PermissionModeSchema = z.enum(PERMISSION_MODES)
 export const CodexCollaborationModeSchema = z.enum(CODEX_COLLABORATION_MODES)
@@ -553,7 +554,13 @@ export const SessionNotifySignalSchema = z.object({
 export const SessionBlockedAckSchema = z.object({
     at: z.number(),
     reason: z.string(),
-    keys: z.array(z.string().max(256)).max(64).nullish()
+    // Bounded by PENDING_REQUEST_REFS_CAP, not an arbitrary round number
+    // (#1717 cold-review round 22): a key can stay dismissed-but-live for as
+    // long as its request is tracked at all, and the system never tracks more
+    // than that many identities for one session, so this is the real ceiling
+    // — a lower one rejected a full-session snapshot whose dismissals were
+    // all still genuinely live.
+    keys: z.array(z.string().max(256)).max(PENDING_REQUEST_REFS_CAP).nullish()
 })
 
 export const ThreadGoalStatusSchema = z.enum([
@@ -644,6 +651,13 @@ export const SessionSchema = z.object({
     agentStateVersion: z.number(),
     thinking: z.boolean(),
     thinkingAt: z.number(),
+    // False only during the hub's optimistic queue-to-delivery grace window
+    // (#1717 cold-review round 22): `markMessageQueued` sets `thinking: true`
+    // before the CLI has confirmed it ever saw the prompt, so a reply
+    // cancelled in that window never genuinely started a turn. Absent on
+    // older hubs and once the CLI confirms, so a client that ignores it keeps
+    // today's behaviour.
+    thinkingConfirmed: z.boolean().optional(),
     activeTurnStartedAt: z.number().nullable().optional(),
     backgroundTaskCount: z.number().optional(),
     backgroundTasks: z.array(BackgroundTaskSchema).optional(),
@@ -792,6 +806,7 @@ export const SessionPatchSchema = z.object({
     lastUserMessageAt: z.number().optional(),
     active: z.boolean().optional(),
     thinking: z.boolean().optional(),
+    thinkingConfirmed: z.boolean().optional(),
     activeTurnStartedAt: z.number().nullable().optional(),
     activeAt: z.number().optional(),
     updatedAt: z.number().optional(),
