@@ -577,6 +577,38 @@ body:
         expect(template.reason).toContain('Severity')
     })
 
+    // Regression (Meta review, tiann/hapi#2147, follow-up): GitHub
+    // documents this as its own validation error — an unquoted option
+    // like `true`/`false` parses as a YAML Boolean, not a string, and the
+    // old `asStringArray(attrs.options)` call silently filtered it out of
+    // the array instead of rejecting the template. A two-option dropdown
+    // with one Boolean-coerced option used to quietly become a
+    // one-option dropdown that still passed every check below.
+    it('is genuinely invalid when a dropdown option parses as a YAML boolean', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: dropdown\n    id: pie\n    attributes:\n      label: Pie?\n      options:\n        - Steak\n        - true'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+    })
+
+    // Regression (Meta review, tiann/hapi#2147, follow-up): "None" is a
+    // reserved word GitHub auto-populates as the non-choice option on an
+    // optional dropdown — GitHub's own documented example rejects a
+    // dropdown that declares it explicitly.
+    it('is genuinely invalid when a dropdown declares the reserved option "None"', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: dropdown\n    id: pie\n    attributes:\n      label: Pie?\n      options:\n        - Steak\n        - None'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('None')
+    })
+
     // Regression (Meta review, tiann/hapi#2147, follow-up): checkboxes'
     // own option labels were never checked for duplicates either — the
     // direct structural sibling of the dropdown-options check above.

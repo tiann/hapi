@@ -370,7 +370,27 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
                 minLength: asNumber(validations.min_length)
             })
         } else if (type === 'dropdown') {
-            const options = asStringArray(attrs.options)
+            // GitHub documents this as its own validation error (bot
+            // review, tiann/hapi#2147, follow-up, confirmed directly
+            // against GitHub's validation-errors page): an unquoted
+            // option like `true`/`false` parses as a YAML Boolean, not a
+            // string, and GitHub rejects the whole form over it. Checked
+            // against the RAW array, before `asStringArray` below quietly
+            // filters non-strings out — that filtering is exactly the bug:
+            // a two-option dropdown where one option parsed as a Boolean
+            // used to silently become a one-option dropdown that still
+            // passed every check below, rather than the malformed template
+            // it actually is. (This codebase's own `yaml` dependency only
+            // coerces literal `true`/`false`, not GitHub's other cited
+            // examples like bare `yes`/`off` — confirmed directly by
+            // parsing them — but the fix doesn't need to chase specific
+            // words: any non-string entry in the parsed array is this bug,
+            // regardless of which YAML schema produced it.)
+            const rawOptions = Array.isArray(attrs.options) ? attrs.options : []
+            if (rawOptions.some(option => typeof option !== 'string')) {
+                return { id, name, kind: 'unsupported', reason: `Dropdown field "${label}" has an option that YAML parsed as a non-string value — wrap it in quotes`, githubValid: false }
+            }
+            const options = rawOptions as string[]
             if (options.length === 0) {
                 return { id, name, kind: 'unsupported', reason: `Dropdown field "${label}" has no options`, githubValid: false }
             }
@@ -383,6 +403,14 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
             // .github-inheritance coverage.
             if (new Set(options).size !== options.length) {
                 return { id, name, kind: 'unsupported', reason: `Dropdown field "${label}" has duplicate options`, githubValid: false }
+            }
+            // "None" is a reserved word GitHub auto-populates as the
+            // non-choice option on an optional dropdown (bot review,
+            // tiann/hapi#2147, follow-up, confirmed directly against
+            // GitHub's validation-errors page) — a template declaring it
+            // explicitly is one GitHub's own chooser rejects outright.
+            if (options.includes('None')) {
+                return { id, name, kind: 'unsupported', reason: `Dropdown field "${label}" uses "None", a reserved option GitHub auto-populates`, githubValid: false }
             }
             fields.push({
                 kind: 'dropdown',
