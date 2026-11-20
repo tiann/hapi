@@ -1037,6 +1037,82 @@ describe('Codex Desktop import routes', () => {
         }
     })
 
+    it('does not duplicate a prompt that the live projection and the importer both hold', async () => {
+        // The live Codex projection and the Desktop importer mirror the same
+        // prompt under two different local ids. Keying on the native
+        // transcript id treated those as distinct occurrences and appended the
+        // imported copy a second time — and that copy's later timestamp let
+        // reconciliation read an initiating prompt as an answer and clear an
+        // unanswered blocker. One event, one row: occurrences are aligned by
+        // position among rows that share a key, so a mirror is not surplus.
+        const app = new Hono<WebAppEnv>()
+        app.use('*', async (c, next) => {
+            c.set('namespace', 'default')
+            await next()
+        })
+        const store = new Store(':memory:')
+        const canonical = store.sessions.getOrCreateSession(
+            'canon-mirror', { codexSessionId: 'codex-thread-12' }, {}, 'default'
+        )
+        const duplicate = store.sessions.getOrCreateSession(
+            'dup-mirror', { codexSessionId: 'codex-thread-12' }, {}, 'default'
+        )
+        const base = Date.now() - 600_000
+
+        // Canonical holds filler plus the live projection's copy of the prompt.
+        for (let i = 0; i < 4; i++) {
+            store.messages.addImportedMessage(canonical.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: { type: 'assistant', message: { content: [{ type: 'text', text: `filler ${i}` }] } }
+                }
+            }, `mirror-filler-${i}`, base)
+        }
+        store.messages.addMessage(canonical.id, {
+            role: 'user', content: { type: 'text', text: 'Continue' }, meta: { sentFrom: 'webapp' }
+        }, 'live-projection-id', null, base + 1_000, base + 1_000)
+        store.messages.markMessagesInvoked(canonical.id, ['live-projection-id'], base + 2_000)
+
+        // The duplicate holds the SAME event under the importer's id, with the
+        // same delivery time — one prompt, mirrored.
+        store.messages.addMessage(duplicate.id, {
+            role: 'user', content: { type: 'text', text: 'Continue' }, meta: { sentFrom: 'webapp' }
+        }, 'importer-id', null, base + 1_000, base + 1_000)
+        store.messages.markMessagesInvoked(duplicate.id, ['importer-id'], base + 2_000)
+
+        const engine = {
+            getSessionsByNamespace: () => [],
+            transferBlockedAck: () => {},
+            transferAttachedJobs: () => {},
+            deleteSession: async (sessionId: string) => {
+                store.sessions.deleteSession(sessionId, 'default')
+            },
+            handleRealtimeEvent: () => {},
+            reconcileNotifySignalAfterImport: () => {},
+            recordSessionActivity: () => {}
+        } as unknown as SyncEngine
+        app.route('/api', createCodexDesktopRoutes({ store, getSyncEngine: () => engine }))
+
+        try {
+            const response = await app.request('/api/codex/merge-duplicate-sessions', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ sessionIds: ['codex-thread-12'] })
+            })
+            expect(response.status).toBe(200)
+            const body = await response.json() as { merged: Array<{ canonicalSessionId?: string }> }
+            const survivorId = body.merged[0]?.canonicalSessionId
+            expect(survivorId).toBe(canonical.id)
+
+            const prompts = store.messages.getAllMessages(survivorId!)
+                .filter((row) => JSON.stringify(row.content).includes('Continue'))
+            expect(prompts).toHaveLength(1)
+        } finally {
+            store.close()
+        }
+    })
+
     it('keeps two identical prompts from ONE import timestamp as separate rows', async () => {
         // An untimestamped Codex Desktop import gives every row in the batch
         // the same timestamp, so keying a delivered prompt on text plus

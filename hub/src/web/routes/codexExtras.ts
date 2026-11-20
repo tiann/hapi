@@ -837,35 +837,39 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
         throw new Error(`No duplicate Hapi session found for Codex thread: ${options.group.codexSessionId}`)
     }
 
-    // A DELIVERED prompt is an event, not just text (#1717). Deduping those by
-    // text alone treated a later "Continue" that answered a blocker as already
-    // present, because an earlier "Continue" was — so the answer was dropped.
-    // Including the delivery time makes distinct occurrences distinct, while a
-    // re-merge of the same history still matches and stays idempotent.
+    // Occurrence COUNTS, not a set of keys (#1717).
     //
-    // The previous attempt instead stamped the duplicate's delivery onto the
-    // canonical row. That broke three ways at once: it could mark a FUTURE
-    // SCHEDULED prompt invoked (so the scheduler would never send it), it left
-    // the answering timestamp on a row whose `seq` still sat before the footer,
-    // and it changed state without appending anything so reconciliation was
-    // skipped. Keeping the occurrence as its own row removes all three.
+    // Deduping by text alone dropped a second identical prompt that was the
+    // delivery answering a blocker. Keying on text plus delivery time then
+    // collided under a single import timestamp. Keying on the native
+    // transcript id instead over-split the other way: the live Codex
+    // projection and the Desktop importer mirror the same prompt under two
+    // different ids, so it was appended twice and the duplicate's later
+    // timestamp let reconciliation read an initiating prompt as an answer.
+    //
+    // None of those is a key problem — it is that "is this message already
+    // here?" is a MULTISET question. The canonical session having one
+    // "Continue" says nothing about whether a second one belongs. So: align
+    // occurrences positionally. The Nth message with a given key in the source
+    // matches the Nth in the canonical session, and only the surplus is
+    // copied. Mirrored copies align and are not duplicated; genuinely
+    // distinct same-text prompts are surplus and survive.
+    //
+    // The key keeps a DELIVERED prompt's delivery time, which is what tells a
+    // mirrored copy (one event, two ids, one delivery time) apart from a
+    // genuinely later delivery of the same text. Counting is what the native
+    // transcript id was wrongly standing in for.
     const mergeKeyOf = (message: StoredMessage): string => {
         const base = getComparableStoredMessageKey(message)
-        if (!isDeliveredOperatorReply(message)) return base
-        // Native transcript id first. An untimestamped Codex Desktop import
-        // gives every row in the batch ONE timestamp, so keying a delivered
-        // prompt on text plus delivery time collided for two identical
-        // prompts in the same import — the second was skipped, the source was
-        // deleted, and reconciliation then saw only the prompt BEFORE the
-        // footer and flagged an answered blocker. The importer assigns each
-        // row the transcript's own id as its `localId`, which distinguishes
-        // occurrences the timestamps cannot and stays stable across a
-        // re-merge of the same history.
-        return message.localId == null
+        return isDeliveredOperatorReply(message)
             ? `${base}\u0000delivered:${operatorReplyDeliveredAt(message)}`
-            : `${base}\u0000native:${message.localId}`
+            : base
     }
-    const knownKeys = new Set(canonical.storedMessages.map(mergeKeyOf))
+    const canonicalCounts = new Map<string, number>()
+    for (const message of canonical.storedMessages) {
+        const key = mergeKeyOf(message)
+        canonicalCounts.set(key, (canonicalCounts.get(key) ?? 0) + 1)
+    }
     const removedSessionIds: string[] = []
     const appendedMessages: StoredMessage[] = []
     let latestActivity = canonical.updatedAt
@@ -883,9 +887,13 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
 
     for (const source of sessionStates.slice(1)) {
         latestActivity = Math.max(latestActivity, source.updatedAt)
+        const sourceSeen = new Map<string, number>()
         for (const message of source.storedMessages) {
             const comparableKey = mergeKeyOf(message)
-            if (knownKeys.has(comparableKey)) {
+            const ordinal = (sourceSeen.get(comparableKey) ?? 0) + 1
+            sourceSeen.set(comparableKey, ordinal)
+            // Already represented by the matching occurrence on the survivor.
+            if (ordinal <= (canonicalCounts.get(comparableKey) ?? 0)) {
                 continue
             }
 
@@ -901,7 +909,7 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
                 receivedAt: message.receivedAt,
                 agentDelivered: message.agentDelivered
             })
-            knownKeys.add(comparableKey)
+            canonicalCounts.set(comparableKey, ordinal)
             appendedMessages.push(copied)
             latestActivity = Math.max(latestActivity, copied.invokedAt ?? copied.createdAt)
         }

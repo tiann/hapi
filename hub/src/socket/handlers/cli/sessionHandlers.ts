@@ -483,7 +483,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         onSessionReady?.(data)
     })
 
-    socket.on('messages-consumed', (data: { sid: string; localIds: string[]; clearQueuedThinkingGrace?: boolean; steered?: boolean }) => {
+    socket.on('messages-consumed', (data: { sid: string; localIds: string[]; clearQueuedThinkingGrace?: boolean; steered?: boolean; maintenance?: boolean }) => {
         if (!data || typeof data.sid !== 'string' || !Array.isArray(data.localIds)) {
             return
         }
@@ -514,7 +514,7 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                 // answered?" from the transcript long afterwards, and
                 // `invoked_at` alone reads a locally handled command as an
                 // answer the agent never received (#1717).
-                { agentDelivered: data.clearQueuedThinkingGrace !== true }
+                { agentDelivered: data.clearQueuedThinkingGrace !== true && data.maintenance !== true }
             )
             sessionUpdatedAt = consumedResult.updatedAt
             newlyDelivered = consumedResult.consumed > 0
@@ -542,7 +542,17 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
         // the row counts as consumed — but the agent never saw it, so whatever
         // it was waiting on is still unanswered. A successful steer reaches the
         // agent and reports `steered` instead, so it still clears.
-        if (newlyDelivered && data.clearQueuedThinkingGrace !== true) {
+        //
+        // `maintenance` is the same statement on a separate axis: OpenCode
+        // acknowledges /compact when it DEQUEUES the command, before
+        // compaction starts, so that consumed a command rather than delivering
+        // a prompt. It cannot reuse `clearQueuedThinkingGrace`, because
+        // /compact must KEEP that grace for the prompts queued behind it — so
+        // without its own flag the hub cleared an unanswered blocker, and a
+        // cancellation during setup consumed no rows, leaving it gone.
+        if (newlyDelivered
+            && data.clearQueuedThinkingGrace !== true
+            && data.maintenance !== true) {
             try {
                 onPromptDelivered?.(data.sid, invokedAt)
             } catch (err) {

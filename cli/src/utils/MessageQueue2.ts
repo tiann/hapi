@@ -63,7 +63,10 @@ export class MessageQueue2<T> {
     private waiter: ((hasMessages: boolean) => void) | null = null;
     private closed = false;
     private onMessageHandler: ((message: string, mode: T) => void) | null = null;
-    onBatchConsumed: ((localIds: string[]) => void) | null = null;
+    /** #1717: `maintenance` marks a batch that consumed a command rather than
+     *  delivering a prompt to the agent, so the hub does not read it as an
+     *  answer to a blocked report. */
+    onBatchConsumed: ((localIds: string[], options?: { maintenance?: boolean }) => void) | null = null;
     /** Optional synchronous admission, before removing or acknowledging a batch. */
     beforeDequeue: (() => void) | null = null;
     modeHasher: (mode: T) => string;
@@ -731,10 +734,13 @@ export class MessageQueue2<T> {
     }
 
     /** Clear in-flight marks for a deferred batch and emit its hub ACK. */
-    commitBatch(batch: Pick<CollectedQueueBatch<T>, 'items'>): void {
+    commitBatch(
+        batch: Pick<CollectedQueueBatch<T>, 'items'>,
+        options?: { maintenance?: boolean }
+    ): void {
         const consumedLocalIds = this.clearInFlightBatch(batch);
         if (consumedLocalIds.length > 0) {
-            this.onBatchConsumed?.(consumedLocalIds);
+            this.onBatchConsumed?.(consumedLocalIds, options);
         }
     }
 

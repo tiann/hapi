@@ -737,47 +737,44 @@ export function chooseBlockedJumpTarget(options: {
 }
 
 /**
- * Share the blocked rows missing from the DOM out across the sections that own
- * them (#1717).
+ * Off-screen blocked rows, above and below, as IDENTITIES (#1717).
  *
- * Allocated in order rather than compared against each section independently:
- * `missing` is one pool, so testing it against each section's size separately
- * counted the same row twice. Whatever is left over is hidden by a filter
- * rather than a collapse — it keeps its place in the pill's count but gets no
- * direction, because nothing on the page says which way it is.
+ * One list feeding both the arrow and the jump target, because two
+ * computations of "which blockers are off-screen" drifted apart twice: the
+ * arrow counted collapsed rows via their section header while the click could
+ * only see mounted rows, so an up arrow from a collapsed section was answered
+ * by a click that landed on a visible row below it.
+ *
+ * A collapsed section's rows leave the DOM once its transition settles, so
+ * they are taken from state and positioned at the section header — which is
+ * both where the arrow was computed from and where activating the pill lands.
  */
-export function allocateHiddenBlockers(missing: number, available: number[]): number[] {
-    let remaining = Math.max(0, missing)
-    return available.map((count) => {
-        const take = Math.min(remaining, Math.max(0, count))
-        remaining -= take
-        return take
-    })
-}
-
-/**
- * Which way the jump pill should point for blocked rows that are collapsed
- * away rather than scrolled away (#1717).
- *
- * Their rows leave the DOM once the collapse transition finishes, so position
- * has to come from the section header they live under — it is still on the
- * page, and it is exactly where activating the pill lands. Counting them as
- * "below" by default drew a down arrow for a section sitting ABOVE the
- * viewport, so the jump scrolled up against its own hint.
- *
- * A header already on screen yields neither direction: expanding scrolls
- * within view, so there is nothing to point at.
- */
-export function attributeCollapsedBlockers(options: {
-    hidden: number
-    headerRect: { top: number; bottom: number } | null
+export function collectOffscreenBlockers(options: {
     bounds: { top: number; bottom: number }
-}): { above: number; below: number } {
-    const { hidden, headerRect, bounds } = options
-    if (hidden <= 0 || !headerRect) return { above: 0, below: 0 }
-    if (headerRect.bottom <= bounds.top) return { above: hidden, below: 0 }
-    if (headerRect.top >= bounds.bottom) return { above: 0, below: hidden }
-    return { above: 0, below: 0 }
+    mounted: Array<{ id: string; top: number; bottom: number; height: number; collapsed: boolean }>
+    collapsedSections: Array<{ ids: string[]; headerRect: { top: number; bottom: number } | null }>
+}): { above: string[]; below: string[] } {
+    const above: string[] = []
+    const below: string[] = []
+    const seen = new Set<string>()
+    for (const row of options.mounted) {
+        if (row.collapsed) continue
+        if (row.height <= 0) continue
+        seen.add(row.id)
+        if (row.bottom <= options.bounds.top) above.push(row.id)
+        else if (row.top >= options.bounds.bottom) below.push(row.id)
+    }
+    for (const section of options.collapsedSections) {
+        const rect = section.headerRect
+        if (!rect) continue
+        for (const id of section.ids) {
+            if (seen.has(id)) continue
+            seen.add(id)
+            if (rect.bottom <= options.bounds.top) above.push(id)
+            else if (rect.top >= options.bounds.bottom) below.push(id)
+        }
+    }
+    return { above, below }
 }
 
 export function filterSessionsForListStatus(
@@ -2977,9 +2974,11 @@ export function SessionList(props: {
     }, [machineFilteredSessions, searchScoreIndex, hasTextQuery, listComparator])
     // Globally pinned blockers stay in Pinned rather than moving to Blocked,
     // so their collapsed rows are attributed to THAT header (#1717).
-    const pinnedBlockedCount = useMemo(() => {
+    const pinnedBlockedIds = useMemo(() => {
         const now = Date.now()
-        return globalPinnedSessions.filter((session) => sessionIsBlocked(session, { now })).length
+        return globalPinnedSessions
+            .filter((session) => sessionIsBlocked(session, { now }))
+            .map((session) => session.id)
     }, [globalPinnedSessions])
     const blockedSectionIds = useMemo(
         () => new Set(blockedSectionSessions.map(session => session.id)),
@@ -3863,35 +3862,10 @@ export function SessionList(props: {
         // on screen — a filter they set is not ours to discard speculatively.
         const cursor = blockedJumpCursorRef.current % blockedSessions.length
         blockedJumpCursorRef.current = cursor + 1
-        // Measured at click time rather than from the counts the pill renders,
-        // which say how many are off-screen but not which.
-        const container = scrollContainerRef.current
-        const above: string[] = []
-        const below: string[] = []
-        if (container) {
-            const bounds = container.getBoundingClientRect()
-            for (const row of Array.from(
-                container.querySelectorAll<HTMLElement>('[data-session-blocked]')
-            )) {
-                const id = row.getAttribute('data-session-id')
-                if (!id) continue
-                // A row inside a collapsed panel has no usable rect, but the
-                // arrow was drawn from its SECTION HEADER — so skipping it
-                // here made the two disagree: an up arrow from a collapsed
-                // Pinned section with the click falling back to a newer row
-                // already on screen. Position it where the arrow positioned
-                // it, which is also where activating the pill lands.
-                const panel = row.closest('.collapsible-panel')
-                const collapsed = panel !== null && !panel.hasAttribute('data-open')
-                const section = collapsed
-                    ? row.closest('[data-testid="blocked-section"], [data-testid="pinned-section"]')
-                    : null
-                const rect = (section ?? row).getBoundingClientRect()
-                if (!collapsed && rect.height <= 0) continue
-                if (rect.bottom <= bounds.top) above.push(id)
-                else if (rect.top >= bounds.bottom) below.push(id)
-            }
-        }
+        // The same snapshot the arrow is drawn from, so the click cannot
+        // disagree with it — including blockers whose section has collapsed
+        // and whose rows have left the DOM entirely.
+        const { above, below } = measureOffscreenBlockers()
         const targetId = chooseBlockedJumpTarget({
             direction: blockedDirection,
             above,
@@ -3964,6 +3938,53 @@ export function SessionList(props: {
 
     // Direction hint for the pill: which way the operator would have to scroll
     // to reach blocked rows that are not currently on screen.
+    // Built once, from state plus live rects, so the arrow and the jump target
+    // can never disagree about which blockers are off-screen (#1717).
+    const measureOffscreenBlockers = useCallback(() => {
+        const container = scrollContainerRef.current
+        if (!container) return { above: [] as string[], below: [] as string[] }
+        const bounds = container.getBoundingClientRect()
+        const mounted = Array.from(
+            container.querySelectorAll<HTMLElement>('[data-session-blocked]')
+        ).flatMap((row) => {
+            const id = row.getAttribute('data-session-id')
+            if (!id) return []
+            const rect = row.getBoundingClientRect()
+            const panel = row.closest('.collapsible-panel')
+            return [{
+                id,
+                top: rect.top,
+                bottom: rect.bottom,
+                height: rect.height,
+                // A collapse is a transition: during it the rows are still
+                // mounted at full size, so a height check would read them as
+                // visible. Afterwards they are gone entirely, which is why the
+                // section lists below exist.
+                collapsed: panel !== null && !panel.hasAttribute('data-open')
+            }]
+        })
+        const headerRect = (testid: string) => container
+            .querySelector<HTMLElement>(`[data-testid="${testid}"]`)
+            ?.getBoundingClientRect() ?? null
+        return collectOffscreenBlockers({
+            bounds,
+            mounted,
+            collapsedSections: [
+                {
+                    ids: blockedSectionCollapsed
+                        ? blockedSectionSessions.map((session) => session.id)
+                        : [],
+                    headerRect: headerRect('blocked-section')
+                },
+                {
+                    // `isFiltering` forces Pinned open, matching its own
+                    // `aria-expanded`, so it is only truly collapsed without one.
+                    ids: pinnedSectionCollapsed && !isFiltering ? pinnedBlockedIds : [],
+                    headerRect: headerRect('pinned-section')
+                }
+            ]
+        })
+    }, [blockedSectionCollapsed, blockedSectionSessions, pinnedSectionCollapsed, pinnedBlockedIds, isFiltering])
     useEffect(() => {
         const container = scrollContainerRef.current
         if (!container || blockedCount === 0) {
@@ -3982,77 +4003,13 @@ export function SessionList(props: {
         let frame = 0
         const measure = () => {
             frame = 0
-            const bounds = container.getBoundingClientRect()
-            const rows = container.querySelectorAll<HTMLElement>('[data-session-blocked]')
-            let above = 0
-            let below = 0
-            rows.forEach((row) => {
-                const rect = row.getBoundingClientRect()
-                // A collapsed section keeps its rows in the DOM (the panel
-                // animates `grid-template-rows: 0fr` rather than unmounting).
-                // Read the panel's open state rather than the row's height:
-                // the collapse is a 250ms transition, so a height check taken
-                // on the frame the operator clicks still measures full-size
-                // rows and would report them as visible.
-                const panel = row.closest('.collapsible-panel')
-                const inClosedPanel = panel !== null && !panel.hasAttribute('data-open')
-                const onScreen = !inClosedPanel
-                    && rect.height > 0
-                    && rect.bottom > bounds.top
-                    && rect.top < bounds.bottom
-                if (onScreen) return
-                if (rect.bottom <= bounds.top) above += 1
-                else below += 1
-            })
-            // Blocked rows that are not in the DOM at all, which happens two
-            // ways and they are NOT the same question.
-            const missing = Math.max(0, blockedCount - rows.length)
-            let nextAbove = above
-            let nextBelow = below
-            // Collapsed away: the rows are gone once the transition finishes,
-            // but their section header is still on the page and is exactly
-            // where the pill would take the operator. Counting them all as
-            // "below" drew a down arrow for a section sitting ABOVE the
-            // viewport, so activating the pill scrolled up against the hint.
-            //
-            // Allocated across the sections that own them rather than counted
-            // against each independently, which would double-count the same
-            // missing row. A globally pinned blocker stays in Pinned, so with
-            // Pinned collapsed its rows take direction from the PINNED header
-            // — attributing only the Blocked section lost the arrow entirely
-            // when the only blocker was a pinned one.
-            // `isFiltering` forces Pinned open, matching its own
-            // `aria-expanded`, so it is only truly collapsed without one.
-            const testids = ['blocked-section', 'pinned-section']
-            const allocated = allocateHiddenBlockers(missing, [
-                blockedSectionCollapsed ? blockedSectionSessions.length : 0,
-                pinnedSectionCollapsed && !isFiltering ? pinnedBlockedCount : 0
-            ])
-            const sections = testids.map((testid, index) => ({
-                hidden: allocated[index] ?? 0,
-                testid
-            }))
-            for (const section of sections) {
-                if (section.hidden <= 0) continue
-                const header = container.querySelector<HTMLElement>(`[data-testid="${section.testid}"]`)
-                const attributed = attributeCollapsedBlockers({
-                    hidden: section.hidden,
-                    headerRect: header?.getBoundingClientRect() ?? null,
-                    bounds
-                })
-                nextAbove += attributed.above
-                nextBelow += attributed.below
-            }
-            // Hidden by a filter rather than by a collapse: these stay in the
-            // pill's count, which reads `blockedCount` and is deliberately
-            // fleet-wide, but they get no direction — nothing on the page says
-            // which way they are, and guessing drew an arrow that lied.
+            const { above, below } = measureOffscreenBlockers()
             // Bail when nothing moved: this runs every scroll frame, and a
             // fresh object each time would re-render every row in the list.
             setBlockedOffscreen((previous) => (
-                previous.above === nextAbove && previous.below === nextBelow
+                previous.above === above.length && previous.below === below.length
                     ? previous
-                    : { above: nextAbove, below: nextBelow }
+                    : { above: above.length, below: below.length }
             ))
         }
         const schedule = () => {
@@ -4081,7 +4038,7 @@ export function SessionList(props: {
             container.removeEventListener('scroll', schedule)
             window.removeEventListener('resize', schedule)
         }
-    }, [blockedCount, blockedSectionSessions, blockedSectionCollapsed, pinnedSectionCollapsed, pinnedBlockedCount, isFiltering, machineFilteredSessions])
+    }, [measureOffscreenBlockers, machineFilteredSessions])
 
     const blockedDirection: BlockedJumpDirection = blockedOffscreen.above > 0 && blockedOffscreen.below > 0
         ? 'both'

@@ -80,6 +80,24 @@ describe('a locally handled command does not answer the agent (#1717)', () => {
         store.close()
     })
 
+    it('leaves the blocker alone for a maintenance command, which keeps its grace', () => {
+        // OpenCode acknowledges /compact when it DEQUEUES the command, before
+        // compaction starts, and that consumed a command rather than
+        // delivering a prompt. It cannot reuse `clearQueuedThinkingGrace`,
+        // because /compact must KEEP that grace for the prompts queued behind
+        // it — so without a separate flag the hub cleared an unanswered
+        // blocker, and a cancellation during setup consumed no rows, leaving
+        // the blocker gone for good.
+        const { socket, session, delivered, store } = harness()
+        sendPrompt(socket, session.id, 'compact-1')
+        socket.trigger('messages-consumed', {
+            sid: session.id, localIds: ['compact-1'], maintenance: true
+        })
+
+        expect(delivered).not.toHaveBeenCalled()
+        store.close()
+    })
+
     it('leaves the blocker alone for a command the CLI handled itself', () => {
         // Copilot `/model`, Pi `/stats`, a rejected or aborted message, a
         // failed steer: the CLI consumes the row and returns without ever
