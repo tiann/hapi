@@ -302,10 +302,20 @@ export function parseLegacyIssueTemplate(id: string, raw: string): IssueTemplate
  * override of the owner's .github inheritance policy" — an unparseable
  * file provides no actual configuration to override anything with, so
  * `repoHasLocalIssueTemplateCoverage` needs to tell the two apart.
+ *
+ * A YAML scalar or sequence (`raw: "true"`, `raw: "- a\n- b"`) parses
+ * without throwing, so the try/catch alone isn't enough (review finding,
+ * tiann/hapi#2147, follow-up) — `asRecord` silently coerces either into
+ * `{}`, which would otherwise read as "parsed to an empty-but-valid
+ * config" and count as a local override with nothing in it. Requiring the
+ * parsed doc itself to be a plain object closes that gap.
  */
 export function parseIssueTemplateConfig(raw: string): { blankIssuesEnabled: boolean; valid: boolean } {
     try {
         const doc = parseYaml(raw)
+        if (!doc || typeof doc !== 'object' || Array.isArray(doc)) {
+            return { blankIssuesEnabled: true, valid: false }
+        }
         const obj = asRecord(doc)
         return { blankIssuesEnabled: obj.blank_issues_enabled !== false, valid: true }
     } catch {

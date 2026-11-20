@@ -2049,6 +2049,45 @@ body:
         expect(calls).toEqual(['bad-config', '.github'])
     })
 
+    // Review finding (tiann/hapi#2147, follow-up): a config.yml containing
+    // a bare YAML scalar parses without throwing — asRecord silently
+    // coerces it to {}, which the prior fix's try/catch-only check read as
+    // a valid local override even though there's no real configuration in it.
+    it('falls back to .github when the target directory exists but only has a config.yml that parses to a scalar', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            (target: { repo: string }) => {
+                calls.push(target.repo)
+                if (target.repo === '.github') {
+                    return {
+                        data: {
+                            repository: {
+                                visibility: 'PUBLIC',
+                                issueTemplateDir: {
+                                    entries: [{ name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }]
+                                }
+                            }
+                        }
+                    }
+                }
+                return {
+                    data: {
+                        repository: {
+                            issueTemplateDir: { entries: [{ name: 'config.yml', object: { text: 'true' } }] }
+                        }
+                    }
+                }
+            }
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/scalar-config`)
+        expect(response.status).toBe(200)
+        const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
+        expect(body.templates).toEqual([])
+        expect(body.blankAllowed).toBe(false)
+        expect(calls).toEqual(['scalar-config', '.github'])
+    })
+
     it('does not recurse when the target repo being queried is already .github', async () => {
         const calls: string[] = []
         const app = await createApp(

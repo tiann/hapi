@@ -326,6 +326,15 @@ describe('parseIssueTemplateConfig', () => {
         expect(parseIssueTemplateConfig('contact_links: []').valid).toBe(true)
         expect(parseIssueTemplateConfig(': : not yaml {{{').valid).toBe(false)
     })
+
+    // A scalar or sequence parses without throwing, so the try/catch alone
+    // isn't enough (review finding, tiann/hapi#2147, follow-up) — asRecord
+    // silently coerces either into {}, which would otherwise read as "an
+    // empty-but-valid config."
+    it('reports valid: false for a syntactically valid scalar or sequence, not just a parse failure', () => {
+        expect(parseIssueTemplateConfig('true').valid).toBe(false)
+        expect(parseIssueTemplateConfig('- a\n- b\n').valid).toBe(false)
+    })
 })
 
 // Regression (bot review, hapi#238, follow-up): templateId alone only
