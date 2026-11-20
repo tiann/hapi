@@ -778,6 +778,25 @@ describe('SessionRowSummary time label', () => {
         vi.useRealTimers()
     })
 
+    it('shows a stopped session the stop time it is ordered by only where the list orders by it', () => {
+        vi.useFakeTimers()
+        const now = 1_800_000_000_000
+        vi.setSystemTime(now)
+        // Expired after a quiet spell: updatedAt is old, the stop time is recent.
+        const quiet = { updatedAt: now - 12 * 60 * 60_000, activeAt: now - 5 * 60_000, backgroundTaskCount: 0 }
+        const row = (active: boolean, showStoppedTime?: boolean) => (
+            <I18nProvider><SessionRowSummary session={makeSummary({ ...quiet, active })} showStoppedTime={showStoppedTime} /></I18nProvider>
+        )
+        const view = render(row(false, true))
+        expect(screen.getByText('5m ago')).toBeInTheDocument()
+
+        // Other callers (Active first off, mention tooltips) keep the activity time.
+        view.rerender(row(false))
+        expect(screen.getByText('12h ago')).toBeInTheDocument()
+        view.rerender(row(true, true))
+        expect(screen.getByText('12h ago')).toBeInTheDocument()
+    })
+
     it('advances the relative time without a parent render', () => {
         vi.useFakeTimers()
         vi.setSystemTime(1_800_000_000_000)

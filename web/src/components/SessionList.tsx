@@ -1416,6 +1416,8 @@ type SessionItemProps = {
     lastSeenVersion: number
     getBoardMatchForIssue?: (ref: ExternalRef) => BoardItemMatch | null
     onOpenBoardItem?: (match: BoardItemMatch) => void
+    /** Stopped rows show the stop time they are ordered by (Active first). */
+    showStoppedTime?: boolean
 }
 
 function shallowEqualExcept<T extends object>(previous: T, next: T, ignored: keyof T): boolean {
@@ -1448,7 +1450,8 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
         targetMessageQuery,
         lastSeenVersion,
         getBoardMatchForIssue,
-        onOpenBoardItem
+        onOpenBoardItem,
+        showStoppedTime = false
     } = props
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
@@ -1816,6 +1819,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                         contentSnippet={contentSnippet}
                         contentSearchTruncated={contentSearchTruncated}
                         trailingClassName={hasQuickAction ? 'session-row-trailing' : undefined}
+                        showStoppedTime={showStoppedTime}
                     />
                 </div>
                 {linkedIssue ? (
@@ -2529,6 +2533,10 @@ export function SessionList(props: {
         }
         return bucketRunningSessions(machineFilteredSessions, effectivePinInProgressMode, byRelevanceOrRecent)
     }, [machineFilteredSessions, effectivePinInProgressMode, searchScoreIndex, hasTextQuery, listComparator])
+    // Stopped rows show their stop time only where the list orders them by it:
+    // Active first, and no text query (which orders rows by relevance or, for
+    // project rows in either search mode, by the legacy comparator).
+    const stoppedTimeShown = listView.activeFirst && !hasTextQuery
     const runningSessionTotal = runningSessions.jobs.length
         + runningSessions.working.length
         + runningSessions.pending.length
@@ -2773,6 +2781,7 @@ export function SessionList(props: {
                                             lastSeenVersion={lastSeenVersion}
                                             getBoardMatchForIssue={props.getBoardMatchForIssue}
                                             onOpenBoardItem={props.onOpenBoardItem}
+                                            showStoppedTime={stoppedTimeShown}
                                         />
                                     ))}
                                 </div>
@@ -2852,6 +2861,7 @@ export function SessionList(props: {
             lastSeenVersion={lastSeenVersion}
             getBoardMatchForIssue={props.getBoardMatchForIssue}
             onOpenBoardItem={props.onOpenBoardItem}
+            showStoppedTime={stoppedTimeShown}
         />
     )
 
@@ -3740,6 +3750,7 @@ export function SessionList(props: {
                                             lastSeenVersion={lastSeenVersion}
                                             getBoardMatchForIssue={props.getBoardMatchForIssue}
                                             onOpenBoardItem={props.onOpenBoardItem}
+                                            showStoppedTime={stoppedTimeShown}
                                         />
                                     ))}
                                 </div>
