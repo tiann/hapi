@@ -283,7 +283,7 @@ it.each(['current', 'latest', 'clear'])('passes Plan into activation and returns
 });
 
 async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; create?: RootHost['create'];
-    initialTierPending?: boolean; holdTierMetadata?: boolean; bindTier?: string;
+    initialTierPending?: boolean; holdTierMetadata?: boolean; bindTier?: string; startupCatalogConfig?: unknown;
     attached?: boolean; settingsFor?: RootHost['settingsFor']; beforeSubscribe?: RootHost['beforeSubscribe']; validateHistory?: RootHost['validateHistory']; initialState?: AgentState }) {
     const directory = await mkdtemp(join(tmpdir(), 'hapi-shared-root-'));
     let state: AgentState = opts?.initialState ?? { steeringActive: true };
@@ -321,7 +321,7 @@ async function fixture(opts?: { hubArchived?: boolean; end?: RootHost['end']; cr
     const root = new SharedCodexRoot({ session, sessionInfo: { agentState: state }, workingDirectory: directory } as SessionBootstrapResult, {
         directory, generation: 'test', endpoint: 'mock', catalogProvider: opts?.attached ? undefined : 'openai', settingsFor: opts?.settingsFor ?? (() => undefined),
         create: opts?.create ?? (async () => { throw new Error('Unexpected root creation'); }),
-        attached: opts?.attached, beforeSubscribe: opts?.beforeSubscribe, validateHistory: opts?.validateHistory,
+        attached: opts?.attached, startupCatalogConfig: opts?.startupCatalogConfig, beforeSubscribe: opts?.beforeSubscribe, validateHistory: opts?.validateHistory,
         end
     } satisfies RootHost);
     cleanups.push(async () => { await root.close(false); await rm(directory, { recursive: true, force: true }); });
@@ -1738,6 +1738,17 @@ it('keeps Standard available when an attached engine cannot verify Ultrafast cat
     expect((await f.root.applySettings({ serviceTier: 'standard' })).applied.serviceTier).toBe('standard');
 });
 
+it('withholds chat Ultrafast after the provider configuration changes but retains the models', async () => {
+    const f = await fixture({ startupCatalogConfig: { config: {}, layers: [] } });
+    await f.root.activate();
+    vi.spyOn(f.root.client, 'supportsProviderScopedModels').mockReturnValue(true);
+    const config = vi.spyOn(f.root.client, 'readConfig').mockResolvedValue({ config: {}, layers: [] });
+    const list = f.rpc.get(RPC_METHODS.ListCodexModels)!;
+    expect(await list({})).toMatchObject({ models: [{ id: 'mock', serviceTiers: ['ultrafast'] }, { id: 'standard-only' }] });
+    config.mockResolvedValue({ config: { openai_base_url: 'https://changed.example.test' }, layers: [] });
+    expect(await list({})).toMatchObject({ models: [{ id: 'mock', serviceTiers: [] }, { id: 'standard-only' }] });
+});
+
 it.each(['priority', 'default'])('reconciles a lost native turn reply from an independent %s snapshot without replaying input', async serviceTier => {
     const f = await fixture({ bindTier: 'default' });
     await f.root.activate();
@@ -1748,7 +1759,8 @@ it.each(['priority', 'default'])('reconciles a lost native turn reply from an in
         if (method === 'thread/resume') return await snapshot as never;
         return original(method, params);
     });
-    const recovering = f.root.recoverLostNativeTurn({ serviceTier: 'priority' }, true, 'default');
+    const prepared = await f.root.prepareNativeTurn({ serviceTier: 'priority' });
+    const recovering = f.root.recoverLostNativeTurn(prepared.params, true, prepared.previousTier, prepared.generation);
     expect(f.metadata().codexTierConfirmationPending).toBe(true);
     await expect(f.root.nativeQueueMutation('thread/queue/start', { threadId: 'thread' })).rejects.toThrow('tier confirmation');
     supplySnapshot({ model: 'mock', serviceTier });
@@ -1756,6 +1768,17 @@ it.each(['priority', 'default'])('reconciles a lost native turn reply from an in
     expect(f.metadata().codexTierConfirmationPending).toBe(serviceTier !== 'priority');
     expect(f.metadata().codexServiceTierExplicit).toBe(serviceTier === 'priority');
     expect(request.mock.calls.map(([method]) => method)).toEqual(['thread/resume']);
+});
+
+it.each(['default', 'priority'])('keeps newer Standard unless a delayed lost reply snapshot reports %s', async serviceTier => {
+    const f = await fixture({ bindTier: 'default' });
+    await f.root.activate();
+    const prepared = await f.root.prepareNativeTurn({ serviceTier: 'priority' });
+    await f.root.applySettings({ serviceTier: 'standard' });
+    vi.spyOn(f.root.client, 'request').mockResolvedValueOnce({ model: 'mock', serviceTier });
+    await f.root.recoverLostNativeTurn(prepared.params, true, prepared.previousTier, prepared.generation);
+    expect(f.root.needsTierConfirmation).toBe(serviceTier !== 'default');
+    expect(f.root.hasConfirmedStandardTier).toBe(true);
 });
 
 it('confirms an identical tier from a fresh snapshot without requiring a duplicate event', async () => {

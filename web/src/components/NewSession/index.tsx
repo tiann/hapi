@@ -2278,9 +2278,12 @@ export function NewSession(props: {
         || (agent === 'pi'
             && model !== 'auto'
             && piModelsState.isLoading)
+    const hasExplicitCatalogModel = model !== 'auto' && codexModelsState.models.some(candidate => candidate.id === model)
     const fastModeSelectionPending = agent === 'codex'
         && serviceTier !== 'standard'
-        && (codexModelsState.isLoading || (serviceTier === 'ultrafast' && (Boolean(codexModelsState.error) || Boolean(selectedCodexImportSessionId) || (serviceTierExplicit && !showCodexUltrafastMode))))
+        && (codexModelsState.isLoading || (serviceTier === 'ultrafast' && (Boolean(codexModelsState.error) || Boolean(selectedCodexImportSessionId) || !hasExplicitCatalogModel)))
+    const verifySavedUltrafastOnLaunch = agent === 'codex' && serviceTierExplicit && serviceTier === 'ultrafast'
+        && !showCodexUltrafastMode && !fastModeSelectionPending
     const canCreate = Boolean(
         machineId
         && trimmedDirectory
@@ -2607,6 +2610,7 @@ export function NewSession(props: {
                 fastAvailable={showCodexFastMode}
                 ultrafastAvailable={showCodexUltrafastMode}
                 keepExistingTier={Boolean(selectedCodexImportSessionId)}
+                verifySavedUltrafastOnLaunch={verifySavedUltrafastOnLaunch}
                 availabilityUnverified={agent === 'codex' && (Boolean(codexModelsState.error) || Boolean(selectedCodexImportSessionId) && serviceTier === 'ultrafast') && serviceTierExplicit && serviceTier !== 'standard'}
                 value={serviceTierExplicit ? serviceTier : 'default'}
                 isDisabled={isFormDisabled}

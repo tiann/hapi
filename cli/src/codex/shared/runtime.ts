@@ -79,7 +79,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     const pendingAdmission = new Set<string>();
     const resumingThreads = new Set<string>();
     const retryableBindings = new Map<string, Reservation>();
-    const nativeTurns = new Map<string, { root: SharedCodexRoot; params: Record<string, unknown>; explicitTier: boolean; previousTier: unknown; fallbackNotice?: string }>();
+    const nativeTurns = new Map<string, { root: SharedCodexRoot; params: Record<string, unknown>; explicitTier: boolean; previousTier: unknown; generation: number; fallbackNotice?: string }>();
     const runtime: CodexRuntimeRecord = { id, pid: process.pid, marker: getProcessStartMarker(process.pid) ?? '',
         endpoint: '', command: command.command, args: command.args, codexHome: home, hub: configuration.apiUrl, authHash: runtimeAuthHash(), sessions: {} };
     if (!runtime.marker) throw new Error('Cannot verify the runtime process generation');
@@ -520,7 +520,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 for (const [key, turn] of nativeTurns) {
                     if (!key.startsWith(`${connection}:`)) continue;
                     nativeTurns.delete(key);
-                    void operation(() => turn.root.recoverLostNativeTurn(turn.params, turn.explicitTier, turn.previousTier, turn.fallbackNotice))
+                    void operation(() => turn.root.recoverLostNativeTurn(turn.params, turn.explicitTier, turn.previousTier, turn.generation, turn.fallbackNotice))
                         .catch(error => logger.debug('[Codex shared] lost turn tier reconciliation', error));
                 }
                 for (const [key, reservation] of reservations) {

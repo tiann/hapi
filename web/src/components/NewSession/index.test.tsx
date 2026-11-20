@@ -22,6 +22,7 @@ const mocks = vi.hoisted(() => ({
         'agy', 'claude', 'codex', 'dsh', 'copilot', 'cursor', 'grok', 'kimi', 'opencode', 'pi'
     ].map((agent) => ({ agent, available: true })) as AgentAvailabilityEntry[],
     codexModelsLoading: false,
+    codexUltrafastUnavailable: false,
     codexModelsError: null as string | null,
     agyModelsLoading: false,
     agyModels: [{ modelId: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' }],
@@ -110,7 +111,7 @@ vi.mock('@/hooks/queries/useCodexModels', () => ({
                 serviceTiers: ['fast'],
                 supportedReasoningEfforts: ['low', 'high', 'xhigh']
             },
-            { id: 'gpt-6.2-sol', displayName: 'GPT-6.2 Sol', isDefault: false, serviceTiers: ['priority', 'ultrafast'], supportedReasoningEfforts: ['high'] },
+            { id: 'gpt-6.2-sol', displayName: 'GPT-6.2 Sol', isDefault: false, serviceTiers: mocks.codexUltrafastUnavailable ? ['priority'] : ['priority', 'ultrafast'], supportedReasoningEfforts: ['high'] },
             {
                 id: 'gpt-5.6-terra',
                 displayName: 'GPT-5.6 Terra',
@@ -395,6 +396,7 @@ describe('NewSession launch preferences', () => {
                 .map((agent) => ({ agent, available: true })) as AgentAvailabilityEntry[]
         )
         mocks.codexModelsLoading = false
+        mocks.codexUltrafastUnavailable = false
         mocks.codexModelsError = null
         mocks.agyModelsLoading = false
         mocks.agyModels = [{ modelId: 'gemini-3.6-flash-low', name: 'Gemini 3.6 Flash (Low)' }]
@@ -583,6 +585,19 @@ describe('NewSession launch preferences', () => {
         fireEvent.click(screen.getByTestId('model'))
         await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
         expect(tier).toHaveValue('ultrafast')
+    })
+
+    it('sends a saved Ultrafast choice for execution-time validation when the current catalog omits it', async () => {
+        savePreferredAgent('codex')
+        mocks.codexUltrafastUnavailable = true
+        savePreferredLaunchSettings('machine-1', 'codex', { model: 'gpt-6.2-sol', cursorSelectedBase: '', effort: 'auto', modelReasoningEffort: 'high', serviceTier: 'ultrafast' })
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'verify-saved-tier' })
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        expect(await screen.findByRole('option', { name: 'misc.fastModeUltrafast' })).toBeDisabled()
+        expect(await screen.findByText(/Codex will verify it when starting the session/)).toBeInTheDocument()
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-6.2-sol', serviceTier: 'ultrafast' })))
     })
 
     it('preserves saved Ultrafast on catalog errors and permits recovery or explicit Standard', async () => {

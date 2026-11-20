@@ -9,6 +9,7 @@ export function FastModeSelector(props: {
     ultrafastAvailable?: boolean
     availabilityUnverified?: boolean
     keepExistingTier?: boolean
+    verifySavedUltrafastOnLaunch?: boolean
     visible: boolean
     value: NewSessionServiceTier | 'default'
     isDisabled: boolean
@@ -38,6 +39,7 @@ export function FastModeSelector(props: {
                 {(props.fastAvailable !== false || props.value === 'fast') && <option value="fast" disabled={props.fastAvailable === false}>{t('misc.fastModeFast')}</option>}
                 {(props.ultrafastAvailable || props.value === 'ultrafast') && <option value="ultrafast" disabled={!props.ultrafastAvailable}>{t('misc.fastModeUltrafast')}</option>}
             </SelectControl>
+            {props.verifySavedUltrafastOnLaunch ? <p role="status" className="text-xs text-[var(--app-hint)]">The current catalog does not list Ultrafast for this model. Codex will verify it when starting the session.</p> : null}
             {props.availabilityUnverified ? <p role="status" className="text-xs text-[var(--app-hint)]">
                 {props.keepExistingTier
                     ? 'Service tier availability could not be verified. Choose Standard to replace the existing tier.'

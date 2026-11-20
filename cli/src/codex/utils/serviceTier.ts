@@ -26,6 +26,10 @@ export function catalogConfiguration(response: Awaited<ReturnType<CodexAppServer
     };
 }
 
+export function catalogConfigurationMatches(startup: unknown, response: Awaited<ReturnType<CodexAppServerClient['readConfig']>>): boolean {
+    return startup != null && isDeepStrictEqual(startup, catalogConfiguration(response));
+}
+
 /** Selected tier notifications do not prove the native execution feature is enabled. */
 export async function isUltrafastEnabled(client: Pick<CodexAppServerClient, 'request'>, threadId: string, deadline = Date.now() + 10_000): Promise<boolean> {
     const seen = new Set<string>();
@@ -90,7 +94,7 @@ export async function isUltrafastAvailable(
     const current = verifyConfig || !explicitModel || !modelProvider
         ? await bounded(() => client.readConfig({ cwd, includeLayers: verifyConfig })) : undefined;
     const assertCatalogConfiguration = (response: typeof current) => {
-        if (startupCatalogConfig == null || !response || !isDeepStrictEqual(startupCatalogConfig, catalogConfiguration(response))) {
+        if (!response || !catalogConfigurationMatches(startupCatalogConfig, response)) {
             throw new Error('Cannot verify the Codex catalog against the launch provider configuration; settings were not changed. Restart the Codex runtime and retry.');
         }
     };

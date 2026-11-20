@@ -1,5 +1,5 @@
 import { fromCodexServiceTier, toCodexServiceTier } from '@hapi/protocol';
-import { isUltrafastAvailable, isUltrafastEnabled, ULTRAFAST_FALLBACK_NOTICE, ULTRAFAST_DISABLED_NOTICE } from '../utils/serviceTier';
+import { catalogConfigurationMatches, isUltrafastAvailable, isUltrafastEnabled, ULTRAFAST_FALLBACK_NOTICE, ULTRAFAST_DISABLED_NOTICE } from '../utils/serviceTier';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -106,6 +106,7 @@ export class SharedCodexRoot {
     private inputGate = new Promise<void>(resolve => { this.inputReady = () => { this.inputGateResolved = true; resolve(); }; });
     private tierOperationCounter = 0;
     private confirmedTierOperation = 0;
+    private confirmedTierValue: unknown;
     private pendingTierOperation = 0;
     private pendingLaunchCollaborationMode?: SharedLaunchOptions['collaborationMode'];
 
@@ -751,8 +752,7 @@ export class SharedCodexRoot {
         this.tierConfirmationResolved = true;
         // Completion observes native state after dispatch, independently of
         // when this request entered the local settings queue.
-        const operationId = ++this.tierOperationCounter;
-        this.confirmedTierOperation = operationId;
+        const operationId = this.rememberTierConfirmation();
         if (operationId < this.pendingTierOperation) return;
         const paused = this.tierConfirmationPending;
         if (!paused && this.session.getMetadata()?.codexTierConfirmationPending !== true) return;
@@ -761,6 +761,10 @@ export class SharedCodexRoot {
         this.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: false }));
         this.publishSteering();
         if (paused && this.activated) { this.alive(); this.inputReady(); this.session.emitSessionReady(); }
+    }
+    private rememberTierConfirmation(): number {
+        this.confirmedTierValue = this.settingsNative.serviceTier;
+        return this.confirmedTierOperation = ++this.tierOperationCounter;
     }
     /** Resolve native intent without committing settings before input is accepted. */
     private async resolveNativeSettings(params: Record<string, unknown>, operationDeadline = Date.now() + 25_000): Promise<{ params: Record<string, unknown>; fallbackNotice?: string }> {
@@ -816,22 +820,37 @@ export class SharedCodexRoot {
         this.settingsWrites = operation;
         return operation;
     }
-    async prepareNativeTurn(params: Record<string, unknown>): Promise<{ params: Record<string, unknown>; fallbackNotice?: string; previousTier: unknown }> {
+    async prepareNativeTurn(params: Record<string, unknown>): Promise<{ params: Record<string, unknown>; fallbackNotice?: string; previousTier: unknown; generation: number }> {
         const resolved = await this.resolveNativeSettings(params);
-        return { ...resolved, previousTier: this.settingsNative.serviceTier };
+        return { ...resolved, previousTier: this.settingsNative.serviceTier, generation: this.tierOperationCounter };
     }
-    async recoverLostNativeTurn(params: Record<string, unknown>, explicitTier: boolean, previousTier: unknown, fallbackNotice?: string): Promise<void> {
+    async recoverLostNativeTurn(params: Record<string, unknown>, explicitTier: boolean, previousTier: unknown, generation: number, fallbackNotice?: string): Promise<void> {
         this.notice('Native turn delivery is unconfirmed after transport loss. Check the conversation before retrying the message.');
         if (params.serviceTier === undefined || this.closed || this.stopping) return;
+        const deadline = Date.now() + 10_000;
+        const revision = this.settingsRevision;
+        const latestConfirmation = this.confirmedTierOperation;
+        if (generation < latestConfirmation) {
+            const latestTier = this.confirmedTierValue;
+            try {
+                const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline));
+                if (!this.closed && !this.stopping && this.confirmedTierOperation === latestConfirmation && this.settingsRevision === revision
+                    && snapshot.serviceTier !== undefined && snapshot.serviceTier !== latestTier) {
+                    this.pauseTierConfirmation(++this.tierOperationCounter);
+                }
+            } catch {
+                // An older unknown reply cannot invalidate a newer confirmation by itself.
+            }
+            return;
+        }
+        if (generation < this.pendingTierOperation) return;
         const operationId = ++this.tierOperationCounter;
         this.pauseTierConfirmation(operationId);
         const expected = { serviceTier: params.serviceTier };
         // An unchanged value cannot establish that the request was accepted.
         if (previousTier === undefined || settingsMatch({ serviceTier: previousTier }, expected)) return;
-        const revision = this.settingsRevision;
         const current = () => !this.closed && !this.stopping && this.settingsRevision === revision
             && operationId >= this.confirmedTierOperation && operationId >= this.pendingTierOperation;
-        const deadline = Date.now() + 10_000;
         try {
             const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline));
             if (!current() || !settingsMatch(snapshot, expected)) return;
@@ -862,7 +881,7 @@ export class SharedCodexRoot {
             if (this.settingsRevision !== revision) {
                 if (verifyUltrafast && this.hasUltrafastTier) {
                     await this.confirmEffectiveUltrafast(deadline, operationId);
-                    if (current()) this.confirmedTierOperation = ++this.tierOperationCounter;
+                    if (current()) this.rememberTierConfirmation();
                 }
                 else if (fallbackNotice && this.hasConfirmedStandardTier) this.notice(fallbackNotice);
                 return;
@@ -872,12 +891,12 @@ export class SharedCodexRoot {
             const expected = { ...(model ? { model } : {}), ...(params.serviceTier !== undefined ? { serviceTier: params.serviceTier } : {}) };
             if (verifyUltrafast && !this.hasUltrafastTier && this.settings.serviceTier !== 'fast') {
                 await this.writeNativeSettings({ threadId: this.threadId, serviceTier: null }, { serviceTier: null }, deadline, operationId);
-                if (current()) this.confirmedTierOperation = ++this.tierOperationCounter;
+                if (current()) this.rememberTierConfirmation();
                 this.notice('Codex did not apply Ultrafast; changed to Standard.');
                 this.alive(); return;
             }
             if (!settingsMatch(this.settingsNative, expected)) throw new Error('Native turn settings are not confirmed');
-            if (verifyUltrafast || params.serviceTier !== undefined) this.confirmedTierOperation = ++this.tierOperationCounter;
+            if (verifyUltrafast || params.serviceTier !== undefined) this.rememberTierConfirmation();
             this.alive();
             if (fallbackNotice) this.notice(fallbackNotice);
         } catch {
@@ -1043,12 +1062,19 @@ export class SharedCodexRoot {
             });
         } };
         rpc.registerHandler(RPC_METHODS.ListCodexModels, async raw => {
-            const models = []; let cursor: string | undefined;
+            const entries = []; let cursor: string | undefined;
             do {
                 const response = await this.client.listModels({ includeHidden: record(raw).includeHidden === true, cursor, ...(this.client.supportsProviderScopedModels() && this.modelProvider ? { modelProvider: this.modelProvider } : {}) });
-                const canVerifyUltrafast = !this.host.attached && this.host.startupCatalogConfig != null && this.client.supportsEffectiveUltrafastLaunch();
-                models.push(...(response.data ?? []).map(entry => normalizeCodexModel(entry, canVerifyUltrafast)).filter(model => model !== null)); cursor = response.nextCursor ?? undefined;
+                entries.push(...response.data ?? []); cursor = response.nextCursor ?? undefined;
             } while (cursor);
+            let canVerifyUltrafast = false;
+            if (!this.host.attached && this.host.startupCatalogConfig != null && this.client.supportsEffectiveUltrafastLaunch()) {
+                try {
+                    const config = await this.client.readConfig({ cwd: this.bootstrap.workingDirectory, includeLayers: true });
+                    canVerifyUltrafast = catalogConfigurationMatches(this.host.startupCatalogConfig, config);
+                } catch { /* Keep the model list and withhold unverified Ultrafast. */ }
+            }
+            const models = entries.map(entry => normalizeCodexModel(entry, canVerifyUltrafast)).filter(model => model !== null);
             return { success: true, models };
         });
         rpc.registerHandler(RPC_METHODS.Switch, async () => { throw new Error('control_mode_not_applicable'); });
