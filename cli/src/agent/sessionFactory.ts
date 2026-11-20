@@ -163,6 +163,7 @@ function pickExistingSessionMetadata(metadata: Metadata | null | undefined): Par
     if (metadata.claudeSessionIdHistory !== undefined) preserved.claudeSessionIdHistory = metadata.claudeSessionIdHistory
     if (metadata.codexSessionId !== undefined) preserved.codexSessionId = metadata.codexSessionId
     if (metadata.codexServiceTierExplicit !== undefined) preserved.codexServiceTierExplicit = metadata.codexServiceTierExplicit
+    if (metadata.codexPreserveNativeTier) preserved.codexPreserveNativeTier = true
     if (metadata.codexPendingServiceTier !== undefined) preserved.codexPendingServiceTier = metadata.codexPendingServiceTier
     if (metadata.codexTierConfirmationPending !== undefined) preserved.codexTierConfirmationPending = metadata.codexTierConfirmationPending
     if (metadata.codexRuntime !== undefined) preserved.codexRuntime = metadata.codexRuntime

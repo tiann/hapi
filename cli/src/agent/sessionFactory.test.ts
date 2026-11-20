@@ -122,9 +122,10 @@ describe('bootstrapExistingSession', () => {
         expect(sessionSyncClientMock).not.toHaveBeenCalled();
     });
 
-    it.each([false, true])('preserves Codex tier intent %s across the existing-session metadata rebuild', async explicit => {
+    it.each([false, true, undefined])('preserves Codex tier intent %s across the existing-session metadata rebuild', async explicit => {
         const session = createSession();
-        session.metadata = { ...session.metadata!, codexServiceTierExplicit: explicit, codexTierConfirmationPending: explicit, codexPendingServiceTier: 'standard' };
+        session.metadata = { ...session.metadata!, codexServiceTierExplicit: explicit, codexTierConfirmationPending: explicit,
+            codexPendingServiceTier: 'standard', ...(explicit === undefined ? { codexPreserveNativeTier: true } : {}) };
         const sessionClient = { updateMetadata: vi.fn() };
         getSessionMock.mockResolvedValue(session);
         getOrCreateMachineMock.mockResolvedValue({ id: 'machine-1' });
@@ -134,9 +135,11 @@ describe('bootstrapExistingSession', () => {
         expect(result.metadata.codexServiceTierExplicit).toBe(explicit);
         expect(result.metadata.codexTierConfirmationPending).toBe(explicit);
         expect(result.metadata.codexPendingServiceTier).toBe('standard');
+        expect(result.metadata.codexPreserveNativeTier).toBe(explicit === undefined ? true : undefined);
         const rebuild = sessionClient.updateMetadata.mock.calls[0][0];
         expect(rebuild(session.metadata).codexServiceTierExplicit).toBe(explicit);
         expect(rebuild(session.metadata).codexTierConfirmationPending).toBe(explicit);
+        expect(rebuild(session.metadata).codexPreserveNativeTier).toBe(explicit === undefined ? true : undefined);
         expect(rebuild({ ...session.metadata, codexPendingServiceTier: 'ultrafast' }).codexPendingServiceTier).toBe('ultrafast');
         expect(rebuild({ ...session.metadata, codexServiceTierExplicit: !explicit }).codexServiceTierExplicit).toBe(!explicit);
     });

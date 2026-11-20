@@ -631,11 +631,28 @@ describe('NewSession launch preferences', () => {
         const tier = await screen.findByRole('combobox', { name: 'newSession.fastMode' })
         expect(tier).toHaveValue('standard')
         fireEvent.change(tier, { target: { value: 'default' } })
+        expect(tier).toHaveValue('default')
+        expect(screen.getByRole('option', { name: 'misc.fastModeStandard' })).toBeEnabled()
         await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
         fireEvent.click(screen.getByTestId('create'))
         await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalled())
         expect(mocks.spawnSession.mock.calls[0][0].serviceTier).toBeUndefined()
         expect(loadPreferredLaunchSettings('machine-1', 'codex')?.serviceTier).toBeUndefined()
+    })
+
+    it('sends explicit Standard from an untouched form during a catalog outage', async () => {
+        savePreferredAgent('codex')
+        mocks.codexModelsError = 'catalog disconnected'
+        mocks.spawnSession.mockResolvedValue({ type: 'success', sessionId: 'standard-without-catalog' })
+        renderWithQuery(<NewSession api={api} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />)
+        const tier = await screen.findByRole('combobox', { name: 'newSession.fastMode' })
+        expect(tier).toHaveValue('default')
+        expect(screen.queryByRole('option', { name: 'misc.fastModeFast' })).not.toBeInTheDocument()
+        expect(screen.queryByRole('option', { name: 'misc.fastModeUltrafast' })).not.toBeInTheDocument()
+        fireEvent.change(tier, { target: { value: 'standard' } })
+        await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled())
+        fireEvent.click(screen.getByTestId('create'))
+        await waitFor(() => expect(mocks.spawnSession).toHaveBeenCalledWith(expect.objectContaining({ serviceTier: 'standard' })))
     })
 
     it('inherits the account tier with a visible untouched picker', async () => {

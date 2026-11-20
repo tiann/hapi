@@ -2550,7 +2550,10 @@ export class SyncEngine {
             }
             child = this.sessionCache.refreshSession(childId)!
             const updated = this.store.sessions.updateSessionMetadata(childId,
-                { ...child.metadata!, codexSessionId: attempt.nativeSessionId, codexServiceTierExplicit: source.metadata?.codexServiceTierExplicit }, child.metadataVersion, namespace, { touchUpdatedAt: false })
+                { ...child.metadata!, codexSessionId: attempt.nativeSessionId,
+                    codexServiceTierExplicit: source.metadata?.codexServiceTierExplicit,
+                    codexPreserveNativeTier: this.codexUsesNativeTier(source.metadata) ? true : undefined
+                }, child.metadataVersion, namespace, { touchUpdatedAt: false })
             if (updated.result !== 'success') throw new Error('Failed to bind native fork to its child')
             this.sessionCache.refreshSession(childId)
             attempt = { ...attempt, spawnAttempted: true }
@@ -4280,11 +4283,16 @@ export class SyncEngine {
         this.releaseSessionEnumerations(sessionId)
     }
 
+    private codexUsesNativeTier(metadata: Session['metadata']): boolean {
+        return metadata?.codexServiceTierExplicit === undefined
+            && (metadata?.codexPreserveNativeTier === true || Boolean(metadata?.codexSourceSessionId))
+    }
+
     private codexResumeTier(session: Pick<Session, 'metadata' | 'serviceTier'>): string | undefined {
         const metadata = session.metadata
         if (metadata?.codexPendingServiceTier !== undefined) return metadata.codexPendingServiceTier
         if (metadata?.codexTierConfirmationPending || metadata?.codexServiceTierExplicit === false) return undefined
-        if (metadata?.codexServiceTierExplicit === undefined && metadata?.codexSourceSessionId) return undefined
+        if (this.codexUsesNativeTier(metadata)) return undefined
         return session.serviceTier ?? undefined
     }
 

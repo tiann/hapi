@@ -41,6 +41,37 @@ function fixture() {
 }
 
 describe('archived Codex fork coordination', () => {
+    it('keeps the native tier implicit when resuming a fork of an archived import', async () => {
+        const f = fixture()
+        try {
+            const source = f.store.sessions.getSession(f.source.id)!
+            f.store.sessions.updateSessionMetadata(source.id, {
+                ...source.metadata!, codexSourceSessionId: 'original-import'
+            }, source.metadataVersion, 'ns')
+            ;(f.engine as unknown as { sessionCache: { refreshSession(id: string): void } }).sessionCache.refreshSession(source.id)
+            const tiers: Array<string | undefined> = []
+            const spawn = f.rpc.spawnSession
+            f.rpc.spawnSession = async (...args) => { tiers.push(args[11]); return spawn(...args) }
+            const fork = await f.engine.forkConversation(source.id, 'ns')
+            if (fork.type !== 'success') throw new Error(fork.message)
+            const child = f.engine.getSession(fork.sessionId)!
+            expect(child.metadata?.codexSourceSessionId).toBeUndefined()
+            expect(child.metadata?.codexPreserveNativeTier).toBe(true)
+            f.engine.handleSessionAlive({ sid: child.id, time: Date.now(), serviceTier: 'fast' })
+            f.engine.handleSessionEnd({ sid: child.id, time: Date.now() })
+            expect(f.engine.getSession(child.id)?.serviceTier).toBe('fast')
+            f.rpc.spawnSession = async (...args) => {
+                const result = await spawn(...args)
+                f.engine.handleSessionAlive({ sid: child.id, time: Date.now(), serviceTier: 'standard' })
+                tiers.push(args[11])
+                return result
+            }
+            expect(await f.engine.resumeSession(child.id, 'ns')).toEqual({ type: 'success', sessionId: child.id })
+            expect(f.engine.getSession(child.id)?.serviceTier).toBe('standard')
+            expect(tiers).toEqual([undefined, undefined])
+        } finally { f.engine.stop() }
+    })
+
     it('requires recovery before forking a source with unconfirmed tier settings', async () => {
         const f = fixture();
         try {
