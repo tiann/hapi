@@ -6,14 +6,15 @@ use serde_json::{json, Value};
 use std::{
     collections::{HashMap, VecDeque},
     io,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard, Weak},
     time::Duration,
 };
 use tokio::sync::{mpsc, oneshot, watch, Notify};
 
 use tokio::time::Instant;
 
-type Reply = oneshot::Sender<Vec<Value>>;
+type Reply = Box<dyn FnOnce(Vec<Value>) + Send>;
+pub(crate) type UpdateListener = dyn Fn(&Value) + Send + Sync;
 
 pub enum Event {
     Connected,
@@ -75,6 +76,7 @@ struct State {
     next_id: u64,
     queue: VecDeque<Outgoing>,
     pending: HashMap<u64, Reply>,
+    update_listeners: Vec<Weak<UpdateListener>>,
 }
 impl State {
     fn enqueue(&mut self, payload: Payload, volatile: bool) -> bool {
@@ -331,6 +333,23 @@ impl Client {
         args: Vec<Value>,
         timeout: Option<Duration>,
     ) -> io::Result<Vec<Value>> {
+        self.emit_with_ack_map(name, args, timeout, |args| args)
+            .await
+    }
+
+    pub(crate) fn listen_updates(&self, listener: &Arc<UpdateListener>) {
+        let mut state = self.shared.lock();
+        state.update_listeners.retain(|l| l.strong_count() != 0);
+        state.update_listeners.push(Arc::downgrade(listener));
+    }
+
+    pub(crate) async fn emit_with_ack_map<T: Send + 'static>(
+        &self,
+        name: &str,
+        args: Vec<Value>,
+        timeout: Option<Duration>,
+        apply: impl FnOnce(Vec<Value>) -> T + Send + 'static,
+    ) -> io::Result<T> {
         if reserved(name) {
             return Err(invalid("reserved event name"));
         }
@@ -344,7 +363,14 @@ impl Client {
             state.next_id = id
                 .checked_add(1)
                 .ok_or_else(|| io::Error::other("ack ids exhausted"))?;
-            state.pending.insert(id, tx);
+            state.pending.insert(
+                id,
+                Box::new(move |args| {
+                    if !tx.is_closed() {
+                        let _ = tx.send(apply(args));
+                    }
+                }),
+            );
             state.enqueue(
                 Payload::Event {
                     id: Some(id),
@@ -574,11 +600,25 @@ fn receive(
                 .as_str()
                 .map(str::to_owned)
                 .unwrap_or_else(|| crate::jsjson::stringify(&name));
+            if name == "update" {
+                let listeners: Vec<_> = state
+                    .update_listeners
+                    .iter()
+                    .filter_map(Weak::upgrade)
+                    .collect();
+                drop(state);
+                if let Some(body) = args.first().and_then(|v| v.get("body")) {
+                    for listener in listeners {
+                        listener(body);
+                    }
+                }
+            }
             let _ = events.send(Event::Message { name, args, ack });
         }
         Payload::Ack { id, args } => {
             if let Some(reply) = state.pending.remove(&id) {
-                let _ = reply.send(args);
+                drop(state);
+                reply(args);
             }
         }
         Payload::Disconnect => return Ok(false),
@@ -1118,12 +1158,93 @@ mod tests {
         client.stop(Duration::ZERO);
     }
 
+    #[tokio::test]
+    async fn adjacent_session_frames_arm_rewind_before_update_worker_resumes() {
+        use crate::session::{
+            incoming_filter::IncomingFilter,
+            versioned_ack::{Document, Kind, Snapshot},
+        };
+
+        for ack_first in [true, false] {
+            let shared = Arc::new(Shared::default());
+            shared.lock().connected = true;
+            let (stop, _) = watch::channel(None);
+            let socket = Client {
+                shared: shared.clone(),
+                stop,
+            };
+            let (events, _rx) = mpsc::unbounded_channel();
+            let (_archive, archived) = watch::channel(false);
+            let clear = json!({"host":"test", "path":"/"});
+            let mut intent = clear.clone();
+            intent["claudeRewind"] = json!({"targetLocalId":"t","truncateFromLocalId":"cut","keepBoundary":"k","droppedPrompts":[]});
+            let doc = Document::new(
+                Kind::Metadata,
+                Snapshot {
+                    value: clear.clone(),
+                    version: 1,
+                },
+                "s".into(),
+                socket,
+                Arc::new(|| {}),
+                archived,
+            );
+            let filter = Arc::new(Mutex::new(IncomingFilter::default()));
+            filter.lock().unwrap().accept(Some("prior"), Some(100));
+            let observer = filter.clone();
+            doc.observe(move |value| observer.lock().unwrap().reconcile_rewind(value));
+            doc.update(Clone::clone);
+            shared.ready.notified().await;
+            let Some(Outgoing {
+                payload: Payload::Event { id: Some(id), .. },
+                ..
+            }) = shared.lock().queue.pop_front()
+            else {
+                panic!("missing pending write")
+            };
+            let ack = |v, value: &Value| {
+                cli(Payload::Ack {
+                    id,
+                    args: vec![json!({"result":"success","version":v,"metadata":value})],
+                })
+            };
+            let broadcast = |v, value: &Value| {
+                cli(Payload::Event {
+                    id: None,
+                    name: "update".into(),
+                    args: vec![
+                        json!({"body":{"t":"update-session","sid":"s","metadata":{"version":v,"value":value}}}),
+                    ],
+                })
+            };
+            let frames = if ack_first {
+                [ack(2, &intent), broadcast(3, &clear)]
+            } else {
+                [broadcast(2, &intent), ack(3, &clear)]
+            };
+            for frame in frames {
+                assert!(receive(frame, &shared, &events).unwrap());
+            }
+            assert_eq!(doc.get().version, 3);
+            assert_eq!(doc.get().value, clear);
+            assert_eq!(filter.lock().unwrap().backfill_start(None), Some((0, 1)));
+            assert!(doc.drain().await);
+        }
+    }
+
     #[test]
     fn disconnect_fails_inflight_ack_and_preserves_buffered_ack() {
         let mut state = State::default();
         let (inflight, mut failed) = oneshot::channel();
         let (buffered, mut kept) = oneshot::channel();
-        state.pending.extend([(0, inflight), (1, buffered)]);
+        for (id, tx) in [(0, inflight), (1, buffered)] {
+            state.pending.insert(
+                id,
+                Box::new(move |args| {
+                    let _ = tx.send(args);
+                }),
+            );
+        }
         state.enqueue(
             Payload::Event {
                 id: Some(1),
@@ -1138,12 +1259,7 @@ mod tests {
             state.queue.pop_front().unwrap().payload,
             Payload::Event { id: Some(1), .. }
         ));
-        state
-            .pending
-            .remove(&1)
-            .unwrap()
-            .send(vec![json!("reply")])
-            .unwrap();
+        state.pending.remove(&1).unwrap()(vec![json!("reply")]);
         assert_eq!(kept.try_recv().unwrap(), vec![json!("reply")]);
     }
 

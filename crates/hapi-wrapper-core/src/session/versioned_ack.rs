@@ -1,5 +1,5 @@
 use super::metadata::hub_archived;
-use crate::sio::client::Client;
+use crate::sio::client::{Client, UpdateListener};
 use serde_json::{json, Value};
 use std::{
     collections::VecDeque,
@@ -42,7 +42,19 @@ impl Kind {
     }
     fn parse(self, v: &Value) -> Option<Value> {
         match self {
-            Self::Metadata => crate::schemas::metadata(v).then(|| v.clone()),
+            Self::Metadata => {
+                if !crate::schemas::metadata(v) {
+                    return None;
+                }
+                let mut metadata = v.clone();
+                if let Some(summary) = metadata.get_mut("summary") {
+                    let summary = summary.as_object_mut()?;
+                    summary.get("text")?.as_str()?;
+                    summary.get("updatedAt")?.as_f64()?;
+                    summary.retain(|key, _| key == "text" || key == "updatedAt");
+                }
+                Some(metadata)
+            }
             Self::AgentState => parse_agent_state(v),
         }
     }
@@ -192,6 +204,7 @@ fn retry_delay(failures: u32, rand: f64) -> Duration {
 }
 
 type Handler = Box<dyn Fn(&Value) -> Value + Send + Sync>;
+type ApplyReply = Box<dyn FnOnce(Vec<Value>) -> bool + Send>;
 type Observer = Box<dyn Fn(&Value) + Send + Sync>;
 
 struct State {
@@ -204,6 +217,28 @@ struct ObservedDocument {
     observer: OnceLock<Observer>,
 }
 impl ObservedDocument {
+    fn remote(&self, kind: Kind, version: u64, value: &Value) -> bool {
+        let mut archived = false;
+        self.change(|current| {
+            if version <= current.version {
+                return false;
+            }
+            current.version = version;
+            let parsed = if kind == Kind::AgentState && value.is_null() {
+                Some(Value::Null)
+            } else {
+                kind.parse(value)
+            };
+            let Some(parsed) = parsed else {
+                return false;
+            };
+            current.value = parsed;
+            archived = kind == Kind::Metadata && hub_archived(value);
+            true
+        });
+        archived
+    }
+
     fn get(&self) -> Snapshot {
         self.state.lock().unwrap().snapshot.clone()
     }
@@ -247,6 +282,7 @@ pub struct Document {
     snapshot: Arc<ObservedDocument>,
     queue: mpsc::UnboundedSender<Work>,
     worker: JoinHandle<()>,
+    listener: Mutex<Option<Arc<UpdateListener>>>,
     archive: Arc<dyn Fn() + Send + Sync>,
 }
 impl Document {
@@ -264,29 +300,50 @@ impl Document {
                 .wait_for(|v| v == crate::sio::client::Connection::Stopped)
                 .await;
         };
-        Self::with_sender(
+        let transport = socket.clone();
+        let session_id = sid.clone();
+        let doc = Self::with_dispatch(
             kind,
             snapshot,
             sid,
             archive,
             archived,
             stopped,
-            move |body| {
-                let socket = socket.clone();
+            move |body, apply| {
+                let socket = transport.clone();
                 async move {
-                    if kind == Kind::AgentState {
-                        return socket.emit_with_ack(kind.event(), vec![body], None).await;
-                    }
-                    if !socket.is_connected() {
-                        return Err(io::Error::other("Socket not connected"));
-                    }
+                    let timeout = if kind == Kind::Metadata {
+                        if !socket.is_connected() {
+                            return Err(io::Error::other("Socket not connected"));
+                        }
+                        Some(Duration::from_secs(5))
+                    } else {
+                        None
+                    };
                     socket
-                        .emit_with_ack(kind.event(), vec![body], Some(Duration::from_secs(5)))
+                        .emit_with_ack_map(kind.event(), vec![body], timeout, apply)
                         .await
                 }
             },
-        )
+        );
+        let state = doc.snapshot.clone();
+        let archive = doc.archive.clone();
+        let listener: Arc<UpdateListener> = Arc::new(move |body| {
+            if body["t"] != "update-session" || body["sid"] != session_id {
+                return;
+            }
+            let patch = &body[kind.key()];
+            if let Some(version) = patch["version"].as_u64() {
+                if state.remote(kind, version, &patch["value"]) {
+                    archive();
+                }
+            }
+        });
+        socket.listen_updates(&listener);
+        *doc.listener.lock().unwrap() = Some(listener);
+        doc
     }
+    #[cfg(test)]
     fn with_sender<F: std::future::Future<Output = io::Result<Vec<Value>>> + Send + 'static>(
         kind: Kind,
         snapshot: Snapshot,
@@ -295,6 +352,28 @@ impl Document {
         archived: watch::Receiver<bool>,
         stopped: impl std::future::Future<Output = ()> + Send + 'static,
         send: impl Fn(Value) -> F + Send + Sync + 'static,
+    ) -> Self {
+        Self::with_dispatch(
+            kind,
+            snapshot,
+            sid,
+            archive,
+            archived,
+            stopped,
+            move |body, apply| {
+                let reply = send(body);
+                async move { reply.await.map(apply) }
+            },
+        )
+    }
+    fn with_dispatch<F: std::future::Future<Output = io::Result<bool>> + Send + 'static>(
+        kind: Kind,
+        snapshot: Snapshot,
+        sid: String,
+        archive: Arc<dyn Fn() + Send + Sync>,
+        archived: watch::Receiver<bool>,
+        stopped: impl std::future::Future<Output = ()> + Send + 'static,
+        send: impl Fn(Value, ApplyReply) -> F + Send + Sync + 'static,
     ) -> Self {
         let (queue, mut requests) = mpsc::unbounded_channel();
         let snapshot = Arc::new(ObservedDocument {
@@ -339,7 +418,9 @@ impl Document {
                         if *cancel_check.borrow() {
                             return true;
                         }
-                        if let Ok(args) = send(body).await {
+                        let state = state.clone();
+                        let on_archive = on_archive.clone();
+                        let apply: ApplyReply = Box::new(move |args| {
                             let ack = args.first().unwrap_or(&Value::Null);
                             let mut finished = false;
                             let mut archived_now = false;
@@ -359,9 +440,10 @@ impl Document {
                                 on_archive();
                                 return true;
                             }
-                            if finished {
-                                return true;
-                            }
+                            finished
+                        });
+                        if send(body, apply).await.unwrap_or(false) {
+                            return true;
                         }
                         failures = (failures + 1).min(50);
                         let rand = (Uuid::new_v4().as_u128() >> 96) as f64 / (u32::MAX as f64 + 1.);
@@ -389,6 +471,7 @@ impl Document {
             snapshot,
             queue,
             worker,
+            listener: Mutex::default(),
             archive,
         }
     }
@@ -414,25 +497,7 @@ impl Document {
         UpdateHandle(cancel)
     }
     pub fn remote(&self, version: u64, value: &Value) {
-        let mut archived = false;
-        self.snapshot.change(|current| {
-            if version <= current.version {
-                return false;
-            }
-            current.version = version;
-            let parsed = if self.kind == Kind::AgentState && value.is_null() {
-                Some(Value::Null)
-            } else {
-                self.kind.parse(value)
-            };
-            let Some(parsed) = parsed else {
-                return false;
-            };
-            current.value = parsed;
-            archived = self.kind == Kind::Metadata && hub_archived(value);
-            true
-        });
-        if archived {
+        if self.snapshot.remote(self.kind, version, value) {
             (self.archive)();
         }
     }
@@ -441,6 +506,7 @@ impl Document {
         self.queue.send(Work::Drain(tx)).is_ok() && rx.await.is_ok()
     }
     pub fn close(&self) {
+        self.listener.lock().unwrap().take();
         self.worker.abort();
     }
 }
@@ -623,6 +689,43 @@ mod tests {
             .unwrap();
         assert!(doc.drain().await);
         assert_eq!((doc.get().version, doc.get().value), (4, previous));
+    }
+
+    #[tokio::test]
+    async fn metadata_summary_adoption_matches_typescript() {
+        let cases = json!([
+            {"host":"test","path":"/","summary":null},
+            {"host":"test","path":"/","summary":{"text":"title"}},
+            {"host":"test","path":"/","summary":{"text":"title","updatedAt":"bad"}},
+            {"host":"test","path":"/","summary":{"text":"title","updatedAt":42,"extra":1}}
+        ]);
+        let script = format!("import {{MetadataSchema as S}} from '@hapi/protocol/schemas'; console.log(JSON.stringify({cases}.map(v=>{{const r=S.safeParse(v);return r.success?r.data:null}})))");
+        let output = std::process::Command::new("bun")
+            .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/../../cli"))
+            .args(["-e", &script])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let parsed: Vec<Option<Value>> = serde_json::from_slice(&output.stdout).unwrap();
+        let (doc, _, _archive) = controlled(Kind::Metadata);
+        let mut acked = initial();
+        for (i, (value, parsed)) in cases.as_array().unwrap().iter().zip(parsed).enumerate() {
+            let version = i as u64 + 2;
+            let expected = parsed.unwrap_or_else(|| acked.value.clone());
+            apply_ack(
+                Kind::Metadata,
+                &mut acked,
+                &json!({"result":"success","version":version,"metadata":value}),
+            )
+            .unwrap();
+            doc.remote(version, value);
+            assert_eq!((&acked.value, acked.version), (&expected, version));
+            assert_eq!((doc.get().value, doc.get().version), (expected, version));
+        }
     }
 
     #[test]
