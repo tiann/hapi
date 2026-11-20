@@ -150,6 +150,16 @@ export type SessionSummary = {
      *  omit it; absent on either side, the merge takes the incoming value,
      *  matching today's behaviour. */
     thinkingAt?: number
+    /** Monotonic hub-issued counter, bumped on every `thinking`/
+     *  `thinkingConfirmed` transition (#1717 cold-review round 27); see
+     *  `Session.thinkingRevision`. `thinkingAt` is the CLI's clamped
+     *  alive-report time, not a hub-issued revision — two transitions
+     *  processed within the same clamped-to-"now" millisecond can carry the
+     *  SAME `thinkingAt`, which a strict `>` check on it cannot then tell
+     *  apart. This field is the actual ordering value; `thinkingAt` is
+     *  carried for display only. Optional for the same reason `thinkingAt`
+     *  is — absent on either side, the merge takes the incoming value. */
+    thinkingRevision?: number
     activeAt: number
     updatedAt: number
     /** Creation time is the stable order key before the first user message. */
@@ -443,6 +453,7 @@ export function toSessionSummary(
         thinking: session.thinking,
         thinkingConfirmed: session.thinkingConfirmed,
         thinkingAt: session.thinkingAt,
+        thinkingRevision: session.thinkingRevision,
         activeAt: session.activeAt,
         updatedAt: session.updatedAt,
         contentRevision: session.contentRevision,

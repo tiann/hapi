@@ -464,6 +464,7 @@ export class SessionCache {
             agentStateVersion: stored.agentStateVersion,
             thinking: existing?.thinking ?? false,
             thinkingAt: existing?.thinkingAt ?? 0,
+            thinkingRevision: existing?.thinkingRevision ?? 0,
             thinkingConfirmed: existing?.thinkingConfirmed,
             activeTurnStartedAt: existing?.activeTurnStartedAt ?? null,
             backgroundTaskCount: existing?.backgroundTaskCount ?? 0,
@@ -911,7 +912,8 @@ export class SessionCache {
                 active: true,
                 activeAt: session.activeAt,
                 thinking: session.thinking,
-                thinkingAt: session.thinkingAt
+                thinkingAt: session.thinkingAt,
+                thinkingRevision: session.thinkingRevision
             } satisfies SessionPatch
         })
 
@@ -968,6 +970,9 @@ export class SessionCache {
         const wasThinking = session.thinking
 
         if (patch.active !== undefined) session.active = patch.active
+        if (patch.thinking !== undefined || patch.thinkingConfirmed !== undefined) {
+            this.bumpThinkingRevision(session)
+        }
         if (patch.thinking !== undefined) session.thinking = patch.thinking
         if (patch.thinkingConfirmed !== undefined) {
             session.thinkingConfirmed = patch.thinkingConfirmed
@@ -1046,6 +1051,17 @@ export class SessionCache {
         return true
     }
 
+    // Monotonic, not wall-clock (#1717 cold-review round 27): `thinkingAt` is
+    // the CLI's own clamped alive-report time, so two transitions processed
+    // within the same clamped-to-"now" millisecond — a reconnect replaying
+    // buffered ticks, clock skew, plain bad luck — can carry the identical
+    // value, defeating a strict `>` ordering check on it. This counter
+    // cannot collide: every call increments it regardless of what wall-clock
+    // time reads.
+    private bumpThinkingRevision(session: Session): void {
+        session.thinkingRevision = (session.thinkingRevision ?? 0) + 1
+    }
+
     handleSessionAlive(payload: {
         sid: string
         time: number
@@ -1087,6 +1103,7 @@ export class SessionCache {
         session.activeAt = Math.max(session.activeAt, hubNow)
         session.thinking = requestedThinking || preserveQueuedThinking
         session.thinkingAt = t
+        this.bumpThinkingRevision(session)
         // A rising edge within a maintenance turn's one-shot exemption window
         // stays marked for the turn's whole duration, not just this tick —
         // OpenCode's /compact can report `thinking: true` more than once
@@ -1188,6 +1205,7 @@ export class SessionCache {
                     activeAt: session.activeAt,
                     thinking: session.thinking,
                     thinkingAt: session.thinkingAt,
+                    thinkingRevision: session.thinkingRevision,
                     thinkingConfirmed: session.thinkingConfirmed,
                     activeTurnStartedAt: session.activeTurnStartedAt,
                     permissionMode: session.permissionMode,
@@ -1236,6 +1254,7 @@ export class SessionCache {
         if (session?.thinking) {
             this.activeMaintenanceTurnSessionIds.add(sessionId)
             session.thinkingConfirmed = false
+            this.bumpThinkingRevision(session)
             return
         }
         this.maintenanceTurnSessionIds.add(sessionId)
@@ -1272,6 +1291,7 @@ export class SessionCache {
 
         session.thinking = true
         session.thinkingAt = nextTime
+        this.bumpThinkingRevision(session)
         if (!wasThinking) {
             session.activeTurnStartedAt = activeTurnStartedAt
             // This turn has only been QUEUED, not confirmed by the CLI — a
@@ -1294,6 +1314,7 @@ export class SessionCache {
                 data: {
                     thinking: true,
                     thinkingAt: session.thinkingAt,
+                    thinkingRevision: session.thinkingRevision,
                     thinkingConfirmed: session.thinkingConfirmed,
                     activeTurnStartedAt: session.activeTurnStartedAt,
                     updatedAt: session.updatedAt
@@ -1653,6 +1674,7 @@ export class SessionCache {
         this.store.sessions.setSessionActive(session.id, false, session.activeAt, session.namespace)
         session.thinking = false
         session.thinkingAt = t
+        this.bumpThinkingRevision(session)
         session.activeTurnStartedAt = null
         this.recordTurn(session, wasThinking, t, 'agent', 'session_end')
         session.backgroundTaskCount = 0
@@ -1669,6 +1691,7 @@ export class SessionCache {
                 activeAt: session.activeAt,
                 thinking: false,
                 thinkingAt: session.thinkingAt,
+                thinkingRevision: session.thinkingRevision,
                 activeTurnStartedAt: null,
                 backgroundTaskCount: 0,
                 backgroundTasks: [],
@@ -1698,6 +1721,7 @@ export class SessionCache {
             // same stop time, or stopped rows reorder after a hub restart.
             this.store.sessions.setSessionActive(session.id, false, session.activeAt, session.namespace)
             session.thinking = false
+            this.bumpThinkingRevision(session)
             // The keepalive died, not the tasks: reset the transient work
             // state like handleSessionEnd does, or a session that expired
             // mid-background-work keeps its stale backgroundTaskCount (and

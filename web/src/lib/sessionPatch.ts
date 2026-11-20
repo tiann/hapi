@@ -68,12 +68,16 @@ export function applySessionDetailPatch(session: Session, patch: SessionPatch): 
     if (patch.active !== undefined) assign('active', patch.active)
     // Same dual, unordered SSE streams as the list summary (#1717 cold-review
     // round 27): a stale `thinking` patch can arrive here after a fresher one
-    // already landed via the other stream. An absent `thinkingAt` (older hub)
+    // already landed via the other stream. Ordered by `thinkingRevision`
+    // (monotonic, hub-issued), not `thinkingAt` (CLI-reported, clamped —
+    // two transitions can land in the same clamped-to-"now" millisecond and
+    // carry an identical value). An absent `thinkingRevision` (older hub)
     // takes the patch unconditionally, preserving prior behaviour.
-    if (patch.thinkingAt === undefined || patch.thinkingAt >= session.thinkingAt) {
+    if (patch.thinkingRevision === undefined || patch.thinkingRevision >= (session.thinkingRevision ?? 0)) {
         if (patch.thinking !== undefined) assign('thinking', patch.thinking)
         if (patch.thinkingConfirmed !== undefined) assign('thinkingConfirmed', patch.thinkingConfirmed)
         if (patch.thinkingAt !== undefined) assign('thinkingAt', patch.thinkingAt)
+        if (patch.thinkingRevision !== undefined) assign('thinkingRevision', patch.thinkingRevision)
     }
     if (patch.activeAt !== undefined) assign('activeAt', patch.activeAt)
     // Monotonic with hub applySessionPatch: a rejected stale
@@ -167,17 +171,25 @@ export function reconcileDelayedListSession(
     // can land after an SSE idle patch and restore a stale `thinking: true`
     // (#1717 cold-review round 26) — which hides a genuinely unanswered
     // footer, since the attention classifier treats "still thinking" as
-    // "nothing to show yet" regardless of how it got that value.
-    const priorThinkingAt = prior?.thinkingAt ?? 0
+    // "nothing to show yet" regardless of how it got that value. Ordered by
+    // `thinkingRevision`, a monotonic hub-issued counter, NOT `thinkingAt`
+    // (#1717 cold-review round 27): `thinkingAt` is the CLI's own clamped
+    // alive-report time, and two transitions processed within the same
+    // clamped-to-"now" millisecond can carry the identical value — a strict
+    // `>` check on it cannot then tell which one actually happened last, so
+    // the idle transition could leave the cached ordering value unchanged
+    // while the flags it is supposed to protect did change.
+    const priorThinkingRevision = prior?.thinkingRevision ?? 0
     const keepPriorThinking = prior !== undefined
-        && priorThinkingAt > (incoming.thinkingAt ?? 0)
+        && priorThinkingRevision > (incoming.thinkingRevision ?? 0)
     return {
         ...incoming,
         ...(keepPriorThinking && prior !== undefined
             ? {
                 thinking: prior.thinking,
                 thinkingConfirmed: prior.thinkingConfirmed,
-                thinkingAt: priorThinkingAt
+                thinkingAt: prior.thinkingAt,
+                thinkingRevision: priorThinkingRevision
             }
             : {}),
         // The pending-request fields are part of the same blocker picture:

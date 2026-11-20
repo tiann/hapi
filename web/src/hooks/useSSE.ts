@@ -521,17 +521,23 @@ export function useSSE(options: {
                 // while the agent was still thinking can arrive on one
                 // stream after an idle patch already landed on the other,
                 // restoring a stale `thinking: true` that hides a genuinely
-                // unanswered footer from the attention classifier.
-                const existingThinkingAt = existing?.thinkingAt ?? 0
+                // unanswered footer from the attention classifier. Ordered
+                // by `thinkingRevision` (monotonic, hub-issued), not
+                // `thinkingAt` (#1717 cold-review round 27) — `thinkingAt`
+                // is the CLI's own clamped alive-report time, and two
+                // transitions landing in the same clamped-to-"now"
+                // millisecond can carry an identical value.
+                const existingThinkingRevision = existing?.thinkingRevision ?? 0
                 const keepExistingThinking = existing !== undefined
-                    && existingThinkingAt > (session.thinkingAt ?? 0)
+                    && existingThinkingRevision > (session.thinkingRevision ?? 0)
                 const summary = {
                     ...toSessionSummary(session),
                     ...(keepExistingThinking && existing !== undefined
                         ? {
                             thinking: existing.thinking,
                             thinkingConfirmed: existing.thinkingConfirmed,
-                            thinkingAt: existingThinkingAt
+                            thinkingAt: existing.thinkingAt,
+                            thinkingRevision: existingThinkingRevision
                         }
                         : {}),
                     ...(keepExistingNotify && existing !== undefined
@@ -595,12 +601,16 @@ export function useSSE(options: {
                 // An incremental patch rides the same two unordered SSE
                 // streams a full snapshot does (#1717 cold-review round 27),
                 // so a stale `thinking` patch can arrive after a fresher one
-                // already landed via the other stream. Unlike the other
-                // versioned fields below, an absent `thinkingAt` (older hub)
-                // takes the patch unconditionally — today's behaviour,
-                // preserved for backward compatibility.
-                const keepCurrentThinking = patch.thinkingAt !== undefined
-                    && patch.thinkingAt < (current.thinkingAt ?? 0)
+                // already landed via the other stream. Ordered by
+                // `thinkingRevision` (monotonic, hub-issued), not
+                // `thinkingAt` (CLI-reported, clamped — two transitions can
+                // land in the same clamped-to-"now" millisecond and carry
+                // an identical value). Unlike the other versioned fields
+                // below, an absent `thinkingRevision` (older hub) takes the
+                // patch unconditionally — today's behaviour, preserved for
+                // backward compatibility.
+                const keepCurrentThinking = patch.thinkingRevision !== undefined
+                    && patch.thinkingRevision < (current.thinkingRevision ?? 0)
                 const nextSummary: SessionSummary = {
                     ...current,
                     contentRevision: Math.max(current.contentRevision ?? 0, patch.contentRevision ?? 0),
@@ -611,6 +621,9 @@ export function useSSE(options: {
                         ? current.thinkingConfirmed
                         : (patch.thinkingConfirmed ?? current.thinkingConfirmed),
                     thinkingAt: keepCurrentThinking ? current.thinkingAt : (patch.thinkingAt ?? current.thinkingAt),
+                    thinkingRevision: keepCurrentThinking
+                        ? current.thinkingRevision
+                        : (patch.thinkingRevision ?? current.thinkingRevision),
                     activeAt: patch.activeAt ?? current.activeAt,
                     // Monotonic: stale versioned-patch replays can carry an
                     // older updatedAt; never move the list clock backward.

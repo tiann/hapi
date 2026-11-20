@@ -120,21 +120,39 @@ describe('reconcileDelayedListSession', () => {
         // merge restored the older thinking=true — and the attention
         // classifier treats "still thinking" as "nothing to show yet",
         // hiding the unanswered footer behind it.
-        const prior = makeSummary({ id: 'session-1', thinking: false, thinkingConfirmed: true, thinkingAt: 20 })
-        const delayed = makeSummary({ id: 'session-1', thinking: true, thinkingConfirmed: false, thinkingAt: 10 })
+        const prior = makeSummary({ id: 'session-1', thinking: false, thinkingConfirmed: true, thinkingRevision: 2 })
+        const delayed = makeSummary({ id: 'session-1', thinking: true, thinkingConfirmed: false, thinkingRevision: 1 })
 
         const result = reconcileDelayedListSession(prior, delayed)
         expect(result.thinking).toBe(false)
         expect(result.thinkingConfirmed).toBe(true)
-        expect(result.thinkingAt).toBe(20)
+        expect(result.thinkingRevision).toBe(2)
     })
 
     it('still takes the incoming thinking state when it is genuinely newer', () => {
-        const prior = makeSummary({ id: 'session-1', thinking: true, thinkingAt: 5 })
-        const incoming = makeSummary({ id: 'session-1', thinking: false, thinkingAt: 10 })
+        const prior = makeSummary({ id: 'session-1', thinking: true, thinkingRevision: 1 })
+        const incoming = makeSummary({ id: 'session-1', thinking: false, thinkingRevision: 2 })
 
         const result = reconcileDelayedListSession(prior, incoming)
         expect(result.thinking).toBe(false)
-        expect(result.thinkingAt).toBe(10)
+        expect(result.thinkingRevision).toBe(2)
+    })
+
+    it('does not get fooled by an identical thinkingAt across two distinct transitions (cold-review round 27)', () => {
+        // `thinkingAt` is the CLI's own clamped alive-report time: two
+        // transitions processed within the same clamped-to-"now"
+        // millisecond can carry the IDENTICAL value, which a strict `>`
+        // check on it cannot tell apart. `thinkingRevision` is a counter,
+        // not a clock — it still orders them correctly even when
+        // `thinkingAt` cannot.
+        const prior = makeSummary({
+            id: 'session-1', thinking: false, thinkingAt: 1_000, thinkingRevision: 4
+        })
+        const delayed = makeSummary({
+            id: 'session-1', thinking: true, thinkingAt: 1_000, thinkingRevision: 3
+        })
+
+        const result = reconcileDelayedListSession(prior, delayed)
+        expect(result.thinking).toBe(false)
     })
 })

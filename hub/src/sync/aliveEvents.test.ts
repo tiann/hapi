@@ -99,6 +99,37 @@ describe('alive incremental events', () => {
         }
         expect(update.data).toHaveProperty('thinkingAt')
         expect(typeof (update.data as { thinkingAt?: unknown }).thinkingAt).toBe('number')
+        expect(update.data).toHaveProperty('thinkingRevision')
+        expect(typeof (update.data as { thinkingRevision?: unknown }).thinkingRevision).toBe('number')
+    })
+
+    it('advances thinkingRevision on every thinking transition, even within the same clamped millisecond (cold-review round 27)', () => {
+        // `thinkingAt` is the CLI's own clamped alive-report time: two
+        // transitions processed within the same clamped-to-"now" millisecond
+        // (bun test executes synchronous calls fast enough for this to
+        // happen routinely) carry the IDENTICAL `thinkingAt`, which the web
+        // caches' ordering gate cannot tell apart with a strict `>` check.
+        // `thinkingRevision` is a counter, not a clock, so it must still
+        // advance even when `thinkingAt` does not.
+        const store = new Store(':memory:')
+        const events: SyncEvent[] = []
+        const cache = new SessionCache(store, createPublisher(events))
+
+        const session = cache.getOrCreateSession(
+            'session-thinking-revision-advance',
+            { path: '/tmp/project', host: 'localhost' },
+            { requests: {}, completedRequests: {} },
+            'default'
+        )
+
+        cache.handleSessionAlive({ sid: session.id, time: Date.now(), thinking: true })
+        const firstRevision = cache.getSession(session.id)?.thinkingRevision
+        cache.handleSessionAlive({ sid: session.id, time: Date.now(), thinking: false })
+        const secondRevision = cache.getSession(session.id)?.thinkingRevision
+
+        expect(typeof firstRevision).toBe('number')
+        expect(typeof secondRevision).toBe('number')
+        expect(secondRevision).toBeGreaterThan(firstRevision!)
     })
 
     it('emits full active machine object on machine alive', () => {

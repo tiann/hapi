@@ -651,6 +651,17 @@ export const SessionSchema = z.object({
     agentStateVersion: z.number(),
     thinking: z.boolean(),
     thinkingAt: z.number(),
+    // Monotonic hub-issued counter, bumped on every `thinking`/
+    // `thinkingConfirmed` transition (#1717 cold-review round 27). `thinkingAt`
+    // is the CLI's clamped alive-report time, not a hub-issued revision — two
+    // transitions processed within the same clamped-to-"now" millisecond (a
+    // CLI reconnect replaying buffered ticks, or plain bad luck) can carry
+    // the SAME `thinkingAt`, which a strict `>` ordering check cannot then
+    // tell apart. This counter can't collide: it increments once per
+    // transition regardless of wall-clock resolution. Optional so an older
+    // hub's objects (reconstructed before this field existed) still parse;
+    // defaults to 0 wherever read.
+    thinkingRevision: z.number().optional(),
     // False only during the hub's optimistic queue-to-delivery grace window
     // (#1717 cold-review round 22): `markMessageQueued` sets `thinking: true`
     // before the CLI has confirmed it ever saw the prompt, so a reply
@@ -807,12 +818,12 @@ export const SessionPatchSchema = z.object({
     active: z.boolean().optional(),
     thinking: z.boolean().optional(),
     thinkingConfirmed: z.boolean().optional(),
-    // Ordering value for `thinking`/`thinkingConfirmed` (#1717 cold-review
-    // round 27); see `Session.thinkingAt`. An incremental patch rides one of
-    // two unordered SSE streams exactly like a full snapshot does, and
-    // without this a stale `thinking` patch arriving after a fresher one
-    // has no way to be recognized as stale.
     thinkingAt: z.number().optional(),
+    // Monotonic ordering value for `thinking`/`thinkingConfirmed` (#1717
+    // cold-review round 27); see `Session.thinkingRevision`. A wall-clock
+    // `thinkingAt` cannot order two transitions that land in the same
+    // clamped-to-"now" millisecond — this hub-issued counter always can.
+    thinkingRevision: z.number().optional(),
     activeTurnStartedAt: z.number().nullable().optional(),
     activeAt: z.number().optional(),
     updatedAt: z.number().optional(),
