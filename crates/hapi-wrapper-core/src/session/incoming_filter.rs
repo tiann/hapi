@@ -119,7 +119,10 @@ impl IncomingFilter {
     pub fn backfill_start(&self, start_cursor: Option<i64>) -> Option<(i64, u64)> {
         let start = match &self.rewind.pending {
             Some(pending) => pending.after,
-            None => start_cursor?.max(self.backfill_cursor().unwrap_or(i64::MIN)),
+            None => match self.backfill_cursor() {
+                Some(after) => after,
+                None => start_cursor?,
+            },
         };
         Some((start, self.rewind.epoch))
     }
@@ -304,6 +307,8 @@ mod tests {
         assert_eq!(f.backfill_start(Some(100)), Some((0, 2)));
         assert_eq!(f.cursor(), Some(0));
         f.complete_rewind(2);
+        assert_eq!(f.backfill_start(Some(100)), Some((0, 2)));
+        f.finish_backfill();
         assert_eq!(f.backfill_start(Some(100)), Some((100, 2)));
         assert!(f.accept(Some("y"), Some(50)));
         f.reconcile_rewind(&json!({}));
@@ -343,6 +348,24 @@ mod tests {
         f.page_scanned(100);
         f.complete_rewind(2);
         assert_eq!(f.backfill_start(Some(0)), Some((100, 2)));
+    }
+    #[test]
+    fn interrupted_backfill_resumes_from_scanned_page_after_live_delivery() {
+        let mut f = IncomingFilter::default();
+        assert!(f.accept(Some("a"), Some(100)));
+        assert_eq!(f.start_backfill(), Some(100));
+        assert_eq!(f.backfill_start(f.cursor()), Some((100, 0)));
+        assert!(f.accept_delivery(Some("live"), Some(500), false));
+        assert_eq!(f.cursor(), Some(500));
+        assert_eq!(f.backfill_start(f.cursor()), Some((100, 0)));
+        assert!(f.accept_delivery(Some("p"), Some(200), true));
+        f.page_scanned(200);
+        assert_eq!(f.start_backfill(), Some(200));
+        assert_eq!(f.backfill_start(f.cursor()), Some((200, 0)));
+        assert!(!f.accept_delivery(Some("live"), Some(500), true));
+        f.page_scanned(500);
+        f.finish_backfill();
+        assert_eq!(f.backfill_start(f.cursor()), Some((500, 0)));
     }
     #[test]
     fn completed_rewind_keeps_scanned_sequence_as_cursor() {

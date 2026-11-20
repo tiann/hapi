@@ -2,7 +2,7 @@ use crate::config::Config;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::{
-    header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE},
+    header::{HeaderMap, HeaderName, HeaderValue, ACCEPT_ENCODING, AUTHORIZATION, CONTENT_TYPE},
     Method, Request,
 };
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
@@ -81,6 +81,7 @@ impl Rest {
                 .map_err(io::Error::other)?,
         );
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("identity"));
         Ok(Self {
             client,
             base: config.api_url.trim_end_matches('/').into(),
@@ -359,5 +360,44 @@ mod tests {
         let metadata = &response.unwrap().session["metadata"];
         assert_eq!(metadata["name"], "fix \u{fffd}");
         assert_eq!(metadata["summary"]["text"], "\u{1f600} ok \u{fffd}");
+    }
+
+    #[tokio::test]
+    async fn hub_requests_override_operator_accept_encoding_with_identity() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let config = Config {
+            home: Default::default(),
+            api_url: format!("http://{}", listener.local_addr().unwrap()),
+            cli_api_token: "token".into(),
+            extra_headers: vec![("Accept-Encoding".into(), "gzip".into())],
+            machine_id: None,
+        };
+        let rest = Rest::new(&config).await.unwrap();
+        let body = format!(
+            r#"{{"messages":[{{"id":"m","seq":1,"createdAt":1,"content":"{}"}}]}}"#,
+            "x".repeat(4096)
+        );
+        let serve = async {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut reader = BufReader::new(&mut stream).lines();
+            let mut encodings = Vec::new();
+            while let Some(line) = reader.next_line().await.unwrap().filter(|l| !l.is_empty()) {
+                if let Some((name, value)) = line.split_once(':') {
+                    if name.eq_ignore_ascii_case("accept-encoding") {
+                        encodings.push(value.trim().to_owned());
+                    }
+                }
+            }
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(head.as_bytes()).await.unwrap();
+            stream.write_all(body.as_bytes()).await.unwrap();
+            encodings
+        };
+        let (messages, encodings) = tokio::join!(rest.messages("s", 0), serve);
+        assert_eq!(encodings, ["identity"]);
+        assert_eq!(messages.unwrap().len(), 1);
     }
 }
