@@ -1,4 +1,4 @@
-import { nativeTierParams, inheritedResumeTier, resolveUltrafastLaunch, ULTRAFAST_FALLBACK_NOTICE } from '../utils/serviceTier';
+import { catalogConfiguration, nativeTierParams, inheritedResumeTier, resolveUltrafastLaunch, ULTRAFAST_FALLBACK_NOTICE } from '../utils/serviceTier';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdir, mkdtemp, chmod, rm, realpath } from 'node:fs/promises';
@@ -86,6 +86,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
     let writes = Promise.resolve();
     const persist = () => { writes = writes.catch(() => {}).then(() => saveRuntime(runtime)); return writes; };
     let catalogProvider: string | undefined;
+    let startupCatalogConfig: unknown = null;
     const control = new CodexAppServerClient({ endpoint: upstream, token: upstreamToken, cwd: launch.cwd });
     control.setServerRequestHandler(() => {});
     // An independent observer preserves settings when a root's side-client
@@ -209,7 +210,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
                 agentState: { controlledByUser: false },
             });
         const root = new SharedCodexRoot(bootstrap, { directory: join(runtimeDirectory(), 'queues'), generation: id, endpoint: upstream, token: upstreamToken,
-            settingsFor: threadId => nativeSettings.get(threadId), get catalogProvider() { return catalogProvider; }, create, end });
+            settingsFor: threadId => nativeSettings.get(threadId), catalogProvider, startupCatalogConfig, create, end });
         prepared.add(root);
         try { assertRunning(); await root.prepare(); assertRunning(); return root; }
         catch (error) { await root.close(!stopping && !existingSessionId); prepared.delete(root); throw error; }
@@ -286,7 +287,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         const source = method === 'thread/fork'
             ? record(record(await control.request('thread/read', { threadId: params.threadId, includeTurns: false })).thread) : undefined;
         const cwd = string(params.cwd) ?? string(source?.cwd) ?? launch.cwd;
-        const resolved = await resolveUltrafastLaunch(control, method, params, cwd, catalogProvider, source);
+        const resolved = await resolveUltrafastLaunch(control, method, params, cwd, catalogProvider, source, startupCatalogConfig);
         const downgraded = resolved.downgraded; params = resolved.params;
         const root = await prepare(cwd, undefined, parent);
         let nativeSucceeded = false;
@@ -402,7 +403,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             }
             const resolved = request.method === 'thread/resume'
                 ? await inheritedResumeTier(control, params, root.session.getMetadata()?.codexServiceTierExplicit, cwd, root.bootstrap.sessionInfo.serviceTier, root.session.getMetadata()?.codexPendingServiceTier) : params;
-            const tier = await resolveUltrafastLaunch(control, request.method!, resolved, cwd, catalogProvider, savedThread);
+            const tier = await resolveUltrafastLaunch(control, request.method!, resolved, cwd, catalogProvider, savedThread, startupCatalogConfig);
             reservations.set(key(connection, request), { root, resumeId: request.method === 'thread/resume' ? threadId : undefined,
                 serviceTierExplicit: params.serviceTier !== undefined || request.method === 'thread/resume' && root.session.getMetadata()?.codexPendingServiceTier !== undefined
                     ? true : request.method === 'thread/resume' ? undefined : false,
@@ -497,9 +498,16 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             catch (error) { if (Date.now() > deadline || stopping) throw error; await new Promise(resolve => setTimeout(resolve, 100)); }
         }
         assertRunning();
-        // Legacy model/list stays bound to startup configuration. Newer native
-        // versions use provider-scoped discovery and do not rely on this snapshot.
-        try { if (control.usesStartupModelCatalog()) catalogProvider = string((await control.readConfig({ cwd: launch.cwd, includeLayers: false })).config.model_provider) ?? 'openai'; }
+        // Even provider-scoped model/list can resolve a named provider from
+        // startup config while thread/start loads the current provider config.
+        try {
+            if (control.supportsEffectiveUltrafastLaunch()) {
+                const config = await control.readConfig({ cwd: launch.cwd, includeLayers: true });
+                startupCatalogConfig = catalogConfiguration(config) ?? null;
+            } else if (control.usesStartupModelCatalog()) {
+                catalogProvider = string((await control.readConfig({ cwd: launch.cwd, includeLayers: false })).config.model_provider) ?? 'openai';
+            }
+        }
         catch { logger.debug('[Codex shared] catalog provider snapshot unavailable'); }
         assertRunning();
         control.setTransportAbandonedHandler(reconnectControl);
@@ -550,7 +558,7 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
             });
             const metadata = root.session.getMetadata();
             const resumeParams = await inheritedResumeTier(control, launch.threadParams, metadata?.codexServiceTierExplicit, root.bootstrap.workingDirectory, root.bootstrap.sessionInfo.serviceTier, metadata?.codexPendingServiceTier);
-            const resolved = await resolveUltrafastLaunch(control, 'thread/resume', { ...resumeParams, cwd: root.bootstrap.workingDirectory }, root.bootstrap.workingDirectory, catalogProvider, thread);
+            const resolved = await resolveUltrafastLaunch(control, 'thread/resume', { ...resumeParams, cwd: root.bootstrap.workingDirectory }, root.bootstrap.workingDirectory, catalogProvider, thread, startupCatalogConfig);
             const downgraded = resolved.downgraded;
             const params = root.config({ ...resolved.params, threadId, excludeTurns: true });
             if (downgraded || resolved.params.serviceTier === 'ultrafast' || root.session.getMetadata()?.codexTierConfirmationPending === true) pendingAdmission.add(threadId);

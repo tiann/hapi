@@ -2606,6 +2606,7 @@ export function NewSession(props: {
                 visible={showCodexFastMode || showCodexUltrafastMode || (agent === 'codex' && (serviceTier === 'ultrafast' || serviceTierExplicit && !codexModelsState.isLoading))}
                 fastAvailable={showCodexFastMode}
                 ultrafastAvailable={showCodexUltrafastMode}
+                keepExistingTier={Boolean(selectedCodexImportSessionId)}
                 availabilityUnverified={agent === 'codex' && (Boolean(codexModelsState.error) || Boolean(selectedCodexImportSessionId) && serviceTier === 'ultrafast') && serviceTierExplicit && serviceTier !== 'standard'}
                 value={serviceTierExplicit ? serviceTier : 'default'}
                 isDisabled={isFormDisabled}

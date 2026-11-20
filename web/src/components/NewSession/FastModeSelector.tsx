@@ -8,6 +8,7 @@ export function FastModeSelector(props: {
     fastAvailable?: boolean
     ultrafastAvailable?: boolean
     availabilityUnverified?: boolean
+    keepExistingTier?: boolean
     visible: boolean
     value: NewSessionServiceTier | 'default'
     isDisabled: boolean
@@ -32,12 +33,16 @@ export function FastModeSelector(props: {
                 disabled={props.isDisabled}
                 className="py-2 pl-3 text-sm rounded-lg border border-[var(--app-divider)] bg-[var(--app-bg)] text-[var(--app-text)] focus:outline-none focus:ring-2 focus:ring-[var(--app-link)] disabled:opacity-50"
             >
-                <option value="default">Account default</option>
+                <option value="default">{props.keepExistingTier ? 'Keep existing tier' : 'Account default'}</option>
                 <option value="standard">{t('misc.fastModeStandard')}</option>
                 {(props.fastAvailable !== false || props.value === 'fast') && <option value="fast" disabled={props.fastAvailable === false}>{t('misc.fastModeFast')}</option>}
                 {(props.ultrafastAvailable || props.value === 'ultrafast') && <option value="ultrafast" disabled={!props.ultrafastAvailable}>{t('misc.fastModeUltrafast')}</option>}
             </SelectControl>
-            {props.availabilityUnverified ? <p role="status" className="text-xs text-[var(--app-hint)]">Service tier availability could not be verified. You can choose Standard or Account default.</p> : null}
+            {props.availabilityUnverified ? <p role="status" className="text-xs text-[var(--app-hint)]">
+                {props.keepExistingTier
+                    ? 'Service tier availability could not be verified. Choose Standard to replace the existing tier.'
+                    : 'Service tier availability could not be verified. You can choose Standard or Account default.'}
+            </p> : null}
         </div>
     )
 }

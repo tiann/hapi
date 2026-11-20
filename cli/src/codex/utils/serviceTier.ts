@@ -1,8 +1,30 @@
+import { isDeepStrictEqual } from 'node:util';
 import type { CodexAppServerClient } from '../codexAppServerClient';
 
 /** Validate against the same native account/provider that will execute the thread. */
 export const ULTRAFAST_FALLBACK_NOTICE = 'Ultrafast was not advertised by the current Codex model catalog; changed to Standard.';
 export const ULTRAFAST_DISABLED_NOTICE = 'Ultrafast is disabled in the current Codex configuration; changed to Standard.';
+
+const providerConfigKeys = new Set([
+    'model_providers', 'openai_base_url', 'chatgpt_base_url', 'model_catalog_json',
+    'forced_login_method', 'forced_chatgpt_workspace_id', 'profile', 'profiles'
+]);
+const providerConfigKey = (key: string): boolean => providerConfigKeys.has(key.split('.', 1)[0]);
+const providerFields = (value: unknown): Record<string, unknown> => value && typeof value === 'object'
+    ? Object.fromEntries(Object.entries(value).filter(([key]) => providerConfigKey(key)))
+    : {};
+
+export function catalogConfiguration(response: Awaited<ReturnType<CodexAppServerClient['readConfig']>>): unknown {
+    if (!Array.isArray(response.layers)) return undefined;
+    return {
+        config: providerFields(response.config),
+        layers: response.layers.flatMap(layer => {
+            if (!layer || layer.disabledReason) return [];
+            const fields = providerFields(layer.config);
+            return Object.keys(fields).length ? [fields] : [];
+        })
+    };
+}
 
 /** Selected tier notifications do not prove the native execution feature is enabled. */
 export async function isUltrafastEnabled(client: Pick<CodexAppServerClient, 'request'>, threadId: string, deadline = Date.now() + 10_000): Promise<boolean> {
@@ -46,6 +68,7 @@ export async function isUltrafastAvailable(
     deadline = Date.now() + 10_000,
     modelProvider?: string,
     catalogProvider?: string,
+    startupCatalogConfig?: unknown,
 ): Promise<boolean> {
     if (client.supportsEffectiveUltrafastLaunch?.() === false) {
         throw new Error('Ultrafast requires Codex 0.170 or newer to verify execution; settings were not changed');
@@ -63,8 +86,16 @@ export async function isUltrafastAvailable(
     const scoped = client.supportsProviderScopedModels?.() === true;
     if (!scoped && !catalogProvider) throw new Error('Cannot verify the Codex catalog provider; settings were not changed');
     const explicitModel = typeof model === 'string' && model.trim() ? model : undefined;
-    const configured = !explicitModel || !modelProvider
-        ? (await bounded(() => client.readConfig({ cwd, includeLayers: false }))).config : undefined;
+    const verifyConfig = scoped && startupCatalogConfig !== undefined;
+    const current = verifyConfig || !explicitModel || !modelProvider
+        ? await bounded(() => client.readConfig({ cwd, includeLayers: verifyConfig })) : undefined;
+    const assertCatalogConfiguration = (response: typeof current) => {
+        if (startupCatalogConfig == null || !response || !isDeepStrictEqual(startupCatalogConfig, catalogConfiguration(response))) {
+            throw new Error('Cannot verify the Codex catalog against the launch provider configuration; settings were not changed. Restart the Codex runtime and retry.');
+        }
+    };
+    if (verifyConfig) assertCatalogConfiguration(current);
+    const configured = current?.config;
     const effectiveProvider = modelProvider ?? (typeof configured?.model_provider === 'string' ? configured.model_provider : 'openai');
     if (!scoped && catalogProvider !== effectiveProvider) throw new Error('Cannot verify Ultrafast for a different Codex model provider; settings were not changed');
     const effectiveModel = explicitModel ?? (typeof configured?.model === 'string' && configured.model.trim() ? configured.model : undefined);
@@ -78,6 +109,7 @@ export async function isUltrafastAvailable(
         if (cursor && seen.has(cursor)) throw new Error('Codex model catalog pagination did not advance');
         if (cursor) seen.add(cursor);
     } while (cursor);
+    if (verifyConfig) assertCatalogConfiguration(await bounded(() => client.readConfig({ cwd, includeLayers: true })));
     const selected = effectiveModel
         ? models.find(entry => entry.id === effectiveModel || entry.model === effectiveModel)
         : models.find(entry => entry.isDefault);
@@ -114,6 +146,7 @@ export async function resolveUltrafastLaunch(
     client: Pick<CodexAppServerClient, 'request' | 'listModels' | 'readConfig' | 'retainsResumeModelProvider' | 'supportsProviderScopedModels'>,
     method: string, params: Record<string, unknown>, cwd: string, catalogProvider?: string,
     savedThread?: Record<string, unknown>,
+    startupCatalogConfig?: unknown,
 ): Promise<{ params: Record<string, unknown>; downgraded: boolean }> {
     params = nativeTierParams(params);
     if (params.serviceTier !== 'ultrafast') return { params, downgraded: false };
@@ -122,10 +155,13 @@ export async function resolveUltrafastLaunch(
         ? await client.request<{ thread: Record<string, unknown> }>('thread/read', { threadId: params.threadId, includeTurns: false }) : undefined;
     const saved = savedThread ?? response?.thread ?? {};
     const config = params.config && typeof params.config === 'object' ? params.config as Record<string, unknown> : {};
+    if (Object.keys(config).some(providerConfigKey)) {
+        throw new Error('Cannot verify the Codex catalog for request-level provider configuration overrides; settings were not changed');
+    }
     const provider = params.modelProvider ?? config.model_provider;
     const context = method === 'thread/resume'
         ? resumeTierContext(params, saved, client.retainsResumeModelProvider())
         : { model: params.model ?? config.model, modelProvider: typeof provider === 'string' ? provider : undefined };
-    const available = await isUltrafastAvailable(client, context.model, typeof params.cwd === 'string' ? params.cwd : typeof saved.cwd === 'string' ? saved.cwd : cwd, deadline, context.modelProvider, catalogProvider);
+    const available = await isUltrafastAvailable(client, context.model, typeof params.cwd === 'string' ? params.cwd : typeof saved.cwd === 'string' ? saved.cwd : cwd, deadline, context.modelProvider, catalogProvider, startupCatalogConfig);
     return { params: available ? params : { ...params, serviceTier: null }, downgraded: !available };
 }

@@ -2816,10 +2816,13 @@ it('withholds Ultrafast on native import until the retained provider can be veri
     const importApi = { ...api, getCodexSessions: vi.fn(async () => ({ sessions: [{ id: 'native-import', title: 'Native import', cwd: 'C:\\repo' }], machineId: 'machine-1' })) } as unknown as ApiClient;
     renderWithQuery(<NewSession api={importApi} machines={[machine]} initialMachineId="machine-1" initialDirectory="C:\repo" onSuccess={mocks.onSuccess} onCancel={() => {}} />);
     expect(await screen.findByRole('combobox', { name: 'newSession.fastMode' })).toHaveValue('ultrafast');
+    expect(screen.getByRole('option', { name: 'Account default' })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'codexSync.newSessionInline.choose' }));
     await waitFor(() => expect(screen.getByTestId('select-codex-history')).toBeEnabled());
     fireEvent.click(screen.getByTestId('select-codex-history'));
     await waitFor(() => expect(screen.getByRole('option', { name: 'misc.fastModeUltrafast' })).toBeDisabled());
+    expect(screen.getByRole('option', { name: 'Keep existing tier' })).toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'Account default' })).not.toBeInTheDocument();
     expect(screen.getByTestId('create')).toBeDisabled();
     fireEvent.change(screen.getByRole('combobox', { name: 'newSession.fastMode' }), { target: { value: 'standard' } });
     await waitFor(() => expect(screen.getByTestId('create')).toBeEnabled());

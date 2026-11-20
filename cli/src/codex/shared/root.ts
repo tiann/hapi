@@ -34,6 +34,7 @@ export type RootHost = {
     attached?: boolean;
     /** Provider captured for the native catalog when its app-server started. */
     catalogProvider?: string;
+    startupCatalogConfig?: unknown;
     beforeSubscribe?(threadId: string): Promise<void>;
     validateHistory?(threadId: string, thread: unknown): Promise<void>;
     settingsFor(threadId: string): Record<string, unknown> | undefined;
@@ -693,7 +694,7 @@ export class SharedCodexRoot {
                 if (!this.client.supportsProviderScopedModels() && !this.host.catalogProvider && config.model && config.serviceTier === undefined) {
                     throw new Error('Catalog provider could not be verified. Switch to Standard before changing models.');
                 }
-                const available = await isUltrafastAvailable(this.client, model, this.bootstrap.workingDirectory, discoveryDeadline, provider, this.host.catalogProvider);
+                const available = await isUltrafastAvailable(this.client, model, this.bootstrap.workingDirectory, discoveryDeadline, provider, this.host.catalogProvider, this.host.startupCatalogConfig);
                 if ((!config.model && model !== this.settings.model) || provider !== this.modelProvider) continue;
                 const enabled = available && await isUltrafastEnabled(this.client, this.threadId, discoveryDeadline);
                 if ((!config.model && model !== this.settings.model) || provider !== this.modelProvider) continue;
@@ -771,7 +772,7 @@ export class SharedCodexRoot {
             for (;;) {
                 const model = requestedModel ?? this.settings.model;
                 const provider = this.modelProvider;
-                const available = await isUltrafastAvailable(this.client, model, this.bootstrap.workingDirectory, deadline, provider, this.host.catalogProvider);
+                const available = await isUltrafastAvailable(this.client, model, this.bootstrap.workingDirectory, deadline, provider, this.host.catalogProvider, this.host.startupCatalogConfig);
                 const enabled = available && await isUltrafastEnabled(this.client, this.threadId, deadline);
                 if ((!requestedModel && model !== this.settings.model) || provider !== this.modelProvider) continue;
                 // A model-only request must not reset a newer tier chosen during discovery.
@@ -885,7 +886,7 @@ export class SharedCodexRoot {
                 timer = setTimeout(() => reject(timedOut()), remaining);
             })]);
         } catch (error) {
-            if (shouldPause() && (method !== 'thread/settings/update' || error instanceof Error && /timed out|timeout/i.test(error.message))) this.pauseTierConfirmation(operationId);
+            if (shouldPause() && (method !== 'thread/settings/update' || isIndeterminateError(error))) this.pauseTierConfirmation(operationId);
             throw error;
         } finally { clearTimeout(timer); }
     }

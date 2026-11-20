@@ -36,7 +36,9 @@ Standard and emits a system notice after native confirmation. Reported catalog
 RPC failures leave settings unchanged and surface the error. Codex can return
 a bundled fallback after a backend refresh failure without exposing that failure
 or catalog provenance; a negative catalog result is not an independent entitlement
-check. A detected thread/catalog provider mismatch is an error, not a downgrade.
+check. If provider configuration changed after the Codex runtime started,
+discovery reports that the catalog could not be verified and leaves the tier
+unchanged. Restart the Codex runtime before retrying Ultrafast.
 HAPI stores explicit tier intent separately from the effective tier displayed by
 Codex. Cold resume re-resolves a configured inherited tier from current settings.
 When the account tier is unset, HAPI omits the override: Codex may restore its

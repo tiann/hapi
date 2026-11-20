@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { AgentState, Metadata } from '@/api/types';
 import type { ApiSessionClient } from '@/api/apiSession';
-import { CodexAppServerClient } from '../codexAppServerClient';
+import { CodexAppServerClient, INDETERMINATE_SYMBOL } from '../codexAppServerClient';
 import { initializeSharedClient } from './launch';
 import { record } from './gateway';
 import { saveRuntime, withThreadOwnership } from './registry';
@@ -203,11 +203,6 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
                 { id: 'gpt-6.1-sol', serviceTiers: [{ id: 'priority' }] },
             ] } as never));
             const originalRequest = CodexAppServerClient.prototype.request;
-            const failSettings = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
-                if (method === 'thread/settings/update' && !clients.includes(this)) return Promise.reject(new Error('fixture Standard confirmation unavailable'));
-                return originalRequest.call(this, method, params) as Promise<T>;
-            });
-            extraSpies.push(failSettings);
             const originalConfirm = SharedCodexRoot.prototype.confirmUltrafastLaunch;
             let entered!: (threadId: string) => void;
             const confirming = new Promise<string>(resolve => { entered = resolve; });
@@ -218,6 +213,23 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             extraSpies.push(confirmation);
             const observer = new CodexAppServerClient({ endpoint: second.runtime.endpoint, token: second.runtime.token });
             clients.push(observer); await initializeSharedClient(observer);
+            const lostTierReply = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
+                if (!clients.includes(this) && method === 'thread/settings/update' && record(params).threadId === threadId) {
+                    return Promise.reject(Object.assign(new Error('Shared Codex connection closed'), { [INDETERMINATE_SYMBOL]: true }));
+                }
+                return originalRequest.call(this, method, params) as Promise<T>;
+            });
+            extraSpies.push(lostTierReply);
+            await expect(second.client.request('thread/settings/update', { threadId, serviceTier: null })).rejects.toThrow('connection closed');
+            lostTierReply.mockRestore();
+            await expect(observer.request('thread/queue/start', { threadId })).rejects.toThrow('tier confirmation');
+            // The original scenario keeps Fast after the later cold resume.
+            await observer.request('thread/settings/update', { threadId, serviceTier: 'priority' });
+            const failSettings = vi.spyOn(CodexAppServerClient.prototype, 'request').mockImplementation(function<T>(this: CodexAppServerClient, method: string, params?: unknown): Promise<T> {
+                if (method === 'thread/settings/update' && !clients.includes(this)) return Promise.reject(new Error('fixture Standard confirmation unavailable'));
+                return originalRequest.call(this, method, params) as Promise<T>;
+            });
+            extraSpies.push(failSettings);
             const creating = second.client.request<{ thread: { id: string } }>('thread/start', { cwd, model: 'gpt-6-astra', serviceTier: 'ultrafast' });
             const confirmingThread = await confirming;
             await expect(observer.request('thread/queue/start', { threadId: confirmingThread })).rejects.toThrow('tier confirmation');

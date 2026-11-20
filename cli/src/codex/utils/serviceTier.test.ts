@@ -1,5 +1,23 @@
 import { describe, expect, it, vi } from 'vitest';
-import { isUltrafastAvailable, isUltrafastEnabled, inheritedResumeTier, resumeTierContext, resolveUltrafastLaunch } from './serviceTier';
+import { catalogConfiguration, isUltrafastAvailable, isUltrafastEnabled, inheritedResumeTier, resumeTierContext, resolveUltrafastLaunch } from './serviceTier';
+
+it('leaves the requested tier untouched when the same provider changes catalog endpoint', async () => {
+    const configuration = (baseUrl: string) => ({
+        config: { model_provider: 'custom' },
+        layers: [{ config: { model_providers: { custom: { base_url: baseUrl } } } }]
+    });
+    const listModels = vi.fn();
+    const client = {
+        readConfig: vi.fn().mockResolvedValue(configuration('https://new.example.test')),
+        listModels,
+        request: vi.fn(), retainsResumeModelProvider: () => true, supportsProviderScopedModels: () => true,
+    };
+    const requested = { model: 'eligible', modelProvider: 'custom', serviceTier: 'ultrafast' };
+    await expect(resolveUltrafastLaunch(client, 'thread/start', requested, '/project', undefined, undefined,
+        catalogConfiguration(configuration('https://old.example.test')))).rejects.toThrow('launch provider configuration');
+    expect(listModels).not.toHaveBeenCalled();
+    expect(requested.serviceTier).toBe('ultrafast');
+});
 
 it.each(['thread/start', 'thread/fork', 'thread/resume'])('applies the same catalog fallback before native %s', async method => {
     const client = {
