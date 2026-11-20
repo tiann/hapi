@@ -2179,14 +2179,25 @@ export function createBoardRoutes(
             // on the project yet by definition. The `repo` check below is a
             // belt-and-suspenders sanity check, not the actual trust
             // boundary; the signature itself is.
-            const claims = await verifyBoardItemRecoveryToken(jwtSecret, parsed.data.recoveryToken)
-            if (!claims || claims.boardId !== board.id || claims.repo.toLowerCase() !== parsed.data.repo.toLowerCase()) {
+            const verification = await verifyBoardItemRecoveryToken(jwtSecret, parsed.data.recoveryToken)
+            if (!verification.ok) {
+                // `code: 'recovery_expired'` only for a genuinely-expired
+                // token (bot review, tiann/hapi#2147, follow-up) — not for
+                // forged/malformed/wrong-board ones, which have no
+                // legitimate prior state the dialog could offer a
+                // different recovery path for anyway.
+                return c.json({
+                    error: 'This retry has expired or no longer matches — start the submission over',
+                    ...(verification.expired ? { code: 'recovery_expired' } : {})
+                }, 400)
+            }
+            if (verification.claims.boardId !== board.id || verification.claims.repo.toLowerCase() !== parsed.data.repo.toLowerCase()) {
                 return c.json({ error: 'This retry has expired or no longer matches — start the submission over' }, 400)
             }
-            issueUrl = claims.url
+            issueUrl = verification.claims.url
             // From the token, not parsed.data.assignees — the hub's own
             // original resolution, never whatever the client supplies.
-            issueAssignees = claims.assignees
+            issueAssignees = verification.claims.assignees
             // Re-apply assignees too, not just the project attach (review
             // finding, tiann/hapi#2147, follow-up): the prior failure that
             // produced this retry may have been the assignee application

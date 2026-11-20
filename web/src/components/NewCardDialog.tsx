@@ -92,6 +92,15 @@ export function NewCardDialog(props: NewCardDialogProps) {
     // arbitrary issue in the repo and have the hub edit its assignees or
     // attach it to the board. Always set together with orphanedIssueUrl.
     const [orphanedRecoveryToken, setOrphanedRecoveryToken] = useState<string | null>(null)
+    // Set when the hub reports `code: 'recovery_expired'` (review finding,
+    // tiann/hapi#2147, follow-up) — the recovery token aged past its TTL
+    // (30 minutes), not forged or mismatched. Resubmitting would either
+    // 400 forever (the token's still attached) or, if the error's own
+    // "start the submission over" wording were followed literally, file a
+    // genuine duplicate of the issue already sitting at orphanedIssueUrl.
+    // Hides the submit button entirely instead — orphanedIssueUrl stays
+    // visible so the user can still finish attaching it by hand on GitHub.
+    const [recoveryExpired, setRecoveryExpired] = useState(false)
     // Snapshot of exactly what was submitted when orphanedIssueUrl was set
     // (review finding, hapi#238, follow-up): the retry-attach path only
     // ever attaches that already-created issue, ignoring title/body, so an
@@ -126,6 +135,7 @@ export function NewCardDialog(props: NewCardDialogProps) {
         setError(null)
         setOrphanedIssueUrl(null)
         setOrphanedRecoveryToken(null)
+        setRecoveryExpired(false)
         setOrphanedSubmissionSnapshot(null)
         setIsSubmitting(false)
     }, [isOpen]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -189,6 +199,21 @@ export function NewCardDialog(props: NewCardDialogProps) {
     }
 
     const handleFormNext = () => {
+        if (recoveryExpired) {
+            // No live token to preserve either way once expired — always
+            // abandon rather than running the usual unchanged-content
+            // check below, which exists to decide whether a *live* token
+            // is still safe to retry with (review finding, tiann/hapi#2147,
+            // follow-up). Reaching the review step again re-enables normal
+            // submission (a fresh, explicit choice the user makes after
+            // already having seen orphanedIssueUrl in the expired error).
+            setOrphanedIssueUrl(null)
+            setOrphanedRecoveryToken(null)
+            setOrphanedSubmissionSnapshot(null)
+            setRecoveryExpired(false)
+            setStep('review')
+            return
+        }
         // Abandon the pending retry-attach association only once the
         // current submission actually diverges from what was submitted
         // when it was set (review finding, hapi#238, follow-up) — not on
@@ -239,6 +264,7 @@ export function NewCardDialog(props: NewCardDialogProps) {
             })
             setOrphanedIssueUrl(null)
             setOrphanedRecoveryToken(null)
+            setRecoveryExpired(false)
             setOrphanedSubmissionSnapshot(null)
             onClose()
         } catch (err) {
@@ -254,6 +280,19 @@ export function NewCardDialog(props: NewCardDialogProps) {
                 onTemplateConflict()
                 setSelectedTemplate(undefined)
                 setStep('template')
+                return
+            }
+            // The token aged past its TTL, not forged or mismatched (bot
+            // review, tiann/hapi#2147, follow-up) — see recoveryExpired's
+            // own comment for why this hides the submit button entirely
+            // rather than leaving "Retry" offered (which would just 400
+            // forever) or reverting to a plain "Create issue" (which, if
+            // the user follows the error's own "start over" wording, would
+            // file a genuine duplicate of the issue at orphanedIssueUrl,
+            // still shown below).
+            if (getApiErrorCode(err) === 'recovery_expired') {
+                setRecoveryExpired(true)
+                setOrphanedRecoveryToken(null)
                 return
             }
             // Keep showing the previously-known orphaned issue (if any) when
@@ -499,6 +538,7 @@ export function NewCardDialog(props: NewCardDialogProps) {
                                             {orphanedIssueUrl}
                                         </a>
                                     ) : null}
+                                    {recoveryExpired ? <span>{t('boards.newCard.recoveryExpiredHint')}</span> : null}
                                 </div>
                             ) : null}
 
@@ -520,14 +560,16 @@ export function NewCardDialog(props: NewCardDialogProps) {
                                 >
                                     {t('button.back')}
                                 </Button>
-                                <Button type="button" className="gap-2" aria-busy={isSubmitting} onClick={handleSubmit} disabled={isSubmitting}>
-                                    {isSubmitting ? (
-                                        <>
-                                            <Spinner size="sm" label={null} className="text-[var(--app-button-text)]" />
-                                            {t('boards.newCard.creating')}
-                                        </>
-                                    ) : orphanedIssueUrl ? t('boards.newCard.retryAttach') : t('boards.newCard.create')}
-                                </Button>
+                                {recoveryExpired ? null : (
+                                    <Button type="button" className="gap-2" aria-busy={isSubmitting} onClick={handleSubmit} disabled={isSubmitting}>
+                                        {isSubmitting ? (
+                                            <>
+                                                <Spinner size="sm" label={null} className="text-[var(--app-button-text)]" />
+                                                {t('boards.newCard.creating')}
+                                            </>
+                                        ) : orphanedRecoveryToken ? t('boards.newCard.retryAttach') : t('boards.newCard.create')}
+                                    </Button>
+                                )}
                             </div>
                         </div>
                     ) : null}

@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto'
 import { encodePasskeyUserHandle, PASSKEY_ACCOUNT_TAG_BYTES } from '@hapi/protocol/passkey'
-import { SignJWT, jwtVerify } from 'jose'
+import { errors, SignJWT, jwtVerify } from 'jose'
 import { z } from 'zod'
 
 const WEB_JWT_TTL = '4h'
@@ -114,13 +114,24 @@ const boardItemRecoverySchema = z.object({
     assignees: z.array(z.string())
 })
 
-export async function verifyBoardItemRecoveryToken(jwtSecret: Uint8Array, token: string): Promise<BoardItemRecoveryClaims | null> {
+export type BoardItemRecoveryVerification =
+    | { ok: true; claims: BoardItemRecoveryClaims }
+    // `expired` distinguishes "this really was a legitimate retry token,
+    // it just aged out" from "forged, malformed, or for a different
+    // board/typ entirely" (bot review, tiann/hapi#2147, follow-up) — the
+    // dialog needs this distinction to offer a different recovery path
+    // (keep the already-created issue's link visible, stop offering a
+    // retry that would just 400 forever) than a flatly invalid token,
+    // which has no legitimate prior state to point back to at all.
+    | { ok: false; expired: boolean }
+
+export async function verifyBoardItemRecoveryToken(jwtSecret: Uint8Array, token: string): Promise<BoardItemRecoveryVerification> {
     try {
         const verified = await jwtVerify(token, jwtSecret, { algorithms: ['HS256'] })
         const parsed = boardItemRecoverySchema.safeParse(verified.payload)
-        if (!parsed.success) return null
-        return { boardId: parsed.data.boardId, repo: parsed.data.repo, url: parsed.data.url, assignees: parsed.data.assignees }
-    } catch {
-        return null
+        if (!parsed.success) return { ok: false, expired: false }
+        return { ok: true, claims: { boardId: parsed.data.boardId, repo: parsed.data.repo, url: parsed.data.url, assignees: parsed.data.assignees } }
+    } catch (error) {
+        return { ok: false, expired: error instanceof errors.JWTExpired }
     }
 }

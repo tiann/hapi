@@ -4,6 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Hono } from 'hono'
+import { SignJWT } from 'jose'
 import type { BoardItemsResponse, BoardsResponse } from '@hapi/protocol'
 import type { WebAppEnv } from '../middleware/auth'
 import { createBoardRoutes, CreateIssueAssigneesFailedError, fetchAllItemComments, fetchAllProjectItems, GhGraphqlNotFoundError, isGhVersionBelow, makeBoardId, parseGhVersion, parseProjectUrl, parseValidatedItemUrl, PROJECT_QUERY, PROJECT_QUERY_FILTERED, resolveProjectView } from './todoBoard'
@@ -2679,8 +2680,8 @@ body:
         // The token must bind the exact board/repo/url/assignees this
         // submission resolved — not just be present (bot review,
         // tiann/hapi#2147, follow-up).
-        const claims = await verifyBoardItemRecoveryToken(TEST_JWT_SECRET, body.recoveryToken)
-        expect(claims).toEqual({ boardId: DEFAULT_BOARD_ID, repo: 'heavygee/hapi', url: 'https://github.com/heavygee/hapi/issues/42', assignees: [] })
+        const verification = await verifyBoardItemRecoveryToken(TEST_JWT_SECRET, body.recoveryToken)
+        expect(verification).toEqual({ ok: true, claims: { boardId: DEFAULT_BOARD_ID, repo: 'heavygee/hapi', url: 'https://github.com/heavygee/hapi/issues/42', assignees: [] } })
     })
 
     it('surfaces a failed createIssue as a 502 without attempting to add anything to the project', async () => {
@@ -2712,8 +2713,8 @@ body:
         const body = await response.json() as { error: string; url: string; recoveryToken: string }
         expect(body.error).toContain('https://github.com/heavygee/hapi/issues/42')
         expect(body.url).toBe('https://github.com/heavygee/hapi/issues/42')
-        const claims = await verifyBoardItemRecoveryToken(TEST_JWT_SECRET, body.recoveryToken)
-        expect(claims).toEqual({ boardId: DEFAULT_BOARD_ID, repo: 'heavygee/hapi', url: 'https://github.com/heavygee/hapi/issues/42', assignees: [] })
+        const verification = await verifyBoardItemRecoveryToken(TEST_JWT_SECRET, body.recoveryToken)
+        expect(verification).toEqual({ ok: true, claims: { boardId: DEFAULT_BOARD_ID, repo: 'heavygee/hapi', url: 'https://github.com/heavygee/hapi/issues/42', assignees: [] } })
     })
 
     // Regression (bot review, hapi#238): a retry after "created but not
@@ -2794,6 +2795,39 @@ body:
         expect(calls).toEqual([])
     })
 
+    // Bot review, tiann/hapi#2147, follow-up: a genuinely expired token
+    // (not forged, not mismatched — just aged past its TTL) gets a
+    // distinct machine-readable code so the dialog can offer a different
+    // recovery path than "start over," which would create a duplicate
+    // issue (the whole reason the token exists in the first place).
+    it('surfaces a distinct recovery_expired code for a token that has genuinely expired', async () => {
+        const calls: string[] = []
+        const app = await createApp(() => ({ data: {} }), undefined, 'default', undefined, {
+            ...UNUSED_ACTIONS,
+            createIssue: async () => { calls.push('should-not-be-called'); return 'https://github.com/heavygee/hapi/issues/99' },
+            addItemToProject: async (target) => { calls.push(`should-not-be-called:${target.issueUrl}`) }
+        })
+        const expiredToken = await new SignJWT({
+            typ: 'board_item_recovery', boardId: DEFAULT_BOARD_ID, repo: 'heavygee/hapi',
+            url: 'https://github.com/heavygee/hapi/issues/42', assignees: []
+        })
+            .setProtectedHeader({ alg: 'HS256' })
+            .setIssuedAt(Math.floor(Date.now() / 1000) - 3600)
+            .setExpirationTime(Math.floor(Date.now() / 1000) - 10)
+            .sign(TEST_JWT_SECRET)
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({
+                repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null,
+                recoveryToken: expiredToken
+            })
+        })
+        expect(response.status).toBe(400)
+        const body = await response.json() as { error: string; code?: string }
+        expect(body.code).toBe('recovery_expired')
+        expect(calls).toEqual([])
+    })
+
     // Bot review, tiann/hapi#2147, follow-up: a token signed for a
     // different board must not validate just because the repo happens to
     // match — the board is part of the trust boundary too (a board swap in
@@ -2817,6 +2851,11 @@ body:
             })
         })
         expect(response.status).toBe(400)
+        // Not `recovery_expired` — this token is perfectly valid and
+        // unexpired, it just doesn't match this board (bot review,
+        // tiann/hapi#2147, follow-up: the two must not be conflated).
+        const body = await response.json() as { error: string; code?: string }
+        expect(body.code).toBeUndefined()
         expect(calls).toEqual([])
     })
 

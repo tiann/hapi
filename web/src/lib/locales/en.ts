@@ -267,6 +267,7 @@ export default {
   'boards.newCard.minLength': 'Minimum {count} characters',
   'boards.newCard.assigneesWarningTitle': 'Issue created, assignees not applied',
   'boards.newCard.assigneesWarningBody': '{message}',
+  'boards.newCard.recoveryExpiredHint': 'This retry window has closed. The issue above was already created — finish attaching it to the board on GitHub directly, or go back and submit a new one.',
   'codexSync.tooltip': 'Import sessions from Codex into Hapi',
   'codexSync.newSessionAction': 'Import Codex history',
   'codexSync.confirm.title': 'Import Codex sessions',
