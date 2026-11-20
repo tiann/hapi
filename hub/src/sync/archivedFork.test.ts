@@ -414,7 +414,11 @@ describe('archived Codex fork coordination', () => {
     })
 })
 
-it.each([false, true])('preserves explicit tier intent %s when launching an archived fork', async explicit => {
+it.each([
+    { explicit: false, pending: false, expected: undefined },
+    { explicit: true, pending: false, expected: 'ultrafast' },
+    { explicit: true, pending: true, expected: 'standard' },
+])('preserves tier intent when launching an archived fork (%j)', async ({ explicit, pending, expected }) => {
     const f = fixture();
     try {
         const current = f.store.sessions.getSession(f.source.id)!;
@@ -422,11 +426,12 @@ it.each([false, true])('preserves explicit tier intent %s when launching an arch
         ;(f.engine as any).sessionCache.refreshSession(f.source.id);
         f.engine.handleSessionAlive({ sid: f.source.id, time: Date.now(), serviceTier: 'ultrafast' });
         f.engine.handleSessionEnd({ sid: f.source.id, time: Date.now() });
+        if (pending) await f.engine.applySessionConfig(f.source.id, { serviceTier: 'standard' });
         let tier: string | undefined;
         const spawn = f.rpc.spawnSession;
         f.rpc.spawnSession = async (...args) => { tier = args[11]; return spawn.apply(f.rpc, args); };
         expect((await f.engine.forkConversation(f.source.id, 'ns')).type).toBe('success');
-        expect(tier).toBe(explicit ? 'ultrafast' : undefined);
+        expect(tier).toBe(expected);
     } finally { f.engine.stop(); }
 });
 

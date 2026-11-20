@@ -161,9 +161,20 @@ describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Code
             await expect(second.client.request('thread/resume', { threadId, excludeTurns: true })).rejects.toThrow('fixture control subscription unavailable');
             subscriptionFailure.mockRestore();
             await expect(concurrent.request('thread/settings/update', { threadId, serviceTier: null })).rejects.toThrow('initialization is pending');
-            const response = await second.client.request<{ serviceTier: string }>('thread/resume', { threadId, excludeTurns: true });
+            await expect(second.client.request('thread/queue/delete', { threadId, queuedSubmissionId: 'not-bound' })).rejects.toThrow('tier confirmation');
+            const activate = vi.spyOn(SharedCodexRoot.prototype, 'activate');
+            extraSpies.push(activate);
+            const attempts = await Promise.allSettled([second.client, concurrent].map(client =>
+                client.request<{ serviceTier: string }>('thread/resume', { threadId, excludeTurns: true })));
+            const response = attempts.find(result => result.status === 'fulfilled');
+            expect(response).toMatchObject({ status: 'fulfilled', value: { serviceTier: 'priority' } });
+            for (const attempt of attempts) {
+                if (attempt.status === 'rejected') expect(attempt.reason).toMatchObject({ message: expect.stringContaining('already being attached') });
+            }
+            await concurrent.request('thread/resume', { threadId, excludeTurns: true });
+            expect(activate).toHaveBeenCalledTimes(1);
+            activate.mockRestore();
             const third = await start();
-            expect(response.serviceTier).toBe('priority');
             expect(state.sessions.get(original.sessionId)).toBe(retainedSession);
             expect(state.sessions.get(original.sessionId)?.metadata.codexServiceTierExplicit).toBe(true);
             extraSpies.push(vi.spyOn(CodexAppServerClient.prototype, 'listModels').mockResolvedValue({ data: [

@@ -311,10 +311,12 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         const params = ['thread/start', 'thread/resume', 'thread/fork'].includes(request.method ?? '') ? nativeTierParams(record(request.params)) : record(request.params);
         const queueRoot = roots.get(string(params.threadId) ?? '');
         const queueMutation = ['thread/queue/add', 'thread/queue/update', 'thread/queue/delete', 'thread/queue/reorder', 'thread/queue/start'].includes(request.method ?? '');
-        const tierPending = pendingAdmission.has(string(params.threadId) ?? '') || queueRoot?.needsTierConfirmation;
-        if (tierPending && (request.method === 'turn/start' || request.method === 'turn/steer' || queueMutation && !(request.method === 'thread/queue/delete' && queueRoot))) throw new Error('Service tier confirmation is pending. Select a service tier in settings before sending input.');
+        const initializing = pendingAdmission.has(string(params.threadId) ?? '');
+        const tierPending = initializing || queueRoot?.needsTierConfirmation;
+        const canCancelQueue = request.method === 'thread/queue/delete' && queueRoot && !initializing;
+        if (tierPending && (request.method === 'turn/start' || request.method === 'turn/steer' || queueMutation && !canCancelQueue)) throw new Error('Service tier confirmation is pending. Select a service tier in settings before sending input.');
         if (tierPending && request.method === 'thread/fork') throw new Error('Confirm the service tier in settings before forking this conversation.');
-        if (pendingAdmission.has(string(params.threadId) ?? '') && request.method === 'thread/settings/update') throw new Error('Codex thread initialization is pending. Retry settings when the thread is ready.');
+        if (initializing && request.method === 'thread/settings/update') throw new Error('Codex thread initialization is pending. Retry settings when the thread is ready.');
         if (queueRoot && request.method === 'turn/start') {
             if (params.serviceTier === undefined && !((params.model || record(record(params.collaborationMode).settings).model) && queueRoot.hasUltrafastTier)) return request;
             if (request.id === undefined) throw new Error('Turn mutations require a JSON-RPC request ID');
@@ -362,19 +364,23 @@ export async function runSharedRuntime(options: SharedLaunchOptions, onReady?: (
         const cwd = string(params.cwd) ?? string(savedThread?.cwd) ?? existing?.bootstrap.workingDirectory ?? launch.cwd;
         // Loaded native resume rejoins a thread and ignores setting overrides.
         // Actual live changes go through thread/settings/update above.
-        const accepted = request.method === 'thread/resume' && threadId ? retryableBindings.get(threadId) : undefined;
-        if (request.method === 'thread/resume' && existing && !accepted) return { ...request, params: existing.config(params) };
-        if (threadId) await withThreadOwnership(home, threadId, id, async () => {});
-        const root = request.method === 'thread/resume' && threadId
+        if (threadId && request.method !== 'thread/resume') await withThreadOwnership(home, threadId, id, async () => {});
+        const claim = request.method === 'thread/resume' && threadId
             ? await withThreadOwnership(home, threadId, id, async () => {
-                if (resumingThreads.has(threadId) || roots.has(threadId) && !accepted) throw new Error('Thread is already being attached in this runtime; retry after it is ready');
+                if (resumingThreads.has(threadId)) throw new Error('Thread is already being attached in this runtime; retry after it is ready');
+                const accepted = retryableBindings.get(threadId);
+                const live = roots.get(threadId) ?? (existing && roots.get(existing.threadId) === existing ? existing : undefined);
+                if (live && !accepted) return { root: live, rejoin: true };
                 resumingThreads.add(threadId);
                 try {
-                    if (accepted) return accepted.root;
+                    if (accepted) return { root: accepted.root, accepted };
                     const root = await prepare(cwd, await findColdBinding(home, threadId));
-                    await reserveRecord(root, threadId); return root;
+                    await reserveRecord(root, threadId);
+                    return { root };
                 } catch (error) { resumingThreads.delete(threadId); throw error; }
-            }) : await prepare(cwd, undefined, request.method === 'thread/fork' ? existing : undefined);
+            }) : { root: await prepare(cwd, undefined, request.method === 'thread/fork' ? existing : undefined) };
+        const { root, accepted } = claim;
+        if (claim.rejoin) return { ...request, params: root.config(params) };
         try {
             if (accepted) {
                 // Rejoin the already accepted native resume, retaining its MCP

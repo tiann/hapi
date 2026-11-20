@@ -2553,7 +2553,7 @@ export class SyncEngine {
             this.setArchivedForkAttempt(source.id, namespace, attempt)
             const spawn = await this.rpcGateway.spawnSession(machineId, path, 'codex',
                 source.model ?? undefined, source.modelReasoningEffort ?? undefined, undefined, 'simple', undefined,
-                attempt.nativeSessionId, source.effort ?? undefined, source.permissionMode, source.metadata?.codexServiceTierExplicit === false ? undefined : source.serviceTier ?? undefined,
+                attempt.nativeSessionId, source.effort ?? undefined, source.permissionMode, this.codexResumeTier(source),
                 childId, source.collaborationMode)
             if (spawn.type === 'success' && spawn.sessionId !== childId) throw new Error('Fork launcher returned a different session')
             if (spawn.type === 'error' && spawn.childStarted === false) throw new Error(spawn.message)
@@ -4276,6 +4276,11 @@ export class SyncEngine {
         this.releaseSessionEnumerations(sessionId)
     }
 
+    private codexResumeTier(session: Pick<Session, 'metadata' | 'serviceTier'>): string | undefined {
+        return session.metadata?.codexPendingServiceTier
+            ?? (session.metadata?.codexServiceTierExplicit === false ? undefined : session.serviceTier ?? undefined)
+    }
+
     async applySessionConfig(
         sessionId: string,
         config: {
@@ -5629,9 +5634,7 @@ export class SyncEngine {
                 resumeToken,
                 session.effort ?? undefined,
                 preferredPermissionMode,
-                flavor === 'codex'
-                    ? session.metadata?.codexPendingServiceTier ?? (session.metadata?.codexServiceTierExplicit === false ? undefined : session.serviceTier ?? undefined)
-                    : session.serviceTier ?? undefined,
+                flavor === 'codex' ? this.codexResumeTier(session) : session.serviceTier ?? undefined,
                 access.sessionId,
                 session.collaborationMode ?? undefined,
                 session.copilotAgentMode ?? undefined,
