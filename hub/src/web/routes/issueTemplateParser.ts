@@ -259,6 +259,16 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
             if (options.length === 0) {
                 return { id, name, kind: 'unsupported', reason: `Dropdown field "${label}" has no options`, githubValid: false }
             }
+            // GitHub requires a dropdown's own choices to be distinct (bot
+            // review, tiann/hapi#2147, follow-up) — same "genuinely
+            // malformed, not merely unsupported" treatment the duplicate
+            // field-id check above already gets, and for the same reason:
+            // a repository whose only local form has this exact defect
+            // would otherwise be wrongly treated as having valid local
+            // .github-inheritance coverage.
+            if (new Set(options).size !== options.length) {
+                return { id, name, kind: 'unsupported', reason: `Dropdown field "${label}" has duplicate options`, githubValid: false }
+            }
             fields.push({
                 kind: 'dropdown',
                 id: fieldId,

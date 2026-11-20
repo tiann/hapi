@@ -394,6 +394,21 @@ body:
         expect(template.githubValid).toBe(false)
         expect(template.reason).toContain('contact')
     })
+
+    // Regression (bot review, tiann/hapi#2147, follow-up): a dropdown's
+    // own choices were never checked for duplicates — only an empty
+    // options list was rejected. GitHub requires a dropdown's choices to
+    // be distinct.
+    it('is genuinely invalid when a dropdown field has duplicate options', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: dropdown\n    id: severity\n    attributes:\n      label: Severity\n      options:\n        - Low\n        - High\n        - Low'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('Severity')
+    })
 })
 
 describe('parseLegacyIssueTemplate', () => {
