@@ -44,9 +44,30 @@ pub enum Placement {
 }
 #[derive(Clone)]
 pub struct Reservation<T> {
-    pub item: QueueItem<T>,
+    item: QueueItem<T>,
     flags: Arc<ReservationFlags>,
 }
+impl<T> Reservation<T> {
+    pub fn item(&self) -> &QueueItem<T> {
+        &self.item
+    }
+}
+
+pub struct AbortController(watch::Sender<bool>);
+#[derive(Clone)]
+pub struct AbortSignal(watch::Receiver<bool>);
+
+impl AbortController {
+    pub fn channel() -> (Self, AbortSignal) {
+        let (sender, receiver) = watch::channel(false);
+        (Self(sender), AbortSignal(receiver))
+    }
+
+    pub fn abort(&self) {
+        self.0.send_replace(true);
+    }
+}
+
 struct ReservationFlags {
     reset: AtomicBool,
     ambiguous: AtomicBool,
@@ -340,9 +361,9 @@ impl<T: Clone> MessageQueue2<T> {
         if self.closed {
             return false;
         }
-        self.held.remove(id);
-        let index = self.items.partition_point(|i| i.order < r.item.order);
-        self.items.insert(index, r.item.clone());
+        let item = self.held.remove(id).unwrap().handle.item;
+        let index = self.items.partition_point(|i| i.order < item.order);
+        self.items.insert(index, item);
         self.wake(true);
         true
     }
@@ -400,9 +421,10 @@ impl<T: Clone> MessageQueue2<T> {
     }
     pub async fn wait(
         queue: &Mutex<Self>,
-        mut abort: watch::Receiver<bool>,
+        abort: AbortSignal,
         deferred: bool,
     ) -> io::Result<Option<Batch<T>>> {
+        let AbortSignal(mut abort) = abort;
         let rx = {
             let mut q = queue.lock().unwrap();
             if *abort.borrow() {
@@ -583,7 +605,7 @@ console.log(JSON.stringify(rows))
     #[tokio::test]
     async fn aborted_wake_preserves_isolated_control_and_ack() {
         let q = Mutex::new(MessageQueue2::new(u8::to_string));
-        let (abort, rx) = watch::channel(false);
+        let (abort, rx) = AbortController::channel();
         let mut wait = Box::pin(MessageQueue2::wait(&q, rx, false));
         assert!(wait.as_mut().now_or_never().is_none());
         q.lock()
@@ -596,7 +618,7 @@ console.log(JSON.stringify(rows))
                 Some(Internal::Control),
             )
             .unwrap();
-        abort.send_replace(true);
+        abort.abort();
         assert!(wait.await.unwrap().is_none());
         let mut q = q.lock().unwrap();
         assert!(!q.has_pending_non_bridge_turn());
@@ -608,7 +630,7 @@ console.log(JSON.stringify(rows))
     #[tokio::test]
     async fn close_wakes_and_rejects_push() {
         let q = Mutex::new(MessageQueue2::new(u8::to_string));
-        let (_tx, rx) = watch::channel(false);
+        let (_tx, rx) = AbortController::channel();
         let mut w = Box::pin(MessageQueue2::wait(&q, rx, false));
         assert!(w.as_mut().now_or_never().is_none());
         q.lock().unwrap().close();
@@ -720,19 +742,19 @@ console.log(JSON.stringify(rows))
     async fn pending_and_woken_waits_abort_without_ack() {
         for pending in [true, false] {
             let q = Mutex::new(MessageQueue2::new(u8::to_string));
-            let (controller, rx) = watch::channel(false);
+            let (controller, rx) = AbortController::channel();
             let mut wait = Box::pin(MessageQueue2::wait(&q, rx.clone(), false));
             if !pending {
                 assert!(wait.as_mut().now_or_never().is_none());
             }
-            controller.send_replace(true);
+            controller.abort();
             q.lock()
                 .unwrap()
                 .enqueue(Placement::Push, "turn".into(), 1, Some("a".into()), None)
                 .unwrap();
             assert!(wait.await.unwrap().is_none());
             assert_eq!(q.lock().unwrap().pending_local_ids(), ["a"]);
-            controller.send_replace(false);
+            let (_next, rx) = AbortController::channel();
             assert_eq!(
                 MessageQueue2::wait(&q, rx, false)
                     .await
@@ -742,6 +764,25 @@ console.log(JSON.stringify(rows))
                 "turn"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn new_turn_cannot_clear_previous_waiters_abort() {
+        let q = Mutex::new(MessageQueue2::new(u8::to_string));
+        let (controller, signal) = AbortController::channel();
+        let mut old = Box::pin(MessageQueue2::wait(&q, signal, false));
+        assert!(old.as_mut().now_or_never().is_none());
+        controller.abort();
+        let (_next_controller, next_signal) = AbortController::channel();
+        let mut next = Box::pin(MessageQueue2::wait(&q, next_signal, false));
+        assert!(next.as_mut().now_or_never().is_none());
+        q.lock()
+            .unwrap()
+            .enqueue(Placement::Push, "next".into(), 1, Some("id".into()), None)
+            .unwrap();
+        assert!(old.await.unwrap().is_none());
+        assert_eq!(q.lock().unwrap().pending_local_ids(), ["id"]);
+        assert_eq!(next.await.unwrap().unwrap().message, "next");
     }
 
     #[test]
@@ -766,7 +807,7 @@ console.log(JSON.stringify(rows))
     #[tokio::test]
     async fn empty_wait_wakes_for_each_arrival_and_closed_queue_drains() {
         let q = Mutex::new(MessageQueue2::new(u8::to_string));
-        let (_controller, rx) = watch::channel(false);
+        let (_controller, rx) = AbortController::channel();
         for placement in [
             Placement::Push,
             Placement::Immediate,
@@ -837,14 +878,14 @@ console.log(JSON.stringify(rows))
     #[tokio::test]
     async fn detached_abort_and_displaced_waiters() {
         let q = Mutex::new(MessageQueue2::new(u8::to_string));
-        let (abort, signal) = watch::channel(false);
+        let (abort, signal) = AbortController::channel();
         let mut old = Box::pin(MessageQueue2::wait(&q, signal.clone(), false));
         assert!(old.as_mut().now_or_never().is_none());
         q.lock().unwrap().reset(true);
         assert!(old.as_mut().now_or_never().is_none());
         let mut replaced = Box::pin(MessageQueue2::wait(&q, signal, false));
         assert!(replaced.as_mut().now_or_never().is_none());
-        let mut current = Box::pin(MessageQueue2::wait(&q, watch::channel(false).1, false));
+        let mut current = Box::pin(MessageQueue2::wait(&q, AbortController::channel().1, false));
         assert!(current.as_mut().now_or_never().is_none());
         assert!(replaced.as_mut().now_or_never().is_none());
         q.lock()
@@ -852,14 +893,14 @@ console.log(JSON.stringify(rows))
             .enqueue(Placement::Push, "x".into(), 1, None, None)
             .unwrap();
         assert_eq!(current.await.unwrap().unwrap().message, "x");
-        abort.send_replace(true);
+        abort.abort();
         assert!(old.await.unwrap().is_none());
         assert!(replaced.await.unwrap().is_none());
     }
     #[tokio::test]
     async fn reset_finishes_wait_without_an_abort_sender() {
         let q = Mutex::new(MessageQueue2::new(u8::to_string));
-        let mut wait = Box::pin(MessageQueue2::wait(&q, watch::channel(false).1, false));
+        let mut wait = Box::pin(MessageQueue2::wait(&q, AbortController::channel().1, false));
         assert!(wait.as_mut().now_or_never().is_none());
         q.lock().unwrap().reset(false);
         assert!(wait.now_or_never().unwrap().unwrap().is_none());
@@ -869,7 +910,7 @@ console.log(JSON.stringify(rows))
     async fn cancellation_while_waiter_reacquires_lock_preserves_batch() {
         let q = Mutex::new(MessageQueue2::new(u8::to_string));
         q.lock().unwrap().on_batch_consumed = Some(Box::new(|_| panic!("cancelled batch ACK")));
-        let (abort, signal) = watch::channel(false);
+        let (abort, signal) = AbortController::channel();
         let mut wait = Box::pin(MessageQueue2::wait(&q, signal, false));
         assert!(wait.as_mut().now_or_never().is_none());
         std::thread::scope(|scope| {
@@ -883,7 +924,7 @@ console.log(JSON.stringify(rows))
                 wait.now_or_never().unwrap().unwrap()
             });
             polling.recv().unwrap();
-            abort.send_replace(true);
+            abort.abort();
             drop(guard);
             assert!(waiting.join().unwrap().is_none());
         });
