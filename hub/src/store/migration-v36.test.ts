@@ -16,7 +16,7 @@ it('adds passkey_credentials when upgrading a v35 database', () => {
         const migrated = new Store(path)
         try {
             const internalDb = (migrated as unknown as { db: Database }).db
-            expect((internalDb.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(36)
+            expect((internalDb.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(37)
             migrated.passkeys.add({
                 id: 'cred', namespace: 'default', rpId: 'localhost', publicKey: new Uint8Array([1, 2, 3]),
                 counter: 0, transports: ['internal'], tokenFingerprint: 'fp', name: null, createdAt: 1
