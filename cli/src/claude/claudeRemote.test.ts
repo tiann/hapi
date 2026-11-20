@@ -476,7 +476,7 @@ describe('claudeRemote in-process /clear', () => {
         'autonomous-eof', 'acknowledged', 'hook', 'late-result', 'late-init',
         'late-stale-result', 'late-hook', 'tagged-timeout', 'silent-timeout', 'result-eof',
         'unacknowledged-input-eof', 'acknowledged-input-eof', 'failed-clear-input-eof',
-        'follow-up-result', 'legacy-follow-up-result', 'follow-up-after-compact', 'later-follow-up-result'
+        'follow-up-result', 'legacy-follow-up-result', 'follow-up-after-compact', 'later-follow-up-result', 'idle-background-output'
     ] as const)('settles an in-process clear on %s', async (outcome) => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
@@ -489,9 +489,10 @@ describe('claudeRemote in-process /clear', () => {
         const legacyFollowUp = outcome === 'legacy-follow-up-result';
         const interveningCompact = outcome === 'follow-up-after-compact';
         const hasLaterFollowUp = outcome === 'later-follow-up-result';
+        const idleBackgroundOutput = outcome === 'idle-background-output';
         const hasFollowUpResult = outcome === 'follow-up-result' || legacyFollowUp || interveningCompact || hasLaterFollowUp;
         const success = outcome === 'success' || outcome === 'eof' || outcome === 'hook'
-            || outcome === 'result-eof' || exitsAfterFollowUp || hasFollowUpResult;
+            || outcome === 'result-eof' || exitsAfterFollowUp || hasFollowUpResult || idleBackgroundOutput;
         const resultId = success || lateRotation ? 'fresh-native-session' : priorId;
         const timeoutNotice = 'Claude did not identify the /clear result. Waiting for Claude to exit so background tasks can finish.';
         const completion = success ? 'Context was reset'
@@ -501,6 +502,7 @@ describe('claudeRemote in-process /clear', () => {
         const dequeuedFollowUp = deferred<void>();
         const finishFollowUp = deferred<void>();
         const clearContextTokens: Array<number | undefined> = [];
+        const thinking: boolean[] = [];
         const result: SDKMessage = {
             type: 'result', subtype: 'success', is_error: false, session_id: priorId, user_message_uuid: 'first-input'
         };
@@ -559,6 +561,12 @@ describe('claudeRemote in-process /clear', () => {
                     await dequeuedFollowUp.promise;
                     return;
                 }
+                if (idleBackgroundOutput) {
+                    yield { type: 'assistant', session_id: priorId, message: { role: 'assistant', content: [] } };
+                    yield autonomousResult;
+                    expect(thinking.at(-1)).toBe(false);
+                    return;
+                }
                 if (interveningCompact) {
                     const compact = await input.next();
                     expect(compact.value?.message.content).toBe('/compact');
@@ -612,7 +620,8 @@ describe('claudeRemote in-process /clear', () => {
             }
         }));
 
-        const inputs = ['first', '/clear', ...(interveningCompact ? ['/compact'] : []), 'follow-up',
+        const inputs = ['first', '/clear', ...(interveningCompact ? ['/compact'] : []),
+            ...(idleBackgroundOutput ? [] : ['follow-up']),
             ...(hasLaterFollowUp ? ['later follow-up'] : [])];
         if (timesOut) vi.useFakeTimers();
         try {
@@ -644,6 +653,7 @@ describe('claudeRemote in-process /clear', () => {
                 },
                 isAborted: () => false,
                 onSessionFound: (id) => { order.push(`session:${id}`); },
+                onThinkingChange: (value) => { thinking.push(value); },
                 onMessage: (message) => { forwarded.push(message); },
                 onCompletionEvent: outcome === 'acknowledged' || lateRotation ? (event) => { order.push(event); } : undefined,
                 getClearHookSessionId: () => hookSessionId,
@@ -668,6 +678,9 @@ describe('claudeRemote in-process /clear', () => {
                 expect(inputs).toEqual(['follow-up']);
             } else if (timesOut) {
                 expect(order).toEqual([`session:${priorId}`, 'ready', '/clear', 'accepted', completion]);
+            } else if (idleBackgroundOutput) {
+                expect(order).toEqual([`session:${priorId}`, 'ready', '/clear', 'accepted', 'reset', `session:${resultId}`, 'Context was reset']);
+                expect(forwarded).toContainEqual(expect.objectContaining({ type: 'assistant', session_id: priorId }));
             } else {
                 expect(order).toEqual(success
                     ? [`session:${priorId}`, 'ready', '/clear', 'accepted', 'reset', `session:${resultId}`, 'Context was reset',

@@ -809,7 +809,8 @@ export async function claudeRemote(opts: {
 
             const isSessionControl = message.type === 'result' || (message.type === 'system'
                 && (message.subtype === 'init' || message.subtype === 'status' || message.subtype === 'compact_boundary'));
-            if (isSessionControl && typeof message.session_id === 'string' && clearedSessionIds.has(message.session_id)) {
+            const fromClearedSession = typeof message.session_id === 'string' && clearedSessionIds.has(message.session_id);
+            if (isSessionControl && fromClearedSession) {
                 continue;
             }
 
@@ -817,7 +818,7 @@ export async function claudeRemote(opts: {
             // assistant messages after the previous result flipped thinking off;
             // the SDK never re-fires its own thinking signal for them. Re-bump
             // here so the hub renders the round as working, not waiting.
-            if (message.type === 'assistant') {
+            if (message.type === 'assistant' && !fromClearedSession) {
                 updateThinking(true);
             }
 
