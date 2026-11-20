@@ -18,7 +18,8 @@ vi.mock('./utils/kimiSessionTitleWatcher', () => ({
 vi.mock('./utils/kimiWireScanner', { spy: true });
 vi.mock('@/modules/watcher/startFileWatcher', () => ({ startFileWatcher: vi.fn() }));
 
-it('forwards the final silent wire append when Kimi exits before the trailing scan', async () => {
+it.each(['pending trailing scan', 'idle watcher'])('forwards the silent append on exit with a %s', async (mode) => {
+    vi.clearAllMocks();
     vi.useFakeTimers();
     const path = mkdtempSync(join(tmpdir(), 'kimi-local-drain-'));
     const located = { sessionId: 'native', wirePath: join(path, 'wire.jsonl'), statePath: join(path, 'state.json') };
@@ -39,6 +40,13 @@ it('forwards the final silent wire append when Kimi exits before the trailing sc
         run.mockImplementation(async () => {
             vi.mocked(createKimiWireLocator).mock.calls[0]![0].onLocated(located);
             await vi.mocked(createKimiWireScanner).mock.results[0]!.value;
+            if (mode === 'idle watcher') {
+                await vi.advanceTimersByTimeAsync(10_000);
+                append('tail');
+                await vi.advanceTimersByTimeAsync(2_001);
+                expect(session.sendAgentMessage).not.toHaveBeenCalled();
+                return 'exit';
+            }
             const firstDelivered = new Promise<void>(resolve => session.sendAgentMessage.mockImplementationOnce(resolve));
             append('first');
             vi.mocked(startFileWatcher).mock.calls[0]![1](located.wirePath);
@@ -47,10 +55,8 @@ it('forwards the final silent wire append when Kimi exits before the trailing sc
             return 'exit';
         });
         await expect(kimiLocalLauncher(session as never, {})).resolves.toBe('exit');
-        expect(session.sendAgentMessage.mock.calls).toEqual([
-            [{ type: 'message', message: 'first' }],
-            [{ type: 'message', message: 'tail' }]
-        ]);
+        const messages = mode === 'idle watcher' ? ['tail'] : ['first', 'tail'];
+        expect(session.sendAgentMessage.mock.calls).toEqual(messages.map(message => [{ type: 'message', message }]));
         expect(session.onSessionFound).toHaveBeenCalledTimes(1);
         expect(createKimiWireScanner).toHaveBeenCalledTimes(1);
     } finally {

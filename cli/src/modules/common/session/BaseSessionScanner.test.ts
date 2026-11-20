@@ -63,12 +63,15 @@ it.each(['discovery', 'empty', 'pruned'])('keeps the discovery cadence for %s ta
     await scanner.cleanup();
 });
 
-it.each(['timer', 'cleanup'])('delivers a silent final append on %s after watcher activity', async (mode) => {
+it.each(['timer', 'cleanup', 'overlapping cleanup'])('delivers a silent final append on %s after watcher activity', async (mode) => {
     vi.useFakeTimers();
     vi.mocked(startFileWatcher).mockImplementation((_path, _changed, health) => {
         health!(true);
         return Object.assign(() => {}, { verifyIdentity: vi.fn() });
     });
+    let finishRead!: () => void;
+    const readBarrier = new Promise<void>(resolve => { finishRead = resolve; });
+    const readCursors: number[] = [];
     const transcript: string[] = [];
     const delivered: string[] = [];
     class TranscriptScanner extends BaseSessionScanner<string> {
@@ -76,7 +79,10 @@ it.each(['timer', 'cleanup'])('delivers a silent final append on %s after watche
         shouldWatchFile() { return true; }
         async findSessionFiles() { return ['wire']; }
         async parseSessionFile(_path: string, cursor: number) {
-            return { events: transcript.slice(cursor).map(event => ({ event })), nextCursor: transcript.length };
+            readCursors.push(cursor);
+            const result = { events: transcript.slice(cursor).map(event => ({ event })), nextCursor: transcript.length };
+            if (mode === 'overlapping cleanup' && result.events.length && cursor === 0) await readBarrier;
+            return result;
         }
         generateEventKey(event: string) { return event; }
         async handleFileScan({ events }: SessionFileScanStats<string>) { delivered.push(...events); }
@@ -87,6 +93,19 @@ it.each(['timer', 'cleanup'])('delivers a silent final append on %s after watche
     transcript.push('first');
     changed('wire');
     await vi.advanceTimersByTimeAsync(0);
+    if (mode === 'overlapping cleanup') {
+        transcript.push('tail');
+        const draining = scanner.cleanup();
+        changed('wire');
+        const secondCleanup = scanner.cleanup();
+        finishRead();
+        await Promise.all([draining, secondCleanup]);
+        await scanner.cleanup();
+        expect(readCursors).toEqual([0, 0, 1]);
+        expect(delivered).toEqual(['first', 'tail']);
+        expect(vi.getTimerCount()).toBe(0);
+        return;
+    }
     expect(delivered).toEqual(['first']);
     transcript.push('tail');
     await vi.advanceTimersByTimeAsync(1999);
