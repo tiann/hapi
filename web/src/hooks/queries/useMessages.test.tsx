@@ -64,7 +64,7 @@ describe('useMessages cachedTailFirstFrame composition', () => {
             seq: 2,
             invokedAt: 2_000,
         } as unknown as DecryptedMessage
-        localStorage.setItem(`hapi:message-window:v3:${tailSessionId}`, JSON.stringify({
+        sessionStorage.setItem(`hapi:message-window:v2:${tailSessionId}`, JSON.stringify({
             messages: [cachedMessage],
             hasMore: false,
             oldestPositionAt: 2_000,
