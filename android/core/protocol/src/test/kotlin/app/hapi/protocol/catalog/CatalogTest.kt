@@ -69,7 +69,7 @@ class CatalogTest {
             PermissionModes.forFlavor("opencode").map { it.wireId }
         )
         assertEquals(
-            listOf("request-review", "acceptEdits", "plan", "always-proceed"),
+            listOf("request-review", "acceptEdits", "auto", "plan", "always-proceed"),
             PermissionModes.forFlavor("agy").map { it.wireId }
         )
         assertEquals(

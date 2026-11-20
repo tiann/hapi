@@ -28,23 +28,28 @@ import type { AgySession } from './session';
 import { AGY_BACKGROUND_COMMAND_RESULT, mapAgyToolCall, mapAgyToolResult } from './agyToolCards';
 import { formatAgySwarmBoard, parseAgySwarmBoardCommand } from './agySwarmBoard';
 import {
-    AGY_WAKEUP_CONTINUE_PROMPT,
     addAgyUsage,
     advanceAgyTurnTranscriptCursor,
     agyTranscriptPaths,
+    areAgyToolArgsCompatible,
+    convertAgyParkedWakeupSlice,
     convertAgyReactiveSteps,
     defaultAgyBrainDir,
     extractAgyBackgroundTaskIds,
+    hasAgyParkedCallProgressed,
     inspectAgyReactiveSteps,
     inspectSyntheticBackgroundCommandMatch,
     readAgyTranscriptStepsAfter,
     readLatestAgyTranscriptStepIndex,
     resolveAgyBackgroundTaskIds,
     type AgyOpenBackgroundCommand,
-    type AgyReactiveTimingConfig
+    type AgyParkedWakeupCall,
+    type AgyPreEmittedWakeupCall,
+    type AgyReactiveTimingConfig,
+    type AgyTranscriptStep
 } from './agyReactiveWakeup';
 import type { AgyMode, PermissionMode } from './types';
-import { createAgyAcpBackend } from './utils/agyAcpBackend';
+import { createAgyAcpBackend, type AgyAcpBackendOptions } from './utils/agyAcpBackend';
 import { applyAgySessionTitleFallback } from './agySessionTitle';
 import { readAgyConversationTitle } from './agyNativeTitle';
 import {
@@ -71,11 +76,17 @@ const REACTIVE_TOOL_PARK_MS = 1_500;
 const REACTIVE_SLOW_TOOL_PARK_MS = 10_000;
 const REACTIVE_MAX_IDLE_MS = 10 * 60_000;
 
-/** `always-proceed` stays in agy's default mode; HAPI answers its requests. */
+/**
+ * Maps HAPI permission modes to `agy acp` session modes. `always-proceed`
+ * launches `agy acp --dangerously-skip-permissions` while keeping ACP's mode
+ * at `default` (plus HAPI's `AcpPermissionHandler` as belt-and-suspenders).
+ */
 export function agyAcpModeForPermission(mode: PermissionMode | undefined): string {
     switch (mode) {
         case 'acceptEdits':
             return 'accept-edits';
+        case 'auto':
+            return 'auto';
         case 'plan':
             return 'plan';
         case 'request-review':
@@ -83,6 +94,10 @@ export function agyAcpModeForPermission(mode: PermissionMode | undefined): strin
         case undefined:
             return 'default';
     }
+}
+
+export function isAgySkipPermissionsMode(mode: PermissionMode | undefined): boolean {
+    return mode === 'always-proceed';
 }
 
 /**
@@ -216,6 +231,9 @@ type AgyTurn = {
     // carries one, else this turn's transcript model calls.
     numTurns: number | undefined;
     transcriptNumTurns: number | undefined;
+    // Prefix texts already forwarded before reattaching a parked wakeup, so an
+    // optional backend replay does not emit duplicate assistant messages.
+    preEmittedTexts: Map<string, number>;
     usage: UsageMessage | null;
     // Any agent output proves agy accepted the prompt.
     sawActivity: boolean;
@@ -243,7 +261,7 @@ type AgyTurn = {
  */
 export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly session: AgySession;
-    private readonly createBackend: () => AcpSdkBackend;
+    private readonly createBackend: (opts?: AgyAcpBackendOptions) => AcpSdkBackend;
     private readonly steerCancelGraceMs: number;
     private readonly cancelHardStopMs: number;
     private readonly killSettleMs: number;
@@ -254,6 +272,25 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     // Option labels each question card showed, by agy tool call id.
     private readonly questionLabels = new Map<string, string[][]>();
     private backend: AcpSdkBackend | null = null;
+    private backendSkipPermissions: boolean | null = null;
+    private pendingIdleModeSync = false;
+    private explicitPermissionMode: PermissionMode | undefined = undefined;
+    private idleConfigWake: (() => void) | null = null;
+    private pendingParkedResolution: {
+        parkedCallId: string;
+        parkedCall: AgyParkedWakeupCall;
+        replayAfterStepIndex: number;
+        toolName: string;
+        decodedArgs: Record<string, unknown>;
+        aliasedLiveId: string | null;
+        decisionConsumed: boolean;
+        decision: 'approved' | 'approved_for_session' | 'denied';
+        answers?: Record<string, string[]>;
+        shownLabels?: string[][];
+        preEmittedTexts: Map<string, number>;
+        remainingPrefixCalls: AgyPreEmittedWakeupCall[];
+        suppressedPrefixLiveIds: Set<string>;
+    } | null = null;
     private permissionHandler: AcpPermissionHandler | null = null;
     // agy's own tool name by call id, to map results of the calls it started.
     private readonly nativeToolNames = new Map<string, string>();
@@ -280,6 +317,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     // Latest step_index seen when an unfinished wakeup hit `maxIdleMs`, so
     // tracking resumes as soon as late output appends a newer step.
     private pausedWakeupStepIndex: number | null = null;
+    // Tracks wakeup items already forwarded when a heuristically parked call
+    // later completes on its own without user intervention.
+    private emittedWakeupThrough: AgyParkedWakeupCall | null = null;
     private lastTurnTranscriptState: {
         turnStartStepIndex: number;
         // Optional wider counting boundary for an internal wakeup reattach:
@@ -307,7 +347,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private readonly availableCommandsWaiters: Array<() => void> = [];
 
     constructor(session: AgySession, opts: {
-        createBackend?: () => AcpSdkBackend;
+        createBackend?: (opts?: AgyAcpBackendOptions) => AcpSdkBackend;
         steerCancelGraceMs?: number;
         cancelHardStopMs?: number;
         killSettleMs?: number;
@@ -333,6 +373,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             maxIdleMs: opts.reactiveMaxIdleMs ?? REACTIVE_MAX_IDLE_MS
         };
         this.session.setKillHandler(() => this.handleKill());
+        this.session.onPermissionModeChanged = (mode) => {
+            this.explicitPermissionMode = mode;
+            this.pendingIdleModeSync = true;
+            this.idleConfigWake?.();
+        };
     }
 
     async launch(): Promise<RemoteLauncherExitReason> {
@@ -366,7 +411,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             async () => await this.handleListSlashCommands()
         );
         try {
-            await this.startBackend(session.sessionId);
+            const initialPermissionMode = session.queue.queue[0]?.mode.permissionMode
+                ?? (session.getPermissionMode() as PermissionMode | undefined);
+            await this.startBackend(session.sessionId, isAgySkipPermissionsMode(initialPermissionMode));
         } catch (error) {
             // A kill during start-up is not a start failure.
             if (this.shouldExit) return;
@@ -387,6 +434,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // Stop replaces the controller, so check the signal this wait used.
             const signal = this.abortController.signal;
             const nextWork = await this.waitForNextBatchOrWakeup(signal);
+            if (nextWork.kind === 'config') {
+                await this.syncIdleBackendConfig();
+                continue;
+            }
             if (nextWork.kind === 'wakeup') {
                 const wakeupRun = this.runReactiveWakeup();
                 this.turnSettled = wakeupRun.then(() => {}, () => {});
@@ -407,6 +458,36 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
+    private async syncIdleBackendConfig(): Promise<void> {
+        this.pendingIdleModeSync = false;
+        if (this.shouldExit || !this.acpSessionId || this.session.queue.size() > 0) return;
+        const mode = this.currentWakeupMode();
+        this.explicitPermissionMode = undefined;
+        this.lastTurnMode = mode;
+        this.lastSessionModeSnapshot = {
+            permissionMode: mode.permissionMode,
+            model: this.session.getModel(),
+            effort: this.session.getEffort()
+        };
+        const wantSkip = isAgySkipPermissionsMode(mode.permissionMode);
+        if (
+            this.backendLost
+            || !this.backend
+            || !this.backend.isTransportAlive()
+            || this.backendSkipPermissions !== wantSkip
+        ) {
+            try {
+                await this.relaunchBackend(wantSkip);
+            } catch (error) {
+                this.reportTurnError(`Failed to restart Antigravity: ${errorMessage(error)}`);
+                return;
+            }
+        }
+        if (this.backend && this.acpSessionId && !this.shouldExit) {
+            await this.applyTurnConfig(this.backend, this.acpSessionId, mode);
+        }
+    }
+
     private syncTranscriptCursor(): void {
         const acpSessionId = this.acpSessionId;
         if (!acpSessionId) return;
@@ -418,6 +499,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             this.lastTranscriptStepIndex = latest;
         }
         this.pausedWakeupStepIndex = null;
+        this.emittedWakeupThrough = null;
     }
 
     private syncTurnTranscriptCursor(turn: AgyTurn, turnStartStepIndex: number, countFromStepIndex?: number): void {
@@ -432,6 +514,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         };
         this.advanceCursorFromLastTurnState(turn);
         this.pausedWakeupStepIndex = null;
+        this.emittedWakeupThrough = null;
     }
 
     private advanceCursorFromLastTurnState(turn?: AgyTurn): number | null {
@@ -492,14 +575,22 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private async waitForNextBatchOrWakeup(outerSignal: AbortSignal): Promise<
         | { kind: 'batch'; batch: Awaited<ReturnType<AgySession['queue']['waitForMessagesAndGetAsString']>> }
         | { kind: 'wakeup' }
+        | { kind: 'config' }
     > {
         const queue = this.session.queue;
         if (queue.size() > 0 || queue.isClosed() || outerSignal.aborted) {
             return { kind: 'batch', batch: await queue.waitForMessagesAndGetAsString(outerSignal) };
         }
+        if (this.pendingIdleModeSync) {
+            return { kind: 'config' };
+        }
+        if (this.hasPendingReactiveWakeup()) {
+            return { kind: 'wakeup' };
+        }
 
         const waitController = new AbortController();
         let wakeupTriggered = false;
+        let configTriggered = false;
         const watchRef: { current: FSWatcher | null } = { current: null };
 
         let directoryIdentity: BigIntStats | undefined;
@@ -511,6 +602,17 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
         const onOuterAbort = () => waitController.abort();
         outerSignal.addEventListener('abort', onOuterAbort, { once: true });
+        this.idleConfigWake = () => {
+            if (waitController.signal.aborted || this.shouldExit || queue.size() > 0) return;
+            if (this.pendingIdleModeSync) {
+                configTriggered = true;
+            } else if (this.hasPendingReactiveWakeup()) {
+                wakeupTriggered = true;
+            } else {
+                configTriggered = true;
+            }
+            waitController.abort();
+        };
 
         let timer: ReturnType<typeof setInterval> | undefined;
         let pollMs: number | undefined;
@@ -563,9 +665,14 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         };
 
         const checkWakeup = (verifyIdentity = false) => {
-            if (wakeupTriggered || waitController.signal.aborted || this.shouldExit || queue.size() > 0) return;
+            if (wakeupTriggered || configTriggered || waitController.signal.aborted || this.shouldExit || queue.size() > 0) return;
             tryAttachWatcher(verifyIdentity);
             armPoll(watchRef.current ? 30_000 : this.reactivePollMs);
+            if (this.pendingIdleModeSync) {
+                configTriggered = true;
+                waitController.abort();
+                return;
+            }
             if (this.hasPendingReactiveWakeup()) {
                 wakeupTriggered = true;
                 waitController.abort();
@@ -576,11 +683,15 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             checkWakeup();
             const batch = await queue.waitForMessagesAndGetAsString(waitController.signal);
             if (batch) return { kind: 'batch', batch };
+            if (configTriggered && !outerSignal.aborted && !this.shouldExit) {
+                return { kind: 'config' };
+            }
             if (wakeupTriggered && !outerSignal.aborted && !this.shouldExit) {
                 return { kind: 'wakeup' };
             }
             return { kind: 'batch', batch: null };
         } finally {
+            this.idleConfigWake = null;
             stopPoll();
             clearTimeout(activityRecheck);
             closeWatcher();
@@ -650,9 +761,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const sessionModel = this.session.getModel();
         const sessionEffort = this.session.getEffort();
         const snap = this.lastSessionModeSnapshot;
-        const permissionMode = snap && sessionPerm !== snap.permissionMode
-            ? sessionPerm
-            : (this.lastTurnMode?.permissionMode ?? sessionPerm);
+        const permissionMode = this.explicitPermissionMode !== undefined
+            ? this.explicitPermissionMode
+            : snap && sessionPerm !== snap.permissionMode
+                ? sessionPerm
+                : (this.lastTurnMode?.permissionMode ?? sessionPerm);
         const model = snap && sessionModel !== snap.model
             ? sessionModel
             : (this.lastTurnMode?.model ?? sessionModel);
@@ -670,11 +783,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     /**
      * Handles autonomous `agy` wakeups (background `run_command` completions,
      * subagent replies, scheduled timers) that `agy acp` runs outside any open
-     * `session/prompt`. If the wakeup finishes cleanly in `transcript.jsonl`,
-     * HAPI emits the converted messages and advances `agy`'s cursor via
-     * `session/resume`; if it parks on a tool approval or `ask_question`, HAPI
-     * reattaches an internal `session/prompt` so live ACP approvals/questions
-     * and streaming take over seamlessly.
+     * `session/prompt`. Under `--dangerously-skip-permissions` (`always-proceed`),
+     * non-question tools run to completion in `transcript.jsonl`, then HAPI emits
+     * the converted messages and advances `agy`'s cursor via `session/resume`.
+     * When a wakeup parks on tool approval (non-skip modes) or `ask_question`,
+     * HAPI surfaces the pending approval/question card with zero hidden writes
+     * to `transcript.jsonl` and waits for the user's explicit visible action.
      */
     private async runReactiveWakeup(): Promise<void> {
         const session = this.session;
@@ -705,6 +819,67 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     return;
                 }
                 if (session.queue.size() > 0) {
+                    if (this.emittedWakeupThrough) {
+                        const stepsSoFar = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, this.lastTranscriptStepIndex);
+                        const firstSystemIdx = stepsSoFar.findIndex(
+                            (step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE'
+                        );
+                        const reactiveSoFar = firstSystemIdx >= 0 ? stepsSoFar.slice(firstSystemIdx) : stepsSoFar;
+                        // Forward the completed result (and any other finished steps already on disk)
+                        // before yielding to the queued user message, so the original pending card
+                        // receives its output and replay deduplication matches what HAPI actually showed.
+                        const delta = convertAgyReactiveSteps(
+                            acpSessionId,
+                            reactiveSoFar,
+                            this.backgroundCommands,
+                            this.emittedWakeupThrough
+                        );
+                        for (const msg of delta.messages) {
+                            this.forwardAgentMessage(this.showQuestionCard(msg));
+                        }
+
+                        const fullProbeBg: AgyOpenBackgroundCommand[] = [];
+                        const fullEmitted = convertAgyReactiveSteps(acpSessionId, reactiveSoFar, fullProbeBg, null);
+                        const fullBgIds = new Set([
+                            ...this.backgroundCommands.map((entry) => entry.callId),
+                            ...fullProbeBg.map((entry) => entry.callId)
+                        ]);
+                        const preEmittedTexts = new Map<string, number>();
+                        const remainingPrefixCalls: AgyPreEmittedWakeupCall[] = [];
+                        for (const msg of fullEmitted.messages) {
+                            if (msg.type === 'text') {
+                                const trimmed = msg.text.trim();
+                                if (trimmed) {
+                                    preEmittedTexts.set(trimmed, (preEmittedTexts.get(trimmed) ?? 0) + 1);
+                                }
+                            } else if (msg.type === 'tool_call') {
+                                remainingPrefixCalls.push({
+                                    callId: msg.id,
+                                    toolName: msg.nativeName ?? msg.name,
+                                    decodedArgs: msg.nativeArgs && typeof msg.nativeArgs === 'object' && !Array.isArray(msg.nativeArgs)
+                                        ? (msg.nativeArgs as Record<string, unknown>)
+                                        : {},
+                                    backgrounded: fullBgIds.has(msg.id)
+                                });
+                            }
+                        }
+
+                        const parkedCallId = `agy-wakeup-${acpSessionId}-${this.emittedWakeupThrough.stepIndex}-${this.emittedWakeupThrough.callIndex}`;
+                        this.pendingParkedResolution = {
+                            parkedCallId,
+                            parkedCall: this.emittedWakeupThrough,
+                            replayAfterStepIndex: this.lastTranscriptStepIndex,
+                            toolName: this.emittedWakeupThrough.toolName,
+                            decodedArgs: this.emittedWakeupThrough.decodedArgs,
+                            aliasedLiveId: null,
+                            decisionConsumed: true,
+                            decision: 'denied',
+                            preEmittedTexts,
+                            remainingPrefixCalls,
+                            suppressedPrefixLiveIds: new Set()
+                        };
+                        this.emittedWakeupThrough = null;
+                    }
                     return;
                 }
 
@@ -715,10 +890,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     session.path,
                     nowMs,
                     lastProgressAtMs,
-                    this.reactiveTimings
+                    this.reactiveTimings,
+                    { skipPermissions: this.backendSkipPermissions === true }
                 );
 
                 if (inspection.state === 'none') {
+                    this.emittedWakeupThrough = null;
                     session.onThinkingChange(false);
                     return;
                 }
@@ -732,6 +909,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 }
 
                 if (inspection.state === 'completed') {
+                    const emittedThrough = this.emittedWakeupThrough;
+                    this.emittedWakeupThrough = null;
                     this.pausedWakeupStepIndex = null;
                     this.lastTranscriptStepIndex = Math.max(this.lastTranscriptStepIndex, inspection.latestStepIndex);
                     const wakeupFirstStepIndex = inspection.steps[0]?.step_index;
@@ -745,7 +924,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     const converted = convertAgyReactiveSteps(
                         acpSessionId,
                         inspection.steps,
-                        this.backgroundCommands
+                        this.backgroundCommands,
+                        emittedThrough
                     );
                     if (!this.backgroundCommands.some((entry) => entry.synthetic)) {
                         this.retainedAmbiguousCompletions.length = 0;
@@ -784,16 +964,25 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
 
                 if (inspection.state === 'parked_on_tool') {
                     this.pausedWakeupStepIndex = null;
-                    if (this.reactiveWakeupAbort === abortController) {
-                        this.reactiveWakeupAbort = null;
+                    const parkedResult = await this.handleParkedWakeup(
+                        acpSessionId,
+                        inspection.steps,
+                        inspection.parkedCall,
+                        this.emittedWakeupThrough,
+                        abortController
+                    );
+                    if (parkedResult === 'progressed') {
+                        this.emittedWakeupThrough = inspection.parkedCall;
+                        watchedStepIndex = inspection.latestStepIndex;
+                        lastProgressAtMs = Date.now();
+                        session.onThinkingChange(true);
+                        continue;
                     }
-                    const replayAfterStepIndex = this.lastTranscriptStepIndex;
-                    const mode = this.currentWakeupMode();
-                    const modeHash = session.queue.modeHasher(mode);
-                    await this.runTurn(AGY_WAKEUP_CONTINUE_PROMPT, mode, modeHash, [], {
-                        internalWakeup: true,
-                        replayAfterStepIndex
-                    });
+                    if (parkedResult === 'superseded_idle') {
+                        this.emittedWakeupThrough = inspection.parkedCall;
+                        return;
+                    }
+                    this.emittedWakeupThrough = null;
                     return;
                 }
 
@@ -855,8 +1044,260 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         };
     }
 
-    private async startBackend(resumeSessionId: string | null): Promise<void> {
-        const run = this.startBackendInner(resumeSessionId);
+    private async handleParkedWakeup(
+        acpSessionId: string,
+        steps: AgyTranscriptStep[],
+        parkedCall: AgyParkedWakeupCall,
+        emittedThrough: AgyParkedWakeupCall | null,
+        abortController: AbortController
+    ): Promise<'resolved' | 'progressed' | 'superseded_idle'> {
+        const session = this.session;
+        const permissionHandler = this.permissionHandler;
+        if (!permissionHandler || this.shouldExit) {
+            session.onThinkingChange(false);
+            return 'resolved';
+        }
+
+        const replayAfterStepIndex = this.lastTranscriptStepIndex;
+        const wakeupFirstStepIndex = steps[0]?.step_index;
+        resolveAgyBackgroundTaskIds(
+            this.brainDir,
+            acpSessionId,
+            this.backgroundCommands,
+            wakeupFirstStepIndex !== undefined ? wakeupFirstStepIndex - 1 : undefined
+        );
+        this.reconcileRetainedAmbiguousCompletions(null);
+
+        const slice = convertAgyParkedWakeupSlice(
+            acpSessionId,
+            steps,
+            parkedCall,
+            this.backgroundCommands,
+            emittedThrough
+        );
+        for (const msg of slice.messages) {
+            this.forwardAgentMessage(this.showQuestionCard(msg));
+        }
+
+        const isQuestion = parkedCall.toolName === 'ask_question';
+        let cardToolName: string;
+        let cardToolInput: unknown;
+        if (isQuestion) {
+            const parsedInput = questionCardInputFromToolCall(parkedCall.decodedArgs);
+            cardToolName = QUESTION_TOOL_NAME;
+            cardToolInput = parsedInput
+                ? {
+                    questions: parsedInput.questions.map((q) => ({
+                        ...q,
+                        allowFreeText: true
+                    }))
+                }
+                : parkedCall.decodedArgs;
+        } else {
+            const mapped = mapAgyToolCall(slice.parkedToolCall);
+            cardToolName = mapped.name;
+            cardToolInput = mapped.input;
+        }
+
+        // Session is now waiting on explicit user approval/answer; nothing has
+        // been written to agy's transcript.jsonl.
+        session.onThinkingChange(false);
+
+        const waitAnswer = permissionHandler.askUser(slice.parkedCallId, cardToolName, cardToolInput);
+        const parkWaitController = new AbortController();
+        let checkTimer: ReturnType<typeof setInterval> | undefined;
+        let pollMs: number | undefined;
+        let activityRecheck: ReturnType<typeof setTimeout> | undefined;
+        let directoryIdentity: BigIntStats | undefined;
+        const watchRef: { current: FSWatcher | null } = { current: null };
+        const closeWatcher = () => {
+            const watcher = watchRef.current;
+            watchRef.current = null;
+            watcher?.close();
+        };
+        const stopPoll = () => {
+            clearInterval(checkTimer);
+            checkTimer = undefined;
+        };
+        const interrupted = new Promise<'superseded' | 'progressed'>((resolve) => {
+            let settled = false;
+            const finish = (reason: 'superseded' | 'progressed') => {
+                if (settled) return;
+                settled = true;
+                resolve(reason);
+            };
+            const armPoll = (intervalMs: number) => {
+                if ((checkTimer && pollMs === intervalMs) || settled) return;
+                stopPoll();
+                pollMs = intervalMs;
+                checkTimer = setInterval(() => check(true), intervalMs);
+                checkTimer.unref?.();
+            };
+            const tryAttachWatcher = (verifyIdentity: boolean) => {
+                if ((watchRef.current && !verifyIdentity) || settled) return;
+                const paths = agyTranscriptPaths(this.brainDir, acpSessionId);
+                if (!paths) return;
+                try {
+                    const identity = statSync(paths.logsDir, { bigint: true });
+                    if (watchRef.current && directoryIdentity?.dev === identity.dev && directoryIdentity.ino === identity.ino) return;
+                    closeWatcher();
+                    const fsWatcher = watch(paths.logsDir, (event) => {
+                        if (watchRef.current !== fsWatcher) return;
+                        if (event === 'rename') {
+                            closeWatcher();
+                        }
+                        check();
+                        clearTimeout(activityRecheck);
+                        if (!settled && watchRef.current) {
+                            activityRecheck = setTimeout(() => check(), this.reactivePollMs);
+                            activityRecheck.unref?.();
+                        }
+                    });
+                    const lost = () => {
+                        if (watchRef.current !== fsWatcher) return;
+                        closeWatcher();
+                        armPoll(this.reactivePollMs);
+                    };
+                    fsWatcher.once('error', lost);
+                    fsWatcher.once('close', lost);
+                    fsWatcher.unref?.();
+                    watchRef.current = fsWatcher;
+                    directoryIdentity = identity;
+                } catch {
+                    closeWatcher();
+                }
+            };
+            const check = (verifyIdentity = false) => {
+                if (settled) return;
+                if (this.shouldExit || abortController.signal.aborted || session.queue.isClosed()) {
+                    finish('superseded');
+                    return;
+                }
+                if (session.queue.size() > 0) {
+                    finish('superseded');
+                    return;
+                }
+                if (
+                    this.pendingIdleModeSync
+                    && isAgySkipPermissionsMode(session.getPermissionMode() as PermissionMode | undefined) !== this.backendSkipPermissions
+                ) {
+                    finish('superseded');
+                    return;
+                }
+                tryAttachWatcher(verifyIdentity);
+                armPoll(watchRef.current ? 30_000 : this.reactivePollMs);
+                const latestSteps = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, replayAfterStepIndex);
+                if (hasAgyParkedCallProgressed(latestSteps, parkedCall)) {
+                    finish('progressed');
+                }
+            };
+            this.idleConfigWake = () => check();
+            abortController.signal.addEventListener('abort', () => check(), { once: true });
+            void session.queue.waitForMessages(parkWaitController.signal).then(() => check());
+            check();
+        });
+
+        let outcome: Awaited<typeof waitAnswer> | 'superseded' | 'progressed';
+        try {
+            outcome = await Promise.race([waitAnswer, interrupted]);
+        } finally {
+            parkWaitController.abort();
+            stopPoll();
+            clearTimeout(activityRecheck);
+            closeWatcher();
+            this.idleConfigWake = null;
+        }
+
+        if (abortController.signal.aborted) {
+            this.syncTranscriptCursor();
+            await this.advanceBackendCursor();
+            session.onThinkingChange(false);
+            if (session.queue.size() === 0 && !this.shouldExit) {
+                session.sendSessionEvent({ type: 'ready' });
+            }
+            return 'resolved';
+        }
+
+        if (outcome === 'progressed') {
+            permissionHandler.retireUserQuestion(slice.parkedCallId);
+            return 'progressed';
+        }
+
+        if (outcome === 'superseded' || outcome.decision === 'abort') {
+            await this.permissionHandler?.cancelAll('Superseded');
+            // Advance past any already-emitted prefix steps if a mode switch or
+            // user message took over before answering the card, while keeping
+            // pendingParkedResolution's preEmittedTexts / remainingPrefixCalls for deduplication.
+            if (session.queue.size() > 0) {
+                this.pendingParkedResolution = {
+                    parkedCallId: slice.parkedCallId,
+                    parkedCall,
+                    replayAfterStepIndex,
+                    toolName: parkedCall.toolName,
+                    decodedArgs: parkedCall.decodedArgs,
+                    aliasedLiveId: null,
+                    decisionConsumed: true,
+                    decision: 'denied',
+                    preEmittedTexts: slice.preEmittedTexts,
+                    remainingPrefixCalls: [...slice.preEmittedCalls],
+                    suppressedPrefixLiveIds: new Set()
+                };
+                return 'resolved';
+            }
+            this.pausedWakeupStepIndex = steps[steps.length - 1]?.step_index ?? null;
+            return 'superseded_idle';
+        }
+
+        if (this.reactiveWakeupAbort === abortController) {
+            this.reactiveWakeupAbort = null;
+        }
+
+        if (outcome.mode) {
+            session.setPermissionMode(outcome.mode as PermissionMode);
+            this.pendingIdleModeSync = false;
+        }
+
+        const userActionText = formatParkedUserActionText(parkedCall, isQuestion, {
+            decision: outcome.decision,
+            reason: outcome.reason,
+            answers: outcome.answers
+        });
+        session.sendUserMessage(userActionText);
+
+        const completedDuringApprovalRace = hasAgyParkedCallProgressed(
+            readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, replayAfterStepIndex),
+            parkedCall
+        );
+
+        this.pendingParkedResolution = {
+            parkedCallId: slice.parkedCallId,
+            parkedCall,
+            replayAfterStepIndex,
+            toolName: parkedCall.toolName,
+            decodedArgs: parkedCall.decodedArgs,
+            aliasedLiveId: null,
+            decisionConsumed: completedDuringApprovalRace,
+            decision: outcome.decision,
+            ...(outcome.answers ? { answers: outcome.answers } : {}),
+            ...(this.questionLabels.has(slice.parkedCallId)
+                ? { shownLabels: this.questionLabels.get(slice.parkedCallId)! }
+                : {}),
+            preEmittedTexts: slice.preEmittedTexts,
+            remainingPrefixCalls: [...slice.preEmittedCalls],
+            suppressedPrefixLiveIds: new Set()
+        };
+
+        const mode = this.currentWakeupMode();
+        const modeHash = session.queue.modeHasher(mode);
+        await this.runTurn(userActionText, mode, modeHash, [], {
+            replayAfterStepIndex,
+            userMessageAlreadyMirrored: true
+        });
+        return 'resolved';
+    }
+
+    private async startBackend(resumeSessionId: string | null, skipPermissions?: boolean): Promise<void> {
+        const run = this.startBackendInner(resumeSessionId, skipPermissions);
         this.startBackendPromise = run;
         try {
             await run;
@@ -867,10 +1308,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         }
     }
 
-    private async startBackendInner(resumeSessionId: string | null): Promise<void> {
+    private async startBackendInner(resumeSessionId: string | null, skipPermissions?: boolean): Promise<void> {
         const session = this.session;
-        const backend = this.createBackend();
+        const effectiveSkip = skipPermissions
+            ?? isAgySkipPermissionsMode(session.getPermissionMode() as PermissionMode | undefined);
+        const backend = this.createBackend({ skipPermissions: effectiveSkip });
         this.backend = backend;
+        this.backendSkipPermissions = effectiveSkip;
         this.backendLost = false;
         try {
             const titleSync = createAcpSessionTitleSync(session.client);
@@ -948,6 +1392,49 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     autoApprovalRules: { alwaysToolNameHints: [], alwaysToolIdHints: [] },
                     autoApproveOnce: true,
                     requiresUser: isAgyQuestionRequest,
+                    resolvePreDecided: (request) => {
+                        const pending = this.pendingParkedResolution;
+                        if (!pending || pending.decisionConsumed || pending.toolName === 'ask_question') {
+                            return null;
+                        }
+                        if (request.toolCallId && pending.suppressedPrefixLiveIds.has(request.toolCallId)) {
+                            return null;
+                        }
+                        if (pending.aliasedLiveId && request.toolCallId !== pending.aliasedLiveId) {
+                            return null;
+                        }
+                        if (!pending.aliasedLiveId) {
+                            if (
+                                acpSessionId
+                                && hasAgyParkedCallProgressed(
+                                    readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, pending.replayAfterStepIndex),
+                                    pending.parkedCall
+                                )
+                            ) {
+                                pending.decisionConsumed = true;
+                                return null;
+                            }
+                            if (
+                                !isPermissionRequestKindCompatibleWithTool(request.kind, pending.toolName)
+                                || !areAgyToolArgsCompatible(
+                                    pending.decodedArgs,
+                                    request.rawInput,
+                                    request.title,
+                                    pending.toolName,
+                                    true
+                                )
+                            ) {
+                                return null;
+                            }
+                            if (request.toolCallId) {
+                                pending.aliasedLiveId = request.toolCallId;
+                                this.syntheticCallAliases.set(request.toolCallId, pending.parkedCallId);
+                                this.nativeToolNames.set(pending.parkedCallId, pending.toolName);
+                            }
+                        }
+                        pending.decisionConsumed = true;
+                        return pending.decision;
+                    },
                     onUserWait: () => {
                         const turn = this.turn;
                         if (!turn) return () => {};
@@ -961,17 +1448,74 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             // A half-started process must not serve later turns; the next turn
             // starts agy again and resumes the previous conversation.
             this.backendLost = true;
-            if (this.backend === backend) this.backend = null;
+            if (this.backend === backend) {
+                this.backend = null;
+                this.backendSkipPermissions = null;
+            }
             await this.retireBackend(backend);
             throw error;
         }
     }
 
-    private async relaunchBackend(): Promise<void> {
+    /**
+     * Delivers any completed, unforwarded autonomous wakeup steps written to
+     * `transcript.jsonl` before `relaunchBackend` calls `session/resume` and
+     * `syncTranscriptCursor` (which would otherwise advance both `agy`'s and
+     * HAPI's cursors past those steps without forwarding them).
+     */
+    private flushUnforwardedWakeupBeforeResume(): void {
+        const acpSessionId = this.acpSessionId;
+        if (!acpSessionId) return;
+        this.reconcileRetainedAmbiguousCompletions(null);
+        this.advanceCursorFromLastTurnState();
+
+        const steps = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, this.lastTranscriptStepIndex);
+        const firstSystemIdx = steps.findIndex(
+            (step) => step.source === 'SYSTEM' && step.type === 'SYSTEM_MESSAGE'
+        );
+        if (firstSystemIdx < 0) return;
+
+        const reactiveSteps = steps.slice(firstSystemIdx);
+        const wakeupFirstStepIndex = reactiveSteps[0]?.step_index;
+        resolveAgyBackgroundTaskIds(
+            this.brainDir,
+            acpSessionId,
+            this.backgroundCommands,
+            wakeupFirstStepIndex !== undefined ? wakeupFirstStepIndex - 1 : undefined
+        );
+        this.reconcileRetainedAmbiguousCompletions(null);
+
+        const emittedThrough = this.emittedWakeupThrough;
+        const converted = convertAgyReactiveSteps(
+            acpSessionId,
+            reactiveSteps,
+            this.backgroundCommands,
+            emittedThrough
+        );
+        if (!this.backgroundCommands.some((entry) => entry.synthetic)) {
+            this.retainedAmbiguousCompletions.length = 0;
+        }
+        for (const msg of converted.messages) {
+            this.forwardAgentMessage(this.showQuestionCard(msg));
+        }
+        if (converted.messages.length > 0 && converted.usage) {
+            this.session.sendAgentMessage(
+                agyRoundSummary(converted.usage, converted.durationMs, this.currentModelId, null)
+            );
+        }
+        const latestReactiveStep = reactiveSteps[reactiveSteps.length - 1]!.step_index;
+        this.lastTranscriptStepIndex = Math.max(this.lastTranscriptStepIndex, latestReactiveStep);
+        this.pausedWakeupStepIndex = null;
+        this.emittedWakeupThrough = null;
+    }
+
+    private async relaunchBackend(skipPermissions?: boolean): Promise<void> {
         const previous = this.backend;
         this.backend = null;
+        this.backendSkipPermissions = null;
         if (previous) await this.retireBackend(previous);
-        await this.startBackend(this.acpSessionId);
+        this.flushUnforwardedWakeupBeforeResume();
+        await this.startBackend(this.acpSessionId, skipPermissions);
     }
 
     /** Stops a backend for good: late permission requests are cancelled, not approved. */
@@ -1004,7 +1548,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             return false;
         }
 
-        const modelId = resolveAgyAcpModelId(mode.model, mode.effort, this.defaultModelId);
+        const effectiveModel = mode.model !== undefined ? mode.model : this.session.getModel();
+        const effectiveEffort = mode.effort !== undefined ? mode.effort : this.session.getEffort();
+        const modelId = resolveAgyAcpModelId(effectiveModel, effectiveEffort, this.defaultModelId);
         if (modelId && modelId !== this.currentModelId) {
             try {
                 await backend.setModel(acpSessionId, modelId);
@@ -1023,22 +1569,27 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         mode: AgyMode,
         modeHash: string,
         localIds: string[],
-        opts: { internalWakeup?: boolean; replayAfterStepIndex?: number } = {}
+        opts: { replayAfterStepIndex?: number; userMessageAlreadyMirrored?: boolean } = {}
     ): Promise<void> {
-        const internalWakeup = opts.internalWakeup === true;
-        const swarmBoardCommand = !internalWakeup ? parseAgySwarmBoardCommand(message) : null;
+        const userMessageAlreadyMirrored = opts.userMessageAlreadyMirrored === true;
+        const swarmBoardCommand = !userMessageAlreadyMirrored ? parseAgySwarmBoardCommand(message) : null;
         const session = this.session;
-        if (!internalWakeup) {
-            if (!swarmBoardCommand) {
-                applyAgySessionTitleFallback(session.client, message);
-            }
-            this.lastTurnMode = mode;
-            this.lastSessionModeSnapshot = {
-                permissionMode: session.getPermissionMode() as PermissionMode | undefined,
-                model: session.getModel(),
-                effort: session.getEffort()
-            };
+        if (!userMessageAlreadyMirrored && !swarmBoardCommand) {
+            applyAgySessionTitleFallback(session.client, message);
         }
+        const currentSessionPerm = session.getPermissionMode() as PermissionMode | undefined;
+        if (this.explicitPermissionMode !== undefined && this.explicitPermissionMode !== mode.permissionMode) {
+            this.pendingIdleModeSync = true;
+        } else {
+            this.pendingIdleModeSync = false;
+            this.explicitPermissionMode = undefined;
+        }
+        this.lastTurnMode = mode;
+        this.lastSessionModeSnapshot = {
+            permissionMode: this.explicitPermissionMode !== undefined ? mode.permissionMode : currentSessionPerm,
+            model: session.getModel(),
+            effort: session.getEffort()
+        };
         session.onThinkingChange(true);
         this.turnPermissionMode = mode.permissionMode;
         let releaseSteerWait!: () => void;
@@ -1047,7 +1598,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         let answerMain!: () => void;
         const mainAnswered = new Promise<void>((resolve) => { answerMain = resolve; });
         const restoreIfUserTurn = () => {
-            if (!internalWakeup) this.restorePrompt(turn, message);
+            if (!userMessageAlreadyMirrored) this.restorePrompt(turn, message);
         };
         const turn: AgyTurn = {
             modeHash,
@@ -1064,7 +1615,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             deferredLiveCommandCalls: new Map(),
             corroboratedSyntheticMatches: 0,
             turnStartStepIndex: this.lastTranscriptStepIndex,
-            streamedTextCounts: new Map(),
+            streamedTextCounts: new Map(this.pendingParkedResolution?.preEmittedTexts ?? []),
+            preEmittedTexts: new Map(this.pendingParkedResolution?.preEmittedTexts ?? []),
             numTurns: undefined,
             transcriptNumTurns: undefined,
             usage: null,
@@ -1116,9 +1668,15 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 return;
             }
             let relaunched = false;
-            if (this.backendLost || !this.backend || !this.backend.isTransportAlive()) {
+            const wantSkip = isAgySkipPermissionsMode(mode.permissionMode);
+            if (
+                this.backendLost
+                || !this.backend
+                || !this.backend.isTransportAlive()
+                || this.backendSkipPermissions !== wantSkip
+            ) {
                 try {
-                    await this.relaunchBackend();
+                    await this.relaunchBackend(wantSkip);
                     relaunched = true;
                 } catch (error) {
                     this.reportTurnError(`Failed to restart Antigravity: ${errorMessage(error)}`);
@@ -1167,9 +1725,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     entry.maxStepIndex = commandWindowAfterStepIndex;
                 }
             }
-            if (!internalWakeup) {
-                this.messageBuffer.addMessage(message, 'user');
-            }
+            this.messageBuffer.addMessage(message, 'user');
             const prompt: PromptContent[] = [{ type: 'text', text: message }];
             session.client.updateAgentState((state) => ({ ...state, steeringActive: true }));
             try {
@@ -1205,11 +1761,12 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             await this.waitForSteers(turn);
             this.flushDeferredLiveCommandCalls(turn);
             if (!turn.aborted && !this.backendLost) {
-                this.syncTurnTranscriptCursor(turn, turnStartStepIndex, internalWakeup ? commandWindowAfterStepIndex : undefined);
+                this.syncTurnTranscriptCursor(turn, turnStartStepIndex, userMessageAlreadyMirrored ? commandWindowAfterStepIndex : undefined);
             }
             this.closeBackgroundCommands(turn, commandWindowAfterStepIndex);
         } finally {
             if (turn.aborted) this.syncTranscriptCursor();
+            this.pendingParkedResolution = null;
             this.questionLabels.clear();
             // After a Stop or a lost agy process, agy may have dropped a steer
             // it had not echoed yet.
@@ -1588,13 +2145,86 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private reconcileSyntheticCommandMessage(
         turn: AgyTurn,
         message: AgentMessage
-    ): { message: AgentMessage; suppressForward: boolean; skipTracking?: boolean } {
+    ): { message: AgentMessage; suppressForward: boolean; recordCallOrdinal?: boolean; skipTracking?: boolean } {
         if ((message.type === 'tool_call' || message.type === 'tool_result') && this.syntheticCallAliases.has(message.id)) {
             const syntheticId = this.syntheticCallAliases.get(message.id)!;
+            const pendingParked = this.pendingParkedResolution;
+            const isParkedCall = pendingParked?.parkedCallId === syntheticId;
+            if (
+                isParkedCall
+                && pendingParked
+                && (message.type === 'tool_result' || message.status === 'completed' || message.status === 'failed')
+            ) {
+                pendingParked.decisionConsumed = true;
+            }
             if (message.type === 'tool_result') {
                 this.syntheticCallAliases.delete(message.id);
             }
-            return { message: { ...message, id: syntheticId }, suppressForward: message.type === 'tool_call' };
+            return {
+                message: { ...message, id: syntheticId },
+                suppressForward: message.type === 'tool_call',
+                ...(isParkedCall ? { recordCallOrdinal: true } : {})
+            };
+        }
+        const pendingParked = this.pendingParkedResolution;
+        if (pendingParked && (message.type === 'tool_call' || message.type === 'tool_result')) {
+            if (pendingParked.suppressedPrefixLiveIds.has(message.id)) {
+                if (message.type === 'tool_result') {
+                    pendingParked.suppressedPrefixLiveIds.delete(message.id);
+                }
+                return { message, suppressForward: true, skipTracking: true };
+            }
+            if (message.type === 'tool_call') {
+                const candidateArgs = message.nativeArgs ?? message.input;
+                const matchesParkedIdentity =
+                    pendingParked.aliasedLiveId === null
+                    && (message.nativeName === pendingParked.toolName || message.name === pendingParked.toolName)
+                    && areAgyToolArgsCompatible(
+                        pendingParked.decodedArgs,
+                        candidateArgs,
+                        message.title,
+                        pendingParked.toolName
+                    );
+
+                if (pendingParked.remainingPrefixCalls.length > 0 && (!matchesParkedIdentity || message.status !== 'pending')) {
+                    const prefixIdx = pendingParked.remainingPrefixCalls.findIndex(
+                        (entry) =>
+                            (message.nativeName === entry.toolName || message.name === entry.toolName)
+                            && areAgyToolArgsCompatible(entry.decodedArgs, candidateArgs, message.title, entry.toolName)
+                    );
+                    if (prefixIdx >= 0) {
+                        const matchedPrefix = pendingParked.remainingPrefixCalls[prefixIdx]!;
+                        pendingParked.remainingPrefixCalls.splice(0, prefixIdx + 1);
+                        if (matchedPrefix.backgrounded) {
+                            this.syntheticCallAliases.set(message.id, matchedPrefix.callId);
+                            this.nativeToolNames.set(matchedPrefix.callId, matchedPrefix.toolName);
+                            return {
+                                message: { ...message, id: matchedPrefix.callId },
+                                suppressForward: true
+                            };
+                        }
+                        pendingParked.suppressedPrefixLiveIds.add(message.id);
+                        return { message, suppressForward: true, skipTracking: true };
+                    }
+                }
+
+                if (matchesParkedIdentity) {
+                    pendingParked.remainingPrefixCalls.length = 0;
+                    pendingParked.aliasedLiveId = message.id;
+                    this.syntheticCallAliases.set(message.id, pendingParked.parkedCallId);
+                    this.nativeToolNames.set(pendingParked.parkedCallId, pendingParked.toolName);
+                    if (message.status === 'completed' || message.status === 'failed') {
+                        // Replay shows the original parked invocation already finished natively;
+                        // retire any saved approval/answer so a later tool cannot inherit it.
+                        pendingParked.decisionConsumed = true;
+                    }
+                    return {
+                        message: { ...message, id: pendingParked.parkedCallId },
+                        suppressForward: true,
+                        recordCallOrdinal: true
+                    };
+                }
+            }
         }
         const acpSessionId = this.acpSessionId;
         if (!acpSessionId) return { message, suppressForward: false };
@@ -1702,10 +2332,15 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 if (effective.type === 'text' && !effective.live) {
                     const trimmed = effective.text.trim();
                     if (trimmed) {
+                        const preEmittedCount = turn.preEmittedTexts.get(trimmed) ?? 0;
+                        if (preEmittedCount > 0) {
+                            turn.preEmittedTexts.set(trimmed, preEmittedCount - 1);
+                            return;
+                        }
                         turn.streamedTextCounts.set(trimmed, (turn.streamedTextCounts.get(trimmed) ?? 0) + 1);
                     }
                 }
-                this.trackOpenCommand(turn, effective, !reconciled.suppressForward);
+                this.trackOpenCommand(turn, effective, reconciled.recordCallOrdinal ?? !reconciled.suppressForward);
                 if (!reconciled.suppressForward) {
                     this.forwardAgentMessage(this.showQuestionCard(effective));
                 }
@@ -1728,6 +2363,40 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         // Only a live turn can be asked on: after Stop, or once that turn has
         // ended, nothing would settle the card.
         if (!this.turn || this.turn.aborted || this.shouldExit) return { action: 'cancel' };
+        const pendingParked = this.pendingParkedResolution;
+        if (
+            pendingParked
+            && !pendingParked.decisionConsumed
+            && pendingParked.toolName === 'ask_question'
+            && (!form.toolCallId || !pendingParked.suppressedPrefixLiveIds.has(form.toolCallId))
+            && (!pendingParked.aliasedLiveId || !form.toolCallId || pendingParked.aliasedLiveId === form.toolCallId)
+            && (
+                (pendingParked.aliasedLiveId !== null && form.toolCallId === pendingParked.aliasedLiveId)
+                || matchesParkedQuestionForm(pendingParked.decodedArgs, form.questions)
+            )
+        ) {
+            if (
+                !pendingParked.aliasedLiveId
+                && this.acpSessionId
+                && hasAgyParkedCallProgressed(
+                    readAgyTranscriptStepsAfter(this.brainDir, this.acpSessionId, pendingParked.replayAfterStepIndex),
+                    pendingParked.parkedCall
+                )
+            ) {
+                pendingParked.decisionConsumed = true;
+            } else {
+                if (!pendingParked.aliasedLiveId && form.toolCallId) {
+                    pendingParked.aliasedLiveId = form.toolCallId;
+                    this.syntheticCallAliases.set(form.toolCallId, pendingParked.parkedCallId);
+                    this.nativeToolNames.set(pendingParked.parkedCallId, 'ask_question');
+                }
+                pendingParked.decisionConsumed = true;
+                if (pendingParked.decision === 'denied') return { action: 'decline' };
+                const content = agyQuestionContent(form.questions, pendingParked.answers, pendingParked.shownLabels);
+                return Object.keys(content).length > 0 ? { action: 'accept', content } : { action: 'decline' };
+            }
+        }
+
         // Shown on agy's tool call card (toolCallId). The request id is the
         // backend's id for this question, unless that id was already used.
         const preferredId = request.requestId ?? form.toolCallId;
@@ -2034,6 +2703,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     }
 
     protected async cleanup(): Promise<void> {
+        this.session.onPermissionModeChanged = null;
+        this.idleConfigWake = null;
         this.clearAbortHandlers(this.session.client.rpcHandlerManager);
         this.session.client.rpcHandlerManager.registerHandler(RPC_METHODS.SteerQueuedMessage, async () => ({
             steered: false,
@@ -2044,9 +2715,69 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         this.permissionHandler = null;
         const backend = this.backend;
         this.backend = null;
+        this.backendSkipPermissions = null;
         await backend?.disconnect();
         logger.debug('[agy-acp] cleanup done');
     }
+}
+
+function isPermissionRequestKindCompatibleWithTool(kind: string | undefined, toolName: string): boolean {
+    if (!kind) return true;
+    const normalized = kind.trim().toLowerCase();
+    if (!normalized) return true;
+    if (normalized === 'execute') return toolName === 'run_command';
+    if (normalized === 'read') return toolName === 'read_file';
+    if (normalized === 'edit' || normalized === 'write' || normalized === 'delete') {
+        return toolName === 'edit_file' || toolName === 'write_file';
+    }
+    return true;
+}
+
+function matchesParkedQuestionForm(
+    decodedArgs: Record<string, unknown>,
+    liveQuestions: Array<{ question: string }>
+): boolean {
+    const parsed = questionCardInputFromToolCall(decodedArgs);
+    if (!parsed || parsed.questions.length === 0 || liveQuestions.length === 0) {
+        return true;
+    }
+    if (parsed.questions.length !== liveQuestions.length) {
+        return false;
+    }
+    return parsed.questions.every(
+        (expected, idx) => expected.question.trim() === (liveQuestions[idx]?.question ?? '').trim()
+    );
+}
+
+function formatParkedUserActionText(
+    parkedCall: AgyParkedWakeupCall,
+    isQuestion: boolean,
+    outcome: {
+        decision: 'approved' | 'approved_for_session' | 'denied';
+        reason?: string;
+        answers?: Record<string, string[]>;
+    }
+): string {
+    if (isQuestion) {
+        if (outcome.decision === 'denied') {
+            return outcome.reason ? `Declined question: ${outcome.reason}` : 'Declined question.';
+        }
+        const selected = Object.values(outcome.answers ?? {})
+            .flat()
+            .map((entry) => entry.trim())
+            .filter(Boolean);
+        return selected.length > 0 ? `Answered question: ${selected.join(', ')}` : 'Answered question.';
+    }
+
+    const detail = typeof parkedCall.decodedArgs.CommandLine === 'string' && parkedCall.decodedArgs.CommandLine.trim()
+        ? parkedCall.decodedArgs.CommandLine.trim()
+        : typeof parkedCall.decodedArgs.Path === 'string' && parkedCall.decodedArgs.Path.trim()
+            ? parkedCall.decodedArgs.Path.trim()
+            : parkedCall.toolName;
+    if (outcome.decision === 'denied') {
+        return outcome.reason ? `Denied: ${detail} (${outcome.reason})` : `Denied: ${detail}`;
+    }
+    return `Approved: ${detail}`;
 }
 
 function errorMessage(error: unknown): string {
