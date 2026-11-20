@@ -311,6 +311,26 @@ export function restoreScrollAnchor(viewport: HTMLElement, anchor: ScrollAnchor)
     return true
 }
 
+/**
+ * End an in-flight fling after programmatic scroll compensation. Native
+ * momentum keeps its velocity across a programmatic scrollTop change, so a
+ * fast upward fling that triggered an older-page load carries straight
+ * through the freshly prepended content once the anchor restore re-pins the
+ * viewport ("jumps to a distant top"). Toggling the scroll container to
+ * non-scrollable for one frame terminates the gesture; the viewport's
+ * scrollbars are auto-hidden, so the toggle is not visible.
+ */
+export function cancelResidualScrollMomentum(viewport: HTMLElement): void {
+    if (viewport.dataset.hapiMomentumKill === '1') return
+    viewport.dataset.hapiMomentumKill = '1'
+    const previous = viewport.style.overflow
+    viewport.style.overflow = 'hidden'
+    requestAnimationFrame(() => {
+        viewport.style.overflow = previous
+        delete viewport.dataset.hapiMomentumKill
+    })
+}
+
 export async function locateOutlineTargetMessage(options: LocateOutlineTargetOptions): Promise<HTMLElement | null> {
     const anchorId = getConversationMessageAnchorId(options.targetMessageId)
     let target = options.findTarget(anchorId)
@@ -1740,6 +1760,12 @@ export function HappyThread(props: {
         if (viewport) {
             viewport.scrollTo({ top: viewport.scrollHeight, behavior: 'instant' })
             lastScrollTopRef.current = viewport.scrollTop
+            // A programmatic relocation ends the gesture that caused it: the
+            // native fling momentum otherwise keeps scrolling from the NEW
+            // position (persisted-window re-entry swap -> jump to bottom ->
+            // residual upward fling carries the viewport deep into history,
+            // the same failure the older-page apply kill covers).
+            cancelResidualScrollMomentum(viewport)
         }
     }, [])
 
@@ -2673,6 +2699,18 @@ export function HappyThread(props: {
             if (loaderState.runId !== pending.runId || loaderState.phase !== 'awaiting-render') {
                 pendingScrollRef.current = null
                 return
+            }
+            // A fast fling that hit the old edge of the window can still carry
+            // native scroll momentum when the older page finally lands. The
+            // compensation above re-pins the viewport to the row the user was
+            // reading, but the residual momentum keeps scrolling from the NEW
+            // position — straight through thousands of freshly prepended
+            // pixels and deep into old history ("jumps to a distant top").
+            // End the gesture with the page it asked for: user-intent loads
+            // kill the remaining momentum; coverage loads (passive, triggered
+            // while reading near the top with little velocity left) keep it.
+            if (loaderState.source === 'user') {
+                cancelResidualScrollMomentum(viewport)
             }
             lastScrollTopRef.current = viewport.scrollTop
             pendingScrollRef.current = null

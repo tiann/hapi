@@ -13,6 +13,7 @@ import {
     isNestedScrollEvent,
     locateOutlineTargetMessage,
     prependMissingUserSnapshot,
+    cancelResidualScrollMomentum,
     restoreScrollAnchor,
     shouldLoadOlderForViewport,
     shouldCancelInitialScrollSettling,
@@ -558,5 +559,29 @@ describe('share turn snapshots', () => {
         const fallback = { html: '', text: 'prompt', role: 'user' as const }
 
         expect(prependMissingUserSnapshot([user], fallback)).toEqual([user])
+    })
+})
+
+describe('residual scroll momentum after an older-page load', () => {
+    const frames = () => new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+
+    it('toggles the viewport to non-scrollable for one frame and restores it', async () => {
+        const element = document.createElement('div')
+        element.style.overflow = 'auto'
+        cancelResidualScrollMomentum(element)
+        expect(element.style.overflow).toBe('hidden')
+        await frames()
+        expect(element.style.overflow).toBe('auto')
+        expect(element.dataset.hapiMomentumKill).toBeUndefined()
+    })
+
+    it('a second call while the kill frame is pending keeps a single restore', async () => {
+        const element = document.createElement('div')
+        element.style.overflow = 'auto'
+        cancelResidualScrollMomentum(element)
+        cancelResidualScrollMomentum(element)
+        expect(element.style.overflow).toBe('hidden')
+        await frames()
+        expect(element.style.overflow).toBe('auto')
     })
 })
