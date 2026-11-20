@@ -965,6 +965,41 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         }
     );
 
+    linuxRecoveryTest('retries a replacement that dies during initialize before session/load', async () => {
+        harness.detectedVersion = 'v2';
+        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        let initCalls = 0;
+        const { createOpencodeBackend } = await import('./utils/opencodeBackend');
+        const originalFactory = vi.mocked(createOpencodeBackend).getMockImplementation()!;
+        vi.mocked(createOpencodeBackend).mockImplementation((opts) => {
+            const backend = originalFactory(opts);
+            backend.initialize = vi.fn(async () => {
+                if (++initCalls === 2) {
+                    harness.treeGone = false;
+                    harness.completeCapture = false;
+                    harness.unexpectedExitHandler!(new Error('replacement died in initialize'), { childProcessExited: true });
+                    throw new Error('replacement died in initialize');
+                }
+                harness.treeGone = true;
+                harness.completeCapture = true;
+            });
+            return backend;
+        });
+        const launcher = opencodeRemoteLauncher(session as never, { recoveryBackoffsMs: [0, 0] });
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.has(RPC_METHODS.Switch)).toBe(true));
+            harness.unexpectedExitHandler!(new Error('initial exit'), { childProcessExited: true });
+            session.queue.push('after pre-load replacement death', createMode(), 'after');
+            await vi.waitFor(() => expect(harness.promptCount).toBe(1));
+            expect(harness.createBackendArgs).toHaveLength(3);
+        } finally {
+            vi.mocked(createOpencodeBackend).mockImplementation(originalFactory);
+            session.queue.close();
+            await launcher.catch(() => {});
+        }
+    });
+
     linuxRecoveryTest('fences a replacement stopped while it is reopening the native session', async () => {
         harness.detectedVersion = 'v2';
         const loading = Promise.withResolvers<string>();

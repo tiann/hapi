@@ -508,8 +508,8 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
         const retryingStartup = this.options.isRecoveryAttempt && !this.recoveryAttempt.ready;
         // Clear hands off to a different native conversation. Every reuse of a
         // lost generation's ID, including a local handoff, joins the same fence.
-        const lostWriter = this.recoveryAttempt.loss !== null;
-        const retryMayOwnSession = retryingStartup && (this.nativeLoadStarted || !this.options.recoverySignal?.aborted);
+        const lostWriter = this.recoveryAttempt.loss !== null && (!retryingStartup || this.nativeLoadStarted);
+        const retryMayOwnSession = retryingStartup && this.nativeLoadStarted;
         if (!this.clearRequested && (lostWriter || retryMayOwnSession)) {
             const stopped = await backend.disconnect({ verifyTermination: true, waitForTransport: true });
             if (!stopped && !backend.canRecheckTermination) {
