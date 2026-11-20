@@ -263,6 +263,53 @@ body:
         expect(template.reason).toContain('Name_US')
     })
 
+    // Regression (Meta review, tiann/hapi#2147, follow-up): GitHub's own
+    // "Labels are too similar" mechanism (Rails' `parameterize`)
+    // transliterates accented Latin characters before slugifying
+    // ("Café" -> "cafe"), not just strips them. Missing that step meant
+    // this parser silently missed a real collision an accented label
+    // creates against its unaccented counterpart.
+    it('is genuinely invalid when an accented label collides with its unaccented counterpart', () => {
+        const yaml = `
+name: Bug
+description: Bug
+body:
+  - type: input
+    attributes:
+      label: Café
+  - type: input
+    attributes:
+      label: Cafe
+`
+        const template = parseIssueFormYaml('x.yml', yaml)
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+    })
+
+    // The other direction (Meta review, tiann/hapi#2147, follow-up): a
+    // naive strip-non-ASCII approach (no transliteration) makes "Café"
+    // and "Caf" collide ("café" and "caf" both reduce to "caf" once the
+    // accented é is simply deleted), but Rails' real transliteration
+    // keeps them distinct ("cafe" vs "caf") — GitHub would accept this
+    // form. Rejecting it would be a false reject, the worse direction:
+    // it blocks a legitimately valid, non-English template outright.
+    it('does not falsely collide an accented label with an unrelated short label', () => {
+        const yaml = `
+name: Bug
+description: Bug
+body:
+  - type: input
+    attributes:
+      label: Café
+  - type: input
+    attributes:
+      label: Caf
+`
+        const template = parseIssueFormYaml('x.yml', yaml)
+        expect(template.kind).toBe('form')
+    })
+
     // Regression (bot review, tiann/hapi#2147, follow-up): GitHub's own
     // documented rule is "Body must have unique labels" for fields with
     // no distinguishing id — this parser's generateFieldId used to paper

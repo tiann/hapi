@@ -33,8 +33,48 @@ function asNumber(value: unknown): number | undefined {
 // (GitHub's own fallback source), slugified (review finding: rejecting the
 // whole template over a missing id makes an otherwise-valid, GitHub-accepted
 // form unusable in Boards).
+//
+// Transliterates Latin diacritics before stripping non-ASCII characters
+// (Meta review follow-up, tiann/hapi#2147) — GitHub's own documented
+// mechanism for this is Rails' `parameterize`, which transliterates first
+// ("Jürgen" -> "Jurgen") rather than just deleting non-ASCII characters
+// outright. Skipping that step disagreed with GitHub's real behavior in
+// BOTH directions for any accented label, confirmed with concrete
+// examples: "Café" (ours: "caf") vs "Cafe" (ours: "cafe") don't collide
+// here but DO under Rails' transliteration ("cafe" both), a collision
+// this parser would silently miss; "Café" (ours: "caf") vs "Caf" (ours:
+// "caf") DO collide here but DON'T under Rails ("cafe" vs "caf"), which
+// this parser's own collision check would now wrongly reject since it
+// rejects on collision (see generateFieldId below) — a false reject is
+// the worse direction (blocks a legitimately GitHub-valid, non-English
+// template outright), and non-ASCII labels aren't hypothetical for a
+// project that ships Japanese/Chinese/Russian localization. NFD
+// normalization plus stripping combining marks covers composed Latin
+// diacritics (the cases above, and most of Western/Central European
+// text); the handful of single-codepoint Latin letters Rails' own docs
+// call out by name (ß, æ, ø, ...) get an explicit map since they have no
+// combining-mark decomposition to strip. Not a byte-for-byte replica of
+// Rails' full locale-aware transliteration table (which even varies by
+// configured I18n locale, e.g. German ü -> "ue" vs the ASCII-default
+// "u" used here) — just enough to stop the concrete false-accept/
+// false-reject pairs above. CJK and other scripts with no Latin
+// approximation are unaffected by this and don't need their own
+// handling: Rails' own `transliterate` replaces an unmappable character
+// with "?" (confirmed in its own docs), which `slugify`'s cleanup below
+// strips like any other non-alphanumeric character, so an all-CJK label
+// already parameterizes to the same empty string under Rails as it does
+// here (falling through to the `'field'` fallback) — two different
+// CJK-only labels colliding on that shared fallback matches GitHub's
+// real behavior already, not a gap.
+function transliterate(label: string): string {
+    return label
+        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/ß/g, 'ss').replace(/[æÆ]/g, 'ae').replace(/[œŒ]/g, 'oe')
+        .replace(/[øØ]/g, 'o').replace(/[þÞ]/g, 'th').replace(/[ðÐ]/g, 'd').replace(/[łŁ]/g, 'l')
+}
+
 function slugify(label: string): string {
-    const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+    const slug = transliterate(label).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
     return slug || 'field'
 }
 
