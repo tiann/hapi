@@ -1613,7 +1613,11 @@ export class SessionCache {
 
         const wasThinking = session.thinking
         session.active = false
-        this.store.sessions.setSessionActive(session.id, false, t, session.namespace)
+        // The end time comes from the CLI host's clock, keepalives from the
+        // hub's; persist, cache and publish the later of the two, so a reloaded
+        // cache keeps the stop time clients ordered by.
+        session.activeAt = Math.max(session.activeAt, t)
+        this.store.sessions.setSessionActive(session.id, false, session.activeAt, session.namespace)
         session.thinking = false
         session.thinkingAt = t
         session.activeTurnStartedAt = null
@@ -1629,6 +1633,7 @@ export class SessionCache {
             sessionId: session.id,
             data: {
                 active: false,
+                activeAt: session.activeAt,
                 thinking: false,
                 activeTurnStartedAt: null,
                 backgroundTaskCount: 0,
@@ -1654,7 +1659,10 @@ export class SessionCache {
             if (now - session.activeAt <= timeoutMs) continue
             const wasThinking = session.thinking
             session.active = false
-            this.store.sessions.setSessionActive(session.id, false, now, session.namespace)
+            // Persist the last keepalive, the value the cache and the inactive
+            // patch carry, not the sweep time: a reloaded cache must keep the
+            // same stop time, or stopped rows reorder after a hub restart.
+            this.store.sessions.setSessionActive(session.id, false, session.activeAt, session.namespace)
             session.thinking = false
             // The keepalive died, not the tasks: reset the transient work
             // state like handleSessionEnd does, or a session that expired
@@ -1674,6 +1682,9 @@ export class SessionCache {
                 sessionId: session.id,
                 data: {
                     active: false,
+                    // The last keepalive: when the session stopped, for clients
+                    // that only saw an older activeAt.
+                    activeAt: session.activeAt,
                     backgroundTaskCount: 0,
                     backgroundTasks: [],
                     derivedToolWork: false

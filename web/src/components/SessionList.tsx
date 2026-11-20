@@ -1775,6 +1775,8 @@ type SessionItemProps = {
     /** Brief ring after jump-to-next-blocked, so the row the list travelled to
      *  is obvious once the scroll settles. */
     flashHighlight?: boolean
+    /** Stopped rows show the stop time they are ordered by (Active first). */
+    showStoppedTime?: boolean
 }
 
 function shallowEqualExcept<T extends object>(previous: T, next: T, ignored: keyof T): boolean {
@@ -1806,7 +1808,8 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
         targetMessageId,
         targetMessageQuery,
         lastSeenVersion,
-        flashHighlight = false
+        flashHighlight = false,
+        showStoppedTime = false
     } = props
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
@@ -2160,6 +2163,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                         contentSnippet={contentSnippet}
                         contentSearchTruncated={contentSearchTruncated}
                         trailingClassName={hasQuickAction ? 'session-row-trailing' : undefined}
+                        showStoppedTime={showStoppedTime}
                     />
                 </button>
                 {githubPrAwarenessEnabled && primaryPrRef ? (
@@ -2450,6 +2454,15 @@ export function SessionList(props: {
     const { sessionListStatusMode } = useSessionListStatusMode()
     const { view: listView, setView: setListView } = useSessionListView()
     const listComparator = useMemo(() => createSessionComparator(listView), [listView])
+    // Pinned and Blocked pull sessions out of the regular active/stopped flow
+    // for an operator-attention reason — a session disconnecting there must
+    // not reorder it ahead of one the operator engaged with more recently,
+    // which `listComparator`'s stopped-recency grouping (upstream main #2518)
+    // would otherwise do purely because disconnecting bumps `updatedAt`.
+    const attentionSectionComparator = useMemo(
+        () => createSessionComparator(listView, { groupStoppedByRecency: false }),
+        [listView]
+    )
     const { showActiveSessionsOnly, setShowActiveSessionsOnly } = useShowActiveSessionsOnly()
     const lastSeenVersion = useSessionLastSeenVersion()
 
@@ -2965,8 +2978,8 @@ export function SessionList(props: {
         if (searchScoreIndex && hasTextQuery) {
             return sortSessionsBySearchRelevance(pinned, searchScoreIndex)
         }
-        return [...pinned].sort(listComparator)
-    }, [machineFilteredSessions, searchScoreIndex, hasTextQuery, listComparator])
+        return [...pinned].sort(attentionSectionComparator)
+    }, [machineFilteredSessions, searchScoreIndex, hasTextQuery, attentionSectionComparator])
     // Fleet-wide count, deliberately computed BEFORE search / time / unread /
     // machine narrowing: the pill exists to tell the operator how much blocked
     // work exists, and a count that silently shrank behind a filter would be
@@ -3000,8 +3013,8 @@ export function SessionList(props: {
         if (searchScoreIndex && hasTextQuery) {
             return sortSessionsBySearchRelevance(blocked, searchScoreIndex)
         }
-        return [...blocked].sort(listComparator)
-    }, [machineFilteredSessions, searchScoreIndex, hasTextQuery, listComparator])
+        return [...blocked].sort(attentionSectionComparator)
+    }, [machineFilteredSessions, searchScoreIndex, hasTextQuery, attentionSectionComparator])
     // Globally pinned blockers stay in Pinned rather than moving to Blocked,
     // so their collapsed rows are attributed to THAT header (#1717).
     const pinnedBlockedIds = useMemo(() => {
@@ -3028,6 +3041,10 @@ export function SessionList(props: {
         const candidates = machineFilteredSessions.filter(session => !blockedSectionIds.has(session.id))
         return bucketRunningSessions(candidates, effectivePinInProgressMode, byRelevanceOrRecent)
     }, [machineFilteredSessions, blockedSectionIds, effectivePinInProgressMode, searchScoreIndex, hasTextQuery, listComparator])
+    // Stopped rows show their stop time only where the list orders them by it:
+    // Active first, and no text query (which orders rows by relevance or, for
+    // project rows in either search mode, by the legacy comparator).
+    const stoppedTimeShown = listView.activeFirst && !hasTextQuery
     const runningSessionTotal = runningSessions.jobs.length
         + runningSessions.working.length
         + runningSessions.pending.length
@@ -3280,6 +3297,7 @@ export function SessionList(props: {
                                             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
                                             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
                                             lastSeenVersion={lastSeenVersion}
+                                            showStoppedTime={stoppedTimeShown}
                                         />
                                     ))}
                                 </div>
@@ -3357,6 +3375,7 @@ export function SessionList(props: {
             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
             lastSeenVersion={lastSeenVersion}
+            showStoppedTime={stoppedTimeShown}
         />
     )
 
@@ -4545,6 +4564,7 @@ export function SessionList(props: {
                                             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
                                             lastSeenVersion={lastSeenVersion}
                                             flashHighlight={s.id === flashBlockedSessionId}
+                                            showStoppedTime={stoppedTimeShown}
                                         />
                                     ))}
                                 </div>
@@ -4613,6 +4633,7 @@ export function SessionList(props: {
                                             contentSearchTruncated={contentSearchTruncatedBySessionId.has(s.id)}
                                             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
                                             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
+                                            showStoppedTime={stoppedTimeShown}
                                         />
                                     ))}
                                 </div>
