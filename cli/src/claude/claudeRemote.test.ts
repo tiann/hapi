@@ -478,7 +478,9 @@ describe('claudeRemote in-process /clear', () => {
         const forwarded: SDKMessage[] = [];
         const priorId = 'previous-native-session';
         const resultId = success ? 'fresh-native-session' : priorId;
-        const result: SDKMessage = { type: 'result', subtype: 'success', is_error: false, session_id: priorId };
+        const result: SDKMessage = {
+            type: 'result', subtype: 'success', is_error: false, session_id: priorId, user_message_uuid: 'first-input'
+        };
 
         queryMock.mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<{ uuid: string; message: { content: string } }> }) => ({
             async *[Symbol.asyncIterator]() {
@@ -512,8 +514,9 @@ describe('claudeRemote in-process /clear', () => {
                 allowedTools: [],
                 hookSettingsPath: '/tmp/hook.json',
                 canCallTool: async () => ({ behavior: 'allow', updatedInput: {} }),
-                nextMessage: async () => {
+                nextMessage: async (correlatesResults) => {
                     const message = inputs.shift();
+                    if (message === '/clear') expect(correlatesResults).toBe(true);
                     if (message === '/clear' || message === 'follow-up') order.push(message);
                     return message ? { message, mode: { permissionMode: 'default' } } : null;
                 },

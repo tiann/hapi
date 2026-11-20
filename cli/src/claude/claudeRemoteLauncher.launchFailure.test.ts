@@ -176,6 +176,7 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
         const queue = new MessageQueue2<EnhancedMode>(claudeBatchModeHash);
         const client = makeClient();
         const session = makeSession(queue, client);
+        session.sessionId = 'native-before-clear';
         const mode: EnhancedMode = { permissionMode: 'default' };
         queue.push('first', mode, 'first');
         const delivered: Array<string | undefined> = [];
@@ -185,12 +186,12 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
             await opts.onReady();
             queue.pushIsolateAndClear(command, mode, 'command');
             queue.push('follow-up', mode, 'follow-up');
-            const next = await opts.nextMessage();
+            const next = await opts.nextMessage(true);
             delivered.push(next?.message);
             if (!next) return;
-            expect(session.isHandlingRemoteClear?.() ?? false).toBe(command === '/clear');
+            expect(session.handleRemoteClearHook?.(session.sessionId!) ?? false).toBe(command === '/clear');
             opts.onResultAccepted();
-            expect(session.isHandlingRemoteClear?.() ?? false).toBe(false);
+            expect(session.handleRemoteClearHook?.(session.sessionId!) ?? false).toBe(false);
             await opts.onReady();
             delivered.push((await opts.nextMessage())?.message);
             triggerSwitch(client);
@@ -208,11 +209,15 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
         }
     });
 
-    it('keeps the wrapper-side clear when native slash commands are disabled', async () => {
+    it.each([
+        { command: '/clear', args: ['--disable-slash-commands'], correlated: true },
+        { command: '/compact', args: [], correlated: false },
+        { command: '/clear', args: [], correlated: false }
+    ])('keeps the restart path for $command with args $args and correlation $correlated', async ({ command, args, correlated }) => {
         const queue = new MessageQueue2<EnhancedMode>(claudeBatchModeHash);
         const client = makeClient();
         const session = makeSession(queue, client);
-        session.claudeArgs = ['--disable-slash-commands'];
+        session.claudeArgs = args;
         const mode: EnhancedMode = { permissionMode: 'default' };
         queue.push('first', mode, 'first');
         const delivered: Array<string | undefined> = [];
@@ -220,8 +225,8 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
         claudeRemoteMock.mockImplementationOnce(async (opts) => {
             delivered.push((await opts.nextMessage())?.message);
             await opts.onReady();
-            queue.pushIsolateAndClear('/clear', mode, 'command');
-            const next = await opts.nextMessage();
+            queue.pushIsolateAndClear(command, mode, 'command');
+            const next = await opts.nextMessage(correlated);
             delivered.push(next?.message);
             if (next) triggerSwitch(client);
         }).mockImplementationOnce(async (opts) => {
@@ -232,7 +237,45 @@ describe('claudeRemoteLauncher launch-failure recovery', () => {
         try {
             const { claudeRemoteLauncher } = await import('./claudeRemoteLauncher');
             await claudeRemoteLauncher(session);
-            expect(delivered).toEqual(['first', undefined, '/clear']);
+            expect(delivered).toEqual(['first', undefined, command]);
+        } finally {
+            session.stopKeepAlive();
+        }
+    });
+
+    it('keeps a clear confirmed by the hook when the stream exits before its result', async () => {
+        const queue = new MessageQueue2<EnhancedMode>(claudeBatchModeHash);
+        const client = makeClient();
+        const session = makeSession(queue, client);
+        session.sessionId = 'native-before-clear';
+        session.claudeArgs = ['--resume', 'native-before-clear'];
+        session.onConversationReset = vi.fn();
+        const mode: EnhancedMode = { permissionMode: 'default' };
+        queue.push('first', mode, 'first');
+        const delivered: Array<string | undefined> = [];
+        let restartId: string | null = null;
+
+        claudeRemoteMock.mockImplementationOnce(async (opts) => {
+            delivered.push((await opts.nextMessage())?.message);
+            await opts.onReady();
+            queue.pushIsolateAndClear('/clear', mode, 'command');
+            queue.push('follow-up', mode, 'follow-up');
+            delivered.push((await opts.nextMessage(true))?.message);
+            session.handleRemoteClearHook?.('native-after-clear');
+            throw new Error('stream ended after native clear');
+        }).mockImplementationOnce(async (opts) => {
+            restartId = opts.sessionId;
+            delivered.push((await opts.nextMessage())?.message);
+            triggerSwitch(client);
+        });
+
+        try {
+            const { claudeRemoteLauncher } = await import('./claudeRemoteLauncher');
+            await claudeRemoteLauncher(session);
+            expect(restartId).toBe('native-after-clear');
+            expect(delivered).toEqual(['first', '/clear', 'follow-up']);
+            expect(session.claudeArgs).toBeUndefined();
+            expect(session.onConversationReset).toHaveBeenCalledTimes(1);
         } finally {
             session.stopKeepAlive();
         }

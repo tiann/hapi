@@ -97,7 +97,7 @@ export async function claudeRemote(opts: {
     bootstrapMode?: EnhancedMode,
 
     // Dynamic parameters
-    nextMessage: () => Promise<{ message: string, mode: EnhancedMode } | null>,
+    nextMessage: (correlatesResults?: boolean) => Promise<{ message: string, mode: EnhancedMode } | null>,
     onReady: (completionEvent?: string, compactSummary?: CompactSummaryPayload, compactContextTokens?: number) => void | Promise<void>,
     isAborted: (toolCallId: string) => boolean,
 
@@ -116,7 +116,7 @@ export async function claudeRemote(opts: {
     /** The native prompt uuid of a just-submitted user message (queue batches only). */
     onInputSubmitted?: (nativePromptUuid: string) => void,
     onCompletionEvent?: (message: string) => void,
-    onSessionReset?: () => void,
+    onSessionReset?: (sessionId?: string) => void,
     /** Open while a plain (non-command) turn runs; null otherwise. */
     onSteerTargetChange?: (target: ClaudeSteerTarget | null) => void
 }) {
@@ -556,6 +556,7 @@ export async function claudeRemote(opts: {
     let nextMessageFetchSeq = 0;
     let streamMessageSeq = 0;
     let resultSeq = 0;
+    let correlatesResults = false;
     const compactCompletionAbort = new AbortController();
     let compactCompletion: Promise<CompactCompletion> | null = null;
     const abortCompactCompletion = () => compactCompletionAbort.abort();
@@ -577,7 +578,7 @@ export async function claudeRemote(opts: {
         logger.debug(`${debugPrefix} scheduleNextMessage start fetchId=${fetchId}`);
         void (async () => {
             try {
-                const next = await opts.nextMessage();
+                const next = await opts.nextMessage(correlatesResults);
                 if (responseClosed) return;
                 if (!next) {
                     inputEnded = true;
@@ -868,6 +869,7 @@ export async function claudeRemote(opts: {
             // Handle result messages
             if (message.type === 'result') {
                 resultSeq += 1;
+                correlatesResults ||= typeof message.user_message_uuid === 'string' || typeof message.local_command === 'string';
                 if (clear) {
                     if (!isClearResult) continue;
                     clearState.active = null;
@@ -877,7 +879,7 @@ export async function claudeRemote(opts: {
                     const id = message.session_id;
                     if (message.subtype === 'success' && message.is_error !== true
                         && typeof id === 'string' && id && id !== clear.previousSessionId) {
-                        opts.onSessionReset?.();
+                        opts.onSessionReset?.(id);
                         currentSessionId = id;
                         opts.onSessionFound(id);
                         if (clear.init?.session_id === id) opts.onMessage(clear.init);

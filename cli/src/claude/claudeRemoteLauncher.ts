@@ -589,8 +589,25 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                     modeHash = claudeBatchModeHash(resumeAtBootstrapMode);
                     mode = resumeAtBootstrapMode;
                 }
-                session.isHandlingRemoteClear = () => inFlightMessage?.isolate === true
-                    && parseSpecialCommand(inFlightMessage.deliveredText).type === 'clear';
+                const resetSession = () => {
+                    logger.debug('[remote]: Session reset');
+                    session.clearSessionId();
+                    permissionHandler.reset();
+                    sdkToLogConverter.resetParentChain();
+                    session.consumeOneTimeFlags();
+                    session.onConversationReset?.();
+                };
+                session.handleRemoteClearHook = (sessionId) => {
+                    if (!inFlightMessage?.isolate || parseSpecialCommand(inFlightMessage.deliveredText).type !== 'clear') {
+                        return false;
+                    }
+                    if (sessionId !== session.sessionId) {
+                        resetSession();
+                        session.onSessionFound(sessionId);
+                        inFlightMessage = null;
+                    }
+                    return true;
+                };
                 try {
                     await claudeRemote({
                         sessionId: session.sessionId,
@@ -626,7 +643,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             const localId = inFlightMessage?.items.find((item) => item.localId)?.localId;
                             recordHistoryPoint(localId, nativePromptUuid);
                         },
-                        nextMessage: async () => {
+                        nextMessage: async (correlatesResults) => {
                             // Flush any pending outgoing messages before consuming the next user
                             // turn. Without this, scheduleProcessing()'s setTimeout(fn,0) fires
                             // after the microtask that sends messages-consumed, causing the hub
@@ -671,6 +688,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             if (msg) {
                                 const command = msg.isolate ? parseSpecialCommand(msg.message).type : null;
                                 const canRunIsolatedInProcess = deliveredMessageThisAttempt
+                                    && correlatesResults
                                     && !spawnArgs?.includes('--disable-slash-commands')
                                     && (command === 'compact' || command === 'clear');
                                 const requiresIsolationRestart = msg.isolate && !canRunIsolatedInProcess;
@@ -766,21 +784,10 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                             logger.debug(`[remote]: Completion event: ${message}`);
                             session.client.sendSessionEvent({ type: 'message', message });
                         },
-                        onSessionReset: () => {
-                            logger.debug('[remote]: Session reset');
-                            session.clearSessionId();
-                            permissionHandler.reset();
-                            sdkToLogConverter.resetParentChain();
-                            // Clear the resume anchor even when no process was
-                            // running and there will be no init for a new ID.
-                            session.consumeOneTimeFlags();
-                            // The reset also discards the conversation a
-                            // pending rewind points into: the runner cancels
-                            // the durable intent, and the next spawn's
-                            // boundary derivation sees no intent - the flag
-                            // is never stored on claudeArgs, so there is
-                            // nothing to strip here.
-                            session.onConversationReset?.();
+                        onSessionReset: (sessionId) => {
+                            if (sessionId === undefined || sessionId !== session.sessionId) {
+                                resetSession();
+                            }
                         },
                         onReady: async (completionEvent?: string, compactSummary?: CompactSummaryPayload, compactContextTokens?: number) => {
                             // Reaching ready at all means this attempt is not an
@@ -989,7 +996,7 @@ class ClaudeRemoteLauncher extends RemoteLauncherBase {
                         restoreInFlightMessage();
                     }
                 } finally {
-                    session.isHandlingRemoteClear = null;
+                    session.handleRemoteClearHook = null;
                     logger.debug('[remote]: launch finally');
 
                     for (let [toolCallId, { parentToolCallId }] of ongoingToolCalls) {
