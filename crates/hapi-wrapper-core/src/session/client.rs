@@ -11,6 +11,7 @@ use futures_util::{future::BoxFuture, FutureExt};
 use serde_json::{json, Value};
 use std::{
     io,
+    panic::{catch_unwind, AssertUnwindSafe},
     sync::{Arc, Mutex, Weak},
     time::Duration,
 };
@@ -54,6 +55,15 @@ pub trait SessionExtension: Send + Sync + 'static {
     fn shutdown(&self) -> BoxFuture<'static, ()> {
         futures_util::future::ready(()).boxed()
     }
+}
+fn contained<T>(index: usize, callback: &str, fallback: T, f: impl FnOnce() -> T) -> T {
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| {
+        report_panic(index, callback);
+        fallback
+    })
+}
+fn report_panic(index: usize, callback: &str) {
+    eprintln!("Session extension {index} panicked in {callback}");
 }
 #[derive(Default)]
 pub struct StartOptions {
@@ -161,8 +171,8 @@ impl SessionClient {
             }
         }
         let rpc = crate::rpc::manager::RpcHandlerManager::new(&id);
-        for extension in &extensions {
-            extension.register(&id, &rpc);
+        for (index, extension) in extensions.iter().enumerate() {
+            contained(index, "register", (), || extension.register(&id, &rpc));
         }
         let initially_archived = super::metadata::hub_archived(&session["metadata"]);
         let (socket, mut session_events) = SessionEvents::start(
@@ -270,7 +280,7 @@ impl SessionClient {
                         }
                         let _ = client.events.send(SessionEvent::ConnectionStart);
                         accepted = true;
-                        client.dispatch(|e| {
+                        client.dispatch("connected", |e| {
                             e.connected(&client.socket, generation);
                             false
                         });
@@ -312,7 +322,7 @@ impl SessionClient {
                         client.filter.lock().unwrap().start_backfill();
                         client.rpc.on_disconnect();
                         if std::mem::take(&mut accepted) {
-                            client.dispatch(|e| {
+                            client.dispatch("disconnected", |e| {
                                 e.disconnected();
                                 false
                             });
@@ -338,7 +348,9 @@ impl SessionClient {
                     Event::Message { name, args, ack } => {
                         if accepted && !client.extensions.is_empty() {
                             let metadata = client.metadata.get().value;
-                            if client.dispatch(|e| e.socket_event(&name, &args, &metadata)) {
+                            if client.dispatch("socket_event", |e| {
+                                e.socket_event(&name, &args, &metadata)
+                            }) {
                                 continue;
                             }
                         }
@@ -550,6 +562,7 @@ impl SessionClient {
     }
     pub fn close(&self) {
         if self.closed.send_replace(true) {
+            self.rpc.on_disconnect();
             self.finish_extensions();
             return;
         }
@@ -563,7 +576,11 @@ impl SessionClient {
         self.stop_keep_alive();
         self.socket.stop(Duration::from_millis(500));
     }
-    fn dispatch(&self, f: impl FnMut(&Arc<dyn SessionExtension>) -> bool) -> bool {
+    fn dispatch(
+        &self,
+        callback: &str,
+        mut f: impl FnMut(&Arc<dyn SessionExtension>) -> bool,
+    ) -> bool {
         if self.extensions.is_empty() {
             return false;
         }
@@ -576,7 +593,11 @@ impl SessionClient {
             gate.dispatcher = Some(current);
         }
         let turn = Turn(self, false);
-        let consumed = self.extensions.iter().any(f);
+        let consumed = self
+            .extensions
+            .iter()
+            .enumerate()
+            .any(|(index, e)| contained(index, callback, false, || f(e)));
         drop(turn);
         let deferred = std::mem::take(&mut self.gate.lock().unwrap().deferred);
         if deferred {
@@ -604,12 +625,29 @@ impl SessionClient {
         gate.finisher = current;
         drop(gate);
         let _turn = Turn(self, true);
-        for extension in &self.extensions {
-            extension.disconnected();
+        for (index, extension) in self.extensions.iter().enumerate() {
+            contained(index, "disconnected", (), || extension.disconnected());
         }
     }
     pub fn shutdown_extensions(&self) -> BoxFuture<'static, ()> {
-        let all: Vec<_> = self.extensions.iter().map(|e| e.shutdown()).collect();
+        let all: Vec<_> = self
+            .extensions
+            .iter()
+            .enumerate()
+            .map(|(index, e)| {
+                let Some(future) = contained(index, "shutdown", None, || Some(e.shutdown())) else {
+                    return futures_util::future::ready(()).boxed();
+                };
+                AssertUnwindSafe(future)
+                    .catch_unwind()
+                    .map(move |done| {
+                        if done.is_err() {
+                            report_panic(index, "shutdown");
+                        }
+                    })
+                    .boxed()
+            })
+            .collect();
         futures_util::future::join_all(all).map(|_| ()).boxed()
     }
     pub fn on_user_message(&self, f: UserHandler) {
@@ -943,7 +981,133 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(*recorder.log.lock().unwrap(), ["panic", "disconnected"]);
+        assert_eq!(
+            *recorder.log.lock().unwrap(),
+            ["panic", "connected:0", "disconnected"]
+        );
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn panicking_extension_callbacks_are_contained() {
+        struct Panics(bool);
+        impl SessionExtension for Panics {
+            fn register(&self, _: &str, _: &crate::rpc::manager::RpcHandlerManager) {
+                panic!("register");
+            }
+            fn connected(&self, _: &Socket, _: u64) {
+                panic!("connected");
+            }
+            fn disconnected(&self) {
+                panic!("disconnected");
+            }
+            fn socket_event(&self, _: &str, _: &[Value], _: &Value) -> bool {
+                panic!("socket_event");
+            }
+            fn shutdown(&self) -> BoxFuture<'static, ()> {
+                if self.0 {
+                    panic!("shutdown");
+                }
+                async { panic!("shutdown future") }.boxed()
+            }
+        }
+        #[derive(Default)]
+        struct Tally(Mutex<Vec<String>>);
+        impl SessionExtension for Tally {
+            fn register(&self, id: &str, rpc: &crate::rpc::manager::RpcHandlerManager) {
+                self.0.lock().unwrap().push(format!("register:{id}"));
+                rpc.register("double", |v| async move {
+                    Ok(Some(json!(v.as_i64().unwrap_or(0) * 2)))
+                });
+            }
+            fn connected(&self, _: &Socket, generation: u64) {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(format!("connected:{generation}"));
+            }
+            fn disconnected(&self) {
+                self.0.lock().unwrap().push("disconnected".into());
+            }
+            fn socket_event(&self, name: &str, _: &[Value], _: &Value) -> bool {
+                self.0.lock().unwrap().push(format!("event:{name}"));
+                false
+            }
+            fn shutdown(&self) -> BoxFuture<'static, ()> {
+                self.0.lock().unwrap().push("shutdown".into());
+                futures_util::future::ready(()).boxed()
+            }
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (config, rest) = local(&listener).await;
+        let tally = Arc::new(Tally::default());
+        let (client, mut events) = SessionClient::start_with_options(
+            &config,
+            rest,
+            &json!({"id":"s","metadataVersion":0,"agentStateVersion":0}),
+            StartOptions {
+                extensions: vec![
+                    Arc::new(Panics(true)),
+                    Arc::new(Panics(false)),
+                    tally.clone(),
+                ],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            let mut ws = accept_session(&listener).await;
+            ws.send(Message::text(r#"42/cli,["terminal:open",{"n":1}]"#))
+                .await
+                .unwrap();
+            ws.send(Message::text(
+                r#"42/cli,1["rpc-request",{"method":"s:double","params":"21"}]"#,
+            ))
+            .await
+            .unwrap();
+            loop {
+                let frame = ws.next().await.unwrap().unwrap().into_text().unwrap();
+                if let Some(ack) = frame.strip_prefix("43/cli,1") {
+                    assert_eq!(ack, r#"["42"]"#);
+                    break;
+                }
+            }
+            assert!(matches!(
+                events.recv().await,
+                Some(SessionEvent::ConnectionStart)
+            ));
+            assert!(matches!(events.recv().await, Some(SessionEvent::Connected)));
+            assert!(
+                matches!(events.recv().await, Some(SessionEvent::Socket(name, args, None)) if name == "terminal:open" && args[0]["n"] == 1)
+            );
+            ws.send(Message::text(r#"42/cli,["update",{"body":{"t":"barrier"}}]"#))
+                .await
+                .unwrap();
+            assert!(
+                matches!(events.recv().await, Some(SessionEvent::Message(body)) if body["t"] == "barrier")
+            );
+        })
+        .await
+        .unwrap();
+        let closer = client.clone();
+        tokio::task::spawn_blocking(move || closer.close())
+            .await
+            .unwrap();
+        assert!(client.is_closed());
+        assert!(!client.metadata.drain().await);
+        assert!(!client.agent_state.drain().await);
+        assert_eq!(client.socket.connection().get(), Connection::Stopped);
+        tokio::time::timeout(Duration::from_secs(5), client.shutdown_extensions())
+            .await
+            .unwrap();
+        assert_eq!(
+            *tally.0.lock().unwrap(),
+            [
+                "register:s",
+                "connected:0",
+                "event:terminal:open",
+                "disconnected",
+                "shutdown"
+            ]
+        );
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn events_of_a_skipped_connection_bypass_extensions() {
