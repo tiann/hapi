@@ -2529,6 +2529,18 @@ export function SessionList(props: {
         []
     )
     const [flashBlockedSessionId, setFlashBlockedSessionId] = useState<string | null>(null)
+    // Non-null for the window between the flash ending and focus actually
+    // leaving the revealed row (#1717 cold-review round 27) — driven by its
+    // OWN effect below, independent of `flashBlockedSessionId`'s lifecycle,
+    // so tearing down THAT effect (triggered by the very transition that
+    // starts this hold) does not also tear down the listener that is
+    // supposed to outlive it.
+    const [focusHoldSessionId, setFocusHoldSessionId] = useState<string | null>(null)
+    // Read synchronously by the effect that releases the exemption on OTHER
+    // triggers (dialog close, etc.) — state alone cannot do this because
+    // `setFocusHoldSessionId` and `setFlashBlockedSessionId` land on the
+    // SAME render, and that effect must see the hold already in place.
+    const focusHeldAfterFlashRef = useRef(false)
     const [blockedOffscreen, setBlockedOffscreen] = useState<{ above: number; below: number }>(
         { above: 0, below: 0 }
     )
@@ -2675,6 +2687,12 @@ export function SessionList(props: {
         if (revealBlockedSessionId === null) return
         if (pendingBlockedScrollId !== null) return
         if (flashBlockedSessionId !== null) return
+        // A keyboard-focused control can still be inside the row the flash
+        // just stopped highlighting (#1717 cold-review round 27) — the
+        // focus-hold effect below owns releasing the exemption once focus
+        // actually leaves it; releasing here too would unmount the row
+        // regardless of where focus still is.
+        if (focusHeldAfterFlashRef.current) return
         setRevealBlockedSessionId(null)
     }, [blockedDialogSessionId, revealBlockedSessionId, flashBlockedSessionId, pendingBlockedScrollId])
     const allSessions = useMemo(
@@ -4022,6 +4040,26 @@ export function SessionList(props: {
     useEffect(() => {
         if (!flashBlockedSessionId) return
         const timer = setTimeout(() => {
+            // Releasing the exemption while a keyboard-focused control is
+            // still inside the revealed row unmounts it out from under the
+            // operator's next keystroke (#1717 cold-review round 27) — hand
+            // off to the dedicated focus-hold effect below instead of
+            // releasing directly. That effect runs on its OWN dependency
+            // (`focusHoldSessionId`), not on `flashBlockedSessionId` — doing
+            // the handoff here, in THIS effect, and tearing the listener
+            // down again the moment `flashBlockedSessionId` clears (which
+            // this very callback is about to do) would undo the handoff on
+            // the same render it happened.
+            const container = scrollContainerRef.current
+            const row = container?.querySelector<HTMLElement>(
+                `[data-session-id="${CSS.escape(flashBlockedSessionId)}"]`
+            )
+            if (row?.contains(document.activeElement)) {
+                focusHeldAfterFlashRef.current = true
+                setFocusHoldSessionId(flashBlockedSessionId)
+                setFlashBlockedSessionId(null)
+                return
+            }
             setFlashBlockedSessionId(null)
             // Only drop the exemption if no dialog is open against that row.
             // Expiring it underneath an open Mark-unblocked dialog unmounted
@@ -4033,6 +4071,32 @@ export function SessionList(props: {
         }, 2000)
         return () => clearTimeout(timer)
     }, [flashBlockedSessionId, blockedDialogSessionId])
+
+    useEffect(() => {
+        if (!focusHoldSessionId) return
+        const container = scrollContainerRef.current
+        const row = container?.querySelector<HTMLElement>(
+            `[data-session-id="${CSS.escape(focusHoldSessionId)}"]`
+        )
+        if (!row) {
+            focusHeldAfterFlashRef.current = false
+            setFocusHoldSessionId(null)
+            return
+        }
+        const release = () => {
+            focusHeldAfterFlashRef.current = false
+            setFocusHoldSessionId(null)
+            if (blockedDialogSessionId === null) {
+                setRevealBlockedSessionId(null)
+            }
+        }
+        const handleFocusOut = (event: FocusEvent) => {
+            if (event.relatedTarget instanceof Node && row.contains(event.relatedTarget)) return
+            release()
+        }
+        row.addEventListener('focusout', handleFocusOut)
+        return () => row.removeEventListener('focusout', handleFocusOut)
+    }, [focusHoldSessionId, blockedDialogSessionId])
 
     // Direction hint for the pill: which way the operator would have to scroll
     // to reach blocked rows that are not currently on screen.

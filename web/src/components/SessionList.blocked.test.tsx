@@ -639,4 +639,43 @@ describe('SessionList blocked chrome (#1717)', () => {
 
         expect(document.activeElement).toBe(pill)
     })
+
+    it('keeps a keyboard-jump target\'s filter exemption while focus remains on it after the flash expires (cold-review round 27)', async () => {
+        // The flash timeout releases the filter exemption after 2s
+        // regardless of where focus is. A keyboard jump moves focus onto
+        // the revealed row (round 26) — if the operator is still ON that
+        // row (reading it, about to act) when the timeout fires, releasing
+        // the exemption unmounts the row out from under the keystroke and
+        // keyboard navigation loses its place.
+        Element.prototype.scrollIntoView = vi.fn()
+        localStorage.setItem('hapi-session-list-status', 'archived')
+        vi.useFakeTimers()
+        try {
+            renderList([pending('stuck-one'), makeSession({ id: 'old-one' })])
+            const row = () => document.querySelector<HTMLElement>('[data-session-id="stuck-one"]')
+            expect(row()).toBeNull()
+
+            fireEvent.click(screen.getByTestId('blocked-jump-pill'), { detail: 0 })
+            expect(row()).not.toBeNull()
+            expect(document.activeElement).toBe(row())
+
+            await act(async () => {
+                vi.advanceTimersByTime(3000)
+            })
+
+            // Still focused on the row: the exemption must survive.
+            expect(row()).not.toBeNull()
+            expect(document.activeElement).toBe(row())
+
+            await act(async () => {
+                fireEvent.focusOut(row()!, { relatedTarget: document.body })
+            })
+
+            // Focus has left: NOW the exemption releases and the filter
+            // hides the row again.
+            expect(document.querySelector('[data-session-id="stuck-one"]')).toBeNull()
+        } finally {
+            vi.useRealTimers()
+        }
+    })
 })
