@@ -68,7 +68,36 @@ body:
         expect(template.fields[5]).toMatchObject({
             kind: 'checkboxes',
             id: 'terms',
+            required: false,
             options: [{ label: 'I agree to follow this project\'s Code of Conduct', required: true }]
+        })
+    })
+
+    // Review finding (tiann/hapi#2147, follow-up): GitHub's own form
+    // schema documents a GROUP-level `validations.required` for
+    // checkboxes, distinct from any individual option's own `required` —
+    // the parser was only ever capturing the per-option one.
+    it('captures validations.required on the checkbox group itself, distinct from per-option required', () => {
+        const yaml = `
+name: Bug report
+description: File a bug report
+body:
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Code of Conduct
+      options:
+        - label: Just an optional note
+    validations:
+      required: true
+`
+        const template = parseIssueFormYaml('bug_report.yml', yaml)
+        expect(template.kind).toBe('form')
+        if (template.kind !== 'form') return
+        expect(template.fields[0]).toMatchObject({
+            kind: 'checkboxes',
+            required: true,
+            options: [{ label: 'Just an optional note', required: false }]
         })
     })
 
@@ -260,6 +289,21 @@ body:
         const template = parseIssueFormYaml('x.yml', 'name: Bug\ndescription: Bug\nbody:\n  - type: markdown\n    attributes:\n      value: Hi\n  - type: markdown\n    attributes:\n      value: There')
         expect(template.kind).toBe('unsupported')
         expect(template.kind === 'unsupported' && template.githubValid).toBe(false)
+    })
+
+    // Review finding (tiann/hapi#2147, follow-up): `upload` is a real,
+    // GitHub-recognized field type — unlike a genuinely malformed or
+    // unrecognized one, GitHub's own chooser still offers a form that
+    // uses it, so it must count as githubValid: true for .github
+    // inheritance-coverage purposes, even though Boards itself can't
+    // render a file picker and still excludes the template from filing.
+    it('is unsupported but githubValid when the body uses an upload field', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: upload\n    id: screenshots\n    attributes:\n      label: Screenshots'
+        )
+        expect(template.kind).toBe('unsupported')
+        expect(template.kind === 'unsupported' && template.githubValid).toBe(true)
     })
 })
 

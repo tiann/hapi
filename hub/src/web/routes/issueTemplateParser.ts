@@ -134,6 +134,19 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
         }
         const elObj = element as Record<string, unknown>
         const type = elObj.type
+        // `upload` is a real, GitHub-recognized field type (review finding,
+        // tiann/hapi#2147, follow-up) — HAPI doesn't render a file picker,
+        // so it's still `unsupported` for Boards' own filing path, but it's
+        // a type GitHub itself accepts, same "deliberately unsupported
+        // feature" treatment as the top-level `type:`/`projects:` keys
+        // below. Falling through to the generic unsupported-type branch's
+        // githubValid: false would wrongly count an upload-only template
+        // as having NO local coverage, letting the owner's `.github`
+        // inheritance override a form the repo's own maintainer set up on
+        // purpose, GitHub's own chooser would still offer.
+        if (type === 'upload') {
+            return { id, name, kind: 'unsupported', reason: 'Uses a form feature not supported yet (type: upload)', githubValid: true }
+        }
         if (typeof type !== 'string' || !SUPPORTED_FIELD_TYPES.has(type)) {
             return {
                 id,
@@ -215,7 +228,7 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
             if (options.length === 0) {
                 return { id, name, kind: 'unsupported', reason: `Checkboxes field "${label}" has no options`, githubValid: false }
             }
-            fields.push({ kind: 'checkboxes', id: fieldId, label, description, options })
+            fields.push({ kind: 'checkboxes', id: fieldId, label, description, options, required })
         }
     }
 
