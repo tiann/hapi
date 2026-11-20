@@ -1390,6 +1390,28 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         }
     });
 
+    linuxRecoveryTest('refuses a same-ID Switch when tree teardown fails and the writer capture is incomplete', async () => {
+        harness.detectedVersion = 'v2';
+        harness.treeGone = false;
+        harness.completeCapture = false;
+        const { session, rpcHandlers, sessionEvents } = createSessionStub([], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        const launcher = opencodeRemoteLauncher({ ...session, startedBy: 'runner' } as never, { recoveryBackoffsMs: [0] });
+        let result: string | undefined;
+        void launcher.then(value => { result = value; }, () => {});
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.has(RPC_METHODS.Switch)).toBe(true));
+            await rpcHandlers.get(RPC_METHODS.Switch)!({});
+            await vi.waitFor(() => expect(sessionEvents.some(e => String(e.message).includes('could not be identified'))).toBe(true));
+            expect(result).toBeUndefined();
+            await expect(rpcHandlers.get(RPC_METHODS.Switch)!({})).rejects.toBeInstanceOf(OpenCodeHandoffRefusedError);
+        } finally {
+            session.queue.close();
+            await launcher.catch(() => {});
+        }
+        expect(result).not.toBe('switch');
+    });
+
     linuxRecoveryTest('checks captured server termination on Switch even when ACP dies between close entry and the tree scan', async () => {
         harness.detectedVersion = 'v2';
         let treeKilled = 0;

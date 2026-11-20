@@ -528,7 +528,9 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
             await backend.disconnect();
         }
         const ended = await backend.disconnect({ verifyTermination: true, waitForTransport: true });
-        if (!hadLossBeforeDisconnect && !retryingStartup && this.recoveryAttempt.loss === null && !backend.canRecheckTermination) {
+        // Without a complete capture only a confirmed tree kill proves the old
+        // writer stopped. A failed one takes the incomplete-capture refusal below.
+        if (ended && !hadLossBeforeDisconnect && !retryingStartup && this.recoveryAttempt.loss === null && !backend.canRecheckTermination) {
             return;
         }
         const stopped = hadLossBeforeDisconnect ? ended : await backend.recheckTermination();
