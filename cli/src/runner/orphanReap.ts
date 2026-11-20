@@ -40,7 +40,7 @@ export type OrphanTarget = {
 
 /** True when cmd looks like a HAPI driver CLI (binary or bun/node src/index.ts). */
 export function isHapiDriverCliCommand(cmd: string, name = ''): boolean {
-    const isHappyBinary = name === 'hapi' || name === 'hapi.exe' || /\bhapi(\.exe)?\b/.test(cmd)
+    const isHappyBinary = name === 'hapi' || name === 'hapi-session-wrapper' || name === 'hapi-session-wr' || name === 'hapi.exe' || /\bhapi(\.exe)?\b/.test(cmd)
     const isDevMode = cmd.includes('src/index.ts')
     return (
         isHappyBinary

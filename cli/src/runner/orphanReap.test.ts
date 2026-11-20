@@ -4,6 +4,7 @@ import {
     commandMatchesRunnerSpawnedSession,
     findRunnerSpawnedOrphanTargets,
     findStopSessionOrphanTargets,
+    isHapiDriverCliCommand,
     parseWindowsProcessSnapshot,
     reapRunnerSpawnedOrphans,
     selectOrphanPidsForSession,
@@ -499,5 +500,29 @@ describe('Windows orphan startMarker format agreement', () => {
         })
         expect(skipped).toBe('stopped')
         expect(killedMismatch).toEqual([])
+    })
+})
+
+describe('Rust session wrapper orphan matching', () => {
+    it.each(['hapi', 'hapi-session-wrapper', 'hapi-session-wr'])('recognises %s as the orphan driver for its stamped session', (binary) => {
+        expect(isHapiDriverCliCommand('claude --started-by runner --existing-session-id mine', binary)).toBe(true)
+        const targets = selectOrphanTargetsForSession([
+            { pid: 91, name: binary, cmd: 'claude --started-by runner --existing-session-id mine', startMarker: 'generation' },
+            { pid: 92, name: binary, cmd: 'claude --started-by runner --existing-session-id other', startMarker: 'other-gen' },
+        ], 'mine', 1)
+        expect(targets).toEqual([{ pid: 91, startMarker: 'generation' }])
+    })
+
+    it('matches full-path hapi-session-wrapper POSIX snapshots with empty name and rejects lookalike names', () => {
+        expect(isHapiDriverCliCommand('/opt/bin/hapi-session-wrapper claude --started-by runner --existing-session-id mine', '')).toBe(true)
+        expect(isHapiDriverCliCommand('claude --started-by runner --existing-session-id mine', 'hapi-session-w')).toBe(false)
+        expect(isHapiDriverCliCommand('claude --started-by runner --existing-session-id mine', 'hapi-session-wrapper-extra')).toBe(false)
+
+        const targets = selectOrphanTargetsForSession([
+            { pid: 101, name: '', cmd: '/opt/bin/hapi-session-wrapper claude --started-by runner --existing-session-id mine', startMarker: 'gen-1' },
+            { pid: 102, name: '', cmd: '/opt/bin/hapi-session-wrapper claude --started-by terminal --existing-session-id mine', startMarker: 'gen-2' },
+            { pid: 103, name: 'hapi-session-wrapper-extra', cmd: 'claude --started-by runner --existing-session-id mine', startMarker: 'gen-3' },
+        ], 'mine', 1)
+        expect(targets).toEqual([{ pid: 101, startMarker: 'gen-1' }])
     })
 })

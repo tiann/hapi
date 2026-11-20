@@ -28,11 +28,13 @@
 import { spawn, spawnSync, SpawnOptions, type ChildProcess } from 'child_process';
 import { join, isAbsolute, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isBunCompiled, projectPath } from '@/projectPath';
+import { isBunCompiled, projectPath, runtimePath } from '@/projectPath';
 import { logger } from '@/ui/logger';
 import { existsSync } from 'node:fs';
 import { DISCLAIM_RESPONSIBILITY_ENV, shouldDisclaimResponsibility } from '@/runtime/disclaimExec';
 import { canDisclaimForChildren } from '@/runtime/responsibility';
+import type { WrapperRuntime } from '@/runner/wrapperRuntime';
+import packageJson from '../../package.json';
 
 const HAPI_CLI_EXECUTABLE_ENV = 'HAPI_CLI_EXECUTABLE';
 
@@ -170,6 +172,14 @@ function resolveInvokedCwd(cwd: SpawnOptions['cwd']): string {
   return process.cwd();
 }
 
+function invokedCwdForSpawn(options: SpawnOptions, env: NodeJS.ProcessEnv): string {
+  const inherited = env.HAPI_INVOKED_CWD?.trim();
+  if (options.cwd === undefined && inherited && isCrossPlatformAbsolutePath(inherited)) {
+    return inherited;
+  }
+  return resolveInvokedCwd(options.cwd);
+}
+
 export function resolveHappyCliExecutable(): string {
   const override = process.env[HAPI_CLI_EXECUTABLE_ENV]?.trim();
   if (override && isCrossPlatformAbsolutePath(override) && existsSync(override)) {
@@ -272,13 +282,7 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
     finalEnv[HAPI_CLI_EXECUTABLE_ENV] = spawnCommand;
     shouldSetEnv = true;
   } else {
-    const invokedCwd = finalEnv.HAPI_INVOKED_CWD?.trim();
-    const hasExplicitCwd = 'cwd' in options && options.cwd !== undefined;
-    finalEnv.HAPI_INVOKED_CWD = hasExplicitCwd
-      ? resolveInvokedCwd(options.cwd)
-      : invokedCwd && isCrossPlatformAbsolutePath(invokedCwd)
-        ? invokedCwd
-        : resolveInvokedCwd(options.cwd);
+    finalEnv.HAPI_INVOKED_CWD = invokedCwdForSpawn(options, finalEnv);
     shouldSetEnv = true;
   }
   // Set or cleared explicitly so an inherited request never leaks to a child.
@@ -299,4 +303,26 @@ export function spawnHappyCLI(args: string[], options: SpawnOptions = {}): Child
   // at the real hapi binary even when the exec line is wrapped.
   const bumped = compiledMode ? applyNofileBump(spawnCommand, spawnArgs) : { command: spawnCommand, args: spawnArgs };
   return spawn(bumped.command, bumped.args, finalOptions);
+}
+
+export function spawnSessionWrapper(
+  runtime: WrapperRuntime,
+  args: string[],
+  options: SpawnOptions = {}
+): ChildProcess {
+  if (runtime.runtime === 'ts') {
+    return spawnHappyCLI(args, options);
+  }
+  const env = { ...process.env, ...options.env };
+  delete env[DISCLAIM_RESPONSIBILITY_ENV];
+  return spawn(runtime.bin, args, {
+    ...options,
+    env: {
+      ...env,
+      HAPI_INVOKED_CWD: invokedCwdForSpawn(options, env),
+      ...(isBunCompiled() && { [HAPI_CLI_EXECUTABLE_ENV]: resolveHappyCliExecutable() }),
+      HAPI_WRAPPER_CLI_VERSION: packageJson.version,
+      HAPI_WRAPPER_RUNTIME_PATH: runtimePath(),
+    },
+  });
 }

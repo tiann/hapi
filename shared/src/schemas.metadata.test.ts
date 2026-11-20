@@ -86,3 +86,22 @@ describe('MetadataSchema claudeRewind', () => {
         expect(result.data?.host).toBe('test');
     });
 });
+
+describe('MetadataSchema wrapperRuntime', () => {
+    const base = {
+        path: '/tmp',
+        host: 'test',
+    };
+
+    it('accepts rust, ts, and absent wrapperRuntime values', () => {
+        for (const wrapperRuntime of ['rust', 'ts', undefined] as const) {
+            const result = MetadataSchema.safeParse({ ...base, wrapperRuntime });
+            expect(result.success).toBe(true);
+            expect(result.data?.wrapperRuntime).toBe(wrapperRuntime);
+        }
+    });
+
+    it('rejects unknown wrapperRuntime values', () => {
+        expect(MetadataSchema.safeParse({ ...base, wrapperRuntime: 'bun' }).success).toBe(false);
+    });
+});
