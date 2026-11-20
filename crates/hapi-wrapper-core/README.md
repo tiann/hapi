@@ -33,6 +33,10 @@ On top of the socket it provides the session layer of `cli/src/api/apiSession.ts
 - `schemas`: the session metadata checks of `shared/src/schemas.ts`, including
   the full OpenCode rewind record.
 
+The standalone `queue::MessageQueue2` groups consecutive messages by mode and
+supports isolated turns, reservations, and deferred batch acknowledgements.
+Reset permits late confirmation of a discarded reservation, as in the CLI.
+
 Some tests compare results with the TypeScript implementation. They run `bun`
 and the CLI's `vitest` from `cli/`, and start a Socket.IO hub fixture from
 `hub/node_modules`. Run `bun install` first.
