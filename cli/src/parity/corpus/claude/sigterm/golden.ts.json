@@ -12,6 +12,7 @@
       "<uuid:1>:git-status",
       "<uuid:1>:handoff-local",
       "<uuid:1>:killSession",
+      "<uuid:1>:killSession/generation/parity-machine/<pid>",
       "<uuid:1>:listAgyModels",
       "<uuid:1>:listClaudeModels",
       "<uuid:1>:listCodexModels",
@@ -39,17 +40,22 @@
       "<uuid:1>:uploadFile",
       "<uuid:1>:uploadFinalize",
       "<uuid:1>:uploadInit",
+      "<uuid:1>:validate-session-uploads",
       "<uuid:1>:writeFile"
     ]
   },
   "alive": {
     "1": {
       "first": {
+        "hasActiveUpload": false,
+        "hasPeerReplyWatch": false,
         "sid": "<uuid:1>",
         "thinking": false
       },
       "last": {
         "effort": null,
+        "hasActiveUpload": false,
+        "hasPeerReplyWatch": false,
         "mode": "remote",
         "model": null,
         "permissionMode": "default",
@@ -125,6 +131,7 @@
                 "machineId": "parity-machine",
                 "os": "linux",
                 "path": "<tmp>/project",
+                "replayableRunnerLaunch": false,
                 "startedBy": "runner",
                 "startedFromRunner": true,
                 "version": "<version>"
@@ -158,6 +165,7 @@
               "machineId": "parity-machine",
               "os": "linux",
               "path": "<tmp>/project",
+              "replayableRunnerLaunch": false,
               "startedBy": "runner",
               "startedFromRunner": true,
               "version": "<version>"
@@ -191,6 +199,7 @@
               "machineId": "parity-machine",
               "os": "linux",
               "path": "<tmp>/project",
+              "replayableRunnerLaunch": false,
               "startedBy": "runner",
               "startedFromRunner": true,
               "version": "<version>"
@@ -221,6 +230,7 @@
               "machineId": "parity-machine",
               "os": "linux",
               "path": "<tmp>/project",
+              "replayableRunnerLaunch": false,
               "startedBy": "runner",
               "startedFromRunner": true,
               "version": "<version>"
@@ -257,6 +267,7 @@
               "machineId": "parity-machine",
               "os": "linux",
               "path": "<tmp>/project",
+              "replayableRunnerLaunch": false,
               "startedBy": "runner",
               "startedFromRunner": true,
               "version": "<version>"
@@ -292,6 +303,7 @@
               "machineId": "parity-machine",
               "os": "linux",
               "path": "<tmp>/project",
+              "replayableRunnerLaunch": false,
               "startedBy": "runner",
               "startedFromRunner": true,
               "version": "<version>"
@@ -328,6 +340,7 @@
               "machineId": "parity-machine",
               "os": "linux",
               "path": "<tmp>/project",
+              "replayableRunnerLaunch": false,
               "startedBy": "runner",
               "startedFromRunner": true,
               "startingMode": "remote",
@@ -364,6 +377,7 @@
               "machineId": "parity-machine",
               "os": "linux",
               "path": "<tmp>/project",
+              "replayableRunnerLaunch": false,
               "startedBy": "runner",
               "startedFromRunner": true,
               "startingMode": "remote",
@@ -401,6 +415,7 @@
               "machineId": "parity-machine",
               "os": "linux",
               "path": "<tmp>/project",
+              "replayableRunnerLaunch": false,
               "slashCommands": [
                 "compact"
               ],
@@ -443,6 +458,7 @@
               "machineId": "parity-machine",
               "os": "linux",
               "path": "<tmp>/project",
+              "replayableRunnerLaunch": false,
               "slashCommands": [
                 "compact"
               ],
@@ -564,6 +580,7 @@
               "machineId": "parity-machine",
               "os": "linux",
               "path": "<tmp>/project",
+              "replayableRunnerLaunch": false,
               "slashCommands": [
                 "compact"
               ],
@@ -608,6 +625,7 @@
               "machineId": "parity-machine",
               "os": "linux",
               "path": "<tmp>/project",
+              "replayableRunnerLaunch": false,
               "slashCommands": [
                 "compact"
               ],
