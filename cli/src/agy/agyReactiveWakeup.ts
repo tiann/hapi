@@ -350,45 +350,33 @@ export function decodeAgyTranscriptArgs(rawArgs: Record<string, unknown> | undef
     return decoded;
 }
 
-function requiredParkMsForToolCalls(
-    toolCalls: AgyTranscriptToolCall[],
+function requiredParkMsForToolCall(
+    call: AgyTranscriptToolCall,
     workspacePath: string,
     timings: AgyReactiveTimingConfig,
     skipPermissions = false
 ): number | null {
-    let waitMs: number | null = null;
-    const lowerBound = (candidate: number) => {
-        waitMs = waitMs === null ? candidate : Math.min(waitMs, candidate);
-    };
-
-    for (const call of toolCalls) {
-        const name = call.name;
-        if (name === 'ask_question') {
-            lowerBound(timings.settleMs);
-            continue;
-        }
-        if (skipPermissions) {
-            continue;
-        }
-        if (AGY_GATED_TOOLS.has(name)) {
-            lowerBound(timings.toolParkMs);
-            continue;
-        }
-        if (name === 'read_file') {
-            const args = decodeAgyTranscriptArgs(call.args);
-            if (isOutsideWorkspace(args.Path, workspacePath)) {
-                lowerBound(timings.toolParkMs);
-            } else {
-                lowerBound(timings.slowToolParkMs);
-            }
-            continue;
-        }
-        // All other agy tools (swarm, swarm_wait, read_board, post_message,
-        // run_workflow, subagent/task/schedule management, web search, etc.)
-        // run internally without ACP permission prompts and never park in
-        // `SetPendingToolPermission`.
+    const name = call.name;
+    if (name === 'ask_question') {
+        return timings.settleMs;
     }
-    return waitMs;
+    if (skipPermissions) {
+        return null;
+    }
+    if (AGY_GATED_TOOLS.has(name)) {
+        return timings.toolParkMs;
+    }
+    if (name === 'read_file') {
+        const args = decodeAgyTranscriptArgs(call.args);
+        return isOutsideWorkspace(args.Path, workspacePath)
+            ? timings.toolParkMs
+            : timings.slowToolParkMs;
+    }
+    // All other agy tools (swarm, swarm_wait, read_board, post_message,
+    // run_workflow, subagent/task/schedule management, web search, etc.)
+    // run internally without ACP permission prompts and never park in
+    // `SetPendingToolPermission`.
+    return null;
 }
 
 /**
@@ -440,32 +428,43 @@ export function inspectAgyReactiveSteps(
                     .slice(lastPlannerIdx + 1)
                     .filter((step) => step.source === 'MODEL' && step.type !== 'PLANNER_RESPONSE');
 
-                const outstandingEntries: Array<{ callIndex: number; call: AgyTranscriptToolCall }> = [];
+                const outstandingEntries: Array<{
+                    callIndex: number;
+                    call: AgyTranscriptToolCall;
+                    parkMs: number | null;
+                }> = [];
                 for (let callIdx = 0; callIdx < toolCalls.length; callIdx += 1) {
                     const call = toolCalls[callIdx]!;
                     const action = trailingActions[callIdx];
-                    if (
-                        !action
-                        || action.status === 'PENDING'
-                        || action.status === 'WAITING'
-                        || (call.name === 'ask_question' && action.status !== 'DONE' && action.status !== 'ERROR')
-                    ) {
-                        outstandingEntries.push({ callIndex: callIdx, call });
+                    if (isCompletedOrBackgroundedBatchAction(call, action)) {
+                        continue;
                     }
+                    if (
+                        action
+                        && action.status !== 'PENDING'
+                        && action.status !== 'WAITING'
+                        && call.name !== 'ask_question'
+                    ) {
+                        // An earlier tool in the batch is still actively running (and is not
+                        // a confirmed backgrounded run_command), so later calls with no action
+                        // row yet are waiting their turn rather than parked on permission.
+                        break;
+                    }
+                    outstandingEntries.push({
+                        callIndex: callIdx,
+                        call,
+                        parkMs: requiredParkMsForToolCall(call, workspacePath, timings, skipPermissions)
+                    });
+                    // Tool calls in a PLANNER_RESPONSE execute sequentially; a later call
+                    // cannot be parked on permission until the current unfinished call completes.
+                    break;
                 }
 
                 if (outstandingEntries.length > 0) {
-                    const outstandingCalls = outstandingEntries.map((entry) => entry.call);
-                    const parkMs = requiredParkMsForToolCalls(
-                        outstandingCalls,
-                        workspacePath,
-                        timings,
-                        skipPermissions
+                    const chosen = outstandingEntries.find(
+                        (entry) => entry.parkMs !== null && idleForMs >= entry.parkMs
                     );
-                    if (parkMs !== null && idleForMs >= parkMs) {
-                        const chosen = skipPermissions
-                            ? (outstandingEntries.find((entry) => entry.call.name === 'ask_question') ?? outstandingEntries[0]!)
-                            : outstandingEntries[0]!;
+                    if (chosen) {
                         return {
                             state: 'parked_on_tool',
                             steps: reactiveSteps,

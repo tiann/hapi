@@ -62,11 +62,8 @@ export class AgySession extends AgentSessionBase<AgyMode> {
     }
 
     setPermissionMode = (mode: PermissionMode): void => {
-        const changed = this.permissionMode !== mode;
         this.permissionMode = mode;
-        if (changed) {
-            this.onPermissionModeChanged?.(mode);
-        }
+        this.onPermissionModeChanged?.(mode);
     };
 
     setModel = (model: SessionModel): void => {

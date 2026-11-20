@@ -274,6 +274,7 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
     private backend: AcpSdkBackend | null = null;
     private backendSkipPermissions: boolean | null = null;
     private pendingIdleModeSync = false;
+    private explicitPermissionMode: PermissionMode | undefined = undefined;
     private idleConfigWake: (() => void) | null = null;
     private pendingParkedResolution: {
         parkedCallId: string;
@@ -372,7 +373,8 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             maxIdleMs: opts.reactiveMaxIdleMs ?? REACTIVE_MAX_IDLE_MS
         };
         this.session.setKillHandler(() => this.handleKill());
-        this.session.onPermissionModeChanged = () => {
+        this.session.onPermissionModeChanged = (mode) => {
+            this.explicitPermissionMode = mode;
             this.pendingIdleModeSync = true;
             this.idleConfigWake?.();
         };
@@ -460,6 +462,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         this.pendingIdleModeSync = false;
         if (this.shouldExit || !this.acpSessionId || this.session.queue.size() > 0) return;
         const mode = this.currentWakeupMode();
+        this.explicitPermissionMode = undefined;
+        this.lastTurnMode = mode;
+        this.lastSessionModeSnapshot = {
+            permissionMode: mode.permissionMode,
+            model: this.session.getModel(),
+            effort: this.session.getEffort()
+        };
         const wantSkip = isAgySkipPermissionsMode(mode.permissionMode);
         if (
             this.backendLost
@@ -572,11 +581,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (queue.size() > 0 || queue.isClosed() || outerSignal.aborted) {
             return { kind: 'batch', batch: await queue.waitForMessagesAndGetAsString(outerSignal) };
         }
-        if (this.hasPendingReactiveWakeup()) {
-            return { kind: 'wakeup' };
-        }
         if (this.pendingIdleModeSync) {
             return { kind: 'config' };
+        }
+        if (this.hasPendingReactiveWakeup()) {
+            return { kind: 'wakeup' };
         }
 
         const waitController = new AbortController();
@@ -595,7 +604,9 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         outerSignal.addEventListener('abort', onOuterAbort, { once: true });
         this.idleConfigWake = () => {
             if (waitController.signal.aborted || this.shouldExit || queue.size() > 0) return;
-            if (this.hasPendingReactiveWakeup()) {
+            if (this.pendingIdleModeSync) {
+                configTriggered = true;
+            } else if (this.hasPendingReactiveWakeup()) {
                 wakeupTriggered = true;
             } else {
                 configTriggered = true;
@@ -657,13 +668,13 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
             if (wakeupTriggered || configTriggered || waitController.signal.aborted || this.shouldExit || queue.size() > 0) return;
             tryAttachWatcher(verifyIdentity);
             armPoll(watchRef.current ? 30_000 : this.reactivePollMs);
-            if (this.hasPendingReactiveWakeup()) {
-                wakeupTriggered = true;
+            if (this.pendingIdleModeSync) {
+                configTriggered = true;
                 waitController.abort();
                 return;
             }
-            if (this.pendingIdleModeSync) {
-                configTriggered = true;
+            if (this.hasPendingReactiveWakeup()) {
+                wakeupTriggered = true;
                 waitController.abort();
             }
         };
@@ -750,9 +761,11 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         const sessionModel = this.session.getModel();
         const sessionEffort = this.session.getEffort();
         const snap = this.lastSessionModeSnapshot;
-        const permissionMode = snap && sessionPerm !== snap.permissionMode
-            ? sessionPerm
-            : (this.lastTurnMode?.permissionMode ?? sessionPerm);
+        const permissionMode = this.explicitPermissionMode !== undefined
+            ? this.explicitPermissionMode
+            : snap && sessionPerm !== snap.permissionMode
+                ? sessionPerm
+                : (this.lastTurnMode?.permissionMode ?? sessionPerm);
         const model = snap && sessionModel !== snap.model
             ? sessionModel
             : (this.lastTurnMode?.model ?? sessionModel);
@@ -1091,8 +1104,21 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         session.onThinkingChange(false);
 
         const waitAnswer = permissionHandler.askUser(slice.parkedCallId, cardToolName, cardToolInput);
-        let checkTimer: ReturnType<typeof setInterval> | null = null;
+        const parkWaitController = new AbortController();
+        let checkTimer: ReturnType<typeof setInterval> | undefined;
+        let pollMs: number | undefined;
+        let activityRecheck: ReturnType<typeof setTimeout> | undefined;
+        let directoryIdentity: BigIntStats | undefined;
         const watchRef: { current: FSWatcher | null } = { current: null };
+        const closeWatcher = () => {
+            const watcher = watchRef.current;
+            watchRef.current = null;
+            watcher?.close();
+        };
+        const stopPoll = () => {
+            clearInterval(checkTimer);
+            checkTimer = undefined;
+        };
         const interrupted = new Promise<'superseded' | 'progressed'>((resolve) => {
             let settled = false;
             const finish = (reason: 'superseded' | 'progressed') => {
@@ -1100,7 +1126,48 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                 settled = true;
                 resolve(reason);
             };
-            const check = () => {
+            const armPoll = (intervalMs: number) => {
+                if ((checkTimer && pollMs === intervalMs) || settled) return;
+                stopPoll();
+                pollMs = intervalMs;
+                checkTimer = setInterval(() => check(true), intervalMs);
+                checkTimer.unref?.();
+            };
+            const tryAttachWatcher = (verifyIdentity: boolean) => {
+                if ((watchRef.current && !verifyIdentity) || settled) return;
+                const paths = agyTranscriptPaths(this.brainDir, acpSessionId);
+                if (!paths) return;
+                try {
+                    const identity = statSync(paths.logsDir, { bigint: true });
+                    if (watchRef.current && directoryIdentity?.dev === identity.dev && directoryIdentity.ino === identity.ino) return;
+                    closeWatcher();
+                    const fsWatcher = watch(paths.logsDir, (event) => {
+                        if (watchRef.current !== fsWatcher) return;
+                        if (event === 'rename') {
+                            closeWatcher();
+                        }
+                        check();
+                        clearTimeout(activityRecheck);
+                        if (!settled && watchRef.current) {
+                            activityRecheck = setTimeout(() => check(), this.reactivePollMs);
+                            activityRecheck.unref?.();
+                        }
+                    });
+                    const lost = () => {
+                        if (watchRef.current !== fsWatcher) return;
+                        closeWatcher();
+                        armPoll(this.reactivePollMs);
+                    };
+                    fsWatcher.once('error', lost);
+                    fsWatcher.once('close', lost);
+                    fsWatcher.unref?.();
+                    watchRef.current = fsWatcher;
+                    directoryIdentity = identity;
+                } catch {
+                    closeWatcher();
+                }
+            };
+            const check = (verifyIdentity = false) => {
                 if (settled) return;
                 if (this.shouldExit || abortController.signal.aborted || session.queue.isClosed()) {
                     finish('superseded');
@@ -1117,25 +1184,16 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
                     finish('superseded');
                     return;
                 }
+                tryAttachWatcher(verifyIdentity);
+                armPoll(watchRef.current ? 30_000 : this.reactivePollMs);
                 const latestSteps = readAgyTranscriptStepsAfter(this.brainDir, acpSessionId, replayAfterStepIndex);
                 if (hasAgyParkedCallProgressed(latestSteps, parkedCall)) {
                     finish('progressed');
                 }
             };
-            this.idleConfigWake = check;
-            abortController.signal.addEventListener('abort', check, { once: true });
-            const paths = agyTranscriptPaths(this.brainDir, acpSessionId);
-            if (paths) {
-                try {
-                    const fsWatcher = watch(paths.logsDir, () => check());
-                    fsWatcher.unref?.();
-                    watchRef.current = fsWatcher;
-                } catch {
-                    watchRef.current = null;
-                }
-            }
-            checkTimer = setInterval(check, Math.max(10, Math.min(this.reactivePollMs, 50)));
-            checkTimer.unref?.();
+            this.idleConfigWake = () => check();
+            abortController.signal.addEventListener('abort', () => check(), { once: true });
+            void session.queue.waitForMessages(parkWaitController.signal).then(() => check());
             check();
         });
 
@@ -1143,8 +1201,10 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         try {
             outcome = await Promise.race([waitAnswer, interrupted]);
         } finally {
-            if (checkTimer) clearInterval(checkTimer);
-            watchRef.current?.close();
+            parkWaitController.abort();
+            stopPoll();
+            clearTimeout(activityRecheck);
+            closeWatcher();
             this.idleConfigWake = null;
         }
 
@@ -1517,10 +1577,16 @@ export class AgyAcpRemoteLauncher extends RemoteLauncherBase {
         if (!userMessageAlreadyMirrored && !swarmBoardCommand) {
             applyAgySessionTitleFallback(session.client, message);
         }
-        this.pendingIdleModeSync = false;
+        const currentSessionPerm = session.getPermissionMode() as PermissionMode | undefined;
+        if (this.explicitPermissionMode !== undefined && this.explicitPermissionMode !== mode.permissionMode) {
+            this.pendingIdleModeSync = true;
+        } else {
+            this.pendingIdleModeSync = false;
+            this.explicitPermissionMode = undefined;
+        }
         this.lastTurnMode = mode;
         this.lastSessionModeSnapshot = {
-            permissionMode: session.getPermissionMode() as PermissionMode | undefined,
+            permissionMode: this.explicitPermissionMode !== undefined ? mode.permissionMode : currentSessionPerm,
             model: session.getModel(),
             effort: session.getEffort()
         };

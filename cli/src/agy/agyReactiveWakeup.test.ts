@@ -396,6 +396,48 @@ describe('agyReactiveWakeup pure helpers', () => {
                 }
             });
 
+        // Unfinished in-workspace read_file followed by run_command must use read_file's own
+        // slowToolParkMs threshold (1000ms) rather than run_command's 200ms threshold, and must
+        // stay running while an earlier tool action row is actively RUNNING.
+        const unfinishedReadBeforeCommand: AgyTranscriptStep[] = [
+            systemStep,
+            {
+                step_index: 5,
+                source: 'MODEL',
+                type: 'PLANNER_RESPONSE',
+                status: 'DONE',
+                tool_calls: [
+                    { name: 'read_file', args: { Path: '"/srv/work/projects/README.md"' } },
+                    { name: 'run_command', args: { CommandLine: '"git status"' } }
+                ]
+            }
+        ];
+        expect(inspectAgyReactiveSteps(unfinishedReadBeforeCommand, '/srv/work/projects', 310, 100, TIMINGS))
+            .toEqual({ state: 'running', latestStepIndex: 5 });
+        expect(inspectAgyReactiveSteps(unfinishedReadBeforeCommand, '/srv/work/projects', 1_150, 100, TIMINGS))
+            .toMatchObject({
+                state: 'parked_on_tool',
+                latestStepIndex: 5,
+                parkedCall: {
+                    stepIndex: 5,
+                    callIndex: 0,
+                    toolName: 'read_file',
+                    decodedArgs: { Path: '/srv/work/projects/README.md' }
+                }
+            });
+
+        const runningReadBeforeCommand: AgyTranscriptStep[] = [
+            ...unfinishedReadBeforeCommand,
+            {
+                step_index: 6,
+                source: 'MODEL',
+                type: 'READ_FILE',
+                status: 'RUNNING'
+            }
+        ];
+        expect(inspectAgyReactiveSteps(runningReadBeforeCommand, '/srv/work/projects', 1_500, 100, TIMINGS))
+            .toEqual({ state: 'running', latestStepIndex: 6 });
+
         // Non-gated internal tools (read_board, post_message, run_workflow, etc.)
         // never park on tool permission even past slowToolParkMs, and a wakeup
         // ending with a completed swarm_wait step settles as completed without

@@ -2537,4 +2537,48 @@ describe('AgyAcpRemoteLauncher questions (agy ask_question)', () => {
             rmSync(brainDir, { recursive: true, force: true });
         }
     });
+
+    it('reconciles the idle backend to request-review after draining a queued always-proceed turn', async () => {
+        const { session, queue } = makeSession();
+        session.setPermissionMode('always-proceed');
+        const firstBackend = new FakeAgyBackend();
+        const secondBackend = new FakeAgyBackend();
+
+        let finishFirstPrompt!: () => void;
+        const firstPromptGate = new Promise<void>((resolve) => {
+            finishFirstPrompt = resolve;
+        });
+        firstBackend.promptScripts.push(async (onUpdate) => {
+            onUpdate({ type: 'text', text: 'turn running' });
+            await firstPromptGate;
+            onUpdate({ type: 'turn_complete', stopReason: 'end_turn' });
+        });
+
+        queue.push('turn 1', { permissionMode: 'always-proceed' }, 'turn-1');
+        const { run, createdOptions } = launch(session, [firstBackend, secondBackend]);
+
+        await vi.waitFor(() => expect(firstBackend.prompts).toHaveLength(1));
+        expect(createdOptions).toEqual([{ skipPermissions: true }]);
+
+        // Queue a second turn under always-proceed, then switch the session to request-review
+        // before the second turn dequeues.
+        queue.push('turn 2', { permissionMode: 'always-proceed' }, 'turn-2');
+        session.setPermissionMode('request-review');
+
+        finishFirstPrompt();
+
+        // Turn 2 runs on the existing always-proceed backend using its queued mode snapshot,
+        // and once the queue drains the idle backend restarts with skipPermissions: false.
+        await vi.waitFor(() => {
+            expect(firstBackend.prompts).toHaveLength(2);
+            expect(createdOptions).toEqual([
+                { skipPermissions: true },
+                { skipPermissions: false }
+            ]);
+            expect(secondBackend.resumeCalls).toEqual(['agy-conv-new']);
+        });
+
+        queue.close();
+        await run;
+    });
 });
