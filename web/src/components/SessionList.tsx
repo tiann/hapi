@@ -1410,6 +1410,8 @@ type SessionItemProps = {
     targetMessageId?: string
     targetMessageQuery?: string
     lastSeenVersion: number
+    /** Stopped rows show the stop time they are ordered by (Active first). */
+    showStoppedTime?: boolean
 }
 
 function shallowEqualExcept<T extends object>(previous: T, next: T, ignored: keyof T): boolean {
@@ -1440,7 +1442,8 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
         contentSearchTruncated,
         targetMessageId,
         targetMessageQuery,
-        lastSeenVersion
+        lastSeenVersion,
+        showStoppedTime = false
     } = props
     const { haptic } = usePlatform()
     const [menuOpen, setMenuOpen] = useState(false)
@@ -1742,6 +1745,7 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                         contentSnippet={contentSnippet}
                         contentSearchTruncated={contentSearchTruncated}
                         trailingClassName={hasQuickAction ? 'session-row-trailing' : undefined}
+                        showStoppedTime={showStoppedTime}
                     />
                 </button>
                 {githubPrAwarenessEnabled && primaryPrRef ? (
@@ -2441,6 +2445,10 @@ export function SessionList(props: {
         }
         return bucketRunningSessions(machineFilteredSessions, effectivePinInProgressMode, byRelevanceOrRecent)
     }, [machineFilteredSessions, effectivePinInProgressMode, searchScoreIndex, hasTextQuery, listComparator])
+    // Stopped rows show their stop time only where the list orders them by it:
+    // Active first, and no text query (which orders rows by relevance or, for
+    // project rows in either search mode, by the legacy comparator).
+    const stoppedTimeShown = listView.activeFirst && !hasTextQuery
     const runningSessionTotal = runningSessions.jobs.length
         + runningSessions.working.length
         + runningSessions.pending.length
@@ -2683,6 +2691,7 @@ export function SessionList(props: {
                                             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
                                             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
                                             lastSeenVersion={lastSeenVersion}
+                                            showStoppedTime={stoppedTimeShown}
                                         />
                                     ))}
                                 </div>
@@ -2760,6 +2769,7 @@ export function SessionList(props: {
             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
             lastSeenVersion={lastSeenVersion}
+            showStoppedTime={stoppedTimeShown}
         />
     )
 
@@ -3633,6 +3643,7 @@ export function SessionList(props: {
                                             targetMessageId={contentTargetMessageIdBySessionId.get(s.id)}
                                             targetMessageQuery={contentSearchActive ? normalizedQuery : undefined}
                                             lastSeenVersion={lastSeenVersion}
+                                            showStoppedTime={stoppedTimeShown}
                                         />
                                     ))}
                                 </div>
