@@ -307,6 +307,52 @@ describe('NewCardDialog', () => {
         })
     })
 
+    // Review finding (tiann/hapi#2147, follow-up on the Back-button fix
+    // above): clicking Back and then Next again without changing anything
+    // must keep retrying the same already-created issue, not abandon it —
+    // the original fix cleared the association on every Back regardless of
+    // whether an edit followed, which orphaned the first issue and filed a
+    // duplicate for this unchanged-answers case too.
+    it('keeps retrying the same issue after Back-then-Next with no edits', async () => {
+        const onSubmit = vi.fn()
+            .mockRejectedValueOnce(new ApiError(
+                'Issue created at https://github.com/heavygee/hapi/issues/42 but could not be added to the board: boom',
+                502, undefined, JSON.stringify({ url: 'https://github.com/heavygee/hapi/issues/42' })
+            ))
+            .mockResolvedValueOnce('https://github.com/heavygee/hapi/issues/42')
+        renderDialog({ templates: [], blankAllowed: true, onSubmit })
+
+        fireEvent.change(screen.getByPlaceholderText('owner/repo'), { target: { value: 'heavygee/hapi' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+        fireEvent.click(await screen.findByText('Open a blank issue'))
+        fireEvent.change(screen.getAllByRole('textbox')[0]!, { target: { value: 'Original title' } })
+        fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Original body' } })
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Create issue' }))
+
+        await screen.findByRole('button', { name: 'Retry adding to board' })
+
+        fireEvent.click(screen.getByRole('button', { name: 'Back' }))
+        fireEvent.click(screen.getByRole('button', { name: 'Next' }))
+
+        // Still the retry affordance — nothing changed, so nothing was abandoned.
+        expect(await screen.findByRole('button', { name: 'Retry adding to board' })).toBeInTheDocument()
+        fireEvent.click(screen.getByRole('button', { name: 'Retry adding to board' }))
+
+        await waitFor(() => {
+            expect(onSubmit).toHaveBeenLastCalledWith({
+                repo: 'heavygee/hapi',
+                title: 'Original title',
+                body: 'Original body',
+                templateId: null,
+                templateRevision: null,
+                existingIssueUrl: 'https://github.com/heavygee/hapi/issues/42',
+                labels: [],
+                assignees: []
+            })
+        })
+    })
+
     it('does not offer "Open a blank issue" when blankAllowed is false but a usable template exists', async () => {
         renderDialog({ templates: [FORM_TEMPLATE], blankAllowed: false })
 

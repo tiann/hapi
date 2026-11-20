@@ -77,6 +77,21 @@ export function NewCardDialog(props: NewCardDialogProps) {
     // (operator ruling, hapi#238): the user has an orphaned issue to go
     // handle by hand, and a bare "closed dialog" would hide that entirely.
     const [orphanedIssueUrl, setOrphanedIssueUrl] = useState<string | null>(null)
+    // Snapshot of exactly what was submitted when orphanedIssueUrl was set
+    // (review finding, hapi#238, follow-up): the retry-attach path only
+    // ever attaches that already-created issue, ignoring title/body, so an
+    // edit made after this point can never reach it — but merely clicking
+    // Back and Next again without changing anything isn't an edit. Clearing
+    // orphanedIssueUrl on Back unconditionally (the original fix) orphaned
+    // the first issue and created a duplicate for that unchanged-answers
+    // case too. The abandonment decision now happens where it can actually
+    // be verified — the form→review transition — by comparing the current
+    // submission against this snapshot, not by assuming any Back means an edit.
+    const [orphanedSubmissionSnapshot, setOrphanedSubmissionSnapshot] = useState<{
+        title: string
+        body: string
+        templateId: string | null
+    } | null>(null)
 
     useEffect(() => {
         if (!isOpen) return
@@ -89,6 +104,7 @@ export function NewCardDialog(props: NewCardDialogProps) {
         setAnswers({})
         setError(null)
         setOrphanedIssueUrl(null)
+        setOrphanedSubmissionSnapshot(null)
         setIsSubmitting(false)
     }, [isOpen]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -165,6 +181,25 @@ export function NewCardDialog(props: NewCardDialogProps) {
         setStep('form')
     }
 
+    const handleFormNext = () => {
+        // Abandon the pending retry-attach association only once the
+        // current submission actually diverges from what was submitted
+        // when it was set (review finding, hapi#238, follow-up) — not on
+        // every form→review transition regardless of whether anything
+        // changed, which orphaned the first issue and created a duplicate
+        // for a plain Back-then-Next with no edits.
+        if (orphanedIssueUrl && orphanedSubmissionSnapshot) {
+            const unchanged = orphanedSubmissionSnapshot.title === finalTitle
+                && orphanedSubmissionSnapshot.body === formattedBody
+                && orphanedSubmissionSnapshot.templateId === (selectedTemplate?.id ?? null)
+            if (!unchanged) {
+                setOrphanedIssueUrl(null)
+                setOrphanedSubmissionSnapshot(null)
+            }
+        }
+        setStep('review')
+    }
+
     const handleSubmit = async () => {
         setError(null)
         setIsSubmitting(true)
@@ -184,6 +219,7 @@ export function NewCardDialog(props: NewCardDialogProps) {
                 assignees: selectedTemplate?.assignees ?? []
             })
             setOrphanedIssueUrl(null)
+            setOrphanedSubmissionSnapshot(null)
             onClose()
         } catch (err) {
             setError(getApiErrorMessage(err, t('boards.newCard.error')))
@@ -192,7 +228,10 @@ export function NewCardDialog(props: NewCardDialogProps) {
             // transient network error on the attach retry must not make the
             // already-created issue's link disappear from view.
             const url = getApiErrorUrl(err)
-            if (url) setOrphanedIssueUrl(url)
+            if (url) {
+                setOrphanedIssueUrl(url)
+                setOrphanedSubmissionSnapshot({ title: finalTitle, body: formattedBody, templateId: selectedTemplate?.id ?? null })
+            }
         } finally {
             setIsSubmitting(false)
         }
@@ -382,7 +421,7 @@ export function NewCardDialog(props: NewCardDialogProps) {
                                 <Button type="button" variant="secondary" onClick={() => setStep('template')}>
                                     {t('button.back')}
                                 </Button>
-                                <Button type="button" onClick={() => setStep('review')} disabled={!title.trim() || !canSubmitForm}>
+                                <Button type="button" onClick={handleFormNext} disabled={!title.trim() || !canSubmitForm}>
                                     {t('button.next')}
                                 </Button>
                             </div>
@@ -424,16 +463,13 @@ export function NewCardDialog(props: NewCardDialogProps) {
                                     type="button"
                                     variant="secondary"
                                     onClick={() => {
-                                        // Abandon the pending retry-attach association on Back
-                                        // (review finding, hapi#238): the hub's retry-attach
-                                        // path only ever attaches the already-created issue —
-                                        // it ignores title/body entirely — so an edit made
-                                        // after this point can never reach that issue. Clearing
-                                        // orphanedIssueUrl here makes the next submit create a
-                                        // fresh issue reflecting the edit, instead of silently
-                                        // discarding it while still reporting success.
+                                        // The retry-attach association is no longer abandoned
+                                        // here unconditionally — handleFormNext decides that by
+                                        // actually comparing the submission when the user heads
+                                        // back to review (review finding, hapi#238, follow-up):
+                                        // plain Back-then-Next with no edits must keep retrying
+                                        // the same already-created issue, not duplicate it.
                                         setError(null)
-                                        setOrphanedIssueUrl(null)
                                         setStep('form')
                                     }}
                                     disabled={isSubmitting}
