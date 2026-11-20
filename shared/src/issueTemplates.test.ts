@@ -64,6 +64,7 @@ describe('formatIssueBody', () => {
                 kind: 'checkboxes',
                 id: 'terms',
                 label: 'Code of Conduct',
+                required: false,
                 options: [
                     { label: 'I agree to follow the Code of Conduct', required: true },
                     { label: 'I have searched for duplicates', required: false }
@@ -78,7 +79,7 @@ describe('formatIssueBody', () => {
 
     it('renders every unchecked option when no checkboxes answer is present at all', () => {
         const fields: IssueFormField[] = [
-            { kind: 'checkboxes', id: 'terms', label: 'Terms', options: [{ label: 'Agree', required: true }] }
+            { kind: 'checkboxes', id: 'terms', label: 'Terms', required: false, options: [{ label: 'Agree', required: true }] }
         ]
         expect(formatIssueBody(fields, [])).toBe('### Terms\n\n- [ ] Agree')
     })
@@ -122,7 +123,7 @@ describe('initialAnswersForFields', () => {
             { kind: 'markdown', value: 'hi' },
             { kind: 'input', id: 'a', label: 'A', required: false },
             { kind: 'dropdown', id: 'b', label: 'B', options: ['x'], multiple: false, required: false },
-            { kind: 'checkboxes', id: 'c', label: 'C', options: [{ label: 'opt', required: false }] }
+            { kind: 'checkboxes', id: 'c', label: 'C', required: false, options: [{ label: 'opt', required: false }] }
         ]
         expect(initialAnswersForFields(fields)).toEqual([])
     })
@@ -159,7 +160,7 @@ describe('validateIssueFormAnswers', () => {
 
     it('rejects a checkbox group missing a required option', () => {
         const fields: IssueFormField[] = [
-            { kind: 'checkboxes', id: 'terms', label: 'Code of Conduct', options: [{ label: 'I agree', required: true }] }
+            { kind: 'checkboxes', id: 'terms', label: 'Code of Conduct', required: false, options: [{ label: 'I agree', required: true }] }
         ]
         expect(validateIssueFormAnswers(fields, [])).toEqual({ valid: false, fieldLabel: 'Code of Conduct' })
     })
@@ -167,11 +168,29 @@ describe('validateIssueFormAnswers', () => {
     it('passes a checkbox group once its required option is checked, ignoring optional ones', () => {
         const fields: IssueFormField[] = [
             {
-                kind: 'checkboxes', id: 'terms', label: 'Code of Conduct',
+                kind: 'checkboxes', id: 'terms', label: 'Code of Conduct', required: false,
                 options: [{ label: 'I agree', required: true }, { label: 'Optional', required: false }]
             }
         ]
         expect(validateIssueFormAnswers(fields, [{ kind: 'checkboxes', id: 'terms', checked: ['I agree'] }])).toEqual({ valid: true })
+    })
+
+    // Review finding (tiann/hapi#2147, follow-up): a checkbox GROUP can be
+    // required on its own (`validations.required`) with no individually
+    // required option — the old check only ever looked at per-option
+    // required, so a group like this accepted an entirely empty selection.
+    it('rejects an entirely empty selection on a group-required checkbox group with no individually-required options', () => {
+        const fields: IssueFormField[] = [
+            { kind: 'checkboxes', id: 'terms', label: 'Code of Conduct', required: true, options: [{ label: 'Just a note', required: false }] }
+        ]
+        expect(validateIssueFormAnswers(fields, [])).toEqual({ valid: false, fieldLabel: 'Code of Conduct' })
+    })
+
+    it('passes a group-required checkbox group once any option is checked', () => {
+        const fields: IssueFormField[] = [
+            { kind: 'checkboxes', id: 'terms', label: 'Code of Conduct', required: true, options: [{ label: 'Just a note', required: false }] }
+        ]
+        expect(validateIssueFormAnswers(fields, [{ kind: 'checkboxes', id: 'terms', checked: ['Just a note'] }])).toEqual({ valid: true })
     })
 
     it('rejects a dropdown selection that is not one of the field\'s own declared options', () => {

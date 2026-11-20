@@ -75,6 +75,12 @@ export type IssueFormCheckboxesField = {
     label: string
     description?: string
     options: IssueFormCheckboxOption[]
+    /** `validations.required` on the GROUP itself (review finding,
+     *  tiann/hapi#2147, follow-up) — GitHub's own form schema documents
+     *  this as distinct from any individual option's own `required`: it
+     *  blocks submission until at least one box is checked, even when no
+     *  single option is itself required. */
+    required: boolean
 }
 
 export type IssueFormField =
@@ -200,6 +206,14 @@ export function validateIssueFormAnswers(
         const answer = answerById.get(field.id)
         if (field.kind === 'checkboxes') {
             const checked = answer && answer.kind === 'checkboxes' ? answer.checked : []
+            // Group-level `validations.required` (review finding,
+            // tiann/hapi#2147, follow-up) — distinct from any individual
+            // option's own `required`: GitHub's own form schema blocks
+            // submission until at least one box is checked, even when no
+            // single option is itself marked required.
+            if (field.required && checked.length === 0) {
+                return { valid: false, fieldLabel: field.label }
+            }
             if (!field.options.every(option => !option.required || checked.includes(option.label))) {
                 return { valid: false, fieldLabel: field.label }
             }

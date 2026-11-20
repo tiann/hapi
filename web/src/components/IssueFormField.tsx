@@ -32,8 +32,10 @@ export function IssueFormFieldView(props: {
         )
     }
 
-    // Checkboxes fields have no group-level `required` — each option carries
-    // its own (rendered inline per-option below), unlike the other kinds.
+    // Checkboxes fields carry their own group-level `required` (shown here
+    // as the top asterisk) in addition to each option's own (rendered
+    // inline per-option below) — the two are independent GitHub form-schema
+    // concepts, not a fallback for each other.
     const isRequired = 'required' in field && field.required
     // `htmlFor`/`id` only make sense where the label maps to exactly one
     // control (input/textarea/single-select) — the checkboxes and

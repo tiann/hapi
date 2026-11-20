@@ -87,6 +87,7 @@ describe('IssueFormFieldView', () => {
                 kind: 'checkboxes',
                 id: 'terms',
                 label: 'Code of Conduct',
+                required: false,
                 options: [{ label: 'I agree', required: true }, { label: 'Optional note', required: false }]
             },
             { kind: 'checkboxes', id: 'terms', checked: [] }
@@ -97,7 +98,7 @@ describe('IssueFormFieldView', () => {
 
     it('unchecks a previously-checked checkbox option', () => {
         const onChange = renderField(
-            { kind: 'checkboxes', id: 'terms', label: 'Terms', options: [{ label: 'Agree', required: true }] },
+            { kind: 'checkboxes', id: 'terms', label: 'Terms', required: false, options: [{ label: 'Agree', required: true }] },
             { kind: 'checkboxes', id: 'terms', checked: ['Agree'] }
         )
         fireEvent.click(screen.getByText('Agree'))
