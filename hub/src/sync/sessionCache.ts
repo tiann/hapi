@@ -723,39 +723,30 @@ export class SessionCache {
     }
 
     /**
-     * The notify revision as SQLite computed it — the single source of truth.
-     *
-     * Every in-memory broadcast must carry the row's value, or two independent
-     * counters drift and the browser's ordering guard starts rejecting good
-     * payloads. Falls back to a local bump only if the row vanished mid-merge.
-     */
-    /**
-     * The most recently delivered operator reply on a session, or null (#1717).
-     *
-     * Ordered by delivery time, not by `seq`. A merge renumbers the
-     * destination's rows above every source row, so the highest seq is not the
-     * latest reply — a recency-bounded scan after a merge could hold only
-     * destination rows and miss the source reply that answered the blocker,
-     * leaving the merged row showing a blocker its own transcript answers.
-     */
-    /**
      * Did this delivered reply arrive after the footer it might answer (#1717)?
      *
-     * Compared in the hub's insertion domain — the footer's `seq` against the
-     * reply's `invoked_seq` — because the footer carries the agent runner's
-     * clock while the reply is stamped by the hub. Mixing those two meant a
-     * runner running 30 seconds behind could have a merge or rewind treat a
-     * turn's own initiating prompt as the answer to the footer that turn ended
-     * on, removing a blocker still plainly visible in the transcript.
-     *
-     * Rows predating `last_notify_seq` have no position recorded, so they fall
-     * back to the old timestamp comparison: imperfect, but it is the only
-     * evidence such a row carries, and it is what they already did.
+     * Both sides are hub stamps: the reply's delivery time against the footer's
+     * hub ARRIVAL. The footer's own timestamp is the runner's clock, and mixing
+     * the two meant a runner running 30 seconds behind could have a merge or
+     * rewind treat a turn's own initiating prompt as the answer to the footer
+     * that turn ended on, removing a blocker still plainly visible in the
+     * transcript. A position cannot serve either — see `messageReceivedAt`.
      */
     private replyAnswersFooter(reply: StoredMessage, footerReceivedAt: number): boolean {
         return deliveredOperatorReplyAt(reply) > footerReceivedAt
     }
 
+    /**
+     * The most recently delivered operator reply on a session, or null (#1717).
+     *
+     * Ordered by delivery time, which is the same key `replyAnswersFooter`
+     * then compares against. Selecting on anything else let the two disagree:
+     * a merge renumbers the destination's positions, so the highest `seq` is
+     * not the latest reply, and the one picked as "latest" could be the one
+     * that answers least. Scans every delivered row rather than a recency
+     * window, because after a merge a bounded window can hold only destination
+     * rows and miss the source reply that answered the blocker.
+     */
     private latestDeliveredOperatorReply(sessionId: string): StoredMessage | null {
         let newest: StoredMessage | null = null
         for (const message of this.store.messages.getInvokedMessages(sessionId)) {
@@ -769,6 +760,13 @@ export class SessionCache {
         return newest
     }
 
+    /**
+     * The notify revision as SQLite computed it — the single source of truth.
+     *
+     * Every in-memory broadcast must carry the row's value, or two independent
+     * counters drift and the browser's ordering guard starts rejecting good
+     * payloads. Falls back to a local bump only if the row vanished mid-merge.
+     */
     private readNotifyRevision(session: Session): number {
         return this.store.sessions
             .getSessionByNamespace(session.id, session.namespace)?.lastNotifyUpdatedAt

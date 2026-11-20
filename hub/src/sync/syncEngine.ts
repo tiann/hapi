@@ -551,14 +551,15 @@ export class SyncEngine {
      * Two separate comparisons, deliberately not one sort:
      *
      *  - footer vs footer: both were stamped by the same agent runner inside
-     *    one transcript, so authorship time is authoritative. Insertion `seq`
-     *    is not — Claude replays an older footer after a newer one and it
-     *    lands at a HIGHER seq while being older in fact.
-     *  - footer vs reply: the footer carries the runner's clock and the reply
-     *    is stamped by the hub, so no timestamp comparison between them is
-     *    sound in either direction. They are ordered by the hub's insertion
-     *    domain instead: the footer's own `seq` against the reply's
-     *    `invoked_seq` (the high-water mark when the agent was handed it).
+     *    one transcript, so authorship time is authoritative between them.
+     *    Insertion `seq` is not — Claude replays an older footer after a newer
+     *    one and it lands at a HIGHER seq while being older in fact.
+     *  - footer vs reply: the footer's own timestamp is the runner's clock and
+     *    the reply's is the hub's, so no comparison between those is sound in
+     *    either direction. The footer's hub ARRIVAL is, because the boundary is
+     *    a hub stamp too. A position cannot serve: cancelling a queued row
+     *    frees its `seq` for reuse, and a merge renumbers one side's positions
+     *    into something synthetic rather than real.
      *
      * A single ordering key cannot satisfy both, which is why mixing hub
      * invocation times with runner footer times could drop a blocker still
