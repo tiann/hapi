@@ -672,6 +672,7 @@ const ISSUE_TEMPLATE_DIR_QUERY = `
 query($owner: String!, $repo: String!) {
   repository(owner: $owner, name: $repo) {
     visibility
+    isBlankIssuesEnabled
     issueTemplateDir: object(expression: "HEAD:.github/ISSUE_TEMPLATE") {
       ... on Tree {
         entries {
@@ -689,6 +690,9 @@ type GhIssueTemplateDirResponse = {
     data?: {
         repository?: {
             visibility?: GhRepositoryVisibility | null
+            // GitHub's own, already-inheritance-resolved answer to "can the
+            // viewer create a blank issue here" — see resolveIssueTemplatesForRepo.
+            isBlankIssuesEnabled?: boolean | null
             issueTemplateDir?: {
                 entries?: Array<{ name: string; object?: { text?: string | null } | null } | null>
             } | null
@@ -745,14 +749,18 @@ function repoHasLocalIssueTemplateCoverage(response: GhIssueTemplateDirResponse)
     return hasGithubValidTemplate || hasConfig
 }
 
-// GitHub only inherits default community files (issue templates, config.yml)
-// from an owner's `.github` repo when that repo is eligible: PUBLIC always
-// is; PRIVATE never is, even for repos the same owner controls (review
-// finding: the hub's gh account can often read an org's private `.github`
-// repo, which must not leak its templates/blank-issues policy into a board
-// whose own repo has none). Fail closed: if visibility can't be determined,
-// treat it as ineligible rather than risk inheriting from a repo GitHub
-// itself wouldn't use as a fallback.
+// Governs the template LIST shown in the picker only — blank-issue
+// authorization comes from GitHub's own isBlankIssuesEnabled field now
+// (see resolveIssueTemplatesForRepo) and never reaches this function.
+//
+// GitHub only inherits default community files (issue templates,
+// config.yml) from an owner's `.github` repo when that repo is eligible:
+// PUBLIC always is; PRIVATE never is, even for repos the same owner
+// controls (review finding: the hub's gh account can often read an org's
+// private `.github` repo, which must not leak its templates into a
+// board whose own repo has none). Fail closed: if visibility can't be
+// determined, treat it as ineligible rather than risk inheriting a
+// template list from a repo GitHub itself wouldn't use as a fallback.
 //
 // INTERNAL is eligible only when the operator opts in (HAPI_BOARD_ALLOW_
 // INTERNAL_GITHUB_FALLBACK=1/true/yes). GitHub's docs require inheriting
@@ -780,24 +788,23 @@ function isInternalGithubFallbackAllowed(): boolean {
     return raw === '1' || raw === 'true' || raw === 'yes'
 }
 
-function parseIssueTemplateDirResponse(response: GhIssueTemplateDirResponse): { templates: IssueTemplate[]; blankIssuesEnabled: boolean; hasConfig: boolean } {
+function parseIssueTemplateDirResponse(response: GhIssueTemplateDirResponse): { templates: IssueTemplate[]; hasConfig: boolean } {
     const entries = response.data?.repository?.issueTemplateDir?.entries ?? []
     const templates: IssueTemplate[] = []
-    let blankIssuesEnabled = true
     let hasConfig = false
     for (const entry of entries) {
         if (!entry || typeof entry.object?.text !== 'string') continue
         const lowerName = entry.name.toLowerCase()
         if (lowerName === 'config.yml' || lowerName === 'config.yaml') {
-            const parsedConfig = parseIssueTemplateConfig(entry.object.text)
-            blankIssuesEnabled = parsedConfig.blankIssuesEnabled
             // Only a config.yml that actually parsed counts as a local
             // override for inheritance-eligibility purposes (review
-            // finding, tiann/hapi#2147, follow-up) — the fail-open default
-            // above is the right call for "don't block blank issues over a
-            // broken file," but an unparseable file provides no real
-            // configuration to override the owner's .github policy with.
-            hasConfig = parsedConfig.valid
+            // finding, tiann/hapi#2147, follow-up) — blank_issues_enabled
+            // itself is no longer read here at all: GitHub's own
+            // isBlankIssuesEnabled field is the sole authority for that
+            // (review finding, tiann/hapi#2147, round 11). This file's
+            // only remaining role is "does local config exist" for
+            // inheritance-coverage purposes.
+            hasConfig = parseIssueTemplateConfig(entry.object.text).valid
         } else if (lowerName.endsWith('.yml') || lowerName.endsWith('.yaml')) {
             templates.push(parseIssueFormYaml(entry.name, entry.object.text))
         } else if (
@@ -816,7 +823,7 @@ function parseIssueTemplateDirResponse(response: GhIssueTemplateDirResponse): { 
             templates.push(parseLegacyIssueTemplate(entry.name, entry.object.text))
         }
     }
-    return { templates, blankIssuesEnabled, hasConfig }
+    return { templates, hasConfig }
 }
 
 const execFileAsync = promisify(execFile)
@@ -1442,46 +1449,43 @@ export function createBoardRoutes(
         if (response.errors?.length) {
             throw new Error(response.errors.map(e => e.message).join('; '))
         }
-        // See the GET route's prior comment for why: GitHub inherits
-        // issue templates (and blank_issues_enabled) from the owner's
-        // `.github` repo when the target repo has none of its own.
+        // GitHub's own field for this, already inheritance-resolved — the
+        // viewer's actual effective answer, computed by GitHub itself
+        // (confirmed against supabase/postgrest-js: no local templates of
+        // its own, isBlankIssuesEnabled: false, inherited from the PUBLIC
+        // supabase/.github repo with no extra fetch). This makes the `.github`
+        // fetch below irrelevant to authorization: reconstructing the
+        // policy from a second repo's config.yml and visibility used to
+        // mean a credential that can write issues here but can't even
+        // READ `.github` (GhGraphqlNotFoundError — indistinguishable from
+        // "no .github repo exists") silently fell through to "allow blank
+        // issues," scoring that unreadable state as a permission (review
+        // finding, tiann/hapi#2147, round 11). Captured from THIS response,
+        // before `response` is possibly reassigned below for the template
+        // list — the two no longer have anything to do with each other.
+        const blankIssuesEnabled = response.data?.repository?.isBlankIssuesEnabled ?? false
+        // See the GET route's prior comment for why: GitHub inherits issue
+        // templates from the owner's `.github` repo when the target repo
+        // has none of its own. This fetch is now purely for the template
+        // LIST shown in the picker (display) — blank-issue authorization
+        // above never depends on it, so any failure to read `.github`
+        // here (including GhGraphqlNotFoundError) is harmless: worst case,
+        // the picker shows fewer inherited templates than GitHub's own
+        // chooser would, never a policy violation.
         if (!repoHasLocalIssueTemplateCoverage(response) && repo.toLowerCase() !== '.github') {
             try {
                 const inherited = await runGraphqlIssueTemplateDir({ host, owner, repo: '.github' })
-                if (!inherited.errors?.length && repoHasLocalIssueTemplateCoverage(inherited)) {
-                    if (isEligibleIssueTemplateFallback(inherited)) {
-                        response = inherited
-                    } else if (inherited.data?.repository?.visibility === 'INTERNAL') {
-                        // INTERNAL without the operator's opt-in is the one
-                        // case HAPI genuinely can't resolve either way (see
-                        // isEligibleIssueTemplateFallback's comment on the
-                        // EMU ambiguity) — blindly defaulting
-                        // blankIssuesEnabled to true would score that
-                        // unresolved policy as a permission (review finding,
-                        // tiann/hapi#2147, round 9). Fail closed on the one
-                        // question we can't safely skip — same treatment as
-                        // "nothing usable and blank disabled" already gets,
-                        // including the githubNewIssueUrl escape hatch.
-                        return { templates: [], blankIssuesEnabled: false }
-                    }
-                    // else: PRIVATE. GitHub's own docs require the .github
-                    // repo itself to be public for its defaults to apply to
-                    // ANY repo it owns, regardless of the destination's own
-                    // visibility — so a private .github repo's policy is
-                    // never read by GitHub at all, for any repo. That's not
-                    // unresolved, it's a determinate "doesn't apply" (review
-                    // finding, tiann/hapi#2147, round 10 — ineligible isn't
-                    // the same as unknown). Ignore it and fall through with
-                    // the target's own already-fetched result.
+                if (!inherited.errors?.length && repoHasLocalIssueTemplateCoverage(inherited) && isEligibleIssueTemplateFallback(inherited)) {
+                    response = inherited
                 }
             } catch (error) {
                 if (!(error instanceof GhGraphqlNotFoundError)) {
                     throw error
                 }
-                // No .github repo — fall through with the target repo's own (empty) result.
+                // No .github repo, or can't read it — fall through with the target repo's own (empty) template list.
             }
         }
-        const { templates, blankIssuesEnabled } = parseIssueTemplateDirResponse(response)
+        const { templates } = parseIssueTemplateDirResponse(response)
         return { templates, blankIssuesEnabled }
     }
 
@@ -2004,14 +2008,17 @@ export function createBoardRoutes(
         // pick again" apart from any other failure, so it kept resubmitting
         // the same stale revision until the user manually backed all the
         // way out and reopened.
-        // Overwritten below only for a structured-form submission — the
-        // hub re-derives the body itself from the CURRENT template and the
-        // submitted answers (via the same formatIssueBody the picker's own
-        // preview uses) rather than trusting whatever markdown the client
-        // rendered (review finding, tiann/hapi#2147, rounds 9-10). Blank
-        // issues and legacy templates have no structured fields to
-        // validate against, so their client-supplied body stands as-is.
+        // Overwritten below once a current template resolves — labels and
+        // assignees come from that template, not the client, for the same
+        // reason the body does for a structured form: a template's stated
+        // labels/assignees are part of its policy, and trusting whatever
+        // the client sent would let a submission carry labels or assignees
+        // the template itself never declared (review finding,
+        // tiann/hapi#2147, round 10). Blank issues have no template, so
+        // the client's (always-empty, per the dialog) values stand as-is.
         let issueBody = parsed.data.body
+        let issueLabels = parsed.data.labels
+        let issueAssignees = parsed.data.assignees
         if (!parsed.data.existingIssueUrl) {
             const [repoOwner, repoName] = parsed.data.repo.split('/') as [string, string]
             try {
@@ -2031,6 +2038,8 @@ export function createBoardRoutes(
                     if (current.revision !== parsed.data.templateRevision) {
                         return c.json({ error: 'This template has changed since you opened it — review it again and try again', code: 'template_conflict' }, 409)
                     }
+                    issueLabels = current.labels
+                    issueAssignees = current.assignees
                     if (current.kind === 'form') {
                         const answers = parsed.data.answers ?? []
                         const validation = validateIssueFormAnswers(current.fields, answers)
@@ -2077,8 +2086,8 @@ export function createBoardRoutes(
                     repo: parsed.data.repo,
                     title: parsed.data.title,
                     body: issueBody,
-                    labels: parsed.data.labels,
-                    assignees: parsed.data.assignees
+                    labels: issueLabels,
+                    assignees: issueAssignees
                 })
             } catch (error) {
                 return c.json({ error: error instanceof Error ? error.message : 'Failed to create issue' }, 502)

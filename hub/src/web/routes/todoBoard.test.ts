@@ -103,7 +103,7 @@ async function createApp(
         actions ?? UNUSED_ACTIONS,
         runGraphqlMembership ?? ALWAYS_MEMBER,
         runGraphqlAssignableUsers ?? (() => ({ data: { repository: { assignableUsers: { nodes: [] } } } })),
-        runGraphqlIssueTemplateDir ?? (() => ({ data: { repository: { issueTemplateDir: null } } })),
+        runGraphqlIssueTemplateDir ?? (() => ({ data: { repository: { isBlankIssuesEnabled: true, issueTemplateDir: null } } })),
         runGraphqlComments ?? (() => ({ data: { resource: { comments: { nodes: [] } } } }))
     ))
     return app
@@ -1747,7 +1747,7 @@ body:
     it('returns blankAllowed: true with an empty template list when the repo has no .github/ISSUE_TEMPLATE directory at all', async () => {
         const app = await createApp(
             () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
-            () => ({ data: { repository: { issueTemplateDir: null } } })
+            () => ({ data: { repository: { isBlankIssuesEnabled: true, issueTemplateDir: null } } })
         )
         const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/hapi`)
         expect(response.status).toBe(200)
@@ -1757,7 +1757,11 @@ body:
         expect(body.githubNewIssueUrl).toBe('https://github.com/heavygee/hapi/issues/new/choose')
     })
 
-    it('inherits templates and blank_issues_enabled from the owner\'s .github repo when the target has no directory of its own', async () => {
+    // blankAllowed comes from the TARGET's own isBlankIssuesEnabled (GitHub's
+    // own, already inheritance-resolved field) regardless of what the
+    // .github fallback's own config.yml says — the fallback below is for
+    // the template LIST only (review finding, tiann/hapi#2147, round 11).
+    it('inherits templates from the owner\'s .github repo when the target has no directory of its own, independent of blank-issue policy', async () => {
         const calls: string[] = []
         const app = await createApp(
             () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
@@ -1778,14 +1782,17 @@ body:
                         }
                     }
                 }
-                return { data: { repository: { issueTemplateDir: null } } }
+                // The target's own isBlankIssuesEnabled: true, deliberately
+                // opposite of .github's config.yml above — proves the two
+                // are unrelated now.
+                return { data: { repository: { isBlankIssuesEnabled: true, issueTemplateDir: null } } }
             }
         )
         const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/no-local-templates`)
         expect(response.status).toBe(200)
         const body = await response.json() as { templates: Array<{ id: string }>; blankAllowed: boolean }
         expect(body.templates.map(t => t.id)).toEqual(['bug_report.yml'])
-        expect(body.blankAllowed).toBe(false)
+        expect(body.blankAllowed).toBe(true)
         expect(calls).toEqual(['no-local-templates', '.github'])
     })
 
@@ -1793,16 +1800,9 @@ body:
     // PUBLIC .github repo — a private one (readable here only because the
     // hub's gh account happens to have access) must not leak its templates
     // into a board for a repo GitHub itself would never apply them to.
-    //
-    // blankAllowed ignores that private repo's config.yml rather than
-    // failing closed on it (review finding, round 10): GitHub's own docs
-    // require the .github repo itself to be public for any of its defaults
-    // to apply, to any repo it owns — so this isn't an unresolved policy,
-    // it's a determinate "never read." Round 9 treated ineligible-for-any-
-    // reason as unknown-and-therefore-blocked; that was itself an
-    // overcorrection for this specific (PRIVATE) case. Templates stay empty
-    // either way — only blankAllowed changes.
-    it('does not inherit templates from a private .github repo, and ignores its blank-issues policy since GitHub never applies it', async () => {
+    // blankAllowed is unaffected either way — it comes from the target's
+    // own isBlankIssuesEnabled, which has nothing to do with this fetch.
+    it('does not inherit templates from a private .github repo', async () => {
         const calls: string[] = []
         const app = await createApp(
             () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
@@ -1823,7 +1823,7 @@ body:
                         }
                     }
                 }
-                return { data: { repository: { issueTemplateDir: null } } }
+                return { data: { repository: { isBlankIssuesEnabled: true, issueTemplateDir: null } } }
             }
         )
         const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/no-local-templates`)
@@ -1844,9 +1844,9 @@ body:
     // policy, not a general Enterprise-Cloud one, and nothing distinguishes
     // the two via API — so this defaults to ineligible and requires an
     // explicit operator opt-in for the EMU case (see the sibling test
-    // below for that case). blankAllowed still fails closed here too
-    // (review finding, round 9) — same reasoning as the private-repo test above.
-    it('does not inherit templates from an internal .github repo by default, but still fails closed on blank issues', async () => {
+    // below for that case). blankAllowed is unaffected either way — same
+    // as the private-repo test above, it comes from the target's own field.
+    it('does not inherit templates from an internal .github repo by default', async () => {
         const calls: string[] = []
         const app = await createApp(
             () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
@@ -1867,14 +1867,14 @@ body:
                         }
                     }
                 }
-                return { data: { repository: { issueTemplateDir: null } } }
+                return { data: { repository: { isBlankIssuesEnabled: true, issueTemplateDir: null } } }
             }
         )
         const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/no-local-templates`)
         expect(response.status).toBe(200)
         const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
         expect(body.templates).toEqual([])
-        expect(body.blankAllowed).toBe(false)
+        expect(body.blankAllowed).toBe(true)
         expect(calls).toEqual(['no-local-templates', '.github'])
     })
 
@@ -1900,14 +1900,14 @@ body:
                         }
                     }
                 }
-                return { data: { repository: { issueTemplateDir: null } } }
+                return { data: { repository: { isBlankIssuesEnabled: true, issueTemplateDir: null } } }
             }
         )
         const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/no-local-templates`)
         expect(response.status).toBe(200)
         const body = await response.json() as { templates: Array<{ id: string }>; blankAllowed: boolean }
         expect(body.templates.map(t => t.id)).toEqual(['bug_report.yml'])
-        expect(body.blankAllowed).toBe(false)
+        expect(body.blankAllowed).toBe(true)
         expect(calls).toEqual(['no-local-templates', '.github'])
     })
 
@@ -1934,10 +1934,9 @@ body:
     // Review finding (tiann/hapi#2147): a directory that *exists* but defines
     // nothing GitHub's own chooser would recognize — a README.md documenting
     // the templates, or genuinely no entries at all — must still trigger the
-    // owner's `.github` inheritance fallback. The old check only asked
-    // whether the directory was present, not whether it had a template or
-    // config.yml, so a README-only directory silently blocked an owner's
-    // `blank_issues_enabled: false` policy from ever applying.
+    // owner's `.github` inheritance fallback for the template LIST. The old
+    // check only asked whether the directory was present, not whether it
+    // had a template or config.yml.
     it('falls back to .github when the target directory exists but only has a README', async () => {
         const calls: string[] = []
         const app = await createApp(
@@ -1959,6 +1958,7 @@ body:
                 return {
                     data: {
                         repository: {
+                            isBlankIssuesEnabled: true,
                             issueTemplateDir: { entries: [{ name: 'README.md', object: { text: 'See the templates above.' } }] }
                         }
                     }
@@ -1969,7 +1969,9 @@ body:
         expect(response.status).toBe(200)
         const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
         expect(body.templates).toEqual([])
-        expect(body.blankAllowed).toBe(false)
+        // Target's own isBlankIssuesEnabled: true survives even though
+        // .github's config.yml says false — the two are unrelated.
+        expect(body.blankAllowed).toBe(true)
         expect(calls).toEqual(['readme-only', '.github'])
     })
 
@@ -2002,6 +2004,7 @@ body:
                 return {
                     data: {
                         repository: {
+                            isBlankIssuesEnabled: true,
                             issueTemplateDir: { entries: [{ name: 'broken.yml', object: { text: 'name: Broken\nbody: []' } }] }
                         }
                     }
@@ -2010,21 +2013,20 @@ body:
         )
         const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/malformed-only`)
         expect(response.status).toBe(200)
-        // Inheritance replaces the whole response with .github's own
+        // Inheritance replaces the whole TEMPLATE LIST with .github's own
         // content (just its config.yml here, no templates of its own) —
-        // the malformed local file isn't merged in alongside it.
+        // the malformed local file isn't merged in alongside it. blankAllowed
+        // stays the target's own true, unrelated to .github's config.yml.
         const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
         expect(body.templates).toEqual([])
-        expect(body.blankAllowed).toBe(false)
+        expect(body.blankAllowed).toBe(true)
         expect(calls).toEqual(['malformed-only', '.github'])
     })
 
     // Review finding (tiann/hapi#2147, follow-up): a config.yml that
-    // exists but doesn't parse used to count as hasConfig: true (the
-    // fail-open blankIssuesEnabled default also set hasConfig, not just
-    // the flag value), wrongly blocking inheritance of the owner's
-    // blank_issues_enabled: false even though the local file provides no
-    // real configuration to override it with.
+    // exists but doesn't parse used to count as hasConfig: true, wrongly
+    // blocking inheritance of the owner's TEMPLATE LIST even though the
+    // local file provides no real configuration to override it with.
     it('falls back to .github when the target directory exists but only has an unparseable config.yml', async () => {
         const calls: string[] = []
         const app = await createApp(
@@ -2046,6 +2048,7 @@ body:
                 return {
                     data: {
                         repository: {
+                            isBlankIssuesEnabled: true,
                             issueTemplateDir: { entries: [{ name: 'config.yml', object: { text: ': : not yaml {{{' } }] }
                         }
                     }
@@ -2056,7 +2059,7 @@ body:
         expect(response.status).toBe(200)
         const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
         expect(body.templates).toEqual([])
-        expect(body.blankAllowed).toBe(false)
+        expect(body.blankAllowed).toBe(true)
         expect(calls).toEqual(['bad-config', '.github'])
     })
 
@@ -2085,6 +2088,7 @@ body:
                 return {
                     data: {
                         repository: {
+                            isBlankIssuesEnabled: true,
                             issueTemplateDir: { entries: [{ name: 'config.yml', object: { text: 'true' } }] }
                         }
                     }
@@ -2095,7 +2099,7 @@ body:
         expect(response.status).toBe(200)
         const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
         expect(body.templates).toEqual([])
-        expect(body.blankAllowed).toBe(false)
+        expect(body.blankAllowed).toBe(true)
         expect(calls).toEqual(['scalar-config', '.github'])
     })
 
@@ -2116,7 +2120,7 @@ body:
     it('falls back to the empty result when the owner has no .github repo either', async () => {
         const app = await createApp(
             () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
-            () => ({ data: { repository: { issueTemplateDir: null } } })
+            () => ({ data: { repository: { isBlankIssuesEnabled: true, issueTemplateDir: null } } })
         )
         const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/no-local-templates`)
         expect(response.status).toBe(200)
@@ -2133,7 +2137,20 @@ body:
     // all. Without a dedicated try/catch around the optional fallback, this
     // rejection reached the route's outer catch and 502'd "New card" for
     // the ordinary case of a valid repo with no templates of its own.
-    it('still returns the empty result, not a 502, when the .github lookup rejects with NOT_FOUND (gh exits nonzero)', async () => {
+    //
+    // Still returns 200 with an empty template list — that part of the
+    // outcome doesn't change. blankAllowed is a SEPARATE assertion here
+    // (review finding, tiann/hapi#2147, round 11): NOT_FOUND on `.github`
+    // means "can't read it," not "it doesn't exist" — a hub credential
+    // that can write issues to the destination but lacks read access to
+    // the owner's `.github` repo gets the exact same NotFoundError as one
+    // where `.github` genuinely doesn't exist. Scoring that unreadable
+    // state as "no .github repo, therefore blank issues must be allowed"
+    // used to score an indistinguishable absence as a permission. Now
+    // blankAllowed never depends on this fetch at all — it's read directly
+    // from the target's own isBlankIssuesEnabled regardless of whether
+    // `.github` is readable, missing, or genuinely nonexistent.
+    it('returns the target\'s own isBlankIssuesEnabled, not a 502, when the .github lookup rejects with NOT_FOUND (gh exits nonzero)', async () => {
         const calls: string[] = []
         const app = await createApp(
             () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
@@ -2142,7 +2159,7 @@ body:
                 if (target.repo === '.github') {
                     throw new GhGraphqlNotFoundError("gh api graphql failed: GraphQL: Could not resolve to a Repository with the name '.github'. (repository)")
                 }
-                return { data: { repository: { issueTemplateDir: null } } }
+                return { data: { repository: { isBlankIssuesEnabled: true, issueTemplateDir: null } } }
             }
         )
         const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/no-local-templates`)
@@ -2151,6 +2168,29 @@ body:
         expect(body.templates).toEqual([])
         expect(body.blankAllowed).toBe(true)
         expect(calls).toEqual(['no-local-templates', '.github'])
+    })
+
+    // The regression this whole fix targets: the hub can genuinely write
+    // issues to this repo (ALWAYS_MEMBER) but can't read `.github` — same
+    // NotFoundError as above — and GitHub's own isBlankIssuesEnabled says
+    // the EFFECTIVE policy (already inheriting from wherever it actually
+    // comes from) is false. The old code would have defaulted to true
+    // here purely because `.github` was unreadable; this must stay false.
+    it('does not fall open to blankAllowed: true just because .github is unreadable, when the target says blank issues are disabled', async () => {
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
+            (target: { repo: string }) => {
+                if (target.repo === '.github') {
+                    throw new GhGraphqlNotFoundError("gh api graphql failed: GraphQL: Could not resolve to a Repository with the name '.github'. (repository)")
+                }
+                return { data: { repository: { isBlankIssuesEnabled: false, issueTemplateDir: null } } }
+            }
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/issue-templates?repo=heavygee/no-local-templates`)
+        expect(response.status).toBe(200)
+        const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
+        expect(body.templates).toEqual([])
+        expect(body.blankAllowed).toBe(false)
     })
 
     // Review finding, second pass: the first fix swallowed *every* error from
@@ -2174,12 +2214,13 @@ body:
         expect(response.status).toBe(502)
     })
 
-    it('parses .yml forms and .md legacy templates, skips config.yml as a template entry, and reads blank_issues_enabled from it', async () => {
+    it('parses .yml forms and .md legacy templates, skips config.yml as a template entry', async () => {
         const app = await createApp(
             () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
             () => ({
                 data: {
                     repository: {
+                        isBlankIssuesEnabled: false,
                         issueTemplateDir: {
                             entries: [
                                 { name: 'bug_report.yml', object: { text: BUG_REPORT_YAML } },
@@ -2222,12 +2263,13 @@ body:
         expect(body.templates.map(t => t.id)).toEqual(['feature_request.md'])
     })
 
-    it('excludes a non-README .md with no valid name/about frontmatter, so it cannot defeat blank_issues_enabled: false', async () => {
+    it('excludes a non-README .md with no valid name/about frontmatter from the template list', async () => {
         const app = await createApp(
             () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
             () => ({
                 data: {
                     repository: {
+                        isBlankIssuesEnabled: false,
                         issueTemplateDir: {
                             entries: [
                                 { name: 'notes.md', object: { text: 'Just some ordinary notes, no frontmatter at all.' } },
@@ -2244,12 +2286,13 @@ body:
         expect(body.blankAllowed).toBe(false)
     })
 
-    it('honors blank_issues_enabled: false even when every template is unsupported (operator ruling, hapi#238: do not fall back to blank)', async () => {
+    it('honors isBlankIssuesEnabled: false even when every template is unsupported (operator ruling, hapi#238: do not fall back to blank)', async () => {
         const app = await createApp(
             () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
             () => ({
                 data: {
                     repository: {
+                        isBlankIssuesEnabled: false,
                         issueTemplateDir: {
                             entries: [
                                 { name: 'weird.yml', object: { text: 'name: Weird\nbody:\n  - type: some-future-type\n    id: x\n    attributes:\n      label: X' } },
@@ -2318,17 +2361,7 @@ describe('POST /api/todo-boards/:id/items (create a card)', () => {
                 createIssue: async () => { calls.push('should-not-be-called'); return 'https://github.com/heavygee/hapi/issues/42' }
             },
             ALWAYS_MEMBER, undefined,
-            () => ({
-                data: {
-                    repository: {
-                        issueTemplateDir: {
-                            entries: [
-                                { name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }
-                            ]
-                        }
-                    }
-                }
-            })
+            () => ({ data: { repository: { isBlankIssuesEnabled: false, issueTemplateDir: null } } })
         )
         const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
             method: 'POST',
@@ -2338,12 +2371,15 @@ describe('POST /api/todo-boards/:id/items (create a card)', () => {
         expect(calls).toEqual([])
     })
 
-    // Review finding (tiann/hapi#2147, round 9): a real blank_issues_enabled:
-    // false sitting in an ineligible-visibility .github repo (an EMU org's
-    // internal .github without the operator opt-in, here) used to be
-    // silently ignored rather than failing closed — the write route must
-    // reject the same way the picker now does, not just the picker.
-    it('rejects a blank-issue submission when the inherited policy exists but its visibility is ineligible', async () => {
+    // Review finding (tiann/hapi#2147, round 11): blankIssuesEnabled is read
+    // directly from the target's own isBlankIssuesEnabled (GitHub's own,
+    // already inheritance-resolved field) — the write route must respect
+    // it the same way the picker does, independent of whether `.github`
+    // itself is public, private, readable, or exists at all. The prior
+    // version of this coverage asserted outcomes reconstructed from
+    // `.github`'s own visibility/config.yml (PRIVATE vs INTERNAL), which
+    // no longer has anything to do with authorization on either route.
+    it('rejects a blank-issue submission when the target\'s own isBlankIssuesEnabled is false', async () => {
         const calls: string[] = []
         const app = await createApp(
             () => ({ data: {} }), undefined, 'default', undefined,
@@ -2352,21 +2388,7 @@ describe('POST /api/todo-boards/:id/items (create a card)', () => {
                 createIssue: async () => { calls.push('should-not-be-called'); return 'https://github.com/heavygee/hapi/issues/42' }
             },
             ALWAYS_MEMBER, undefined,
-            (target: { repo: string }) => {
-                if (target.repo === '.github') {
-                    return {
-                        data: {
-                            repository: {
-                                visibility: 'INTERNAL',
-                                issueTemplateDir: {
-                                    entries: [{ name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }]
-                                }
-                            }
-                        }
-                    }
-                }
-                return { data: { repository: { issueTemplateDir: null } } }
-            }
+            () => ({ data: { repository: { isBlankIssuesEnabled: false, issueTemplateDir: null } } })
         )
         const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
             method: 'POST',
@@ -2374,53 +2396,6 @@ describe('POST /api/todo-boards/:id/items (create a card)', () => {
         })
         expect(response.status).toBe(409)
         expect(calls).toEqual([])
-    })
-
-    // Review finding (round 10): the sibling test above fails closed on an
-    // INTERNAL .github repo because that visibility is genuinely unresolved
-    // without the operator's opt-in. A PRIVATE .github repo is different —
-    // GitHub's own docs say its defaults never apply to any repo it owns,
-    // so its blank_issues_enabled: false carries no information about this
-    // destination's effective policy. The write route must allow the same
-    // blank issue the picker now allows, not block on a policy GitHub
-    // itself would never read.
-    it('allows a blank-issue submission when the only inherited policy is a private .github repo GitHub would never apply', async () => {
-        const calls: string[] = []
-        const app = await createApp(
-            () => ({ data: {} }), undefined, 'default', undefined,
-            {
-                ...UNUSED_ACTIONS,
-                createIssue: async (target) => {
-                    calls.push(`createIssue:${target.repo}`)
-                    return 'https://github.com/heavygee/hapi/issues/42'
-                },
-                addItemToProject: async (target) => {
-                    calls.push(`addItemToProject:${target.issueUrl}`)
-                }
-            },
-            ALWAYS_MEMBER, undefined,
-            (target: { repo: string }) => {
-                if (target.repo === '.github') {
-                    return {
-                        data: {
-                            repository: {
-                                visibility: 'PRIVATE',
-                                issueTemplateDir: {
-                                    entries: [{ name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }]
-                                }
-                            }
-                        }
-                    }
-                }
-                return { data: { repository: { issueTemplateDir: null } } }
-            }
-        )
-        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
-            method: 'POST',
-            body: JSON.stringify({ repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null })
-        })
-        expect(response.status).toBe(200)
-        expect(calls).toEqual(['createIssue:heavygee/hapi', 'addItemToProject:https://github.com/heavygee/hapi/issues/42'])
     })
 
     // Review finding (round 10): a current, revision-matching template was
@@ -2433,6 +2408,8 @@ describe('POST /api/todo-boards/:id/items (create a card)', () => {
     const FORM_WITH_REQUIRED_FIELD_YAML = `
 name: Bug report
 description: File a bug report
+labels: [bug, needs-triage]
+assignees: [octocat]
 body:
   - type: input
     id: contact
@@ -2444,14 +2421,21 @@ body:
 `
     const formTemplateRevision = createHash('sha256').update(FORM_WITH_REQUIRED_FIELD_YAML).digest('hex')
 
-    it('derives the issue body from the current template and submitted answers, not the client-rendered body', async () => {
+    // Review finding (round 10, bot re-raise): the body derivation above
+    // closed one half of the client-trust gap, but labels/assignees were
+    // still whatever the client sent — a submission with a current,
+    // revision-matching template could still carry labels or assignees
+    // the template itself never declared. These are template policy the
+    // same way blank_issues_enabled is, so they must come from the CURRENT
+    // template too, not the client's draft of it.
+    it('derives the issue body, labels, and assignees from the current template, not the client-supplied values', async () => {
         const calls: string[] = []
         const app = await createApp(
             () => ({ data: {} }), undefined, 'default', undefined,
             {
                 ...UNUSED_ACTIONS,
                 createIssue: async (target) => {
-                    calls.push(`createIssue:${target.repo}:${target.body}`)
+                    calls.push(`createIssue:${target.repo}:${target.body}:${target.labels.join(',')}:${target.assignees.join(',')}`)
                     return 'https://github.com/heavygee/hapi/issues/42'
                 },
                 addItemToProject: async (target) => {
@@ -2474,9 +2458,12 @@ body:
             body: JSON.stringify({
                 repo: 'heavygee/hapi',
                 title: 'T',
-                // The client's own rendered body is deliberately wrong here
-                // — proves the hub re-derives it rather than trusting this.
+                // The client's own rendered body AND labels/assignees are
+                // deliberately wrong here — proves the hub re-derives all
+                // three from the current template rather than trusting them.
                 body: 'this should never reach GitHub',
+                labels: ['spoofed-label'],
+                assignees: ['spoofed-assignee'],
                 answers: [{ kind: 'input', id: 'contact', value: 'me@example.com' }],
                 templateId: 'bug_report.yml',
                 templateRevision: formTemplateRevision
@@ -2484,7 +2471,7 @@ body:
         })
         expect(response.status).toBe(200)
         expect(calls).toEqual([
-            'createIssue:heavygee/hapi:### Contact\n\nme@example.com',
+            'createIssue:heavygee/hapi:### Contact\n\nme@example.com:bug,needs-triage:octocat',
             'addItemToProject:https://github.com/heavygee/hapi/issues/42'
         ])
     })
