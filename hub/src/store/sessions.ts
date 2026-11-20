@@ -1258,7 +1258,8 @@ export function replaceSessionNotifyAfterTruncate(
     id: string,
     namespace: string,
     signal: { status: string; at: number; note: string | null; receivedAt?: number | null } | null,
-    clearedAt: number
+    clearedAt: number,
+    clearedAuthorAt: number | null = null
 ): boolean {
     try {
         // Every boundary is assigned ABSOLUTELY here, never via MAX, and
@@ -1272,11 +1273,14 @@ export function replaceSessionNotifyAfterTruncate(
                 last_notify_note = @note,
                 last_notify_received_at = @receivedAt,
                 last_notify_cleared_at = @clearedAt,
-                -- Dropped outright: this records a turn that the deleted
-                -- history superseded, and the signal above was just re-derived
-                -- from what survives. Keeping it would suppress the very
-                -- footers the retained transcript is entitled to report.
-                last_notify_cleared_author_at = NULL,
+                -- Re-derived from the RETAINED history, not dropped. Nulling
+                -- it threw away the one thing that rejects a late footer from
+                -- a turn the retained reply already answered: after the
+                -- rewind such a footer arrives fresh, so arrival cannot catch
+                -- it and only its author time can. Carrying the OLD value
+                -- would be wrong too — it describes deleted history — which is
+                -- why this is the value the reconciliation just computed.
+                last_notify_cleared_author_at = @clearedAuthorAt,
                 last_notify_updated_at = MAX(COALESCE(last_notify_updated_at, 0) + 1, @rev),
                 seq = seq + 1
             WHERE id = @id AND namespace = @namespace
@@ -1287,6 +1291,7 @@ export function replaceSessionNotifyAfterTruncate(
             at: signal?.at ?? null,
             note: signal?.note ?? null,
             receivedAt: signal?.receivedAt ?? null,
+            clearedAuthorAt,
             // The derived delivery boundary, already a hub stamp. No clamping
             // against the retained footer is needed any more: the boundary is
             // compared against a footer's hub ARRIVAL, and the retained footer

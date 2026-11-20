@@ -213,6 +213,30 @@ describe('SessionList blocked chrome (#1717)', () => {
         expect(screen.getByTestId('unblock-reason-dialog')).toBeTruthy()
     })
 
+    it('keeps an open dismissal draft when the row leaves the Blocked section', async () => {
+        // A reply from another client clears the blocker, so the next session
+        // update moves the row out of Blocked. The row used to own the dialog,
+        // so React unmounted it and discarded the reason the operator was
+        // part-way through typing. The dialog lives in SessionList now, which
+        // outlives any row movement.
+        const { rerender } = renderList([blocked('stuck-one'), makeSession({ id: 'fine-one' })])
+
+        const row = document.querySelector('[data-session-id="stuck-one"]') as HTMLElement
+        fireEvent.contextMenu(row)
+        fireEvent.click(await screen.findByTestId('session-action-mark-unblocked'))
+        fireEvent.change(screen.getByRole('textbox'), {
+            target: { value: 'half-typed rationale' }
+        })
+
+        // The blocker clears underneath the operator.
+        rerender(wrapList([makeSession({ id: 'stuck-one' }), makeSession({ id: 'fine-one' })]))
+
+        expect(screen.queryByTestId('blocked-section')).toBeNull()
+        expect(screen.getByTestId('unblock-reason-dialog')).toBeTruthy()
+        expect((screen.getByRole('textbox') as HTMLTextAreaElement).value)
+            .toBe('half-typed rationale')
+    })
+
     it('does not offer Mark unblocked on an unblocked row', async () => {
         renderList([makeSession({ id: 'fine-one' })])
 

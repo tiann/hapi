@@ -1051,6 +1051,7 @@ describe('Codex Desktop import routes', () => {
         store.messages.addMessage(engineSession.id, { type: 'text', text: 'engine-only message' }, 'engine-1')
         const engine = {
             getSessionsByNamespace: () => [engineSession],
+            transferBlockedAck: () => {},
             transferAttachedJobs: (fromSessionId: string, toSessionId: string) => {
                 store.sessionJobs.transfer(fromSessionId, toSessionId)
             },

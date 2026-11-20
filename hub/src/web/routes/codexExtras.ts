@@ -872,6 +872,16 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
             latestActivity = Math.max(latestActivity, copied.invokedAt ?? copied.createdAt)
         }
 
+        // Carry the duplicate's dismissal onto the canonical session before it
+        // is deleted (#1717). The loop above copies the duplicate's messages
+        // across, so a footer the operator had already dismissed can become
+        // the canonical session's latest signal — and without its
+        // acknowledgement it shows up in Blocked again, undoing a decision
+        // they made, through a merge they never asked for.
+        if (engine) {
+            engine.transferBlockedAck(source.sessionId, canonical.sessionId, options.namespace)
+        }
+
         // Transfer outliving jobs before CASCADE delete (store refuses running jobs).
         // Without SyncEngine we cannot persist jobsAcceptedFromSessionIds / key remaps,
         // so refuse rather than orphan a supervisor still holding the source session id.

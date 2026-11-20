@@ -657,6 +657,71 @@ export function filterActiveSessionsOnly(sessions: SessionSummary[], selectedSes
  * that still have a running attachedJob stay visible (and stay out of archived).
  */
 /**
+ * Owns the dismissal dialog and its mutation for as long as one is open.
+ *
+ * Deliberately a separate component rather than a hook on `SessionList`: the
+ * row-render-isolation guard watches `useSessionActions` as its proxy for "no
+ * row re-rendered", and calling it on every `SessionList` render would both
+ * trip that guard and run a mutation hook for a null session continuously.
+ * Mounted while a target exists and unmounted when it clears, so the draft
+ * inside the dialog survives the row moving between sections — which is the
+ * whole point — without the row owning it.
+ */
+function UnblockDialogHost(props: {
+    target: UnblockDialogTarget
+    api: ApiClient | null
+    scrollContainer: React.RefObject<HTMLDivElement | null>
+    onClose: () => void
+}) {
+    const { target } = props
+    const { acknowledgeBlocked, isPending } = useSessionActions(props.api, target.sessionId)
+    return (
+        <UnblockReasonDialog
+            isOpen
+            sessionTitle={target.title}
+            blockedLabel={target.label}
+            blockedNote={target.note}
+            isPending={isPending}
+            // Resolved at restore time rather than captured: the row this was
+            // opened from may have moved, or be gone from the DOM entirely.
+            // The jump pill is the stable fallback, so focus never lands on
+            // the document body.
+            returnFocusTo={() => props.scrollContainer.current
+                ?.querySelector<HTMLElement>(
+                    `[data-session-id="${CSS.escape(target.sessionId)}"] button`
+                )
+                ?? document.querySelector<HTMLElement>('[data-testid="blocked-jump-pill"]')}
+            onClose={props.onClose}
+            onConfirm={async (reason) => {
+                await acknowledgeBlocked({
+                    reason,
+                    observed: { at: target.at, key: target.key }
+                })
+            }}
+        />
+    )
+}
+
+/**
+ * Share the blocked rows missing from the DOM out across the sections that own
+ * them (#1717).
+ *
+ * Allocated in order rather than compared against each section independently:
+ * `missing` is one pool, so testing it against each section's size separately
+ * counted the same row twice. Whatever is left over is hidden by a filter
+ * rather than a collapse — it keeps its place in the pill's count but gets no
+ * direction, because nothing on the page says which way it is.
+ */
+export function allocateHiddenBlockers(missing: number, available: number[]): number[] {
+    let remaining = Math.max(0, missing)
+    return available.map((count) => {
+        const take = Math.min(remaining, Math.max(0, count))
+        remaining -= take
+        return take
+    })
+}
+
+/**
  * Which way the jump pill should point for blocked rows that are collapsed
  * away rather than scrolled away (#1717).
  *
@@ -1575,6 +1640,28 @@ const CollapsiblePanelHoldContext = createContext<((held: boolean) => void) | nu
  * withheld explicitly instead.
  */
 const BlockedDialogHoldContext = createContext<((sessionId: string | null) => void) | null>(null)
+
+/**
+ * Opening the Mark-unblocked dialog hands its target UP to `SessionList`
+ * rather than rendering it on the row (#1717).
+ *
+ * The row is not a stable place for it: a reply from another client clears the
+ * blocker, the row moves out of the Blocked section on the next session
+ * update, React unmounts it — and the dialog goes with it, discarding a reason
+ * the operator was part-way through typing. `SessionList` outlives any row
+ * movement, so the dialog and the draft inside it survive.
+ */
+export type UnblockDialogTarget = {
+    sessionId: string
+    title: string
+    at: number
+    key: string
+    label: string | null
+    note: string | null
+}
+const UnblockDialogRequestContext = createContext<((target: UnblockDialogTarget) => void) | null>(null)
+/** Which row, if any, currently has the dismissal dialog open against it. */
+const BlockedDialogOpenContext = createContext<string | null>(null)
 const CollapsiblePanelOpenContext = createContext(true)
 
 type QuickUnpinFocusTarget = { sessionId: string; pending: boolean }
@@ -1686,12 +1773,11 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     const rowButtonRef = useRef<HTMLButtonElement>(null)
     const quickUnpinFocusRef = useContext(QuickUnpinFocusContext)
     const panelOpen = useContext(CollapsiblePanelOpenContext)
-    const [unblockOpen, setUnblockOpen] = useState(false)
-    // Pinned when the dialog opens so the watermark covers the blocker the
-    // operator reviewed, not whatever arrived while they were typing.
-    const [unblockObserved, setUnblockObserved] = useState<
-        { at: number; key: string; label: string | null; note: string | null } | null
-    >(null)
+    const requestUnblockDialog = useContext(UnblockDialogRequestContext)
+    // The dialog itself lives in `SessionList` so it outlives this row moving
+    // between sections; the row only reports whether one is open against it,
+    // which `overlayOpen` below needs.
+    const unblockOpen = useContext(BlockedDialogOpenContext) === s.id
     const {
         status: cursorChatStoreStatus,
         isApplicable: cursorChatStoreApplicable,
@@ -1724,12 +1810,6 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
     )
     const [reopenError, setReopenError] = useState<string | null>(null)
     const holdPanel = useContext(CollapsiblePanelHoldContext)
-    const holdBlockedDialog = useContext(BlockedDialogHoldContext)
-    useEffect(() => {
-        if (!unblockOpen || !holdBlockedDialog) return
-        holdBlockedDialog(s.id)
-        return () => holdBlockedDialog(null)
-    }, [unblockOpen, holdBlockedDialog, s.id])
     // `unblockOpen` belongs here with the other dialogs: without it, a row
     // revealed by the jump exemption unmounted two seconds later and took the
     // open Mark-unblocked dialog with it, mid-entry.
@@ -2078,13 +2158,14 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                         // timestamp let the dialog keep rendering a newer
                         // footer while confirming against the older one, so
                         // the operator read one blocker and dismissed another.
-                        setUnblockObserved({
+                        requestUnblockDialog?.({
+                            sessionId: s.id,
+                            title: sessionName,
                             at: blocked.at,
                             key: blocked.key,
                             label: t(getSessionBlockedLabelKey(blocked)),
                             note: blocked.note ?? null
                         })
-                        setUnblockOpen(true)
                     }
                     : undefined}
                 onArchive={() => setArchiveOpen(true)}
@@ -2138,24 +2219,6 @@ const SessionItem = memo(function SessionItem(props: SessionItemProps) {
                         if (forkFlow.errorWasConnectFailure) forkFlow.retryPreview()
                         else forkFlow.closePreview()
                     }}
-                />
-            ) : null}
-
-            {unblockOpen ? (
-                <UnblockReasonDialog
-                    isOpen
-                    sessionTitle={sessionName}
-                    blockedLabel={unblockObserved?.label ?? null}
-                    blockedNote={unblockObserved?.note ?? null}
-                    isPending={isPending}
-                    returnFocusTo={() => rowButtonRef.current}
-                    onClose={() => { setUnblockOpen(false); setUnblockObserved(null) }}
-                    onConfirm={(reason) => acknowledgeBlocked({
-                        reason,
-                        ...(unblockObserved
-                            ? { observed: { at: unblockObserved.at, key: unblockObserved.key } }
-                            : {})
-                    })}
                 />
             ) : null}
 
@@ -2349,6 +2412,19 @@ export function SessionList(props: {
     /** Set while a row's dismissal dialog is open, so the exemption above is
      *  not withdrawn mid-entry and take the dialog and its draft with it. */
     const [blockedDialogSessionId, setBlockedDialogSessionId] = useState<string | null>(null)
+    // The dismissal dialog's target lives here, not on the row: a reply from
+    // another client can move the row to a different section mid-typing, and
+    // React would unmount the row — and the half-written reason with it.
+    const [unblockTarget, setUnblockTarget] = useState<UnblockDialogTarget | null>(null)
+    const requestUnblockDialog = useCallback((target: UnblockDialogTarget) => {
+        setUnblockTarget(target)
+        setBlockedDialogSessionId(target.sessionId)
+    }, [])
+    const closeUnblockDialog = useCallback(() => {
+        setUnblockTarget(null)
+        setBlockedDialogSessionId(null)
+    }, [])
+
     const holdBlockedDialog = useCallback(
         (sessionId: string | null) => setBlockedDialogSessionId(sessionId),
         []
@@ -2835,6 +2911,12 @@ export function SessionList(props: {
         }
         return [...blocked].sort(listComparator)
     }, [machineFilteredSessions, searchScoreIndex, hasTextQuery, listComparator])
+    // Globally pinned blockers stay in Pinned rather than moving to Blocked,
+    // so their collapsed rows are attributed to THAT header (#1717).
+    const pinnedBlockedCount = useMemo(() => {
+        const now = Date.now()
+        return globalPinnedSessions.filter((session) => sessionIsBlocked(session, { now })).length
+    }, [globalPinnedSessions])
     const blockedSectionIds = useMemo(
         () => new Set(blockedSectionSessions.map(session => session.id)),
         [blockedSectionSessions]
@@ -3832,17 +3914,35 @@ export function SessionList(props: {
             // where the pill would take the operator. Counting them all as
             // "below" drew a down arrow for a section sitting ABOVE the
             // viewport, so activating the pill scrolled up against the hint.
-            const collapsedHidden = blockedSectionCollapsed
-                ? Math.min(missing, blockedSectionSessions.length)
-                : 0
-            const header = container.querySelector<HTMLElement>('[data-testid="blocked-section"]')
-            const attributed = attributeCollapsedBlockers({
-                hidden: collapsedHidden,
-                headerRect: header?.getBoundingClientRect() ?? null,
-                bounds
-            })
-            nextAbove += attributed.above
-            nextBelow += attributed.below
+            //
+            // Allocated across the sections that own them rather than counted
+            // against each independently, which would double-count the same
+            // missing row. A globally pinned blocker stays in Pinned, so with
+            // Pinned collapsed its rows take direction from the PINNED header
+            // — attributing only the Blocked section lost the arrow entirely
+            // when the only blocker was a pinned one.
+            // `isFiltering` forces Pinned open, matching its own
+            // `aria-expanded`, so it is only truly collapsed without one.
+            const testids = ['blocked-section', 'pinned-section']
+            const allocated = allocateHiddenBlockers(missing, [
+                blockedSectionCollapsed ? blockedSectionSessions.length : 0,
+                pinnedSectionCollapsed && !isFiltering ? pinnedBlockedCount : 0
+            ])
+            const sections = testids.map((testid, index) => ({
+                hidden: allocated[index] ?? 0,
+                testid
+            }))
+            for (const section of sections) {
+                if (section.hidden <= 0) continue
+                const header = container.querySelector<HTMLElement>(`[data-testid="${section.testid}"]`)
+                const attributed = attributeCollapsedBlockers({
+                    hidden: section.hidden,
+                    headerRect: header?.getBoundingClientRect() ?? null,
+                    bounds
+                })
+                nextAbove += attributed.above
+                nextBelow += attributed.below
+            }
             // Hidden by a filter rather than by a collapse: these stay in the
             // pill's count, which reads `blockedCount` and is deliberately
             // fleet-wide, but they get no direction — nothing on the page says
@@ -3866,7 +3966,7 @@ export function SessionList(props: {
             container.removeEventListener('scroll', schedule)
             window.removeEventListener('resize', schedule)
         }
-    }, [blockedCount, blockedSectionSessions, blockedSectionCollapsed, pinnedSectionCollapsed, machineFilteredSessions])
+    }, [blockedCount, blockedSectionSessions, blockedSectionCollapsed, pinnedSectionCollapsed, pinnedBlockedCount, isFiltering, machineFilteredSessions])
 
     const blockedDirection: BlockedJumpDirection = blockedOffscreen.above > 0 && blockedOffscreen.below > 0
         ? 'both'
@@ -4198,6 +4298,8 @@ export function SessionList(props: {
             <div ref={scrollContainerRef} className="app-scroll-y session-list-scrollbar-left scrollbar-auto-hide min-h-0 flex-1">
             <QuickUnpinFocusContext.Provider value={quickUnpinFocusRef}>
             <BlockedDialogHoldContext.Provider value={holdBlockedDialog}>
+            <UnblockDialogRequestContext.Provider value={requestUnblockDialog}>
+            <BlockedDialogOpenContext.Provider value={blockedDialogSessionId}>
             <SessionListScrollAnchor sessions={props.sessions} className="mx-auto flex w-full max-w-content flex-col gap-1 pl-1.5 pr-2 pb-2">
                 {props.sessions.length === 0 && !props.isLoading ? (
                     <SessionsEmptyState
@@ -4265,7 +4367,7 @@ export function SessionList(props: {
                 ) : null}
 
                 {globalPinnedSessions.length > 0 ? (
-                    <div key="pinned-section">
+                    <div key="pinned-section" data-testid="pinned-section">
                         <div
                             className="group/pinned flex min-w-0 w-full select-none cursor-pointer items-center gap-2 rounded-lg py-1.5 pl-2 pr-2 transition-colors hover:bg-[var(--app-secondary-bg)]"
                             role="button"
@@ -4404,6 +4506,16 @@ export function SessionList(props: {
                 {groups.map(renderDirectoryGroup)}
                 {actionOnlyGroups.map(renderActionOnlyGroupHeader)}
             </SessionListScrollAnchor>
+            {unblockTarget ? (
+                <UnblockDialogHost
+                    target={unblockTarget}
+                    api={props.api}
+                    scrollContainer={scrollContainerRef}
+                    onClose={closeUnblockDialog}
+                />
+            ) : null}
+            </BlockedDialogOpenContext.Provider>
+            </UnblockDialogRequestContext.Provider>
             </BlockedDialogHoldContext.Provider>
             </QuickUnpinFocusContext.Provider>
             </div>

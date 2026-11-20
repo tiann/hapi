@@ -3,6 +3,7 @@ import { toSessionSummary, type Session } from '@hapi/protocol'
 import type { SessionSummary } from '@/types/api'
 import { sessionIsUnread } from '@/lib/sessionAttention'
 import {
+    allocateHiddenBlockers,
     attributeCollapsedBlockers,
     computeOpenSessionTickRatio,
     deduplicateSessionsByAgentId,
@@ -1183,5 +1184,37 @@ describe('attributeCollapsedBlockers (#1717 jump pill direction)', () => {
             headerRect: { top: 20, bottom: 40 },
             bounds
         })).toEqual({ above: 0, below: 0 })
+    })
+})
+
+describe('allocateHiddenBlockers (#1717 per-section jump direction)', () => {
+    it('gives a collapsed Pinned section its rows when Blocked has none', () => {
+        // Globally pinned blockers stay in Pinned rather than moving to
+        // Blocked. The caller only ever asked about the Blocked header, so the
+        // only blocker being a pinned one lost the arrow entirely — the pill
+        // still counted it but pointed nowhere.
+        expect(allocateHiddenBlockers(1, [0, 1])).toEqual([0, 1])
+    })
+
+    it('does not count one missing row against two sections', () => {
+        // `missing` is a single pool. Comparing it with each section's size
+        // independently attributed the same row twice, so one hidden blocker
+        // could produce both an up and a down arrow.
+        expect(allocateHiddenBlockers(1, [3, 3])).toEqual([1, 0])
+    })
+
+    it('fills the first section before moving on', () => {
+        expect(allocateHiddenBlockers(5, [2, 4])).toEqual([2, 3])
+    })
+
+    it('leaves filter-hidden rows unallocated', () => {
+        // Three missing but only one is collapsed away; the other two are
+        // hidden by a filter and must get no direction at all.
+        expect(allocateHiddenBlockers(3, [1, 0])).toEqual([1, 0])
+    })
+
+    it('handles nothing missing and nothing collapsed', () => {
+        expect(allocateHiddenBlockers(0, [2, 2])).toEqual([0, 0])
+        expect(allocateHiddenBlockers(2, [0, 0])).toEqual([0, 0])
     })
 })

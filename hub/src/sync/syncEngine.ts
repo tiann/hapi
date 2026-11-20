@@ -579,6 +579,7 @@ export class SyncEngine {
     ): {
         signal: { status: string; at: number; note: string | null; receivedAt?: number | null } | null
         boundaryAt: number | null
+        authorCutoff: number | null
     } {
         const scanned = scanDepth === null
             ? this.store.messages.getAllMessages(sessionId)
@@ -648,7 +649,15 @@ export class SyncEngine {
         } | null = null
         for (const footer of footers) {
             if (boundary !== null && atOrBefore(footer.position, boundary)) continue
-            if (authorCutoff !== null && footer.signal.at <= authorCutoff) continue
+            // STRICTLY older, not "at or older". An untimestamped Codex
+            // Desktop import synthesizes one timestamp for every row, so an
+            // earlier turn's footer sets a cutoff EQUAL to the final footer's
+            // author time — and `<=` then discarded a blocker that is still
+            // unanswered and is the last thing in the transcript. Where the
+            // author clock cannot discriminate, position already has: this
+            // footer is after the boundary. A genuine replay is strictly
+            // older than the footer it duplicates, so `<` still rejects it.
+            if (authorCutoff !== null && footer.signal.at < authorCutoff) continue
             if (best === null
                 || footer.signal.at > best.signal.at
                 || (footer.signal.at === best.signal.at && !atOrBefore(footer.position, best.position))) {
@@ -657,7 +666,8 @@ export class SyncEngine {
         }
         return {
             signal: best === null ? null : { ...best.signal, receivedAt: best.position[0] },
-            boundaryAt
+            boundaryAt,
+            authorCutoff
         }
     }
 
@@ -691,7 +701,8 @@ export class SyncEngine {
         this.sessionCache.replaceNotifyAfterTruncate(
             sessionId,
             retained.signal,
-            retained.boundaryAt ?? 0
+            retained.boundaryAt ?? 0,
+            retained.authorCutoff
         )
     }
 
@@ -715,7 +726,8 @@ export class SyncEngine {
         this.sessionCache.replaceNotifyAfterTruncate(
             sessionId,
             derived.signal,
-            derived.boundaryAt ?? 0
+            derived.boundaryAt ?? 0,
+            derived.authorCutoff
         )
     }
 
@@ -1648,6 +1660,11 @@ export class SyncEngine {
     /** Move outliving jobs + redirects onto another session (pre-delete). */
     transferAttachedJobs(fromSessionId: string, toSessionId: string, namespace: string): void {
         this.sessionCache.transferAttachedJobs(fromSessionId, toSessionId, namespace)
+    }
+
+    /** Carry a dismissal across a merge that copies messages itself (#1717). */
+    transferBlockedAck(fromSessionId: string, toSessionId: string, namespace: string): void {
+        this.sessionCache.transferBlockedAck(fromSessionId, toSessionId, namespace)
     }
 
     /** Shared REST/SSE watermark allocator for attachedJob patches. */

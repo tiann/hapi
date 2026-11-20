@@ -291,6 +291,121 @@ describe('importing a transcript does not reopen an answered blocker (#1717)', (
         expect(engine.getSession(session.id)?.lastNotify?.note).toBe('needs a decision')
     })
 
+    it('keeps the final blocker of a MULTI-TURN untimestamped import', async () => {
+        // Two turns, no timestamps anywhere: the importer stamps every row
+        // identically. The first turn's footer then sets an author cutoff
+        // EQUAL to the final footer's author time, and an at-or-older
+        // comparison discarded a blocker that is both unanswered and the last
+        // thing in the transcript. Where the author clock cannot discriminate,
+        // position already has.
+        const { SyncEngine } = await import('./syncEngine')
+        const { RpcRegistry } = await import('../socket/rpcRegistry')
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const session = engine.getOrCreateSession(
+            'import-two-turns',
+            { path: '/tmp/project', host: 'localhost' },
+            null,
+            'default'
+        )
+        const importedAt = Date.now()
+        const footerText = (status: string, summary: string) => 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status, summary })
+        const agent = (text: string) => ({
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'assistant', message: { content: [{ type: 'text', text }] } }
+            }
+        })
+
+        // Turn one: blocked, then answered.
+        store.messages.addImportedMessage(session.id, agent(footerText('blocked', 'turn one')), 'f1', importedAt)
+        store.messages.addImportedMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'here you go' },
+            meta: { sentFrom: 'webapp' }
+        }, 'p1', importedAt)
+        // Turn two: the operator prompts again, and it ends blocked.
+        store.messages.addImportedMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'now this' },
+            meta: { sentFrom: 'webapp' }
+        }, 'p2', importedAt)
+        store.messages.addImportedMessage(session.id, agent(footerText('blocked', 'turn two')), 'f2', importedAt)
+
+        engine.reconcileNotifySignalAfterImport(session.id)
+
+        expect(engine.getSession(session.id)?.lastNotify?.status).toBe('blocked')
+        expect(engine.getSession(session.id)?.lastNotify?.note).toBe('turn two')
+    })
+
+    it('persists the replay cutoff across a rewind, so a late footer still cannot return', async () => {
+        // Reconciliation computes an author cutoff from the retained history,
+        // and the replacement write used to reset it to null. A footer from
+        // the retained, already-answered turn that reaches the hub for the
+        // FIRST time after the rewind then arrives fresh, so arrival cannot
+        // reject it and only the cutoff can.
+        const { SyncEngine } = await import('./syncEngine')
+        const { RpcRegistry } = await import('../socket/rpcRegistry')
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const session = engine.getOrCreateSession(
+            'rewind-cutoff',
+            { path: '/tmp/project', host: 'localhost' },
+            null,
+            'default'
+        )
+        const base = Date.now() - 600_000
+        const footerText = 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'original' })
+
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'assistant', message: { content: [{ type: 'text', text: footerText }] } }
+            }
+        }, undefined, null, base, base)
+        store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'here you go' },
+            meta: { sentFrom: 'webapp' }
+        }, 'reply-1', null, base + 1_000, base + 1_000)
+        store.messages.markMessagesInvoked(session.id, ['reply-1'], base + 2_000)
+
+        // The rewind retains the footer and the reply that answered it.
+        engine.reconcileNotifySignalAfterImport(session.id)
+        expect(engine.getSession(session.id)?.lastNotify ?? null).toBeNull()
+        const row = store.sessions.getSessionByNamespace(session.id, 'default')
+        expect(row?.lastNotifyClearedAuthorAt).toBe(base)
+
+        // A footer from that answered turn, arriving only now.
+        engine.getSession(session.id)
+        engine.handleRealtimeEvent({
+            type: 'message-received',
+            sessionId: session.id,
+            message: {
+                id: 'late-1',
+                seq: 99,
+                localId: null,
+                createdAt: base - 5_000,
+                receivedAt: Date.now(),
+                content: {
+                    role: 'agent',
+                    content: {
+                        type: 'output',
+                        data: { type: 'assistant', message: { content: [{ type: 'text', text: footerText }] } }
+                    }
+                }
+            }
+        })
+
+        expect(engine.getSession(session.id)?.lastNotify ?? null).toBeNull()
+    })
+
     it('does not restore, on rewind, a replay that live ingestion rejected', async () => {
         // Live ingestion rejects an older footer replay using the author time
         // of the footer the reply superseded — but that cutoff is SESSION
@@ -429,6 +544,59 @@ describe('cancelling a queued prompt cannot suppress the next blocker (#1717)', 
 
         expect(cache.getSession(session.id)?.lastNotify?.status).toBe('blocked')
         expect(cache.getSession(session.id)?.lastNotify?.note).toBe('needs a key')
+    })
+})
+
+describe('transferBlockedAck across a merge that copies its own messages (#1717)', () => {
+    it('carries the dismissal onto the canonical session', () => {
+        // The Codex Desktop duplicate reconciliation copies a duplicate's
+        // messages into the canonical session and then deletes the source. It
+        // never transferred the acknowledgement, so a footer the operator had
+        // already dismissed became the canonical session's latest signal and
+        // reappeared in Blocked — their decision undone by a merge they never
+        // asked for.
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, { emit: (_e: SyncEvent) => {} } as EventPublisher)
+        const duplicate = cache.getOrCreateSession('dup', { path: '/tmp', host: 'h' }, null, 'default')
+        const canonical = cache.getOrCreateSession('canon', { path: '/tmp', host: 'h' }, null, 'default')
+        const at = Date.now()
+        cache.setSessionBlockedAck(duplicate.id, 'handled out of band', at, 'notify:1000')
+
+        cache.transferBlockedAck(duplicate.id, canonical.id, 'default')
+
+        const row = store.sessions.getSessionByNamespace(canonical.id, 'default')
+        expect(row?.blockedAckKeys).toEqual(['notify:1000'])
+        expect(row?.blockedAckReason).toBe('handled out of band')
+    })
+
+    it('unions the two sets rather than replacing either', () => {
+        // Each side having dismissed a DIFFERENT prompt must not make either
+        // block again on the merged row.
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, { emit: (_e: SyncEvent) => {} } as EventPublisher)
+        const duplicate = cache.getOrCreateSession('dup2', { path: '/tmp', host: 'h' }, null, 'default')
+        const canonical = cache.getOrCreateSession('canon2', { path: '/tmp', host: 'h' }, null, 'default')
+        const at = Date.now()
+        cache.setSessionBlockedAck(duplicate.id, 'theirs', at - 1_000, 'request:a')
+        cache.setSessionBlockedAck(canonical.id, 'ours', at, 'request:b')
+
+        cache.transferBlockedAck(duplicate.id, canonical.id, 'default')
+
+        const keys = store.sessions.getSessionByNamespace(canonical.id, 'default')?.blockedAckKeys ?? []
+        expect([...keys].sort()).toEqual(['request:a', 'request:b'])
+    })
+
+    it('is a no-op when the source never dismissed anything', () => {
+        const store = new Store(':memory:')
+        const cache = new SessionCache(store, { emit: (_e: SyncEvent) => {} } as EventPublisher)
+        const duplicate = cache.getOrCreateSession('dup3', { path: '/tmp', host: 'h' }, null, 'default')
+        const canonical = cache.getOrCreateSession('canon3', { path: '/tmp', host: 'h' }, null, 'default')
+        cache.setSessionBlockedAck(canonical.id, 'ours', Date.now(), 'request:b')
+
+        cache.transferBlockedAck(duplicate.id, canonical.id, 'default')
+
+        expect(store.sessions.getSessionByNamespace(canonical.id, 'default')?.blockedAckKeys)
+            .toEqual(['request:b'])
     })
 })
 

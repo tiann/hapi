@@ -136,9 +136,10 @@ export class SessionStore {
         id: string,
         namespace: string,
         signal: { status: string; at: number; note: string | null; receivedAt?: number | null } | null,
-        clearedAt: number = Date.now()
+        clearedAt: number = Date.now(),
+        clearedAuthorAt: number | null = null
     ): boolean {
-        return replaceSessionNotifyAfterTruncate(this.db, id, namespace, signal, clearedAt)
+        return replaceSessionNotifyAfterTruncate(this.db, id, namespace, signal, clearedAt, clearedAuthorAt)
     }
 
     setSessionTeamState(id: string, teamState: unknown, updatedAt: number, namespace: string): boolean {

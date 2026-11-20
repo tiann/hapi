@@ -673,7 +673,8 @@ export class SessionCache {
     replaceNotifyAfterTruncate(
         sessionId: string,
         signal: { status: string; at: number; note: string | null; receivedAt?: number | null } | null,
-        boundaryAt: number = Date.now()
+        boundaryAt: number = Date.now(),
+        boundaryAuthorAt: number | null = null
     ): void {
         const session = this.sessions.get(sessionId) ?? this.refreshSession(sessionId)
         if (!session) return
@@ -681,7 +682,8 @@ export class SessionCache {
             sessionId,
             session.namespace,
             signal,
-            boundaryAt
+            boundaryAt,
+            boundaryAuthorAt
         )) {
             this.applyLastNotifyToCache(session, signal)
         }
@@ -739,6 +741,53 @@ export class SessionCache {
         // acknowledgement and re-blocking a row the operator had dismissed.
         session.notifyUpdatedAt = this.readNotifyRevision(session)
         this.publisher.emit({ type: 'session-updated', sessionId: session.id, data: session })
+    }
+
+    /**
+     * Carry a dismissal from one session onto another (#1717).
+     *
+     * Public because more than one path merges sessions: the resume-id rotation
+     * in `mergeSessionData`, and the Codex Desktop duplicate reconciliation,
+     * which copies messages across and then deletes the source. That one did
+     * not transfer the acknowledgement, so a dismissed footer copied into the
+     * canonical session became its latest signal and showed up in Blocked
+     * again — a dismissal the operator had already made, undone by a merge
+     * they did not ask for. One implementation rather than two, because an
+     * ack-merge rule duplicated is an ack-merge rule that drifts.
+     */
+    transferBlockedAck(fromSessionId: string, toSessionId: string, namespace: string): void {
+        const source = this.store.sessions.getSessionByNamespace(fromSessionId, namespace)
+        const sourceAckAt = source?.blockedAckAt ?? null
+        if (!source || sourceAckAt === null) return
+        const target = this.store.sessions.getSessionByNamespace(toSessionId, namespace)
+        if (!target) return
+        const targetAckAt = target.blockedAckAt ?? null
+        // UNION the dismissal sets. Skipping the source entirely whenever the
+        // destination had its own keyed acknowledgement meant each row having
+        // dismissed a DIFFERENT request made the source's request block again
+        // on the merged row — the merge unions the requests, so it has to
+        // union what dismissed them.
+        const mergedKeys = Array.from(new Set([
+            ...(target.blockedAckKeys ?? []),
+            ...(source.blockedAckKeys ?? [])
+        ]))
+        // Keyless acknowledgements (written before identities existed) still
+        // carry across on the old watermark rule, so an upgrade does not
+        // resurrect work the operator already dismissed.
+        const transferKeyless = mergedKeys.length === 0
+            && (targetAckAt === null || sourceAckAt > targetAckAt)
+        if (mergedKeys.length === 0 && !transferKeyless) return
+        this.store.sessions.setSessionBlockedAck(
+            toSessionId,
+            {
+                at: Math.max(sourceAckAt, targetAckAt ?? 0),
+                reason: (targetAckAt !== null && targetAckAt >= sourceAckAt)
+                    ? (target.blockedAckReason ?? '')
+                    : (source.blockedAckReason ?? ''),
+                keys: mergedKeys.length > 0 ? mergedKeys : null
+            },
+            namespace
+        )
     }
 
     /**
@@ -2652,38 +2701,7 @@ export class SessionCache {
         //
         // Keyless acks (written before the identity existed) keep the old
         // watermark semantics, so the later of the two still wins for them.
-        const oldAckAt = oldStored.blockedAckAt
-        if (oldAckAt !== null) {
-            const latest = this.store.sessions.getSessionByNamespace(newSessionId, namespace)
-            const targetAckAt = latest?.blockedAckAt ?? null
-            // UNION the dismissal sets. Skipping the source entirely whenever
-            // the destination had its own keyed acknowledgement meant each row
-            // having dismissed a DIFFERENT request made the source's request
-            // block again on the merged row — the merge unions the requests, so
-            // it has to union what dismissed them.
-            const mergedKeys = Array.from(new Set([
-                ...(latest?.blockedAckKeys ?? []),
-                ...(oldStored.blockedAckKeys ?? [])
-            ]))
-            // Keyless acknowledgements (written before identities existed)
-            // still carry across on the old watermark rule, so an upgrade does
-            // not resurrect work the operator already dismissed.
-            const transferKeyless = mergedKeys.length === 0
-                && (targetAckAt === null || oldAckAt > targetAckAt)
-            if (latest && (mergedKeys.length > 0 || transferKeyless)) {
-                this.store.sessions.setSessionBlockedAck(
-                    newSessionId,
-                    {
-                        at: Math.max(oldAckAt, targetAckAt ?? 0),
-                        reason: (targetAckAt !== null && targetAckAt >= oldAckAt)
-                            ? (latest.blockedAckReason ?? '')
-                            : (oldStored.blockedAckReason ?? ''),
-                        keys: mergedKeys.length > 0 ? mergedKeys : null
-                    },
-                    namespace
-                )
-            }
-        }
+        this.transferBlockedAck(oldSessionId, newSessionId, namespace)
 
         // The footer has to follow its transcript. `mergeSessionMessages` moves
         // the blocked turn onto the destination but replays no `message-added`,
