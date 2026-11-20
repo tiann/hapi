@@ -183,6 +183,45 @@ export function initialAnswersForFields(fields: IssueFormField[]): IssueFormAnsw
 }
 
 /**
+ * Mirrors GitHub's own issue-forms client-side validation (required fields,
+ * `min_length`, required checkbox options, required dropdown selection).
+ * The web dialog uses this to disable its own submit button; the hub uses
+ * it as a hard gate before filing, so a submission that bypasses the
+ * dialog (bug, or a non-browser caller) can't reach GitHub with something a
+ * real issue form would have rejected (review finding, tiann/hapi#2147,
+ * round 10) — one validator, not two copies that could drift.
+ */
+export function validateIssueFormAnswers(
+    fields: IssueFormField[], answers: IssueFormAnswer[]
+): { valid: true } | { valid: false; fieldLabel: string } {
+    const answerById = new Map(answers.map(answer => [answer.id, answer]))
+    for (const field of fields) {
+        if (field.kind === 'markdown') continue
+        const answer = answerById.get(field.id)
+        if (field.kind === 'checkboxes') {
+            const checked = answer && answer.kind === 'checkboxes' ? answer.checked : []
+            if (!field.options.every(option => !option.required || checked.includes(option.label))) {
+                return { valid: false, fieldLabel: field.label }
+            }
+            continue
+        }
+        if (field.kind === 'input' || field.kind === 'textarea') {
+            const raw = answer && answer.kind === field.kind ? answer.value.trim() : ''
+            if (!field.required && raw.length === 0) continue
+            if (raw.length < (field.minLength ?? (field.required ? 1 : 0))) {
+                return { valid: false, fieldLabel: field.label }
+            }
+            continue
+        }
+        if (!field.required) continue
+        if (!(answer && answer.kind === 'dropdown' && answer.selected.length > 0)) {
+            return { valid: false, fieldLabel: field.label }
+        }
+    }
+    return { valid: true }
+}
+
+/**
  * Formats a structured template's answers into the markdown body GitHub's
  * own issue-forms UI would produce. `markdown`-kind fields are instructional
  * only (no answer) and are skipped, matching GitHub's own behavior.

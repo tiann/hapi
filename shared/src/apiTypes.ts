@@ -25,7 +25,7 @@ import type {
     Session
 } from './schemas'
 import type { SessionSummary } from './sessionSummary'
-import type { IssueTemplate } from './issueTemplates'
+import type { IssueFormAnswer, IssueTemplate } from './issueTemplates'
 
 export const CreateOrLoadMachineRequestSchema = z.object({
     id: z.string().min(1),
@@ -1684,17 +1684,33 @@ export type GetIssueTemplatesResponse = {
     githubNewIssueUrl: string
 }
 
+export const IssueFormAnswerSchema: z.ZodType<IssueFormAnswer> = z.union([
+    z.object({ kind: z.literal('input'), id: z.string().min(1), value: z.string() }),
+    z.object({ kind: z.literal('textarea'), id: z.string().min(1), value: z.string() }),
+    z.object({ kind: z.literal('dropdown'), id: z.string().min(1), selected: z.array(z.string()) }),
+    z.object({ kind: z.literal('checkboxes'), id: z.string().min(1), checked: z.array(z.string()) })
+])
+
 /**
- * `body` is the already-formatted markdown the web client computed via
- * `formatIssueBody` (shared/src/issueTemplates.ts) and showed the operator
- * in the review step — hub persists it verbatim rather than re-deriving it
- * from template/answer data, so there is no second formatting pass that
- * could ever disagree with what was reviewed before the write.
+ * `body` carries the blank-issue and legacy-template cases, which have no
+ * structured fields to validate against — the hub uses it as-is.
+ *
+ * `answers` is present for a structured-form submission (`templateId`
+ * resolves to a `kind: 'form'` template): the hub validates these against
+ * the CURRENT template's own field rules (required, `min_length`, required
+ * options) and derives the actual body itself via `formatIssueBody`
+ * (`shared/src/issueTemplates.ts`) — the same formatter the picker's own
+ * preview already uses — rather than trusting whatever markdown the client
+ * rendered. Without this, a client that skips its own validation (bug, or a
+ * non-browser caller) could file something a real GitHub form would reject
+ * even with a current `templateId`/`templateRevision` (review finding,
+ * tiann/hapi#2147, rounds 9–10).
  */
 export const CreateBoardItemRequestSchema = z.object({
     repo: GithubRepoSlugSchema,
     title: z.string().min(1),
     body: z.string(),
+    answers: z.array(IssueFormAnswerSchema).optional(),
     labels: z.array(z.string().min(1)).default([]),
     assignees: z.array(z.string().min(1)).default([]),
     // `null` = the user explicitly chose "blank issue" in the picker, a

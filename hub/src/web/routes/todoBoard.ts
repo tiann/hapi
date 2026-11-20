@@ -18,9 +18,11 @@ import {
     type BoardItemsResponse,
     type BoardsResponse,
     type CreateBoardItemResponse,
+    formatIssueBody,
     type GetIssueTemplatesResponse,
     isUsableIssueTemplate,
-    type IssueTemplate
+    type IssueTemplate,
+    validateIssueFormAnswers
 } from '@hapi/protocol'
 import { GithubRepoSlugSchema } from '@hapi/protocol/schemas'
 import type { WebAppEnv } from '../middleware/auth'
@@ -1449,21 +1451,28 @@ export function createBoardRoutes(
                 if (!inherited.errors?.length && repoHasLocalIssueTemplateCoverage(inherited)) {
                     if (isEligibleIssueTemplateFallback(inherited)) {
                         response = inherited
-                    } else {
-                        // A real policy exists right there — we just
-                        // fetched and parsed it — but its visibility
-                        // doesn't clear HAPI's own EMU-ambiguity bar, so
-                        // its *templates* are still not inherited. Blindly
-                        // defaulting blankIssuesEnabled to true here would
-                        // score that unresolved policy as a permission
-                        // (review finding, tiann/hapi#2147, round 9): an
-                        // EMU org's real "no blank issues" answer is sitting
-                        // unread. Fail closed on the one question we can't
-                        // safely skip — same treatment as "nothing usable
-                        // and blank disabled" already gets, including the
-                        // githubNewIssueUrl escape hatch.
+                    } else if (inherited.data?.repository?.visibility === 'INTERNAL') {
+                        // INTERNAL without the operator's opt-in is the one
+                        // case HAPI genuinely can't resolve either way (see
+                        // isEligibleIssueTemplateFallback's comment on the
+                        // EMU ambiguity) — blindly defaulting
+                        // blankIssuesEnabled to true would score that
+                        // unresolved policy as a permission (review finding,
+                        // tiann/hapi#2147, round 9). Fail closed on the one
+                        // question we can't safely skip — same treatment as
+                        // "nothing usable and blank disabled" already gets,
+                        // including the githubNewIssueUrl escape hatch.
                         return { templates: [], blankIssuesEnabled: false }
                     }
+                    // else: PRIVATE. GitHub's own docs require the .github
+                    // repo itself to be public for its defaults to apply to
+                    // ANY repo it owns, regardless of the destination's own
+                    // visibility — so a private .github repo's policy is
+                    // never read by GitHub at all, for any repo. That's not
+                    // unresolved, it's a determinate "doesn't apply" (review
+                    // finding, tiann/hapi#2147, round 10 — ineligible isn't
+                    // the same as unknown). Ignore it and fall through with
+                    // the target's own already-fetched result.
                 }
             } catch (error) {
                 if (!(error instanceof GhGraphqlNotFoundError)) {
@@ -1995,6 +2004,14 @@ export function createBoardRoutes(
         // pick again" apart from any other failure, so it kept resubmitting
         // the same stale revision until the user manually backed all the
         // way out and reopened.
+        // Overwritten below only for a structured-form submission — the
+        // hub re-derives the body itself from the CURRENT template and the
+        // submitted answers (via the same formatIssueBody the picker's own
+        // preview uses) rather than trusting whatever markdown the client
+        // rendered (review finding, tiann/hapi#2147, rounds 9-10). Blank
+        // issues and legacy templates have no structured fields to
+        // validate against, so their client-supplied body stands as-is.
+        let issueBody = parsed.data.body
         if (!parsed.data.existingIssueUrl) {
             const [repoOwner, repoName] = parsed.data.repo.split('/') as [string, string]
             try {
@@ -2013,6 +2030,22 @@ export function createBoardRoutes(
                     // different content (review finding, hapi#238, follow-up).
                     if (current.revision !== parsed.data.templateRevision) {
                         return c.json({ error: 'This template has changed since you opened it — review it again and try again', code: 'template_conflict' }, 409)
+                    }
+                    if (current.kind === 'form') {
+                        const answers = parsed.data.answers ?? []
+                        const validation = validateIssueFormAnswers(current.fields, answers)
+                        if (!validation.valid) {
+                            // Not `template_conflict`: the template itself is
+                            // current, only the submitted answers fail its
+                            // own requirements — the dialog's own submit
+                            // button already blocks this in normal use, so
+                            // reaching here means a client bypassed it. A
+                            // refetch-and-reset (what template_conflict
+                            // triggers) would be the wrong recovery for an
+                            // unchanged template.
+                            return c.json({ error: `"${validation.fieldLabel}" doesn't meet this template's requirements` }, 400)
+                        }
+                        issueBody = formatIssueBody(current.fields, answers)
                     }
                 }
             } catch (error) {
@@ -2043,7 +2076,7 @@ export function createBoardRoutes(
                     host: board.host,
                     repo: parsed.data.repo,
                     title: parsed.data.title,
-                    body: parsed.data.body,
+                    body: issueBody,
                     labels: parsed.data.labels,
                     assignees: parsed.data.assignees
                 })

@@ -15,6 +15,7 @@ import {
     formatIssueBody,
     initialAnswersForFields,
     isUsableIssueTemplate,
+    validateIssueFormAnswers,
     type IssueFormAnswer,
     type IssueTemplate,
     type LegacyIssueTemplate,
@@ -53,7 +54,7 @@ export type NewCardDialogProps = {
      */
     onTemplateConflict: () => void
     onRepoChange: (repo: string | null) => void
-    onSubmit: (payload: { repo: string; title: string; body: string; templateId: string | null; templateRevision: string | null; existingIssueUrl?: string; labels: string[]; assignees: string[] }) => Promise<string>
+    onSubmit: (payload: { repo: string; title: string; body: string; answers?: IssueFormAnswer[]; templateId: string | null; templateRevision: string | null; existingIssueUrl?: string; labels: string[]; assignees: string[] }) => Promise<string>
 }
 
 /**
@@ -144,27 +145,11 @@ export function NewCardDialog(props: NewCardDialogProps) {
     // (review finding). Seeded into `title` itself in handleTemplatePick, so
     // this just trims whatever's actually in the input.
     const finalTitle = title.trim()
+    // Shared with the hub's own pre-write check (review finding,
+    // tiann/hapi#2147, round 10) — one validator, so this button's
+    // disabled state and the hub's hard gate can never disagree.
     const canSubmitForm = selectedTemplate?.kind !== 'form'
-        || selectedTemplate.fields.every(field => {
-            if (field.kind === 'markdown') return true
-            const answer = answers[field.id]
-            if (field.kind === 'checkboxes') {
-                const checked = answer && answer.kind === 'checkboxes' ? answer.checked : []
-                return field.options.every(option => !option.required || checked.includes(option.label))
-            }
-            if (field.kind === 'input' || field.kind === 'textarea') {
-                const raw = answer && answer.kind === field.kind ? answer.value.trim() : ''
-                // GitHub enforces min_length as an HTML `minlength` attribute —
-                // it still applies to a non-empty answer on an optional field,
-                // just not to one left blank (review finding: a required
-                // field's min_length was being silently ignored, only
-                // non-emptiness was checked).
-                if (!field.required && raw.length === 0) return true
-                return raw.length >= (field.minLength ?? (field.required ? 1 : 0))
-            }
-            if (!field.required) return true
-            return answer && answer.kind === 'dropdown' && answer.selected.length > 0
-        })
+        || validateIssueFormAnswers(selectedTemplate.fields, Object.values(answers)).valid
 
     const handleRepoNext = () => {
         const repo = repoInput.trim()
@@ -223,6 +208,13 @@ export function NewCardDialog(props: NewCardDialogProps) {
                 repo: repoInput.trim(),
                 title: finalTitle,
                 body: formattedBody,
+                // Lets the hub validate against the CURRENT template and
+                // derive the body itself via the same formatIssueBody this
+                // dialog's own preview uses, instead of trusting this
+                // client's rendered `body` (review finding, tiann/hapi#2147,
+                // round 10). Only meaningful for a structured form — a
+                // blank issue or legacy template has no fields to answer.
+                answers: selectedTemplate?.kind === 'form' ? Object.values(answers) : undefined,
                 templateId: selectedTemplate?.id ?? null,
                 templateRevision: selectedTemplate?.revision ?? null,
                 // Retrying after a partial failure attaches the issue that

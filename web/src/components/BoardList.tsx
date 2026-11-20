@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { BoardItem, BoardSummary, IssueTemplate } from '@/types/api'
+import type { BoardItem, BoardSummary, IssueFormAnswer, IssueTemplate } from '@/types/api'
 import type { SessionSummary } from '@/types/api'
 import { BoardSwitcherBar, BoardSwitcherMenu, type BoardFilterItem } from '@/components/BoardSwitcher'
 import { AddBoardDialog } from '@/components/AddBoardDialog'
@@ -365,7 +365,7 @@ export function BoardList(props: {
     issueTemplatesError: string | null
     onIssueTemplatesRefetch: () => void
     onNewCardRepoChange: (repo: string | null) => void
-    onCreateCard: (payload: { repo: string; title: string; body: string; templateId: string | null; templateRevision: string | null; existingIssueUrl?: string; labels: string[]; assignees: string[] }) => Promise<string>
+    onCreateCard: (payload: { repo: string; title: string; body: string; answers?: IssueFormAnswer[]; templateId: string | null; templateRevision: string | null; existingIssueUrl?: string; labels: string[]; assignees: string[] }) => Promise<string>
 }) {
     const { t } = useTranslation()
     // In-memory cache of explicit user toggles this session, keyed by

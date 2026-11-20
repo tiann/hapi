@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test'
-import { formatIssueBody, initialAnswersForFields, isUsableIssueTemplate, type IssueFormField } from './issueTemplates'
+import { formatIssueBody, initialAnswersForFields, isUsableIssueTemplate, validateIssueFormAnswers, type IssueFormField } from './issueTemplates'
 
 describe('formatIssueBody', () => {
     it('skips markdown fields entirely (instructional only, no answer)', () => {
@@ -125,6 +125,53 @@ describe('initialAnswersForFields', () => {
             { kind: 'checkboxes', id: 'c', label: 'C', options: [{ label: 'opt', required: false }] }
         ]
         expect(initialAnswersForFields(fields)).toEqual([])
+    })
+})
+
+describe('validateIssueFormAnswers', () => {
+    it('passes when every required field is answered and skips markdown', () => {
+        const fields: IssueFormField[] = [
+            { kind: 'markdown', value: 'hi' },
+            { kind: 'input', id: 'contact', label: 'Contact', required: true }
+        ]
+        expect(validateIssueFormAnswers(fields, [{ kind: 'input', id: 'contact', value: 'me@example.com' }])).toEqual({ valid: true })
+    })
+
+    it('rejects a required input/textarea left blank', () => {
+        const fields: IssueFormField[] = [{ kind: 'input', id: 'contact', label: 'Contact', required: true }]
+        expect(validateIssueFormAnswers(fields, [])).toEqual({ valid: false, fieldLabel: 'Contact' })
+    })
+
+    it('rejects an answer shorter than min_length even when non-empty', () => {
+        const fields: IssueFormField[] = [{ kind: 'textarea', id: 'logs', label: 'Logs', required: true, minLength: 10 }]
+        expect(validateIssueFormAnswers(fields, [{ kind: 'textarea', id: 'logs', value: 'short' }])).toEqual({ valid: false, fieldLabel: 'Logs' })
+    })
+
+    it('does not apply min_length to a blank answer on an optional field', () => {
+        const fields: IssueFormField[] = [{ kind: 'input', id: 'extra', label: 'Extra', required: false, minLength: 10 }]
+        expect(validateIssueFormAnswers(fields, [])).toEqual({ valid: true })
+    })
+
+    it('rejects a required dropdown with nothing selected', () => {
+        const fields: IssueFormField[] = [{ kind: 'dropdown', id: 'version', label: 'Version', options: ['1.0', '2.0'], multiple: false, required: true }]
+        expect(validateIssueFormAnswers(fields, [])).toEqual({ valid: false, fieldLabel: 'Version' })
+    })
+
+    it('rejects a checkbox group missing a required option', () => {
+        const fields: IssueFormField[] = [
+            { kind: 'checkboxes', id: 'terms', label: 'Code of Conduct', options: [{ label: 'I agree', required: true }] }
+        ]
+        expect(validateIssueFormAnswers(fields, [])).toEqual({ valid: false, fieldLabel: 'Code of Conduct' })
+    })
+
+    it('passes a checkbox group once its required option is checked, ignoring optional ones', () => {
+        const fields: IssueFormField[] = [
+            {
+                kind: 'checkboxes', id: 'terms', label: 'Code of Conduct',
+                options: [{ label: 'I agree', required: true }, { label: 'Optional', required: false }]
+            }
+        ]
+        expect(validateIssueFormAnswers(fields, [{ kind: 'checkboxes', id: 'terms', checked: ['I agree'] }])).toEqual({ valid: true })
     })
 })
 

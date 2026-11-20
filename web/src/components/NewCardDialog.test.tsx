@@ -96,6 +96,7 @@ describe('NewCardDialog', () => {
                 repo: 'heavygee/hapi',
                 title: '[Bug]: Everything is broken',
                 body: '### Contact\n\nme@example.com',
+                answers: [{ kind: 'input', id: 'contact', value: 'me@example.com' }],
                 templateId: 'bug_report.yml',
                 templateRevision: 'rev-bug-report-1',
                 labels: ['bug'],

@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'bun:test'
+import { createHash } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -1793,12 +1794,15 @@ body:
     // hub's gh account happens to have access) must not leak its templates
     // into a board for a repo GitHub itself would never apply them to.
     //
-    // blankAllowed still fails closed, though (review finding, round 9): a
-    // real blank_issues_enabled: false is sitting right there in that
-    // private repo's own config.yml — defaulting to "allowed" because its
-    // visibility makes it ineligible for template inheritance would score
-    // that unread policy as a permission. Templates stay empty either way.
-    it('does not inherit templates from a private .github repo, but still fails closed on blank issues', async () => {
+    // blankAllowed ignores that private repo's config.yml rather than
+    // failing closed on it (review finding, round 10): GitHub's own docs
+    // require the .github repo itself to be public for any of its defaults
+    // to apply, to any repo it owns — so this isn't an unresolved policy,
+    // it's a determinate "never read." Round 9 treated ineligible-for-any-
+    // reason as unknown-and-therefore-blocked; that was itself an
+    // overcorrection for this specific (PRIVATE) case. Templates stay empty
+    // either way — only blankAllowed changes.
+    it('does not inherit templates from a private .github repo, and ignores its blank-issues policy since GitHub never applies it', async () => {
         const calls: string[] = []
         const app = await createApp(
             () => ({ data: {} }), undefined, 'default', undefined, UNUSED_ACTIONS, ALWAYS_MEMBER, undefined,
@@ -1826,7 +1830,7 @@ body:
         expect(response.status).toBe(200)
         const body = await response.json() as { templates: unknown[]; blankAllowed: boolean }
         expect(body.templates).toEqual([])
-        expect(body.blankAllowed).toBe(false)
+        expect(body.blankAllowed).toBe(true)
         expect(calls).toEqual(['no-local-templates', '.github'])
     })
 
@@ -2369,6 +2373,156 @@ describe('POST /api/todo-boards/:id/items (create a card)', () => {
             body: JSON.stringify({ repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null })
         })
         expect(response.status).toBe(409)
+        expect(calls).toEqual([])
+    })
+
+    // Review finding (round 10): the sibling test above fails closed on an
+    // INTERNAL .github repo because that visibility is genuinely unresolved
+    // without the operator's opt-in. A PRIVATE .github repo is different —
+    // GitHub's own docs say its defaults never apply to any repo it owns,
+    // so its blank_issues_enabled: false carries no information about this
+    // destination's effective policy. The write route must allow the same
+    // blank issue the picker now allows, not block on a policy GitHub
+    // itself would never read.
+    it('allows a blank-issue submission when the only inherited policy is a private .github repo GitHub would never apply', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined,
+            {
+                ...UNUSED_ACTIONS,
+                createIssue: async (target) => {
+                    calls.push(`createIssue:${target.repo}`)
+                    return 'https://github.com/heavygee/hapi/issues/42'
+                },
+                addItemToProject: async (target) => {
+                    calls.push(`addItemToProject:${target.issueUrl}`)
+                }
+            },
+            ALWAYS_MEMBER, undefined,
+            (target: { repo: string }) => {
+                if (target.repo === '.github') {
+                    return {
+                        data: {
+                            repository: {
+                                visibility: 'PRIVATE',
+                                issueTemplateDir: {
+                                    entries: [{ name: 'config.yml', object: { text: 'blank_issues_enabled: false' } }]
+                                }
+                            }
+                        }
+                    }
+                }
+                return { data: { repository: { issueTemplateDir: null } } }
+            }
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({ repo: 'heavygee/hapi', title: 'T', body: 'B', templateId: null, templateRevision: null })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual(['createIssue:heavygee/hapi', 'addItemToProject:https://github.com/heavygee/hapi/issues/42'])
+    })
+
+    // Review finding (round 10): a current, revision-matching template was
+    // enough to pass the old checks even if the submitted answers didn't
+    // satisfy the template's own required/min_length rules — the request
+    // schema carried no answers at all, so there was nothing to validate.
+    // The hub must now derive the body itself from CURRENT fields + the
+    // submitted answers (same formatIssueBody the picker's preview uses),
+    // not trust whatever markdown the client rendered.
+    const FORM_WITH_REQUIRED_FIELD_YAML = `
+name: Bug report
+description: File a bug report
+body:
+  - type: input
+    id: contact
+    attributes:
+      label: Contact
+    validations:
+      required: true
+      min_length: 3
+`
+    const formTemplateRevision = createHash('sha256').update(FORM_WITH_REQUIRED_FIELD_YAML).digest('hex')
+
+    it('derives the issue body from the current template and submitted answers, not the client-rendered body', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined,
+            {
+                ...UNUSED_ACTIONS,
+                createIssue: async (target) => {
+                    calls.push(`createIssue:${target.repo}:${target.body}`)
+                    return 'https://github.com/heavygee/hapi/issues/42'
+                },
+                addItemToProject: async (target) => {
+                    calls.push(`addItemToProject:${target.issueUrl}`)
+                }
+            },
+            ALWAYS_MEMBER, undefined,
+            () => ({
+                data: {
+                    repository: {
+                        issueTemplateDir: {
+                            entries: [{ name: 'bug_report.yml', object: { text: FORM_WITH_REQUIRED_FIELD_YAML } }]
+                        }
+                    }
+                }
+            })
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({
+                repo: 'heavygee/hapi',
+                title: 'T',
+                // The client's own rendered body is deliberately wrong here
+                // — proves the hub re-derives it rather than trusting this.
+                body: 'this should never reach GitHub',
+                answers: [{ kind: 'input', id: 'contact', value: 'me@example.com' }],
+                templateId: 'bug_report.yml',
+                templateRevision: formTemplateRevision
+            })
+        })
+        expect(response.status).toBe(200)
+        expect(calls).toEqual([
+            'createIssue:heavygee/hapi:### Contact\n\nme@example.com',
+            'addItemToProject:https://github.com/heavygee/hapi/issues/42'
+        ])
+    })
+
+    it('rejects a submission whose answers do not satisfy the current template\'s required fields', async () => {
+        const calls: string[] = []
+        const app = await createApp(
+            () => ({ data: {} }), undefined, 'default', undefined,
+            {
+                ...UNUSED_ACTIONS,
+                createIssue: async () => { calls.push('should-not-be-called'); return 'https://github.com/heavygee/hapi/issues/42' }
+            },
+            ALWAYS_MEMBER, undefined,
+            () => ({
+                data: {
+                    repository: {
+                        issueTemplateDir: {
+                            entries: [{ name: 'bug_report.yml', object: { text: FORM_WITH_REQUIRED_FIELD_YAML } }]
+                        }
+                    }
+                }
+            })
+        )
+        const response = await app.request(`/api/todo-boards/${DEFAULT_BOARD_ID}/items`, {
+            method: 'POST',
+            body: JSON.stringify({
+                repo: 'heavygee/hapi',
+                title: 'T',
+                body: 'B',
+                // No answers at all — a client that skips its own
+                // validation (bug, or a non-browser caller) must not be
+                // able to file past the hub's own gate.
+                answers: [],
+                templateId: 'bug_report.yml',
+                templateRevision: formTemplateRevision
+            })
+        })
+        expect(response.status).toBe(400)
         expect(calls).toEqual([])
     })
 
