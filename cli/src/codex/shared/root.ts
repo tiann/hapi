@@ -985,46 +985,40 @@ export class SharedCodexRoot {
             }
         }
         if (!current()) return;
-        const revision = this.settingsRevision;
         const deadline = Date.now() + 25_000;
+        const confirmsTier = verifyUltrafast || params.serviceTier !== undefined;
         const model = string(record(record(params.collaborationMode).settings).model) ?? string(params.model);
         try {
-            const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline, true, () => current() && (verifyUltrafast || params.serviceTier !== undefined), operationId));
-            if (!current()) return;
-            // A notification received during the lookup is newer than its captured snapshot.
-            if (this.settingsRevision !== revision) {
-                if (verifyUltrafast && this.hasUltrafastTier) {
-                    await this.confirmEffectiveUltrafast(deadline, operationId);
-                    if (current()) await this.completeTierConfirmation(operationId);
+            for (let attempt = 0; attempt < 3; attempt++) {
+                const revision = this.settingsRevision;
+                const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true },
+                    deadline, true, () => current() && confirmsTier, operationId));
+                if (!current()) return;
+                // A selection notification invalidates a concurrent read but
+                // cannot establish the effective tier by itself.
+                if (this.settingsRevision !== revision) continue;
+                if (confirmsTier && (typeof snapshot.model !== 'string'
+                    || snapshot.serviceTier !== null && typeof snapshot.serviceTier !== 'string')) continue;
+                this.acceptSettings(snapshot, true);
+                if (verifyUltrafast && !this.hasUltrafastTier && !this.hasOtherEffectiveTier) {
+                    if (!await this.fallbackToStandard(deadline, operationId) && current()) {
+                        await this.confirmEffectiveUltrafast(deadline, operationId);
+                    }
+                } else {
+                    // An accepted turn can still have its requested tier
+                    // filtered by native feature state. A fresh effective
+                    // null means there is no override to restore on resume.
+                    if (typeof params.serviceTier === 'string' && snapshot.serviceTier === null) this.serviceTierExplicit = false;
+                    if (!confirmsTier && model && snapshot.model !== model) throw new Error('Native turn settings are not confirmed');
                 }
-                else if (params.serviceTier !== undefined && settingsMatch(this.settingsNative, { serviceTier: params.serviceTier })) {
-                    await this.completeTierConfirmation(operationId);
-                    if (fallbackNotice && this.hasConfirmedStandardTier) this.notice(fallbackNotice);
-                }
+                if (!current()) return;
+                if (confirmsTier) await this.completeTierConfirmation(operationId);
+                this.alive();
+                if (fallbackNotice && this.hasConfirmedStandardTier) this.notice(fallbackNotice);
                 return;
             }
-            this.acceptSettings(snapshot, true);
-            if (verifyUltrafast && !this.hasUltrafastTier && !this.hasOtherEffectiveTier) {
-                if (!await this.fallbackToStandard(deadline, operationId) && current()) {
-                    await this.confirmEffectiveUltrafast(deadline, operationId);
-                }
-                if (current()) {
-                    await this.completeTierConfirmation(operationId);
-                    this.alive();
-                }
-                return;
-            }
-            const tierConfirmed = params.serviceTier !== undefined
-                ? settingsMatch(snapshot, { serviceTier: params.serviceTier })
-                : verifyUltrafast && snapshot.serviceTier !== undefined;
-            // A later model-only update can legitimately change the model
-            // while the snapshot still confirms this turn's tier.
-            if (tierConfirmed) await this.completeTierConfirmation(operationId);
-            else if (verifyUltrafast || params.serviceTier !== undefined || model && snapshot.model !== model) {
-                throw new Error('Native turn settings are not confirmed');
-            }
-            this.alive();
-            if (fallbackNotice) this.notice(fallbackNotice);
+            if (confirmsTier) this.pauseTierConfirmation(operationId);
+            throw new Error('Native turn settings are not confirmed');
         } catch {
             if (!current()) return;
             // Input has already been accepted. Never return a send error inviting a duplicate.

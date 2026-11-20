@@ -61,6 +61,35 @@ vi.mock('../utils/buildHapiMcpBridge', () => ({ buildHapiMcpBridge: async () => 
 // Explicit opt-in: installed official binary, entirely isolated CODEX_HOME, mock Responses API only.
 describe.skipIf(process.env.HAPI_RUN_SHARED_CODEX_TESTS !== '1')('installed Codex shared runtime', () => {
     afterEach(() => { vi.unstubAllEnvs(); state.sessions.clear(); state.beforeBootstrap = undefined; });
+    it('reports no effective override after accepting a turn with disabled native Fast', async () => {
+        const home = await mkdtemp(join(tmpdir(), 'hapi-shared-filtered-fast-'));
+        await writeFile(join(home, 'config.toml'), [
+            'model = "mock-model"', 'model_provider = "mock"', '[features]', 'fast_mode = false',
+            '[model_providers.mock]', 'name = "No model calls"', 'base_url = "http://127.0.0.1:1/v1"',
+            'wire_api = "responses"', 'requires_openai_auth = false', 'request_max_retries = 0',
+            '[analytics]', 'enabled = false', '[feedback]', 'enabled = false', ''
+        ].join('\n'));
+        vi.stubEnv('CODEX_HOME', home);
+        const client = new CodexAppServerClient({ cwd: home });
+        try {
+            await initializeSharedClient(client);
+            const start = await client.request<{ thread: { id: string } }>('thread/start', { cwd: home });
+            const threadId = start.thread.id;
+            await client.request('thread/metadata/update', { threadId, gitInfo: { branch: null } });
+            const accepted = await client.request<{ turn: { id: string } }>('turn/start', {
+                threadId, serviceTier: 'priority', input: [{ type: 'text', text: 'Isolated test', text_elements: [] }]
+            });
+            expect(accepted.turn.id).toBeTruthy();
+            await vi.waitFor(async () => {
+                expect(await client.request('thread/read', { threadId, includeTurns: false }))
+                    .toMatchObject({ thread: { status: { type: 'idle' } } });
+            }, { timeout: 5_000 });
+            expect(await client.request('thread/resume', { threadId, excludeTurns: true })).toMatchObject({ serviceTier: null });
+        } finally {
+            await client.disconnect({ gracefulTimeoutMs: 2_000 });
+            await rm(home, { recursive: true, force: true });
+        }
+    }, 30_000);
     it('forks an archived Flex thread against a Standard directory default', async () => {
         const home = await mkdtemp(join(tmpdir(), 'hapi-shared-flex-fork-'));
         const cwd = join(home, 'work');

@@ -2382,6 +2382,33 @@ it('preserves accepted explicit tier intent across a later model-only change', a
     expect(f.metadata().codexConfirmedServiceTier).toBe('fast');
     expect(f.root.freshParams()).toMatchObject({ model: 'changed-model', serviceTier: 'priority' });
 });
+it('clears in-flight Fast intent when Codex confirms an accepted turn has no effective override', async () => {
+    const f = await fixture({ bindTier: 'default' });
+    await f.root.activate();
+    const keepAlive = vi.spyOn(f.session, 'keepAlive');
+    const operation = await f.root.prepareNativeTurn({ serviceTier: 'priority' });
+    f.native.settings.serviceTier = null;
+    await f.root.confirmNativeTurn(operation.params, true, operation.fallbackNotice, operation.generation);
+    expect(f.metadata().codexServiceTierExplicit).toBe(false);
+    expect(f.metadata().codexPendingServiceTier).toBeUndefined();
+    expect(f.metadata().codexTierConfirmationPending).toBe(false);
+    expect(f.root.needsTierConfirmation).toBe(false);
+    expect(keepAlive.mock.lastCall?.[2]?.serviceTier).toBeNull();
+    expect(f.root.freshParams().serviceTier).toBeUndefined();
+});
+
+it('preserves an explicit native tier reset when Codex confirms no override', async () => {
+    const f = await fixture({ bindTier: 'priority' });
+    await f.root.activate();
+    const operation = await f.root.prepareNativeTurn({ serviceTier: null });
+    f.native.settings.serviceTier = null;
+    await f.root.confirmNativeTurn(operation.params, true, operation.fallbackNotice, operation.generation);
+    expect(f.metadata().codexServiceTierExplicit).toBe(true);
+    expect(f.metadata().codexPendingServiceTier).toBeUndefined();
+    expect(f.root.needsTierConfirmation).toBe(false);
+    expect(f.root.freshParams().serviceTier).toBeNull();
+});
+
 it('does not reset a newer Fast choice during model-only native turn discovery', async () => {
     const f = await fixture(); await f.root.activate();
     f.root.acceptSettings({ model: 'mock', serviceTier: 'ultrafast' }, true);
@@ -2408,6 +2435,7 @@ it('does not overwrite a newer tier notification with a delayed native snapshot'
     });
     const pending = f.root.confirmNativeTurn({ serviceTier: 'priority' }, true);
     await reading;
+    f.native.settings.serviceTier = 'default';
     f.root.acceptSettings({ model: 'mock', serviceTier: 'default' }, true);
     release({ model: 'mock', serviceTier: 'priority' }); await pending;
     expect(f.root.freshParams().serviceTier).toBe('default');
@@ -2477,7 +2505,7 @@ it.each(['ultrafast', 'priority'])('rechecks a selected notification during nati
     vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
         if (method === 'thread/resume') {
             if (first) { first = false; return await new Promise<unknown>(resolve => { release = resolve; }) as never; }
-            return { model: 'mock', serviceTier: null } as never;
+            return { model: 'mock', serviceTier: selected === 'priority' ? 'priority' : null } as never;
         }
         return original(method, params);
     });
