@@ -155,8 +155,24 @@ export function reconcileDelayedListSession(
     // of the agentState-derived bundle below is still fine to take from the
     // incoming response.
     const keepPriorRefs = prior !== undefined && (keepPriorPending || keepPriorNotify)
+    // Neither `thinking` nor `thinkingConfirmed` carries its own revision
+    // otherwise, so a list GET captured while the agent was still thinking
+    // can land after an SSE idle patch and restore a stale `thinking: true`
+    // (#1717 cold-review round 26) — which hides a genuinely unanswered
+    // footer, since the attention classifier treats "still thinking" as
+    // "nothing to show yet" regardless of how it got that value.
+    const priorThinkingAt = prior?.thinkingAt ?? 0
+    const keepPriorThinking = prior !== undefined
+        && priorThinkingAt > (incoming.thinkingAt ?? 0)
     return {
         ...incoming,
+        ...(keepPriorThinking && prior !== undefined
+            ? {
+                thinking: prior.thinking,
+                thinkingConfirmed: prior.thinkingConfirmed,
+                thinkingAt: priorThinkingAt
+            }
+            : {}),
         // The pending-request fields are part of the same blocker picture:
         // keeping the newer footer while taking older pending data brought an
         // answered prompt back into Blocked and re-fired the arrival alert.

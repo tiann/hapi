@@ -111,4 +111,30 @@ describe('reconcileDelayedListSession', () => {
         expect(result.agentStateVersion).toBe(6)
         expect(result.pendingRequestsCount).toBe(0)
     })
+
+    it('keeps a newer thinking=false when a delayed list response still shows thinking=true (cold-review round 26)', () => {
+        // If GET /sessions captures a blocked footer while the agent is
+        // still thinking, the turn can end and deliver thinking=false over
+        // SSE before the GET returns. Neither `thinking` nor
+        // `thinkingConfirmed` carries its own revision otherwise, so this
+        // merge restored the older thinking=true — and the attention
+        // classifier treats "still thinking" as "nothing to show yet",
+        // hiding the unanswered footer behind it.
+        const prior = makeSummary({ id: 'session-1', thinking: false, thinkingConfirmed: true, thinkingAt: 20 })
+        const delayed = makeSummary({ id: 'session-1', thinking: true, thinkingConfirmed: false, thinkingAt: 10 })
+
+        const result = reconcileDelayedListSession(prior, delayed)
+        expect(result.thinking).toBe(false)
+        expect(result.thinkingConfirmed).toBe(true)
+        expect(result.thinkingAt).toBe(20)
+    })
+
+    it('still takes the incoming thinking state when it is genuinely newer', () => {
+        const prior = makeSummary({ id: 'session-1', thinking: true, thinkingAt: 5 })
+        const incoming = makeSummary({ id: 'session-1', thinking: false, thinkingAt: 10 })
+
+        const result = reconcileDelayedListSession(prior, incoming)
+        expect(result.thinking).toBe(false)
+        expect(result.thinkingAt).toBe(10)
+    })
 })

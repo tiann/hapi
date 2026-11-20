@@ -791,8 +791,14 @@ export function copyMessageToSession(
             scheduled_at: message.scheduledAt ?? null,
             delivery_state: message.deliveryState ?? 'queued',
             // Carried too: provenance is a fact about the original event, not
-            // the copy (#1717 cold-review round 23).
-            imported: message.imported ? 1 : null,
+            // the copy (#1717 cold-review round 23). Tri-state, not boolean
+            // (round 26): `message.imported ? 1 : null` collapsed a known-LIVE
+            // row (`false`) onto the same NULL a never-stamped pre-round-23 row
+            // uses for "unknown". `isImported`'s NULL fallback then re-ran the
+            // timestamp heuristic on a row that already had an explicit
+            // answer, misreading a live footer whose created/arrival times
+            // happen to match as imported.
+            imported: message.imported === true ? 1 : message.imported === false ? 0 : null,
             // A row already reconciled by an earlier merge must not lose that
             // recovery on a SECOND one: a later import surviving as the new
             // canonical copies this row across, and without carrying the

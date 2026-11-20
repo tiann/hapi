@@ -140,6 +140,16 @@ export type SessionSummary = {
     /** False only during the hub's optimistic queue-to-delivery grace window
      *  (#1717 cold-review round 22); see `Session.thinkingConfirmed`. */
     thinkingConfirmed?: boolean
+    /** Ordering value for `thinking`/`thinkingConfirmed` (#1717 cold-review
+     *  round 26); see `Session.thinkingAt`. Neither field carries its own
+     *  revision otherwise, so a REST list GET captured while the agent was
+     *  still thinking can land after an SSE idle patch and restore a stale
+     *  `thinking: true` — which then hides a genuinely unanswered blocker,
+     *  since the attention classifier treats "still thinking" as "nothing to
+     *  show yet". Optional so an older hub (no column to read it from) can
+     *  omit it; absent on either side, the merge takes the incoming value,
+     *  matching today's behaviour. */
+    thinkingAt?: number
     activeAt: number
     updatedAt: number
     /** Creation time is the stable order key before the first user message. */
@@ -432,6 +442,7 @@ export function toSessionSummary(
         active: session.active,
         thinking: session.thinking,
         thinkingConfirmed: session.thinkingConfirmed,
+        thinkingAt: session.thinkingAt,
         activeAt: session.activeAt,
         updatedAt: session.updatedAt,
         contentRevision: session.contentRevision,

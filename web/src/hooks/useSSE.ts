@@ -506,8 +506,34 @@ export function useSSE(options: {
                 // See useSessions: pending requests follow agentStateVersion.
                 const keepExistingPending = existing !== undefined
                     && (existing.agentStateVersion ?? 0) > (session.agentStateVersion ?? 0)
+                // `pendingRequestRefs` ALSO depends on the dismissal set, not
+                // only on `agentStateVersion` (#1717 cold-review round 26 —
+                // same gap as `reconcileDelayedListSession`, round 25's
+                // Minor, in this OTHER path that populates the list: a
+                // full-session snapshot can arrive on either SSE stream with
+                // no ordering between them). A snapshot captured before a
+                // dismissal can omit an overflow request the other stream's
+                // dismissal already surfaced, even though the requests
+                // themselves (and so `agentStateVersion`) never changed.
+                const keepExistingRefs = existing !== undefined && (keepExistingPending || keepExistingNotify)
+                // Same gap as `reconcileDelayedListSession`'s Major (#1717
+                // cold-review round 26): a full-session snapshot captured
+                // while the agent was still thinking can arrive on one
+                // stream after an idle patch already landed on the other,
+                // restoring a stale `thinking: true` that hides a genuinely
+                // unanswered footer from the attention classifier.
+                const existingThinkingAt = existing?.thinkingAt ?? 0
+                const keepExistingThinking = existing !== undefined
+                    && existingThinkingAt > (session.thinkingAt ?? 0)
                 const summary = {
                     ...toSessionSummary(session),
+                    ...(keepExistingThinking && existing !== undefined
+                        ? {
+                            thinking: existing.thinking,
+                            thinkingConfirmed: existing.thinkingConfirmed,
+                            thinkingAt: existingThinkingAt
+                        }
+                        : {}),
                     ...(keepExistingNotify && existing !== undefined
                         ? {
                             lastNotify: existing.lastNotify ?? null,
@@ -521,9 +547,11 @@ export function useSSE(options: {
                             pendingRequestKinds: existing.pendingRequestKinds,
                             pendingRequests: existing.pendingRequests,
                             pendingRequestsNewestAt: existing.pendingRequestsNewestAt,
-                            pendingRequestRefs: existing.pendingRequestRefs,
                             agentStateVersion: existing.agentStateVersion
                         }
+                        : {}),
+                    ...(keepExistingRefs && existing !== undefined
+                        ? { pendingRequestRefs: existing.pendingRequestRefs }
                         : {}),
                     attachedJob: existing?.attachedJob ?? null,
                     attachedJobUpdatedAt: existing?.attachedJobUpdatedAt ?? 0,

@@ -911,9 +911,23 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
     // second merge whose new survivor already held a matching occurrence
     // (the UPGRADE path, not the copy path round 24 fixed) reverted
     // reconciliation to the stale synthetic stamp (#1717 cold-review
-    // round 25).
+    // round 25). `reconciledInvokedAt` only ever gets set on a REPLY (see
+    // `upgradeMessageDeliveryStamp` below), so that check alone still missed
+    // a FOOTER's own recovered evidence: a first merge can upgrade a
+    // footer's `receivedAt` from its original synthetic stamp to a real one
+    // while leaving `imported: true` untouched (provenance is a fact about
+    // the original event, never rewritten), and a second merge then saw
+    // `imported: true` with no `reconciledInvokedAt` and discarded that
+    // already-recovered time too (#1717 cold-review round 26). Every
+    // imported row's `receivedAt` starts out identical to its own
+    // `createdAt` (`addImportedMessage` stamps both from the same transcript
+    // time); a mismatch between them is exactly the signal that an earlier
+    // upgrade already recovered a real one, for a footer exactly as it is
+    // for a reply.
     const hasDeliveryEvidence = (message: StoredMessage): boolean =>
-        !isImported(message) || message.reconciledInvokedAt != null
+        !isImported(message)
+        || message.reconciledInvokedAt != null
+        || (message.receivedAt != null && message.receivedAt !== message.createdAt)
     const contentKeyOf = (message: StoredMessage): string =>
         getComparableStoredMessageKey(message)
     const timedKeyOf = (message: StoredMessage): string =>
@@ -1083,6 +1097,20 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
             // — and its synthetic stamp could fall after the footer, letting
             // reconciliation read it as an answer (#1717).
             canonicalContentCounts.set(content, (canonicalContentCounts.get(content) ?? 0) + 1)
+            // Register the copy in the SAME occurrence lookup the initial
+            // canonical tally feeds (#1717 cold-review round 26), not just
+            // the count: a later duplicate supplying a dismissal for this
+            // exact content lands in the `ordinal <= have` branch once the
+            // count above makes room for it, and that branch resolves its
+            // notify-key remap target via `canonicalContentOccurrences` —
+            // which, without this, has no entry for a row that was COPIED
+            // rather than present in the original canonical transcript. The
+            // remap silently found no survivor and the later duplicate's
+            // dismissal stayed keyed to its own (dropped) row.
+            const copiedOccurrences = canonicalContentOccurrences.get(content)
+            if (copiedOccurrences) copiedOccurrences.push(copied.id)
+            else canonicalContentOccurrences.set(content, [copied.id])
+            canonicalMessagesById.set(copied.id, copied)
             // Tracked for ANY role, same as the initial canonical tally
             // (round 22) — a copied footer can still be the surviving
             // synthetic occurrence a later duplicate's upgrade targets.

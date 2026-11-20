@@ -402,7 +402,7 @@ function BlockedJumpPill(props: {
     direction: BlockedJumpDirection
     /** Briefly true after a NEW blocker arrives — see `useBlockedArrivalAlert`. */
     alerting: boolean
-    onJump: () => void
+    onJump: (viaKeyboard: boolean) => void
 }) {
     const { t } = useTranslation()
     const glyph = BLOCKED_DIRECTION_GLYPH[props.direction]
@@ -411,7 +411,7 @@ function BlockedJumpPill(props: {
     return (
         <button
             type="button"
-            onClick={props.onJump}
+            onClick={(event) => props.onJump(event.detail === 0)}
             data-testid="blocked-jump-pill"
             title={label}
             aria-label={label}
@@ -2538,6 +2538,15 @@ export function SessionList(props: {
     // forever, so a blocker hidden behind a filter — never in `above`/`below`
     // — is never reached.
     const blockedJumpVisitedRef = useRef<Set<string>>(new Set())
+    // Whether the jump currently in flight was activated by keyboard
+    // (#1717 cold-review round 26) — read once the target row mounts, so
+    // the scroll effect below knows whether to also move focus there. A
+    // mouse click already leaves focus exactly where the operator put it
+    // (the pill); only a keyboard activation needs the destination row to
+    // become the new focus, or Tab continues from the pill through
+    // intervening toolbar and list controls instead of landing on the
+    // blocker just jumped to.
+    const blockedJumpViaKeyboardRef = useRef(false)
     const { pinInProgressMode } = usePinInProgressSessions()
     // List sort/filter lives in SessionListView (#2263); jobs mode is #1404.
     const effectivePinInProgressMode: PinInProgressMode = pinInProgressMode
@@ -3917,8 +3926,9 @@ export function SessionList(props: {
     // blocked row mounted at the top of the list, "make the row reachable"
     // only ever means expanding that section and dropping narrowing filters —
     // no directory-group expansion or preview-cap raising required.
-    const jumpToNextBlocked = () => {
+    const jumpToNextBlocked = (viaKeyboard: boolean) => {
         if (blockedSessions.length === 0) return
+        blockedJumpViaKeyboardRef.current = viaKeyboard
         const renderedIds = new Set(machineFilteredSessions.map((session) => session.id))
         // Pick the target BEFORE deciding to clear anything. Testing "is any
         // blocker hidden" threw away the operator's saved status/unread
@@ -3997,6 +4007,10 @@ export function SessionList(props: {
             return
         }
         row.scrollIntoView({ block: 'center', behavior: 'smooth' })
+        if (blockedJumpViaKeyboardRef.current) {
+            row.focus({ preventScroll: true })
+            blockedJumpViaKeyboardRef.current = false
+        }
         setFlashBlockedSessionId(pendingBlockedScrollId)
         setPendingBlockedScrollId(null)
         // The exemption is NOT dropped here. Releasing it the moment the

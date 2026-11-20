@@ -522,8 +522,13 @@ describe('SessionList blocked chrome (#1717)', () => {
         fireEvent.blur(screen.getByTestId('session-list-search'), { relatedTarget: pill })
 
         // Still mounted, so the click that follows the blur actually lands.
+        // A real mouse click, not the keyboard-detail-0 convention this file
+        // uses elsewhere (#1717 cold-review round 26) — otherwise the jump's
+        // own keyboard-activation focus move reproduces the exact "focus
+        // left for an unrecognized destination" collapse this test guards
+        // against, for an unrelated reason.
         expect(screen.getByTestId('blocked-search-controls')).toBeTruthy()
-        fireEvent.click(pill)
+        fireEvent.click(pill, { detail: 1 })
         expect(screen.getByTestId('blocked-search-controls')).toBeTruthy()
     })
 
@@ -604,5 +609,34 @@ describe('SessionList blocked chrome (#1717)', () => {
         // before the scroll effect could use it, so the row was filtered
         // straight back out and clicking the pill did nothing at all.
         expect(document.querySelector('[data-session-id="stuck-one"]')).not.toBeNull()
+    })
+
+    it('moves focus to the revealed row on keyboard activation of the jump pill (cold-review round 26)', () => {
+        // Activating the pill with Enter/Space scrolled to the blocker while
+        // focus stayed on the pill — the next Tab followed toolbar order and
+        // could scroll away from the row just jumped to, leaving a keyboard
+        // user to traverse every intervening control to act on it.
+        Element.prototype.scrollIntoView = vi.fn()
+        renderList([blocked('stuck-one')])
+
+        fireEvent.click(screen.getByTestId('blocked-jump-pill'), { detail: 0 })
+
+        const row = document.querySelector('[data-session-id="stuck-one"]')
+        expect(row).not.toBeNull()
+        expect(document.activeElement).toBe(row)
+    })
+
+    it('leaves focus on the pill after a mouse-click activation (cold-review round 26)', () => {
+        // A mouse click already leaves focus exactly where the operator put
+        // it; only keyboard activation needs the destination row to become
+        // the new focus.
+        Element.prototype.scrollIntoView = vi.fn()
+        renderList([blocked('stuck-one')])
+
+        const pill = screen.getByTestId('blocked-jump-pill')
+        pill.focus()
+        fireEvent.click(pill, { detail: 1 })
+
+        expect(document.activeElement).toBe(pill)
     })
 })

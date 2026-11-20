@@ -526,4 +526,70 @@ describe('useSSE user-activity ordering', () => {
         expect(refs.map((r) => r.id)).toContain('r200')
         unmount()
     })
+
+    it('keeps an overflow request visible through a delayed full-session SSE snapshot (cold-review round 26)', () => {
+        // Round 25 fixed this gap in the REST list path
+        // (`reconcileDelayedListSession`). The SAME gap exists in THIS path
+        // — a full session object can arrive on either the global or the
+        // session-scoped SSE stream with no ordering between them, and
+        // `pendingRequestRefs` was only re-gated by `agentStateVersion`, not
+        // by the notify/dismissal revision a delayed snapshot can also be
+        // stale on.
+        const { queryClient, unmount } = renderUseSSE()
+        const richerRefs = [
+            { id: 'r0', kind: 'permission' as const, since: 0 },
+            { id: 'r200', kind: 'input' as const, since: 300 }
+        ]
+        queryClient.setQueryData(queryKeys.sessions, { sessions: [makeSummary({
+            id: 'session-1',
+            agentStateVersion: 1,
+            notifyUpdatedAt: 10,
+            pendingRequestRefs: richerRefs
+        })] })
+
+        // A full-session snapshot arrives with the SAME agentStateVersion
+        // (the underlying requests never changed) but an OLDER notify
+        // revision — captured before the dismissal that surfaced r200 — and
+        // its own (stale) refs computed without it.
+        act(() => FakeEventSource.instances[0]?.simulateMessage({
+            type: 'session-updated', sessionId: 'session-1',
+            data: {
+                ...makeSummary(), id: 'session-1', namespace: 'default', seq: 1,
+                createdAt: 1, agentState: null, thinkingAt: 0,
+                agentStateVersion: 1, notifyUpdatedAt: 8,
+                pendingRequestRefs: [{ id: 'r0', kind: 'permission', since: 0 }]
+            }
+        }))
+
+        const data = queryClient.getQueryData<{ sessions: SessionSummary[] }>(queryKeys.sessions)
+        const refs = data?.sessions[0]?.pendingRequestRefs ?? []
+        expect(refs.map((r) => r.id)).toContain('r200')
+        unmount()
+    })
+
+    it('keeps a newer thinking=false when a delayed full-session SSE snapshot still shows thinking=true (cold-review round 26)', () => {
+        // Same gap as `reconcileDelayedListSession`'s Major, in this OTHER
+        // path that populates the list: a full-session snapshot can arrive
+        // on either SSE stream with no ordering between them, so one stream
+        // can deliver a stale `thinking: true` after the other already
+        // delivered the idle patch that ended the turn.
+        const { queryClient, unmount } = renderUseSSE()
+        queryClient.setQueryData(queryKeys.sessions, { sessions: [makeSummary({
+            id: 'session-1', thinking: false, thinkingConfirmed: true, thinkingAt: 20
+        })] })
+
+        act(() => FakeEventSource.instances[0]?.simulateMessage({
+            type: 'session-updated', sessionId: 'session-1',
+            data: {
+                ...makeSummary(), id: 'session-1', namespace: 'default', seq: 1,
+                createdAt: 1, agentState: null,
+                thinking: true, thinkingConfirmed: false, thinkingAt: 10
+            }
+        }))
+
+        const data = queryClient.getQueryData<{ sessions: SessionSummary[] }>(queryKeys.sessions)
+        expect(data?.sessions[0]?.thinking).toBe(false)
+        expect(data?.sessions[0]?.thinkingAt).toBe(20)
+        unmount()
+    })
 })
