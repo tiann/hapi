@@ -78,6 +78,7 @@ function unidentifiedCommandResult(command: 'compact' | 'clear'): string {
 // downgrade (e.g. Yolo -> Default) would never take effect.
 const EFFORT_APPLY_TIMEOUT_MS = 5_000;
 const UNIDENTIFIED_COMMAND_RESULT_TIMEOUT_MS = 30_000;
+const COMPACT_PROGRESS_TIMEOUT_MS = 5 * 60_000;
 
 function nativePermissionMode(mode: PermissionMode): PermissionMode {
     return mode === 'acceptEdits' || mode === 'bypassPermissions' ? 'default' : mode;
@@ -570,18 +571,20 @@ export async function claudeRemote(opts: {
     const compactCompletionAbort = new AbortController();
     let compactCompletion: Promise<CompactCompletion> | null = null;
     let timedOutCommand: { uuid: string; command: 'compact' | 'clear' } | null = null;
-    let commandResultTimeout: Promise<null> | null = null;
     let commandResultTimer: ReturnType<typeof setTimeout> | undefined;
-    const waitForCommandResult = (message: SDKMessage) => {
-        if (commandResultTimeout !== null || message.user_message_uuid != null || message.local_command != null) return;
-        commandResultTimeout = new Promise((resolve) => {
-            commandResultTimer = setTimeout(resolve, UNIDENTIFIED_COMMAND_RESULT_TIMEOUT_MS, null);
-        });
-    };
+    let commandResultExpired = false;
+    let resolveCommandResultTimeout: ((value: null) => void) | undefined;
     const cancelCommandResultTimeout = () => {
         clearTimeout(commandResultTimer);
         commandResultTimer = undefined;
-        commandResultTimeout = null;
+        commandResultExpired = false;
+    };
+    const startCommandResultTimeout = (delay = UNIDENTIFIED_COMMAND_RESULT_TIMEOUT_MS) => {
+        cancelCommandResultTimeout();
+        commandResultTimer = setTimeout(() => {
+            commandResultExpired = true;
+            resolveCommandResultTimeout?.(null);
+        }, delay);
     };
     const getClearRotation = (clear: ActiveClear) => {
         const id = clear.init?.session_id ?? opts.getClearHookSessionId?.();
@@ -628,8 +631,10 @@ export async function claudeRemote(opts: {
                 const followUpUuid = pushUserMessage(next.message);
                 if (nextSpecialCommand.type === 'compact') {
                     beginCompactCommand(followUpUuid, false);
+                    startCommandResultTimeout();
                 } else if (nextSpecialCommand.type === 'clear') {
                     clearState.active = { uuid: followUpUuid, previousSessionId: currentSessionId };
+                    startCommandResultTimeout();
                 }
                 // See applyInitialTurn: only plain prompts are resolvable
                 // history points.
@@ -740,9 +745,11 @@ export async function claudeRemote(opts: {
                 }
                 message = winner.result.value;
             } else {
-                const next = await (commandResultTimeout
-                    ? Promise.race([pendingResponseNext, commandResultTimeout])
-                    : pendingResponseNext);
+                const next = commandResultExpired ? null : await Promise.race([
+                    pendingResponseNext,
+                    new Promise<null>((resolve) => { resolveCommandResultTimeout = resolve; })
+                ]);
+                resolveCommandResultTimeout = undefined;
                 if (next === null) {
                     cancelCommandResultTimeout();
                     const clear = clearState.active;
@@ -914,8 +921,9 @@ export async function claudeRemote(opts: {
                 const systemStatus = message as SDKSystemMessage;
                 if (systemStatus.status === 'compacting') {
                     compact.sawCompactingStatus = true;
-                    cancelCommandResultTimeout();
+                    if (!compact.initial) startCommandResultTimeout(COMPACT_PROGRESS_TIMEOUT_MS);
                 }
+                if (!compact.initial && systemStatus.compact_result !== undefined) startCommandResultTimeout();
                 if (systemStatus.compact_result !== undefined || (compact.initial && systemStatus.status === 'compacting')) {
                     compact.sawCompactSignal = true;
                 }
@@ -932,6 +940,7 @@ export async function claudeRemote(opts: {
             // (pre_tokens/post_tokens are the context sizes on each side).
             if (compact && isManualCompactBoundaryMessage(message)) {
                 compact.sawCompactSignal = true;
+                if (!compact.initial) startCommandResultTimeout();
                 if (typeof compactMetadata?.pre_tokens === 'number') compact.tokensBefore = compactMetadata.pre_tokens;
                 if (typeof compactMetadata?.post_tokens === 'number') compact.tokensAfter = compactMetadata.post_tokens;
                 logger.debug(`[claudeRemote] compact_boundary tokens: ${compact.tokensBefore} -> ${compact.tokensAfter}`);
@@ -948,19 +957,19 @@ export async function claudeRemote(opts: {
                     correlatesResults = true;
                 }
                 if (clear) {
-                    if (!isClearResult) {
-                        waitForCommandResult(message);
-                        continue;
-                    }
+                    if (!isClearResult) continue;
+                    const resultId = message.session_id;
+                    const succeeded = message.subtype === 'success' && message.is_error !== true;
+                    const rotatedId = clearSessionId ?? (succeeded
+                        && typeof resultId === 'string' && resultId && resultId !== clear.previousSessionId
+                        ? resultId : undefined);
                     cancelCommandResultTimeout();
                     clearState.active = null;
                     pushedUuids.delete(clear.uuid);
                     opts.onResultAccepted?.();
                     updateThinking(false);
-                    const id = message.session_id;
-                    if (message.subtype === 'success' && message.is_error !== true
-                        && typeof id === 'string' && id && id !== clear.previousSessionId) {
-                        bindClearSession(id, clear.init);
+                    if (rotatedId) {
+                        bindClearSession(rotatedId, clear.init);
                         await opts.onReady('Context was reset', undefined, 0);
                     } else {
                         await opts.onReady('Could not reset context');
@@ -968,10 +977,7 @@ export async function claudeRemote(opts: {
                     scheduleNextMessage();
                     continue;
                 }
-                if (compact && !isCompactTurnResult) {
-                    if (!compact.initial) waitForCommandResult(message);
-                    continue;
-                }
+                if (compact && !isCompactTurnResult) continue;
                 if (resultSeq === 1 && specialCommand.type === null && initial) {
                     opts.onFirstResult?.(initial.message);
                 }

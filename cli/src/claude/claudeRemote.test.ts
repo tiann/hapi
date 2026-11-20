@@ -473,15 +473,16 @@ describe('claudeRemote async message handling', () => {
 describe('claudeRemote in-process /clear', () => {
     it.each([
         'success', 'failure', 'untagged-failure', 'eof', 'no-result',
-        'autonomous-eof', 'acknowledged', 'hook', 'late-result', 'late-init'
+        'autonomous-eof', 'acknowledged', 'hook', 'late-result', 'late-init',
+        'late-stale-result', 'tagged-timeout', 'silent-timeout'
     ] as const)('settles an in-process clear on %s', async (outcome) => {
         const querySpy = vi.spyOn(claudeSdk, 'query').mockImplementation(queryMock as typeof claudeSdk.query);
         const { claudeRemote } = await import('./claudeRemote');
         const order: string[] = [];
         const forwarded: SDKMessage[] = [];
         const priorId = 'previous-native-session';
-        const lateRotation = outcome === 'late-result' || outcome === 'late-init';
-        const timesOut = outcome === 'untagged-failure' || lateRotation;
+        const lateRotation = outcome === 'late-result' || outcome === 'late-init' || outcome === 'late-stale-result';
+        const timesOut = lateRotation || outcome === 'untagged-failure' || outcome === 'tagged-timeout' || outcome === 'silent-timeout';
         const success = outcome === 'success' || outcome === 'eof' || outcome === 'hook';
         const resultId = success || lateRotation ? 'fresh-native-session' : priorId;
         const timeoutNotice = 'Claude did not identify the /clear result. Waiting for Claude to exit so background tasks can finish.';
@@ -491,6 +492,7 @@ describe('claudeRemote in-process /clear', () => {
         const result: SDKMessage = {
             type: 'result', subtype: 'success', is_error: false, session_id: priorId, user_message_uuid: 'first-input'
         };
+        const unmatchedResult = { ...result, is_error: true, user_message_uuid: outcome === 'tagged-timeout' ? 'autonomous-input' : undefined };
 
         queryMock.mockImplementationOnce(({ prompt }: { prompt: AsyncIterable<{ uuid: string; message: { content: string } }> }) => ({
             async *[Symbol.asyncIterator]() {
@@ -517,16 +519,21 @@ describe('claudeRemote in-process /clear', () => {
                     yield { type: 'user', isReplay: true, uuid: clear.value?.uuid };
                     return;
                 }
-                yield {
-                    ...result,
-                    is_error: !success,
-                    ...(outcome === 'success' ? { local_command: 'clear' } : {}),
-                    session_id: timesOut ? priorId : resultId,
-                    user_message_uuid: outcome === 'hook' || timesOut ? undefined : clear.value?.uuid
-                };
+                if (timesOut) {
+                    if (outcome !== 'silent-timeout') yield unmatchedResult;
+                } else {
+                    yield {
+                        ...result,
+                        is_error: !success,
+                        ...(outcome === 'success' ? { local_command: 'clear' } : {}),
+                        session_id: resultId,
+                        user_message_uuid: outcome === 'hook' ? undefined : clear.value?.uuid
+                    };
+                }
                 if (timesOut) {
                     expect(order).not.toContain('accepted');
                     await vi.advanceTimersByTimeAsync(31_000);
+                    expect(order).toContain(timeoutNotice);
                 }
                 const followUp = await input.next();
                 if (timesOut) {
@@ -539,6 +546,9 @@ describe('claudeRemote in-process /clear', () => {
                             yield { ...result, session_id: resultId, user_message_uuid: clear.value?.uuid };
                         } else {
                             yield { type: 'system', subtype: 'init', session_id: resultId };
+                            if (outcome === 'late-stale-result') {
+                                yield { ...result, is_error: true, user_message_uuid: clear.value?.uuid };
+                            }
                         }
                     }
                 } else {
@@ -597,8 +607,8 @@ describe('claudeRemote in-process /clear', () => {
                     : [`session:${priorId}`, 'ready', '/clear', 'accepted', completion, 'follow-up']);
             }
             const forwardedResults = forwarded.filter((message) => message.type === 'result');
-            expect(forwardedResults).toEqual(timesOut
-                ? [result, result, { ...result, is_error: true, user_message_uuid: undefined }]
+            expect(forwardedResults).toEqual(timesOut && outcome !== 'silent-timeout'
+                ? [result, result, unmatchedResult]
                 : [result, result]);
         } finally {
             if (timesOut) vi.useRealTimers();
@@ -785,7 +795,7 @@ describe('claudeRemote /compact result reporting', () => {
                 yield { type: 'system', subtype: 'status', status: 'compacting' };
                 yield resultMessage;
                 expect(events).toEqual(['ready']);
-                await vi.advanceTimersByTimeAsync(31_000);
+                await vi.advanceTimersByTimeAsync(5 * 60_000 + 1);
                 expect(events).toEqual(['ready', timeoutNotice]);
                 expect((await input.next()).done).toBe(true);
                 if (identity !== 'absent') {
