@@ -5,7 +5,7 @@ use super::{
 use crate::{
     config::Config,
     rest::Rest,
-    sio::client::{Client as Socket, Connection, Event, ServerAck},
+    sio::client::{Client as Socket, Connection, Event, ServerAck, SessionEvents},
 };
 use futures_util::{future::BoxFuture, FutureExt};
 use serde_json::{json, Value};
@@ -97,7 +97,7 @@ impl SessionClient {
             }
         }
         let initially_archived = super::metadata::hub_archived(&session["metadata"]);
-        let (socket, mut rx) = Socket::start_session(
+        let (socket, mut session_events) = SessionEvents::start(
             config.api_url.clone(),
             config.extra_headers.clone(),
             config.cli_api_token.clone(),
@@ -129,7 +129,7 @@ impl SessionClient {
                     version: session[version].as_u64().unwrap_or(0),
                 },
                 id.clone(),
-                socket.clone(),
+                &session_events,
                 latch.clone(),
                 archived.clone(),
             )
@@ -180,7 +180,7 @@ impl SessionClient {
                     biased;
                     _=closing.changed()=>break,
                     _=heartbeat_control.changed(),if heartbeat.is_some()=>{heartbeat=None;continue},
-                    e=rx.recv()=>match e{Some(e)=>e,None=>break},
+                    e=session_events.recv()=>match e{Some(e)=>e,None=>break},
                     _=async{if let Some(timer)=&mut heartbeat{timer.tick().await;}},if heartbeat.is_some()=>{if let Some(c)=weak.upgrade(){c.alive(true);}else{break} continue}
                 };
                 let Some(client) = weak.upgrade() else { break };
