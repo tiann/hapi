@@ -954,7 +954,10 @@ export class SharedCodexRoot {
             }
             this.acceptSettings(snapshot, true);
             if (verifyUltrafast && !this.hasUltrafastTier && !this.hasOtherEffectiveTier) {
-                if (await this.fallbackToStandard(deadline, operationId)) {
+                if (!await this.fallbackToStandard(deadline, operationId) && current()) {
+                    await this.confirmEffectiveUltrafast(deadline, operationId);
+                }
+                if (current()) {
                     this.completeTierConfirmation(operationId);
                     this.alive();
                 }
@@ -1017,7 +1020,9 @@ export class SharedCodexRoot {
         if (settingsMatch(this.settingsNative, comparable)) {
             const revision = this.settingsRevision;
             const snapshot = record(await this.settingsRequest('thread/resume', { threadId: this.threadId, excludeTurns: true }, deadline));
+            if (canWrite && !canWrite()) return false;
             if (this.settingsRevision === revision) this.acceptSettings(snapshot, true);
+            else if (canWrite) return false;
             if (canWrite && !canWrite()) return false;
             if (settingsMatch(this.settingsNative, comparable)) {
                 if (verifyUltrafast) await this.confirmEffectiveUltrafast(deadline, operationId, requestedUltrafast);
@@ -1067,16 +1072,16 @@ export class SharedCodexRoot {
             if (!current()) throw new Error('Codex settings were superseded by a newer tier selection; refresh before retrying');
             if (this.settingsRevision !== revision) continue;
             this.acceptSettings(snapshot, true);
-            if (this.hasUltrafastTier) return;
+            if (snapshot.serviceTier === 'ultrafast' && this.settings.serviceTier === 'ultrafast') return;
             // A concurrent native client may have selected a different tier.
             if (this.hasOtherEffectiveTier) {
                 if (requestedUltrafast) throw new Error('Codex settings were superseded by a newer tier selection; refresh before retrying');
                 return;
             }
-            if (!await this.fallbackToStandard(deadline, operationId) && requestedUltrafast && !this.hasUltrafastTier) {
-                throw new Error('Codex settings were superseded by a newer tier selection; refresh before retrying');
-            }
-            return;
+            if (await this.fallbackToStandard(deadline, operationId)) return;
+            if (!current()) throw new Error('Codex settings were superseded by a newer tier selection; refresh before retrying');
+            // A selection notification can invalidate the fallback read, but
+            // only the next effective snapshot can satisfy confirmation.
         }
         this.pauseTierConfirmation(operationId);
         throw new Error('Codex settings changed during effective tier confirmation; confirm Standard in settings');

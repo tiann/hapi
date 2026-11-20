@@ -1851,6 +1851,37 @@ it('does not write Standard when native Flex is accepted during the fallback rec
     expect(f.events).not.toHaveBeenCalledWith({ type: 'message', message: 'Codex did not apply Ultrafast; changed to Standard.' });
 });
 
+it.each([false, true])('requires an effective read despite provisional Ultrafast notifications (repeated: %s)', async repeated => {
+    const f = await fixture();
+    await f.root.activate({}, false, true);
+    const original = f.root.client.request.bind(f.root.client);
+    let reads = 0;
+    vi.spyOn(f.root.client, 'request').mockImplementation(async (method, params) => {
+        if (method !== 'thread/resume') return original(method, params);
+        if (++reads === 1) f.native.settings.serviceTier = 'default';
+        const snapshot = await original(method, params);
+        if (reads === 2 || repeated && reads % 2 === 0) {
+            f.native.notify('thread/settings/updated', { threadId: 'thread', threadSettings: { model: 'mock', serviceTier: 'ultrafast' } });
+            expect(f.root.needsTierConfirmation).toBe(true);
+            expect(f.sessionReady).not.toHaveBeenCalled();
+        }
+        return snapshot;
+    });
+    const update = f.root.applySettings({ serviceTier: 'ultrafast' });
+    const fallbackNotice = { type: 'message', message: 'Codex did not apply Ultrafast; changed to Standard.' };
+    if (repeated) {
+        await expect(update).rejects.toThrow('settings changed during effective tier confirmation');
+        expect(f.sessionReady).not.toHaveBeenCalled();
+        expect(f.events).not.toHaveBeenCalledWith(fallbackNotice);
+    } else {
+        await expect(update).resolves.toMatchObject({ applied: { serviceTier: 'standard' } });
+        expect(f.sessionReady).toHaveBeenCalledTimes(1);
+        expect(f.events).toHaveBeenCalledWith(fallbackNotice);
+    }
+    expect(reads).toBe(repeated ? 6 : 4);
+    expect(f.root.needsTierConfirmation).toBe(repeated);
+});
+
 it.each([
     { expectFast: true, effective: 'priority', ready: true },
     { expectFast: true, effective: 'flex', ready: false },
