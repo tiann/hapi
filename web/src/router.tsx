@@ -22,9 +22,7 @@ import {
     shouldShowSessionSidebar,
 } from '@/lib/sessionNavigation'
 import { App } from '@/App'
-import { SessionChat } from '@/components/SessionChat'import { useSessionListView } from '@/hooks/useSessionListView'
-import { isSseDownFor, useSseConnected } from '@/lib/sseHealth'
-import { useEagerSessionPrefetch } from '@/hooks/queries/useEagerSessionPrefetch'
+import { useSessionListView } from '@/hooks/useSessionListView'
 
 import { SessionList } from '@/components/SessionList'
 import { SidebarShowButton } from '@/components/SidebarToggle'
