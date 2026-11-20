@@ -134,11 +134,26 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
     // is generated later in iteration order must not collide with an
     // explicit id declared further down the body (generateFieldId only
     // guards against ids it has already handed out, not ones still to come).
+    //
+    // Two EXPLICIT ids colliding with each other is a separate, genuine
+    // malformation this same pre-scan loop must also catch (bot review,
+    // tiann/hapi#2147, follow-up) — GitHub rejects a form with duplicate
+    // ids outright. Below, `fieldId = explicitFieldId ?? generateFieldId(...)`
+    // only ever runs generateFieldId's own collision check when there's NO
+    // explicit id; two fields both declaring `id: foo` would otherwise both
+    // get `fieldId = 'foo'` uncaught, and since both the dialog and the hub
+    // key answers by id, the second field's answer silently overwrites the
+    // first's, letting one value satisfy two different required fields.
     const usedIds = new Set<string>()
     for (const element of bodyRaw) {
         if (element && typeof element === 'object') {
             const explicitId = asString((element as Record<string, unknown>).id)
-            if (explicitId) usedIds.add(explicitId)
+            if (explicitId) {
+                if (usedIds.has(explicitId)) {
+                    return { id, name, kind: 'unsupported', reason: `Template body has a duplicate field id "${explicitId}"`, githubValid: false }
+                }
+                usedIds.add(explicitId)
+            }
         }
     }
 

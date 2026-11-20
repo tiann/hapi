@@ -375,6 +375,25 @@ body:
         expect(template.githubValid).toBe(false)
         expect(template.reason).toContain('value')
     })
+
+    // Regression (bot review, tiann/hapi#2147, follow-up): two fields
+    // explicitly declaring the same id used to both parse successfully,
+    // each keeping its own `fieldId = explicitFieldId` — generateFieldId's
+    // own collision check never runs for an explicit id at all. Since both
+    // the dialog and the hub key answers by id, the second field's answer
+    // would silently overwrite the first's, letting one value satisfy two
+    // different required fields. GitHub itself rejects a form with
+    // duplicate ids outright.
+    it('is genuinely invalid when two fields declare the same explicit id', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: input\n    id: contact\n    attributes:\n      label: Email\n  - type: input\n    id: contact\n    attributes:\n      label: Phone'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('contact')
+    })
 })
 
 describe('parseLegacyIssueTemplate', () => {
