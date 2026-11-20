@@ -1043,10 +1043,10 @@ describe('runOpencode set-session-config handler', () => {
         }
     });
 
-    it('retries a lost durable-reservation response before native teardown', async () => {
+    it.each(['ECONNRESET', 'ECONNABORTED'] as const)('retries a lost durable-reservation response (%s) before native teardown', async (code) => {
         vi.useFakeTimers();
         harness.triggerClear = true;
-        const transient = Object.assign(new Error('connection reset after commit'), { code: 'ECONNRESET' });
+        const transient = Object.assign(new Error('transient reservation error'), { code });
         harness.reserveOpenCodeClearSession.mockRejectedValueOnce(transient).mockResolvedValueOnce('fresh-session');
         const exit = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
         try {

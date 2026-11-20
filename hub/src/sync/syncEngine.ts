@@ -4529,12 +4529,18 @@ export class SyncEngine {
         const needsAdmission = metadata.capabilities?.openCodeHandoffAdmission === true
         const sourceVersion = source.metadataVersion
         const deadline = performance.now() + DEFAULT_RPC_TIMEOUT_MS
+        const remainingAdmissionMs = () => Math.ceil(deadline - performance.now())
         let writing = false
         let persisted = false
         try {
             if (needsAdmission) {
-                await this.rpcGateway.checkOpenCodeHandoff(sessionId, { action: 'prepare-clear', reservationId })
-                await this.rpcGateway.checkOpenCodeHandoff(sessionId, { action: 'commit-clear', reservationId })
+                const checkAdmission = (action: 'prepare-clear' | 'commit-clear') => {
+                    const timeoutMs = remainingAdmissionMs()
+                    if (timeoutMs <= 0) throw new Error('OpenCode Clear admission timed out')
+                    return this.rpcGateway.checkOpenCodeHandoff(sessionId, { action, reservationId }, timeoutMs)
+                }
+                await checkAdmission('prepare-clear')
+                await checkAdmission('commit-clear')
                 const latest = this.sessionCache.getSessionByNamespace(sessionId, namespace)
                 if (!latest?.active) throw new OpenCodeHandoffRefusal('OpenCode Clear source is no longer active')
                 if (latest.metadataVersion !== sourceVersion) {
@@ -4574,9 +4580,11 @@ export class SyncEngine {
             if (needsAdmission) {
                 // A lost acknowledgement cannot undo the durable decision. The
                 // worker releases this same lease on expiry if settlement is lost.
-                await this.rpcGateway.checkOpenCodeHandoff(sessionId, {
+                const remainingMs = remainingAdmissionMs()
+                const settlement = this.rpcGateway.checkOpenCodeHandoff(sessionId, {
                     action: persisted ? 'finish-clear' : 'cancel-clear', reservationId
-                }).catch(() => {})
+                }, Math.max(1, remainingMs)).catch(() => {})
+                if (remainingMs > 0) await settlement
             }
         }
     }

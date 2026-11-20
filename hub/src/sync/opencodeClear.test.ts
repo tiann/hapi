@@ -108,6 +108,43 @@ describe('SyncEngine.clearOpenCodeSession', () => {
             expect(await engine.reserveOpenCodeClearSession(source.id, 'default')).toMatchObject({ type: 'success' })
         } finally { engine.stop(); store.close() }
     })
+    it('bounds Clear admission and settlement to the remaining admission deadline when commit and cancel acknowledgements time out', async () => {
+        const { store, engine } = createEngine()
+        let now = 1_000
+        const clock = spyOn(performance, 'now').mockImplementation(() => now)
+        try {
+            const source = createClearSource(engine, { lifecycleState: 'active', startedBy: 'runner',
+                capabilities: { openCodeHandoffAdmission: true } })
+            engine.handleSessionAlive({ sid: source.id, time: Date.now() })
+            const observed: Array<{ action: string; timeoutMs?: number }> = []
+            const gateway = (engine as unknown as {
+                rpcGateway: { checkOpenCodeHandoff(id: string, request: { action: string }, timeoutMs?: number): Promise<void> }
+            }).rpcGateway
+            gateway.checkOpenCodeHandoff = async (_id, request, timeoutMs) => {
+                observed.push({ action: request.action, timeoutMs })
+                if (request.action === 'prepare-clear') {
+                    now += 5
+                    return
+                }
+                if (request.action === 'commit-clear') {
+                    now += timeoutMs ?? 30_000
+                    throw new Error('operation has timed out')
+                }
+                await new Promise(() => {})
+            }
+            const result = await Promise.race([
+                engine.reserveOpenCodeClearSession(source.id, 'default'),
+                new Promise<'hung'>(resolve => setTimeout(() => resolve('hung'), 50))
+            ])
+            expect(result).toMatchObject({ type: 'error', code: 'clear_admission_unavailable' })
+            expect(observed).toEqual([
+                { action: 'prepare-clear', timeoutMs: 30_000 },
+                { action: 'commit-clear', timeoutMs: 29_995 },
+                { action: 'cancel-clear', timeoutMs: 1 }
+            ])
+            expect(now).toBe(31_000)
+        } finally { clock.mockRestore(); engine.stop(); store.close() }
+    })
     it.each(['resume', 'reopen'] as const)('allows %s after a failed native cleanup aborts clear', async (action) => {
         const { store, engine } = createEngine()
         try {

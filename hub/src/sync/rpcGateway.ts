@@ -794,8 +794,8 @@ export class RpcGateway {
         }
     }
 
-    async checkOpenCodeHandoff(sessionId: string, admission?: OpenCodeClearAdmission): Promise<void> {
-        const reply = await this.sessionRpc(sessionId, RPC_METHODS.CheckOpenCodeHandoff, admission ?? {}) as { allowed?: boolean; error?: string; code?: string } | null
+    async checkOpenCodeHandoff(sessionId: string, admission?: OpenCodeClearAdmission, timeoutMs?: number): Promise<void> {
+        const reply = await this.sessionRpc(sessionId, RPC_METHODS.CheckOpenCodeHandoff, admission ?? {}, timeoutMs) as { allowed?: boolean; error?: string; code?: string } | null
         if (reply?.code === 'opencode_handoff_refused' && typeof reply.error === 'string') throw new OpenCodeHandoffRefusal(reply.error)
         if (reply?.allowed !== true) throw new Error(reply?.error ?? 'OpenCode handoff admission was not confirmed')
     }
