@@ -853,3 +853,44 @@ describe('claudeRemoteLauncher resume anchor', () => {
     })
 
 })
+
+vi.mock('ink', async original => ({
+    ...await original<typeof import('ink')>(), render: vi.fn()
+}))
+
+describe('Claude terminal display', () => {
+    it.each([false, true])('runs terminal cleanup when rendering fails=%s', async fail => {
+        const { RemoteLauncherBase } = await import('@/modules/common/remote/RemoteLauncherBase')
+        const { RemoteModeDisplay } = await import('@/ui/ink/RemoteModeDisplay')
+        const { render } = await import('ink')
+        const unmount = vi.fn()
+        vi.spyOn(RemoteLauncherBase.prototype as unknown as { hasTTY: boolean }, 'hasTTY', 'get').mockReturnValue(true)
+        vi.spyOn(process.stdin, 'resume').mockReturnThis()
+        vi.spyOn(process.stdin, 'setEncoding').mockReturnThis()
+        vi.spyOn(process.stdin, 'pause').mockReturnThis()
+        const client = createClientStub()
+        const { session, queue } = createSession(client, undefined)
+        vi.mocked(render).mockImplementationOnce(element => {
+            expect(element).toMatchObject({ type: RemoteModeDisplay })
+            if (fail) throw new Error('display failed')
+            return { unmount, rerender: vi.fn(), waitUntilExit: vi.fn(), cleanup: vi.fn(), clear: vi.fn() }
+        })
+        harness.switchAfterCall = 1
+        harness.triggerSwitch = () => { void client.rpcHandlers.get(RPC_METHODS.Switch)?.() }
+        queue.push('hello', { permissionMode: 'default' }, '1')
+        try {
+            if (fail) await expect(claudeRemoteLauncher(session)).rejects.toThrow('display failed')
+            else {
+                await expect(claudeRemoteLauncher(session)).resolves.toBe('switch')
+                expect(unmount).toHaveBeenCalledOnce()
+            }
+            expect(process.stdin.pause).toHaveBeenCalled()
+            expect(client.rpcHandlers.has(RPC_METHODS.Abort)).toBe(true)
+        } finally {
+            session.stopKeepAlive()
+            harness.callCount = 0
+            harness.triggerSwitch = null
+            vi.restoreAllMocks()
+        }
+    })
+})

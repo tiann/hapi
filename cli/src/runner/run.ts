@@ -873,6 +873,9 @@ export async function startRunner(options: { workspaceRoots?: string[] } = {}): 
           detached: true,  // Sessions stay alive when runner stops
           stdio: ['ignore', 'pipe', 'pipe'],  // Capture stdout/stderr for debugging
           env: {
+            // Make JSC collect earlier so idle wrappers keep a lower heap
+            // high-water mark. Placed before process.env so users can override it.
+            BUN_JSC_forceRAMSize: String(256 * 1024 * 1024),
             ...process.env,
             ...extraEnv
           }

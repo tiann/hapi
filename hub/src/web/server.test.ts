@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import zlib from 'node:zlib'
-import { createConfiguration, resetConfigurationForTests } from '../configuration'
+import { createConfiguration } from '../configuration'
 import { Store } from '../store'
 import type { EmbeddedWebAsset } from './embeddedAssets'
 import { createWebApp } from './server'
@@ -81,10 +81,10 @@ afterAll(() => {
     } else {
         process.env.HAPI_HOME = previousHapiHome
     }
-    if (homeDir) {
-        resetConfigurationForTests(homeDir)
-        rmSync(homeDir, { recursive: true, force: true })
-    }
+    // homeDir is deliberately left in place. createConfiguration() is a
+    // process-wide singleton and bun runs every test file in one process, so
+    // test files that run after this one still write settings under homeDir;
+    // removing it made routes/cli.test.ts fail with ENOENT whenever it ran later.
     if (distDir) {
         rmSync(distDir, { recursive: true, force: true })
     }
