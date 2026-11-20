@@ -497,16 +497,18 @@ describe('session model', () => {
         expect(refs).toEqual(lateRef)
     })
 
-    // Regression (bot review, hapi#238, follow-up): the fix above makes a
-    // late-arriving ref visible to the final merge pass — but if combining
-    // it with the target's refs pushes the total over MAX_EXTERNAL_REFS,
-    // the old (pre-follow-up) code re-threw ExternalRefsMergeCapExceededError
-    // there even though messages/scratchlist/job redirects had already
-    // moved to the target by that point — a thrown "merge failed" while the
-    // surviving rows already had split history. The merge must complete
-    // (and the old row still get deleted) rather than throw after those
-    // irreversible side effects.
-    it('completes a deleting merge instead of throwing when a mid-flight link pushes combined refs over the cap', async () => {
+    // Regression (bot review, hapi#238 / hapi#2147, follow-up): the fix
+    // above makes a late-arriving ref visible to the final merge pass —
+    // but if combining it with the target's refs pushes the total over
+    // MAX_EXTERNAL_REFS, re-throwing there (the original follow-up's fix)
+    // skipped the whole round's consolidation, silently losing the exact
+    // ref that just landed — even though messages/scratchlist/job
+    // redirects had already moved to the target by that point, so nothing
+    // about re-throwing was actually safe to begin with. The merge must
+    // complete (old row deleted) AND keep the freshest ref — the one
+    // acknowledged during the merge's own I/O window — trimming the
+    // stalest entry among the target's own refs instead.
+    it('completes a deleting merge and keeps the freshest ref when a mid-flight link pushes combined refs over the cap', async () => {
         const store = new Store(':memory:')
         const events: SyncEvent[] = []
         const cache = new SessionCache(store, createPublisher(events))
@@ -520,6 +522,9 @@ describe('session model', () => {
             source: 'user' as const,
             linkedAt: 1
         }))
+        // Strictly fresher than every targetRefs entry — represents the
+        // link just acknowledged on the old row during the merge's own
+        // scratchlist I/O window, which must survive the trim.
         const lateRef = [{
             kind: 'github_pr' as const,
             repo: 'tiann/hapi',
@@ -527,7 +532,7 @@ describe('session model', () => {
             url: 'https://github.com/tiann/hapi/pull/999',
             role: 'secondary' as const,
             source: 'user' as const,
-            linkedAt: 1
+            linkedAt: 2
         }]
 
         const oldSession = cache.getOrCreateSession(
@@ -562,15 +567,16 @@ describe('session model', () => {
 
         await expect(cache.mergeSessions(oldSession.id, newSession.id, 'default')).resolves.toBeUndefined()
 
-        // Merge completed: old row deleted, its message carried over, and
-        // the target's own 32 refs are intact (the one that would have
-        // pushed it over the cap was skipped this round, not lost mid-way
-        // through a half-applied merge).
+        // Merge completed: old row deleted, its message carried over, the
+        // result stays at the cap, and the ref acknowledged mid-merge
+        // (the freshest one) survived — a stalest target ref was trimmed
+        // instead of the just-landed one.
         expect(store.sessions.getSessionByNamespace(oldSession.id, 'default')).toBeNull()
         expect(store.messages.getMessages(newSession.id).length).toBe(1)
         const merged = store.sessions.getSessionByNamespace(newSession.id, 'default')
-        const refs = (merged?.metadata as { externalRefs?: unknown[] })?.externalRefs
+        const refs = (merged?.metadata as { externalRefs?: Array<{ number: number }> })?.externalRefs
         expect(refs?.length).toBe(32)
+        expect(refs?.some(ref => ref.number === 999)).toBe(true)
     })
 
     it('retains source session when metadata merge exhausts version retries', async () => {

@@ -1,6 +1,6 @@
 import { mergeClaudeSessionIdHistory, mergeReadState } from '@hapi/protocol'
 import { SESSION_LIFECYCLE_IDLE, SESSION_LIFECYCLE_RUNNING } from '@hapi/protocol'
-import { MAX_EXTERNAL_REFS, reconcileExternalRefs, toValidExternalRefs, upsertExternalRef } from '@hapi/protocol/schemas'
+import { MAX_EXTERNAL_REFS, reconcileExternalRefs, toValidExternalRefs, trimExternalRefsToCap, upsertExternalRef } from '@hapi/protocol/schemas'
 import { AgentStateSchema, ExternalRefsSchema, MetadataSchema, SessionPatchSchema, TeamStateSchema } from '@hapi/protocol/schemas'
 import type { BackgroundTask, CodexCollaborationMode, CopilotAgentMode, ExternalRef, PermissionMode, Session, SessionPatch } from '@hapi/protocol/types'
 import type { SessionTurnEndReason, SessionTurnTrigger, Store } from '../store'
@@ -36,7 +36,12 @@ type RuntimeConfigKey = 'permissionMode' | 'model' | 'modelReasoningEffort' | 'e
  */
 export function mergeSessionMetadataForSessionMerge(
     oldMetadata: unknown | null,
-    newMetadata: unknown | null
+    newMetadata: unknown | null,
+    // 'trim' only from the already-committed late pass in mergeSessions
+    // (review finding, tiann/hapi#2147, follow-up) — the default 'throw'
+    // stays for every other caller, since aborting before anything else
+    // has happened loses nothing at all, which trimming never beats.
+    options: { onExternalRefsCapExceeded?: 'throw' | 'trim' } = {}
 ): unknown | null {
     if (!oldMetadata || typeof oldMetadata !== 'object') {
         return newMetadata
@@ -170,7 +175,19 @@ export function mergeSessionMetadataForSessionMerge(
             // links survive; mergeSessionHistory (old row stays alive)
             // catches it and proceeds, since nothing is actually lost there.
             if (combined.length > MAX_EXTERNAL_REFS) {
-                throw new ExternalRefsMergeCapExceededError()
+                if (options.onExternalRefsCapExceeded === 'trim') {
+                    // The caller has already committed to this write
+                    // (review finding, tiann/hapi#2147, follow-up): a
+                    // link acknowledged on the old row during the merge's
+                    // own scratchlist I/O window is, almost by
+                    // definition, the single freshest entry in the
+                    // combined set. Keeping the freshest MAX_EXTERNAL_REFS
+                    // entries means that one survives; the stalest entry
+                    // among everything else is what gets dropped instead.
+                    combined = trimExternalRefsToCap(combined, MAX_EXTERNAL_REFS)
+                } else {
+                    throw new ExternalRefsMergeCapExceededError()
+                }
             }
             if (combined.length !== newRefs.length || combined.some((ref, i) => ref !== newRefs[i])) {
                 merged.externalRefs = combined
@@ -2292,21 +2309,25 @@ export class SessionCache {
             const freshOld = this.store.sessions.getSessionByNamespace(oldSessionId, namespace)
             let mergedMetadata: unknown | null
             try {
-                mergedMetadata = this.mergeSessionMetadata(freshOld?.metadata ?? oldStored.metadata, latest.metadata)
+                // 'trim' only when the old row is about to be deleted
+                // (review finding, hapi#238 / hapi#2147, follow-up):
+                // messages, scratchlist rows, and job redirects have
+                // already moved to newSessionId by this point, so a thrown
+                // "merge failed" here would leave the caller believing the
+                // merge failed while the surviving rows already have split
+                // history — strictly worse than trimming the stalest ref
+                // to stay under the cap. mergeSessionHistory (old row
+                // stays alive) keeps the default 'throw': its own refs are
+                // still safely on its own un-deleted row, so there is
+                // nothing to trim for — skipping this round's
+                // consolidation on the caught error below loses nothing.
+                mergedMetadata = this.mergeSessionMetadata(
+                    freshOld?.metadata ?? oldStored.metadata,
+                    latest.metadata,
+                    options.deleteOldSession ? { onExternalRefsCapExceeded: 'trim' } : undefined
+                )
             } catch (error) {
                 if (!(error instanceof ExternalRefsMergeCapExceededError)) throw error
-                // Unlike mergeSessionMetadataForTransfer's own carve-out
-                // above (which runs before any of this function's other
-                // side effects), re-throwing here would NOT actually abort
-                // anything recoverable (review finding, hapi#238, follow-up):
-                // messages, scratchlist rows, and job redirects have already
-                // moved to newSessionId by this point in the function. The
-                // caller would see a thrown "merge failed" while the
-                // surviving rows already have split history — strictly
-                // worse than just skipping this round's ref consolidation,
-                // which only risks losing the one freshly-arrived ref that
-                // pushed the combined total over the cap (rare: already
-                // near 32 AND a link landed during this exact I/O window).
                 break
             }
             if (mergedMetadata === null || mergedMetadata === latest.metadata) break
@@ -2315,7 +2336,24 @@ export class SessionCache {
                 mergedMetadata,
                 latest.metadataVersion,
                 namespace,
-                { touchUpdatedAt: false }
+                {
+                    touchUpdatedAt: false,
+                    // mergedMetadata.externalRefs is already the complete,
+                    // authoritative union of freshOld + latest (same reason
+                    // mutateSessionExternalRefs's dedicated mutations use
+                    // this flag) — without it, updateSessionMetadata's own
+                    // sparse-write preservation re-unions it against
+                    // latest's still-persisted refs a second time. That
+                    // second union is normally a no-op (every identity in
+                    // latest's refs is already present in mergedMetadata),
+                    // but the trim above can drop one of latest's own
+                    // entries to make room for the freshly-arrived one —
+                    // breaking that invariant and re-exceeding the cap,
+                    // which fell back to discarding the write entirely and
+                    // silently kept latest's untrimmed refs instead (review
+                    // finding, tiann/hapi#2147, follow-up).
+                    replaceExternalRefs: true
+                }
             )
             if (result.result === 'success') {
                 break
@@ -2868,8 +2906,12 @@ export class SessionCache {
         return allocated
     }
 
-    private mergeSessionMetadata(oldMetadata: unknown | null, newMetadata: unknown | null): unknown | null {
-        return mergeSessionMetadataForSessionMerge(oldMetadata, newMetadata)
+    private mergeSessionMetadata(
+        oldMetadata: unknown | null,
+        newMetadata: unknown | null,
+        options?: { onExternalRefsCapExceeded?: 'throw' | 'trim' }
+    ): unknown | null {
+        return mergeSessionMetadataForSessionMerge(oldMetadata, newMetadata, options)
     }
 
     private async mergeSessionMetadataForTransfer(

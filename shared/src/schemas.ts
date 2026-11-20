@@ -425,6 +425,29 @@ export function reconcileExternalRefs(prior: ExternalRef[], next: ExternalRef[])
 }
 
 /**
+ * Keeps only the `cap` freshest entries (same linkedAt/statusCheckedAt key
+ * `reconcileExternalRefs` uses for per-identity ties) — for a caller that
+ * has already committed to completing a write when a union exceeds the cap
+ * (hub/src/sync/sessionCache.ts: a deleting session merge whose other side
+ * effects already moved, so rejecting the write outright is no longer safe
+ * — review finding, tiann/hapi#2147, follow-up). Rejecting the whole union
+ * at that point would silently lose whichever entry just landed, almost
+ * always the freshest one in the set; trimming the stalest entries instead
+ * keeps exactly the one most recently acknowledged.
+ */
+export function trimExternalRefsToCap(refs: ExternalRef[], cap: number): ExternalRef[] {
+    if (refs.length <= cap) return refs
+    return [...refs]
+        .sort((a, b) => {
+            const aKey = refFreshnessKey(a)
+            const bKey = refFreshnessKey(b)
+            if (aKey[0] !== bKey[0]) return bKey[0] - aKey[0]
+            return bKey[1] - aKey[1]
+        })
+        .slice(0, cap)
+}
+
+/**
  * Field-level merge for a generic metadata write (`hub/src/store/sessions.ts`'s
  * mergeContributionFields) — distinct from `reconcileExternalRefs`' union,
  * where prior-only identities survive. Here `next` is the base: an explicit
