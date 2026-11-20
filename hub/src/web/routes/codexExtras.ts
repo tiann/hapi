@@ -837,14 +837,25 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
         throw new Error(`No duplicate Hapi session found for Codex thread: ${options.group.codexSessionId}`)
     }
 
-    const knownKeys = new Set(canonical.comparableKeys)
-    // Keyed by the same comparable key the dedupe uses, so a skipped duplicate
-    // can still hand its delivery evidence to the row that survived (#1717).
-    const canonicalByKey = new Map<string, StoredMessage>()
-    for (const message of canonical.storedMessages) {
-        const key = getComparableStoredMessageKey(message)
-        if (!canonicalByKey.has(key)) canonicalByKey.set(key, message)
+    // A DELIVERED prompt is an event, not just text (#1717). Deduping those by
+    // text alone treated a later "Continue" that answered a blocker as already
+    // present, because an earlier "Continue" was — so the answer was dropped.
+    // Including the delivery time makes distinct occurrences distinct, while a
+    // re-merge of the same history still matches and stays idempotent.
+    //
+    // The previous attempt instead stamped the duplicate's delivery onto the
+    // canonical row. That broke three ways at once: it could mark a FUTURE
+    // SCHEDULED prompt invoked (so the scheduler would never send it), it left
+    // the answering timestamp on a row whose `seq` still sat before the footer,
+    // and it changed state without appending anything so reconciliation was
+    // skipped. Keeping the occurrence as its own row removes all three.
+    const mergeKeyOf = (message: StoredMessage): string => {
+        const base = getComparableStoredMessageKey(message)
+        return isDeliveredOperatorReply(message)
+            ? `${base}\u0000delivered:${operatorReplyDeliveredAt(message)}`
+            : base
     }
+    const knownKeys = new Set(canonical.storedMessages.map(mergeKeyOf))
     const removedSessionIds: string[] = []
     const appendedMessages: StoredMessage[] = []
     let latestActivity = canonical.updatedAt
@@ -863,22 +874,8 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
     for (const source of sessionStates.slice(1)) {
         latestActivity = Math.max(latestActivity, source.updatedAt)
         for (const message of source.storedMessages) {
-            const comparableKey = getComparableStoredMessageKey(message)
+            const comparableKey = mergeKeyOf(message)
             if (knownKeys.has(comparableKey)) {
-                // Same text, so the copy is skipped — but the two occurrences
-                // are not interchangeable when THIS one is the delivery that
-                // answered a blocker. A canonical session whose earlier
-                // "Continue" was already present kept only that earlier
-                // delivery, so reconciliation saw no answer and flagged it
-                // blocked. The surviving row inherits the later evidence.
-                const existing = canonicalByKey.get(comparableKey)
-                if (existing && isDeliveredOperatorReply(message)) {
-                    options.store.messages.applyLaterDeliveryEvidence(existing.id, {
-                        invokedAt: operatorReplyDeliveredAt(message),
-                        receivedAt: message.receivedAt,
-                        agentDelivered: message.agentDelivered
-                    })
-                }
                 continue
             }
 
@@ -926,10 +923,14 @@ async function mergeSingleDuplicateCodexSessionGroup(options: {
 
     if (appendedMessages.length > 0) {
         emitImportedMessageEvents(engine, canonical.sessionId, appendedMessages)
+    }
+    if (removedSessionIds.length > 0) {
+        // Whenever a merge happened, not only when rows were appended (#1717).
         // Live ingestion installs each copied footer as it replays, and a
         // copied reply never passes through the delivery callback — so the
-        // canonical row entered Blocked on a footer its own combined
-        // transcript answers. Derive once from the whole thing instead (#1717).
+        // canonical row entered Blocked on a footer its own combined transcript
+        // answers. Gating this on "did we append?" also meant a merge that
+        // only changed delivery state reconciled nothing at all.
         engine?.reconcileNotifySignalAfterImport(canonical.sessionId)
     }
 

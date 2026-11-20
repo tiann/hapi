@@ -710,6 +710,33 @@ function UnblockDialogHost(props: {
 }
 
 /**
+ * Which blocked row the jump pill should travel to (#1717).
+ *
+ * The pill draws an arrow from measured off-screen counts, but the target was
+ * chosen by a cursor cycling through every blocker in update order — so with a
+ * newer blocker already visible and an older one below the fold, the arrow
+ * pointed down and the first click selected the row already on screen. The
+ * operator had to click twice to go where the arrow said.
+ *
+ * A single direction is honoured by travelling to the nearest off-screen row
+ * that way. With blockers both above and below, the arrow is not promising one
+ * direction, so the cursor keeps cycling and repeated clicks still reach
+ * everything.
+ */
+export function chooseBlockedJumpTarget(options: {
+    direction: BlockedJumpDirection
+    above: string[]
+    below: string[]
+    fallbackId: string
+}): string {
+    const { direction, above, below, fallbackId } = options
+    // `above` is in document order, so the LAST entry is nearest the viewport.
+    if (direction === 'up' && above.length > 0) return above[above.length - 1]!
+    if (direction === 'down' && below.length > 0) return below[0]!
+    return fallbackId
+}
+
+/**
  * Share the blocked rows missing from the DOM out across the sections that own
  * them (#1717).
  *
@@ -3828,7 +3855,34 @@ export function SessionList(props: {
         // on screen — a filter they set is not ours to discard speculatively.
         const cursor = blockedJumpCursorRef.current % blockedSessions.length
         blockedJumpCursorRef.current = cursor + 1
-        const target = blockedSessions[cursor]!
+        // Measured at click time rather than from the counts the pill renders,
+        // which say how many are off-screen but not which.
+        const container = scrollContainerRef.current
+        const above: string[] = []
+        const below: string[] = []
+        if (container) {
+            const bounds = container.getBoundingClientRect()
+            for (const row of Array.from(
+                container.querySelectorAll<HTMLElement>('[data-session-blocked]')
+            )) {
+                const id = row.getAttribute('data-session-id')
+                if (!id) continue
+                const rect = row.getBoundingClientRect()
+                const panel = row.closest('.collapsible-panel')
+                if (panel !== null && !panel.hasAttribute('data-open')) continue
+                if (rect.height <= 0) continue
+                if (rect.bottom <= bounds.top) above.push(id)
+                else if (rect.top >= bounds.bottom) below.push(id)
+            }
+        }
+        const targetId = chooseBlockedJumpTarget({
+            direction: blockedDirection,
+            above,
+            below,
+            fallbackId: blockedSessions[cursor]!.id
+        })
+        const target = blockedSessions.find((session) => session.id === targetId)
+            ?? blockedSessions[cursor]!
         if (!renderedIds.has(target.id)) {
             // Reveal the target through transient state only. Writing
             // `listView` / `machineFilter` persists to local storage, so a

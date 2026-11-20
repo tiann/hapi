@@ -748,57 +748,6 @@ describe('transferBlockedAck across a merge that copies its own messages (#1717)
         expect(copied.agentDelivered).toBe(1)
     })
 
-    it('hands a skipped duplicate\'s delivery evidence to the row that survived', () => {
-        // Duplicate reconciliation dedupes user prompts by their TEXT, so a
-        // second "Continue" is skipped as already present. The two are not
-        // interchangeable when the skipped one is the delivery that answered a
-        // blocker: the canonical session kept only its earlier delivery, so
-        // reconciliation saw no answer and flagged it blocked. Rather than
-        // loosen the dedupe and copy the prompt twice, the surviving row
-        // inherits the later evidence.
-        const store = new Store(':memory:')
-        const cache = new SessionCache(store, { emit: (_e: SyncEvent) => {} } as EventPublisher)
-        const session = cache.getOrCreateSession('eviction', { path: '/tmp', host: 'h' }, null, 'default')
-        const base = Date.now() - 600_000
-
-        const earlier = store.messages.addMessage(session.id, {
-            role: 'user',
-            content: { type: 'text', text: 'Continue' },
-            meta: { sentFrom: 'webapp' }
-        }, 'early', null, base, base)
-        store.messages.markMessagesInvoked(session.id, ['early'], base + 1_000)
-
-        expect(store.messages.applyLaterDeliveryEvidence(earlier.id, {
-            invokedAt: base + 10_000,
-            receivedAt: base + 9_000,
-            agentDelivered: 1
-        })).toBe(true)
-
-        const row = store.messages.getAllMessages(session.id)
-            .find((message) => message.id === earlier.id)
-        expect(row?.invokedAt).toBe(base + 10_000)
-        expect(row?.receivedAt).toBe(base + 9_000)
-    })
-
-    it('never moves delivery evidence backwards', () => {
-        // An earlier occurrence must not un-deliver a later one.
-        const store = new Store(':memory:')
-        const cache = new SessionCache(store, { emit: (_e: SyncEvent) => {} } as EventPublisher)
-        const session = cache.getOrCreateSession('eviction-back', { path: '/tmp', host: 'h' }, null, 'default')
-        const base = Date.now() - 600_000
-
-        const row = store.messages.addMessage(session.id, {
-            role: 'user',
-            content: { type: 'text', text: 'Continue' },
-            meta: { sentFrom: 'webapp' }
-        }, 'late', null, base, base)
-        store.messages.markMessagesInvoked(session.id, ['late'], base + 10_000)
-
-        expect(store.messages.applyLaterDeliveryEvidence(row.id, { invokedAt: base + 1_000 })).toBe(false)
-        expect(store.messages.getAllMessages(session.id)
-            .find((message) => message.id === row.id)?.invokedAt).toBe(base + 10_000)
-    })
-
     it('falls back to createdAt when copying history written before the column existed', () => {
         const store = new Store(':memory:')
         const cache = new SessionCache(store, { emit: (_e: SyncEvent) => {} } as EventPublisher)

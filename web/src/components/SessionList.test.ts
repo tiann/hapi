@@ -4,6 +4,7 @@ import type { SessionSummary } from '@/types/api'
 import { sessionIsUnread } from '@/lib/sessionAttention'
 import {
     allocateHiddenBlockers,
+    chooseBlockedJumpTarget,
     attributeCollapsedBlockers,
     computeOpenSessionTickRatio,
     deduplicateSessionsByAgentId,
@@ -1216,5 +1217,61 @@ describe('allocateHiddenBlockers (#1717 per-section jump direction)', () => {
     it('handles nothing missing and nothing collapsed', () => {
         expect(allocateHiddenBlockers(0, [2, 2])).toEqual([0, 0])
         expect(allocateHiddenBlockers(2, [0, 0])).toEqual([0, 0])
+    })
+})
+
+describe('chooseBlockedJumpTarget (#1717 jump follows its own arrow)', () => {
+    it('travels down to the off-screen row when the arrow points down', () => {
+        // The bug: with a newer blocker already visible and an older one below
+        // the fold, the arrow pointed down but the cursor selected the visible
+        // row, so the first click appeared to do nothing and the operator had
+        // to click again to go where the arrow said.
+        expect(chooseBlockedJumpTarget({
+            direction: 'down',
+            above: [],
+            below: ['older-below'],
+            fallbackId: 'newer-visible'
+        })).toBe('older-below')
+    })
+
+    it('travels to the NEAREST row above when the arrow points up', () => {
+        // `above` is in document order, so the last entry is the closest one.
+        expect(chooseBlockedJumpTarget({
+            direction: 'up',
+            above: ['far-above', 'near-above'],
+            below: [],
+            fallbackId: 'visible'
+        })).toBe('near-above')
+    })
+
+    it('keeps cycling when blockers lie both ways', () => {
+        // The arrow is not promising a direction, so repeated clicks should
+        // still reach everything rather than pinning one side.
+        expect(chooseBlockedJumpTarget({
+            direction: 'both',
+            above: ['a'],
+            below: ['b'],
+            fallbackId: 'cursor-pick'
+        })).toBe('cursor-pick')
+    })
+
+    it('falls back when the arrow points somewhere with nothing measurable', () => {
+        // Filter-hidden blockers are not in the DOM, so a direction can be
+        // drawn with no row to travel to; the cursor still has to work.
+        expect(chooseBlockedJumpTarget({
+            direction: 'down',
+            above: [],
+            below: [],
+            fallbackId: 'cursor-pick'
+        })).toBe('cursor-pick')
+    })
+
+    it('falls back when there is no direction at all', () => {
+        expect(chooseBlockedJumpTarget({
+            direction: 'none',
+            above: ['a'],
+            below: ['b'],
+            fallbackId: 'cursor-pick'
+        })).toBe('cursor-pick')
     })
 })
