@@ -422,13 +422,16 @@ impl<T: Clone> MessageQueue2<T> {
             biased;
             Ok(_) = abort.wait_for(|v|*v) => false,
             Ok(ready) = rx => ready,
-            else => std::future::pending().await,
+            else => false,
         };
-        if ready && !*abort.borrow() {
-            queue.lock().unwrap().collect(deferred)
-        } else {
-            Ok(None)
+        if !ready {
+            return Ok(None);
         }
+        let mut q = queue.lock().unwrap();
+        if *abort.borrow() {
+            return Ok(None);
+        }
+        q.collect(deferred)
     }
     fn ids(batch: &Batch<T>) -> impl Iterator<Item = &String> {
         batch
@@ -853,6 +856,40 @@ console.log(JSON.stringify(rows))
         assert!(old.await.unwrap().is_none());
         assert!(replaced.await.unwrap().is_none());
     }
+    #[tokio::test]
+    async fn reset_finishes_wait_without_an_abort_sender() {
+        let q = Mutex::new(MessageQueue2::new(u8::to_string));
+        let mut wait = Box::pin(MessageQueue2::wait(&q, watch::channel(false).1, false));
+        assert!(wait.as_mut().now_or_never().is_none());
+        q.lock().unwrap().reset(false);
+        assert!(wait.now_or_never().unwrap().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn cancellation_while_waiter_reacquires_lock_preserves_batch() {
+        let q = Mutex::new(MessageQueue2::new(u8::to_string));
+        q.lock().unwrap().on_batch_consumed = Some(Box::new(|_| panic!("cancelled batch ACK")));
+        let (abort, signal) = watch::channel(false);
+        let mut wait = Box::pin(MessageQueue2::wait(&q, signal, false));
+        assert!(wait.as_mut().now_or_never().is_none());
+        std::thread::scope(|scope| {
+            let mut guard = q.lock().unwrap();
+            guard
+                .enqueue(Placement::Push, "one".into(), 1, Some("id".into()), None)
+                .unwrap();
+            let (started, polling) = std::sync::mpsc::sync_channel(0);
+            let waiting = scope.spawn(move || {
+                started.send(()).unwrap();
+                wait.now_or_never().unwrap().unwrap()
+            });
+            polling.recv().unwrap();
+            abort.send_replace(true);
+            drop(guard);
+            assert!(waiting.join().unwrap().is_none());
+        });
+        assert_eq!(q.lock().unwrap().pending_local_ids(), ["id"]);
+    }
+
     #[test]
     fn admission_filters_and_reservation_release() {
         let mut q = MessageQueue2::new(u8::to_string);
