@@ -2083,21 +2083,27 @@ export function SessionList(props: {
     const [toolbarRowBoxPx, setToolbarRowBoxPx] = useState(0)
 
     const searchChromeDirtyRef = useRef(true)
+    const prevSearchExpandedRef = useRef(searchExpanded)
+    const prevHasQueryRef = useRef(searchQuery.length > 0)
     const [, bumpSearchChromeTick] = useState(0)
     const searchNodeRef = useRef<HTMLElement | null>(null)
     const searchMutationObserverRef = useRef<MutationObserver | null>(null)
     const observedChromePartsRef = useRef<Set<HTMLElement>>(new Set())
 
     const syncSearchChromeObservers = useCallback((search: HTMLElement | null) => {
-        searchNodeRef.current = search
         const ro = actionsObserverRef.current
-        if (!search) {
-            searchMutationObserverRef.current?.disconnect()
-            searchMutationObserverRef.current = null
+        const prevSearch = searchNodeRef.current
+        if (prevSearch && prevSearch !== search) {
             if (ro) {
+                ro.unobserve(prevSearch)
                 for (const el of observedChromePartsRef.current) ro.unobserve(el)
             }
             observedChromePartsRef.current.clear()
+            searchMutationObserverRef.current?.disconnect()
+            searchMutationObserverRef.current = null
+        }
+        searchNodeRef.current = search
+        if (!search) {
             return
         }
         if (ro) {
@@ -2138,6 +2144,7 @@ export function SessionList(props: {
         headerActionsRef.current = node
         actionsObserverRef.current?.disconnect()
         actionsObserverRef.current = null
+        observedChromePartsRef.current.clear()
         // Search expand unmounts this node — keep the last positive width so
         // we do not fall back to a permissive unmeasured budget mid-cycle.
         if (!node || typeof ResizeObserver === 'undefined') return
@@ -3120,6 +3127,12 @@ export function SessionList(props: {
     }, [])
 
     useLayoutEffect(() => {
+        const hasQuery = searchQuery.length > 0
+        if (prevSearchExpandedRef.current !== searchExpanded || prevHasQueryRef.current !== hasQuery) {
+            prevSearchExpandedRef.current = searchExpanded
+            prevHasQueryRef.current = hasQuery
+            searchChromeDirtyRef.current = true
+        }
         const search = headerRowRef.current?.querySelector<HTMLElement>('[data-testid="session-list-search"]')
         if (searchChromeDirtyRef.current || typeof ResizeObserver === 'undefined') {
             searchChromeDirtyRef.current = false

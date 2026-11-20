@@ -243,4 +243,80 @@ describe('SessionList header measurement optimization', () => {
         // Without ResizeObserver, it falls back to measuring on every commit (reads increase)
         expect(getSearchStyleReads()).toBeGreaterThan(initialReads)
     })
+
+    it('re-measures search chrome and sets minWidth floor when collapsing search with a non-empty query', () => {
+        const getComputedStyleSpy = vi.spyOn(window, 'getComputedStyle')
+        const getSearchStyleReads = () => getComputedStyleSpy.mock.calls.filter(
+            ([el]) => el instanceof HTMLElement && el.getAttribute('data-testid') === 'session-list-search'
+        ).length
+
+        renderSessionList(sessions(5))
+        const initialReads = getSearchStyleReads()
+        expect(initialReads).toBe(1)
+
+        // Expand search
+        const searchButton = screen.getByRole('button', { name: /search/i })
+        act(() => {
+            fireEvent.click(searchButton)
+        })
+
+        // Type a query so that when collapsed, the clear button should be rendered and measured
+        const searchInput = screen.getByRole('searchbox')
+        act(() => {
+            fireEvent.change(searchInput, { target: { value: 'bug' } })
+        })
+
+        const readsBeforeBlur = getSearchStyleReads()
+
+        // Collapse search by blurring the input
+        act(() => {
+            fireEvent.blur(searchInput, { relatedTarget: document.body })
+        })
+
+        // On collapse with a non-empty query, search chrome must be re-measured synchronously
+        expect(getSearchStyleReads()).toBeGreaterThan(readsBeforeBlur)
+
+        // And the search element should have a positive minWidth floor so the clear button fits
+        const searchElement = document.querySelector<HTMLElement>('[data-testid="session-list-search"]')
+        expect(searchElement?.style.minWidth).not.toBe('')
+        expect(searchElement?.style.minWidth).not.toBe('0px')
+    })
+
+    it('unobserves the search root and its chrome parts when the list empties', () => {
+        const initial = sessions(5)
+        const { rerender } = renderSessionList(initial, { renderHeader: true })
+
+        const searchElement = document.querySelector<HTMLElement>('[data-testid="session-list-search"]')
+        expect(searchElement).not.toBeNull()
+
+        const ro = observers[0]
+        expect(ro).toBeDefined()
+        expect(ro.targets.has(searchElement!)).toBe(true)
+
+        // Empty the sessions list so that the search root unmounts while header row stays mounted
+        rerender(
+            <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+                <ToastProvider>
+                    <I18nProvider>
+                        <SessionList
+                            sessions={[]}
+                            selectedSessionId={OPEN_SESSION_ID}
+                            onSelect={vi.fn()}
+                            onNewSession={vi.fn()}
+                            onRefresh={vi.fn()}
+                            isLoading={false}
+                            renderHeader={true}
+                            api={null}
+                        />
+                    </I18nProvider>
+                </ToastProvider>
+            </QueryClientProvider>
+        )
+
+        // Search element is unmounted
+        expect(document.querySelector('[data-testid="session-list-search"]')).toBeNull()
+
+        // The detached search element must be unobserved from ResizeObserver
+        expect(ro.targets.has(searchElement!)).toBe(false)
+    })
 })
