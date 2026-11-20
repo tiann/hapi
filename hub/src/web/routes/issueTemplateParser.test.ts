@@ -358,6 +358,23 @@ body:
         expect(template.githubValid).toBe(false)
         expect(template.reason).toContain('label')
     })
+
+    // Regression (bot review, tiann/hapi#2147, follow-up): markdown's own
+    // `attributes.value` was never validated at all — a form with a valid
+    // input field alongside a markdown block missing it used to come back
+    // githubValid: true (the empty-string fallback made it look like a
+    // normal, usable field), even though GitHub itself rejects a form
+    // missing this. Wrongly counted as local .github-inheritance coverage.
+    it('is genuinely invalid when a markdown field is missing its required value', () => {
+        const template = parseIssueFormYaml(
+            'x.yml',
+            'name: Bug\ndescription: Bug\nbody:\n  - type: markdown\n    attributes: {}\n  - type: input\n    id: contact\n    attributes:\n      label: Contact'
+        )
+        expect(template.kind).toBe('unsupported')
+        if (template.kind !== 'unsupported') return
+        expect(template.githubValid).toBe(false)
+        expect(template.reason).toContain('value')
+    })
 })
 
 describe('parseLegacyIssueTemplate', () => {

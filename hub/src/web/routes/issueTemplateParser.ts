@@ -152,7 +152,19 @@ export function parseIssueFormYaml(id: string, raw: string): IssueTemplate {
         const attrs = asRecord(elObj.attributes)
 
         if (type === 'markdown') {
-            fields.push({ kind: 'markdown', value: asString(attrs.value) ?? '' })
+            // `attributes.value` is required for a markdown element — GitHub
+            // rejects a form missing it outright (bot review,
+            // tiann/hapi#2147, follow-up). Substituting '' used to let a
+            // form with this exact malformation parse as a normal, usable
+            // field (never caught by any check elsewhere, since markdown
+            // carries no label/options to validate) — one GitHub's own
+            // chooser would reject, but Boards' own `.github`-inheritance
+            // logic would still have counted it as valid local coverage.
+            const value = asString(attrs.value)
+            if (!value) {
+                return { id, name, kind: 'unsupported', reason: 'A "markdown" field is missing a value', githubValid: false }
+            }
+            fields.push({ kind: 'markdown', value })
             continue
         }
 
