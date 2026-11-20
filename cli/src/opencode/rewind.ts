@@ -55,6 +55,8 @@ export class OpenCodeRuntimeGate {
     readonly workerId = randomUUID();
     private recovering = false;
     private clearGeneration = 0;
+    /** The Hub persisted a Clear replacement; this source only ends from here. */
+    private clearSettled = false;
     private clearAdmission?: {
         id: string;
         phase: 'prepared' | 'committed' | 'revoked';
@@ -76,7 +78,7 @@ export class OpenCodeRuntimeGate {
 
     assertHandoffAllowed(): void {
         this.assertSessionOpen();
-        if (this.liveClearAdmission()) throw new OpenCodeHandoffRefusedError('OpenCode Clear is in progress.');
+        if (this.clearSettled || this.liveClearAdmission()) throw new OpenCodeHandoffRefusedError('OpenCode Clear is in progress.');
     }
 
     private assertSessionOpen(): void {
@@ -102,6 +104,9 @@ export class OpenCodeRuntimeGate {
         const current = this.liveClearAdmission();
         const matches = current?.id === reservationId;
         if (action === 'cancel-clear' || action === 'finish-clear') {
+            // finish-clear precedes the reserve response and source cleanup. Keep
+            // handoffs fenced after releasing the lease's recovery hold.
+            if (matches && action === 'finish-clear' && current.phase === 'committed') this.clearSettled = true;
             if (matches) this.releaseClearAdmission();
             return;
         }

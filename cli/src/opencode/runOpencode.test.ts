@@ -550,6 +550,36 @@ describe('runOpencode set-session-config handler', () => {
         } finally { vi.useRealTimers(); }
     });
 
+    it('refuses local handoff after finish-clear until the cleared source exits, and still expires an unsettled lease', async () => {
+        await runOpencode({ startingMode: 'remote' });
+        vi.useFakeTimers();
+        try {
+            const handler = (name: string) => harness.session.rpcHandlerManager.registerHandler.mock.calls.find(([method]) => method === name)![1];
+            const admission = handler(RPC_METHODS.CheckOpenCodeHandoff);
+            const handoff = handler(RPC_METHODS.HandoffLocal);
+            const send = (action: string, reservationId: string) => admission({ action, reservationId });
+
+            // Unsettled: a committed lease whose settlement is lost still expires.
+            send('prepare-clear', 'lost');
+            send('commit-clear', 'lost');
+            expect(() => handoff({})).toThrow('OpenCode Clear is in progress.');
+            await vi.advanceTimersByTimeAsync(DEFAULT_RPC_TIMEOUT_MS + 1);
+            expect(() => admission({})).not.toThrow();
+
+            // Settled: the Hub persisted the replacement and sent finish-clear
+            // before its reserve response. The source must stay fenced.
+            send('prepare-clear', 'persisted');
+            send('commit-clear', 'persisted');
+            send('finish-clear', 'persisted');
+            expect(() => handoff({})).toThrow(OpenCodeHandoffRefusedError);
+            await vi.advanceTimersByTimeAsync(DEFAULT_RPC_TIMEOUT_MS + 1);
+            expect(() => handoff({})).toThrow('OpenCode Clear is in progress.');
+            expect(() => admission({})).toThrow('OpenCode Clear is in progress.');
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it('returns an untagged retryable error when a reconnected Clear retry arrives before the previous prepared lease expires', async () => {
         await runOpencode({ startingMode: 'remote' });
         vi.useFakeTimers();
