@@ -752,18 +752,19 @@ export async function claudeRemote(opts: {
                         pushedUuids.delete(pending.uuid);
                     }
                     const rotatedId = clear ? getClearRotation(clear) : undefined;
-                    clearState.active = null;
+                    clearState.active = rotatedId ? null : clear;
                     compactState.active = null;
-                    opts.onResultAccepted?.();
-                    updateThinking(false);
-                    if (rotatedId) {
-                        bindClearSession(rotatedId, clear?.init);
-                        await opts.onReady('Context was reset', undefined, 0);
-                    } else {
-                        await opts.onReady(unidentifiedCommandResult(clear ? 'clear' : 'compact'));
-                    }
                     inputEnded = true;
                     messages.end();
+                    opts.onResultAccepted?.();
+                    updateThinking(false);
+                    const waitNotice = 'Waiting for Claude to exit so background tasks can finish.';
+                    if (rotatedId) {
+                        bindClearSession(rotatedId, clear?.init);
+                        await opts.onReady(`Context was reset. ${waitNotice}`, undefined, 0);
+                    } else {
+                        await opts.onReady(`${unidentifiedCommandResult(clear ? 'clear' : 'compact')}. ${waitNotice}`);
+                    }
                     continue;
                 }
                 pendingResponseNext = null;
@@ -779,10 +780,6 @@ export async function claudeRemote(opts: {
                 `subtype=${'subtype' in message ? String((message as any).subtype) : 'n/a'}`
             );
             logger.debugLargeJson(`[claudeRemote] Message ${message.type}`, message);
-
-            if (timedOutCommand && isCommandResult(message, timedOutCommand.uuid, timedOutCommand.command, false)) {
-                continue;
-            }
 
             // Autonomous rounds (background tasks, scheduled follow-ups) stream
             // assistant messages after the previous result flipped thinking off;
@@ -812,8 +809,14 @@ export async function claudeRemote(opts: {
                 continue;
             }
             const clearSessionId = clear ? getClearRotation(clear) : undefined;
-            const isClearResult = clear !== null && isCommandResult(message, clear.uuid, 'clear',
-                clearSessionId !== undefined && message.session_id === clearSessionId);
+            const matchesClearSession = clearSessionId !== undefined && message.session_id === clearSessionId;
+            const isClearResult = clear !== null
+                && isCommandResult(message, clear.uuid, 'clear', matchesClearSession)
+                && (!timedOutCommand || message.user_message_uuid === clear.uuid || matchesClearSession);
+            if (timedOutCommand && !isClearResult
+                && isCommandResult(message, timedOutCommand.uuid, timedOutCommand.command, false)) {
+                continue;
+            }
 
             const compactMetadata =
                 message.type === 'system' && message.subtype === 'compact_boundary'
@@ -936,7 +939,7 @@ export async function claudeRemote(opts: {
 
             // Handle result messages
             if (message.type === 'result') {
-                if (timedOutCommand) {
+                if (timedOutCommand && !isClearResult) {
                     updateThinking(false);
                     continue;
                 }
@@ -1064,7 +1067,7 @@ export async function claudeRemote(opts: {
         const clear = clearState.active;
         const compact = compactState.active;
         const pending = clear ?? (compact?.initial === false ? compact : null);
-        if (pending && !opts.signal?.aborted && !(clear && getClearRotation(clear))) {
+        if (pending && !timedOutCommand && !opts.signal?.aborted && !(clear && getClearRotation(clear))) {
             const command = clear ? 'clear' : 'compact';
             const acknowledged = !pushedUuids.has(pending.uuid)
                 || compact?.sawCompactingStatus || compact?.sawCompactSignal;
