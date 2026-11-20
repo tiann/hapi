@@ -186,9 +186,21 @@ export class SharedCodexRoot {
                 const slash = text.trim().startsWith('/');
                 let resolved: string | null = text;
                 if (slash) {
-                    // Once the command is dispatched, its ledger owns cancel.
-                    releaseHeld();
-                    resolved = await this.queue.command(id, () => this.command(text));
+                    for (;;) {
+                        if (this.needsTierConfirmation) await this.inputGate;
+                        if (this.closed || this.stopping || !stillHeld() || this.queue.isHeldCancellation(id)) return;
+                        try {
+                            resolved = await this.queue.command(id, () => this.command(text), () => {
+                                if (!stillHeld()) throw new QueueAdmissionPaused('Command was canceled before dispatch.');
+                                // The command ledger takes over cancellation
+                                // only after the durable preflight succeeds.
+                                releaseHeld();
+                            });
+                            break;
+                        } catch (error) {
+                            if (!(error instanceof QueueAdmissionPaused)) throw error;
+                        }
+                    }
                     if (resolved !== null && !this.heldMessages.has(id)) this.heldMessages.set(id, attempt);
                 }
                 if (resolved === null) { this.session.emitMessagesConsumed([id], { clearQueuedThinkingGrace: true }); return; }
@@ -798,29 +810,36 @@ export class SharedCodexRoot {
         const confirmsTier = config.serviceTier !== undefined || this.hasUltrafastTier;
         const confirmed = await this.writeNativeSettings(params, params, deadline, operationId);
         if (config.collaborationMode) this.pendingLaunchCollaborationMode = undefined;
-        this.confirmSettingsWrite(confirmed, explicitTier, confirmsTier, fallbackNotice);
+        await this.confirmSettingsWrite(confirmed, explicitTier, confirmsTier, fallbackNotice);
         this.alive(); return { applied: this.settings };
     }
-    private confirmSettingsWrite(operationId: number | undefined, explicitTier: boolean, confirmsTier: boolean, fallbackNotice?: string): void {
+    private async confirmSettingsWrite(operationId: number | undefined, explicitTier: boolean, confirmsTier: boolean, fallbackNotice?: string): Promise<void> {
         if (operationId === undefined || !this.isCurrentTierOperation(operationId)) return;
         if (explicitTier) this.serviceTierExplicit = true;
-        if (fallbackNotice) this.notice(fallbackNotice);
-        if (confirmsTier) this.completeTierConfirmation(operationId);
+        if (confirmsTier) await this.completeTierConfirmation(operationId);
+        if (fallbackNotice && this.isCurrentTierOperation(operationId)) this.notice(fallbackNotice);
     }
-    private completeTierConfirmation(operationId = ++this.tierOperationCounter): void {
+    private async completeTierConfirmation(operationId = ++this.tierOperationCounter): Promise<void> {
         if (!this.isCurrentTierOperation(operationId)) return;
         this.confirmedTierOperation = operationId;
         this.confirmedTierValue = this.settingsNative.serviceTier;
-        this.tierConfirmationResolved = true;
         const paused = this.tierConfirmationPending;
         const metadata = this.session.getMetadata();
         const confirmedTier = this.serviceTierExplicit ? this.settings.serviceTier ?? undefined : undefined;
-        if (!paused && metadata?.codexTierConfirmationPending !== true && metadata?.codexPendingServiceTier === undefined
-            && metadata?.codexConfirmedServiceTier === confirmedTier && metadata?.codexServiceTierExplicit === this.serviceTierExplicit) return;
+        if (paused || metadata?.codexTierConfirmationPending === true || metadata?.codexPendingServiceTier !== undefined
+            || metadata?.codexConfirmedServiceTier !== confirmedTier || metadata?.codexServiceTierExplicit !== this.serviceTierExplicit) {
+            this.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: false,
+                codexServiceTierExplicit: this.serviceTierExplicit, codexConfirmedServiceTier: confirmedTier, codexPendingServiceTier: undefined }));
+        }
+        if (this.activated && !await this.session.flushMetadata()) {
+            this.pauseTierConfirmation(operationId);
+            throw new Error('Codex applied the tier, but HAPI could not confirm saving it. Reconnect before changing the service tier.');
+        }
+        if (!this.isCurrentTierOperation(operationId) || this.closed || this.stopping) return;
+        this.tierConfirmationResolved = true;
+        if (!this.tierConfirmationPending) return;
         this.tierConfirmationPending = false;
         this.pendingLaunchCollaborationMode = undefined;
-        this.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: false,
-            codexServiceTierExplicit: this.serviceTierExplicit, codexConfirmedServiceTier: confirmedTier, codexPendingServiceTier: undefined }));
         this.publishSteering();
         if (paused && this.activated) {
             this.alive(); this.inputReady(); this.session.emitSessionReady();
@@ -878,7 +897,7 @@ export class SharedCodexRoot {
                 ...(effectiveModel ? { model: effectiveModel } : {})
             }, deadline, operationId);
             if (resolved.params.collaborationMode) this.pendingLaunchCollaborationMode = undefined;
-            this.confirmSettingsWrite(confirmed, explicitTier, confirmsTier, resolved.fallbackNotice);
+            await this.confirmSettingsWrite(confirmed, explicitTier, confirmsTier, resolved.fallbackNotice);
             this.alive();
         });
         this.settingsWrites = operation;
@@ -922,7 +941,7 @@ export class SharedCodexRoot {
             if (!current()) return;
             this.acceptSettings(snapshot, true);
             if (explicitTier) this.serviceTierExplicit = true;
-            this.completeTierConfirmation(operationId);
+            await this.completeTierConfirmation(operationId);
             this.alive();
             if (fallbackNotice) this.notice(fallbackNotice);
         } catch {
@@ -968,10 +987,10 @@ export class SharedCodexRoot {
             if (this.settingsRevision !== revision) {
                 if (verifyUltrafast && this.hasUltrafastTier) {
                     await this.confirmEffectiveUltrafast(deadline, operationId);
-                    if (current()) this.completeTierConfirmation(operationId);
+                    if (current()) await this.completeTierConfirmation(operationId);
                 }
                 else if (params.serviceTier !== undefined && settingsMatch(this.settingsNative, { serviceTier: params.serviceTier })) {
-                    this.completeTierConfirmation(operationId);
+                    await this.completeTierConfirmation(operationId);
                     if (fallbackNotice && this.hasConfirmedStandardTier) this.notice(fallbackNotice);
                 }
                 return;
@@ -982,7 +1001,7 @@ export class SharedCodexRoot {
                     await this.confirmEffectiveUltrafast(deadline, operationId);
                 }
                 if (current()) {
-                    this.completeTierConfirmation(operationId);
+                    await this.completeTierConfirmation(operationId);
                     this.alive();
                 }
                 return;
@@ -992,7 +1011,7 @@ export class SharedCodexRoot {
                 : verifyUltrafast && snapshot.serviceTier !== undefined;
             // A later model-only update can legitimately change the model
             // while the snapshot still confirms this turn's tier.
-            if (tierConfirmed) this.completeTierConfirmation(operationId);
+            if (tierConfirmed) await this.completeTierConfirmation(operationId);
             else if (verifyUltrafast || params.serviceTier !== undefined || model && snapshot.model !== model) {
                 throw new Error('Native turn settings are not confirmed');
             }
@@ -1008,13 +1027,15 @@ export class SharedCodexRoot {
         if (operationId < Math.max(this.confirmedTierOperation, this.acceptedNativeTierOperation)) return;
         this.tierConfirmationResolved = false;
         this.pendingTierOperation = Math.max(this.pendingTierOperation, operationId);
+        if (this.session.getMetadata()?.codexTierConfirmationPending !== true) {
+            this.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: true }));
+        }
         if (!this.tierConfirmationPending) {
             this.tierConfirmationPending = true;
             if (this.inputGateResolved) {
                 this.inputGateResolved = false;
                 this.inputGate = new Promise<void>(resolve => { this.inputReady = () => { this.inputGateResolved = true; resolve(); }; });
             }
-            this.session.updateMetadata(metadata => ({ ...metadata, codexTierConfirmationPending: true }));
             this.publishSteering();
             this.notice('Codex settings confirmation is pending. Confirm Standard in settings before sending more input.');
         }
@@ -1125,7 +1146,7 @@ export class SharedCodexRoot {
         // Native launch configuration filters a disabled feature before its
         // response. Unlike live updates, it does not require another discovery
         // RPC after creation that could strand a known, unactivated child.
-        if (this.settings.serviceTier === 'ultrafast') { this.completeTierConfirmation(); return; }
+        if (this.settings.serviceTier === 'ultrafast') { await this.completeTierConfirmation(); return; }
         await this.applySettings({ serviceTier: 'standard' });
         if (!explicitTier) {
             this.serviceTierExplicit = false;

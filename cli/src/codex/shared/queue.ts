@@ -221,7 +221,7 @@ export class SharedCodexQueue {
 
     /** Slash commands can mutate native state too. Crash/redelivery must not
      * repeat /new, /compact, or a settings change whose outcome was lost. */
-    command(id: string, work: () => Promise<string | null>): Promise<string | null> {
+    command(id: string, work: () => Promise<string | null>, beforeDispatch?: () => void): Promise<string | null> {
         return this.serial(async () => {
             const existing = this.entries[id];
             if (existing?.state === 'consumed') { this.consumed([id]); return null; }
@@ -229,6 +229,17 @@ export class SharedCodexQueue {
                 this.uncertain([id]); throw new Error('Previous command outcome is unknown; not replaying');
             }
             this.entries[id] = { input: [], state: 'unknown' }; await this.save();
+            try {
+                this.assertInputAdmission();
+                beforeDispatch?.();
+            } catch (error) {
+                // No native command ran. Restore the ledger before the
+                // caller waits or cancels outside this serialized operation.
+                if (existing) this.entries[id] = existing;
+                else delete this.entries[id];
+                await this.save();
+                throw error;
+            }
             try {
                 const result = await work();
                 if (result === null) await this.committed(id);

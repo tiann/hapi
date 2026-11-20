@@ -303,6 +303,28 @@ it.each([false, true])('holds input paused during queue preflight and submits it
     expect(request.mock.calls.some(([method]) => method === (batch ? 'thread/queue/update' : 'thread/queue/add'))).toBe(true);
 });
 
+it.each(['/new', '/clear'])('defers %s when tier confirmation pauses during the command ledger write', async command => {
+    const create = vi.fn(async () => ({ session: { sessionId: 'child' } }) as unknown as SharedCodexRoot);
+    const f = await fixture({ create });
+    await f.root.activate();
+    const root = f.root as unknown as { queue: { save(): Promise<void> }; pauseTierConfirmation(id: number): void; tierOperationCounter: number };
+    const save = root.queue.save.bind(root.queue);
+    vi.spyOn(root.queue, 'save').mockImplementationOnce(async () => {
+        await save();
+        root.pauseTierConfirmation(++root.tierOperationCounter);
+    });
+    f.submit(command, 'command');
+    await vi.waitFor(async () => {
+        expect(f.root.needsTierConfirmation).toBe(true);
+        expect((await f.ledger()).entries.command).toBeUndefined();
+    });
+    expect(create).not.toHaveBeenCalled();
+    expect(f.uncertain).not.toHaveBeenCalled();
+    await f.root.applySettings({ serviceTier: 'standard' });
+    await vi.waitFor(async () => expect((await f.ledger()).entries.command?.state).toBe('consumed'));
+    expect(create).toHaveBeenCalledTimes(1);
+});
+
 it.each([false, true])('starts admitted input after tier recovery without re-enqueueing (disconnect %s)', async disconnect => {
     const f = await fixture();
     f.native.thread.turns = [{ id: 'interrupted', status: 'interrupted', items: [] }];
@@ -2034,6 +2056,41 @@ it.each(['web', 'native'])('keeps a newer lost-turn pause after an older %s Stan
     await f.root.applySettings({ serviceTier: 'fast' });
     expect(f.root.needsTierConfirmation).toBe(false);
     expect(f.sessionReady).toHaveBeenCalledTimes(2);
+});
+
+it.each(['web', 'native'])('awaits durable Standard recovery through %s before acknowledging settings or releasing input', async origin => {
+    const f = await fixture();
+    f.session.updateMetadata(metadata => ({ ...metadata, codexPendingServiceTier: 'ultrafast', codexTierConfirmationPending: true }));
+    await f.root.activate({}, true);
+    let durable = structuredClone(f.metadata());
+    let entered!: () => void;
+    let release!: () => void;
+    const waiting = new Promise<void>(resolve => { entered = resolve; });
+    const persistence = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(f.session, 'flushMetadata').mockImplementationOnce(async () => {
+        entered();
+        await persistence;
+        durable = structuredClone(f.metadata());
+        return true;
+    });
+    const recovery = origin === 'web'
+        ? f.root.applySettings({ serviceTier: 'standard' })
+        : f.root.applyNativeSettings({ threadId: 'thread', serviceTier: null });
+    const acknowledged = vi.fn();
+    void recovery.then(acknowledged, () => {});
+    await waiting;
+    expect(acknowledged).not.toHaveBeenCalled();
+    expect(f.root.needsTierConfirmation).toBe(true);
+    expect(f.sessionReady).not.toHaveBeenCalled();
+    expect(durable.codexPendingServiceTier).toBe('ultrafast');
+    release();
+    await recovery;
+    expect(acknowledged).toHaveBeenCalledTimes(1);
+    expect(f.sessionReady).toHaveBeenCalledTimes(1);
+    expect(durable.codexPendingServiceTier).toBeUndefined();
+    expect(durable.codexConfirmedServiceTier).toBe('standard');
+    expect(await inheritedResumeTier(f.root.client, {}, durable.codexServiceTierExplicit, '/project',
+        durable.codexConfirmedServiceTier ?? 'ultrafast', durable.codexPendingServiceTier, durable.codexTierConfirmationPending)).toEqual({ serviceTier: null });
 });
 
 it.each(['default', 'priority'])('keeps newer Standard unless a delayed lost reply snapshot reports %s', async serviceTier => {
