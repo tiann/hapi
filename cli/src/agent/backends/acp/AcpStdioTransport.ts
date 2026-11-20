@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptions } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import {
     acquireAgentCliSpawnLease,
     releaseAgentCliSpawnLeaseFromAcpRegisterSync
@@ -92,6 +93,7 @@ export class AcpStdioTransport {
     private stderrErrorHandler: ((error: AcpStderrError) => void) | null = null;
     private unexpectedExitHandler: ((error: Error, details: { childProcessExited: boolean }) => void) | null = null;
     private closeRequested = false;
+    private childExitedBeforeClose = false;
     private reportedChildExit: boolean | null = null;
     private buffer = '';
     private recentStderr = '';
@@ -502,15 +504,36 @@ export class AcpStdioTransport {
         return stopped && (await this.ownedServers?.verify()) === true;
     }
 
+    private isChildDeadAtCloseEntry(): boolean {
+        if (this.exited || this.process.exitCode !== null || this.process.signalCode != null) return true;
+        if (this.childPid === null || !this.captureFence) return false;
+        if (process.platform === 'linux') {
+            try {
+                const stat = readFileSync(`/proc/${this.childPid}/stat`, 'utf8');
+                const state = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[0];
+                return state === 'Z' || state === 'X' || state === 'x';
+            } catch (error) {
+                if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+            }
+        }
+        try {
+            process.kill(this.childPid, 0);
+            return false;
+        } catch (error) {
+            return (error as NodeJS.ErrnoException).code === 'ESRCH';
+        }
+    }
+
     /** Ends the agent process; resolves true once its whole process tree is confirmed gone. */
     async close(options?: { recovery?: boolean }): Promise<boolean> {
+        if (!this.closeRequested) {
+            this.childExitedBeforeClose = this.isChildDeadAtCloseEntry();
+        }
         this.closeRequested = true;
         this.process.stdin.end();
         // Node assigns the PID before spawn() returns. A failed spawn emits
         // its error later, but already has no child to terminate.
-        const treeGone = options?.recovery
-            ? await this.terminateForRecovery()
-            : await killProcessByChildProcess(this.process);
+        const treeGone = options?.recovery ? await this.terminateForRecovery() : await killProcessByChildProcess(this.process);
         this.releaseAgentCliGuard();
         this.markClosed(new Error('ACP transport closed'));
         return treeGone;
@@ -677,7 +700,9 @@ export class AcpStdioTransport {
     }
 
     private reportGenerationLoss(error: Error, childProcessExited: boolean): void {
-        if ((this.closeRequested && this.reportedChildExit === null) || this.reportedChildExit === true || this.reportedChildExit === childProcessExited) return;
+        if ((this.closeRequested && this.reportedChildExit === null && (!childProcessExited || !this.childExitedBeforeClose || !this.captureFence))
+            || this.reportedChildExit === true
+            || this.reportedChildExit === childProcessExited) return;
         this.reportedChildExit = childProcessExited;
         try {
             this.unexpectedExitHandler?.(error, { childProcessExited });

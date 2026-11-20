@@ -506,30 +506,36 @@ class OpencodeRemoteLauncher extends RemoteLauncherBase {
     private async disconnectBackend(backend: ReturnType<typeof createOpencodeBackend>): Promise<void> {
         if (!this.recoverChildExit) return backend.disconnect();
         const retryingStartup = this.options.isRecoveryAttempt && !this.recoveryAttempt.ready;
+        const requireWriterVerification = () =>
+            (!retryingStartup || this.nativeLoadStarted)
+            && !this.clearRequested
+            && (Boolean(this.recoveryAttempt.loss && (this.activeAcpSessionId || this.nativeLoadStarted || retryingStartup)) || retryingStartup);
         // Clear hands off to a different native conversation. Every reuse of a
         // lost generation's ID, including a local handoff, joins the same fence.
-        const lostWriter = this.recoveryAttempt.loss !== null && (!retryingStartup || this.nativeLoadStarted);
-        const retryMayOwnSession = retryingStartup && this.nativeLoadStarted;
-        if (!this.clearRequested && (lostWriter || retryMayOwnSession)) {
-            const stopped = await backend.disconnect({ verifyTermination: true, waitForTransport: true });
-            if (!stopped && !backend.canRecheckTermination) {
-                throw new MissingAcpWriterCapture(() => this.finishWithoutNativeSession());
+        const hadLossBeforeDisconnect = this.recoveryAttempt.loss !== null;
+        if (!requireWriterVerification()) {
+            if (retryingStartup) {
+                await backend.disconnect({ waitForTransport: true });
+            } else {
+                await backend.disconnect();
             }
-            if (!stopped) throw new UnverifiedAcpWriter(
-                'OpenCode v2 server termination cannot be verified',
-                this.exitReason === 'switch',
-                () => backend.recheckTermination(),
-                () => {
-                    const message = 'The previous OpenCode server may still be writing. Send a message to resume when it stops.';
-                    this.messageBuffer.addMessage(message, 'status');
-                    this.session.sendSessionEvent({ type: 'message', message });
-                }
-            );
-        } else if (retryingStartup) {
-            await backend.disconnect({ waitForTransport: true });
-        } else {
-            await backend.disconnect();
+            if (!requireWriterVerification()) return;
         }
+        const ended = await backend.disconnect({ verifyTermination: true, waitForTransport: true });
+        const stopped = hadLossBeforeDisconnect ? ended : await backend.recheckTermination();
+        if (!stopped && !backend.canRecheckTermination) {
+            throw new MissingAcpWriterCapture(() => this.finishWithoutNativeSession());
+        }
+        if (!stopped) throw new UnverifiedAcpWriter(
+            'OpenCode v2 server termination cannot be verified',
+            this.exitReason === 'switch',
+            () => backend.recheckTermination(),
+            () => {
+                const message = 'The previous OpenCode server may still be writing. Send a message to resume when it stops.';
+                this.messageBuffer.addMessage(message, 'status');
+                this.session.sendSessionEvent({ type: 'message', message });
+            }
+        );
     }
 
     private missingWriterNotice(): string {

@@ -264,10 +264,38 @@ describe('AcpStdioTransport agent CLI guard', () => {
 
         await transport.close();
         for (const handler of spawnState.closeHandlers) {
-            handler(null, 'SIGTERM');
+            handler(null, 'SIGKILL');
         }
 
         expect(exits).toEqual([]);
+    });
+
+    test.each([false, true])('reports close-time child exit as loss only when the child was already dead at close entry (deadAtEntry=%s)', async (deadAtEntry) => {
+        spawnState.pid = deadAtEntry ? 999999999 : process.pid;
+        const transport = await AcpStdioTransport.create({
+            command: 'opencode',
+            args: ['acp'],
+            captureChildExitFence: () => ({ complete: true, verify: async () => true, refresh: () => {} })
+        });
+        const exits: Array<{ error: Error; childProcessExited: boolean }> = [];
+        transport.onUnexpectedExit((error, details) => exits.push({ error, childProcessExited: details.childProcessExited }));
+
+        const closing = transport.close();
+        for (const handler of spawnState.exitHandlers) {
+            handler(deadAtEntry ? 0 : null, deadAtEntry ? null : 'SIGTERM');
+        }
+        await closing;
+        for (const handler of spawnState.closeHandlers) {
+            handler(deadAtEntry ? 0 : null, deadAtEntry ? null : 'SIGTERM');
+        }
+
+        if (deadAtEntry) {
+            expect(exits).toEqual([
+                { error: expect.objectContaining({ message: expect.stringContaining('ACP process exited') }), childProcessExited: true }
+            ]);
+        } else {
+            expect(exits).toEqual([]);
+        }
     });
 
     test('registers cross-process guard only for Cursor agent command', async () => {

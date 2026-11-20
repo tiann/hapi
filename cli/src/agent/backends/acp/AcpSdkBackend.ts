@@ -1380,7 +1380,7 @@ export class AcpSdkBackend implements AgentBackend {
             // (kill unverified, close threw, or this process dies first) the
             // record stays for a restore.
             this.settleToolCallLifetimeRecord(recordSessionId, agentEnded);
-            if (recovery && !agentEnded && transport.hasCompleteWriterCapture) {
+            if (transport.hasCompleteWriterCapture) {
                 this.verifyDisconnectedWriter = async () => {
                     const stopped = await transport.verifyTermination();
                     if (stopped) this.settleToolCallLifetimeRecord(recordSessionId, true);

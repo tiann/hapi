@@ -1257,21 +1257,94 @@ describe('opencodeRemoteLauncher inline model switch', () => {
         }
     });
 
-    it.each(['switch', 'clear'] as const)('uses ordinary v2 teardown for %s without transport loss', async action => {
+    it.each([
+        ['switch', true],
+        ['switch', false],
+        ['clear', true],
+        ['clear', false]
+    ] as const)('uses ordinary v2 teardown for %s without transport loss (completeCapture=%s)', async (action, completeCapture) => {
         harness.detectedVersion = 'v2';
         harness.treeGone = false;
-        const { session, rpcHandlers } = createSessionStub([], { keepOpen: true });
+        harness.completeCapture = completeCapture;
+        let childExitedBeforeClose = false;
+        const { createOpencodeBackend } = await import('./utils/opencodeBackend');
+        const originalFactory = vi.mocked(createOpencodeBackend).getMockImplementation()!;
+        vi.mocked(createOpencodeBackend).mockImplementationOnce((opts) => {
+            const backend = originalFactory(opts);
+            backend.disconnect = vi.fn(async () => {
+                // Real AcpStdioTransport.close() kills the live ACP child and
+                // Node delivers 'exit' before close() resolves, which is suppressed
+                // when childExitedBeforeClose is false.
+                if (childExitedBeforeClose) {
+                    harness.unexpectedExitHandler?.(new Error('ACP process exited (code=null, signal=SIGTERM)'), {
+                        childProcessExited: true
+                    });
+                }
+                return true;
+            }) as never;
+            return backend;
+        });
+        const { session, rpcHandlers, sessionEvents } = createSessionStub([], { keepOpen: true });
+        const gate = new OpenCodeRuntimeGate();
+        (session as unknown as { runtimeGate: OpenCodeRuntimeGate }).runtimeGate = gate;
+        let sawRecoveryPending = false;
+        const origSetRecoveryPending = gate.setRecoveryPending.bind(gate);
+        vi.spyOn(gate, 'setRecoveryPending').mockImplementation((pending: boolean) => {
+            if (pending) sawRecoveryPending = true;
+            origSetRecoveryPending(pending);
+        });
         const launcher = opencodeRemoteLauncher(session as never);
         try {
             await vi.waitFor(() => expect(rpcHandlers.has(RPC_METHODS.Switch)).toBe(true));
             if (action === 'switch') await rpcHandlers.get(RPC_METHODS.Switch)!({});
             else session.queue.push('', createClearMode(), 'clear');
             await expect(launcher).resolves.toBe(action === 'switch' ? 'switch' : 'exit');
-            const { createOpencodeBackend } = await import('./utils/opencodeBackend');
+            expect(sawRecoveryPending).toBe(false);
+            expect(sessionEvents.some(e => String(e.message).includes('could not be identified'))).toBe(false);
             const backend = vi.mocked(createOpencodeBackend).mock.results[0]?.value;
             expect(backend?.disconnect).toHaveBeenCalledWith();
         } finally {
             session.queue.close();
+        }
+    });
+
+    linuxRecoveryTest('checks captured server termination on Switch even when ACP exit arrives after close starts', async () => {
+        harness.detectedVersion = 'v2';
+        let treeKilled = 0;
+        let verified = 0;
+        const { createOpencodeBackend } = await import('./utils/opencodeBackend');
+        const originalFactory = vi.mocked(createOpencodeBackend).getMockImplementation()!;
+        vi.mocked(createOpencodeBackend).mockImplementationOnce((opts) => {
+            const backend = originalFactory(opts);
+            backend.disconnect = vi.fn(async (disconnectOpts?: { verifyTermination?: boolean; waitForTransport?: boolean }) => {
+                if (disconnectOpts?.verifyTermination) {
+                    verified++;
+                    return harness.treeGone;
+                }
+                treeKilled++;
+                harness.unexpectedExitHandler?.(new Error('ACP process exited (code=null, signal=SIGTERM)'), {
+                    childProcessExited: true
+                });
+                return true;
+            }) as never;
+            return backend;
+        });
+        harness.treeGone = false;
+        const { session, rpcHandlers, sessionEvents } = createSessionStub([], { keepOpen: true });
+        session.sessionId = 'acp-session-1';
+        const launcher = opencodeRemoteLauncher(session as never, { recoveryBackoffsMs: [0] });
+        try {
+            await vi.waitFor(() => expect(rpcHandlers.has(RPC_METHODS.Switch)).toBe(true));
+            await rpcHandlers.get(RPC_METHODS.Switch)!({});
+            await vi.waitFor(() => expect(sessionEvents.some(e => String(e.message).includes('still be writing'))).toBe(true));
+            expect(treeKilled).toBe(1);
+            expect(verified).toBe(1);
+            harness.treeGone = true;
+            session.queue.push('resume after server exits', createMode(), 'next');
+            await vi.waitFor(() => expect(harness.promptCount).toBe(1), { timeout: 4000 });
+        } finally {
+            session.queue.close();
+            await launcher.catch(() => {});
         }
     });
 
