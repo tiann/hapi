@@ -4,7 +4,7 @@ import { usePwaUpdateContext } from '@/lib/pwa-update-context'
 import { useTranslation } from '@/lib/use-translation'
 import { useVoiceOptional } from '@/lib/voice-context'
 
-export function PwaUpdateBanner({ topClassName, statusHeight }: { topClassName?: string; statusHeight?: number } = {}) {
+export function PwaUpdateBanner({ topClassName, inStatusStack = false }: { topClassName?: string; inStatusStack?: boolean } = {}) {
     const { t } = useTranslation()
     const { needRefresh, reload } = usePwaUpdateContext()
     const isOnline = useOnlineStatus()
@@ -17,12 +17,12 @@ export function PwaUpdateBanner({ topClassName, statusHeight }: { topClassName?:
     const topClass = topClassName ?? (isOnline
         ? 'top-[calc(env(safe-area-inset-top)+0.5rem)]'
         : 'top-[calc(env(safe-area-inset-top)+2.5rem)]')
+    const placement = inStatusStack ? 'mx-4 mt-2 shrink-0' : `fixed left-4 right-4 z-50 ${topClass}`
 
     return (
         <div
             data-testid="pwa-update-banner"
-            style={statusHeight ? { top: `calc(${statusHeight}px + 0.5rem)` } : undefined}
-            className={`fixed left-4 right-4 bg-[var(--app-secondary-bg)] border border-[var(--app-border)] rounded-lg p-4 shadow-lg z-50 ${topClass}`}
+            className={`${placement} bg-[var(--app-secondary-bg)] border border-[var(--app-border)] rounded-lg p-4 shadow-lg`}
         >
             <div className="flex items-center justify-between gap-3">
                 <div className="flex-1 min-w-0">
@@ -60,11 +60,11 @@ export function PwaUpdateBanner({ topClassName, statusHeight }: { topClassName?:
 export function PwaUpdateBannerWithStatusOffset({
     isSyncing,
     isReconnecting,
-    statusHeight,
+    inStatusStack,
 }: {
     isSyncing: boolean
     isReconnecting: boolean
-    statusHeight?: number
+    inStatusStack?: boolean
 }) {
     const voice = useVoiceOptional()
     const hasTopStatusBanner =
@@ -74,7 +74,7 @@ export function PwaUpdateBannerWithStatusOffset({
 
     return (
         <PwaUpdateBanner
-            statusHeight={statusHeight}
+            inStatusStack={inStatusStack}
             topClassName={hasTopStatusBanner
                 ? 'top-[calc(env(safe-area-inset-top)+3rem)]'
                 : undefined}

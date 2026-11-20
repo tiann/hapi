@@ -582,11 +582,6 @@ function AppInner() {
     return (
         <AppContextProvider value={{ api, token, baseUrl, titleSuggestionAvailable }}>
             <VoiceProvider>
-                <PwaUpdateBannerWithStatusOffset
-                    isSyncing={revealSyncing}
-                    isReconnecting={revealReconnecting || revealAuthRefresh}
-                    statusHeight={connectionBannerHeight || undefined}
-                />
                 <SyncingBanner isSyncing={revealSyncing} />
                 <ReconnectingBanner
                     isReconnecting={revealReconnecting && !streamConnected}
@@ -604,12 +599,19 @@ function AppInner() {
                     isHubConnected={globalSubscriptionId !== null}
                     isReconnecting={showReconnectingBanner}
                 />
-                <RunnerVersionSkewBanner statusHeight={connectionBannerHeight || undefined} />
                 <div className="h-full min-h-0 flex flex-col" style={{
                     paddingTop: connectionBannerHeight,
                     '--route-safe-area-top': connectionBannerHeight ? '0px' : undefined
                 } as CSSProperties}>
-                    <Outlet />
+                    <PwaUpdateBannerWithStatusOffset
+                        isSyncing={revealSyncing}
+                        isReconnecting={revealReconnecting || revealAuthRefresh}
+                        inStatusStack={connectionBannerHeight > 0}
+                    />
+                    <RunnerVersionSkewBanner inStatusStack={connectionBannerHeight > 0} />
+                    <div className="flex min-h-0 flex-1 flex-col">
+                        <Outlet />
+                    </div>
                 </div>
                 <ToastContainer />
                 <InstallPrompt />

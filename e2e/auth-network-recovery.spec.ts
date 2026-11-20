@@ -9,6 +9,7 @@ const streams = new Set<ServerResponse>()
 const stalledAuth = new Set<ServerResponse>()
 let authAttempts = 0
 let closeGlobalOnce = false
+let skewedRunner = false
 const now = Date.now()
 const sessions = ['A', 'B'].map(letter => ({
     id: 'network-chat-' + letter, namespace: 'fixture', seq: 1, createdAt: now, updatedAt: now,
@@ -52,7 +53,12 @@ test.beforeAll(async () => {
         }
         if (path === '/api/sessions') { json({ sessions }); return }
         if (path === '/api/features') { json({ githubPrAwareness: { enabled: false, source: 'default' } }); return }
-        if (path === '/api/machines') { json({ machines: [] }); return }
+        if (path === '/api/machines') {
+            json({ machines: skewedRunner ? [{
+                id: 'old-fixture-runner', active: true, metadata: { host: 'Fixture runner', capabilities: [] }
+            }] : [] })
+            return
+        }
         const session = sessions.find(s => path.startsWith('/api/sessions/' + s.id))
         if (session && path.endsWith('/messages')) {
             const text = 'Cached message ' + session.id.slice(-1)
@@ -74,7 +80,7 @@ test.afterAll(async () => { disconnect(); hub.closeAllConnections(); await new P
 test.beforeEach(async ({ page }, testInfo) => {
     mode = 'ok'; disconnect()
     for (const response of stalledAuth) response.destroy()
-    stalledAuth.clear(); authAttempts = 0; closeGlobalOnce = false
+    stalledAuth.clear(); authAttempts = 0; closeGlobalOnce = false; skewedRunner = false
     await page.addInitScript(({ server, passkey }) => {
         localStorage.setItem('hapi_hub_url', server)
         if (passkey) localStorage.setItem('hapi_passkey_session::' + server, 'fixture-passkey')
@@ -179,20 +185,37 @@ test('phone navigation remains reachable below wrapped auth and outage warnings'
 })
 
 test('refresh warning leaves runner minimize and dismiss controls reachable on a phone', async ({ page }) => {
+    test.setTimeout(60_000)
     await page.clock.install()
     await page.setViewportSize({ width: 390, height: 844 })
-    await page.route('**/api/machines', route => route.fulfill({ json: { machines: [{
-        id: 'old-fixture-runner', active: true, metadata: { host: 'Fixture runner', capabilities: [] }
-    }] } }))
+    skewedRunner = true
+    await page.addInitScript(() => sessionStorage.setItem('hapi.runnerSkew.minimized.v1', '1'))
+    const back = page.locator('button').filter({ has: page.locator('polyline[points="15 18 9 12 15 6"]') }).first()
     await page.goto('/sessions/network-chat-A')
+    await page.addStyleTag({ content: `
+        [class*="pt-[env(safe-area-inset-top)]"] { padding-top: 36px; }
+        [class*="pt-[var(--route-safe-area-top,env(safe-area-inset-top))]"] { padding-top: var(--route-safe-area-top, 36px); }
+        [class*="pt-[calc(env(safe-area-inset-top)+0.5rem)]"] { padding-top: 44px; }
+    ` })
     await expect(page.getByText('Cached message A', { exact: true })).toBeVisible()
+    await back.click()
+    await page.getByText('Offline fixture B', { exact: true }).first().click()
+    await expect(page.getByText('Cached message B', { exact: true })).toBeVisible()
+    await back.click()
+    await page.getByText('Offline fixture A', { exact: true }).first().click()
     await page.clock.fastForward(16_000)
     mode = 'auth-unavailable'; closeGlobalOnce = true; disconnect()
     const refresh = page.getByText(/^Sign-in refresh failed\. Chat updates may be delayed; retrying automatically\./)
     await expect(refresh).toBeVisible()
     const runnerWarning = page.getByTestId('runner-version-skew-banner')
     await expect.poll(async () => (await runnerWarning.boundingBox())!.y - (await refresh.boundingBox())!.y - (await refresh.boundingBox())!.height).toBeGreaterThanOrEqual(8)
+    await page.getByTestId('runner-version-skew-expand').click()
     await page.getByTestId('runner-version-skew-minimize').click()
+    await expect(runnerWarning).toHaveAttribute('data-state', 'minimized')
+    await expect.poll(async () => (await back.boundingBox())!.y - (await runnerWarning.boundingBox())!.y - (await runnerWarning.boundingBox())!.height).toBeGreaterThanOrEqual(0)
+    await back.click()
+    await page.getByText('Offline fixture B', { exact: true }).first().click()
+    await expect(page.getByText('Cached message B', { exact: true })).toBeVisible()
     await expect(runnerWarning).toHaveAttribute('data-state', 'minimized')
     await page.getByTestId('runner-version-skew-expand').click()
     await page.getByTestId('runner-version-skew-dismiss').click()

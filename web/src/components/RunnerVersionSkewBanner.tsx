@@ -34,7 +34,7 @@ export function listSkewedMachines(machines: Machine[]): Machine[] {
  * Manual Restart asks hub to stop-runner (escape hatch when version handoff
  * is stuck or HAPI_DISABLE_VERSION_HANDOFF=1). Normal upgrades self-restart.
  */
-export function RunnerVersionSkewBanner({ topClassName, statusHeight }: { topClassName?: string; statusHeight?: number } = {}) {
+export function RunnerVersionSkewBanner({ inStatusStack = false }: { inStatusStack?: boolean } = {}) {
     const { api } = useAppContext()
     const { machines } = useMachines(api, true)
     const { t } = useTranslation()
@@ -102,7 +102,7 @@ export function RunnerVersionSkewBanner({ topClassName, statusHeight }: { topCla
         return null
     }
 
-    const topClass = topClassName ?? (isOnline ? 'top-2' : 'top-10')
+    const placement = inStatusStack ? 'mx-4 mt-2 shrink-0' : `fixed left-4 right-4 z-40 ${isOnline ? 'top-2' : 'top-10'}`
     const hosts = skewed.map(machineDisplayHost).join(', ')
 
     if (minimized) {
@@ -110,8 +110,7 @@ export function RunnerVersionSkewBanner({ topClassName, statusHeight }: { topCla
             <div
                 data-testid="runner-version-skew-banner"
                 data-state="minimized"
-                style={statusHeight ? { top: `calc(${statusHeight}px + 0.5rem)` } : undefined}
-                className={`fixed left-4 right-4 z-40 ${topClass}`}
+                className={placement}
             >
                 <button
                     type="button"
@@ -129,9 +128,8 @@ export function RunnerVersionSkewBanner({ topClassName, statusHeight }: { topCla
         <div
             data-testid="runner-version-skew-banner"
             data-state="expanded"
-            style={statusHeight ? { top: `calc(${statusHeight}px + 0.5rem)` } : undefined}
             role="alert"
-            className={`fixed left-4 right-4 z-40 max-h-[40vh] overflow-y-auto rounded-lg border-2 border-amber-500 bg-amber-50 p-3 shadow-lg dark:bg-amber-950/90 ${topClass}`}
+            className={`${placement} max-h-[40vh] overflow-y-auto rounded-lg border-2 border-amber-500 bg-amber-50 p-3 shadow-lg dark:bg-amber-950/90`}
         >
             <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0 flex-1">
