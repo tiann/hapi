@@ -245,6 +245,14 @@ describe('SessionList header measurement optimization', () => {
     })
 
     it('re-measures search chrome and sets minWidth floor when collapsing search with a non-empty query', () => {
+        const ICON_WIDTH = 28
+        const CLEAR_BUTTON_WIDTH = 36
+        const offsetWidthSpy = vi.spyOn(HTMLElement.prototype, 'offsetWidth', 'get').mockImplementation(function (this: HTMLElement) {
+            if (this.tagName === 'SPAN' && this.hasAttribute('data-toolbar-chrome')) return ICON_WIDTH
+            if (this.tagName === 'BUTTON' && this.hasAttribute('data-toolbar-chrome')) return CLEAR_BUTTON_WIDTH
+            return 0
+        })
+
         const getComputedStyleSpy = vi.spyOn(window, 'getComputedStyle')
         const getSearchStyleReads = () => getComputedStyleSpy.mock.calls.filter(
             ([el]) => el instanceof HTMLElement && el.getAttribute('data-testid') === 'session-list-search'
@@ -276,10 +284,45 @@ describe('SessionList header measurement optimization', () => {
         // On collapse with a non-empty query, search chrome must be re-measured synchronously
         expect(getSearchStyleReads()).toBeGreaterThan(readsBeforeBlur)
 
-        // And the search element should have a positive minWidth floor so the clear button fits
+        // And the search element should have the exact combined floor (icon + clear button + padding)
         const searchElement = document.querySelector<HTMLElement>('[data-testid="session-list-search"]')
-        expect(searchElement?.style.minWidth).not.toBe('')
-        expect(searchElement?.style.minWidth).not.toBe('0px')
+        const trigger = searchElement?.querySelector('button')
+        const triggerStyle = trigger ? window.getComputedStyle(trigger) : null
+        const triggerPad = triggerStyle
+            ? (Number.parseFloat(triggerStyle.paddingLeft) || 0) + (Number.parseFloat(triggerStyle.paddingRight) || 0)
+            : 0
+        const expectedFloor = ICON_WIDTH + CLEAR_BUTTON_WIDTH + triggerPad
+        expect(searchElement?.style.minWidth).toBe(`${expectedFloor}px`)
+
+        offsetWidthSpy.mockRestore()
+    })
+
+    it('does not re-render or measure when search subtree mutates while expanded', async () => {
+        renderSessionList(sessions(5))
+
+        // Expand search
+        const searchButton = screen.getByRole('button', { name: /search/i })
+        act(() => {
+            fireEvent.click(searchButton)
+        })
+
+        const headerRow = document.querySelector<HTMLElement>('[data-testid="session-list-header-row"]')
+        expect(headerRow).not.toBeNull()
+        const querySpy = vi.spyOn(headerRow!, 'querySelector')
+
+        // Click search scope toggle to open the include/exclude menu while expanded
+        const scopeToggle = screen.getByRole('button', { name: 'Search scope' })
+        act(() => {
+            fireEvent.click(scopeToggle)
+        })
+
+        // Give MutationObserver a tick to fire if it wasn't ignored
+        await act(async () => {
+            await Promise.resolve()
+        })
+
+        // Opening the menu must not cause the parent SessionList to re-render or re-measure
+        expect(querySpy).not.toHaveBeenCalled()
     })
 
     it('unobserves the search root and its chrome parts when the list empties', () => {

@@ -2123,7 +2123,23 @@ export function SessionList(props: {
             }
         }
         if (typeof MutationObserver !== 'undefined' && !searchMutationObserverRef.current) {
-            const mo = new MutationObserver(() => {
+            const mo = new MutationObserver((mutations) => {
+                if (search.dataset.expanded === 'true') {
+                    return
+                }
+                const affectsChrome = mutations.some((m) => {
+                    if (m.type === 'attributes' && m.attributeName === 'data-expanded') return true
+                    if (m.type === 'childList') {
+                        for (const node of m.addedNodes) {
+                            if (node instanceof HTMLElement && (node.hasAttribute('data-toolbar-chrome') || node.querySelector('[data-toolbar-chrome]'))) return true
+                        }
+                        for (const node of m.removedNodes) {
+                            if (node instanceof HTMLElement && (node.hasAttribute('data-toolbar-chrome') || node.querySelector('[data-toolbar-chrome]'))) return true
+                        }
+                    }
+                    return false
+                })
+                if (!affectsChrome) return
                 syncSearchChromeObservers(search)
                 searchChromeDirtyRef.current = true
                 bumpSearchChromeTick((v) => v + 1)
