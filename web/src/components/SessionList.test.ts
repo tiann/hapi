@@ -3,6 +3,7 @@ import { toSessionSummary, type Session } from '@hapi/protocol'
 import type { SessionSummary } from '@/types/api'
 import { sessionIsUnread } from '@/lib/sessionAttention'
 import {
+    attributeCollapsedBlockers,
     computeOpenSessionTickRatio,
     deduplicateSessionsByAgentId,
     expandSelectedSessionCollapseOverrides,
@@ -1134,5 +1135,53 @@ describe('shouldShowOpenSessionTick', () => {
             insideCollapsedPanel: false,
             tickRatio: null,
         })).toBe(false)
+    })
+})
+
+describe('attributeCollapsedBlockers (#1717 jump pill direction)', () => {
+    const bounds = { top: 100, bottom: 500 }
+
+    it('points up when the collapsed section sits above the viewport', () => {
+        // The bug: these rows leave the DOM when the collapse transition
+        // finishes, and counting them as "below" by default drew a DOWN arrow
+        // for a section above the fold — so activating the pill scrolled up,
+        // against its own hint.
+        expect(attributeCollapsedBlockers({
+            hidden: 3,
+            headerRect: { top: 20, bottom: 40 },
+            bounds
+        })).toEqual({ above: 3, below: 0 })
+    })
+
+    it('points down when the collapsed section sits below the viewport', () => {
+        expect(attributeCollapsedBlockers({
+            hidden: 2,
+            headerRect: { top: 600, bottom: 620 },
+            bounds
+        })).toEqual({ above: 0, below: 2 })
+    })
+
+    it('points nowhere when the header is already on screen', () => {
+        // Expanding scrolls within view, so there is nothing to point at.
+        expect(attributeCollapsedBlockers({
+            hidden: 4,
+            headerRect: { top: 200, bottom: 220 },
+            bounds
+        })).toEqual({ above: 0, below: 0 })
+    })
+
+    it('points nowhere for filter-hidden blockers, which have no header', () => {
+        // They stay in the pill's fleet-wide count, but nothing on the page
+        // says which way they are and guessing drew an arrow that lied.
+        expect(attributeCollapsedBlockers({ hidden: 5, headerRect: null, bounds }))
+            .toEqual({ above: 0, below: 0 })
+    })
+
+    it('is a no-op when nothing is collapsed away', () => {
+        expect(attributeCollapsedBlockers({
+            hidden: 0,
+            headerRect: { top: 20, bottom: 40 },
+            bounds
+        })).toEqual({ above: 0, below: 0 })
     })
 })

@@ -727,6 +727,18 @@ export function extractSessionNotifySignal(
         return null
     }
 
+    // A live stream snapshot is a transient cumulative render of a message
+    // still being written, and the hub sweeps it from the transcript once the
+    // message settles. OpenCode emits them, so a snapshot can end on a valid
+    // footer while the settled message goes on to add prose after it and carry
+    // no valid footer at all — and the list kept the status derived from the
+    // snapshot, showing blocked once thinking ended. The work-graph ingest has
+    // skipped these all along; list status has to agree, and for the same
+    // reason: only settled output is the agent's actual self-report.
+    if (isLiveStreamSnapshot(content)) {
+        return null
+    }
+
     const agentBody = unwrapRoleWrappedRecordEnvelope(content)
     const agentContent = agentBody?.role === 'agent' ? agentBody.content : content
     const plainText = extractAssistantPlainText(agentContent)
@@ -764,7 +776,14 @@ export function buildOperatorUnblockEvent(input: {
     sessionId: string
     ownerUserId: string | number
     reason: string
+    /** When the operator made this decision — hub now, NOT the blocker's own
+     *  timestamp. The session event log sorts by event time, so stamping a
+     *  days-old blocker's time filed today's rationale among last week's
+     *  activity, or outside a recent-events window entirely. */
     acknowledgedAt: number
+    /** The dismissed blocker's own timestamp, kept as a detail rather than as
+     *  the event's position in the log. */
+    observedAt?: number | null
     /** Identity of the blocker the operator dismissed. Recorded even when the
      *  footer it named has since been replaced, so the event can still be
      *  matched back to what was actually reviewed. */
@@ -793,6 +812,7 @@ export function buildOperatorUnblockEvent(input: {
             blocker_key: input.observedKey
                 ? clampJsonUtf8(input.observedKey, WORK_GRAPH_MAX_STRING)
                 : null,
+            observed_at: input.observedAt ?? null,
             prior_status: prior?.status ?? null,
             prior_note: (prior && 'note' in prior ? prior.note : null) ?? null,
             prior_at: (prior && 'at' in prior ? prior.at : null) ?? null

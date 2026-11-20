@@ -286,6 +286,32 @@ describe('SessionList blocked chrome (#1717)', () => {
         expect(within(compact).getByTestId('blocked-lens-toggle')).toBeTruthy()
     })
 
+    it('collapses the expanded search once focus leaves the blocked controls too', () => {
+        // The controls are siblings of the search container, so once that
+        // container stopped collapsing on focus moving INTO them, nothing
+        // noticed focus leaving them again: tabbing search -> controls -> list
+        // left the bar expanded and the normal toolbar hidden with focus
+        // already gone from both.
+        Element.prototype.scrollIntoView = vi.fn()
+        renderList([blocked('stuck-one'), makeSession({ id: 'fine-one' })])
+
+        fireEvent.click(within(screen.getByTestId('session-list-search')).getAllByRole('button')[0]!)
+        const compact = screen.getByTestId('blocked-search-controls')
+        const pill = within(compact).getByTestId('blocked-jump-pill')
+
+        // Focus crosses into the controls: still expanded, as it must be for
+        // the click to land at all.
+        fireEvent.blur(screen.getByTestId('session-list-search'), { relatedTarget: pill })
+        expect(screen.getByTestId('blocked-search-controls')).toBeTruthy()
+
+        // Then on past them, into the list.
+        const row = document.querySelector('[data-session-id="stuck-one"]')!
+        fireEvent.blur(compact, { relatedTarget: row })
+
+        expect(screen.queryByTestId('blocked-search-controls')).toBeNull()
+        expect(screen.getByTestId('blocked-toolbar-controls')).toBeTruthy()
+    })
+
     it('orders the Blocked section by the configured list order', () => {
         // The section sorted by `updatedAt`, which is neither the operator's
         // configured order nor the search ranking. The default comparator

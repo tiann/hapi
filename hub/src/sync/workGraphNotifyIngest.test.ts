@@ -1313,6 +1313,50 @@ describe('isOperatorReplyMessage (#1717 backfill boundary)', () => {
     })
 })
 
+describe('extractSessionNotifySignal ignores live stream snapshots (#1717)', () => {
+    const footer = 'Working.\n\nAGENT_NOTIFY_SUMMARY '
+        + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs a key' })
+
+    function codexMessage(extra: Record<string, unknown>) {
+        return {
+            role: 'agent',
+            content: { type: 'codex', data: { type: 'message', message: footer, ...extra } }
+        }
+    }
+
+    it('reads a footer from settled output', () => {
+        // Positive control: without it the null assertions below would pass on
+        // any content shape this function simply cannot read.
+        expect(extractSessionNotifySignal(assistantOutput(footer), 1_000)?.status).toBe('blocked')
+    })
+
+    it('reads a footer from a settled codex message', () => {
+        // The shape the snapshot case is built from, proving it parses when it
+        // is not marked live — so the next test isolates `live`, nothing else.
+        expect(extractSessionNotifySignal(codexMessage({}), 1_000)?.status).toBe('blocked')
+    })
+
+    it('ignores a live snapshot of a message still being written', () => {
+        // A snapshot is a transient cumulative render that the hub sweeps once
+        // the message settles. It can end on a valid footer while the settled
+        // message goes on to add prose after it and carry no valid footer —
+        // and the list kept the status derived from the snapshot, showing the
+        // session blocked once thinking ended. The work-graph ingest has
+        // skipped these all along; list status now agrees.
+        expect(extractSessionNotifySignal(
+            codexMessage({ streamSnapshot: true, live: true }), 1_000
+        )).toBeNull()
+    })
+
+    it('still reads a snapshot-shaped message once it is no longer live', () => {
+        // `live` is what marks it transient; a settled row that kept the
+        // snapshot shape is the agent's real output and must still count.
+        expect(extractSessionNotifySignal(
+            codexMessage({ streamSnapshot: true }), 1_000
+        )?.status).toBe('blocked')
+    })
+})
+
 describe('isDeliveredOperatorReply (#1717 what counts as an answer)', () => {
     function reply(overrides: {
         invokedAt?: number | null
@@ -1368,6 +1412,35 @@ describe('isDeliveredOperatorReply (#1717 what counts as an answer)', () => {
 })
 
 describe('buildOperatorUnblockEvent (#1717 posterity record)', () => {
+    it('positions the event at the decision time, with the blocker time as detail', () => {
+        // The session event log sorts by event time. Stamping a days-old
+        // blocker's timestamp filed today's rationale among last week's
+        // activity — or outside a recent-events window entirely — so the
+        // operator could not find the reason they had just written.
+        const decidedAt = 1_700_000_000_000
+        const blockedAt = decidedAt - 3 * 86_400_000
+        const event = buildOperatorUnblockEvent({
+            sessionId: 's1',
+            ownerUserId: 7,
+            reason: 'handled out of band',
+            acknowledgedAt: decidedAt,
+            observedAt: blockedAt,
+            observedKey: `notify:${blockedAt}`,
+            priorNotify: { status: 'blocked', at: blockedAt, note: 'needs a key' }
+        })
+
+        expect(event.payload_json).toMatchObject({
+            acknowledged_at: decidedAt,
+            observed_at: blockedAt,
+            blocker_key: `notify:${blockedAt}`,
+            prior_at: blockedAt
+        })
+        // Both are kept: the decision is findable in time order, and what was
+        // dismissed is still identifiable.
+        const payload = event.payload_json as { acknowledged_at: number; observed_at: number }
+        expect(payload.acknowledged_at).not.toBe(payload.observed_at)
+    })
+
     it('records the operator rationale against the session, as a human principal', () => {
         const event = buildOperatorUnblockEvent({
             sessionId: 'sess-1',
@@ -1387,6 +1460,10 @@ describe('buildOperatorUnblockEvent (#1717 posterity record)', () => {
             // Null here because this call names no observed blocker; the
             // identity is recorded whenever the dialog supplies one.
             blocker_key: null,
+            // Likewise null without an observed blocker. When present it is
+            // the dismissed blocker's own timestamp, kept as detail so
+            // `acknowledged_at` can stay the decision time.
+            observed_at: null,
             // The agent's claim travels with the dismissal so a reader can tell
             // "operator disagreed" from "resolved elsewhere".
             prior_status: 'blocked',

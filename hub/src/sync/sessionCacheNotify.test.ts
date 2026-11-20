@@ -249,6 +249,101 @@ describe('importing a transcript does not reopen an answered blocker (#1717)', (
         expect(engine.getSession(session.id)?.lastNotify ?? null).toBeNull()
     })
 
+    it('keeps an unanswered footer when the import has no timestamps at all', async () => {
+        // A Codex Desktop transcript carries no per-message timestamps, so the
+        // importer stamps every row with the same import time. Comparing
+        // arrival alone then made the transcript's FINAL message — an
+        // unanswered blocked footer — compare equal to the prompt that started
+        // it and read as already answered, so the conversation went missing
+        // from Blocked entirely. Native transcript order breaks the tie.
+        const { SyncEngine } = await import('./syncEngine')
+        const { RpcRegistry } = await import('../socket/rpcRegistry')
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const session = engine.getOrCreateSession(
+            'import-no-timestamps',
+            { path: '/tmp/project', host: 'localhost' },
+            null,
+            'default'
+        )
+        const importedAt = Date.now()
+        const footer = 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needs a decision' })
+
+        // Prompt first, then the footer — same timestamp, order carried by seq.
+        store.messages.addImportedMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'off you go' },
+            meta: { sentFrom: 'webapp' }
+        }, 'codex-prompt', importedAt)
+        store.messages.addImportedMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'assistant', message: { content: [{ type: 'text', text: footer }] } }
+            }
+        }, 'codex-footer', importedAt)
+
+        engine.reconcileNotifySignalAfterImport(session.id)
+
+        expect(engine.getSession(session.id)?.lastNotify?.status).toBe('blocked')
+        expect(engine.getSession(session.id)?.lastNotify?.note).toBe('needs a decision')
+    })
+
+    it('does not restore, on rewind, a replay that live ingestion rejected', async () => {
+        // Live ingestion rejects an older footer replay using the author time
+        // of the footer the reply superseded — but that cutoff is SESSION
+        // state, so a derivation reading only the transcript cannot see it.
+        // Rewind retaining both the reply and the replay therefore handed the
+        // replay back as the blocker, reopening an answered turn. The
+        // transcript carries the equivalent: a footer that arrived before the
+        // reply belongs to a turn the reply superseded, so nothing authored at
+        // or before it can be current.
+        const { SyncEngine } = await import('./syncEngine')
+        const { RpcRegistry } = await import('../socket/rpcRegistry')
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const session = engine.getOrCreateSession(
+            'rewind-replay',
+            { path: '/tmp/project', host: 'localhost' },
+            null,
+            'default'
+        )
+        const base = Date.now() - 600_000
+        const footerAt = (at: number, summary: string) => 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary })
+
+        // The agent blocked, and the operator answered.
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'assistant', message: { content: [{ type: 'text', text: footerAt(base, 'original') }] } }
+            }
+        }, undefined, null, base, base)
+        store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'here you go' },
+            meta: { sentFrom: 'webapp' }
+        }, 'reply-1', null, base + 1_000, base + 1_000)
+        store.messages.markMessagesInvoked(session.id, ['reply-1'], base + 2_000)
+        // A delayed replay of that same, already-answered turn: authored
+        // BEFORE the original footer, but reaching the hub after the reply.
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'assistant', message: { content: [{ type: 'text', text: footerAt(base, 'stale replay') }] } }
+            }
+        }, undefined, null, base - 5_000, base + 3_000)
+
+        engine.reconcileNotifySignalAfterImport(session.id)
+
+        expect(engine.getSession(session.id)?.lastNotify ?? null).toBeNull()
+    })
+
     it('keeps a genuinely unanswered footer from an imported transcript', async () => {
         // Positive control: reconciliation must not simply wipe the signal.
         const { SyncEngine } = await import('./syncEngine')

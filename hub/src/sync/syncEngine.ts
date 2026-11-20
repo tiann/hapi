@@ -473,18 +473,26 @@ export class SyncEngine {
         const ack = this.sessionCache.setSessionBlockedAck(sessionId, reason, ackAt, observedKey)
         if (!ack) return null
 
+        // The ledger records WHEN THE OPERATOR DECIDED, which is now — not the
+        // blocker's own timestamp, and not `ack.at`, which is kept monotonic
+        // and so may belong to a newer prompt than the one just dismissed.
+        // The log sorts by event time, so either of those filed today's
+        // rationale among days-old activity, or outside a recent-events window
+        // entirely. What was dismissed is carried as detail instead.
+        const decidedAt = Date.now()
         try {
             this.store.workGraph.insertEvent(session.namespace, buildOperatorUnblockEvent({
                 sessionId,
                 ownerUserId: this.hubOwnerUserId,
                 reason,
-                acknowledgedAt: ack.at,
+                acknowledgedAt: decidedAt,
+                observedAt: ackAt,
                 // Carry the identity even when the footer it named has already
                 // been replaced: an event that records the reason with null
                 // prior fields cannot be matched back to what was dismissed.
                 observedKey: observedKey ?? null,
                 priorNotify: priorNotify
-            }), { ts: ack.at })
+            }), { ts: decidedAt })
         } catch (error) {
             // Best-effort ledger capture — never fail the operator's dismissal
             // because the event log rejected the row.
@@ -576,37 +584,79 @@ export class SyncEngine {
             ? this.store.messages.getAllMessages(sessionId)
             : this.store.messages.getMessages(sessionId, scanDepth)
 
-        // When the operator's most recent genuine reply was delivered. Only a
-        // reply the agent was actually given counts: a locally handled slash
-        // command has `invoked_at` stamped but answered nothing.
+        // Position in the hub's arrival order, with `seq` breaking ties.
+        //
+        // The tie-break is not cosmetic: a Codex Desktop transcript carries no
+        // per-message timestamps, so the importer stamps every row with the
+        // same import time. Comparing arrival alone then made a transcript's
+        // FINAL message — an unanswered blocked footer — compare equal to the
+        // prompt that started it and read as already answered, so the
+        // conversation went missing from Blocked entirely. `seq` is the native
+        // transcript order for imported rows, which is exactly the information
+        // the timestamps lack.
+        const position = (message: StoredMessage): [number, number] =>
+            [messageReceivedAt(message), message.seq]
+        const atOrBefore = (a: [number, number], b: [number, number]): boolean =>
+            a[0] < b[0] || (a[0] === b[0] && a[1] <= b[1])
+
+        // Where the operator's most recent genuine reply sits. Only a reply the
+        // agent was actually given counts: a locally handled slash command has
+        // `invoked_at` stamped but answered nothing.
+        let boundary: [number, number] | null = null
         let boundaryAt: number | null = null
         for (const message of scanned) {
             if (!isDeliveredOperatorReply(message)) continue
-            const at = deliveredOperatorReplyAt(message)
-            if (boundaryAt === null || at > boundaryAt) boundaryAt = at
+            const here: [number, number] = [deliveredOperatorReplyAt(message), message.seq]
+            if (boundary === null || !atOrBefore(here, boundary)) {
+                boundary = here
+                boundaryAt = here[0]
+            }
         }
 
-        // The newest footer that boundary does not already answer. Eligibility
-        // is decided on hub ARRIVAL (same clock as the boundary); which of the
-        // eligible footers is newest is decided on AUTHOR time (same clock as
-        // each other).
-        let best: {
+        // Reconstruct the author cutoff that live ingestion holds in
+        // `last_notify_cleared_author_at`.
+        //
+        // That cutoff is SESSION state, so a derivation that reads only the
+        // transcript cannot see it — and a rewind retaining both the reply and
+        // an older footer replay would hand back the replay that live
+        // ingestion had already rejected, reopening an answered turn. The
+        // transcript does carry the equivalent: any footer that arrived at or
+        // before the boundary belongs to a turn the reply superseded, so
+        // nothing authored at or before the newest of those can be current.
+        let authorCutoff: number | null = null
+        const footers: Array<{
             signal: { status: string; at: number; note: string | null }
-            receivedAt: number
-        } | null = null
+            position: [number, number]
+        }> = []
         for (const message of scanned) {
-            const receivedAt = messageReceivedAt(message)
-            if (boundaryAt !== null && receivedAt <= boundaryAt) continue
             const signal = extractSessionNotifySignal(message.content, message.createdAt)
             if (!signal) continue
+            const here = position(message)
+            footers.push({ signal, position: here })
+            if (boundary !== null && atOrBefore(here, boundary)) {
+                if (authorCutoff === null || signal.at > authorCutoff) authorCutoff = signal.at
+            }
+        }
+
+        // The newest footer the boundary does not already answer. Eligibility
+        // is decided on arrival order (same clock as the boundary) and on the
+        // author cutoff (same clock as the other footers); which of the
+        // eligible ones is newest is decided on AUTHOR time.
+        let best: {
+            signal: { status: string; at: number; note: string | null }
+            position: [number, number]
+        } | null = null
+        for (const footer of footers) {
+            if (boundary !== null && atOrBefore(footer.position, boundary)) continue
+            if (authorCutoff !== null && footer.signal.at <= authorCutoff) continue
             if (best === null
-                || signal.at > best.signal.at
-                || (signal.at === best.signal.at && receivedAt > best.receivedAt)) {
-                best = { signal, receivedAt }
+                || footer.signal.at > best.signal.at
+                || (footer.signal.at === best.signal.at && !atOrBefore(footer.position, best.position))) {
+                best = footer
             }
         }
         return {
-            signal: best === null ? null : { ...best.signal, receivedAt: best.receivedAt },
+            signal: best === null ? null : { ...best.signal, receivedAt: best.position[0] },
             boundaryAt
         }
     }

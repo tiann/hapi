@@ -656,6 +656,31 @@ export function filterActiveSessionsOnly(sessions: SessionSummary[], selectedSes
  * List-view status filter with the #1404 jobs exception on "active": idle rows
  * that still have a running attachedJob stay visible (and stay out of archived).
  */
+/**
+ * Which way the jump pill should point for blocked rows that are collapsed
+ * away rather than scrolled away (#1717).
+ *
+ * Their rows leave the DOM once the collapse transition finishes, so position
+ * has to come from the section header they live under — it is still on the
+ * page, and it is exactly where activating the pill lands. Counting them as
+ * "below" by default drew a down arrow for a section sitting ABOVE the
+ * viewport, so the jump scrolled up against its own hint.
+ *
+ * A header already on screen yields neither direction: expanding scrolls
+ * within view, so there is nothing to point at.
+ */
+export function attributeCollapsedBlockers(options: {
+    hidden: number
+    headerRect: { top: number; bottom: number } | null
+    bounds: { top: number; bottom: number }
+}): { above: number; below: number } {
+    const { hidden, headerRect, bounds } = options
+    if (hidden <= 0 || !headerRect) return { above: 0, below: 0 }
+    if (headerRect.bottom <= bounds.top) return { above: hidden, below: 0 }
+    if (headerRect.top >= bounds.bottom) return { above: 0, below: hidden }
+    return { above: 0, below: 0 }
+}
+
 export function filterSessionsForListStatus(
     sessions: SessionSummary[],
     status: SessionListView['status'],
@@ -3797,18 +3822,37 @@ export function SessionList(props: {
                 if (rect.bottom <= bounds.top) above += 1
                 else below += 1
             })
-            // Rows an active filter excluded are not in the DOM at all. They
-            // are not literally below the fold, but they are off-screen and
-            // the pill's click reveals them — so they count toward "there is
-            // more that way" rather than being dropped from the hint.
-            const unmounted = Math.max(0, blockedCount - rows.length)
-            const nextBelow = below + unmounted
+            // Blocked rows that are not in the DOM at all, which happens two
+            // ways and they are NOT the same question.
+            const missing = Math.max(0, blockedCount - rows.length)
+            let nextAbove = above
+            let nextBelow = below
+            // Collapsed away: the rows are gone once the transition finishes,
+            // but their section header is still on the page and is exactly
+            // where the pill would take the operator. Counting them all as
+            // "below" drew a down arrow for a section sitting ABOVE the
+            // viewport, so activating the pill scrolled up against the hint.
+            const collapsedHidden = blockedSectionCollapsed
+                ? Math.min(missing, blockedSectionSessions.length)
+                : 0
+            const header = container.querySelector<HTMLElement>('[data-testid="blocked-section"]')
+            const attributed = attributeCollapsedBlockers({
+                hidden: collapsedHidden,
+                headerRect: header?.getBoundingClientRect() ?? null,
+                bounds
+            })
+            nextAbove += attributed.above
+            nextBelow += attributed.below
+            // Hidden by a filter rather than by a collapse: these stay in the
+            // pill's count, which reads `blockedCount` and is deliberately
+            // fleet-wide, but they get no direction — nothing on the page says
+            // which way they are, and guessing drew an arrow that lied.
             // Bail when nothing moved: this runs every scroll frame, and a
             // fresh object each time would re-render every row in the list.
             setBlockedOffscreen((previous) => (
-                previous.above === above && previous.below === nextBelow
+                previous.above === nextAbove && previous.below === nextBelow
                     ? previous
-                    : { above, below: nextBelow }
+                    : { above: nextAbove, below: nextBelow }
             ))
         }
         const schedule = () => {
@@ -3844,6 +3888,23 @@ export function SessionList(props: {
                     ref={headerRowRef}
                     data-testid="session-list-header-row"
                     className="@container flex min-w-0 w-full flex-nowrap items-center gap-1 px-2 py-1"
+                    // Collapse on departure from the ROW, not from the search
+                    // container (#1717). The blocked controls are siblings of
+                    // that container, so once it stops collapsing on focus
+                    // moving INTO them, nothing was left to notice focus
+                    // leaving them again: tabbing search -> controls -> list
+                    // left the bar expanded and the normal toolbar hidden with
+                    // focus already gone from both. This is their common
+                    // ancestor, and with the search expanded it holds exactly
+                    // those two. `SessionListSearch` keeps its own handler for
+                    // the standalone usage that has no row around it.
+                    onBlur={(event) => {
+                        if (!searchExpanded) return
+                        const related = event.relatedTarget as Element | null
+                        if (related?.closest('[data-fue-callout]')) return
+                        if (event.currentTarget.contains(related as Node | null)) return
+                        setSearchExpanded(false)
+                    }}
                 >
                     {showSearch ? (
                         <SessionListSearch
