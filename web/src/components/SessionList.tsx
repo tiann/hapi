@@ -3852,6 +3852,34 @@ export function SessionList(props: {
                             maxWidthPx={searchQuery.length > 0 ? searchMaxPx : 0}
                         />
                     ) : null}
+                    {/* The actions row unmounts while the search field is
+                        expanded, and it carries the blocked controls — so an
+                        operator typing a query that hides the blocked rows lost
+                        both the off-screen cue and the jump control until they
+                        left the field, and an arrival pulse could expire unseen.
+                        A compact cluster keeps both reachable. No
+                        `blockedControlsRef` here: that measurement feeds the
+                        shed budget of the row that is not currently rendered. */}
+                    {showSearch && searchExpanded && (blockedCount > 0 || showBlockedOnly) ? (
+                        <div
+                            data-testid="blocked-search-controls"
+                            className="flex shrink-0 items-center gap-1"
+                        >
+                            {blockedCount > 0 ? (
+                                <BlockedJumpPill
+                                    count={blockedCount}
+                                    direction={blockedDirection}
+                                    alerting={blockedAlerting}
+                                    onJump={jumpToNextBlocked}
+                                />
+                            ) : null}
+                            <BlockedLensToggle
+                                active={showBlockedOnly}
+                                count={blockedCount}
+                                onToggle={() => setShowBlockedOnly(!showBlockedOnly)}
+                            />
+                        </div>
+                    ) : null}
                     {!(showSearch && searchExpanded) ? (
                         <div
                             ref={setHeaderActionsNode}

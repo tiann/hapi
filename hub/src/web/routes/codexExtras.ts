@@ -793,6 +793,7 @@ export function emitImportedMessageEvents(
                 localId: message.localId ?? null,
                 content: message.content,
                 createdAt: message.createdAt,
+                receivedAt: message.receivedAt,
                 invokedAt: message.invokedAt
             }
         })

@@ -37,6 +37,8 @@ export function UnblockReasonDialog(props: {
     const [error, setError] = useState<string | null>(null)
     const inputRef = useRef<HTMLTextAreaElement>(null)
     const dialogRef = useRef<HTMLDivElement>(null)
+    // Synchronous in-flight latch; see `submit`.
+    const inFlightRef = useRef(false)
     // Restore focus to the caller-named target, so dismissing returns the
     // keyboard user to the session row rather than the top of the document.
     // Deliberately NOT keyed on the callback identity. SessionItem passes a
@@ -62,16 +64,28 @@ export function UnblockReasonDialog(props: {
     const trimmed = reason.trim()
 
     const submit = async () => {
+        // One guard for BOTH activations. The Confirm button disables itself
+        // while the mutation runs, but Ctrl/Cmd+Enter in the textarea reaches
+        // this directly, so a second press mid-flight sent a second dismissal
+        // and appended a duplicate `operator_unblock` for one decision.
+        // `inFlightRef`, not `props.isPending`: that arrives via a re-render,
+        // which is too late for two keystrokes in the same tick.
+        if (inFlightRef.current || props.isPending) return
         if (trimmed.length === 0) {
             setError(t('sessions.unblock.reasonRequired'))
             inputRef.current?.focus()
             return
         }
+        inFlightRef.current = true
         try {
             await props.onConfirm(trimmed.slice(0, BLOCKED_ACK_REASON_MAX_CHARS))
             props.onClose()
         } catch (err) {
             setError(err instanceof Error ? err.message : t('dialog.error.default'))
+        } finally {
+            // Released on failure so the operator can retry; on success the
+            // dialog has already closed.
+            inFlightRef.current = false
         }
     }
 

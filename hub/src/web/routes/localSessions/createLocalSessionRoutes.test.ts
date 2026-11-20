@@ -88,6 +88,7 @@ function harness(overrides: {
                     : source
             }
         },
+        reconcileNotifySignalAfterImport: () => {},
         recordSessionActivity: () => {},
         handleRealtimeEvent: () => {},
         applySessionConfig: async (_sessionId: string, config: Record<string, unknown>) => {

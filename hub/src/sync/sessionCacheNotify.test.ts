@@ -122,6 +122,118 @@ describe('footer timestamp boundary on the live path (#1717)', () => {
     })
 })
 
+describe('importing a transcript does not reopen an answered blocker (#1717)', () => {
+    it('derives the blocker from the imported conversation, not from import-time arrival', async () => {
+        // An import replays historical rows through live ingestion, which is
+        // the wrong shape twice over: the imported reply never passes through
+        // the CLI delivery callback, so nothing clears the footer it answered;
+        // and every imported row is stamped with the SAME hub arrival (import
+        // time) while imported replies keep their historical invocation times,
+        // so arrival cannot order them either. The conversation entered Blocked
+        // on a footer its own transcript answers.
+        const { SyncEngine } = await import('./syncEngine')
+        const { RpcRegistry } = await import('../socket/rpcRegistry')
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const session = engine.getOrCreateSession(
+            'import-answered',
+            { path: '/tmp/project', host: 'localhost' },
+            null,
+            'default'
+        )
+        const historical = Date.now() - 86_400_000
+        const footer = 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'needed a key' })
+
+        // The transcript: blocked footer, the operator's reply, then an
+        // assistant turn carrying no footer at all.
+        const rows = [
+            store.messages.addMessage(session.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: { type: 'assistant', message: { content: [{ type: 'text', text: footer }] } }
+                }
+            }, undefined, null, historical),
+            store.messages.addMessage(session.id, {
+                role: 'user',
+                content: { type: 'text', text: 'here is the key' },
+                meta: { sentFrom: 'webapp' }
+            }, 'imported-reply', null, historical + 1_000),
+            store.messages.addMessage(session.id, {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: { type: 'assistant', message: { content: [{ type: 'text', text: 'All done.' }] } }
+                }
+            }, undefined, null, historical + 2_000)
+        ]
+        store.messages.markMessagesInvoked(session.id, ['imported-reply'], historical + 1_000)
+
+        // Replayed through live ingestion exactly as the importer does.
+        for (const message of rows) {
+            engine.handleRealtimeEvent({
+                type: 'message-received',
+                sessionId: session.id,
+                message: {
+                    id: message.id,
+                    seq: message.seq,
+                    localId: message.localId,
+                    content: message.content,
+                    createdAt: message.createdAt,
+                    receivedAt: message.receivedAt,
+                    invokedAt: message.invokedAt
+                }
+            })
+        }
+        // Live ingestion alone leaves the answered footer standing.
+        expect(engine.getSession(session.id)?.lastNotify?.status).toBe('blocked')
+
+        engine.reconcileNotifySignalAfterImport(session.id)
+
+        expect(engine.getSession(session.id)?.lastNotify ?? null).toBeNull()
+    })
+
+    it('keeps a genuinely unanswered footer from an imported transcript', async () => {
+        // Positive control: reconciliation must not simply wipe the signal.
+        const { SyncEngine } = await import('./syncEngine')
+        const { RpcRegistry } = await import('../socket/rpcRegistry')
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const session = engine.getOrCreateSession(
+            'import-unanswered',
+            { path: '/tmp/project', host: 'localhost' },
+            null,
+            'default'
+        )
+        const historical = Date.now() - 86_400_000
+        const footer = 'Prose.\n\nAGENT_NOTIFY_SUMMARY '
+            + JSON.stringify({ version: 1, status: 'blocked', summary: 'still needs a key' })
+
+        // Reply FIRST, then the agent blocks and nobody answers.
+        store.messages.addMessage(session.id, {
+            role: 'user',
+            content: { type: 'text', text: 'off you go' },
+            meta: { sentFrom: 'webapp' }
+        }, 'early-reply', null, historical)
+        store.messages.markMessagesInvoked(session.id, ['early-reply'], historical)
+        store.messages.addMessage(session.id, {
+            role: 'agent',
+            content: {
+                type: 'output',
+                data: { type: 'assistant', message: { content: [{ type: 'text', text: footer }] } }
+            }
+        }, undefined, null, historical + 1_000)
+
+        engine.reconcileNotifySignalAfterImport(session.id)
+
+        expect(engine.getSession(session.id)?.lastNotify?.status).toBe('blocked')
+        expect(engine.getSession(session.id)?.lastNotify?.note).toBe('still needs a key')
+    })
+})
+
 describe('cancelling a queued prompt cannot suppress the next blocker (#1717)', () => {
     it('ingests a genuine footer after a higher-numbered scheduled prompt is cancelled', () => {
         // Insertion `seq` is allocated as MAX(seq)+1, so deleting the

@@ -318,6 +318,10 @@ export function registerSessionHandlers(socket: CliSocketWithData, deps: Session
                 localId: msg.localId,
                 content: msg.content,
                 createdAt: msg.createdAt,
+                // Hub arrival must survive the hop into ingestion: without it
+                // the footer falls back to the runner's clock and a slow-clock
+                // agent's genuine blocker is rejected (#1717).
+                receivedAt: msg.receivedAt,
                 invokedAt: msg.invokedAt,
                 ...(msg.contentRevision ? { contentRevision: msg.contentRevision } : {})
             }

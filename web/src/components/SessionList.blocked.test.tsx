@@ -265,6 +265,27 @@ describe('SessionList blocked chrome (#1717)', () => {
         expect(screen.queryByTestId('blocked-jump-pill')).toBeNull()
     })
 
+    it('keeps the blocked counter and lens reachable while the search is expanded', () => {
+        // The actions row unmounts while the search field is expanded, and it
+        // carries the blocked controls. An operator typing a query that hides
+        // the blocked rows therefore lost both the off-screen cue and the jump
+        // control until they left the field — and an arrival pulse could expire
+        // unseen in the meantime. The lens toggle matters just as much: with
+        // the lens on and the control gone, there was no way to turn it off.
+        renderList([blocked('stuck-one'), makeSession({ id: 'fine-one' })])
+
+        expect(screen.getByTestId('blocked-toolbar-controls')).toBeTruthy()
+        expect(screen.queryByTestId('blocked-search-controls')).toBeNull()
+
+        fireEvent.click(within(screen.getByTestId('session-list-search')).getAllByRole('button')[0]!)
+
+        // The toolbar row is gone, as designed — but the controls are not.
+        expect(screen.queryByTestId('blocked-toolbar-controls')).toBeNull()
+        const compact = screen.getByTestId('blocked-search-controls')
+        expect(within(compact).getByTestId('blocked-jump-pill')).toBeTruthy()
+        expect(within(compact).getByTestId('blocked-lens-toggle')).toBeTruthy()
+    })
+
     it('does not let the selected session escape the machine filter', () => {
         // The machine filter had no selected-session exception before the
         // blocked jump, and must not gain one: with a machine-A session open,

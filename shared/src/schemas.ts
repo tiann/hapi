@@ -597,6 +597,10 @@ export const DecryptedMessageSchema = z.object({
     localId: z.string().nullable(),
     content: z.unknown(),
     createdAt: z.number(),
+    /** When the HUB received this message, vs `createdAt`'s runner clock
+     *  (#1717). The blocked clear boundary is a hub stamp, so only this can be
+     *  ordered against it. Optional: older hubs and senders omit it. */
+    receivedAt: z.number().nullable().optional(),
     invokedAt: z.number().nullable().optional(),
     scheduledAt: z.number().nullable().optional(),
     // The agent was sent the steer but its final outcome could not be proven.

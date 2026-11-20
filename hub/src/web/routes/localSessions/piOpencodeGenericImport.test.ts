@@ -110,6 +110,7 @@ function harness(overrides: {
                 : summaries
             return { success: true, sessions: source }
         },
+        reconcileNotifySignalAfterImport: () => {},
         recordSessionActivity: () => {},
         handleRealtimeEvent: () => {},
         applySessionConfig: async (_sessionId: string, config: Record<string, unknown>) => {
@@ -369,6 +370,7 @@ describe('Pi sync import wrapper', () => {
         const store = new Store(':memory:')
         stores.push(store)
         const engine = {
+            reconcileNotifySignalAfterImport: () => {},
             recordSessionActivity: () => {},
             handleRealtimeEvent: () => {},
             getSessionsByNamespace: () => []

@@ -1055,6 +1055,7 @@ export class MessageService {
                 localId: msg.localId,
                 content: msg.content,
                 createdAt: msg.createdAt,
+                receivedAt: msg.receivedAt,
                 invokedAt: msg.invokedAt,
                 scheduledAt: msg.scheduledAt,
                 ...(msg.deliveryState ? { deliveryState: msg.deliveryState } : {}),

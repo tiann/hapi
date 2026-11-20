@@ -98,6 +98,134 @@ describe('a locally handled command does not answer the agent (#1717)', () => {
     })
 })
 
+describe('hub arrival survives the socket hop into ingestion (#1717)', () => {
+    function footerText(status: string): string {
+        return `Prose.\n\nAGENT_NOTIFY_SUMMARY ${JSON.stringify({
+            version: 1, status, summary: `s-${status}`
+        })}`
+    }
+
+    it('carries receivedAt on the emitted event, so ingestion does not fall back to the runner clock', () => {
+        // The handler builds the event by hand, and dropping `receivedAt` there
+        // silently defeated the whole boundary: ingestion fell back to
+        // `createdAt`, which is the agent runner's clock. A slow-clock runner's
+        // genuine blocked footer then looked older than the hub's delivery
+        // stamp and was rejected — the session never appeared in Blocked.
+        const store = new Store(':memory:')
+        const session = store.sessions.getOrCreateSession('arrival-hop', {}, null, 'default')
+        const socket = new FakeSocket()
+        const events: SyncEvent[] = []
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store, resolveSessionAccess: () => ({ ok: true, value: session }), emitAccessError() {},
+            onWebappEvent: event => events.push(event)
+        })
+
+        // Runner clock an hour behind the hub.
+        const runnerStamp = Date.now() - 3_600_000
+        socket.trigger('message', {
+            sid: session.id,
+            message: {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: { type: 'assistant', message: { content: [{ type: 'text', text: footerText('blocked') }] } }
+                }
+            },
+            createdAt: runnerStamp
+        })
+
+        const received = events.find(event => event.type === 'message-received') as
+            { message: { createdAt: number; receivedAt?: number | null } } | undefined
+        expect(received).toBeTruthy()
+        expect(received!.message.createdAt).toBe(runnerStamp)
+        // The arrival is the hub's own, not the runner's — that is the whole
+        // point, so assert they actually differ.
+        expect(received!.message.receivedAt).toBeGreaterThan(runnerStamp)
+        store.close()
+    })
+})
+
+describe('blocked chrome through the real socket-to-ingestion path (#1717)', () => {
+    function footerText(status: string): string {
+        return `Prose.\n\nAGENT_NOTIFY_SUMMARY ${JSON.stringify({
+            version: 1, status, summary: `s-${status}`
+        })}`
+    }
+
+    async function wire(tag: string) {
+        const { SyncEngine } = await import('../../../sync/syncEngine')
+        const { RpcRegistry } = await import('../../rpcRegistry')
+        const store = new Store(':memory:')
+        const io = { of: () => ({ to: () => ({ emit() {} }) }) }
+        const engine = new SyncEngine(store, io as never, new RpcRegistry(), { broadcast() {} } as never)
+        const session = engine.getOrCreateSession(tag, { path: '/tmp', host: 'h', flavor: 'claude' }, null, 'default')
+        const stored = store.sessions.getSessionByNamespace(session.id, 'default')!
+        const socket = new FakeSocket()
+        registerSessionHandlers(socket as unknown as CliSocketWithData, {
+            store,
+            resolveSessionAccess: () => ({ ok: true, value: stored }),
+            emitAccessError() {},
+            onWebappEvent: (event) => engine.handleRealtimeEvent(event as SyncEvent),
+            onPromptDelivered: (sid, at) => engine.clearSessionLastNotifyOnDelivery(sid, at)
+        })
+        return { store, engine, session, socket }
+    }
+
+    function sendFooter(socket: FakeSocket, sid: string, status: string, createdAt: number): void {
+        socket.trigger('message', {
+            sid,
+            message: {
+                role: 'agent',
+                content: {
+                    type: 'output',
+                    data: { type: 'assistant', message: { content: [{ type: 'text', text: footerText(status) }] } }
+                }
+            },
+            createdAt
+        })
+    }
+
+    function deliverPrompt(socket: FakeSocket, sid: string, localId: string): void {
+        socket.trigger('message', {
+            sid, localId, message: { role: 'user', content: { type: 'text', text: 'carry on' } }
+        })
+        socket.trigger('messages-consumed', { sid, localIds: [localId] })
+    }
+
+    it('shows a slow-clock runner blocked after the prompt that provoked it', async () => {
+        // The runner is an hour behind, so its footer's author time predates
+        // the hub's delivery stamp for the prompt that caused it. Only the
+        // footer's hub ARRIVAL can tell the truth here, and it has to survive
+        // the socket hop to be available at all.
+        const { engine, session, socket } = await wire('socket-slow-clock')
+        deliverPrompt(socket, session.id, 'prompt-1')
+
+        sendFooter(socket, session.id, 'blocked', Date.now() - 3_600_000)
+
+        expect(engine.getSession(session.id)?.lastNotify?.status).toBe('blocked')
+    })
+
+    it('does not readmit a delayed footer from the turn the prompt answered', async () => {
+        // The other direction, and the reason arrival alone is not enough: this
+        // footer was authored BEFORE the reply but reaches the hub after it, so
+        // its arrival is genuinely later. The author time of the footer the
+        // delivery superseded is what rejects it.
+        const { engine, session, socket } = await wire('socket-delayed-sibling')
+        const runnerNow = Date.now()
+
+        sendFooter(socket, session.id, 'blocked', runnerNow - 10_000)
+        expect(engine.getSession(session.id)?.lastNotify?.status).toBe('blocked')
+
+        deliverPrompt(socket, session.id, 'prompt-1')
+        expect(engine.getSession(session.id)?.lastNotify ?? null).toBeNull()
+
+        // Late output from that same, already-answered turn.
+        sendFooter(socket, session.id, 'blocked', runnerNow - 20_000)
+
+        expect(engine.getSession(session.id)?.lastNotify ?? null).toBeNull()
+    })
+})
+
 function redundantGoalStatusContent(message: string): unknown {
     return {
         role: 'agent',

@@ -51,6 +51,7 @@ function createImportSyncEngine(store: Store, machines: Machine[], transcripts?:
             store.sessions.getOrCreateSession(tag, metadata, agentState, namespace) as unknown as ReturnType<SyncEngine['getOrCreateSession']>
         ),
         handleRealtimeEvent: () => {},
+        reconcileNotifySignalAfterImport: () => {},
         recordSessionActivity: (sessionId: string, updatedAt: number) => {
             store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
         }
@@ -1057,6 +1058,7 @@ describe('Codex Desktop import routes', () => {
                 store.sessions.deleteSession(sessionId, 'default')
             },
             handleRealtimeEvent: () => {},
+            reconcileNotifySignalAfterImport: () => {},
             recordSessionActivity: (sessionId: string, updatedAt: number) => {
                 store.sessions.touchSessionUpdatedAt(sessionId, updatedAt, 'default')
             }
